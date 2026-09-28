@@ -4027,4 +4027,914 @@ mod tests {
             }
         }
     }
+
+    /// A weighted row of the oracle: features, two targets, the weight.
+    type OracleRow = (Vec<f64>, [f64; 2], f64);
+    /// A weighted row of [`fitted`]: features, the targets, the weight.
+    type FitRow = (Vec<f64>, Vec<Option<f64>>, f64);
+
+    /// `a x = b` by `faer`'s partial-pivot LU: a third-party solver for the
+    /// oracle, sharing nothing with the model's own Cholesky
+    /// ([`crate::solve::solve_spd`]).
+    fn oracle_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+        use faer::linalg::solvers::Solve;
+        use faer::prelude::*;
+        let n = b.len();
+        let mat = Mat::from_fn(n, n, |i, j| a[i][j]);
+        let rhs = Mat::from_fn(n, 1, |i, _| b[i]);
+        let x = mat.partial_piv_lu().solve(&rhs);
+        (0..n).map(|i| x[(i, 0)]).collect()
+    }
+
+    /// Every solve against its closed form, from weighted sums written out
+    /// here (mutation baseline, docs/PLAN.md task 113): two targets and a
+    /// ridge grid of two (one under `ridge_decay`, which refuses a grid), so
+    /// each system's slot `j * nc + c` is its own; a
+    /// `coef_prior` that is not zero and a ridge that is not small, so the
+    /// penalty's centre moves every coefficient; under both target-gap
+    /// rules, where the targets read one Gram or one each. No decay, so the
+    /// weighted means are plain weighted averages:
+    ///
+    /// - through the origin, raw: `(E[zz'] + λI) β = E[zy] + λ c0`;
+    /// - through the origin, standardized: the penalty per slot is `λ E[z_i²]`;
+    /// - `ridge_decay`: `(W E[zz'] + λI) β = W E[zy] + λ c0`, `W` the weight;
+    /// - with an intercept: the slopes from the weighted covariance, with
+    ///   `λ` (plain) or `λ Var(x_i)` (standardized), and `β_0 = ȳ − m·β`.
+    #[test]
+    fn every_solve_is_its_closed_form_across_targets_and_ridges() {
+        let (k, m) = (3usize, 2usize);
+        let ridges = [0.7, 4.0];
+        let prior = [vec![0.4, -1.0, 2.0, 0.5], vec![-0.3, 0.8, 0.1, -2.0]];
+        let mut s = 20260927u64;
+        let rows: Vec<OracleRow> = (0..60)
+            .map(|_| {
+                let x: Vec<f64> = (0..k)
+                    .map(|i| 2.0 * lcg(&mut s) + [0.5, -1.0, 3.0][i])
+                    .collect();
+                let y0 = 1.0 + 2.0 * x[0] - x[1] + 0.5 * x[2] + 0.3 * lcg(&mut s);
+                let y1 = -2.0 + 0.5 * x[0] + x[1] - 1.5 * x[2] + 0.3 * lcg(&mut s);
+                (x, [y0, y1], 0.5 + (lcg(&mut s) + 1.0))
+            })
+            .collect();
+        let wsum: f64 = rows.iter().map(|r| r.2).sum();
+        let mean = |f: &dyn Fn(&OracleRow) -> f64| -> f64 {
+            rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / wsum
+        };
+        for (intercept, standardize, ridge_decay) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, true),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+                let mut c = cfg(k, m);
+                c.add_intercept = intercept;
+                c.standardize = standardize;
+                c.ridge_decay = ridge_decay;
+                // `ridge_decay` takes one ridge, never a grid.
+                let grid: Vec<f64> = if ridge_decay {
+                    vec![ridges[1]]
+                } else {
+                    ridges.to_vec()
+                };
+                c.ridge = grid.clone();
+                c.target_gaps = gaps;
+                c.min_periods = 0.0;
+                let off = usize::from(intercept);
+                c.coef_prior = Some(prior.iter().map(|p| p[1 - off..].to_vec()).collect());
+                let mut model = EwRidge::new(c).unwrap();
+                for (i, (x, y, w)) in rows.iter().enumerate() {
+                    model.step(
+                        x,
+                        &[Some(y[0]), Some(y[1])],
+                        if i == 0 { 0.0 } else { 1.0 },
+                        *w,
+                    );
+                }
+                let beta = model.coefficients().unwrap().to_vec();
+                let x_new = [0.3, -0.7, 2.2];
+                let pred = model.predict(&x_new, 1.0).pred;
+                let kz = k + off;
+                let z = |r: &OracleRow, i: usize| -> f64 {
+                    if intercept {
+                        if i == 0 { 1.0 } else { r.0[i - 1] }
+                    } else {
+                        r.0[i]
+                    }
+                };
+                for j in 0..m {
+                    let c0 = &prior[j][1 - off..];
+                    for (ci, &lam) in grid.iter().enumerate() {
+                        let want: Vec<f64> = if intercept && !ridge_decay {
+                            let mx: Vec<f64> = (0..k).map(|i| mean(&|r| r.0[i])).collect();
+                            let my = mean(&|r| r.1[j]);
+                            let cov =
+                                |a: usize, b: usize| mean(&|r| (r.0[a] - mx[a]) * (r.0[b] - mx[b]));
+                            let pen = |i: usize| if standardize { lam * cov(i, i) } else { lam };
+                            let a: Vec<Vec<f64>> = (0..k)
+                                .map(|a| {
+                                    (0..k)
+                                        .map(|b| cov(a, b) + if a == b { pen(a) } else { 0.0 })
+                                        .collect()
+                                })
+                                .collect();
+                            let rhs: Vec<f64> = (0..k)
+                                .map(|a| {
+                                    mean(&|r| (r.0[a] - mx[a]) * (r.1[j] - my)) + pen(a) * c0[a + 1]
+                                })
+                                .collect();
+                            let slopes = oracle_solve(&a, &rhs);
+                            let b0 = my - (0..k).map(|i| mx[i] * slopes[i]).sum::<f64>();
+                            std::iter::once(b0).chain(slopes).collect()
+                        } else {
+                            let scale = if ridge_decay { wsum } else { 1.0 };
+                            let pen = |i: usize| {
+                                if standardize {
+                                    lam * mean(&|r| z(r, i) * z(r, i))
+                                } else {
+                                    lam
+                                }
+                            };
+                            let a: Vec<Vec<f64>> = (0..kz)
+                                .map(|a| {
+                                    (0..kz)
+                                        .map(|b| {
+                                            scale * mean(&|r| z(r, a) * z(r, b))
+                                                + if a == b { pen(a) } else { 0.0 }
+                                        })
+                                        .collect()
+                                })
+                                .collect();
+                            let rhs: Vec<f64> = (0..kz)
+                                .map(|a| scale * mean(&|r| z(r, a) * r.1[j]) + pen(a) * c0[a])
+                                .collect();
+                            oracle_solve(&a, &rhs)
+                        };
+                        let got = &beta[j * grid.len() + ci];
+                        let zx: Vec<f64> = if intercept {
+                            std::iter::once(1.0).chain(x_new).collect()
+                        } else {
+                            x_new.to_vec()
+                        };
+                        let p_want: f64 = zx.iter().zip(&want).map(|(a, b)| a * b).sum();
+                        let p_got = pred[j * grid.len() + ci];
+                        assert!(
+                            (p_got - p_want).abs() <= 1e-9 * (1.0 + p_want.abs()),
+                            "predict, target {j}, ridge {lam}: {p_got} against {p_want}"
+                        );
+                        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                            assert!(
+                                (g - w).abs() <= 1e-9 * (1.0 + w.abs()),
+                                "{intercept} {standardize} {ridge_decay} {gaps:?}: target {j}, \
+                                 ridge {lam}, slot {i}: {g} against the closed form {w}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- the mutation baseline's survivors (docs/PLAN.md task 113) --------
+
+    /// A small fitted model: `k` features at levels, weights that move, no
+    /// decay, a solve every row.
+    fn fitted(c: EwRidgeCfg, n: usize, seed: u64) -> (EwRidge, Vec<FitRow>) {
+        let (k, m) = (c.n_features, c.n_targets);
+        let mut model = EwRidge::new(c).unwrap();
+        let mut s = seed;
+        let rows: Vec<_> = (0..n)
+            .map(|i| {
+                let x: Vec<f64> = (0..k).map(|j| 2.0 * lcg(&mut s) + j as f64).collect();
+                let y = (0..m)
+                    .map(|t| {
+                        let v = 1.0
+                            + x.iter()
+                                .enumerate()
+                                .map(|(j, xj)| (j + t + 1) as f64 * 0.3 * xj)
+                                .sum::<f64>()
+                            + 0.2 * lcg(&mut s);
+                        // The second target is absent on every third row.
+                        (t == 0 || i % 3 != 1).then_some(v)
+                    })
+                    .collect::<Vec<_>>();
+                (x, y, 0.5 + (lcg(&mut s) + 1.0))
+            })
+            .collect();
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            model.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+        }
+        (model, rows)
+    }
+
+    #[test]
+    fn readiness_is_compared_bit_for_bit_and_field_by_field() {
+        assert!(same_bits(&[f64::NAN], &[f64::NAN]), "a NaN is itself");
+        assert!(!same_bits(&[0.0], &[-0.0]), "the bits, not the value");
+        assert!(!same_bits(&[1.0], &[2.0]));
+        assert!(!same_bits(&[1.0], &[1.0, 2.0]), "the lengths");
+        let mut c = cfg(2, 1);
+        c.min_periods = 0.0;
+        let (mut m, _) = fitted(c, 30, 3);
+        m.set_keep_factor(true);
+        m.solve();
+        let base = m.ready.clone();
+        assert_eq!(base, base.clone());
+        assert!(!base.systems.is_empty() && !base.support.is_empty());
+        let changes: [&dyn Fn(&mut Readiness); 5] = [
+            &|r| r.edf[0] += 1.0,
+            &|r| r.support.push(vec![]),
+            // Slot 0 is the intercept, whose share is NaN by definition.
+            &|r| r.support[0][1] += 1.0,
+            &|r| r.systems[0] = None,
+            &|r| r.system_of[0] += 1,
+        ];
+        for (i, change) in changes.iter().enumerate() {
+            let mut r = base.clone();
+            change(&mut r);
+            assert_ne!(r, base, "change {i} went unseen");
+        }
+    }
+
+    #[test]
+    fn the_kept_factors_follow_the_setting_and_survive_a_load() {
+        let mut c = cfg(3, 1);
+        c.min_periods = 0.0;
+        let (mut m, _) = fitted(c, 40, 5);
+        m.set_keep_factor(true);
+        m.solve();
+        let x = [0.3, 1.1, 2.4];
+        let mut on = Vec::new();
+        m.row_error_inflation_into(&x, &mut on);
+        assert!(on[0].is_finite() && on[0] > 1.0, "{on:?}");
+        // A loaded model rebuilds the factors from the systems it carries:
+        // through the bytes a file holds, which carry no factor (an
+        // in-memory `State` clones them, and would hide a missing rebuild).
+        let bytes = rmp_serde::to_vec_named(&m.state()).unwrap();
+        let back = EwRidge::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+        let mut loaded = Vec::new();
+        back.row_error_inflation_into(&x, &mut loaded);
+        assert_eq!(loaded, on);
+        // Off, nothing is kept and the answer is infinite.
+        m.set_keep_factor(false);
+        let mut off = Vec::new();
+        m.row_error_inflation_into(&x, &mut off);
+        assert_eq!(off, vec![f64::INFINITY]);
+    }
+
+    /// `sqrt(1 + h)`, `h` the row's leverage over Kish's sample size, from
+    /// the definition: centred and standardized, `h = (1 + v'(R + λI)⁻¹v)/n`
+    /// with `v` the row centred and scaled and `R` the correlation; under
+    /// `ridge_decay`, `h = W z'(W E[zz'] + λI)⁻¹z / n`.
+    #[test]
+    fn the_row_error_inflation_is_the_leverage_of_its_definition() {
+        for ridge_decay in [false, true] {
+            let mut c = cfg(3, 1);
+            c.min_periods = 0.0;
+            c.standardize = !ridge_decay;
+            c.ridge_decay = ridge_decay;
+            c.ridge = vec![if ridge_decay { 3.0 } else { 0.5 }];
+            let lam = c.ridge[0];
+            let mut m = EwRidge::new(c.clone()).unwrap();
+            m.set_keep_factor(true);
+            let (_, rows) = fitted(c, 50, 9);
+            for (i, (x, y, w)) in rows.iter().enumerate() {
+                m.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+            }
+            m.solve();
+            let x = [0.3, 1.1, 2.4];
+            let mut got = Vec::new();
+            m.row_error_inflation_into(&x, &mut got);
+            let ws: f64 = rows.iter().map(|r| r.2).sum();
+            let wq: f64 = rows.iter().map(|r| r.2 * r.2).sum();
+            let n = ws * ws / wq;
+            let mean =
+                |f: &dyn Fn(&[f64]) -> f64| rows.iter().map(|r| r.2 * f(&r.0)).sum::<f64>() / ws;
+            let want = if ridge_decay {
+                let z = |r: &[f64], i: usize| if i == 0 { 1.0 } else { r[i - 1] };
+                let a: Vec<Vec<f64>> = (0..4)
+                    .map(|i| {
+                        (0..4)
+                            .map(|j| {
+                                ws * mean(&|r| z(r, i) * z(r, j)) + if i == j { lam } else { 0.0 }
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let v: Vec<f64> = (0..4).map(|i| z(&x, i)).collect();
+                let u = oracle_solve(&a, &v);
+                let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum::<f64>() * ws;
+                (1.0 + q / n).sqrt()
+            } else {
+                let mx: Vec<f64> = (0..3).map(|i| mean(&|r| r[i])).collect();
+                let cov = |a: usize, b: usize| mean(&|r| (r[a] - mx[a]) * (r[b] - mx[b]));
+                let sd: Vec<f64> = (0..3).map(|i| cov(i, i).sqrt()).collect();
+                let a: Vec<Vec<f64>> = (0..3)
+                    .map(|i| {
+                        (0..3)
+                            .map(|j| cov(i, j) / (sd[i] * sd[j]) + if i == j { lam } else { 0.0 })
+                            .collect()
+                    })
+                    .collect();
+                let v: Vec<f64> = (0..3).map(|i| (x[i] - mx[i]) / sd[i]).collect();
+                let u = oracle_solve(&a, &v);
+                let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum();
+                (1.0 + (1.0 + q) / n).sqrt()
+            };
+            assert!(
+                (got[0] - want).abs() <= 1e-10 * want,
+                "ridge_decay {ridge_decay}: {} against {want}",
+                got[0]
+            );
+        }
+    }
+
+    #[test]
+    fn the_error_inflation_has_a_slot_per_fit_and_waits_for_min_periods() {
+        // Two targets and three ridges: `m * nc` = 6 where `m + nc` = 5.
+        let mut c = cfg(2, 2);
+        c.ridge = vec![1e-6, 0.1, 1.0];
+        c.min_periods = 6.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 13u64;
+        let mut out = Vec::new();
+        for i in 0..8 {
+            m.error_inflation_into(&mut out);
+            assert_eq!(out.len(), 6);
+            // Solved from the second row on, but withheld below the floor,
+            // whose check is `<`: at exactly six rows of weight 1 it is met.
+            if i < 6 {
+                assert!(out.iter().all(|v| *v == f64::INFINITY), "row {i}: {out:?}");
+            } else {
+                assert!(
+                    out.iter().all(|v| v.is_finite() && *v > 1.0),
+                    "row {i}: {out:?}"
+                );
+                assert!(m.beta.is_some());
+            }
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0]), Some(x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        // A state whose readiness did not come with it answers infinity; the
+        // statistic is never indexed past what it holds.
+        m.ready.edf.clear();
+        m.error_inflation_into(&mut out);
+        assert!(out.iter().all(|v| *v == f64::INFINITY), "{out:?}");
+    }
+
+    #[test]
+    fn each_target_reports_its_own_weight() {
+        let mut c = cfg(2, 2);
+        c.min_periods = 0.0;
+        let (m, rows) = fitted(c, 30, 17);
+        let mut out = vec![-1.0];
+        assert!(m.target_n_eff_into(&mut out));
+        let want: Vec<f64> = (0..2)
+            .map(|t| rows.iter().filter(|r| r.1[t].is_some()).map(|r| r.2).sum())
+            .collect();
+        assert_eq!(out.len(), 2);
+        for (g, w) in out.iter().zip(&want) {
+            assert!((g - w).abs() <= 1e-12 * w, "{out:?} against {want:?}");
+        }
+        assert!(want[1] < want[0], "the second target missed rows");
+    }
+
+    #[test]
+    fn a_window_budget_reports_its_overrun_and_clears() {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(30.0);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        c.min_periods = 0.0;
+        let (mut m, _) = fitted(c, 100, 21);
+        assert_eq!(m.window_over_budget(), None, "no budget, no overrun");
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(1e-6)));
+        match m.window_over_budget() {
+            Some((bytes, every)) => {
+                assert!(bytes > 1, "{bytes}");
+                assert_eq!(every, 2);
+            }
+            None => panic!("a ring of snapshots is past a budget of one byte"),
+        }
+        m.set_window_budget(None);
+        assert_eq!(m.window_over_budget(), None);
+    }
+
+    #[test]
+    fn the_gram_parts_are_the_fits_and_carry_the_target_moments() {
+        let mut c = cfg(2, 2);
+        c.min_periods = 0.0;
+        let (m, rows) = fitted(c, 30, 23);
+        let (parts, moments) = m.gram_parts();
+        assert_eq!(parts.len(), 2, "one Gram per target under own_rows");
+        assert_eq!(parts[0].targets, vec![0]);
+        let w0: f64 = rows.iter().map(|r| r.2).sum();
+        assert!((parts[0].cov.n_eff() - w0).abs() <= 1e-12 * w0);
+        assert!(
+            moments.is_some(),
+            "no window, so the history's moments are given"
+        );
+    }
+
+    /// The doc: re-solve "when anything was mixed and there is a fit to
+    /// replace". Before the first fit there is none, so a blend solves
+    /// nothing.
+    #[test]
+    fn a_blend_before_the_first_fit_solves_nothing() {
+        let mut c = cfg(2, 1);
+        c.long_halflife = Some(500.0);
+        c.session_shrink = Some(0.5);
+        // The first fit waits for `min_periods` whatever the schedule.
+        c.min_periods = 100.0;
+        c.solve_every = 1e9;
+        c.max_rows_between_solves = 100_000;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 29u64;
+        for i in 0..5 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.coefficients().is_none(), "no solve scheduled yet");
+        m.blend_toward_long_run();
+        assert!(
+            m.coefficients().is_none(),
+            "the blend solved with no fit to replace"
+        );
+    }
+
+    /// Kish's sample size and the residual spread under a window are those
+    /// of the rows inside it, from the definition: the rows at most one
+    /// window old, weighted `2^(-age / halflife)`.
+    #[test]
+    fn the_window_kish_and_spread_are_the_rows_inside_it() {
+        let (halflife, window) = (30.0, 80.0);
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(halflife);
+        c.window = Some(window);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 31u64;
+        let (mut t, mut resid, mut clock) = (vec![], vec![], 0.0);
+        for i in 0..150 {
+            let d = if i == 0 {
+                0.0
+            } else {
+                0.25 * (2.0 + (lcg(&mut s).abs() * 8.0).floor())
+            };
+            clock += d;
+            let x = [lcg(&mut s) * 4.0 - 2.0];
+            let y = 3.0 * x[0] + 1.0 + 0.5 * lcg(&mut s);
+            let pred = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+            t.push(clock);
+            resid.push(pred.is_finite().then_some(y - pred));
+            if i < 20 {
+                continue;
+            }
+            let kept: Vec<(f64, Option<f64>)> = (0..=i)
+                .filter(|&r| clock - t[r] <= window)
+                .map(|r| (0.5_f64.powf((clock - t[r]) / halflife), resid[r]))
+                .collect();
+            let (ws, wq) = kept
+                .iter()
+                .fold((0.0, 0.0), |(a, b), (w, _)| (a + w, b + w * w));
+            let kish = m.gram_kish()[0].expect("a window with rows in it");
+            assert!(
+                (kish - ws * ws / wq).abs() <= 1e-8 * kish,
+                "row {i}: {kish} against {}",
+                ws * ws / wq
+            );
+            let (rs, rw) = kept
+                .iter()
+                .filter_map(|(w, r)| r.map(|r| (w * r * r, *w)))
+                .fold((0.0, 0.0), |(a, b), (x, y)| (a + x, b + y));
+            let sig2 = m.sigma2()[0];
+            assert!(
+                (sig2 - rs / rw).abs() <= 1e-8 * sig2,
+                "row {i}: {sig2} against {}",
+                rs / rw
+            );
+        }
+    }
+
+    /// Each target's spread is its first fit's squared residuals over the
+    /// rows it learned, weighted -- not another target's, not another
+    /// ridge's. A row of weight 0 at the first prediction, while the spread
+    /// holds no weight at all, leaves it alone (hard rule 9: no 0/0).
+    #[test]
+    fn each_targets_spread_is_its_first_fits_residuals() {
+        let mut c = cfg(2, 2);
+        c.ridge = vec![1e-6, 2.0];
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 37u64;
+        let mut acc = [(0.0, 0.0); 2];
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s) + 1.0];
+            let y = [
+                Some(1.0 + x[0] - x[1] + 0.3 * lcg(&mut s)),
+                // The second target starts late, so while the first is
+                // predicted it is not: a row it is present on must not read
+                // the first's prediction.
+                (i >= 8 && i % 4 != 2).then(|| 2.0 * x[1] + 0.3 * lcg(&mut s)),
+            ];
+            let w = if i == 3 {
+                0.0
+            } else if i < 3 {
+                1.0
+            } else {
+                0.5 + (lcg(&mut s) + 1.0)
+            };
+            let pred = m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, w).pred;
+            if i == 3 {
+                assert!(pred[0].is_finite(), "the first prediction is this row's");
+            }
+            for j in 0..2 {
+                if let Some(yj) = y[j] {
+                    let p = pred[j * 2];
+                    if w > 0.0 && p.is_finite() {
+                        acc[j].0 += w * (yj - p) * (yj - p);
+                        acc[j].1 += w;
+                    }
+                }
+            }
+        }
+        let sig2 = m.sigma2();
+        for j in 0..2 {
+            let want = acc[j].0 / acc[j].1;
+            assert!(
+                (sig2[j] - want).abs() <= 1e-10 * want,
+                "target {j}: {} against {want}",
+                sig2[j]
+            );
+        }
+    }
+
+    #[test]
+    fn a_schema_17_state_is_read_as_it_is_and_a_mismatched_twin_is_refused() {
+        let mut c = cfg(2, 2);
+        c.target_gaps = TargetGaps::Pairwise;
+        c.min_periods = 0.0;
+        let (m, _) = fitted(c, 60, 41);
+        let mut s17 = m.state();
+        s17.schema_version = 17;
+        let (mut whole, mut read) = (
+            EwRidge::restore(&m.state()).unwrap(),
+            EwRidge::restore(&s17).unwrap(),
+        );
+        let mut s = 43u64;
+        for _ in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = [Some(x[0]), Some(x[1] - x[0])];
+            let (a, b) = (
+                whole.step(&x, &y, 1.0, 1.0).pred,
+                read.step(&x, &y, 1.0, 1.0).pred,
+            );
+            assert_eq!(
+                a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                b.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+        }
+        let twin = |k: usize| {
+            let mut c = cfg(k, 1);
+            c.long_halflife = Some(200.0);
+            c.session_shrink = Some(0.5);
+            c.min_periods = 0.0;
+            fitted(c, 20, 47).0
+        };
+        let (mut two, three) = (twin(2), twin(3));
+        two.slow = three.slow.clone();
+        assert!(
+            EwRidge::restore(&two.state()).is_err(),
+            "a twin of three features beside two"
+        );
+    }
+
+    #[test]
+    fn a_window_that_is_not_a_positive_length_is_refused_by_name() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut c = cfg(1, 1);
+            c.window = Some(bad);
+            let err = EwRidge::new(c).expect_err("refused");
+            assert!(
+                err.contains("window must be finite and > 0"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    /// Standardized, a feature that never moves has no scale and gets no
+    /// slope, and when no feature moves the fit is the target's mean: the
+    /// intercept alone, with no system kept, so no row leverage either (its
+    /// doc: infinite "where no system was kept").
+    #[test]
+    fn with_no_feature_moving_the_fit_is_the_mean_and_keeps_no_system() {
+        let mut c = cfg(2, 1);
+        c.standardize = true;
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        m.set_keep_factor(true);
+        let mut s = 53u64;
+        let (mut ys, mut ws) = (0.0, 0.0);
+        for i in 0..30 {
+            let y = 5.0 + lcg(&mut s);
+            let w = 0.5 + (lcg(&mut s) + 1.0);
+            m.step(&[3.0, -2.0], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
+            ys += w * y;
+            ws += w;
+        }
+        let beta = &m.coefficients().unwrap()[0];
+        assert!((beta[0] - ys / ws).abs() <= 1e-12 * (ys / ws), "{beta:?}");
+        assert_eq!(&beta[1..], &[0.0, 0.0]);
+        let mut out = Vec::new();
+        m.row_error_inflation_into(&[3.0, -2.0], &mut out);
+        assert_eq!(out, vec![f64::INFINITY]);
+    }
+
+    /// Under `pairwise` the Gram is over every row, and a target's
+    /// intercept is `ȳ_j − m_j·β` with `m_j` the feature means over the
+    /// rows that target was present on -- its own, not the Gram's.
+    #[test]
+    fn a_pairwise_intercept_is_centred_on_the_targets_own_rows() {
+        let mut c = cfg(2, 2);
+        c.target_gaps = TargetGaps::Pairwise;
+        c.min_periods = 0.0;
+        let (m, rows) = fitted(c, 60, 59);
+        let beta = &m.coefficients().unwrap()[1];
+        let own: Vec<_> = rows.iter().filter(|r| r.1[1].is_some()).collect();
+        let w: f64 = own.iter().map(|r| r.2).sum();
+        let my = own.iter().map(|r| r.2 * r.1[1].unwrap()).sum::<f64>() / w;
+        let mx: Vec<f64> = (0..2)
+            .map(|i| own.iter().map(|r| r.2 * r.0[i]).sum::<f64>() / w)
+            .collect();
+        let want = my - mx[0] * beta[1] - mx[1] * beta[2];
+        assert!(
+            (beta[0] - want).abs() <= 1e-10 * (1.0 + want.abs()),
+            "{} against {want}",
+            beta[0]
+        );
+        let all: f64 =
+            rows.iter().map(|r| r.2 * r.0[0]).sum::<f64>() / rows.iter().map(|r| r.2).sum::<f64>();
+        assert!(
+            (all - mx[0]).abs() > 1e-3,
+            "the target's rows are not every row's mean"
+        );
+    }
+
+    /// A zero-weight copy of every row changes nothing, to the bit: the
+    /// targets' own means are pairs, and a pair given a step of zero could
+    /// round afresh (`crate::comp::add`), so a row of weight 0 takes none.
+    #[test]
+    fn a_zero_weight_copy_of_every_row_changes_nothing() {
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let mut c = cfg(2, 2);
+            c.target_gaps = gaps;
+            c.decay = Decay::Halflife(15.0);
+            c.min_periods = 0.0;
+            let (mut plain, mut doubled) =
+                (EwRidge::new(c.clone()).unwrap(), EwRidge::new(c).unwrap());
+            let mut s = 61u64;
+            for i in 0..200 {
+                // Features centred near zero, where a step can exceed the mean.
+                let x = [0.01 * lcg(&mut s), 3.0 * lcg(&mut s)];
+                let y = [Some(x[0] - x[1]), (i % 3 != 0).then(|| 0.5 * x[1])];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let a = plain.step(&x, &y, d, 1.0).pred;
+                let b = doubled.step(&x, &y, d, 1.0).pred;
+                let copy = doubled.step(&x, &y, 0.0, 0.0).pred;
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a), bits(&b), "{gaps:?} row {i}");
+                let after = plain.clone().step(&x, &[None, None], 0.0, 0.0).pred;
+                assert_eq!(
+                    bits(&copy),
+                    bits(&after),
+                    "{gaps:?} row {i}: the copy's prediction"
+                );
+            }
+            assert_eq!(plain.acc.cross, doubled.acc.cross, "{gaps:?}");
+        }
+    }
+
+    /// Two identical features at no ridge: the system is singular, the
+    /// solve adds a jitter `μ`, and each copy's share of its coefficient is
+    /// `1 / (2 + μ)`, about a half -- the diagonal of `I − μ(A + μI)⁻¹` for
+    /// `A = [[1, 1], [1, 1]]`. A share below 1 at a ridge of 0 is itself the
+    /// evidence that the jitter was applied.
+    #[test]
+    fn a_duplicated_feature_shares_its_support_at_the_jitter() {
+        let mut c = cfg(2, 1);
+        c.standardize = true;
+        c.ridge = vec![0.0];
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 67u64;
+        for i in 0..40 {
+            let v = lcg(&mut s);
+            m.step(
+                &[v, v],
+                &[Some(2.0 * v + 0.1 * lcg(&mut s))],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let support = &m.support_coef().unwrap()[0];
+        for &share in &support[1..] {
+            assert!((share - 0.5).abs() < 1e-3, "{support:?}");
+        }
+    }
+
+    /// The row leverage per slot, two targets on their own rows and three
+    /// ridges, against its definition (centred, plain): `h = (1 +
+    /// v'(C_j + λ_c I)⁻¹v) / n_j` over target `j`'s rows. With the floor
+    /// check at `<`, and nothing indexed past what the readiness holds.
+    #[test]
+    fn the_row_error_inflation_has_each_slots_own_leverage() {
+        let ridges = [1e-6, 0.3, 2.0];
+        let mut c = cfg(2, 2);
+        c.ridge = ridges.to_vec();
+        c.min_periods = 12.0;
+        let mut m = EwRidge::new(c).unwrap();
+        m.set_keep_factor(true);
+        let mut s = 71u64;
+        let mut rows: Vec<(Vec<f64>, [Option<f64>; 2])> = Vec::new();
+        let x_new = [0.4, 1.9];
+        let mut out = Vec::new();
+        for i in 0..40 {
+            m.row_error_inflation_into(&x_new, &mut out);
+            assert_eq!(out.len(), 6);
+            if i < 12 {
+                assert!(out.iter().all(|v| *v == f64::INFINITY), "row {i}: {out:?}");
+            } else {
+                assert!(out.iter().all(|v| v.is_finite()), "row {i}: {out:?}");
+            }
+            let x = vec![lcg(&mut s), 2.0 * lcg(&mut s) + 1.0];
+            let y = [
+                Some(x[0] + 0.3 * lcg(&mut s)),
+                (i % 3 != 1).then(|| x[1] - x[0] + 0.3 * lcg(&mut s)),
+            ];
+            m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            rows.push((x, y));
+        }
+        m.row_error_inflation_into(&x_new, &mut out);
+        assert_eq!(m.support_coef().map(|v| v.len()), Some(6));
+        for j in 0..2 {
+            let own: Vec<&Vec<f64>> = rows
+                .iter()
+                .filter(|r| r.1[j].is_some())
+                .map(|r| &r.0)
+                .collect();
+            let n = own.len() as f64;
+            let mx: Vec<f64> = (0..2)
+                .map(|i| own.iter().map(|x| x[i]).sum::<f64>() / n)
+                .collect();
+            let cov = |a: usize, b: usize| {
+                own.iter()
+                    .map(|x| (x[a] - mx[a]) * (x[b] - mx[b]))
+                    .sum::<f64>()
+                    / n
+            };
+            for (ci, lam) in ridges.iter().enumerate() {
+                let a: Vec<Vec<f64>> = (0..2)
+                    .map(|i| {
+                        (0..2)
+                            .map(|k| cov(i, k) + if i == k { *lam } else { 0.0 })
+                            .collect()
+                    })
+                    .collect();
+                let v: Vec<f64> = (0..2).map(|i| x_new[i] - mx[i]).collect();
+                let u = oracle_solve(&a, &v);
+                let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum();
+                let want = (1.0 + (1.0 + q) / n).sqrt();
+                let got = out[j * 3 + ci];
+                assert!(
+                    (got - want).abs() <= 1e-9 * want,
+                    "target {j}, ridge {lam}: {got} against {want}"
+                );
+            }
+        }
+        m.ready.system_of.clear();
+        m.row_error_inflation_into(&x_new, &mut out);
+        assert!(out.iter().all(|v| *v == f64::INFINITY), "{out:?}");
+    }
+
+    /// Under `ridge_decay` the system is on the sum scale, `W E[zz'] + λI`,
+    /// and a slope's share of its coefficient is `1 − λ [(W E[zz'] +
+    /// λI)⁻¹]_ii`: the penalty the readiness reads is `λ`, as solved.
+    #[test]
+    fn the_support_under_ridge_decay_is_the_sum_scale_systems() {
+        let lam = 5.0;
+        let mut c = cfg(2, 1);
+        c.ridge = vec![lam];
+        c.ridge_decay = true;
+        c.min_periods = 0.0;
+        let (m, rows) = fitted(c, 25, 73);
+        let z = |x: &[f64], i: usize| if i == 0 { 1.0 } else { x[i - 1] };
+        let a: Vec<Vec<f64>> = (0..3)
+            .map(|i| {
+                (0..3)
+                    .map(|j| {
+                        rows.iter()
+                            .map(|r| r.2 * z(&r.0, i) * z(&r.0, j))
+                            .sum::<f64>()
+                            + if i == j { lam } else { 0.0 }
+                    })
+                    .collect()
+            })
+            .collect();
+        let support = &m.support_coef().unwrap()[0];
+        for (i, &share) in support.iter().enumerate().skip(1) {
+            let e: Vec<f64> = (0..3).map(|k| f64::from(k == i)).collect();
+            let want = 1.0 - lam * oracle_solve(&a, &e)[i];
+            assert!(
+                (share - want).abs() <= 1e-9,
+                "slot {i}: {share} against {want}"
+            );
+        }
+    }
+
+    /// A system that cannot be factorized keeps the fit it had, slot by
+    /// slot, and is counted; with no fit before, the slot is NaN. The other
+    /// target's fit is solved as usual.
+    #[test]
+    fn a_solve_that_fails_keeps_the_last_fit_or_says_nan() {
+        let mut c = cfg(2, 2);
+        c.ridge = vec![1e-6, 0.5];
+        c.min_periods = 0.0;
+        let (mut m, _) = fitted(c.clone(), 30, 79);
+        let before = m.coefficients().unwrap().to_vec();
+        let failed = m.solve_failures;
+        let g = m.acc.grams.of[1];
+        m.acc.grams.grams[g].update(&[f64::NAN; 3], 1.0, 1.0);
+        m.solve();
+        assert_eq!(
+            m.solve_failures,
+            failed + 2,
+            "both ridges of the second target failed"
+        );
+        let after = m.coefficients().unwrap();
+        for ci in 0..2 {
+            assert_eq!(
+                after[2 + ci],
+                before[2 + ci],
+                "ridge {ci}: the second target keeps its fit"
+            );
+            assert!(after[ci].iter().all(|v| v.is_finite()));
+        }
+    }
+
+    /// A window that holds no row of a target reports no fit for it, in
+    /// each of its ridges' slots, and only its (review 2026-09-12, C2).
+    #[test]
+    fn a_target_absent_from_the_window_has_no_fit() {
+        let mut c = cfg(2, 2);
+        c.ridge = vec![1e-6, 0.5];
+        c.decay = Decay::Halflife(20.0);
+        c.window = Some(10.0);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 97u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            // The second target stops at row 20; the window is 10 rows.
+            let y1 = (i < 20).then_some(x[1]);
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let beta = m.coefficients().unwrap();
+        for ci in 0..2 {
+            assert!(beta[ci].iter().all(|v| v.is_finite()), "{:?}", beta[ci]);
+            assert!(
+                beta[2 + ci].iter().all(|v| v.is_nan()),
+                "{:?}",
+                beta[2 + ci]
+            );
+        }
+    }
+
+    /// A target first seen after the last solve has weight but no statistic
+    /// yet: its inflation is infinite, never `sqrt(1 + NaN)`.
+    #[test]
+    fn a_target_seen_since_the_last_solve_reads_infinite_inflation() {
+        let mut c = cfg(2, 2);
+        // With a ridge, a Gram with no weight is solved to the prior and
+        // has a statistic; with none, it is skipped and has none.
+        c.ridge = vec![0.0];
+        c.min_periods = 0.0;
+        c.solve_every = 1e9;
+        c.max_rows_between_solves = 5;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 89u64;
+        for i in 0..7 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y1 = (i == 6).then_some(x[1]);
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let mut out = Vec::new();
+        m.error_inflation_into(&mut out);
+        assert!(out[0].is_finite(), "{out:?}");
+        assert_eq!(out[1], f64::INFINITY, "{out:?}");
+    }
 }

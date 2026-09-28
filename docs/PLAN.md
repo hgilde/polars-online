@@ -4507,7 +4507,7 @@ decision it needs, with a recommendation where there is one.
       read off a real model's state. U5: a Decimal and a `UInt8` column
       through the CLI give the bank's numbers on the same `Float64`s.
 
-- [ ] 113. **CI and tooling.** S–M. S7, one composite action for the Linux
+- [x] 113. **CI and tooling.** S–M. S7, one composite action for the Linux
       prep step (five copies now); a coverage run, and whether Rust coverage
       joins CI; a fresh mutation baseline and its triage (the weekly job
       starts 2026-09-27; `lasso` and `ewridge` first); WRITING's step-5
@@ -4530,6 +4530,23 @@ decision it needs, with a recommendation where there is one.
       follows a blank line at six spaces is an indented code block: 35
       blocks, 2,662 lines. Four spaces would render them as text; the diff
       is whitespace across the whole file, so it is not made without a word.
+      **The rest done 2026-09-27.** The mutation baseline over `lasso.rs`
+      and `ewridge.rs`: 906 mutants, 104 missed and 152 timed out; two
+      `--iterate` rounds leave none that is neither caught nor recorded
+      with its reason (14 equivalents; TESTING, "Mutation survivors"). The
+      new tests use third-party oracles (the user asked, 2026-09-27: "is
+      there no third party oracle library?"): `faer` solves the Rust
+      oracle's normal equations, and scikit-learn's `Ridge` holds every
+      `ewridge` solve in the Python suite, 20 cases to 1e-8; `cargo mutants`
+      sees only the Rust tests, so both. The changed lines of task 112's
+      performance fixes: 42 of 43 caught, the other equivalent. Coverage
+      (`scripts/coverage.sh`): 96% Python, 93.9% region and 92.6% line
+      Rust, from 75% and 73% on 2026-08-30. **Rust coverage does not join
+      CI:** it sees `cargo test` alone, so `online-py` reads 0% and
+      `online-polars` less than the Python suite drives; it would add an
+      instrumented build a run; and the mutation jobs, on every push and
+      weekly, are the sharper measure of the same thing. CI keeps the
+      Python figure it reports.
 
 - [ ] 114. **Four formulas checked against their papers.** S–M; needs the
       papers (none is in `.cache/research/papers`). WKD 2012's Bartlett

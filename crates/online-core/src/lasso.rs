@@ -1636,4 +1636,402 @@ mod tests {
         });
         assert!(matches!(restore(v), Err(StateError::Invalid(_))));
     }
+
+    // --- the mutation baseline's survivors (docs/PLAN.md task 113) --------
+
+    /// A weighted row: features, two targets, the weight.
+    type Row = (Vec<f64>, [Option<f64>; 2], f64);
+
+    /// `a x = b` by `faer`'s partial-pivot LU: a third-party oracle.
+    fn oracle_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
+        use faer::linalg::solvers::Solve;
+        use faer::prelude::*;
+        let n = b.len();
+        let mat = Mat::from_fn(n, n, |i, j| a[i][j]);
+        let rhs = Mat::from_fn(n, 1, |i, _| b[i]);
+        let x = mat.partial_piv_lu().solve(&rhs);
+        (0..n).map(|i| x[(i, 0)]).collect()
+    }
+
+    /// Weighted rows: `k` features at levels, two targets, the second absent
+    /// on every third row.
+    fn weighted_rows(k: usize, n: usize, seed: u64) -> Vec<Row> {
+        let mut s = seed;
+        (0..n)
+            .map(|i| {
+                let x: Vec<f64> = (0..k)
+                    .map(|j| 1.5 * lcg(&mut s) + 0.7 * j as f64 + 0.5)
+                    .collect();
+                let y0 = 1.0
+                    + x.iter()
+                        .enumerate()
+                        .map(|(j, v)| (j as f64 - 0.8) * v)
+                        .sum::<f64>()
+                    + 0.2 * lcg(&mut s);
+                let y1 = -0.5 + 0.9 * x[0] + 0.2 * lcg(&mut s);
+                (
+                    x,
+                    [Some(y0), (i % 3 != 1).then_some(y1)],
+                    0.5 + (lcg(&mut s) + 1.0),
+                )
+            })
+            .collect()
+    }
+
+    fn run(c: LassoCfg, rows: &[Row]) -> Lasso {
+        use crate::OnlineModel;
+        let m = c.n_targets;
+        let mut model = Lasso::new(c).unwrap();
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            model.step(x, &y[..m], if i == 0 { 0.0 } else { 1.0 }, *w);
+        }
+        model
+    }
+
+    /// With no intercept and no penalty the descent lands on least squares
+    /// through the origin, `E[xx'] β = E[xy]`, whatever the features' means
+    /// (review 2026-09-12, C8's form, now held to its closed form).
+    #[test]
+    fn without_an_intercept_and_no_penalty_it_is_least_squares_through_the_origin() {
+        let mut c = cfg(3, 1, vec![0.0]);
+        c.add_intercept = false;
+        c.min_periods = 0.0;
+        c.max_cd_iters = 100_000;
+        c.cd_tol = 1e-15;
+        let rows = weighted_rows(3, 80, 3);
+        let m = run(c, &rows);
+        let ws: f64 = rows.iter().map(|r| r.2).sum();
+        let e = |f: &dyn Fn(&Row) -> f64| rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / ws;
+        let a: Vec<Vec<f64>> = (0..3)
+            .map(|i| (0..3).map(|j| e(&|r| r.0[i] * r.0[j])).collect())
+            .collect();
+        let b: Vec<f64> = (0..3).map(|i| e(&|r| r.0[i] * r.1[0].unwrap())).collect();
+        let want = oracle_solve(&a, &b);
+        let got = &m.coefficients().unwrap()[0][0];
+        for (g, w) in got.iter().zip(&want) {
+            assert!(
+                (g - w).abs() <= 1e-8 * (1.0 + w.abs()),
+                "{got:?} against {want:?}"
+            );
+        }
+    }
+
+    /// A feature that never moves gets no slope and leaves the others at
+    /// the fit without it: with no penalty, the moving feature's slope is
+    /// `Cov(x, y) / Var(x)` and the intercept `ȳ − m·β`.
+    #[test]
+    fn a_held_feature_gets_no_slope_and_moves_nothing_else() {
+        let mut c = cfg(2, 1, vec![0.0]);
+        c.min_periods = 0.0;
+        let mut rows = weighted_rows(2, 60, 7);
+        for r in &mut rows {
+            r.0[1] = 7.25;
+        }
+        let m = run(c, &rows);
+        let ws: f64 = rows.iter().map(|r| r.2).sum();
+        let e = |f: &dyn Fn(&Row) -> f64| rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / ws;
+        let (mx, my) = (e(&|r| r.0[0]), e(&|r| r.1[0].unwrap()));
+        let slope = e(&|r| (r.0[0] - mx) * (r.1[0].unwrap() - my)) / e(&|r| (r.0[0] - mx).powi(2));
+        let got = &m.coefficients().unwrap()[0][0];
+        assert_eq!(got[2], 0.0, "{got:?}");
+        assert!(
+            (got[1] - slope).abs() <= 1e-9 * slope.abs(),
+            "{got:?} against {slope}"
+        );
+        assert!(
+            (got[0] - (my - mx * slope)).abs() <= 1e-9 * (1.0 + my.abs()),
+            "{got:?}"
+        );
+    }
+
+    /// Under `pairwise` a target's intercept is centred on its own rows'
+    /// feature means, not the Gram's (`EwRidge` holds the same).
+    #[test]
+    fn a_pairwise_intercept_is_centred_on_the_targets_own_rows() {
+        let mut c = cfg(2, 2, vec![0.05]);
+        c.target_gaps = TargetGaps::Pairwise;
+        c.min_periods = 0.0;
+        let rows = weighted_rows(2, 60, 11);
+        let m = run(c, &rows);
+        let beta = &m.coefficients().unwrap()[1][0];
+        let own: Vec<_> = rows.iter().filter(|r| r.1[1].is_some()).collect();
+        let w: f64 = own.iter().map(|r| r.2).sum();
+        let my = own.iter().map(|r| r.2 * r.1[1].unwrap()).sum::<f64>() / w;
+        let mx: Vec<f64> = (0..2)
+            .map(|i| own.iter().map(|r| r.2 * r.0[i]).sum::<f64>() / w)
+            .collect();
+        let want = my - mx[0] * beta[1] - mx[1] * beta[2];
+        assert!(
+            (beta[0] - want).abs() <= 1e-10 * (1.0 + want.abs()),
+            "{} against {want}",
+            beta[0]
+        );
+    }
+
+    /// The descent starts from the last solve's answer: on the same data it
+    /// is already there, and one sweep finds nothing to move.
+    #[test]
+    fn a_re_solve_starts_where_the_last_one_ended() {
+        let mut c = cfg(4, 1, vec![0.01]);
+        c.min_periods = 0.0;
+        let rows = weighted_rows(4, 80, 13);
+        let mut m = run(c, &rows);
+        let before = m.solve_failures;
+        m.cfg.max_cd_iters = 1;
+        m.cfg.cd_tol = 1e-9;
+        m.solve();
+        assert_eq!(m.solve_failures, before, "the warm start was not used");
+    }
+
+    /// An empty window leaves the fit NaN, and the next solve does not start
+    /// from it: every coefficient is a number again once rows return.
+    #[test]
+    fn a_fit_after_an_empty_window_does_not_start_from_its_nan() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 1, vec![0.01]);
+        c.window = Some(10.0);
+        c.decay = Decay::Halflife(20.0);
+        c.min_periods = 0.0;
+        let mut m = Lasso::new(c).unwrap();
+        let rows = weighted_rows(2, 60, 17);
+        for (i, (x, y, w)) in rows.iter().take(30).enumerate() {
+            m.step(x, &y[..1], if i == 0 { 0.0 } else { 1.0 }, *w);
+        }
+        // A zero-weight row after a gap longer than the window: nothing is in
+        // the window, and the fit says so.
+        m.step(&rows[30].0, &[None], 50.0, 0.0);
+        let emptied = m.coefficients().unwrap()[0][0].clone();
+        assert!(
+            emptied.iter().any(|v| v.is_nan()),
+            "the window was not emptied: {emptied:?}"
+        );
+        for (x, y, w) in rows.iter().skip(31) {
+            m.step(x, &y[..1], 1.0, *w);
+        }
+        let back = &m.coefficients().unwrap()[0][0];
+        assert!(back.iter().all(|v| v.is_finite()), "{back:?}");
+    }
+
+    #[test]
+    fn a_window_budget_reports_its_overrun_and_clears() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 1, vec![0.01]);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        c.decay = Decay::Halflife(30.0);
+        c.min_periods = 0.0;
+        let rows = weighted_rows(2, 100, 19);
+        let mut m = run(c, &rows);
+        assert_eq!(m.window_over_budget(), None);
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(1e-6)));
+        match m.window_over_budget() {
+            Some((bytes, every)) => {
+                assert!(bytes > 1, "{bytes}");
+                assert_eq!(every, 2);
+            }
+            None => panic!("a ring of snapshots is past a budget of one byte"),
+        }
+        m.set_window_budget(None);
+        assert_eq!(m.window_over_budget(), None);
+    }
+
+    /// A coefficient vector of the wrong length inside a path of the right
+    /// length is refused, not loaded.
+    #[test]
+    fn a_fit_of_the_wrong_inner_shape_is_refused() {
+        use crate::{ModelState, OnlineModel};
+        let mut c = cfg(2, 1, vec![0.1, 0.01]);
+        c.min_periods = 0.0;
+        let m = run(c, &weighted_rows(2, 20, 23));
+        let mut s = m.state();
+        let ModelState::Lasso(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.beta.as_mut().unwrap()[0][1].pop();
+        assert!(Lasso::restore(&s).is_err());
+    }
+
+    /// Without an intercept a feature that is all zeros has no scale: it
+    /// gets no slope, and the rest is least squares through the origin on
+    /// the others.
+    #[test]
+    fn without_an_intercept_an_all_zero_feature_moves_nothing() {
+        let mut c = cfg(3, 1, vec![0.0]);
+        c.add_intercept = false;
+        c.min_periods = 0.0;
+        c.max_cd_iters = 100_000;
+        c.cd_tol = 1e-15;
+        let mut rows = weighted_rows(3, 80, 29);
+        for r in &mut rows {
+            r.0[1] = 0.0;
+        }
+        let m = run(c, &rows);
+        let ws: f64 = rows.iter().map(|r| r.2).sum();
+        let e = |f: &dyn Fn(&Row) -> f64| rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / ws;
+        let keep = [0usize, 2];
+        let a: Vec<Vec<f64>> = keep
+            .iter()
+            .map(|&i| keep.iter().map(|&j| e(&|r| r.0[i] * r.0[j])).collect())
+            .collect();
+        let b: Vec<f64> = keep
+            .iter()
+            .map(|&i| e(&|r| r.0[i] * r.1[0].unwrap()))
+            .collect();
+        let want = oracle_solve(&a, &b);
+        let got = &m.coefficients().unwrap()[0][0];
+        assert_eq!(got[1], 0.0, "{got:?}");
+        for (g, w) in [got[0], got[2]].iter().zip(&want) {
+            assert!(
+                (g - w).abs() <= 1e-8 * (1.0 + w.abs()),
+                "{got:?} against {want:?}"
+            );
+        }
+    }
+
+    /// What the bank exports from a fit: the Grams with their readers, each
+    /// target's raw cross-moments `E[z·y_j]` and weight over its own rows,
+    /// the target moments, and the count of targets.
+    #[test]
+    fn the_exported_moments_are_each_targets_own() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 2, vec![0.01]);
+        c.min_periods = 0.0;
+        let rows = weighted_rows(2, 40, 31);
+        let m = run(c, &rows);
+        assert_eq!(m.n_targets(), 2);
+        let (parts, moments) = m.gram_parts();
+        assert_eq!(parts.len(), 2);
+        assert!(moments.is_some() && m.target_moments().is_some());
+        let mut out = Vec::new();
+        assert!(m.target_n_eff_into(&mut out));
+        let cross = m.cross_moments();
+        for t in 0..2 {
+            let own: Vec<_> = rows.iter().filter(|r| r.1[t].is_some()).collect();
+            let w: f64 = own.iter().map(|r| r.2).sum();
+            assert!((m.target_weights()[t] - w).abs() <= 1e-12 * w);
+            assert!((out[t] - w).abs() <= 1e-12 * w);
+            assert_eq!(cross[t].len(), 3);
+            for (i, &got) in cross[t].iter().enumerate() {
+                let z = |r: &&Row| if i == 0 { 1.0 } else { r.0[i - 1] };
+                let want = own
+                    .iter()
+                    .map(|r| r.2 * z(r) * r.1[t].unwrap())
+                    .sum::<f64>()
+                    / w;
+                assert!(
+                    (got - want).abs() <= 1e-10 * (1.0 + want.abs()),
+                    "target {t}, slot {i}"
+                );
+            }
+        }
+    }
+
+    /// The schedule: every `max_rows_between_solves` rows, every
+    /// `solve_every` of clock, and the first fit as soon as `min_periods` is
+    /// met -- counted as the rows on which the fit changed.
+    #[test]
+    fn the_solve_schedule_counts_rows_and_clock() {
+        use crate::OnlineModel;
+        let changes = |solve_every: f64, max_rows: u32| {
+            let mut c = cfg(2, 1, vec![0.01]);
+            c.min_periods = 3.0;
+            c.solve_every = solve_every;
+            c.max_rows_between_solves = max_rows;
+            let mut m = Lasso::new(c).unwrap();
+            let (mut last, mut n) = (None::<Vec<f64>>, 0);
+            for (i, (x, y, _)) in weighted_rows(2, 30, 37).iter().enumerate() {
+                m.step(x, &y[..1], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                let now = m.coefficients().map(|b| b[0][0].clone());
+                if now != last {
+                    n += 1;
+                    last = now;
+                }
+            }
+            n
+        };
+        // The first fit at row 3 (3 rows of weight 1), then every 4 rows:
+        // rows 3, 7, ..., 27.
+        assert_eq!(changes(1e9, 4), 7);
+        // Every 5 units of clock, one a row: rows 3, 8, 13, ..., 28.
+        assert_eq!(changes(5.0, 1_000_000), 6);
+    }
+
+    #[test]
+    fn a_config_without_features_or_targets_is_refused() {
+        assert!(Lasso::new(cfg(0, 1, vec![0.1])).is_err());
+        assert!(Lasso::new(cfg(2, 0, vec![0.1])).is_err());
+        assert!(Lasso::new(cfg(2, 1, vec![0.1])).is_ok());
+    }
+
+    /// Through the bytes a file holds, and read as schema 17 (own means,
+    /// already): a loaded model goes on exactly as the one saved.
+    #[test]
+    fn a_saved_fit_goes_on_as_it_would_have() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 2, vec![0.05, 0.01]);
+        c.target_gaps = TargetGaps::Pairwise;
+        c.min_periods = 0.0;
+        let rows = weighted_rows(2, 60, 41);
+        let m = run(c, &rows[..40]);
+        let bytes = rmp_serde::to_vec_named(&m.state()).unwrap();
+        let mut s17: crate::State = rmp_serde::from_slice(&bytes).unwrap();
+        let mut loaded = Lasso::restore(&s17).unwrap();
+        s17.schema_version = 17;
+        let mut read17 = Lasso::restore(&s17).unwrap();
+        let mut whole = m;
+        for (x, y, w) in &rows[40..] {
+            let a = whole.step(x, &y[..], 1.0, *w).pred;
+            let b = loaded.step(x, &y[..], 1.0, *w).pred;
+            let c = read17.step(x, &y[..], 1.0, *w).pred;
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a), bits(&b));
+            assert_eq!(bits(&a), bits(&c));
+        }
+    }
+
+    /// The empty window's NaN fit is no start at all: a descent from it is
+    /// a descent from zero, sweep for sweep, as a model with no fit takes.
+    #[test]
+    fn a_nan_fit_is_started_from_zero_like_no_fit() {
+        use crate::OnlineModel;
+        let mut c = cfg(3, 1, vec![0.01]);
+        c.window = Some(10.0);
+        c.decay = Decay::Halflife(20.0);
+        c.min_periods = 0.0;
+        let mut m = Lasso::new(c).unwrap();
+        let rows = weighted_rows(3, 60, 43);
+        for (i, (x, y, w)) in rows.iter().take(30).enumerate() {
+            m.step(x, &y[..1], if i == 0 { 0.0 } else { 1.0 }, *w);
+        }
+        m.step(&rows[30].0, &[None], 50.0, 0.0);
+        for (x, y, w) in rows.iter().skip(31).take(5) {
+            m.step(x, &y[..1], 1.0, *w);
+        }
+        m.cfg.max_cd_iters = 1;
+        m.beta.as_mut().unwrap()[0][0].fill(f64::NAN);
+        let mut cold = m.clone();
+        cold.beta = None;
+        m.solve();
+        cold.solve();
+        assert_eq!(
+            m.coefficients().unwrap()[0][0],
+            cold.coefficients().unwrap()[0][0]
+        );
+    }
+
+    /// A target no row has taught predicts nothing, from `predict` as from
+    /// `step`: its fit is the empty system's, not an estimate.
+    #[test]
+    fn a_target_with_no_rows_predicts_nothing() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 2, vec![0.1, 0.01]);
+        c.min_periods = 0.0;
+        let mut m = Lasso::new(c).unwrap();
+        for (i, (x, y, w)) in weighted_rows(2, 20, 47).iter().enumerate() {
+            m.step(x, &[y[0], None], if i == 0 { 0.0 } else { 1.0 }, *w);
+        }
+        let pred = m.predict(&[0.3, 1.2], 1.0).pred;
+        assert!(pred[..2].iter().all(|v| v.is_finite()), "{pred:?}");
+        assert!(pred[2..].iter().all(|v| v.is_nan()), "{pred:?}");
+    }
 }

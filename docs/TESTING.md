@@ -294,9 +294,11 @@ wrong.
 
 ### Measured coverage
 
-Measured with `./scripts/coverage.sh` on 2026-08-30: **96% of the Python
-package**, and **75% region / 73% line** of the Rust workspace. It is
-reported, never gating (T-D4).
+Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
+package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
+of the Rust workspace, up from 75% and 73% on 2026-08-30; `robust.rs`, the
+thin spot then at 75%, is at 98%. It is reported, never gating (T-D4), and
+Rust's figure is not in CI (docs/PLAN.md task 113 says why).
 
 **The Rust figure understates reality.** `cargo llvm-cov` only sees what
 `cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
@@ -317,6 +319,25 @@ in CI. What is still thin is below: the mutation survivors, and `robust.rs`'s
 coverage.
 
 ### Mutation survivors
+
+**`lasso.rs` and `ewridge.rs`, closed 2026-09-27 (docs/PLAN.md task
+113).** A fresh baseline over the two files left 104 of 906 missed and 152
+timed out. Two `--iterate` rounds re-ran everything not caught; what
+remains is caught or recorded, with its reason, in
+`scripts/mutants_equivalent.toml` (14 entries). The tests that closed
+them lean on third-party oracles where there is one: every `ewridge` solve
+against its closed form, solved by `faer` (already a dependency, and not
+the model's own Cholesky), and against scikit-learn's `Ridge` in
+`tests/test_second_opinion.py`, 20 cases to 1e-8; `lasso` without an
+intercept and no penalty against least squares through the origin, again
+by `faer`. The rest hold a definition written out: the row leverage and
+each coefficient's support share, per target and ridge; the window's Kish
+count and residual spread against the rows inside it; the solve schedule
+counted row by row; a zero-weight copy of every row changing nothing to
+the bit; a state through its bytes, since an in-memory `State` clones the
+kept factors and hid their rebuild. The same pass over the lines task 112
+changed in `gaps.rs` and `ewlagcov.rs` caught 42 of 43, the other
+equivalent.
 
 Run 3 of the mutation pass left **217 missed** in `online-core`: 8.3%
 surviving, down from 31% at the first-ever pass. Most are in `lasso.rs` (50),
@@ -494,6 +515,7 @@ tests, not a bug in the code. The passes so far:
 | run 1, before the follow-up work (T-D5) | 2616 | 501 | 175 |
 | run 2, after it, under load | | 104 as reported, which was wrong | 425 |
 | run 3 (`--iterate`), 14 min on an idle machine | 690 | **217**, the honest current figure | 18 |
+| `lasso.rs` and `ewridge.rs` afresh, 2026-09-27, 3 h | 906 | 104, then 0 not caught or recorded after two `--iterate` rounds | 152, then 0 |
 
 The headline number (501 of 2616 mutants surviving) is less interesting than
 its shape. Grouped by function, the survivors were:

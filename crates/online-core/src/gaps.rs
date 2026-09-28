@@ -182,7 +182,7 @@ impl Cross {
         } else {
             for (i, (ci, &zi)) in c.iter_mut().zip(z).enumerate() {
                 let u = dev(zi, mj[i], lo_of(mj_lo, i));
-                *ci = aj * *ci + ab_dy * u;
+                *ci = aj * *ci + ab_dy * u; // `ab_dy` is a zero here: `bj` is 0
             }
         }
         if bj > 0.0 {

@@ -102,3 +102,126 @@ line_has = "let sgn = if zz < 0.0 { -1.0 } else { 1.0 };"
 why = """the line runs only where |zz| > l1, and l1 >= 0 is validated, so zz \
 is never zero there (a NaN zz fails both comparisons alike): < 0 and <= 0 \
 agree on every value it takes"""
+
+# The fresh baseline of 2026-09-27 over lasso.rs and ewridge.rs, and the
+# changed lines of gaps.rs (docs/PLAN.md task 113). Every other survivor
+# there got a test.
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::solve_centred"
+mutation = "replace + with *"
+line_has = "crate::variance_is_usable(c[i * kf + i], cov.raw(zidx[i + 1], zidx[i + 1]))"
+why = """both mutants are inside the second argument, and `variance_is_usable` \
+ignores it (it tests the variance alone since the review of 2026-09-12); \
+`zidx[i * 1]` is still in range, so nothing is computed differently"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::view"
+mutation = "replace > with >="
+line_has = "let sig2 = if acc.cross.w > 0.0 {"
+why = """the cross weight is 0 only in an empty view, where the window's \
+residual weight is 0 too and `truncated_mean` returns `None`, which the \
+branch maps to the same 0 the other branch gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::standardized"
+mutation = "replace == with !="
+line_has = "f64::from(i == j)"
+why = """the entries it changes are a held feature's (scale 0): its own \
+diagonal, which the descent never reads because it skips that feature, \
+and its column, which only ever multiplies its coefficient, held at 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::standardized"
+mutation = "replace > with >="
+line_has = "if s[i] > 0.0 {"
+why = """at a scale of 0 the entry of `d` it lets through is read only by \
+that feature's own update, which the descent skips; the coefficient stays 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::solve"
+mutation = "replace > with >="
+line_has = "let newb = if rho > l1 {"
+why = """they differ only at `rho == l1`, where the mutant's `(rho - l1) / \
+denom` is +0 divided by a positive denominator: the 0 the original gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::solve"
+mutation = "replace < with <="
+line_has = "} else if rho < -l1 {"
+why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
+denom` is +0 divided by a positive denominator: the 0 the original gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::solve"
+mutation = "replace < with <="
+line_has = "if max_delta < self.cfg.cd_tol {"
+why = """they differ only when a sweep's largest step equals the tolerance \
+exactly, a floating-point coincidence no input can be built to reach"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "Cross::learn"
+mutation = "replace + with -"
+line_has = "*ci = aj * *ci + ab_dy * u; // `ab_dy` is a zero here: `bj` is 0"
+why = """on this branch `bj` is 0, so `ab_dy = aj * bj * dy` is a zero and \
+the line adds or subtracts it: `aj * c` either way, whose sign of zero only \
+an underflow to -0 could reach"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::error_inflation_into"
+mutation = "replace > with >="
+line_has = "if n > 0.0 && edf.is_finite() {"
+why = """`n` is Kish's count for a Gram with weight (a Gram without any gives \
+`None` and is skipped two lines up), and that count is positive"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::row_error_inflation_into"
+mutation = "replace > with >="
+line_has = "let q = if kk > 0 {"
+why = """a kept system always has a column: a raw one holds the intercept or a \
+feature, and a centred one with no usable feature keeps no system"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::standardized"
+mutation = "replace > with >="
+line_has = "c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {"
+why = """on the first operand only: it lets a NaN into the row of a feature \
+with no scale, which the descent never reads because it skips that \
+feature (the second operand's mutant puts it in a column that is read, \
+and is caught)"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::standardized"
+mutation = "replace + with *"
+line_has = "if crate::variance_is_usable(v, acc.raw(i + off, i + off)) {"
+why = """both mutants are inside the second argument, which \
+`variance_is_usable` ignores; `acc.raw(i * off, ..)` is still in range"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "Lasso::solve"
+mutation = "replace > with >="
+line_has = "if s[i] > 0.0 && p.is_finite() {"
+why = """it adds the features with no scale, whose warm start is then \
+`p * 0`, the 0 they start at anyway"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "<impl OnlineModel for Lasso>::step"
+mutation = "replace != with =="
+line_has = "if self.zbuf.len() != self.cfg.k_total() {"
+why = """`new` and `restore` both size the buffer at `k_total`, so the branch \
+never runs; the mutant reallocates it every row instead, and the row \
+overwrites every entry before anything reads it"""

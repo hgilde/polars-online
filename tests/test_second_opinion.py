@@ -2412,3 +2412,75 @@ class TestAMeanRevertingKalmanIsFilterpy:
                 wsig = ws_new
             wj = lam * wj + 1.0
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+
+
+# The fits are small on purpose; a readiness notice about one says nothing here.
+@pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+class TestEwRidgeIsSklearnsRidge:
+    """Every ``ewridge`` solve against scikit-learn's ``Ridge``: a second
+    opinion on the whole weighted, penalized fit, where the Rust oracle in
+    ``ewridge.rs`` (``every_solve_is_its_closed_form_across_targets_and_ridges``)
+    checks the same forms with ``faer``'s solver (docs/PLAN.md task 113).
+
+    With no decay, ``ewridge``'s mean-form system at ridge ``λ`` is
+    ``Ridge``'s at ``alpha = λ·Σw`` with the same ``sample_weight``; the
+    standardized penalty is the same fit on features divided by their
+    deviation (centred) or root mean square (through the origin); a
+    ``coef_prior`` ``c0`` is the ridge fit of ``y − X·c0``, shifted back by
+    ``c0``; and ``ridge_decay``'s sum-scale system is ``Ridge`` at
+    ``alpha = λ`` with the intercept column penalized as a feature."""
+
+    @staticmethod
+    def rows(n=300, seed=5):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 3)) * [1.0, 2.0, 0.5] + [0.5, -1.0, 3.0]
+        y = 1.0 + x @ np.array([2.0, -1.0, 0.5]) + rng.normal(0.0, 0.3, n)
+        return x, y, rng.uniform(0.5, 2.0, n)
+
+    @pytest.mark.parametrize("with_prior", [False, True])
+    @pytest.mark.parametrize("lam", [0.7, 4.0])
+    @pytest.mark.parametrize(
+        "mode", ["centred", "centred standardized", "origin", "origin standardized", "ridge_decay"]
+    )
+    def test_the_fit_is_sklearns_ridge(self, mode, lam, with_prior):
+        from sklearn.linear_model import Ridge
+
+        x, y, w = self.rows()
+        intercept = mode.startswith("centred") or mode == "ridge_decay"
+        standardize = "standardized" in mode
+        prior = np.array([0.4, -1.0, 2.0, 0.5]) if with_prior else np.zeros(4)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            ridge=lam,
+            standardize=standardize,
+            ridge_decay=mode == "ridge_decay",
+            add_intercept=intercept,
+            coef_prior=[list(prior if intercept else prior[1:])] if with_prior else None,
+            halflife=float("inf"),
+            weight="w",
+            min_periods=0.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        got = bank.coef("m").sort("position")["coef"].to_numpy()
+        sw = w.sum()
+        c0 = prior[1:]
+        if mode == "ridge_decay":
+            z = np.column_stack([np.ones(len(y)), x])
+            fit = Ridge(alpha=lam, fit_intercept=False).fit(z, y - z @ prior, sample_weight=w)
+            want = prior + fit.coef_
+        elif intercept:
+            mean = (w[:, None] * x).sum(0) / sw
+            sd = np.sqrt((w[:, None] * (x - mean) ** 2).sum(0) / sw) if standardize else np.ones(3)
+            fit = Ridge(alpha=lam * sw).fit(x / sd, y - x @ c0, sample_weight=w)
+            want = np.concatenate(([fit.intercept_], c0 + fit.coef_ / sd))
+        else:
+            rms = np.sqrt((w[:, None] * x**2).sum(0) / sw) if standardize else np.ones(3)
+            fit = Ridge(alpha=lam * sw, fit_intercept=False).fit(
+                x / rms, y - x @ c0, sample_weight=w
+            )
+            want = c0 + fit.coef_ / rms
+        np.testing.assert_allclose(got, want, rtol=1e-8, atol=1e-10)
