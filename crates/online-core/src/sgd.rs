@@ -204,6 +204,12 @@ pub struct Sgd {
     /// AdaGrad accumulators per target (empty for the other schedules).
     g2: Vec<Vec<f64>>,
     w_sum: f64,
+    /// Per target, the weight of the rows that carried it, decayed: what its
+    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// (d)). `w_sum` stood in for it, so ten rows with a null target met
+    /// `min_periods = 10` with every coefficient at zero.
+    #[serde(default)]
+    w_target: Vec<f64>,
     /// The standardized row `[1, z]` under a scaler; unused without one,
     /// where the model reads `x` in place.
     #[serde(skip)]
@@ -234,6 +240,8 @@ struct SgdV3 {
     beta: Vec<Vec<f64>>,
     g2: Vec<Vec<f64>>,
     w_sum: f64,
+    #[serde(default)]
+    w_target: Vec<f64>,
 }
 
 impl TryFrom<SgdV3> for Sgd {
@@ -241,6 +249,7 @@ impl TryFrom<SgdV3> for Sgd {
 
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
+        let mut w_target = v.w_target;
         let k = cfg.k_total();
         let m = cfg.n_targets;
         // What the cfg asks for, the state carries, and nothing else: a
@@ -267,12 +276,16 @@ impl TryFrom<SgdV3> for Sgd {
         {
             return Err("sgd: state has the wrong shape".into());
         }
+        if !crate::model::restore_target_weights(&mut w_target, w_sum, m) {
+            return Err("sgd: the state's target weights have the wrong shape".into());
+        }
         Ok(Self {
             cfg,
             scaler,
             beta,
             g2,
             w_sum,
+            w_target,
             zbuf: vec![],
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
@@ -305,6 +318,7 @@ impl Sgd {
             beta,
             g2,
             w_sum: 0.0,
+            w_target: vec![0.0; m],
             zbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
@@ -377,6 +391,12 @@ impl Sgd {
 
     pub fn n_eff(&self) -> f64 {
         self.w_sum
+    }
+
+    /// Per target, the weight of the rows that carried it: what its
+    /// `min_periods` is checked against.
+    pub fn target_weights(&self) -> &[f64] {
+        &self.w_target
     }
 
     /// `p = link(eta)`.
@@ -540,10 +560,10 @@ impl OnlineModel for Sgd {
         // on (see `EwRidgeCfg::min_periods`). Decaying it here would make
         // `min_periods` mean a slightly different number of rows for `sgd`
         // than for `ewridge`, which is exactly the kind of quiet divergence
-        // the cross-model semantics suite exists to catch.
+        // the cross-model semantics suite exists to catch. Each target's
+        // `min_periods` reads its own weight, the rows that carried it.
         let n_eff = self.w_sum;
 
-        let ready = n_eff >= self.cfg.min_periods;
         let mut pred = vec![f64::NAN; m];
         if self.cfg.constraint.is_some() {
             // Skipped by serde, so sized here rather than in `new`.
@@ -569,7 +589,7 @@ impl OnlineModel for Sgd {
         for j in 0..m {
             let eta = dot(&self.beta[j], off, z);
             let p = self.link(eta);
-            if ready {
+            if self.w_target[j] >= self.cfg.min_periods {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -636,6 +656,12 @@ impl OnlineModel for Sgd {
             }
         }
         self.w_sum = lam * self.w_sum + weight;
+        crate::model::age_target_weights(
+            &mut self.w_target,
+            |j| y[j].is_some_and(f64::is_finite),
+            lam,
+            weight,
+        );
 
         Step {
             pred,
@@ -647,12 +673,14 @@ impl OnlineModel for Sgd {
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if n_eff >= self.cfg.min_periods {
+        if self.w_target.iter().any(|w| *w >= self.cfg.min_periods) {
             let off = usize::from(self.cfg.add_intercept);
             let lam = self.cfg.decay.factor(d_clock);
             let predict_with = |z: &[f64], pred: &mut [f64]| {
                 for (j, p) in pred.iter_mut().enumerate() {
-                    *p = self.link(dot(&self.beta[j], off, z));
+                    if self.w_target[j] >= self.cfg.min_periods {
+                        *p = self.link(dot(&self.beta[j], off, z));
+                    }
                 }
             };
             match &self.scaler {
@@ -1362,6 +1390,48 @@ mod tests {
         assert!(Sgd::new(c).is_err());
         assert!(Sgd::new(cfg(1, SgdLoss::Quantile { tau: 0.0 })).is_err());
         assert!(Sgd::new(cfg(1, SgdLoss::Huber { delta: -1.0 })).is_err());
+    }
+
+    /// A target's `min_periods` counts only the rows that carried it, and
+    /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
+    /// ten rows with no target met `min_periods = 3` with every coefficient
+    /// at zero. A zero-weight row with the target (row 12) only ages it; the
+    /// scaler, which a null target does not stop, is on.
+    #[test]
+    fn min_periods_counts_only_the_rows_that_carried_the_target() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.min_periods = 3.0;
+        c.scale_features = true;
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..16usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i >= 10).then(|| x[0] - x[1]);
+            let out = m.step(&x, &[y], 1.0, if i == 12 { 0.0 } else { 1.0 });
+            assert_eq!(out.n_eff, (i - usize::from(i > 12)) as f64, "row {i}");
+            assert_eq!(out.pred[0].is_nan(), i < 14, "row {i}");
+            assert_eq!(m.predict(&x, 1.0).pred[0].is_nan(), i < 13, "row {i}");
+        }
+        assert_eq!(m.target_weights(), &[5.0]);
+    }
+
+    /// A schema-19 state keeps no target weights: it loads with each target
+    /// at the shared weight, the one its gate read.
+    #[test]
+    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.decay = Decay::Halflife(50.0); // JSON has no `inf`
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..8 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[(i >= 5).then(|| x[0])], 1.0, 1.0);
+        }
+        assert!(m.target_weights()[0] < m.n_eff());
+        let mut v = serde_json::to_value(&m).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
+        let back: Sgd = serde_json::from_value(v).unwrap();
+        assert_eq!(back.target_weights(), &[m.n_eff()]);
     }
 
     /// Without `scale_features` there is no scaler in either schema, and a

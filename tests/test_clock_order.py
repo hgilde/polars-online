@@ -287,3 +287,23 @@ def test_a_group_column_is_the_remedy_for_interleaved_streams():
     with pytest.raises(ValueError, match="goes backwards by"):
         po.ModelBank([spec()]).fit_predict(df)
     assert po.ModelBank([spec(group="g")]).fit_predict(df).height == 60
+
+
+def test_a_long_temporal_step_back_is_named_to_the_nanosecond():
+    """The step reached the message as a double of seconds, which above about
+    104 days resolves more than a nanosecond: 200 days and 1 ns printed as
+    200 days and 0 or 4 ns. It is taken in integer nanoseconds now, and a
+    minimum is printed as the spec wrote it (review 2026-09-28)."""
+    day = 86_400 * 10**9
+    ns = [0, 300 * day, 100 * day - 1]  # back by 200 days and 1 ns
+    df = pl.DataFrame(
+        {"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]}
+    )
+    temporal = dict(targets=["y"], features=["x0"], clock="t", halflife="1d", max_dclock="1d")
+    with pytest.raises(ValueError, match="goes backwards by 200d1ns at row 2"):
+        po.ModelBank([po.spec.ewridge("m", **temporal)]).fit_predict(df)
+    late = po.spec.ewridge("m", on_clock_reset="reset_state", min_backwards_jump="300d", **temporal)
+    with pytest.raises(
+        ValueError, match="200d1ns at row 2, no more than min_backwards_jump = 300d"
+    ):
+        po.ModelBank([late]).fit_predict(df)

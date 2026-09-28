@@ -702,9 +702,10 @@ names. It pins every helper module the package has (`corr`, `eval`, `gram`,
 `sim` and `stream`), read from the package's directory
 (`tests/test_api_surface.py`, since task 109).
 
-**3. Defaults, which are API in the worst way.** They are
-`solve_every = halflife/50`, `standardize` true for lasso and false for
-ridge, `average_eta = 1.0` and `clip_gradient = 1e3`. Changing one of these
+**3. Defaults, which are API in the worst way.** They are the solve
+cadence (by weight since 0.13.0, `halflife/50` of clock in steady state),
+`standardize` true for lasso and false for ridge, `average_eta = 1.0` and
+`clip_gradient = 1e3`. Changing one of these
 does not raise: it silently changes users' numbers, which is worse than
 breaking them. `docs/VALIDATION.md` justifies them, and
 `test_validation_doc.py` pins that they are still the measured optimum, but

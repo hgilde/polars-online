@@ -1,6 +1,6 @@
 """`docs/VALIDATION.md` must still be what the code produces.
 
-The defaults this library ships -- `solve_every = halflife/50`, `standardize`
+The defaults this library ships -- the solve cadence, `standardize`
 per model, the elastic-net ratio, Kalman's `share_p` -- were chosen from the
 measurements in that document. If the code moves and the document does not,
 the defaults are justified by numbers that are no longer true, and nothing

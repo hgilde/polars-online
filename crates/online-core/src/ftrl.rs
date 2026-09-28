@@ -139,6 +139,14 @@ pub struct Ftrl {
     #[serde(default)]
     prox: Vec<Vec<f64>>,
     w_sum: f64,
+    /// Per target, the weight of the rows that carried it, decayed: what its
+    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// (d)). `w_sum` stood in for it, so ten rows with a null target met
+    /// `min_periods = 10` with every coefficient at zero and `pred = 0.5`
+    /// (review 2026-09-12, S31). A label `strict_binary` refuses does not
+    /// count.
+    #[serde(default)]
+    w_target: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
     #[serde(skip)]
@@ -155,6 +163,7 @@ impl Ftrl {
             zz: vec![vec![0.0; k]; m],
             prox: vec![vec![0.0; k]; m],
             w_sum: 0.0,
+            w_target: vec![0.0; m],
             zbuf: vec![0.0; k],
             coef: vec![0.0; k],
             cfg,
@@ -167,6 +176,12 @@ impl Ftrl {
 
     pub fn n_eff(&self) -> f64 {
         self.w_sum
+    }
+
+    /// Per target, the weight of the rows that carried it: what its
+    /// `min_periods` is checked against.
+    pub fn target_weights(&self) -> &[f64] {
+        &self.w_target
     }
 
     /// Proximal weights implied by the current FTRL state, per target.
@@ -244,8 +259,8 @@ impl OnlineModel for Ftrl {
                 }
             }
         }
+        // Each target's `min_periods` reads its own weight.
         let n_eff = self.w_sum;
-        let ready = n_eff >= self.cfg.min_periods;
 
         let mut pred = vec![f64::NAN; m];
         for j in 0..m {
@@ -260,7 +275,7 @@ impl OnlineModel for Ftrl {
                 FtrlLoss::Logistic => sigmoid(raw),
                 FtrlLoss::Squared => raw,
             };
-            if ready {
+            if self.w_target[j] >= self.cfg.min_periods {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -297,6 +312,13 @@ impl OnlineModel for Ftrl {
             }
         }
         self.w_sum = lam * self.w_sum + weight;
+        let strict = self.cfg.strict_binary && matches!(self.cfg.loss, FtrlLoss::Logistic);
+        crate::model::age_target_weights(
+            &mut self.w_target,
+            |j| y[j].is_some_and(|v| v.is_finite() && (!strict || v == 0.0 || v == 1.0)),
+            lam,
+            weight,
+        );
 
         Step {
             pred,
@@ -310,28 +332,29 @@ impl OnlineModel for Ftrl {
         let n_eff = self.w_sum;
         let m = self.cfg.n_targets;
         let mut pred = vec![f64::NAN; m];
-        if n_eff >= self.cfg.min_periods {
-            let k = self.cfg.k_total();
-            let off = usize::from(self.cfg.add_intercept);
-            for (j, p) in pred.iter_mut().enumerate() {
-                // The proximal weights `step` would derive after decaying the
-                // accumulators by this row's clock, computed without storing
-                // the decay.
-                let raw: f64 = (0..k)
-                    .map(|i| {
-                        let z = if i < off { 1.0 } else { x[i - off] };
-                        z * self.weight_of(
-                            self.zz[j][i] * lam,
-                            self.n[j][i] * lam,
-                            self.prox[j][i] * lam,
-                        )
-                    })
-                    .sum();
-                *p = match self.cfg.loss {
-                    FtrlLoss::Logistic => sigmoid(raw),
-                    FtrlLoss::Squared => raw,
-                };
+        let k = self.cfg.k_total();
+        let off = usize::from(self.cfg.add_intercept);
+        for (j, p) in pred.iter_mut().enumerate() {
+            if self.w_target[j] < self.cfg.min_periods {
+                continue;
             }
+            // The proximal weights `step` would derive after decaying the
+            // accumulators by this row's clock, computed without storing
+            // the decay.
+            let raw: f64 = (0..k)
+                .map(|i| {
+                    let z = if i < off { 1.0 } else { x[i - off] };
+                    z * self.weight_of(
+                        self.zz[j][i] * lam,
+                        self.n[j][i] * lam,
+                        self.prox[j][i] * lam,
+                    )
+                })
+                .sum();
+            *p = match self.cfg.loss {
+                FtrlLoss::Logistic => sigmoid(raw),
+                FtrlLoss::Squared => raw,
+            };
         }
         Step {
             pred,
@@ -358,6 +381,11 @@ impl OnlineModel for Ftrl {
                 if !rows(&m.n) || !rows(&m.zz) || !rows(&m.prox) {
                     return Err(StateError::Invalid(
                         "ftrl: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                    return Err(StateError::Invalid(
+                        "ftrl: the target weights have the wrong shape".into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -425,6 +453,54 @@ mod tests {
         for v in [0.3, 2.0, 17.0] {
             assert!((sigmoid(v) + sigmoid(-v) - 1.0).abs() < 1e-15, "{v}");
         }
+    }
+
+    /// A target's `min_periods` counts only the rows that carried it, and
+    /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
+    /// S31's ten rows with no target met `min_periods = 3` with every
+    /// coefficient at zero, and `pred` was 0.5. A zero-weight row with the
+    /// target (row 12) only ages it, and a label `strict_binary` refuses
+    /// (the second target's 0.5) never counts.
+    #[test]
+    fn min_periods_counts_only_the_rows_that_carried_the_target() {
+        let mut c = cfg(2, 2);
+        c.min_periods = 3.0;
+        c.strict_binary = true;
+        let mut m = Ftrl::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..16usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y0 = (i >= 10).then(|| f64::from(u8::from(x[0] > x[1])));
+            let out = m.step(&x, &[y0, Some(0.5)], 1.0, if i == 12 { 0.0 } else { 1.0 });
+            assert_eq!(out.n_eff, (i - usize::from(i > 12)) as f64, "row {i}");
+            assert_eq!(out.pred[0].is_nan(), i < 14, "row {i}");
+            assert!(out.pred[1].is_nan(), "row {i}");
+            let served = m.predict(&x, 1.0).pred;
+            assert_eq!(served[0].is_nan(), i < 13, "row {i}");
+            assert!(served[1].is_nan(), "row {i}");
+        }
+        assert_eq!(m.target_weights(), &[5.0, 0.0]);
+    }
+
+    /// A schema-19 state keeps no target weights: it loads with each target
+    /// at the shared weight, the one its gate read.
+    #[test]
+    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+        use crate::{ModelState, State};
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(50.0);
+        let mut m = Ftrl::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..8 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[(i >= 5).then_some(1.0), None], 1.0, 1.0);
+        }
+        assert!(m.target_weights()[0] < m.n_eff() && m.target_weights()[1] == 0.0);
+        let mut v = serde_json::to_value(&m).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
+        let old: Ftrl = serde_json::from_value(v).unwrap();
+        let back = Ftrl::restore(&State::new(ModelState::Ftrl(Box::new(old)))).unwrap();
+        assert_eq!(back.target_weights(), &[m.n_eff(), m.n_eff()]);
     }
 
     /// The model alone skips such a row. The bank never hands it one: it

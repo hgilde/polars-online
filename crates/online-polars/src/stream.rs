@@ -20,11 +20,44 @@ use crate::span::{Span, SpanList};
 use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
 use crate::summary::DataSummary;
 
-/// A refused backwards clock: the raw delta, the absolute row it happened at,
-/// and, under `"reset_state"`, the late-row minimum that refused it -- `None`
-/// under `"error"`, which refuses every step back. The bank turns it into the
-/// error naming all three.
-pub type ClockRefusal = (f64, usize, Option<Disorder>);
+/// A refused backwards clock, for the bank to turn into the error naming it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockRefusal {
+    /// The raw delta, negative.
+    pub raw: f64,
+    /// The absolute row it happened at, in the chunk.
+    pub row: usize,
+    /// Under `"reset_state"`, the late-row minimum that refused it; `None`
+    /// under `"error"`, which refuses every step back.
+    pub disorder: Option<Disorder>,
+    /// On a temporal clock, the step back in integer nanoseconds: `raw` is a
+    /// double of seconds, which above about 104 days resolves more than a
+    /// nanosecond, and the message names the step exactly (review
+    /// 2026-09-28).
+    pub back_ns: Option<i128>,
+}
+
+impl ClockRefusal {
+    fn new(
+        raw: f64,
+        row: usize,
+        disorder: Option<Disorder>,
+        clock: Option<online_core::ClockValue>,
+        prev: Option<online_core::ClockValue>,
+    ) -> Self {
+        use online_core::ClockValue::Ns;
+        let back_ns = match (clock, prev) {
+            (Some(Ns(c)), Some(Ns(p))) => Some(i128::from(p) - i128::from(c)),
+            _ => None,
+        };
+        Self {
+            raw,
+            row,
+            disorder,
+            back_ns,
+        }
+    }
+}
 
 /// Enum dispatch over the models the bank can run (serde-friendly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,6 +198,16 @@ impl AnyModel {
     /// Bound the model's window ([`OnlineModel::set_window_budget`]).
     pub fn set_window_budget(&mut self, budget: Option<online_core::WindowBudget>) {
         dispatch!(self, m => m.set_window_budget(budget))
+    }
+
+    /// The weight-share cadence ([`OnlineModel::set_solve_share`]).
+    pub fn set_solve_share(&mut self, share: Option<f64>) {
+        dispatch!(self, m => m.set_solve_share(share))
+    }
+
+    /// The weight-share cadence the model runs by ([`OnlineModel::solve_share`]).
+    pub fn solve_share(&self) -> Option<f64> {
+        dispatch!(self, m => m.solve_share())
     }
 
     /// A refusing budget's overrun ([`OnlineModel::window_over_budget`]).
@@ -468,6 +511,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
                 target_gaps: *target_gaps,
                 window: window.as_ref().map(Span::value),
@@ -516,6 +560,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),
                 window_every: *window_every,
                 max_cd_iters: max_cd_iters.unwrap_or(100),
@@ -573,6 +618,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: 1e-3,
             };
             Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
@@ -598,6 +644,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: quantile_eps.unwrap_or(0.2),
             };
             Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
@@ -2204,7 +2251,10 @@ impl Stream {
             .drain(..)
             .zip(&saved.models)
             .map(|((suffix, fresh), st)| {
-                let m = AnyModel::restore(st).map_err(|e| e.to_string())?;
+                let mut m = AnyModel::restore(st).map_err(|e| e.to_string())?;
+                // The cadence is the spec's, as the budget is: a state saved
+                // before the weight-share rule takes it on load (task 115 (b)).
+                m.set_solve_share(fresh.solve_share());
                 // The state's cfg is the model's, but the stream feeds it the
                 // spec's columns and reads the spec's slots: a state whose
                 // cfg is another width would index past both (review
@@ -2418,9 +2468,16 @@ impl Stream {
             let at = base + ri;
             // `accept` only routes the delta into `pending`; whether the row
             // is refused depends on the clock and session alone.
+            let prev = state.last_clock();
             let adv = state.advance(cfg, Some(clock.at(at)), session.map(|s| s[at]), true);
             if let Some(raw) = adv.backwards {
-                return Err((raw, row, adv.disorder));
+                return Err(ClockRefusal::new(
+                    raw,
+                    row,
+                    adv.disorder,
+                    Some(clock.at(at)),
+                    prev,
+                ));
             }
         }
         Ok(())
@@ -2491,14 +2548,14 @@ impl Stream {
             let c = clock.map(|c| c.at(i));
             // A clock below the previous row's, before the schedule decides
             // what to do about it; the summary counts them (task 35).
-            let below =
-                matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c.is_before(p));
+            let prev = clock_state.last_clock();
+            let below = matches!((c, prev), (Some(c), Some(p)) if c.is_before(p));
             let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
             // A step back the policy refuses: hand the offending delta (and,
             // for a late row, the minimum) back so the caller can name the
             // row and column.
             if let Some(raw) = adv.backwards {
-                return Err((raw, row, adv.disorder));
+                return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
             }
             if accept {
                 rows_seen += 1;

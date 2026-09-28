@@ -107,6 +107,12 @@ pub struct Pa {
     cfg: PaCfg,
     beta: Vec<Vec<f64>>,
     w_sum: f64,
+    /// Per target, the weight of the rows that carried it, decayed: what its
+    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// (d)). `w_sum` stood in for it, so ten rows with a null target met
+    /// `min_periods = 10` with every coefficient at zero.
+    #[serde(default)]
+    w_target: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
     /// Scratch for the projection.
@@ -129,6 +135,7 @@ impl Pa {
         Ok(Self {
             beta,
             w_sum: 0.0,
+            w_target: vec![0.0; cfg.n_targets],
             zbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             cfg,
@@ -145,6 +152,12 @@ impl Pa {
 
     pub fn n_eff(&self) -> f64 {
         self.w_sum
+    }
+
+    /// Per target, the weight of the rows that carried it: what its
+    /// `min_periods` is checked against.
+    pub fn target_weights(&self) -> &[f64] {
+        &self.w_target
     }
 
     fn ensure_buffers(&mut self) {
@@ -168,9 +181,8 @@ impl OnlineModel for Pa {
         }
 
         // Before this row's update and before its decay -- the convention
-        // every model reports and gates on.
+        // every model reports and gates on, each target on its own weight.
         let n_eff = self.w_sum;
-        let ready = n_eff >= self.cfg.min_periods;
         let sq_norm: f64 = self.zbuf.iter().map(|z| z * z).sum();
 
         let mut pred = vec![f64::NAN; m];
@@ -181,7 +193,7 @@ impl OnlineModel for Pa {
                 .zip(&self.beta[j])
                 .map(|(z, b)| z * b)
                 .sum();
-            if ready {
+            if self.w_target[j] >= self.cfg.min_periods {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -218,6 +230,12 @@ impl OnlineModel for Pa {
             }
         }
         self.w_sum = lam * self.w_sum + weight;
+        crate::model::age_target_weights(
+            &mut self.w_target,
+            |j| y[j].is_some_and(f64::is_finite),
+            lam,
+            weight,
+        );
 
         Step {
             pred,
@@ -229,8 +247,8 @@ impl OnlineModel for Pa {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if n_eff >= self.cfg.min_periods {
-            for (p, beta) in pred.iter_mut().zip(&self.beta) {
+        for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
+            if *w >= self.cfg.min_periods {
                 *p = dot_aug(beta, x, self.cfg.add_intercept);
             }
         }
@@ -259,6 +277,11 @@ impl OnlineModel for Pa {
                         "pa: the coefficients have the wrong shape".into(),
                     ));
                 }
+                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                    return Err(StateError::Invalid(
+                        "pa: the target weights have the wrong shape".into(),
+                    ));
+                }
                 m.ensure_buffers();
                 Ok(m)
             }
@@ -281,6 +304,48 @@ impl OnlineModel for Pa {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A target's `min_periods` counts only the rows that carried it, and
+    /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
+    /// ten rows with no target met `min_periods = 3` with every coefficient
+    /// at zero, and `pred` was 0. A zero-weight row with the target (row 12)
+    /// only ages it.
+    #[test]
+    fn min_periods_counts_only_the_rows_that_carried_the_target() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, PaMode::Pa1);
+        c.min_periods = 3.0;
+        let mut m = Pa::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..16usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i >= 10).then(|| x[0] - x[1]);
+            let out = m.step(&x, &[y], 1.0, if i == 12 { 0.0 } else { 1.0 });
+            assert_eq!(out.n_eff, (i - usize::from(i > 12)) as f64, "row {i}");
+            assert_eq!(out.pred[0].is_nan(), i < 14, "row {i}");
+            assert_eq!(m.predict(&x, 1.0).pred[0].is_nan(), i < 13, "row {i}");
+        }
+        assert_eq!(m.target_weights(), &[5.0]);
+    }
+
+    /// A schema-19 state keeps no target weights: it loads with each target
+    /// at the shared weight, the one its gate read.
+    #[test]
+    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+        use crate::{ModelState, OnlineModel, State};
+        let mut m = Pa::new(cfg(2, PaMode::Pa1)).unwrap();
+        let mut s = 7u64;
+        for i in 0..8 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[(i >= 5).then(|| x[0])], 1.0, 1.0);
+        }
+        assert_eq!(m.target_weights(), &[3.0]);
+        let mut v = serde_json::to_value(&m).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
+        let old: Pa = serde_json::from_value(v).unwrap();
+        let back = Pa::restore(&State::new(ModelState::Pa(Box::new(old)))).unwrap();
+        assert_eq!(back.target_weights(), &[8.0]);
+    }
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).

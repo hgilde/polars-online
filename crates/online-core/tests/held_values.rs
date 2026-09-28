@@ -161,6 +161,7 @@ fn the_lasso_keeps_the_slope_it_learned() {
         min_periods: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         max_cd_iters: 1000,
         cd_tol: 1e-12,
         target_gaps: TargetGaps::OwnRows,
@@ -191,6 +192,7 @@ fn ridge(standardize: bool) -> EwRidgeCfg {
         min_periods: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         gram_block_rows: 0,
         target_gaps: TargetGaps::OwnRows,
         window: None,
@@ -357,6 +359,7 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
         min_periods: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         quantile_eps: 0.05,
     };
     holds(
@@ -595,6 +598,7 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         min_periods: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         max_cd_iters: 1000,
         cd_tol: 1e-30,
         target_gaps: TargetGaps::OwnRows,
@@ -617,6 +621,7 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         min_periods: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         quantile_eps: 0.05,
     };
     slopes_decay(
@@ -802,6 +807,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             min_periods: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             max_cd_iters: 1000,
             cd_tol: 1e-12,
             target_gaps: TargetGaps::OwnRows,
@@ -822,6 +828,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             min_periods: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             quantile_eps: 0.05,
         })
         .unwrap()
@@ -1000,6 +1007,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             min_periods: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             max_cd_iters: 1000,
             cd_tol: 1e-12,
             target_gaps: TargetGaps::OwnRows,
@@ -1020,6 +1028,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             min_periods: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             quantile_eps: 0.05,
         })
         .unwrap()

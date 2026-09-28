@@ -759,7 +759,7 @@ intercept identity. It sees one snapshot, the last solve's, so since
 to `reference.lasso_ref`. That is a cyclic coordinate descent written from
 the objective (Friedman, Hastie & Tibshirani 2010), run from zero to 1e-14 so
 no warm start can change its answer, on the documented schedule:
-`solve_every` and its `halflife / 50` default, `max_rows_between_solves`,
+`solve_every` and its default by weight (task 115 (b)), `max_rows_between_solves`,
 the forced first solve at `min_periods`, the decay, a capped gap, skipped
 and zero-weight rows. It compares every path point's `pred` and `resid`,
 `n_eff`, every `coef` row, where `coef` is null, and which coefficients the

@@ -112,6 +112,34 @@ impl ModelState {
     }
 }
 
+/// Age each target's own weight by this row's decay and add the row's weight
+/// to the targets it carried: the weight a target's `min_periods` is checked
+/// against (hard rule 8, docs/PLAN.md task 115 (d)), where the emitted
+/// `n_eff` is every row's. For the update-form models, `pa`, `sgd`, `ftrl`
+/// and `rls`, whose coefficients a row with a null target does not move; a
+/// zero weight only ages it (hard rule 9).
+pub(crate) fn age_target_weights(
+    w: &mut [f64],
+    carried: impl Fn(usize) -> bool,
+    lam: f64,
+    weight: f64,
+) {
+    for (j, wt) in w.iter_mut().enumerate() {
+        *wt = lam * *wt + if carried(j) { weight } else { 0.0 };
+    }
+}
+
+/// A state from before task 115 (d) keeps no per-target weight, and loads
+/// with each target at the shared weight -- the one its gate read, so the
+/// restored model withholds and predicts where it did. `false` when the
+/// state holds one of the wrong length.
+pub(crate) fn restore_target_weights(w: &mut Vec<f64>, w_sum: f64, n_targets: usize) -> bool {
+    if w.is_empty() {
+        *w = vec![w_sum; n_targets];
+    }
+    w.len() == n_targets
+}
+
 /// Check a state's schema version before dispatching to a model's `restore`.
 ///
 /// Layout migrations do not live here: a model whose layout changed accepts
@@ -240,6 +268,18 @@ pub trait OnlineModel: Sized {
     /// restoring the model, and a model without a window ignores it --
     /// hence the default.
     fn set_window_budget(&mut self, _budget: Option<crate::WindowBudget>) {}
+
+    /// Set the weight-share cadence of a model that solves on a schedule
+    /// (`ewridge`, `lasso`, `huber`, `quantile`; docs/PLAN.md task 115 (b)).
+    /// Configuration from the spec: a caller sets it after building or
+    /// restoring, so a state saved before the rule existed takes it on load;
+    /// a model with no schedule ignores it -- hence the default.
+    fn set_solve_share(&mut self, _share: Option<f64>) {}
+
+    /// The weight-share cadence this model runs by, if any.
+    fn solve_share(&self) -> Option<f64> {
+        None
+    }
 
     /// What a refusing budget saw the window reach: its snapshots' bytes,
     /// and its spacing (`window_every`, doubled by any thinning). `None`

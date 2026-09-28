@@ -447,12 +447,12 @@ the state that produced this row's prediction, after forgetting and before
 the row's own update. It is `0` on a stream's first row. It runs one behind
 the row count while nothing is forgotten, and settles at `1 / (1 − λ)` once
 forgetting balances arrival. It means the same thing in every model, so one
-`min_periods` means the same thing across a bank. A model that keeps a
-weight per target checks each target against that target's own weight, the
-weight of the rows it was present on, so an often-null target reports later
-than the others. The `n_eff` field is the shared weight either way, and
-[`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html)
-says which models keep one.
+`min_periods` means the same thing across a bank. A regression model
+checks each target against that target's own weight, the weight of the
+rows it was present on, so an often-null target reports later than the
+others. For `rls`, which learns a row only when every target is present,
+that is the weight of the rows it learned from. The `n_eff` field is the
+shared weight either way.
 
 ### Labels that arrive late
 
@@ -509,7 +509,7 @@ Three ways keep a row from teaching a model, and they differ:
 | | the row is scored | the clock advances | the fit moves | `n_eff` | use it to |
 |---|---|---|---|---|---|
 | **weight `0`** | yes | yes | no | keeps decaying, so a long stretch can fall below `min_periods` | keep a row's place in the stream |
-| **a null target** | yes | yes | as the model decides; its section says | counts the row, so it does not decay toward `min_periods` | leave a label out |
+| **a null target** | yes | yes | as the model decides; its section says | counts the row; the target's own weight, which its `min_periods` reads, only decays | leave a label out |
 | **`predict`** | yes | no | no | frozen | serve |
 
 In `ewridge` and `lasso` under the default `target_gaps="own_rows"`, a
@@ -1339,7 +1339,8 @@ rr = po.spec.ewridge(
     "rr", targets=["y"], features=["x0", "x1", "x2"], clock="t", max_dclock=300.0, halflife=600.0,
     ridge=[1e-6, 0.1],             # one value, or a list: every value is solved from the same sums, so a grid is nearly free
     feature_sets={"mkt": ["x0"], "all": ["x0", "x1", "x2"]},   # named subsets, likewise solved from one set of sums
-    solve_every=12.0,              # solve every 12 clock units (default halflife/50; every row when halflife=inf or lam= is given)
+    solve_every=12.0,              # solve every 12 clock units (default: by weight, which is halflife/50 in steady
+                                   # state; every row when halflife=inf or lam= is given)
     max_rows_between_solves=100,   # ... and at least every 100 rows, whatever the clock does
     standardize=True,              # solve on the correlation matrix and undo afterwards; a feature with almost no
                                    # variance is dropped rather than allowed to blow the solve up
@@ -1355,11 +1356,11 @@ Cholesky factorization. With decay off and `ridge=0` this is ordinary least
 squares over every row seen, in any row order. The coefficients match
 `numpy.linalg.lstsq` to 2e-13 forwards, backwards or shuffled, and 6M rows
 × 20 features from a parquet stream peak at 1.4 GB, against 3.97 GB for
-`lstsq` on the same rows. One trap in that setting: the solve schedule
-defaults to `halflife/50`, so `halflife=1e12` solves once, at
-`min_periods`, and never again. Say `inf`, or set `solve_every`.
-`solve_every=1000` on that stream takes 1.4 s instead of 11 s, with the
-coefficients at most 1000 rows out of date.
+`lstsq` on the same rows. `halflife=inf` solves every row; a very long
+finite halflife solves by weight, once the rows since the last solve
+reach `ln 2 / 50` of the weight the fit holds (about 1.4 %), so it keeps
+solving as the stream grows. `solve_every=1000` on that stream takes 1.4 s
+instead of 11 s, with the coefficients at most 1000 rows out of date.
 
 `target_gaps` says which rows a target's `S_j` covers when the target is
 null on some of them. Under `"own_rows"`, the default, it covers exactly the

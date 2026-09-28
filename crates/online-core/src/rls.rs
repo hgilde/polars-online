@@ -99,6 +99,13 @@ pub struct Rls {
     /// Coefficients per target, `R^-1 u_j`, refreshed after every update.
     beta: Vec<Vec<f64>>,
     w_sum: f64,
+    /// Per target, the weight of the rows the fit learned from, decayed:
+    /// what its `min_periods` is checked against (hard rule 8, docs/PLAN.md
+    /// task 115 (d)). The fit learns from a row only when every target is
+    /// present, so the entries move together. `w_sum` stood in for it, so
+    /// rows with a null target counted toward a fit they never reached.
+    #[serde(default)]
+    w_target: Vec<f64>,
     seen: bool,
     #[serde(skip)]
     zbuf: Vec<f64>,
@@ -129,6 +136,7 @@ impl Rls {
             u,
             beta,
             w_sum: 0.0,
+            w_target: vec![0.0; cfg.n_targets],
             seen: false,
             zbuf: vec![0.0; k],
             ybuf: vec![0.0; cfg.n_targets],
@@ -142,6 +150,12 @@ impl Rls {
 
     pub fn n_eff(&self) -> f64 {
         self.w_sum
+    }
+
+    /// Per target, the weight of the rows the fit learned from: what its
+    /// `min_periods` is checked against.
+    pub fn target_weights(&self) -> &[f64] {
+        &self.w_target
     }
 
     fn ensure_buffers(&mut self) {
@@ -215,9 +229,11 @@ impl OnlineModel for Rls {
             }
         }
         self.w_sum = lam * self.w_sum + weight;
+        let learns = weight > 0.0 && y.iter().all(Option::is_some);
+        crate::model::age_target_weights(&mut self.w_target, |_| learns, lam, weight);
 
         // ---- update (only when every target is present) ----
-        if weight > 0.0 && y.iter().all(Option::is_some) {
+        if learns {
             // The working row is sqrt(w) [z, y]; each rotation zeroes one of
             // its entries against the matching row of R and moves what was
             // there down into the rest of the working row.
@@ -271,9 +287,11 @@ impl OnlineModel for Rls {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if n_eff >= self.cfg.min_periods && self.seen {
-            for (p, beta) in pred.iter_mut().zip(&self.beta) {
-                *p = dot_aug(beta, x, self.cfg.add_intercept);
+        if self.seen {
+            for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
+                if *w >= self.cfg.min_periods {
+                    *p = dot_aug(beta, x, self.cfg.add_intercept);
+                }
             }
         }
         Step {
@@ -300,6 +318,11 @@ impl OnlineModel for Rls {
                 if m.r.len() != k * k || !rows(&m.u) || !rows(&m.beta) {
                     return Err(StateError::Invalid(
                         "rls: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                    return Err(StateError::Invalid(
+                        "rls: the target weights have the wrong shape".into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -342,6 +365,49 @@ mod tests {
         }
     }
     use crate::{EwRidge, EwRidgeCfg};
+
+    /// A target's `min_periods` counts only the rows the fit learned from,
+    /// and `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115
+    /// (d)): with ten rows of no target it predicted from the one row after.
+    /// The fit learns only when every target is present, so the second
+    /// target's null on row 11 holds both back a row, and a zero-weight row
+    /// (row 12) only ages them.
+    #[test]
+    fn min_periods_counts_only_the_rows_the_fit_learned_from() {
+        let mut c = rls_cfg(2, 2, f64::INFINITY, 1.0);
+        c.min_periods = 3.0;
+        let mut m = Rls::new(c).unwrap();
+        let mut s = 7u64;
+        for i in 0..17usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y0 = (i >= 10).then(|| x[0] - x[1]);
+            let y1 = (i >= 10 && i != 11).then(|| x[0] + x[1]);
+            let out = m.step(&x, &[y0, y1], 1.0, if i == 12 { 0.0 } else { 1.0 });
+            assert_eq!(out.n_eff, (i - usize::from(i > 12)) as f64, "row {i}");
+            assert!(out.pred.iter().all(|p| p.is_nan() == (i < 15)), "row {i}");
+            let served = m.predict(&x, 1.0).pred;
+            assert!(served.iter().all(|p| p.is_nan() == (i < 14)), "row {i}");
+        }
+        assert_eq!(m.target_weights(), &[5.0, 5.0]);
+    }
+
+    /// A schema-19 state keeps no target weights: it loads with each target
+    /// at the shared weight, the one its gate read.
+    #[test]
+    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+        let mut m = Rls::new(rls_cfg(2, 1, 50.0, 1.0)).unwrap();
+        let mut s = 7u64;
+        for i in 0..8 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[(i >= 5).then(|| x[0])], 1.0, 1.0);
+        }
+        assert!(m.target_weights()[0] < m.n_eff());
+        let mut v = serde_json::to_value(&m).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
+        let old: Rls = serde_json::from_value(v).unwrap();
+        let back = Rls::restore(&State::new(ModelState::Rls(Box::new(old)))).unwrap();
+        assert_eq!(back.target_weights(), &[m.n_eff()]);
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state
@@ -446,6 +512,7 @@ mod tests {
             min_periods: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             gram_block_rows: 0,
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
@@ -497,6 +564,7 @@ mod tests {
             min_periods: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             gram_block_rows: 0,
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
@@ -566,6 +634,7 @@ mod tests {
             min_periods: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             gram_block_rows: 0,
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,

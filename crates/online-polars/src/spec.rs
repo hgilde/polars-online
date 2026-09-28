@@ -2344,7 +2344,23 @@ impl Spec {
         matches!(self.model, ModelKind::EwRidge { .. })
     }
 
-    /// Default solve cadence: halflife/50 (docs/PLAN.md §4.1, [`Spec::validate`]).
+    /// The weight-share cadence (docs/PLAN.md task 115 (b)), the default
+    /// where `solve_every` is left out under a finite halflife: a solve once
+    /// the weight learned since the last reaches `ln 2 / 50` of the weight
+    /// the fit holds. `None` with an explicit `solve_every`, which keeps its
+    /// clock, and under `lam` or an infinite halflife, which solve every row.
+    pub fn solve_share_default(&self, solve_every: Option<&Span>, decay: Decay) -> Option<f64> {
+        match (solve_every, decay) {
+            (None, Decay::Halflife(h)) if h.is_finite() => Some(online_core::DEFAULT_SOLVE_SHARE),
+            _ => None,
+        }
+    }
+
+    /// The clock cadence a spec without `solve_every` carries: halflife/50, or
+    /// 0 (every row) under `lam` or an infinite halflife. Under a finite
+    /// halflife the solves go by weight instead ([`Self::solve_share_default`],
+    /// task 115 (b)); this value stays in the cfg, where `gram_block_rows`
+    /// reads whether there is a cadence at all.
     pub fn solve_every_default(&self, decay: Decay) -> f64 {
         match decay {
             Decay::Halflife(h) if h.is_finite() => h / 50.0,

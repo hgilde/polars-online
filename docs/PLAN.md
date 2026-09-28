@@ -142,9 +142,13 @@ State: `S = EW Σ w·x·xᵀ` (k×k, intercept included), `r_j = EW Σ w·x·y_j
 - **Grids expanded at solve time, not into separate accumulators**:
   `ridge: list[float]`, `feature_sets: dict[str, list[str]]` (sub-blocks of S), `lasso_path` (4.3).
   `halflife: list` IS a separate accumulator per value — allowed, documented as costing k² per row each.
-- **Solve schedule**: `solve_every` in clock units, default `halflife/50`; `max_rows_between_solves`
-  cap; forced solve on first-ready and after any capped/session gap. **[validate]** the /50 default
-  via task 12 (schedules share the accumulator, so this is a free experiment).
+- **Solve schedule**: `solve_every` in clock units; by default, under a finite halflife, a solve
+  once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds, which is
+  `halflife/50` of clock in steady state (task 115 (b); the default was that clock cadence, which
+  never came due under a halflife much longer than the stream); every row under `lam` or an
+  infinite halflife; `max_rows_between_solves` cap; forced solve on first-ready and after any
+  capped/session gap. **[validate]** the /50 cadence via task 12 (schedules share the accumulator,
+  so this is a free experiment).
 - Between solves, predictions use the last solved coefficients.
 
 ### 4.2 RLS (recursive least squares) — variant
@@ -4574,7 +4578,24 @@ decision it needs, with a recommendation where there is one.
       sharing better on both targets, and this plan keeps `False` because it
       hurt one — re-measure, then decide. (b) The solve cadence by
       accumulated weight: `halflife=1e12` solves once (a state field; the
-      next schema bump). (c) §12: a weight-0 row after the decay underflows
+      next schema bump). **Decided 2026-09-28 (the user: "Do 115b") and
+      built:** with no `solve_every` under a finite halflife, `ewridge`,
+      `lasso`, `huber` and `quantile` solve once the weight learned since
+      the last solve reaches `ln 2 / 50` of the weight the fit holds
+      (`online_core::DEFAULT_SOLVE_SHARE`; `n_eff`, and `robust`'s raw
+      weight), which on evenly spaced rows in steady state is `halflife /
+      50` of clock (at halflife 500, 10.007 rows against 10). An explicit
+      `solve_every` keeps its clock; `lam` and an infinite halflife still
+      solve every row; `max_rows_between_solves` still caps. The share is
+      configuration the bank sets from the spec on build and on restore,
+      and the counter is state: `SCHEMA_VERSION` 20, a 19 file loading
+      with it at 0 (`tests/test_solve_cadence.py`; the oracles in
+      `tests/reference.py` and `tests/reference_paths.py` run the rule).
+      Measured on VALIDATION §1's data: the clock cadences of 9, 10 and 11
+      rows give MSE 1.1741, 1.1617 and 1.1606 (×1e-6), the weight rule
+      1.1704 -- phase noise on a stream whose every fit has a negative
+      R², so the report cannot rank them; solving every row is the worst,
+      1.2255. (c) §12: a weight-0 row after the decay underflows
       keeps the history, where `decay(0)` forgets it (recommended: forget)
       — *a clock gap: reviewed with task 120*. **Decided (forget) and built
       2026-09-28 with task 120**, which records `hmm`'s subnormal edge,
@@ -4582,7 +4603,26 @@ decision it needs, with a recommendation where there is one.
       256 MiB window budget; a budget-refused bank refusing every later
       call; C24 part 2, `ftrl`'s penalties under a halflife; S30, `holt`
       with no level-only mode; S31, `n_eff` counting rows with a null target
-      in `ftrl`, `pa` and `sgd` (hard rule 8). (e) The 2026-09-12 review's
+      in `ftrl`, `pa` and `sgd` (hard rule 8). **S31 decided 2026-09-28
+      (the user: "n eff should do what it does everywhere else") and
+      built:** measured first, every model emits the shared weight as
+      `n_eff` and every regression model but these checks a target's
+      `min_periods` against its own weight (ten null-target rows, then the
+      target, `min_periods = 2.5`, halflife 200: `ewridge`, `lasso`,
+      `huber`, `quantile` and `kalman` first predict on row 13, `holt` too
+      once its level is set); `pa`, `sgd` and `ftrl` predicted from row 3 on
+      coefficients no target had moved, and `rls` from row 11. So `pa`,
+      `sgd`, `ftrl` and `rls` now keep `w_target`, the weight of the rows
+      that carried each target (for `rls` the rows it learned from, all
+      targets present; for `ftrl` not a label `strict_binary` refuses), and
+      gate each target on it in `step` and `predict`; the emitted `n_eff` is
+      unchanged. `SCHEMA_VERSION` 20 (with (b)); a 19 state loads with each
+      target at the shared weight. Pinned by
+      `test_a_target_counts_toward_min_periods_only_on_rows_that_carry_it`
+      (the whole sweep) and a test in each model's file; the oracles
+      (`rls_ref`, `ftrl_ref`, `rls_paths_ref`, `pa_ref`, `sgd_ref`) gate the
+      same way. `sgd`'s `inv_scaling` rate still reads the shared weight.
+      The rest of (d) is open. (e) The 2026-09-12 review's
       sign-offs (P4's calls; decisions 1, 3, 4 and 5; D1's caveat to rule
       5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. (f) S18, Bartlett
       weights for `serial_rule`; S19, windowed target moments; C18, a
@@ -4602,7 +4642,11 @@ decision it needs, with a recommendation where there is one.
       "linear"` a zero-weight row moves `rho` (`deco.rs`: `(1-α-β)·bar +
       α·u + β·rho` is recomputed whether or not `b` is 0), against hard
       rule 9; whether the linear form should hold `rho` still on such a row
-      is a decision. (i) The Linux CLI's glibc floor (task 109's leftover,
+      is a decision. **Decided 2026-09-28 (the user: "Hold rho still on a
+      zero-weight row") and built after 0.12.0:** `rho' = rho` at `w = 0`
+      under `"linear"`; positive weights still reach `rho` only through
+      `rho_bar`, which the docstring states (options not taken: scaling the
+      `alpha` step by the weight, or documenting only). (i) The Linux CLI's glibc floor (task 109's leftover,
       measured 2026-09-27 on 0.11.1's assets): both binaries need
       `GLIBC_2.39`, the runner's own -- `pidfd_getpid` and `pidfd_spawnp`
       from Rust's standard library, weak symbols under a version requirement

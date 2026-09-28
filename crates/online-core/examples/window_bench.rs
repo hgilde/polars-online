@@ -31,6 +31,7 @@ fn ridge(k: usize, window: Option<f64>) -> EwRidgeCfg {
         min_periods: (k + 1) as f64,
         solve_every: f64::MAX,
         max_rows_between_solves: 50,
+        solve_share: None,
         gram_block_rows: 0,
         target_gaps: TargetGaps::OwnRows,
         window,

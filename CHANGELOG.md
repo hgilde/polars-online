@@ -7,6 +7,42 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed
+
+- **The default solve cadence goes by weight.** `ewridge`, `lasso`, `huber`
+  and `quantile` with no `solve_every` solved every `halflife / 50` of
+  clock, so a halflife much longer than the stream solved once, at
+  `min_periods`, and never again: under `halflife=1e6` the fit after 4,000
+  rows was the first rows' slope, 0.99, where the stream said 2.95. They
+  now solve once the weight learned since the last solve reaches `ln 2 /
+  50` of the weight the fit holds. On evenly spaced rows in steady state
+  that is the same `halflife / 50` of clock, one row later at most, and
+  from the start of a stream it solves more often, while the fit holds
+  little weight. Numbers change for these four models whenever
+  `solve_every` is left out under a finite halflife; an explicit
+  `solve_every` keeps its clock, and `lam` or `halflife=inf` still solve
+  every row. On the validation data every cadence from 9 to 11 rows scores
+  within 1.2% of the others, the new default among them
+  (`docs/VALIDATION.md` §1).
+
+- **`pa`, `sgd`, `ftrl` and `rls` check a target's `min_periods` against
+  that target's own weight.** They checked the weight of every row, so rows
+  with a null target counted toward a fit they never moved. After ten such
+  rows, `min_periods=10` was met with every coefficient at zero: `ftrl`
+  predicted 0.5, and `pa` and `sgd` predicted 0. Each target now waits for
+  the weight of the rows that carried it, as the other regression models
+  already did. For `rls`, which learns a row only when every target is
+  present, that is the weight of the rows it learned from. The `n_eff`
+  field does not change: it is still the weight of every row. Outputs
+  change only on rows where a target's own weight is below `min_periods`,
+  which now report null.
+
+- **State schema 20.** The four solving models keep the weight learned
+  since their last solve, and `pa`, `sgd`, `ftrl` and `rls` each target's
+  own weight. A schema-19 file loads: the first count starts at 0, and each
+  target's weight at the shared one its gate read. A 0.12.0 build refuses a
+  schema-20 file by its version.
+
 ### Fixed
 
 - **`po.stream.refresh_time` under `.head(n)` saves the state behind the
@@ -18,6 +54,16 @@ carries breaking changes, and any change to the numbers a model returns.
   the rows a `head(n)` pulled: a run resumed on the input after that tick
   goes on with point n + 1. With `pairs=True`, a tick that completes several
   pairs' points at once is taken whole.
+
+- **`deco` with `dynamics="linear"` holds `rho` still on a zero-weight
+  row.** The linear recursion took the row's `u` at full strength in its
+  `alpha * u` term whatever the row's weight, so a row meant to advance the
+  clock and learn nothing -- an `embargo` predict copy, a row masked by a
+  weight column -- moved the level: one such row moved it from 0.0525 to
+  0.0392 in the test. Numbers change only for `"linear"` streams with
+  zero-weight rows. A positive weight still reaches `rho` only through
+  `rho_bar`, as the paper's recursion has no row weights; the docstring
+  says so.
 
 ## [0.12.0] — 2026-09-28
 

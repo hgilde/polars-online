@@ -110,6 +110,7 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         gram_block_rows: 0,
         target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
@@ -129,6 +130,7 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         quantile_eps: 1e-3,
     }
 }
@@ -283,6 +285,7 @@ fn lasso_golden() {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         window: None,
         window_every: None,
         max_cd_iters: 200,

@@ -116,6 +116,15 @@ pub struct EwRidgeCfg {
     pub solve_every: f64,
     /// Row cap between solves; 1 solves every row.
     pub max_rows_between_solves: u32,
+    /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
+    /// learned since the last solve reaches this share of the weight the fit
+    /// holds, in place of `solve_every`'s clock. In steady state that is the
+    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// keeps the fit that close to its data, where the clock solved once and
+    /// never again. `None` keeps the clock.
+    #[serde(default)]
+    pub solve_share: Option<f64>,
     /// Rows of the Gram update held back and merged as one block
     /// (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71). `0`, the default,
     /// updates the `k×k` matrix on every row. With `B` here, a row's `z` is
@@ -188,6 +197,12 @@ impl EwRidgeCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .solve_share
+            .is_some_and(|f| !(f.is_finite() && f > 0.0))
+        {
+            return Err("solve_share must be finite and > 0".into());
+        }
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
@@ -236,8 +251,9 @@ impl EwRidgeCfg {
                     "ewridge: gram_block_rows needs a solve cadence; the Gram is brought up to \
                      date before every solve, and with solve_every = {} and \
                      max_rows_between_solves = {} that is every row, so a block would never \
-                     hold more than one. Set solve_every > 0 (the default is halflife / 50, \
-                     or 0 for `lam` and an infinite halflife) and max_rows_between_solves > 1",
+                     hold more than one. Set solve_every > 0 (the default is by weight under a \
+                     finite halflife, and 0 for `lam` and an infinite halflife) and \
+                     max_rows_between_solves > 1",
                     self.solve_every, self.max_rows_between_solves
                 ));
             }
@@ -328,6 +344,9 @@ pub struct EwRidge {
     slow: Option<Box<Acc>>,
     clock_since_solve: f64,
     rows_since_solve: u32,
+    /// Weight learned since the last solve, for `solve_share`.
+    #[serde(default)]
+    weight_since_solve: f64,
     pub solve_failures: u64,
     /// What the last solve left for the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §2): the effective degrees of freedom
@@ -422,6 +441,7 @@ impl EwRidge {
             beta: None,
             clock_since_solve: 0.0,
             rows_since_solve: 0,
+            weight_since_solve: 0.0,
             solve_failures: 0,
             win,
             zbuf: vec![0.0; k_total],
@@ -674,6 +694,7 @@ impl EwRidge {
             self.factors = Factors(factors);
             self.clock_since_solve = 0.0;
             self.rows_since_solve = 0;
+            self.weight_since_solve = 0.0;
             return;
         }
         let mut failures = 0u64;
@@ -873,6 +894,7 @@ impl EwRidge {
         self.factors = Factors(factors);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
+        self.weight_since_solve = 0.0;
     }
 
     /// Factorize and solve, counting the jitter it took; the factor comes
@@ -1283,6 +1305,14 @@ impl PartialEq for Factors {
 }
 
 impl OnlineModel for EwRidge {
+    fn set_solve_share(&mut self, share: Option<f64>) {
+        self.cfg.solve_share = share;
+    }
+
+    fn solve_share(&self) -> Option<f64> {
+        self.cfg.solve_share
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -1457,8 +1487,14 @@ impl OnlineModel for EwRidge {
         // ---- solve schedule ----
         self.clock_since_solve += d_clock;
         self.rows_since_solve += 1;
-        let due = self.cfg.solve_every <= 0.0
-            || self.clock_since_solve >= self.cfg.solve_every
+        if weight.is_finite() && weight > 0.0 {
+            self.weight_since_solve += weight;
+        }
+        let by_cadence = match self.cfg.solve_share {
+            Some(share) => self.weight_since_solve >= share * self.n_eff(),
+            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+        };
+        let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
             || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
         if due {
@@ -1591,6 +1627,7 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             gram_block_rows: 0,
             target_gaps: TargetGaps::OwnRows,
             window: None,

@@ -237,6 +237,7 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         gram_block_rows: 0,
         target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
@@ -282,6 +283,7 @@ fn lasso_cfg() -> LassoCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         window: None,
         window_every: None,
         max_cd_iters: 100,
@@ -351,6 +353,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        solve_share: None,
         quantile_eps: 1e-3,
     }
 }

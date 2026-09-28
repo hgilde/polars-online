@@ -505,3 +505,22 @@ def test_predictions_move_even_where_the_coefficients_do_not():
     both = [(x, y) for x, y in zip(a, b, strict=True) if x is not None and y is not None]
     assert both, "no row was predicted in both runs"
     assert max(abs(x - y) for x, y in both) > 1e-6
+
+
+def test_only_a_plan_level_sort_ends_the_walk():
+    """An expression's sort (`pl.col("t").sort()` in `with_columns`)
+    serializes to a node also tagged `Sort`, with `expr` and `options` where
+    a plan's has `input`. The walk took it for a plan node and stopped there,
+    harmless only because nothing below an expression is a plan step; it
+    reads `input` now, so the rule is deliberate (review 2026-09-28)."""
+    from polars_online._frame import _walk
+
+    hazard = {"Distinct": {"input": {"DataFrameScan": {}}, "options": {}}}
+    expression_sort = {"Sort": {"expr": hazard, "options": {}}}
+    found: list[str] = []
+    _walk(expression_sort, found)
+    assert found and "unique" in found[0], found
+    plan_sort = {"Sort": {"input": hazard, "by_column": [{"Column": "t"}], "sort_options": {}}}
+    found = []
+    _walk(plan_sort, found)
+    assert found == []

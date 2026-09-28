@@ -116,8 +116,10 @@ def lasso_paths_ref(
     (scalar or one per target). ``n_eff`` is the weight of every row.
 
     **The schedule** is ``lasso_ref``'s: after the row is learned a solve
-    runs when the clock since the last one reaches ``solve_every`` (default
-    ``halflife / 50``, every row for an infinite halflife), when
+    runs when the clock since the last one reaches ``solve_every`` (left out:
+    once the weight learned since the last reaches ``ln 2 / 50`` of the weight
+    the fit holds under a finite halflife, docs/PLAN.md task 115 (b); every row
+    for an infinite one), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
     none yet and ``n_eff`` has reached ``min_periods``. That last rule is
     written for one target and one threshold; with several the reference
@@ -152,8 +154,10 @@ def lasso_paths_ref(
     if min_periods is None:
         min_periods = float(kt)
     mp = np.broadcast_to(np.asarray(min_periods, dtype=float), (m,))
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
     if solve_every is None:
-        solve_every = halflife / 50.0 if np.isfinite(halflife) else 0.0
+        solve_every = 0.0
+    since_w = 0.0
     if select_halflife is None:
         select_halflife = halflife
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
@@ -232,7 +236,7 @@ def lasso_paths_ref(
 
     fit = None
     t_last, pending = 0.0, 0.0
-    since_clock, since_rows = 0.0, 0
+    since_clock, since_rows, since_w = 0.0, 0, 0.0
     for i in range(n):
         if np.isnan(X[i]).any():
             pending += dclock[i]
@@ -290,7 +294,14 @@ def lasso_paths_ref(
         # ---- solve, on the schedule ----
         since_clock += d
         since_rows += 1
-        cadence = solve_every <= 0.0 or since_clock >= solve_every or since_rows >= max_rows
+        since_w += max(float(w[i]), 0.0)
+        if share is not None:
+            ages = t_now - np.asarray(T)
+            held = (np.asarray(Wr) * decay(ages, halflife))[ages <= horizon].sum()
+            by_cadence = since_w >= share * held
+        else:
+            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+        cadence = by_cadence or since_rows >= max_rows
         if not cadence and fit is None:
             ages = t_now - np.asarray(T)
             weight = (np.asarray(Wr) * decay(ages, halflife))[ages <= horizon].sum()
@@ -304,7 +315,7 @@ def lasso_paths_ref(
         if cadence:
             fit = solve(t_now)
             solved[i] = True
-            since_clock, since_rows = 0.0, 0
+            since_clock, since_rows, since_w = 0.0, 0, 0.0
         if fit is not None:
             coef[i] = fit
 
@@ -415,7 +426,9 @@ def ewridge_paths_ref(
 
     **The schedule** is ``lasso_paths_ref``'s: after the row is learned a
     solve runs when the clock since the last one reaches ``solve_every``
-    (default ``halflife / 50``, every row for ``inf``), when
+    (left out: once the weight learned since the last reaches ``ln 2 / 50`` of
+    the weight the fit holds under a finite halflife, docs/PLAN.md task 115
+    (b); every row for ``inf``), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
     none yet and ``n_eff`` has reached the smallest ``min_periods`` -- which
     with ``ewridge``'s default of 0 is the first row.
@@ -439,8 +452,10 @@ def ewridge_paths_ref(
     sets = [list(range(k))] if feature_sets is None else [list(s) for s in feature_sets]
     combos = [(s, r) for s in sets for r in ridges]
     mp = np.broadcast_to(np.asarray(min_periods, dtype=float), (m,))
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
     if solve_every is None:
-        solve_every = halflife / 50.0 if np.isfinite(halflife) else 0.0
+        solve_every = 0.0
+    since_w = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
     horizon = np.inf if window is None else window
     blend = session_shrink is not None
@@ -486,6 +501,8 @@ def ewridge_paths_ref(
         return [], [], [], [], [], None, 0.0, 0
 
     fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
+
+    since_w = 0.0
     t_last, pending, prev_session, started = 0.0, 0.0, None, False
     for i in range(n):
         if np.isnan(X[i]).any():
@@ -495,6 +512,7 @@ def ewridge_paths_ref(
         prev_session = None if session is None else session[i]
         if changed and session_gap == "reset":
             fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
+            since_w = 0.0
             d = 0.0
         elif changed and session_gap is not None:
             d = min(float(session_gap), max_dclock)
@@ -507,7 +525,7 @@ def ewridge_paths_ref(
                 (1.0 - session_shrink) * np.asarray(fast) + session_shrink * np.asarray(slow)
             )
             fit = solve()
-            since_clock, since_rows = 0.0, 0
+            since_clock, since_rows, since_w = 0.0, 0, 0.0
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
 
         # ---- before the row, seen from the last accepted row ----
@@ -538,14 +556,19 @@ def ewridge_paths_ref(
         # ---- solve, on the schedule ----
         since_clock += d
         since_rows += 1
-        due = solve_every <= 0.0 or since_clock >= solve_every or since_rows >= max_rows
+        since_w += max(float(w[i]), 0.0)
+        inside = (t_last - np.asarray(T)) <= horizon
+        if share is not None:
+            by_cadence = since_w >= share * float(np.asarray(fast)[inside].sum())
+        else:
+            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+        due = by_cadence or since_rows >= max_rows
         if not due and fit is None:
-            inside = (t_last - np.asarray(T)) <= horizon
             due = float(np.asarray(fast)[inside].sum()) >= float(np.min(mp))
         if due:
             fit = solve()
             solved[i] = True
-            since_clock, since_rows = 0.0, 0
+            since_clock, since_rows, since_w = 0.0, 0, 0.0
         if fit is not None:
             coef[i] = fit
             has_fit[i] = True
@@ -582,10 +605,11 @@ def rls_paths_ref(
     so after rows at ages ``a_r`` (the prior's age is the whole stream's),
     ``A = ridge * lam^T I + sum_r w_r lam^a_r z_r z_r'`` and ``b_j`` likewise.
     The factor ``R`` is shared, so a row with any null target is learned
-    for none (it still ages the sums). Scoring: once ``n_eff``, the weight of
-    every row, reaches ``min_periods`` (default the number of coefficients)
-    and a row has been learned; the prior alone predicts nothing (review
-    2026-09-12, S10). ``coef`` is ``beta`` after the row.
+    for none (it still ages the sums). Scoring: once the weight of the rows
+    learned from reaches ``min_periods`` (default the number of
+    coefficients; hard rule 8, docs/PLAN.md task 115 (d)); the prior alone
+    predicts nothing (review 2026-09-12, S10). ``n_eff`` is the weight of
+    every row. ``coef`` is ``beta`` after the row.
 
     Returns ``pred`` and ``coef`` per target, and ``n_eff``."""
     n, k = X.shape
@@ -622,11 +646,13 @@ def rls_paths_ref(
         d = min(dclock[i] + pending, max_dclock) if started else 0.0
         pending = 0.0
         if started:
-            n_eff[i] = float((np.asarray(Wr) * 0.5 ** ((t_now - np.asarray(T)) / halflife)).sum())
+            aged = np.asarray(Wr) * 0.5 ** ((t_now - np.asarray(T)) / halflife)
+            n_eff[i] = float(aged.sum())
+            w_learned = float((aged * np.asarray(learned)).sum())
         else:
-            n_eff[i] = 0.0
+            n_eff[i], w_learned = 0.0, 0.0
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        if beta is not None and any(learned) and n_eff[i] >= min_periods:
+        if beta is not None and any(learned) and w_learned >= min_periods:
             pred[i] = beta @ z
         t_now = t_now + d if started else 0.0
         started = True
@@ -676,9 +702,10 @@ def pa_ref(
         b += min(w, 1) * tau * sign(y - p) * z
 
     per target, from zero. A null target or a zero weight moves nothing; the
-    coefficients never decay, ``n_eff`` does. ``pred`` is null while
-    ``n_eff`` is below ``min_periods``. Returns ``pred``, ``n_eff`` and
-    ``coef`` (after the row)."""
+    coefficients never decay, ``n_eff`` does. ``pred_j`` is null while the
+    target's own weight, the rows that carried it, decayed, is below
+    ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d)); ``n_eff`` is
+    every row's. Returns ``pred``, ``n_eff`` and ``coef`` (after the row)."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if add_intercept else k
@@ -687,12 +714,12 @@ def pa_ref(
     coef = np.full((n, m, kt), np.nan)
     b = np.zeros((m, kt))
     w_sum = 0.0
+    w_target = np.zeros(m)
     for i, d in _accepted_steps(X, dclock, max_dclock):
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
         n_eff[i] = w_sum
         p = b @ z
-        if w_sum >= min_periods:
-            pred[i] = p
+        pred[i] = np.where(w_target >= min_periods, p, np.nan)
         s = z @ z
         for j in range(m):
             if np.isnan(Y[i, j]) or not w[i] > 0.0 or s <= 0.0:
@@ -707,6 +734,7 @@ def pa_ref(
             b[j] += min(w[i], 1.0) * tau * np.sign(r) * z
         lam = 1.0 if np.isinf(halflife) else 0.5 ** (d / halflife)
         w_sum = lam * w_sum + w[i]
+        w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
     return {"pred": pred, "n_eff": n_eff, "coef": coef}
 
@@ -744,9 +772,11 @@ def sgd_ref(
     the row, and ``learning_rate / (sqrt(G_i) + 1e-8)`` for ``"adagrad"``,
     ``G_i`` the sum of squared gradients with this row's in it. ``n_eff``
     and ``G`` decay on the clock; the coefficients do not. Per target, from
-    zero; a null target or a zero weight moves nothing. ``pred`` is ``p``,
-    null while ``n_eff`` is below ``min_periods``. Returns ``pred``,
-    ``n_eff`` and ``coef`` (after the row)."""
+    zero; a null target or a zero weight moves nothing. ``pred_j`` is ``p``,
+    null while the target's own weight, the rows that carried it, decayed,
+    is below ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d));
+    ``n_eff`` is every row's. Returns ``pred``, ``n_eff`` and ``coef``
+    (after the row)."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if add_intercept else k
@@ -756,6 +786,7 @@ def sgd_ref(
     b = np.zeros((m, kt))
     G = np.zeros((m, kt))
     w_sum = 0.0
+    w_target = np.zeros(m)
     links = {
         "poisson": np.exp,
         "logistic": lambda e: 1.0 / (1.0 + np.exp(-e)),
@@ -766,8 +797,7 @@ def sgd_ref(
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
         n_eff[i] = w_sum
         p = links.get(loss, lambda e: e)(b @ z)
-        if w_sum >= min_periods:
-            pred[i] = p
+        pred[i] = np.where(w_target >= min_periods, p, np.nan)
         for j in range(m):
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
@@ -790,6 +820,7 @@ def sgd_ref(
                 lr = learning_rate / (np.sqrt(G[j]) + 1e-8)
             b[j] -= lr * g
         w_sum = lam * w_sum + w[i]
+        w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
     return {"pred": pred, "n_eff": n_eff, "coef": coef}
 

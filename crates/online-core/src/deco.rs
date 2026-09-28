@@ -535,7 +535,14 @@ impl Deco {
                         self.cfg.alpha.expect("validated"),
                         self.cfg.beta.expect("validated"),
                     );
-                    if self.rho[m].is_finite() {
+                    // A row of weight 0 advances the clock and learns
+                    // nothing (hard rule 9): the paper's recursion has no
+                    // row weights, and took its `u` at full strength in the
+                    // `α·u` term (review 2026-09-28). A positive weight
+                    // reaches `rho` through `rho_bar` alone.
+                    if w <= 0.0 {
+                        self.rho[m]
+                    } else if self.rho[m].is_finite() {
                         (1.0 - alpha - beta) * *bar + alpha * um + beta * self.rho[m]
                     } else {
                         um
@@ -823,15 +830,27 @@ mod tests {
         assert!(m.rho[0].is_finite());
     }
 
+    /// Under either dynamics: the linear one took the row's `u` at full
+    /// strength in its `α·u` term whatever the row's weight, so a zero-weight
+    /// row moved `rho` (review 2026-09-28; the user: "Hold rho still on a
+    /// zero-weight row"). This test ran `"ew"` alone.
     #[test]
     fn a_zero_weight_row_mid_stream_moves_nothing_but_the_clock() {
-        let mut m = Deco::new(cfg(3)).unwrap();
-        for x in stream(50, 3, 0.3, 5) {
-            m.step(&x, &[], 1.0, 1.0);
+        let linear = DecoCfg {
+            dynamics: DecoDynamics::Linear,
+            alpha: Some(0.05),
+            beta: Some(0.9),
+            ..cfg(3)
+        };
+        for c in [cfg(3), linear] {
+            let mut m = Deco::new(c.clone()).unwrap();
+            for x in stream(50, 3, 0.3, 5) {
+                m.step(&x, &[], 1.0, 1.0);
+            }
+            let before = m.rho.clone();
+            m.step(&[9.0, -9.0, 9.0], &[], 1.0, 0.0);
+            assert_eq!(m.rho, before, "{:?}", c.dynamics);
         }
-        let before = m.rho.clone();
-        m.step(&[9.0, -9.0, 9.0], &[], 1.0, 0.0);
-        assert_eq!(m.rho, before);
     }
 
     #[test]

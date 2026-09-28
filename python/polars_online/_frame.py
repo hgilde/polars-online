@@ -327,14 +327,17 @@ def _walk(node: Any, found: list[str]) -> None:
         return
     if len(node) == 1:
         ((tag, body),) = node.items()
-        if tag == "Sort":
+        # A plan's sort has an `input`; an expression's (`pl.col(..).sort()`)
+        # is tagged `Sort` too, with `expr` and `options`, and is descended as
+        # any other node (review 2026-09-28).
+        if tag == "Sort" and isinstance(body, dict) and "input" in body:
             # Measured on polars 1.44.2 (task 120): sorted by two keys without
             # maintain_order, 2,109 of 10,000 rows came out in another order
             # than the stable sort's -- rows of one group at one clock value,
             # reordered -- and by one key, none did. Polars promises neither,
             # and `test_order_hazards.py` pins both, so a change shows.
-            opts = body.get("sort_options", {}) if isinstance(body, dict) else {}
-            keys = body.get("by_column", []) if isinstance(body, dict) else []
+            opts = body.get("sort_options", {})
+            keys = body.get("by_column", [])
             if len(keys) > 1 and not opts.get("maintain_order", False):
                 found.append(
                     "a sort by several keys without maintain_order=True (rows with equal "

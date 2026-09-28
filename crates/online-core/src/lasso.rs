@@ -53,6 +53,15 @@ pub struct LassoCfg {
     pub min_periods: f64,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
+    /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
+    /// learned since the last solve reaches this share of the weight the fit
+    /// holds, in place of `solve_every`'s clock. In steady state that is the
+    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// keeps the fit that close to its data, where the clock solved once and
+    /// never again. `None` keeps the clock.
+    #[serde(default)]
+    pub solve_share: Option<f64>,
     pub max_cd_iters: u32,
     pub cd_tol: f64,
     /// Which rows a target's Gram is taken over where the target is null on
@@ -87,6 +96,12 @@ impl LassoCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .solve_share
+            .is_some_and(|f| !(f.is_finite() && f > 0.0))
+        {
+            return Err("solve_share must be finite and > 0".into());
+        }
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
@@ -124,6 +139,9 @@ pub struct Lasso {
     sel_idx: Vec<usize>,
     clock_since_solve: f64,
     rows_since_solve: u32,
+    /// Weight learned since the last solve, for `solve_share`.
+    #[serde(default)]
+    weight_since_solve: f64,
     /// Coordinate descents that ran out of sweeps (`max_cd_iters`) before
     /// meeting `cd_tol`, one per target and path point; such a fit is where
     /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
@@ -194,6 +212,7 @@ impl Lasso {
             sel_idx: vec![np - 1; m],
             clock_since_solve: 0.0,
             rows_since_solve: 0,
+            weight_since_solve: 0.0,
             solve_failures: 0,
             win,
             zbuf: vec![0.0; k_total],
@@ -577,10 +596,19 @@ impl Lasso {
         self.beta = Some(out);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
+        self.weight_since_solve = 0.0;
     }
 }
 
 impl OnlineModel for Lasso {
+    fn set_solve_share(&mut self, share: Option<f64>) {
+        self.cfg.solve_share = share;
+    }
+
+    fn solve_share(&self) -> Option<f64> {
+        self.cfg.solve_share
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -693,8 +721,14 @@ impl OnlineModel for Lasso {
 
         self.clock_since_solve += d_clock;
         self.rows_since_solve += 1;
-        let due = self.cfg.solve_every <= 0.0
-            || self.clock_since_solve >= self.cfg.solve_every
+        if weight.is_finite() && weight > 0.0 {
+            self.weight_since_solve += weight;
+        }
+        let by_cadence = match self.cfg.solve_share {
+            Some(share) => self.weight_since_solve >= share * self.n_eff(),
+            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+        };
+        let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
             || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
         if due {
@@ -894,6 +928,7 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             window: None,
             window_every: None,
             target_gaps: TargetGaps::OwnRows,

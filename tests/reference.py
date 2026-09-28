@@ -265,6 +265,8 @@ def rls_ref(
     A = decayed sum of w*x x^T plus the decaying prior ridge*I (intercept
     penalized); b_j = decayed sum of w*x*y_j. Rows with any NaN target are
     predict-only for all targets (RLS null-policy deviation, documented).
+    ``min_periods`` reads the weight of the rows learned from (hard rule 8,
+    docs/PLAN.md task 115 (d)); ``n_eff`` is every row's.
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -284,6 +286,7 @@ def rls_ref(
             "A": ridge * np.eye(k_total),
             "b": np.zeros((k_total, m)),
             "W": 0.0,
+            "Wt": 0.0,
             "beta": None,
             "pending": 0.0,
             "seen": False,
@@ -302,7 +305,7 @@ def rls_ref(
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
-        ready = st["W"] >= min_periods and st["beta"] is not None and st["seen"]
+        ready = st["Wt"] >= min_periods and st["beta"] is not None and st["seen"]
         if ready:
             pred[i] = xi @ st["beta"]
             for j in range(m):
@@ -313,7 +316,9 @@ def rls_ref(
         st["A"] = lam * st["A"]
         st["b"] = lam * st["b"]
         st["W"] = lam * st["W"] + w[i]
-        if not np.isnan(Y[i]).any():
+        learns = not np.isnan(Y[i]).any()
+        st["Wt"] = lam * st["Wt"] + (w[i] if learns and w[i] > 0.0 else 0.0)
+        if learns:
             st["A"] = st["A"] + w[i] * np.outer(xi, xi)
             st["b"] = st["b"] + w[i] * np.outer(xi, Y[i])
             st["seen"] = True
@@ -403,8 +408,11 @@ def lasso_ref(
       ``max_rows_between_solves`` rows have gone by since it (a zero-weight
       row is a row), or when there has been none yet and the weight has
       reached ``min_periods``;
-    - ``solve_every`` defaults to ``halflife / 50``, which is every row for an
-      infinite halflife; ``max_rows_between_solves`` is off by default.
+    - left out, ``solve_every`` gives way to the weight rule under a finite
+      halflife: a solve once the weight learned since the last reaches
+      ``ln 2 / 50`` of the weight the fit holds (docs/PLAN.md task 115 (b));
+      every row under an infinite one. ``max_rows_between_solves`` is off by
+      default.
 
     Feature null => the row is skipped. Nothing is scored or learned and it
     is not a row for the schedule. Its clock step folds into the next accepted
@@ -422,9 +430,11 @@ def lasso_ref(
         raise ValueError("lasso_ref takes a target with no nulls")
     if min_periods is None:
         min_periods = float(kt)
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
     if solve_every is None:
-        solve_every = halflife / 50.0 if np.isfinite(halflife) else 0.0
+        solve_every = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
+    since_w = 0.0
 
     pred = np.full((n, npath), np.nan)
     n_eff = np.full(n, np.nan)
@@ -483,15 +493,15 @@ def lasso_ref(
         # ---- solve, on the schedule ----
         since_clock += d
         since_rows += 1
-        if (
-            solve_every <= 0.0
-            or since_clock >= solve_every
-            or since_rows >= max_rows
-            or (fit is None and w_sum >= min_periods)
-        ):
+        since_w += max(w[i], 0.0)
+        if share is not None:
+            by_cadence = since_w >= share * w_sum
+        else:
+            by_cadence = solve_every <= 0.0 or since_clock >= solve_every
+        if by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_periods):
             fit = solve(mean, raw, ry)
             solved[i] = True
-            since_clock, since_rows = 0.0, 0
+            since_clock, since_rows, since_w = 0.0, 0, 0.0
         if fit is not None:
             coef[i] = fit
 
@@ -998,7 +1008,10 @@ def ftrl_ref(
     is ``beta / alpha + d``, their own discounted sum. Decaying ``n`` inside
     the square root instead shrank every coefficient toward zero on every
     row, by a factor between ``lam`` and ``sqrt(lam)`` (review 2026-09-12,
-    C24).
+    C24). ``pred_j`` waits for the target's own weight, the rows that
+    carried it (a label ``strict_binary`` refuses does not), decayed, to
+    reach ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d));
+    ``n_eff`` is every row's.
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -1019,6 +1032,7 @@ def ftrl_ref(
             "z": np.zeros((m, kt)),
             "d": np.zeros((m, kt)),
             "w_sum": 0.0,
+            "w_target": np.zeros(m),
             "pending": 0.0,
         }
 
@@ -1052,9 +1066,9 @@ def ftrl_ref(
             st["d"] *= lam
 
         n_eff[i] = st["w_sum"]
-        ready = st["w_sum"] >= min_periods
 
         for j in range(m):
+            ready = st["w_target"][j] >= min_periods
             b = weights(st, j)
             coef[i, j] = b
             p = z @ b if loss == "squared" else 1.0 / (1.0 + np.exp(-(z @ b)))
@@ -1080,6 +1094,11 @@ def ftrl_ref(
                 st["n"][j, ii] = n_new
                 st["d"][j, ii] += s
         st["w_sum"] = lam * st["w_sum"] + w[i]
+        for j in range(m):
+            y = Y[i, j]
+            refused = loss == "logistic" and strict_binary and y not in (0.0, 1.0)
+            carried = not np.isnan(y) and not refused
+            st["w_target"][j] = lam * st["w_target"][j] + (w[i] if carried else 0.0)
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
 

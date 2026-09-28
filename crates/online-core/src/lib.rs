@@ -22,6 +22,7 @@
 //!     long_halflife: None,
 //!     min_periods: 5.0,
 //!     solve_every: 0.0,
+//!     solve_share: None,
 //!     max_rows_between_solves: 1,
 //!     gram_block_rows: 0,
 //!     target_gaps: online_core::TargetGaps::OwnRows,
@@ -307,7 +308,23 @@ pub use window::{
 ///   written before names one that no longer exists, so the bank loads none
 ///   older than 19 (`online_polars`' `MIN_BANK_SCHEMA_VERSION`); a model's
 ///   own state from 14 on still loads.
-pub const SCHEMA_VERSION: u32 = 19;
+/// - 20: `ewridge`, `lasso`, `huber` and `quantile` keep the weight learned
+///   since their last solve, and their configuration the share of the fit's
+///   weight that makes a solve due, the default cadence under a finite
+///   halflife (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
+///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
+///   `min_periods` reads (task 115 (d)). All are `#[serde(default)]`, so a 19
+///   file loads: the counter starts at 0, the bank sets the share from the
+///   spec, and each target's weight starts at the shared one its gate read.
+///   A 19 build would do none of that, so a 20 file is refused there by its
+///   version.
+pub const SCHEMA_VERSION: u32 = 20;
+
+/// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
+/// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
+/// reaches `ln 2 / 50` of the weight the fit holds, which is the share that
+/// `halflife / 50` of clock brings in steady state.
+pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 
 /// Oldest state layout this build still loads.
 ///

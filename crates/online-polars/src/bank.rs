@@ -24,7 +24,7 @@ use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame_
 use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
-use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels, usable};
+use crate::stream::{AnyModel, ChunkOut, ClockRefusal, Stream, StreamState, combo_labels, usable};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -863,8 +863,8 @@ fn process(
                                 break 'segments;
                             }
                         }
-                        Err((raw, i, why)) => {
-                            outs.push((si, Err(backwards_clock(spec, raw, row_base + i, why))));
+                        Err(refusal) => {
+                            outs.push((si, Err(backwards_clock(spec, refusal, row_base))));
                             break 'segments;
                         }
                     }
@@ -1014,27 +1014,36 @@ fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> Polar
 /// `"reset_state"` a step back no larger than `min_backwards_jump` is a late
 /// row, and the way out is a sort or a smaller minimum. Either way the bank
 /// was not updated.
-fn backwards_clock(spec: &Spec, raw: f64, row: usize, why: Option<Disorder>) -> PolarsError {
+fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
     let column = spec.clock.as_deref().unwrap_or("<row count>");
-    match why {
+    let row = row_base + refusal.row;
+    // The step exactly: in integer nanoseconds on a temporal clock, where the
+    // double of seconds resolves more than a nanosecond above about 104 days.
+    let step = match refusal.back_ns.and_then(|ns| i64::try_from(ns).ok()) {
+        Some(ns) => crate::span::format_duration(ns),
+        None => clock_amount(spec, -refusal.raw),
+    };
+    match refusal.disorder {
         None => polars_err!(ComputeError:
             "spec {:?}: clock column {:?} goes backwards by {} at row {} (on_clock_reset = \
              \"error\", the default); the bank was not updated. Sort each group by the \
              clock; to resume a saved state on input that overlaps it, feed \
              ModelBank.skip_learned(frame); or, if a step back starts the stream over, set \
              on_clock_reset = \"reset_state\" with a min_backwards_jump.",
-            spec.name, column, clock_amount(spec, -raw), row
+            spec.name, column, step, row
         ),
         Some(Disorder {
-            back,
-            min_backwards_jump,
+            min_backwards_jump, ..
         }) => polars_err!(ComputeError:
             "spec {:?}: clock column {:?} goes backwards by {} at row {}, no more than \
              min_backwards_jump = {}: a late row, not a new start; the bank was not \
              updated. Sort each group by the clock, or lower min_backwards_jump if a step \
              back this small starts the stream over (0 starts over at every one).",
-            spec.name, column, clock_amount(spec, back), row,
-            clock_amount(spec, min_backwards_jump)
+            spec.name, column, step, row,
+            // As the spec wrote it: a duration's text is exact.
+            spec.min_backwards_jump
+                .as_ref()
+                .map_or_else(|| clock_amount(spec, min_backwards_jump), ToString::to_string)
         ),
     }
 }
@@ -2962,9 +2971,7 @@ impl Bank {
                     idx,
                     *base,
                 )
-                .map_err(|(raw, i, why)| {
-                    backwards_clock(&specs[*si], raw, chunk.row_base() + i, why)
-                })
+                .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))
         });
         if let Err(e) = checked {
             drop(work);

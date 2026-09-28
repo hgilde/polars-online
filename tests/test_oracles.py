@@ -463,9 +463,10 @@ class TestLassoPredPath:
             max_rows_between_solves=5,
         )
 
-    def test_the_default_cadence_is_a_fiftieth_of_the_halflife(self):
-        """No ``solve_every``: a solve every ``halflife / 50`` = 2 clock
-        units, which the dyadic steps meet exactly."""
+    def test_the_default_cadence_is_by_weight(self):
+        """No ``solve_every``: a solve once the weight learned since the last
+        reaches ``ln 2 / 50`` of the weight the fit holds (task 115 (b)),
+        about every ``halflife / 50`` = 2 clock units in steady state."""
         self._compare(self._stream(33), l1_ratio=1.0, halflife=100.0, min_periods=20.0)
 
     def test_the_first_solve_is_forced_when_min_periods_is_reached(self):

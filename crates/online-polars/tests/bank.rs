@@ -468,8 +468,10 @@ fn coef_is_the_output_s_last_coef_per_group() {
 
     // `coef` does not wait for `min_periods` (5 here): the spec solves every
     // row, so after one row per group there is a fit, and `n_eff` is what
-    // says how little is behind it. Under the default schedule the first
-    // row of a stream has not solved, and the row is `None`, as `coef` is.
+    // says how little is behind it. Under a clock schedule the first row of
+    // a stream has not solved, and the row is `None`, as `coef` is; the
+    // default schedule solves it, all of its weight being new (docs/PLAN.md
+    // task 115 (b)).
     let mut fresh = Bank::new(vec![spec_json("m", true)]).unwrap();
     fresh.fit_predict(&df.slice(0, 2)).unwrap();
     assert!(
@@ -482,14 +484,13 @@ fn coef_is_the_output_s_last_coef_per_group() {
     let lazy: Spec = serde_json::from_str(
         &serde_json::to_string(&spec_json("m", true))
             .unwrap()
-            .replace(r#","max_rows_between_solves":1"#, ""),
+            .replace(r#","max_rows_between_solves":1"#, "")
+            .replace(r#""solve_every":null"#, r#""solve_every":10.0"#),
     )
     .unwrap();
-    assert!(
-        !serde_json::to_string(&lazy)
-            .unwrap()
-            .contains("max_rows_between_solves\":1")
-    );
+    let written = serde_json::to_string(&lazy).unwrap();
+    assert!(!written.contains("max_rows_between_solves\":1"));
+    assert!(written.contains("\"solve_every\":10.0"), "{written}");
     let mut lazy = Bank::new(vec![lazy]).unwrap();
     lazy.fit_predict(&df.slice(0, 2)).unwrap();
     assert!(
@@ -1204,5 +1205,35 @@ fn a_bank_saved_under_one_shard_count_loads_under_another() {
     assert!(
         Bank::load_bytes(&bytes, Some(&other)).is_err(),
         "a real difference still refuses"
+    );
+}
+
+/// Docs/PLAN.md task 115 (b): the weight-share cadence is the spec's, set
+/// again on restore, as the window's budget is, so a state saved before the
+/// rule existed -- its models' config without it, as an explicit
+/// `solve_every` also leaves it -- takes it when it loads under a spec that
+/// leaves `solve_every` out.
+#[test]
+fn the_solve_cadence_is_the_specs_on_restore() {
+    let spec = |model: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["x0"],
+                "halflife": 1e6}}"#
+        ))
+        .unwrap()
+    };
+    let explicit = spec(r#"{"type": "ew_ridge", "solve_every": 1e9}"#);
+    let default = spec(r#"{"type": "ew_ridge"}"#);
+    let saved = Stream::new(&explicit).unwrap().save();
+    assert_eq!(
+        Stream::restore(&explicit, &saved).unwrap().models[0]
+            .1
+            .solve_share(),
+        None
+    );
+    let resumed = Stream::restore(&default, &saved).unwrap();
+    assert_eq!(
+        resumed.models[0].1.solve_share(),
+        Some(online_polars::online_core::DEFAULT_SOLVE_SHARE)
     );
 }

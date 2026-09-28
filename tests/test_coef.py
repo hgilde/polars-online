@@ -89,8 +89,10 @@ def test_coef_does_not_wait_for_min_periods_but_says_so():
     assert out["pred_y"].is_null().all() and out["coef"][-1] is not None
     c = bank.coef("m")
     assert c["coef"].null_count() == 0 and c["n_eff"][0] < 5
-    # Under the default schedule the first row of a stream has not solved.
-    lazy = po.spec.ewridge("m", targets=["y"], features=["x1", "x2"], halflife=30)
+    # Before its first solve there is no fit, and the row is null. Under a
+    # clock schedule the first row of a stream has not solved; the default
+    # schedule solves it, since all of the row's weight is new (task 115 (b)).
+    lazy = po.spec.ewridge("m", targets=["y"], features=["x1", "x2"], halflife=30, solve_every=10.0)
     bank = po.ModelBank([lazy])
     bank.fit_predict(df.head(1))
     c = bank.coef("m")

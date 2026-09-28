@@ -27,8 +27,8 @@ def test_huber_beats_least_squares_under_outliers():
         features=["x0"],
         halflife=1e9,
         min_periods=10.0,
-        # default solve_every is halflife/50; with halflife 1e9 that is one
-        # solve ever, so ask for a real cadence.
+        # The oracle below refits every row; the default cadence solves by
+        # weight, so ask for every row.
         max_rows_between_solves=1,
     )
     hub = po.ModelBank([po.spec.huber("m", huber_delta=1.5, **common)]).fit_predict(df)

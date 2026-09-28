@@ -5,9 +5,9 @@ A bank keeps sufficient statistics, so with decay off (``halflife=inf`` or
 every row it has seen, in whatever order the rows came -- one stream per
 group, the groups interleaved however the file has them. A finite halflife
 without a clock discounts by position in the stream instead; and a huge
-*finite* halflife is not ``inf``, because the solve cadence it inherits
-(``halflife/50``) never comes due. The README's "Convergence without a decay" section
-states all three; this file keeps it honest.
+*finite* halflife is not ``inf``, because it solves by weight rather than
+every row, so its fit can be a few rows out of date. The README states all
+three; this file keeps it honest.
 """
 
 from __future__ import annotations
@@ -105,13 +105,15 @@ def test_a_row_halflife_without_a_clock_discounts_by_position():
 
 
 def test_a_huge_finite_halflife_is_not_inf():
-    """The trap the README warns about: the default solve cadence is
-    ``halflife/50`` clock units, so ``halflife=1e12`` on a 2000-row stream
-    solves once (at ``min_periods``) and never again -- the prediction is the
-    stale fit -- while ``halflife=inf`` re-solves every row and ``solve_every``
-    makes the finite case do the same. If this test starts failing because
-    the schedule changed, update the README's "Convergence without a decay" section and the
-    solve-schedule paragraph in docs/PLAN.md (2026-09-03) as well."""
+    """``halflife=inf`` solves every row. A finite halflife, however long,
+    solves by weight: once the rows since the last solve reach ``ln 2 / 50``
+    of the weight the fit holds (task 115 (b)), about 1.4% of the rows on a
+    stream this much shorter than the halflife. So ``halflife=1e12`` on a
+    2000-row stream keeps solving and ends within about 28 rows of the fit
+    of every row, not exactly on it; ``solve_every`` or
+    ``max_rows_between_solves`` make it exact. Under the old default,
+    ``halflife/50`` of clock, it solved once, at ``min_periods``, and never
+    again: that warm-up fit is 0.33 from the fit of every row."""
     df = _frame(n=2000).drop("g")
     ols = _ols(df)
 
@@ -126,8 +128,9 @@ def test_a_huge_finite_halflife_is_not_inf():
         bank.fit_predict(df)
         return bank.coef("m").sort("position")["coef"].to_numpy()
 
-    stale = coef(halflife=1e12)
-    assert np.abs(stale - ols).max() > 1e-3, "the default cadence now re-solves; update the docs"
+    gap = np.abs(coef(halflife=1e12) - ols).max()
+    assert 1e-4 < gap < 0.02, gap  # 0.0097: a few rows out of date
+    assert np.abs(_ols(df.head(30)) - ols).max() > 0.3  # what solving once would leave
     np.testing.assert_allclose(coef(halflife=1e12, solve_every=1.0), ols, atol=1e-6)
     np.testing.assert_allclose(coef(halflife=1e12, max_rows_between_solves=1), ols, atol=1e-6)
     np.testing.assert_allclose(coef(halflife=math.inf), ols, atol=1e-10)

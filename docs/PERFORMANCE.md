@@ -58,7 +58,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | run | the rows a stream feeds through one set of output buffers, `ChunkOut::run_rows` of them (§13) |
 | stride, gather | a stride reads one group's values from every n-th row of an interleaved column. A gather copies them into one contiguous run first (§12, P9) |
 | the Gram | the `k × k` co-moment matrix a regression keeps (§14, §18) |
-| solve cadence | how often a regression solves: every `solve_every` clock units, `halflife / 50` by default (§12) |
+| solve cadence | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, `halflife / 50` of clock in steady state (§12) |
 | O(state), O(data) | memory that grows with what the models keep, or with the rows that have passed. O(data) means the whole input is resident at once (§11) |
 | peak footprint | the most physical memory a process held, as `/usr/bin/time -l` prints it. Not RSS, which also counts the pages of a memory-mapped file (§11) |
 | row group, prefetch | a block of a parquet file. Polars' reader decodes row groups ahead of whatever consumes them, and that read-ahead is the prefetch (§11) |
@@ -2348,8 +2348,8 @@ anyone at `k ≥ 1,000` is already rarely.
 **It is not free to switch on where it does not pay.** The parameter is
 refused with `window`, which snapshots the matrix every row, and with a
 solve every row: `solve_every <= 0` or `max_rows_between_solves <= 1`. The
-default `solve_every` is `halflife / 50`, which is `0` for `lam` and for an
-infinite halflife, so those need it set. In both cases a block could never
+default cadence is every row for `lam` and for an infinite halflife, so
+those need `solve_every` set. In both cases a block could never
 hold more than one row, and the product would be a slower rank-1 update.
 It is not refused narrow, because it still gains there, less. With a
 256-row block and no solve:

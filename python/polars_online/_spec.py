@@ -650,11 +650,14 @@ def ewridge(
         = 1`` lands exactly on the twin's fit.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule: every ``solve_every`` clock units, and at least every
-        ``max_rows_between_solves`` rows. ``solve_every`` defaults to ``halflife /
-        50``, which is every row for ``halflife = inf`` and for ``lam``; with a
-        large finite halflife set it, or the default never comes due.
-        ``max_rows_between_solves`` is off by default. The coefficients are the
-        sums' as of the last solve.
+        ``max_rows_between_solves`` rows. Left out, the schedule is by weight: a
+        solve once the weight learned since the last reaches ``ln 2 / 50`` of the
+        weight the fit holds, which in steady state is every ``halflife / 50`` of
+        clock at any row spacing, and more often during warm-up and after a gap,
+        where the fit moves most. A halflife far longer than the stream still
+        solves, at rows further apart as the weight grows. ``halflife = inf`` and
+        ``lam`` solve every row. ``max_rows_between_solves`` is off by default.
+        The coefficients are the sums' as of the last solve.
     ``gram_block_rows``
         Hold that many rows back and bring the ``k x k`` matrix up to date once
         per block, by one matrix product instead of one rank-one update per row:
@@ -1051,6 +1054,11 @@ def rls(
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
+
+    ``min_periods`` counts the rows the model learned from, those with every
+    target present, at their raw weights, decayed, where ``n_eff`` counts every
+    row, so rows with a null target do not warm up a fit they never reached
+    (docs/PLAN.md task 115 (d)).
 
     .. rubric:: Output
 
@@ -1673,6 +1681,11 @@ def ftrl(
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
 
+    ``min_periods`` counts the rows the target was present on, at their raw
+    weights, decayed, where ``n_eff`` counts every row, so rows with a null
+    target do not warm up coefficients they never moved (docs/PLAN.md task
+    115 (d)). A label ``strict_binary`` refuses is not one of them.
+
     .. rubric:: Output
 
     One struct column named after the spec (`docs/OUTPUTS.md#ftrl
@@ -2051,6 +2064,11 @@ def sgd(
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
 
+    ``min_periods`` counts the rows the target was present on, at their raw
+    weights, decayed, where ``n_eff`` counts every row, so rows with a null
+    target do not warm up coefficients they never moved (docs/PLAN.md task
+    115 (d)).
+
     .. rubric:: Output
 
     One struct column named after the spec (`docs/OUTPUTS.md#sgd
@@ -2169,6 +2187,11 @@ def pa(
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
+
+    ``min_periods`` counts the rows the target was present on, at their raw
+    weights, decayed, where ``n_eff`` counts every row, so rows with a null
+    target do not warm up coefficients they never moved (docs/PLAN.md task
+    115 (d)).
 
     A row weight below 1 scales ``tau``, so a half-weight row moves the fit half
     as far; a weight above 1 counts as 1. The update is a projection onto the
@@ -3227,11 +3250,16 @@ def deco(
         "ew":      W' = lam * W + w,  a = lam * W / W',  b = w / W'
                    rho' = a * rho + b * u                     (rho = u at W = 0)
         "linear":  rho' = (1 - alpha - beta) * rho_bar' + alpha * u + beta * rho
+                   rho' = rho                                  (at w = 0)
 
     where ``rho_bar`` is the ``"ew"`` recursion run alongside as the target of the
-    linear one. Two departures from the paper, on purpose. Its eq. 21 has a free
-    intercept and applies correlation targeting to the DCC ``Q`` recursion, not to
-    the linear one; writing the intercept as ``(1 - alpha - beta) * rho_bar`` is
+    linear one. A row of weight 0 moves neither: it advances the clock and learns
+    nothing, as everywhere. Otherwise the linear recursion has no row weights, as
+    the paper's has none: a positive weight reaches ``rho`` only through
+    ``rho_bar``, so rows of weight 0.5 and 2 move it by the same ``alpha * u``.
+    Two departures from the paper, on purpose. Its eq. 21 has a free intercept and
+    applies correlation targeting to the DCC ``Q`` recursion, not to the linear
+    one; writing the intercept as ``(1 - alpha - beta) * rho_bar`` is
     this library's reparameterisation, chosen because a streaming model has no
     sample to fit a free intercept on. And the paper permits ``alpha + beta``
     slightly above 1 under numerical bounds, where this refuses it. The paper also

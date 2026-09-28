@@ -1,7 +1,7 @@
 """``ewridge`` on the paths its numpy oracle (``tests/reference.py``
 ``ewridge_ref``, which solves after every row) does not reach, held row by
 row to ``tests/reference_paths.py::ewridge_paths_ref``: the solve schedule
-(``solve_every``, its ``halflife / 50`` default, ``max_rows_between_solves``,
+(``solve_every``, its default by weight, ``max_rows_between_solves``,
 ``gram_block_rows``), the grids (a ridge list, ``feature_sets``, a halflife
 list), both ``target_gaps`` with a penalty and ``standardize``,
 ``add_intercept=False``, a ``window`` over weights and skipped rows, and
@@ -174,9 +174,11 @@ class TestTheSchedule:
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     def test_the_default_cadence_over_a_grid_of_ridges_and_sets(self):
-        """No ``solve_every``: a solve every ``halflife / 50`` = 0.8 clock
-        units, over two ridges times two feature sets, each target gated on
-        its own threshold."""
+        """No ``solve_every``: a solve once the weight learned since the last
+        reaches ``ln 2 / 50`` of the weight the fit holds (task 115 (b); in
+        steady state every ``halflife / 50`` = 0.8 clock units), over two
+        ridges times two feature sets, each target gated on its own
+        threshold."""
         _check(
             _stream(41),
             40.0,
@@ -186,8 +188,9 @@ class TestTheSchedule:
         )
 
     def test_a_long_halflife_solves_every_four_clock_units(self):
-        """``halflife = 200``: the default cadence is 4, so a row is scored
-        with coefficients up to four clock units stale."""
+        """``halflife = 200``: the default cadence is by weight, about every
+        four clock units in steady state, so a row is scored with
+        coefficients that stale."""
         _check(_stream(46), 200.0, min_periods=12.0)
 
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.

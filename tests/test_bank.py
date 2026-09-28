@@ -16,8 +16,6 @@ from test_model_registry import REGRESSIONS
 #: the shared weight. Held to the code by the test below, which runs every
 #: regression model: one listed here that waits on the shared weight, or one
 #: missing that waits on its own, fails there (docs/PLAN.md task 111).
-PER_TARGET_WEIGHT = {"ewridge", "lasso", "kalman", "huber", "quantile", "holt"}
-
 HL = 300.0
 MAXD = 50.0
 GAP = 25.0
@@ -334,13 +332,14 @@ class TestPerTargetMinPeriods:
     @pytest.mark.parametrize("kind", sorted(REGRESSIONS))
     def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
         """Each target's threshold is checked against that target's own weight
-        -- the rows it was present on -- where the model keeps one, and it was
-        checked against the shared ``n_eff``, the feature side's, the same for
-        every target (review 2026-09-12, S2). ``y1`` is present on every tenth
-        row, so under ``min_periods=[5, 5]`` its first prediction is the row
-        after its fifth observation, row 41, not row 5, for the models of
-        ``PER_TARGET_WEIGHT``; for the rest it is row 5, with ``y0``. ``y0``,
-        present on every row, is unchanged, and the emitted ``n_eff`` stays the
+        -- the rows it was present on -- and it was checked against the shared
+        ``n_eff``, the feature side's, the same for every target (review
+        2026-09-12, S2; in ``pa``, ``sgd``, ``ftrl`` and ``rls`` until task 115
+        (d)). ``y1`` is present on every tenth row, so under ``min_periods=[5,
+        5]`` its first prediction is the row after its fifth observation, row
+        41, not row 5. ``y0``, present on every row, first predicts on row 5,
+        except in ``rls``, which learns a row only when every target is present
+        and so waits for the same five rows. The emitted ``n_eff`` stays the
         shared weight."""
         n = 120
         x = np.random.default_rng(2).standard_normal(n)
@@ -372,8 +371,8 @@ class TestPerTargetMinPeriods:
             else next(f for f in names if f.startswith(f"pred_{t}"))
             for t in ("y0", "y1")
         }
-        assert self._first(out, pred["y0"]) == 5
-        assert self._first(out, pred["y1"]) == (41 if kind in PER_TARGET_WEIGHT else 5)
+        assert self._first(out, pred["y0"]) == (41 if kind == "rls" else 5)
+        assert self._first(out, pred["y1"]) == 41
         assert out["m"].struct.field("n_eff").to_list()[41] == pytest.approx(41.0)
 
     def test_a_late_target_has_no_residual_or_sigma_either(self):

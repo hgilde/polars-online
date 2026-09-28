@@ -113,27 +113,37 @@ def main() -> None:
     print(f"- Rows: {df.height}, features: {feats}, targets: {targets}")
     print(f"- Polars {pl.__version__}, polars-online {po.__version__}")
 
-    # ---- 1. solve schedule: is halflife/50 the right default? ----
+    # ---- 1. solve schedule: is halflife/50 the right cadence? ----
+    # The default is by weight (docs/PLAN.md task 115 (b)): a solve once the
+    # weight learned since the last reaches ln 2 / 50 of the weight the fit
+    # holds, which on evenly spaced rows is every halflife/50 of clock. The
+    # divisors measure the clock cadences; the default is measured beside.
     hl = 500.0
     divisors = [1, 5, 10, 50, 200, 1000]
-    specs = []
+    specs = [po.spec.ewridge("default", ridge=1e-4, **common)]
     for d in divisors:
         specs.append(po.spec.ewridge(f"s{d}", ridge=1e-4, solve_every=hl / d, **common))
     t0 = time.perf_counter()
     res = run(df, specs, [target])
     elapsed = time.perf_counter() - t0
-    res = res.with_columns(divisor=pl.col("spec").str.strip_prefix("s").cast(pl.Int64)).sort(
-        "divisor"
+    default = res.filter(pl.col("spec") == "default").row(0, named=True)
+    res = (
+        res.filter(pl.col("spec") != "default")
+        .with_columns(divisor=pl.col("spec").str.strip_prefix("s").cast(pl.Int64))
+        .sort("divisor")
     )
     best = res.sort("mse").row(0, named=True)
     section(
-        "1. Solve schedule (`solve_every` default = halflife/50) [validate]",
+        "1. Solve schedule (`solve_every` default = by weight, halflife/50 in steady state) "
+        "[validate]",
         f"Solving every `halflife/d` clock units, halflife = {hl}. "
         f"All schedules share one accumulator, so this is a free experiment "
-        f"({elapsed:.2f}s for {len(divisors)} schedules).\n\n"
+        f"({elapsed:.2f}s for {len(divisors) + 1} schedules).\n\n"
         + table(res, ["divisor", "n", "r2", "ic", "hit_rate", "mse"])
         + f"\n\n**Result:** lowest MSE at divisor {best['divisor']} "
-        f"(mse {best['mse']:.6g}).",
+        f"(mse {best['mse']:.6g}). The default, a solve once the weight learned "
+        f"since the last reaches `ln 2 / 50` of the weight the fit holds: "
+        f"mse {default['mse']:.6g}, r2 {default['r2']:.6g}, ic {default['ic']:.6g}.",
     )
 
     # ---- 2. standardize default ----

@@ -35,7 +35,7 @@ MODELS = [
 def _spec(model="ewridge", **kw):
     d = dict(targets=["y0"], features=["x0"], halflife=1e9, min_periods=1.0)
     if model not in _NO_SOLVE_SCHEDULE:
-        # A huge halflife means solve_every (halflife/50) would solve once ever.
+        # Solve every row, so each case reads a fit of every row before it.
         d["max_rows_between_solves"] = 1
     d.update(kw)
     return getattr(po.spec, model)("m", **d)

@@ -10,9 +10,9 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 - Rows: 14336, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
 - Polars 1.44.2, polars-online 0.12.0
 
-## 1. Solve schedule (`solve_every` default = halflife/50) [validate]
+## 1. Solve schedule (`solve_every` default = by weight, halflife/50 in steady state) [validate]
 
-Solving every `halflife/d` clock units, halflife = 500.0. All schedules share one accumulator, so this is a free experiment (0.04s for 6 schedules).
+Solving every `halflife/d` clock units, halflife = 500.0. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
@@ -23,14 +23,14 @@ Solving every `halflife/d` clock units, halflife = 500.0. All schedules share on
 | 200 | 14284 | -0.0515809 | -0.0823539 | 0.498131 | 1.21087e-06 |
 | 1000 | 14284 | -0.0642677 | -0.122221 | 0.497002 | 1.22548e-06 |
 
-**Result:** lowest MSE at divisor 50 (mse 1.16172e-06).
+**Result:** lowest MSE at divisor 50 (mse 1.16172e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.17042e-06, r2 -0.0164563, ic -0.00966967.
 
 ## 2. `standardize` default (false for ridge, true for lasso)
 
 | spec | n | r2 | ic | mse |
 |---|---|---|---|---|
-| plain | 14284 | -0.00286446 | 0.00104445 | 1.15477e-06 |
-| std | 14284 | -0.0088945 | 0.0230593 | 1.16172e-06 |
+| plain | 14284 | -0.00378539 | -0.00850127 | 1.15583e-06 |
+| std | 14284 | -0.0164563 | -0.00966967 | 1.17042e-06 |
 
 ## 3. Elastic net `l1_ratio` [validate]
 
@@ -38,15 +38,15 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 | spec | slot | n | r2 | ic | mse |
 |---|---|---|---|---|---|
-| l1_100 | pred_y0__l0.0001 | 14284 | -0.000652936 | 0.0171685 | 1.15223e-06 |
-| l1_100 | pred_y0__l0.001 | 14284 | -0.00102572 | -0.0155329 | 1.15265e-06 |
-| l1_100 | pred_y0__l0.01 | 14284 | -0.00102572 | -0.0155329 | 1.15265e-06 |
-| l1_50 | pred_y0__l0.0001 | 14284 | -0.00077922 | 0.0315941 | 1.15237e-06 |
-| l1_50 | pred_y0__l0.001 | 14284 | -0.00102572 | -0.0155329 | 1.15265e-06 |
-| l1_50 | pred_y0__l0.01 | 14284 | -0.00102572 | -0.0155329 | 1.15265e-06 |
-| l1_10 | pred_y0__l0.0001 | 14284 | -0.00578538 | 0.0263286 | 1.15814e-06 |
-| l1_10 | pred_y0__l0.001 | 14284 | -0.00065152 | 0.017163 | 1.15222e-06 |
-| l1_10 | pred_y0__l0.01 | 14284 | -0.00102572 | -0.0155329 | 1.15265e-06 |
+| l1_100 | pred_y0__l0.0001 | 14284 | -0.00422842 | -0.0200441 | 1.15634e-06 |
+| l1_100 | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
+| l1_100 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
+| l1_50 | pred_y0__l0.0001 | 14284 | -0.00699471 | -0.0111053 | 1.15953e-06 |
+| l1_50 | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
+| l1_50 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
+| l1_10 | pred_y0__l0.0001 | 14284 | -0.0123753 | -0.00591977 | 1.16572e-06 |
+| l1_10 | pred_y0__l0.001 | 14284 | -0.0042236 | -0.0200419 | 1.15634e-06 |
+| l1_10 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
 
 ## 4. Kalman `share_p` approximation [validate]
 
@@ -63,12 +63,12 @@ Two targets (['y0', 'y1']) with very different noise levels, so the shared-P app
 
 | spec | slot | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|---|
-| ewridge | pred_y0 | 14284 | -0.0088945 | 0.0230593 | 0.497778 | 1.16172e-06 |
+| ewridge | pred_y0 | 14284 | -0.0164563 | -0.00966967 | 0.498131 | 1.17042e-06 |
 | rls | pred_y0 | 14284 | -0.064088 | -0.122254 | 0.497002 | 1.22527e-06 |
 | kalman | pred_y0 | 14284 | -0.110682 | -0.147729 | 0.501869 | 1.27892e-06 |
-| lasso | pred_y0__l0 | 14284 | -0.00889757 | 0.023058 | 0.497849 | 1.16172e-06 |
-| lasso | pred_y0__l0.0001 | 14284 | -0.000652936 | 0.0171685 | 0.502716 | 1.15223e-06 |
-| lasso | pred_y0__l0.001 | 14284 | -0.00102572 | -0.0155329 | 0.498907 | 1.15265e-06 |
+| lasso | pred_y0__l0 | 14284 | -0.0164607 | -0.00967148 | 0.498131 | 1.17043e-06 |
+| lasso | pred_y0__l0.0001 | 14284 | -0.00422842 | -0.0200441 | 0.503068 | 1.15634e-06 |
+| lasso | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 0.498907 | 1.15258e-06 |
 
 ---
 

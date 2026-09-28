@@ -99,6 +99,15 @@ pub struct RobustCfg {
     pub min_periods: f64,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
+    /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
+    /// learned since the last solve reaches this share of the weight the fit
+    /// holds, in place of `solve_every`'s clock. In steady state that is the
+    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// keeps the fit that close to its data, where the clock solved once and
+    /// never again. `None` keeps the clock.
+    #[serde(default)]
+    pub solve_share: Option<f64>,
     /// Half-width of the band a quantile fit takes its Newton step in, in
     /// units of the EW residual std: rows inside carry the curvature, rows
     /// outside only the score (the module docs). It was the floor under `|r|`
@@ -132,6 +141,12 @@ impl RobustCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .solve_share
+            .is_some_and(|f| !(f.is_finite() && f > 0.0))
+        {
+            return Err("solve_share must be finite and > 0".into());
+        }
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
@@ -198,6 +213,9 @@ pub struct Robust {
     beta: Option<Vec<Vec<f64>>>,
     clock_since_solve: f64,
     rows_since_solve: u32,
+    /// Weight learned since the last solve, for `solve_share`.
+    #[serde(default)]
+    weight_since_solve: f64,
     pub solve_failures: u64,
     /// What each `ybar` leaves out: the mean is `ybar[j] + ybar_lo[j]`
     /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
@@ -226,6 +244,7 @@ impl Robust {
             beta: None,
             clock_since_solve: 0.0,
             rows_since_solve: 0,
+            weight_since_solve: 0.0,
             solve_failures: 0,
             ybar_lo: vec![0.0; m],
             zbuf: vec![0.0; k],
@@ -345,6 +364,7 @@ impl Robust {
         self.beta = Some(beta);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
+        self.weight_since_solve = 0.0;
     }
 
     /// The solve with an intercept, plain or standardized, on the centred
@@ -449,6 +469,14 @@ impl Robust {
 }
 
 impl OnlineModel for Robust {
+    fn set_solve_share(&mut self, share: Option<f64>) {
+        self.cfg.solve_share = share;
+    }
+
+    fn solve_share(&self) -> Option<f64> {
+        self.cfg.solve_share
+    }
+
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
         out.extend_from_slice(&self.wobs);
@@ -614,8 +642,14 @@ impl OnlineModel for Robust {
 
         self.clock_since_solve += d_clock;
         self.rows_since_solve += 1;
-        let due = self.cfg.solve_every <= 0.0
-            || self.clock_since_solve >= self.cfg.solve_every
+        if weight.is_finite() && weight > 0.0 {
+            self.weight_since_solve += weight;
+        }
+        let by_cadence = match self.cfg.solve_share {
+            Some(share) => self.weight_since_solve >= share * self.w_raw,
+            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+        };
+        let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
             || (self.beta.is_none() && self.w_raw >= self.cfg.min_periods);
         if due {
@@ -781,6 +815,7 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             quantile_eps: 1e-3,
         }
     }
@@ -1077,6 +1112,7 @@ mod tests {
             min_periods: 2.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            solve_share: None,
             gram_block_rows: 0,
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,

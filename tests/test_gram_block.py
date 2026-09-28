@@ -442,8 +442,8 @@ def test_a_session_change_blends_the_held_block_first():
         ({"window": 50.0}, "gram_block_rows and window do not combine"),
         ({"solve_every": 0.0}, "needs a solve cadence"),
         ({"max_rows_between_solves": 1}, "max_rows_between_solves = 1"),
-        # The default cadence is halflife / 50, which is every row for an
-        # infinite halflife and for `lam`: the option then needs its own.
+        # The default cadence is every row for an infinite halflife and for
+        # `lam`: the option then needs its own.
         ({"halflife": float("inf"), "solve_every": None}, "solve_every = 0"),
         ({"halflife": None, "lam": 0.99, "solve_every": None}, "0 for `lam`"),
         ({"gram_block_rows": 1 << 30}, "over the 256 MiB budget"),

@@ -135,6 +135,29 @@ class TestWarmup:
         assert neff[first] >= 5.0, f"{model}: predicted at n_eff {neff[first]} < 5"
         assert all(p is None for p in preds[:first])
 
+    def test_a_target_counts_toward_min_periods_only_on_rows_that_carry_it(self, model, extra):
+        """Hard rule 8 (docs/PLAN.md task 115 (d)): `n_eff` is the weight of
+        every row, and a target's `min_periods` is checked against the
+        weight of the rows that carried it. Ten rows with a null target,
+        then the target: under a halflife of 200 its own weight is 1.997
+        before row 12 and 2.990 before row 13, so at `min_periods = 2.5`
+        every model first predicts on row 13. `pa`, `sgd` and `ftrl` did
+        from row 3, on coefficients no target had moved, and `rls` from
+        row 11, after one. `ewridge`'s noise gate is off here: three rows
+        for three coefficients leave no residual degrees of freedom, so it
+        withholds row 13 on its own account (`above_max_error_inflation`)."""
+        df = frame(binary=model == "ftrl")
+        y = df["y0"].to_list()
+        y[:10] = [None] * 10
+        df = df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
+        gate = {"max_error_inflation": float("inf")} if model == "ewridge" else {}
+        out = run(model, extra, df, min_periods=2.5, **gate)
+        preds = slot(out, "pred_", model)
+        neff = slot(out, "n_eff", model)
+        first = next((i for i, p in enumerate(preds) if p is not None), None)
+        assert first == 13, f"{model}: first prediction on row {first}"
+        assert neff[first] > 12.0, "n_eff counts every row, the null-target ones too"
+
     def test_coef_is_null_or_complete_never_empty(self, model, extra):
         """A model that has not solved yet has nothing to report, and every
         other output spells that `null`. `coef` used to spell it as an empty
