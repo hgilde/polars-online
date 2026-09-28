@@ -299,7 +299,15 @@ pub use window::{
 ///   record holds does, so a 17 build would misread it and is refused. A
 ///   17 file loads: its records carry no radius, and those rows are scored
 ///   against the radius at release, as 17 scored them.
-pub const SCHEMA_VERSION: u32 = 18;
+/// - 19: no model state changes; a bank file does. `on_clock_reset` keeps
+///   `"error"`, now its default, and `"reset_state"`; `"max"` and `"zero"`
+///   are gone, and `min_backwards_jump` is required with `"reset_state"`
+///   and refused with `"error"` (docs/PLAN.md task 120, decided
+///   2026-09-28). A bank file names every spec's policy, and every one
+///   written before names one that no longer exists, so the bank loads none
+///   older than 19 (`online_polars`' `MIN_BANK_SCHEMA_VERSION`); a model's
+///   own state from 14 on still loads.
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// Oldest state layout this build still loads.
 ///

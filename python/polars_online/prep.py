@@ -73,15 +73,20 @@ def embargo(
                              halflife=50.0, weight="_online_role_weight")]
         ).filter(pl.col("_online_role") == "predict").collect()
 
-    The frame must already be in ``clock`` order, as a stream must be. The result
-    is sorted by ``clock`` with learn rows before predict rows at the same clock
-    value: a label whose ``delay`` has just run out is known at that instant, so a
+    The frame must already be in ``clock`` order across all its rows, not only
+    within each group, which is all a stream needs: the two copies are merged by the
+    clock alone, so a frame sorted within its groups but not across them comes back
+    with a group's rows out of order, and a bank then refuses it under the default
+    ``on_clock_reset`` (task 120). Sort by the clock first (``lf.sort(clock,
+    maintain_order=True)``), or embargo each group and concatenate. The result is
+    sorted by ``clock`` with learn rows before predict rows at the same clock value:
+    a label whose ``delay`` has just run out is known at that instant, so a
     prediction made then may use it. A spec's ``label_delay`` releases in the same
     order, which is what lets the two be compared row for row. A spec's
     ``label_delay=`` does the same thing in the stream with no doubling and no
     filtering, which is cheaper and does not need the frame rewritten; reach for
-    this when a delay has to be visible in the data (an oracle, a demonstration,
-    or an engine that is not this one).
+    this when a delay has to be visible in the data (an oracle, a demonstration, or
+    an engine that is not this one).
 
     ``delay`` is measured the way a spec's clock parameters are: a number of the
     clock's own units for a numeric clock, and a duration for a ``Datetime``,

@@ -329,7 +329,10 @@ the bad one is:
 > refusal names the setting that caused it.**
 
 `min_backwards_jump` passes: derived from `max_dclock`, measured, named in
-the message. 0.8.1's `min_session_clock` failed the second clause.
+the message. (Superseded 2026-09-28, task 120: `max_dclock` is a cap and
+nothing else, so the minimum has no default; `"error"`, now the default
+policy, refuses every step back, and the minimum is required with
+`"reset_state"`, the one policy that reads it.) 0.8.1's `min_session_clock` failed the second clause.
 `require_full_rank` failed the first, there being no user-chosen quantity
 to derive it from, and predictions were correct anyway (§5.7). And
 `min_settled_frac` passes the first and third — its natural default
@@ -488,7 +491,9 @@ One row of `x3` varying again restored rank at both tolerances. A gap
 **capped** by `max_dclock` changes nothing (uniform decay, ratios
 unchanged). An **uncapped** gap of 100 halflives collapses rank on the
 second new row and rebuilds one direction per row (the model has genuinely
-forgotten; only reachable with `max_dclock = inf`).
+forgotten; reachable then only with `max_dclock = inf`, which task 120
+refused on 2026-09-28, and now only under a cap of more than 100
+halflives).
 
 ### 5.6 `full_rank_halflives` at startup
 

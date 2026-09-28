@@ -79,11 +79,13 @@ def _ridge(clock: str, **kw) -> dict:
 
 
 #: One spec's clock parameters as plain seconds, and the same as durations,
-#: in each of the three forms a duration can be written in.
+#: in each of the three forms a duration can be written in. A minimum for a
+#: step back is `"reset_state"`'s alone (task 120).
 NUMBERS = dict(
     halflife=600.0,
     max_dclock=1_800.0,
     label_delay=60.0,
+    on_clock_reset="reset_state",
     min_backwards_jump=30.0,
     session_gap=600.0,
     window=3_600.0,
@@ -94,6 +96,7 @@ DURATIONS = {
         halflife=timedelta(minutes=10),
         max_dclock=timedelta(minutes=30),
         label_delay=timedelta(minutes=1),
+        on_clock_reset="reset_state",
         min_backwards_jump=timedelta(seconds=30),
         session_gap=timedelta(minutes=10),
         window=timedelta(hours=1),
@@ -103,6 +106,7 @@ DURATIONS = {
         halflife=pl.duration(minutes=10),
         max_dclock=pl.duration(minutes=30),
         label_delay=pl.duration(minutes=1),
+        on_clock_reset="reset_state",
         min_backwards_jump=pl.duration(seconds=30),
         session_gap=pl.duration(minutes=10),
         window=pl.duration(hours=1),
@@ -112,6 +116,7 @@ DURATIONS = {
         halflife="10m",
         max_dclock="30m",
         label_delay="1m",
+        on_clock_reset="reset_state",
         min_backwards_jump="30s",
         session_gap="10m",
         window="1h",
@@ -208,7 +213,8 @@ class TestTheUnitNeverReachesTheFit:
             features=["x0"],
             halflife=timedelta(seconds=25),
             clock="t",
-            max_dclock=float("inf"),
+            # A cap no gap here reaches (they are under 3 s): pandas has none.
+            max_dclock="1d",
             stats=["mean"],
             min_periods=0.0,
         )
@@ -233,19 +239,19 @@ class TestTheUnitNeverReachesTheFit:
 class TestHowADurationIsWritten:
     def test_three_forms_are_one_text(self):
         for form in (timedelta(minutes=90), pl.duration(hours=1, minutes=30), "1h30m"):
-            assert _ridge("t", halflife=form, max_dclock="inf")["halflife"] == "1h30m"
+            assert _ridge("t", halflife=form, max_dclock="365d")["halflife"] == "1h30m"
         # Text is kept as written; it means the same thing.
-        assert _ridge("t", halflife="90m", max_dclock="inf")["halflife"] == "90m"
+        assert _ridge("t", halflife="90m", max_dclock="365d")["halflife"] == "90m"
 
     def test_a_grid_is_named_by_its_durations(self):
-        spec = _ridge("t", halflife=["5m", timedelta(hours=1)], max_dclock="inf")
+        spec = _ridge("t", halflife=["5m", timedelta(hours=1)], max_dclock="365d")
         assert spec["halflife"] == ["5m", "1h"]
         fields = po.spec.output_fields(spec)
         assert any("@h5m" in f for f in fields) and any("@h1h" in f for f in fields), fields
 
     def test_zero_and_infinity_mean_the_same_in_every_unit(self):
         df = _temporal(_frame())
-        free = _fit(df, _ridge("t", halflife=float("inf"), max_dclock=float("inf")))
+        free = _fit(df, _ridge("t", halflife=float("inf"), max_dclock="365d"))
         # n_eff is the weight before the row's own update (hard rule 8).
         assert free.struct.field("n_eff")[-1] == pytest.approx(df.height - 1)
 
@@ -262,7 +268,7 @@ class TestHowADurationIsWritten:
     )
     def test_what_is_not_a_duration_is_refused_by_name(self, value, exc, says):
         with pytest.raises(exc, match='spec "m": halflife') as e:
-            _ridge("t", halflife=value, max_dclock="inf")
+            _ridge("t", halflife=value, max_dclock="365d")
         assert says in str(e.value), str(e.value)
 
 
@@ -314,7 +320,7 @@ class TestEachMixtureIsRefused:
             _fit(
                 _temporal(_frame()),
                 po.spec.ewridge(
-                    "m", targets=["y"], features=["x0"], clock="t", lam=0.99, max_dclock="inf"
+                    "m", targets=["y"], features=["x0"], clock="t", lam=0.99, max_dclock=300.0
                 ),
             )
         assert "give halflife as a duration" in str(e.value)
@@ -457,7 +463,7 @@ class TestEveryClockParameterTakesADuration:
     VALUES = {
         "halflife": ("5m", {}),
         "max_dclock": ("30m", {}),
-        "min_backwards_jump": ("10s", {}),
+        "min_backwards_jump": ("10s", {"on_clock_reset": "reset_state"}),
         "session_gap": ("10m", {"session": "s"}),
         "label_delay": ("30s", {}),
         "long_halflife": ("1h", {"session": "s", "session_gap": "10m", "session_shrink": 0.5}),
@@ -481,17 +487,18 @@ class TestEveryClockParameterTakesADuration:
                     yield builder, name
 
     #: How each clock parameter is made unit-free when another is the one
-    #: under test: ``inf`` where that means something, left out otherwise.
+    #: under test: ``inf`` where that means something, left out where it can
+    #: be. ``max_dclock`` and ``session_gap`` take no ``inf`` (task 120) and
+    #: stay durations: the parameter under test, a plain number beside them,
+    #: is then refused as a mixture, which names it the same way.
     UNIT_FREE = {
         "halflife": float("inf"),
-        "max_dclock": float("inf"),
         "coef_halflife": float("inf"),
         "level_halflife": float("inf"),
         "trend_halflife": float("inf"),
         "long_halflife": float("inf"),
         "select_halflife": float("inf"),
         "revert_halflife": float("inf"),
-        "session_gap": float("inf"),
         "window": None,
         "solve_every": None,
         "label_delay": None,
@@ -544,10 +551,20 @@ class TestADurationTheDataCannotHold:
         assert "clock would count rows" in str(e.value)
         _fit(self._daily(), self._daily_spec(max_dclock="1d"))
 
-    def test_a_threshold_no_jump_can_undercut_is_refused(self):
+    def test_a_threshold_no_step_back_can_meet_is_refused(self):
+        """Under a minimum finer than a day no step back could be as small, so
+        every one would start the model over, which `0` says directly. A
+        minimum of exactly a day acts: the comparison is inclusive, so a day's
+        step back is a late row (task 120: it passed under a strict `<`)."""
+        restart = dict(max_dclock="3d", on_clock_reset="reset_state")
         with pytest.raises(ValueError, match="min_backwards_jump is 12h") as e:
-            _fit(self._daily(), self._daily_spec(max_dclock="3d", min_backwards_jump="12h"))
-        assert "never fire" in str(e.value)
+            _fit(self._daily(), self._daily_spec(min_backwards_jump="12h", **restart))
+        assert "every one would start the model over" in str(e.value)
+        df = self._daily()
+        late = pl.concat([df.slice(0, 3), df.slice(4, 1), df.slice(3, 1), df.slice(5)])
+        with pytest.raises(ValueError, match="goes backwards by 1d at row 4") as e:
+            _fit(late, self._daily_spec(min_backwards_jump="1d", **restart))
+        assert "min_backwards_jump = 1d" in str(e.value)
 
     # A 500 us halflife forgets every row at once, which the readiness notice
     # says; that it is allowed is the point here.
@@ -645,7 +662,7 @@ class TestNanosecondsAreKept:
             features=["x0"],
             clock="t",
             halflife="1us",
-            max_dclock="inf",
+            max_dclock="365d",
             max_error_inflation=float("inf"),
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
@@ -660,7 +677,7 @@ class TestNanosecondsAreKept:
             features=["x0"],
             clock="t",
             halflife=1_000.0,
-            max_dclock=float("inf"),
+            max_dclock=1e18,
             max_error_inflation=float("inf"),
         )
         drift = po.ModelBank([loose]).fit_predict(as_float)["m"].struct.field("n_eff").to_numpy()
@@ -687,7 +704,7 @@ class TestNanosecondsAreKept:
             features=["x0"],
             clock="t",
             halflife="1us",
-            max_dclock="inf",
+            max_dclock="365d",
             max_error_inflation=float("inf"),
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
@@ -709,7 +726,7 @@ class TestNanosecondsAreKept:
             features=["x0"],
             clock="t",
             halflife="1us",
-            max_dclock="inf",
+            max_dclock="365d",
             max_error_inflation=float("inf"),
         )
         whole = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -720,8 +737,8 @@ class TestNanosecondsAreKept:
 
     def test_a_refused_chunk_leaves_the_state_untouched(self):
         df = _temporal(_frame())
-        # A minute apart throughout, so a row fed late is a jump back of
-        # less than max_dclock, which the disorder check refuses.
+        # A minute apart throughout, so a row fed late is a step back, which
+        # the default policy refuses.
         df = df.with_columns(
             t_s=(START + 60.0 * pl.int_range(pl.len())).cast(pl.Float64)
         ).with_columns(t=pl.from_epoch(pl.col("t_s").cast(pl.Int64), time_unit="s"))
@@ -821,11 +838,11 @@ class TestTheClockColumnInOtherRoles:
         assert all(s % 3_600 == 0 for s in starts)
 
     def test_padding_and_spaces_in_duration_text(self):
-        spec = _ridge("t", halflife=[" 5m ", "1h"], max_dclock="inf")
+        spec = _ridge("t", halflife=[" 5m ", "1h"], max_dclock="365d")
         assert spec["halflife"] == ["5m", "1h"]
         assert any("@h5m" in f for f in po.spec.output_fields(spec))
         with pytest.raises(ValueError, match="has a space in it"):
-            _ridge("t", halflife="1h 30m", max_dclock="inf")
+            _ridge("t", halflife="1h 30m", max_dclock="365d")
 
 
 UNIT_NS = {
@@ -975,7 +992,12 @@ class TestEveryUnitAgainstEveryColumn:
         ns = START * 10**9 + np.arange(20) * 3 * step
         x = np.arange(20, dtype=float)
         df = pl.DataFrame({"t": _column(dtype, ns), "x0": x, "y": x})
-        coarse = {"halflife": seven, "max_dclock": "3w", "min_backwards_jump": "3w"}
+        coarse = {
+            "halflife": seven,
+            "max_dclock": "3w",
+            "on_clock_reset": "reset_state",
+            "min_backwards_jump": "3w",
+        }
         for param in ("max_dclock", "min_backwards_jump"):
             spec = po.spec.ewridge(
                 "m", targets=["y"], features=["x0"], clock="t", **{**coarse, param: seven}

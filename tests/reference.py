@@ -32,15 +32,20 @@ def compute_dclock(
     session: np.ndarray | None,
     n: int,
     max_dclock: float = np.inf,
-    on_clock_reset: str = "max",
+    on_clock_reset: str = "error",
     session_gap: float | str | None = None,
+    min_backwards_jump: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Per-row clock deltas and state-reset flags (docs/PLAN.md section 3).
+    """Per-row clock deltas and state-reset flags (docs/PLAN.md section 3), as a
+    stream learns them.
 
-    Returns ``(dclock, reset)``. Row 0 has delta 0. A negative raw delta is
-    handled per ``on_clock_reset``: "max" -> max_dclock, "zero" -> 0,
-    "reset_state" -> reset. A session change overrides the delta with
-    ``session_gap`` (or resets state if it is "reset").
+    Returns ``(dclock, reset)``. Row 0 has delta 0. A session change overrides
+    the delta with ``session_gap`` (or resets state if it is "reset"). A step
+    back within a session is handled per ``on_clock_reset`` (task 120):
+    "error" raises, naming the row; "reset_state" raises for a step back no
+    larger than ``min_backwards_jump`` (a late row) and resets for a larger
+    one. ``max_dclock`` defaults to no cap for a row-count clock (``t`` None),
+    which steps by one row.
 
     Per row only: the references below fold a skipped row's delta into the
     next accepted row's and cap that total at their own ``max_dclock``, as
@@ -62,15 +67,17 @@ def compute_dclock(
                 d[i] = min(max(d[i], 0.0), max_dclock)
             continue
         if d[i] < 0:
-            if on_clock_reset == "max":
-                d[i] = max_dclock
-            elif on_clock_reset == "zero":
-                d[i] = 0.0
-            elif on_clock_reset == "reset_state":
-                reset[i] = True
-                d[i] = 0.0
-            else:
+            back = -d[i]
+            if on_clock_reset == "error":
+                raise ValueError(f"row {i}: the clock goes backwards by {back}")
+            if on_clock_reset != "reset_state":
                 raise ValueError(on_clock_reset)
+            if min_backwards_jump is None:
+                raise ValueError("reset_state needs min_backwards_jump")
+            if back <= min_backwards_jump:
+                raise ValueError(f"row {i}: a late row, back by {back}")
+            reset[i] = True
+            d[i] = 0.0
         else:
             d[i] = min(d[i], max_dclock)
     return d, reset

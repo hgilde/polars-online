@@ -47,40 +47,37 @@ sees a stream* is the guide to them; this is the reference.
 ``max_dclock``
     Why: a gap in the stream, a weekend or a feed that stopped, would
     otherwise forget everything at once. What: a ceiling on the clock step
-    between two rows a model learns from. Required with ``clock``; ``inf`` is
-    no ceiling and ``0`` turns forgetting off. The ceiling also caps the step
-    a run of skipped rows hands the row after them, however long the run. A
-    step the ceiling cut breaks adjacency: ``ew_cov`` and ``marginal`` clear
-    their lagged co-moments there, because a lag counts rows and the row
-    before such a gap is not one row back from the row after it. Units: clock
-    units.
+    between two rows a model learns from, finite and above ``0``, and
+    required with ``clock``. The ceiling also caps the step a run of skipped
+    rows hands the row after them, however long the run. A step the ceiling
+    cut is a break: ``ew_cov`` and ``marginal`` clear their lagged
+    co-moments there, because a lag counts rows and the row before such a
+    gap is not one row back from the row after it, and ``label_delay``
+    releases the rows it holds. For no forgetting at all, set ``halflife =
+    "inf"``. Units: clock units.
 ``on_clock_reset``
-    What a clock that runs backwards within a group means. ``"max"`` (the
-    default): the step is ``max_dclock``. ``"zero"``: no step.
-    ``"reset_state"``: the model starts over. ``"error"``: the chunk is
-    refused, naming the row.
+    What a clock that runs backwards within a group means. ``"error"`` (the
+    default): the chunk is refused, naming the row, and the bank is
+    untouched. ``"reset_state"``: a step back larger than
+    ``min_backwards_jump`` starts the model over, and a smaller one is
+    refused as a late row.
 ``min_backwards_jump``
-    Why: it is easy to feed rows out of order by accident, and every policy
-    but ``"error"`` would absorb it into plausible, wrong output. What: one
-    check, on by default, that refuses a backwards jump which cannot be a
-    session boundary, whatever ``on_clock_reset`` says -- the chunk is
-    refused naming the row, and the bank is untouched. ``max_dclock`` is the
-    most two adjacent rows can be apart and a session is longer than that,
-    so a jump back by less than ``min_backwards_jump`` is a late row -- a
-    transposed pair, a row a minute late, two sources never merged -- not a
-    boundary. Default ``max_dclock``; a jump of at least that much takes
-    the policy. ``0`` switches the check off, and it is off under an
-    infinite ``max_dclock``, which gives it nothing to compare against.
-    Needs ``clock``. It guards learning: ``predict`` scores a row that sits
-    before the last learned clock as the policy says (re-scoring learned
-    rows is ordinary), and only ``"error"`` refuses there. Units: clock
-    units.
+    Why: under ``"reset_state"`` a step back can be a new start, such as a
+    replayed day or a restarted feed, or a late row: a transposed pair, a
+    row a minute late, two sources never merged. Only the caller knows
+    which size is which. What: required with ``"reset_state"``, and
+    refused under ``"error"``, which refuses every step back. A step back
+    no larger than it is a late row: the chunk is refused naming the row,
+    and the bank is untouched. A larger one starts the model over. ``0``
+    starts over at every step back. Needs ``clock``. It guards learning:
+    ``predict`` scores a row before the last learned clock against the state
+    as it stands, under either policy. Units: clock units.
 ``session``, ``session_gap``
     Why: a stream in market-data-like sessions has boundaries where the clock
     stops measuring time -- overnight, over a weekend. What: ``session`` names
     a column whose value changes at such a boundary, and ``session_gap`` is
-    the clock step to apply there, at most ``max_dclock``; ``"reset"`` starts
-    the model over instead. Units: clock units.
+    the clock step to apply there, finite and at most ``max_dclock``;
+    ``"reset"`` starts the model over instead. Units: clock units.
 ``weight``
     A row-weight column. A row of weight 0 is scored, advances the clock and
     teaches nothing; a null weight skips the row. ``seqtest`` and ``rcov``
@@ -347,11 +344,13 @@ takes::
 
 It raises ``ValueError``, naming the spec and the parameter, for a value the
 model refuses: a count below 0; ``NaN`` anywhere; ``inf`` where it means
-nothing (it is allowed where it does -- ``halflife``, ``max_dclock``,
-``min_periods``, ``session_gap``, ``average_eta`` and the model parameters
-that say so); neither ``halflife`` nor ``lam``; ``clock`` without
-``max_dclock``; a column listed twice, or as both target and feature; a level
-outside ``(0, 1)``; an option not in the list the message gives; and each
+nothing (it is allowed where it does -- ``halflife``, ``min_periods``,
+``average_eta`` and the model parameters that say so); neither ``halflife``
+nor ``lam``; ``clock`` without ``max_dclock``, or a ``max_dclock`` of ``0``;
+``on_clock_reset = "reset_state"`` without ``min_backwards_jump``, or
+``min_backwards_jump`` under ``"error"``; a column listed twice, or as both
+target and feature; a level outside ``(0, 1)``; an option not in the list the
+message gives; and each
 model's own rules. A parameter whose switch is off is refused rather than
 ignored: ``drift_delta``, ``drift_threshold`` or ``drift_action = "reset"``
 without ``emit_drift``, ``average_eta`` without ``emit_averaged``,

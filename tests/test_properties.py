@@ -76,6 +76,25 @@ def streams(draw, min_rows=1, max_rows=40, max_groups=3):
     return pl.DataFrame(cols, schema_overrides={c: pl.Float64 for c in floats})
 
 
+#: The late-row minimum the stepping-back streams are run under: a step back
+#: larger than it starts the model over, one no larger is refused.
+MINIMUM = 5.0
+
+
+@st.composite
+def stepping_back_streams(draw, min_rows=2, max_rows=40, max_groups=3):
+    """`streams`, with each group's clock stepping back now and then -- by more
+    than `MINIMUM`, so that under `"reset_state"` every step back starts the
+    group over and none is refused (task 120)."""
+    df = draw(streams(min_rows=min_rows, max_rows=max_rows, max_groups=max_groups))
+    clocks, last = [], {}
+    for g in df["g"].to_list():
+        step = draw(st.sampled_from([0.0, 0.5, 1.0, 7.0, 1e4, -(MINIMUM + 2.0), -1e4]))
+        last[g] = last.get(g, 0.0) + step if g in last else 0.0
+        clocks.append(last[g])
+    return df.with_columns(t=pl.Series(clocks, dtype=pl.Float64))
+
+
 def build(model, extra, **kw):
     opts = dict(
         targets=["y0"],
@@ -120,6 +139,55 @@ class TestUniversalProperties:
         parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
         many = unnested(pl.concat(parts))
         assert one.equals(many, null_equal=True)
+
+    @SETTINGS
+    @given(df=stepping_back_streams(), chunk=st.integers(min_value=1, max_value=13))
+    def test_chunking_never_changes_the_output_when_the_clock_steps_back(
+        self, model, extra, df, chunk
+    ):
+        """Hard rule 3 with the clock stepping back: under `"reset_state"` each
+        step back past the minimum starts its group over, and where the chunks
+        fall cannot move a number."""
+        df = binarize(df, model)
+        spec = build(model, extra, on_clock_reset="reset_state", min_backwards_jump=MINIMUM)
+        one = unnested(po.ModelBank([spec]).fit_predict(df))
+        bank = po.ModelBank([spec])
+        parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+        assert one.equals(unnested(pl.concat(parts)), null_equal=True)
+
+    @SETTINGS
+    @given(df=streams(min_rows=2), chunk=st.integers(min_value=1, max_value=13), data=st.data())
+    def test_a_late_row_is_refused_at_its_input_row_whatever_the_chunking(
+        self, model, extra, df, chunk, data
+    ):
+        """A row stepped back by no more than the minimum is a late row: the
+        stream is refused there, naming the row's place in the input, whether
+        the row before it in its group is in the same chunk or in the state."""
+        groups = df["g"].to_list()
+        later = [i for i in range(1, df.height) if groups[i] in groups[:i]]
+        assume(later)
+        i = data.draw(st.sampled_from(later), label="late row")
+        prev = max(j for j in range(i) if groups[j] == groups[i])
+        t = df["t"].to_list()
+        t[i] = t[prev] - 2.0
+        # Every later row of its group stays after it. The late row and the
+        # one before it are ordinary rows, so the null policy skips neither
+        # and the step back is measured between the two.
+        ordinary = pl.int_range(pl.len()).is_in([prev, i])
+        df = df.with_columns(
+            t=pl.Series(t, dtype=pl.Float64),
+            x0=pl.when(ordinary).then(1.0).otherwise("x0"),
+            x1=pl.when(ordinary).then(1.0).otherwise("x1"),
+            w=pl.when(ordinary).then(1.0).otherwise("w"),
+        )
+        df = binarize(df, model)
+        spec = build(model, extra, on_clock_reset="reset_state", min_backwards_jump=MINIMUM)
+        says = f"goes backwards by 2 at row {i}, no more than min_backwards_jump = 5"
+        with pytest.raises(ValueError, match=says):
+            po.ModelBank([spec]).fit_predict(df)
+        chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]
+        with pytest.raises(ValueError, match=says):
+            list(po.ModelBank([spec]).fit_predict_batches(iter(chunks)))
 
     @SETTINGS
     @given(df=streams(min_rows=2), split=st.integers(min_value=1, max_value=39))

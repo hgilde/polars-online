@@ -20,17 +20,18 @@ fn spec(json: &str) -> Spec {
 }
 
 /// The specs every test runs: a grouped, weighted, sessioned ridge whose
-/// session changes reset it (so `resets == session_changes`); a ridge that
-/// resets on a backwards clock (so `resets == clock_backwards`); an `ew_cov`
-/// (unsupervised: no target rows in `describe`); an `ew_class` on a string
-/// label (counts only for the label); a ridge on the row-count clock (no
-/// clock range); and a comparison, whose one "target" is the comparison's
-/// own difference of residuals.
+/// session changes reset it (so `resets == session_changes +
+/// clock_backwards`); a ridge without a session (so `resets ==
+/// clock_backwards`); an `ew_cov` (unsupervised: no target rows in
+/// `describe`); an `ew_class` on a string label (counts only for the
+/// label); a ridge on the row-count clock (no clock range); and a
+/// comparison, whose one "target" is the comparison's own difference of
+/// residuals.
 ///
-/// The clocked specs switch the clock's disorder checks off (design note of
-/// 2026-09-19): `make_df` steps the clock back by 3 within a session on
-/// purpose, so the summary's `clock_backwards` count has something to count,
-/// and that step is exactly what the jitter check (on by default) refuses.
+/// `make_df` steps the clock back by 3 within a session on purpose, so the
+/// summary's `clock_backwards` count has something to count. The default
+/// policy refuses that step, so every clocked spec starts over at it
+/// (`on_clock_reset = "reset_state"`, with no step back a late row).
 fn specs() -> Vec<Spec> {
     vec![
         spec(
@@ -38,7 +39,7 @@ fn specs() -> Vec<Spec> {
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "session": "sess", "session_gap": "reset", "weight": "w",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "min_backwards_jump": 0}"#,
+                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "r", "model": {"type": "ew_ridge", "ridge": 1e-6},
@@ -51,14 +52,14 @@ fn specs() -> Vec<Spec> {
             r#"{"name": "c", "model": {"type": "ew_cov"},
                 "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "min_backwards_jump": 0}"#,
+                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "k", "model": {"type": "ew_class", "classes": ["up", "down"],
                 "precision_prior": 1.0},
                 "targets": ["lbl"], "features": ["x0", "x1"], "clock": "t",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "min_backwards_jump": 0}"#,
+                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "n", "model": {"type": "ew_ridge", "ridge": 1e-6},
@@ -69,7 +70,7 @@ fn specs() -> Vec<Spec> {
             r#"{"name": "s", "model": {"type": "seqtest", "a": "m", "b": "r"},
                 "targets": ["y"], "features": [], "group": "g", "clock": "t",
                 "max_dclock": 30.0,
-                "min_backwards_jump": 0}"#,
+                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
         ),
     ]
 }
@@ -265,7 +266,7 @@ fn oracle(df: &DataFrame, s: &Spec, group: &str, reset_on: &str) -> Oracle {
         o.session_changes += u64::from(session_changed);
         o.backwards += u64::from(backwards);
         o.resets += u64::from(match reset_on {
-            "session" => session_changed,
+            "both" => session_changed || backwards,
             "backwards" => backwards,
             _ => false,
         });
@@ -344,9 +345,9 @@ fn summary_and_describe_are_the_frame_s_numbers() {
 
     for (si, s) in specs.iter().enumerate() {
         let reset_on = match s.name.as_str() {
-            "m" => "session",
-            "r" => "backwards",
-            _ => "never",
+            "m" => "both",
+            "n" => "never",
+            _ => "backwards",
         };
         let summary = bank.summary(si, None).unwrap();
         assert_eq!(

@@ -193,13 +193,17 @@ def _got(v: Any) -> str:
 # a limit for one builder and no setting for another; ``"*"`` is the shared
 # parameters. tests/test_error_messages.py checks this table against the
 # Rust side.
+#: Where ``inf`` meant something until task 120 (2026-09-28), and the Rust
+#: side now refuses it with a message that names what to write instead:
+#: ``halflife = "inf"`` or a finite cap, and ``"reset"``. The builder passes
+#: these to it rather than say only "must be finite".
+_INF_REFUSED_BY_RUST = frozenset({"max_dclock", "session_gap"})
+
 _INF_OK: dict[str, frozenset[str]] = {
     "*": frozenset(
         {
             "halflife",
             "min_periods",
-            "max_dclock",
-            "session_gap",
             "average_eta",
             # The noise gate at `inf` is off: no ratio is above it.
             "max_error_inflation",
@@ -305,7 +309,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 floor = 1 if key in _AT_LEAST_ONE else 0
                 if min(value) < floor:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {_got(value)}")
-            if key not in inf_ok and not _finite(value):
+            if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
         # A clock parameter's duration, however it was written, is kept as
         # the text a TOML config writes and a state file stores (task 88).
@@ -470,7 +474,7 @@ def _common(
     halflife: float | Duration | list[float | Duration] | None = None,
     lam: float | None = None,
     max_dclock: float | Duration | None = None,
-    on_clock_reset: str = "max",
+    on_clock_reset: str = "error",
     min_backwards_jump: float | Duration | None = None,
     session: str | None = None,
     session_gap: float | Duration | None = None,

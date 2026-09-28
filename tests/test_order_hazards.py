@@ -25,9 +25,9 @@ import pytest
 import polars_online as po
 
 # The joins and group-bys below reorder `left()`'s rows, so its clock runs
-# backwards again and again -- exactly what the clock's disorder checks (on by
-# default) refuse as out-of-order rows. They are off here because these tests
-# are about the *plan* warning, which must fire before any row is read.
+# backwards again and again, which the default `on_clock_reset = "error"`
+# refuses. These tests are about the *plan* warning, which must fire before
+# any row is read, so the spec starts over at every step back instead.
 SPEC = po.spec.ewridge(
     "m",
     targets=["y"],
@@ -36,6 +36,7 @@ SPEC = po.spec.ewridge(
     halflife=10.0,
     max_dclock=5.0,
     min_periods=1.0,
+    on_clock_reset="reset_state",
     min_backwards_jump=0.0,
 )
 
@@ -202,20 +203,59 @@ def test_the_prefilter_and_the_walk_cannot_drift_apart():
     text holds none of ``_HAZARD_TAGS``' markers. That is only safe while the
     table lists every tag ``_walk`` reports: one handled there and missing
     here would stop being warned about **silently**, which is the worst way
-    this code can fail. ``Sort`` is excluded because it ends the walk rather
-    than reporting anything."""
+    this code can fail."""
     import inspect
     import re
 
     from polars_online import _frame
 
-    handled = set(re.findall(r'tag == "(\w+)"', inspect.getsource(_frame._walk))) - {"Sort"}
+    handled = set(re.findall(r'tag == "(\w+)"', inspect.getsource(_frame._walk)))
     assert handled, "the walk's tags could not be read; this guard is not checking anything"
     assert handled == set(_frame._HAZARD_TAGS), (
         f"_walk reports {sorted(handled)} but _HAZARD_TAGS lists "
         f"{sorted(_frame._HAZARD_TAGS)}; add the missing tag's explain marker, "
         "or the pre-filter will skip plans that should warn"
     )
+
+
+def test_a_sort_by_several_keys_without_maintain_order_is_warned_about():
+    """Task 120: the check took any sort as settling the order, but a sort by
+    several keys without `maintain_order` leaves rows with equal keys in no
+    particular order -- rows of one group at one clock value, whose order is
+    the order a stream learns them in. By one key polars sorted stably here;
+    that is pinned below rather than promised."""
+    with pytest.warns(po.OrderNotGuaranteedWarning, match="maintain_order=True"):
+        po.ModelBank([SPEC]).fit(left().sort(["k", "t"]), chunk_rows=4)
+    quiet(lambda: po.ModelBank([SPEC]).fit(left().sort(["k", "t"], maintain_order=True)))
+    quiet(lambda: po.ModelBank([SPEC]).fit(left().sort("t")))
+
+
+def test_the_measurement_behind_the_sort_warning():
+    """Measured on polars 1.44.2: 2,109 of 10,000 rows came out elsewhere than
+    a stable sort puts them when sorted by two keys, none by one. If polars
+    makes the multi-key sort stable, the warning can go; if it makes the
+    single-key one unstable, a single-key sort must warn too."""
+    import numpy as np
+
+    n = 10_000
+    rng = np.random.default_rng(1)
+    lf = pl.LazyFrame(
+        {
+            "id": np.arange(n),
+            "t": rng.integers(0, n // 50, n).astype(float),
+            "g": rng.integers(0, 100, n).astype(str),
+        }
+    )
+
+    def ids(plan: pl.LazyFrame) -> list[int]:
+        return pl.concat(list(plan.collect_batches(maintain_order=True)))["id"].to_list()
+
+    def moved(keys: list[str]) -> int:
+        stable = ids(lf.sort(keys, maintain_order=True))
+        return sum(a != b for a, b in zip(ids(lf.sort(keys)), stable, strict=True))
+
+    assert moved(["g", "t"]) > 0
+    assert moved(["t"]) == 0
 
 
 @pytest.mark.parametrize(

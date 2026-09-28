@@ -53,7 +53,7 @@ and `--save-state`, and a `ModelBank` has `load` and `save`.
 | **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row | R1, R2, R4, R6, R7 |
 | **2. Inspect it** | The file is a `ModelBank`: `po.ModelBank.load(path)` gives the object back, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data | |
 | **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --resume p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count | R3, R5 |
-| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --resume p --save-state p` | it resumes and replaces. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read | R2, R3 |
+| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --resume p --save-state p` | it resumes at the next row and replaces. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
 
 ### Fit, and keep the state
 
@@ -87,7 +87,10 @@ runs the bank to the end of its input before it reports an error from a
 later step (F5), so the bank reaches its last row and writes. A full disk
 under `sink_parquet`, or a bad cast, then leaves `save_state` written with
 the whole stream's state, while the query's own output is missing. With
-`load_state=p, save_state=p`, a rerun learns the same data twice.
+`load_state=p, save_state=p`, a rerun of the same input then steps every
+group's clock back, which the default `on_clock_reset` refuses; feeding it
+through [`skip_learned`](#resuming-on-input-that-overlaps-the-state) learns
+nothing twice, and so writes no output for those rows either.
 
 **Where the state must land only with the output, use the command line.**
 It saves the state only after its writer has committed the output.
@@ -99,6 +102,46 @@ needs, and the files keep an audit trail.
 On py-polars 2.0.0rc1 the gap narrows: a long enough stream is stopped
 rather than run to its end, and the state is not written (the note at the
 top).
+
+### Resuming on input that overlaps the state
+
+**A bank resumes at the next row.** Input that starts before the save,
+such as a rerun of the day or a file that overlaps the last one, steps
+every group's clock back to rows the state has learned. The default
+`on_clock_reset="error"` refuses that chunk, naming the row, and the bank
+is untouched. Under `"reset_state"`, a step back larger than
+`min_backwards_jump` starts the group over, so the overlap is learned again
+from nothing (docs/PLAN.md task 120).
+
+**`ModelBank.skip_learned(frame)` drops what the state has learned.** It
+keeps each row whose clock is after its group's last clock, in every spec
+with a clock, and every row of a group the bank has not seen. It takes a
+`DataFrame` or a `LazyFrame` and keeps the row order, so a query stays a
+query:
+
+```python
+bank = po.ModelBank.load("ridge.state")
+out = bank.fit_predict(bank.skip_learned(rerun))              # eager
+
+(bank.skip_learned(pl.scan_parquet("2025-06.parquet"))       # a query
+   .online.fit_predict(load_state="ridge.state", save_state="ridge.state")
+   .sink_parquet("2025-06_scored.parquet"))
+```
+
+| a row of the input | is |
+|---|---|
+| after its group's last clock, in every spec with a clock | kept |
+| of a group the bank has not seen | kept |
+| with a null clock | kept, for the bank to refuse by name |
+| at or before its group's last clock | dropped: the state has learned it |
+
+The comparison is exact: a temporal clock is compared in the integer
+nanoseconds the state keeps, whatever the column's unit or time zone. A row
+at a group's last clock counts as learned, so a stream saved between two
+rows with one clock value loses the second. A row-count clock has no
+position to resume from, and `skip_learned` refuses a bank whose specs all
+count rows. The command line has no counterpart yet: filter its input
+before `--resume`.
 
 ### The rules, and the evidence for each
 

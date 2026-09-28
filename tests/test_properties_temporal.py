@@ -177,7 +177,7 @@ PARTS = [
 def _halflife(value):
     """The text a spec stores for ``value`` given as a halflife."""
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], clock="t", max_dclock="inf", halflife=value
+        "m", targets=["y"], features=["x0"], clock="t", max_dclock="365d", halflife=value
     )
     return spec["halflife"]
 
@@ -260,7 +260,7 @@ class TestDurationText:
             targets=["y"],
             features=["x0"],
             clock="t",
-            max_dclock="inf",
+            max_dclock="365d",
             halflife=[padded, other],
         )
         assert spec["halflife"] == [text, other]
@@ -694,7 +694,10 @@ class TestNanosecondsAreExact:
             clock="t", halflife=format_duration(halflife), targets=["y"], features=["x0", "x1"]
         )
         kw |= N_EFF_MODELS[model]
-        kw["max_dclock"] = float("inf") if cap is None else format_duration(cap)
+        # No cap is a cap as long as the stream: a finite one no gap reaches
+        # (task 120 took `inf` away).
+        span = instants[-1] - instants[0]
+        kw["max_dclock"] = format_duration(span if cap is None else cap)
         spec = getattr(po.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
         bank = po.ModelBank([spec])
         edges = _edges(data.draw, n)

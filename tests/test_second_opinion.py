@@ -2077,7 +2077,8 @@ class TestTheEwMomentsArePandas:
             features=["x0"],
             halflife=self.H,
             clock="t",
-            max_dclock=float("inf"),
+            # A cap no gap here reaches (they are under 3): pandas has none.
+            max_dclock=1e9,
             stats=["mean"],
             min_periods=0.0,
         )

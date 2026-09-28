@@ -176,9 +176,10 @@ class TestClockSemantics:
         rng = np.random.default_rng(1)
         y = (rng.random(n) < 0.5).astype(float) if model == "ftrl" else np.arange(float(n))
         df = pl.DataFrame({"t": t, "x0": np.arange(float(n)), "x1": np.ones(n), "y0": y})
-        # The clock policies are what this class tests, so the clock's
-        # disorder checks (on by default; they would refuse these steps back
-        # as out-of-order rows before any policy saw them) are off here.
+        # A step back under `"reset_state"` starts over whatever its size
+        # here: no step back is a late row.
+        if kw.get("on_clock_reset") == "reset_state":
+            kw.setdefault("min_backwards_jump", 0.0)
         return run(
             model,
             extra,
@@ -186,7 +187,6 @@ class TestClockSemantics:
             clock="t",
             max_dclock=4.0,
             min_periods=0.0,
-            min_backwards_jump=0.0,
             **kw,
         )
 
@@ -198,10 +198,9 @@ class TestClockSemantics:
         w2 = neff[2]
         assert neff[3] == pytest.approx(w2 * 0.5 ** (4 / 200) + 1.0, rel=1e-9)
 
-    def test_backwards_clock_uses_max_by_default(self, model, extra):
-        out = self._clocked(model, extra, [0.0, 100.0, 50.0, 51.0])
-        neff = slot(out, "n_eff", model)
-        assert neff[3] == pytest.approx(neff[2] * 0.5 ** (4 / 200) + 1.0, rel=1e-9)
+    def test_a_backwards_clock_is_refused_by_default(self, model, extra):
+        with pytest.raises(ValueError, match="goes backwards by 50 at row 2"):
+            self._clocked(model, extra, [0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state_restarts_the_stream(self, model, extra):
         out = self._clocked(model, extra, [0.0, 10.0, 5.0, 6.0], on_clock_reset="reset_state")

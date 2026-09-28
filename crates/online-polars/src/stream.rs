@@ -21,8 +21,9 @@ use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
 use crate::summary::DataSummary;
 
 /// A refused backwards clock: the raw delta, the absolute row it happened at,
-/// and the disorder rule that refused it -- `None` when it was the `error`
-/// policy alone. The bank turns it into the error naming all three.
+/// and, under `"reset_state"`, the late-row minimum that refused it -- `None`
+/// under `"error"`, which refuses every step back. The bank turns it into the
+/// error naming all three.
 pub type ClockRefusal = (f64, usize, Option<Disorder>);
 
 /// Enum dispatch over the models the bank can run (serde-friendly).
@@ -2380,9 +2381,10 @@ impl Stream {
         Ok(stream)
     }
 
-    /// Under `on_clock_reset = "error"`: the first row of the chunk at which
-    /// this stream's clock would go backwards, exactly as [`Stream::process_chunk`]
-    /// would report it, found on a copy of the clock so nothing is touched.
+    /// The first row of the chunk at which this stream's clock would step back
+    /// in a way its policy refuses -- any step back under `"error"`, a late
+    /// row under `"reset_state"` -- exactly as [`Stream::process_chunk`] would
+    /// report it, found on a copy of the clock so nothing is touched.
     ///
     /// The bank runs this over every stream of a chunk before it runs any of
     /// them (docs/IMPROVEMENTS.md C3). Without it a backwards clock in one
@@ -2398,11 +2400,11 @@ impl Stream {
         base: usize,
     ) -> Result<(), ClockRefusal> {
         // A row-count clock cannot go backwards, so this costs nothing there.
-        // With a clock it can fail under the `error` policy or, whatever the
-        // policy, under the disorder check (`min_backwards_jump`, on by
-        // default from the spec), so the pass runs whenever one of those can
-        // refuse a row: that is what keeps the refusal chunk-level and the
-        // bank untouched.
+        // With a clock it can fail under `"error"`, the default, which
+        // refuses every step back, or under `"reset_state"` with a
+        // `min_backwards_jump` above 0, which refuses a late row; the pass
+        // runs whenever one of those can refuse a row: that is what keeps
+        // the refusal chunk-level and the bank untouched.
         let Some(clock) = clock else {
             return Ok(());
         };
@@ -2439,8 +2441,8 @@ impl Stream {
     /// row*. That case keeps row-major order. Both paths call the same
     /// `run_instance`, so there is one implementation of the arithmetic.
     ///
-    /// On a backwards clock under `on_clock_reset = "error"`, returns the raw
-    /// delta and the absolute row it happened at, for the caller to name, and
+    /// On a step back the policy refuses, returns the raw delta and the
+    /// absolute row it happened at, for the caller to name, and
     /// leaves the stream untouched (pass 1 runs on a copy of the clock). The
     /// bank runs [`Stream::check_clock`] over every stream before it runs
     /// this on any, so the refusal is per chunk, not per stream.
@@ -2492,8 +2494,8 @@ impl Stream {
             let below =
                 matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c.is_before(p));
             let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
-            // `on_clock_reset = "error"`, or a disorder rule: hand the
-            // offending delta (and the rule) back so the caller can name the
+            // A step back the policy refuses: hand the offending delta (and,
+            // for a late row, the minimum) back so the caller can name the
             // row and column.
             if let Some(raw) = adv.backwards {
                 return Err((raw, row, adv.disorder));
@@ -2782,14 +2784,15 @@ impl Stream {
     /// the pending time of skipped rows and the session policy applied as
     /// the learning path would apply them.
     ///
-    /// The session and clock policies hold too, because they are part of
-    /// what "the next row" means: a row that would start a fresh stream
-    /// (`session_gap = "reset"`, `on_clock_reset = "reset_state"`) is scored
-    /// by a fresh one -- null throughout, as it would be -- a row that would
-    /// blend toward the long run (`session_shrink`) is scored by a blended
-    /// copy, and a backwards clock under `on_clock_reset = "error"` is the
-    /// same error, naming the row. The scoring for each of the three is the
-    /// one `run_instance`, with its updates switched off.
+    /// The session policy holds too, because it is part of what "the next
+    /// row" means: a row that would start a fresh stream (`session_gap =
+    /// "reset"`) is scored by a fresh one -- null throughout, as it would be
+    /// -- and a row that would blend toward the long run (`session_shrink`)
+    /// is scored by a blended copy. A row before the last learned clock is
+    /// scored against the state as it stands, a step of 0, under either
+    /// `on_clock_reset`: scoring learns nothing, so it neither refuses nor
+    /// starts over (task 120). The scoring for each of the three is the one
+    /// `run_instance`, with its updates switched off.
     ///
     /// Per field: `pred` and `lam_selected` as the model would report;
     /// `resid` where the row carries a usable target; `sigma`, `resid_z`,
@@ -2811,7 +2814,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         out: &mut ChunkOut,
-    ) -> Result<(), ClockRefusal> {
+    ) {
         let n_rows = rows.len();
         out.rows.extend_from_slice(rows);
         // Three classes of row, by what the clock says the row would do to
@@ -2821,29 +2824,21 @@ impl Stream {
         // (class, position in it) of the last accepted row, which carries
         // the coefficients for the chunk.
         let mut last_accepted: Option<(usize, usize)> = None;
-        // Scoring learns nothing, so the clock's disorder check -- which
-        // guards what the bank *learns* from out-of-order rows -- does not
-        // apply: a fresh frame scored against the bank as it stands may well
-        // sit a little before the last learned clock, and such a row is scored
-        // as the policy says, as it always was. The `error` policy still
-        // refuses it, that being the user's own choice.
-        let cfg = &online_core::ClockCfg {
-            min_backwards_jump: 0.0,
-            ..*cfg
-        };
-        for (ri, &row) in rows.iter().enumerate() {
+        // Scoring learns nothing, so nothing that guards what the bank
+        // *learns* applies: a fresh frame scored against the bank as it
+        // stands may well sit before the last learned clock, and such a row
+        // is scored against the state as it stands -- a step of 0 -- under
+        // either policy, never refused and never a reset (task 120). A
+        // session change still takes its rule.
+        for ri in 0..rows.len() {
             let i = base + ri;
             let accept = all_usable(features.row(i));
             // Every row is the first after the last learned one.
-            let adv = self.clock.clone().advance(
+            let adv = self.clock.clone().advance_scoring(
                 cfg,
                 clock.map(|c| c.at(i)),
                 session.map(|s| s[i]),
-                true,
             );
-            if let Some(raw) = adv.backwards {
-                return Err((raw, row, adv.disorder));
-            }
             if accept {
                 out.processed[ri] = true;
             }
@@ -2925,7 +2920,6 @@ impl Stream {
                 n_rows,
             );
         }
-        Ok(())
     }
 
     /// Run these plans through every instance with `learn = false`, scoring

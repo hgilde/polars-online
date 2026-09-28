@@ -441,7 +441,8 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     is one continuous stream -- the rows the bank gives, and the state it
     ends in -- and a plan built between two batches carries the state it was
     built from (R3): the file changing under it does not change its frame."""
-    df = _frame(n=4000)
+    full = _frame(n=5000)
+    df, after = full.head(4000), full.slice(4000)
     state = tmp_path / "bank.state"
     parts = [df.slice(0, 900), df.slice(900, 1300), df.slice(2200, 1800)]
     got = []
@@ -454,13 +455,15 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     assert state.read_bytes() == _bank_after(df)
     # The plan carries the loaded state, so collecting it twice with the
     # file rewritten in between gives the same frame; the same for `predict`.
-    resume = parts[2].lazy().online.fit_predict(load_state=state, chunk_rows=500)
-    score = parts[2].lazy().online.predict(state, chunk_rows=500)
+    # It resumes on the rows after the state's: the ones it has learned
+    # would step each group's clock back, which the default refuses.
+    resume = after.lazy().online.fit_predict(load_state=state, chunk_rows=500)
+    score = after.lazy().online.predict(state, chunk_rows=500)
     first, scored = resume.collect(), score.collect()
     parts[0].lazy().online.fit_predict([_spec()], save_state=state).collect()
     assert resume.collect().equals(first)
     assert score.collect().equals(scored)
-    assert not parts[2].lazy().online.predict(state).collect().equals(scored)
+    assert not after.lazy().online.predict(state).collect().equals(scored)
     # ... and `load_state=p, save_state=p` used twice in one query resumes
     # from the file's state twice, not from what the first run wrote.
     plan = (

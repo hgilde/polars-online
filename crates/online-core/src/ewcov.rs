@@ -802,6 +802,14 @@ impl EwCov {
             self.rows_learned += 1;
             self.runs.track(x, self.rows_learned);
         }
+        // A zero-weight row the decay took the whole history from -- `lam·W`
+        // is 0 with `W > 0`, from 1075 halflives on -- is the decay alone:
+        // the weight goes to 0 and the next row starts over, as it all but
+        // does one halflife short of that. The update below is `0/0` there,
+        // and refusing it kept the history whole (task 115 (c), PLAN §12).
+        if w == 0.0 && self.w_sum > 0.0 && lam * self.w_sum == 0.0 {
+            return self.decay(lam);
+        }
         if self.pending.block_rows > 0 {
             return self.buffer(x, lam, w);
         }

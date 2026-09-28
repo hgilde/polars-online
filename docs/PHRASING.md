@@ -838,7 +838,8 @@ there, at most max_dclock".
 cfg.max_dclock)`), so `inf` is the same as a capped gap: measured, a jump
 of 1000 clock units at a session change with `max_dclock=100` applies a
 step of 100 under `session_gap=inf`, exactly as with no session column at
-all. "Never applies it" had nothing behind it. The sentence also hid the
+all. (Since task 120, 2026-09-28, `session_gap=inf` is refused, pointing to
+`"reset"`.) "Never applies it" had nothing behind it. The sentence also hid the
 limit itself, which matters to anyone choosing a gap larger than
 `max_dclock`.
 

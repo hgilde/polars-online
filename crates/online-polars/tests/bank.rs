@@ -4,13 +4,12 @@
 use online_polars::{Bank, ChunkOut, GroupKey, ModelKind, Spec, Stream};
 use polars::prelude::*;
 
-/// The clock's disorder checks (on by default; design note of 2026-09-19)
-/// are off in these specs: ungrouped, or re-keyed onto a column the
-/// fixture's per-group clock does not follow, a spec here reads interleaved
-/// clocks as one stream, which the checks rightly refuse as out-of-order
-/// rows. The tests are about groups, keys and chunks, not the clock; the one
-/// that is about the clock, `an_ungrouped_view_of_interleaved_groups_is_refused_by_default`,
-/// builds its spec without this.
+/// The fixture's clock is one clock over every row, so no view of it steps
+/// back: ungrouped, or re-keyed onto another column, a spec here reads a
+/// stream in order. The tests are about groups, keys and chunks, not the
+/// clock; the one that is about the clock,
+/// `an_ungrouped_view_of_interleaved_groups_is_refused_by_default`, builds a
+/// frame whose groups keep clocks of their own.
 fn spec_json(name: &str, group: bool) -> Spec {
     let g = if group { r#""group": "g","# } else { "" };
     serde_json::from_str(&format!(
@@ -22,7 +21,6 @@ fn spec_json(name: &str, group: bool) -> Spec {
             "clock": "t",
             "halflife": 60.0,
             "max_dclock": 30.0,
-            "min_backwards_jump": 0,
             "weight": "w",
             {g}
             "min_periods": 5.0
@@ -31,11 +29,11 @@ fn spec_json(name: &str, group: bool) -> Spec {
     .unwrap()
 }
 
-/// What `spec_json` switches off, seen once: an ungrouped spec over the two
-/// interleaved groups reads their clocks as one stream that steps back on
-/// every other row, and the jitter check refuses the chunk by name, leaving
-/// the bank untouched -- where the `max` policy used to absorb every step
-/// into plausible, wrong output.
+/// An ungrouped spec over two interleaved groups with clocks of their own
+/// reads them as one stream that steps back on every other row, and the
+/// default policy refuses the chunk by name, leaving the bank untouched --
+/// where the removed `max` policy absorbed every step into plausible, wrong
+/// output.
 #[test]
 fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
     let spec: Spec = serde_json::from_str(
@@ -48,14 +46,26 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
     )
     .unwrap();
     let mut bank = Bank::new(vec![spec]).unwrap();
-    let err = bank.fit_predict(&make_df(200)).unwrap_err().to_string();
-    assert!(err.contains("min_backwards_jump"), "{err}");
-    assert!(err.contains("out-of-order rows"), "{err}");
+    let err = bank
+        .fit_predict(&make_df_clocked(200, true))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("goes backwards by"), "{err}");
+    assert!(
+        err.contains("on_clock_reset = \"error\", the default"),
+        "{err}"
+    );
     assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
 }
 
-/// Deterministic stream over 2 groups with nulls sprinkled in.
+/// Deterministic stream over 2 groups with nulls sprinkled in, on one clock.
 fn make_df(n: usize) -> DataFrame {
+    make_df_clocked(n, false)
+}
+
+/// [`make_df`], with a clock per group when `per_group` -- the same draws, so
+/// each group's steps are the same and only the interleaving differs.
+fn make_df_clocked(n: usize, per_group: bool) -> DataFrame {
     let mut s = 1234u64;
     let mut lcg = move || {
         s = s
@@ -73,8 +83,9 @@ fn make_df(n: usize) -> DataFrame {
     for i in 0..n {
         let g = i % 2;
         group.push(format!("g{g}"));
-        clocks[g] += 1.0 + lcg().abs() * 5.0;
-        t.push(clocks[g]);
+        let c = if per_group { g } else { 0 };
+        clocks[c] += 1.0 + lcg().abs() * 5.0;
+        t.push(clocks[c]);
         let a = lcg();
         let b = lcg();
         x0.push(if i % 17 == 5 { None } else { Some(a) });

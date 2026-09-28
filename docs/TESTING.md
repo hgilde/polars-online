@@ -872,7 +872,7 @@ build of the time when this document was written, and both are fixed.
 | T-E3 | ~~P1~~ **done** | ±inf in features / targets / weight / clock | pinned by `TestNonFinite`, plus outputs are never non-finite |
 | T-E4 | ~~P1~~ **done** | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | both halves covered: the absorbing policies, and `on_clock_reset="error"` |
 | T-E5 | ~~P2~~ **done** | Degenerate solves in the **plain** path | finite outputs throughout, with `solve_failures` observable |
-| T-E6 | ~~P2~~ **done** | Duplicate clock values, `max_dclock = 0`, `halflife` far below the typical Δ | pinned; no NaN leaks under extreme decay |
+| T-E6 | ~~P2~~ **done** | Duplicate clock values, `max_dclock = 0` (refused since task 120), `halflife` far below the typical Δ | pinned; no NaN leaks under extreme decay |
 | T-E7 | ~~P2~~ **done** | Minimal shapes | empty chunks, single-row groups and a one-feature/one-target spec all behave |
 | T-E8 | ~~P2~~ **done** | Non-string group and session columns, null session values | a null session value **is** its own session |
 | T-E9 | ~~P2~~ **done; found a defect, then removed the limit** | **Large-offset cancellation** | slope-recovery error at a 1e6 offset **2.0e-03 → 6.8e-10** |
@@ -922,9 +922,12 @@ required implementing ENHANCEMENTS E5 first: `Bank::solve_failures()` /
 `ModelBank.solve_failures()` expose the count per spec and group.
 
 **T-E6.** Duplicate clock values are zero deltas, so no decay.
-`max_dclock = 0` disables decay entirely. A halflife far below the delta
+`max_dclock = 0` disabled decay entirely until task 120 (2026-09-28), which
+refuses it: no decay is `halflife = "inf"`. A halflife far below the delta
 makes every row effectively the first (`n_eff → 1`), and no NaN leaks under
-extreme decay.
+extreme decay. A zero-weight row whose decay underflows forgets the history
+as the decay does (task 115 (c)), in every model
+(`crates/online-core/tests/model_contract.rs`).
 
 **T-E7.** An empty chunk is accepted, and returns an empty frame with the
 output column. An empty chunk *between* real chunks changes nothing.

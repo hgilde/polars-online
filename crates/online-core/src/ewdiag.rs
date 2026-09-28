@@ -181,6 +181,11 @@ impl EwDiag {
         }
         let w_new = lam * self.w_sum + w;
         if w_new <= 0.0 {
+            // Nothing carried and nothing added: `a` and `b` are 0/0, and no
+            // moment moves. The weight is 0 either way -- it was, at the
+            // head of a stream, and the decay took it, from 1075 halflives
+            // on, where it used to be kept (task 115 (c), PLAN §12).
+            self.w_sum = w_new;
             return;
         }
         let a = lam * self.w_sum / w_new; // weight of the old statistics

@@ -611,8 +611,9 @@ denominated in a clock. Three tiers, in the order to consider them:
    is out-of-sample by construction, so row *i* is predicted from the rows
    before it and reordering moves every one of them — **1.33** on the same
    no-decay `ewridge` whose coefficients agreed to 3.3e-16. And *with* a clock
-   column, out-of-order rows are refused rather than absorbed (0.9.0), so there
-   the question does become whether the run completes.
+   column, a step back is refused rather than absorbed -- a small one since
+   0.9.0, and every one by default since task 120 (2026-09-28) -- so there the
+   question does become whether the run completes.
 
 So the filter to apply to a producer below is not "can it promise order?" but
 "which tier is this pipeline in?". A producer that cannot promise one is still
@@ -693,9 +694,10 @@ Three things, none of which reorders the list:
    warehouses but QuestDB, TimescaleDB and, through Flight SQL, InfluxDB 3:
    the systems whose storage model already *is* clock order.
 2. **The order guidance (§6.3) should be split in two.** For a spec with a
-   clock it is a hard precondition — since 0.9.0 the bank refuses out-of-order
-   rows rather than absorbing them, so "sorted by the clock within each group"
-   is what makes the source work at all. For a spec without one it is a
+   clock it is a hard precondition — the bank refuses a step back rather than
+   absorbing it (a small one since 0.9.0, every one by default since task
+   120), so "sorted by the clock within each group" is what makes the source
+   work at all. For a spec without one it is a
    statement about meaning rather than about completion: the run succeeds
    either way, and what arrival order decides is what "recent" weighs and what
    every out-of-sample prediction was scored against. Both belong beside the

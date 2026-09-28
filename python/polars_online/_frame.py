@@ -36,7 +36,7 @@ import sys
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from types import FrameType
-from typing import Any, overload
+from typing import Any, Literal, overload
 
 import polars as pl
 from polars.io.plugins import register_io_source
@@ -315,8 +315,10 @@ def _user_stacklevel() -> int:
 def _walk(node: Any, found: list[str]) -> None:
     """Collect the nodes of a serialized plan whose output order is unspecified,
     top-down. A ``Sort`` settles the order of everything beneath it, so the
-    walk stops there; a join that keeps one side's order is followed on that
-    side alone. Anything unrecognised is descended into generically."""
+    walk stops there -- up to ties, which a sort by several keys without
+    ``maintain_order`` leaves in no particular order, and that is reported; a
+    join that keeps one side's order is followed on that side alone. Anything
+    unrecognised is descended into generically."""
     if isinstance(node, list):
         for item in node:
             _walk(item, found)
@@ -326,6 +328,18 @@ def _walk(node: Any, found: list[str]) -> None:
     if len(node) == 1:
         ((tag, body),) = node.items()
         if tag == "Sort":
+            # Measured on polars 1.44.2 (task 120): sorted by two keys without
+            # maintain_order, 2,109 of 10,000 rows came out in another order
+            # than the stable sort's -- rows of one group at one clock value,
+            # reordered -- and by one key, none did. Polars promises neither,
+            # and `test_order_hazards.py` pins both, so a change shows.
+            opts = body.get("sort_options", {}) if isinstance(body, dict) else {}
+            keys = body.get("by_column", []) if isinstance(body, dict) else []
+            if len(keys) > 1 and not opts.get("maintain_order", False):
+                found.append(
+                    "a sort by several keys without maintain_order=True (rows with equal "
+                    "keys come out in no particular order)"
+                )
             return
         if tag == "Join" and isinstance(body, dict):
             args = body.get("options", {}).get("args", {})
@@ -367,9 +381,9 @@ def _walk(node: Any, found: list[str]) -> None:
 #: the deprecated JSON read when none of these can be in the plan. **They must
 #: not drift apart** -- a tag the walk handles but this omits would stop being
 #: warned about, silently, which is the worst shape this code can fail in, so
-#: ``test_order_hazards.py`` fails if the two ever diverge. ``Sort`` is absent
-#: on purpose: it ends the walk rather than reporting anything, so a plan whose
-#: only node is a sort has no hazard to find. Checked, filter against raw walk,
+#: ``test_order_hazards.py`` fails if the two ever diverge. ``Sort`` is here
+#: since task 120: a sort by several keys without ``maintain_order`` reports.
+#: Checked, filter against raw walk,
 #: across every join form -- the seven ``how=`` variants plus ``join_asof`` and
 #: ``join_where`` -- and ``group_by``, ``group_by_dynamic``, ``rolling``,
 #: three ``unique`` forms and ``merge_sorted``: no disagreement in any, each
@@ -378,6 +392,7 @@ _HAZARD_TAGS: dict[str, str] = {
     "Join": "JOIN",
     "GroupBy": "AGGREGATE",
     "Distinct": "UNIQUE",
+    "Sort": "SORT BY",
 }
 
 
@@ -467,7 +482,9 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "emit_averaged": (False,),
     "group_close": (None,),
     "weight": (None,),
-    "on_clock_reset": ("max",),
+    # The default refuses a step back, loudly; `"reset_state"` starts over at
+    # one, which is order itself.
+    "on_clock_reset": ("error",),
     "target_gaps": ("own_rows",),
     "coef_every": (0,),
     "emit_autocorr": (False,),
@@ -501,9 +518,8 @@ _ORDER_FREE_ANY = frozenset(
         "group",
         "clock",
         "max_dclock",
-        # The disorder check refuses out-of-order input loudly rather than
-        # changing any number a fit produces, so it leaves order-freeness
-        # where it was (design note of 2026-09-19).
+        # Taken only with `on_clock_reset = "reset_state"`, which is order
+        # itself and is denied above; it decides nothing more here.
         "min_backwards_jump",
         "add_intercept",
         "standardize",
@@ -586,18 +602,21 @@ def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str, plan_text: str | Non
 def _source(
     lf: pl.LazyFrame,
     make_bank: Callable[[], ModelBank],
-    step: Callable[[ModelBank, pl.DataFrame], pl.DataFrame],
+    step: Literal["fit_predict", "predict"],
     chunk_rows: int | None,
     save_state: State | None = None,
     closed_groups: State | None = None,
 ) -> pl.LazyFrame:
-    """``lf`` streamed through ``step`` on a bank from ``make_bank``, as a plan."""
+    """``lf`` streamed through the bank method ``step`` names, on a bank from
+    ``make_bank``, as a plan. Each chunk is fed as rows of the whole input, so an
+    error names the input's row."""
     if chunk_rows is not None and chunk_rows < 1:
         msg = f"chunk_rows must be at least 1, got {chunk_rows}"
         raise ValueError(msg)
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
-    called = f"lf.online.{getattr(step, '__name__', 'fit_predict')}"
+    called = f"lf.online.{step}"
+    run = ModelBank._fit_predict_from if step == "fit_predict" else ModelBank._predict_from
     # One `explain` for both plan checks: the order hazards below and the
     # Python-scan test further down. Reading it twice would cost more than the
     # JSON scan the first one skips.
@@ -615,7 +634,7 @@ def _source(
     # naming a column the input lacks is reported: while the plan is built,
     # as polars reports its own schema errors, not when it runs.
     bank = make_bank()
-    schema = step(bank, pl.DataFrame(schema=in_schema)).schema
+    schema = run(bank, pl.DataFrame(schema=in_schema), 0).schema
     needed = _spec_columns(bank.specs)
     closed_path = _closed_path(closed_groups, bank.specs)
     # Peeked, not drained: `make_bank` can hand back the caller's own bank
@@ -651,7 +670,7 @@ def _source(
         for chunk in plan.collect_batches(chunk_size=rows, maintain_order=True):
             if n_rows is not None:
                 chunk = chunk.head(n_rows - seen)
-            out = step(bank, chunk)
+            out = run(bank, chunk, seen)
             seen += chunk.height
             if closed_path is not None:
                 # Drained per chunk so the bank's queue stays bounded; the
@@ -753,7 +772,7 @@ def _fit_predict_lazy(
     return _source(
         lf,
         _bank(specs, load_state, "fit_predict"),
-        ModelBank.fit_predict,
+        "fit_predict",
         chunk_rows,
         save_state,
         closed_groups,
@@ -764,14 +783,14 @@ def _predict_lazy(
     lf: pl.LazyFrame, bank: ModelBank | State, chunk_rows: int | None
 ) -> pl.LazyFrame:
     if not isinstance(bank, ModelBank):
-        return _source(lf, _bank(None, bank, "predict"), ModelBank.predict, chunk_rows)
+        return _source(lf, _bank(None, bank, "predict"), "predict", chunk_rows)
 
     def own() -> ModelBank:
         # `predict` leaves a bank as it was, so the caller's own is safe to
         # share with the plan; it scores as the bank stands when the plan runs.
         return bank
 
-    return _source(lf, own, ModelBank.predict, chunk_rows)
+    return _source(lf, own, "predict", chunk_rows)
 
 
 def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any]]:

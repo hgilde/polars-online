@@ -123,7 +123,40 @@ pub struct RefreshTime {
     /// Per group key, the joint state or one state per pair.
     states: HashMap<GroupKey, Vec<GridState>>,
     /// The last `time` seen per group, so a backwards clock is refused.
-    last_time: HashMap<GroupKey, f64>,
+    last_time: HashMap<GroupKey, Instant>,
+    /// Rows fed before this chunk, so an error names the input's row, not
+    /// the chunk's (task 120).
+    rows_fed: usize,
+}
+
+/// A `time` value as the order check compares it: a number as itself, a
+/// temporal value as its physical integer, exactly. Read as a double, a
+/// `Datetime` in nanoseconds resolves 256 ns at today's dates, and a step
+/// back smaller than that was a tie (task 120).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+enum Instant {
+    Number(f64),
+    Physical(i64),
+}
+
+impl Instant {
+    /// The value as the column shows it: a temporal one in its own dtype.
+    fn show(self, dtype: &DataType) -> String {
+        match (self, dtype) {
+            (Self::Number(v), _) => format!("{v}"),
+            (Self::Physical(v), DataType::Datetime(tu, tz)) => {
+                format!("{}", AnyValue::Datetime(v, *tu, tz.as_ref()))
+            }
+            (Self::Physical(v), DataType::Date) => match i32::try_from(v) {
+                Ok(d) => format!("{}", AnyValue::Date(d)),
+                Err(_) => format!("{v}"),
+            },
+            (Self::Physical(v), DataType::Duration(tu)) => {
+                format!("{}", AnyValue::Duration(v, *tu))
+            }
+            (Self::Physical(v), _) => format!("{v}"),
+        }
+    }
 }
 
 /// One completed grid point, as the scan collects it: the group it belongs
@@ -173,6 +206,7 @@ impl RefreshTime {
             pairs,
             states: HashMap::new(),
             last_time: HashMap::new(),
+            rows_fed: 0,
         })
     }
 
@@ -225,8 +259,24 @@ impl RefreshTime {
         let n = df.height();
         let series = df.column(cols.series)?.cast(&DataType::String)?;
         let series = series.str()?;
-        let time = df.column(cols.time)?.cast(&DataType::Float64)?;
-        let time = time.f64()?;
+        let time_col = df.column(cols.time)?;
+        let time_dtype = time_col.dtype().clone();
+        let (numbers, physical) = if time_dtype.is_temporal() {
+            let p = time_col.to_physical_repr().cast(&DataType::Int64)?;
+            (None, Some(p))
+        } else {
+            (Some(time_col.cast(&DataType::Float64)?), None)
+        };
+        let numbers = numbers.as_ref().map(|c| c.f64()).transpose()?;
+        let physical = physical.as_ref().map(|c| c.i64()).transpose()?;
+        let instant = |row: usize| -> Option<Instant> {
+            match (numbers, physical) {
+                (Some(n), _) => n.get(row).filter(|t| t.is_finite()).map(Instant::Number),
+                (_, Some(p)) => p.get(row).map(Instant::Physical),
+                _ => None,
+            }
+        };
+        let base = self.rows_fed;
         let value = df.column(cols.value)?.cast(&DataType::Float64)?;
         let value = value.f64()?;
         let by = match cols.by {
@@ -245,20 +295,21 @@ impl RefreshTime {
         // Rows of the output, as (group, pair index, row index, ticks).
         let mut points: Vec<Point> = Vec::new();
         for row in 0..n {
+            let at = base + row;
             let Some(name) = series.get(row) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {row} has a null {:?}", cols.series);
+                    "refresh_time: row {at} has a null {:?}", cols.series);
             };
             let Some(&si) = index.get(name) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {row} names series {name:?}, which is not in `names` \
+                    "refresh_time: row {at} names series {name:?}, which is not in `names` \
                      ({:?}); a row for an unknown series is a misspelling, not something to drop",
                     self.names
                 );
             };
-            let Some(t) = time.get(row).filter(|t| t.is_finite()) else {
+            let Some(t) = instant(row) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {row} has a null or non-finite {:?}", cols.time);
+                    "refresh_time: row {at} has a null or non-finite {:?}", cols.time);
             };
             let key = GroupKey(
                 by.map_or_else(|| Some(String::new()), |b| b.get(row).map(str::to_string)),
@@ -270,9 +321,11 @@ impl RefreshTime {
                 Some(prev) => {
                     if t < *prev {
                         polars_bail!(ComputeError:
-                            "refresh_time: row {row} has {:?} = {t}, below the previous row's \
-                             {prev} in the same group; the input must be in time order",
-                            cols.time
+                            "refresh_time: row {at} has {:?} = {}, below the previous row's \
+                             {} in the same group; the input must be in time order",
+                            cols.time,
+                            t.show(&time_dtype),
+                            prev.show(&time_dtype)
                         );
                     }
                     *prev = t;
@@ -323,6 +376,7 @@ impl RefreshTime {
                 }
             }
         }
+        self.rows_fed += n;
         self.frame(df, cols, points)
     }
 

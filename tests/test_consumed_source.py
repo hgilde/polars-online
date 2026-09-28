@@ -155,11 +155,12 @@ def test_a_parquet_plan_is_reusable_and_stays_quiet(tmp_path):
     path = tmp_path / "rows.parquet"
     _frame().write_parquet(path)
     lf = pl.scan_parquet(path)
-    bank = _bank()
+    # A bank per run: one bank fed the same rows twice would refuse the
+    # second run's first row, a step back to rows it has learned.
     with warnings.catch_warnings():
         warnings.simplefilter("error", po.ConsumedSourceWarning)
-        bank.fit(lf)
-        bank.fit(lf)
+        _bank().fit(lf)
+        _bank().fit(lf)
 
 
 def test_an_empty_frame_is_not_inspected():
@@ -327,12 +328,11 @@ def test_rebuilding_the_plan_per_run_is_the_documented_fix():
     import duckdb
 
     con, _ = _duck_rel(duckdb)
-    bank = _bank()
     with warnings.catch_warnings():
         warnings.simplefilter("error", po.ConsumedSourceWarning)
         for _ in range(2):
             rel = con.sql("SELECT t, x0, y FROM ticks ORDER BY t")
-            bank.fit(pl.scan_arrow_c_stream(rel))
+            _bank().fit(pl.scan_arrow_c_stream(rel))
     con.close()
 
 

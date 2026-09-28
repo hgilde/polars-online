@@ -12,7 +12,6 @@ at once.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import threading
 import time
@@ -183,18 +182,29 @@ POLICIES = [
         dict(session="s", session_gap=5.0, session_shrink=0.5, long_halflife=300.0),
         id="session-shrink",
     ),
-    pytest.param(dict(on_clock_reset="reset_state"), id="clock-reset-state"),
-    pytest.param(dict(on_clock_reset="zero"), id="clock-zero"),
-    pytest.param(dict(on_clock_reset="max"), id="clock-max"),
+    pytest.param(dict(on_clock_reset="reset_state", min_backwards_jump=0.0), id="clock-reset"),
+    pytest.param({}, id="clock-error"),
 ]
+
+
+def _at_the_last_clock(bank, df: pl.DataFrame, rows) -> pl.DataFrame:
+    """`df` with `rows` dated at the bank's last learned clock: what scoring
+    reads a row before it as -- a step of 0 (task 120)."""
+    last = bank.groups()["last_clock"][0]
+    return df.with_columns(
+        t=pl.when(pl.int_range(pl.len()).is_in(list(rows))).then(last).otherwise(pl.col("t"))
+    )
 
 
 @pytest.mark.parametrize("policy", POLICIES)
 def test_session_and_clock_policies_hold(policy):
     """A row that would reset the stream is scored by a fresh one, a row that
-    would blend toward the long run by a blended copy, a session gap or a
-    backwards clock by the delta the policy defines -- each exactly as
-    `fit_predict` would have it for that row."""
+    would blend toward the long run by a blended copy, a session gap by the
+    delta the policy defines -- each exactly as `fit_predict` would have it
+    for that row. A row dated before the last learned row is scored against
+    the state as it stands, a step of 0, under either `on_clock_reset`:
+    scoring learns nothing, so it neither refuses nor starts over, and such
+    a row scores as it would at the last learned clock (task 120)."""
     df = _frame(n=60, groups=("a",)).with_columns(s=pl.lit("one"))
     specs = [_spec("ewridge", {"max_rows_between_solves": 1}, **policy)]
     bank = po.ModelBank(specs)
@@ -208,14 +218,17 @@ def test_session_and_clock_policies_hold(policy):
         .then(pl.col("t") - 200.0)
         .otherwise(pl.col("t")),
     )
-    assert_row_oracle(bank, specs, later)
+    early = range(12, 15)
+    at_last = _at_the_last_clock(bank, later, early)
+    assert_row_oracle(bank, specs, at_last)
     out = bank.predict(later)["m"]
+    assert out.equals(bank.predict(at_last)["m"])
     n_eff = out.struct.field("n_eff").to_list()
     pred = out.struct.field("pred_y0").to_list()
-    if policy.get("session_gap") == "reset" or policy.get("on_clock_reset") == "reset_state":
+    if policy.get("session_gap") == "reset":
         # A fresh stream has nothing to say -- and the rows around it are
         # scored by the bank as it stands, unaffected.
-        fresh = range(5, 10) if "session" in policy else range(12, 15)
+        fresh = range(5, 10)
         assert all(pred[i] is None and n_eff[i] == 0.0 for i in fresh)
         assert all(pred[i] is not None for i in range(20) if i not in fresh)
     elif "session_shrink" in policy:
@@ -224,29 +237,28 @@ def test_session_and_clock_policies_hold(policy):
         assert n_eff[5] != n_eff[0]
         assert all(n_eff[i] == n_eff[0] for i in range(20) if i not in range(5, 10))
     else:
-        assert len(set(n_eff)) == 1
+        assert len(set(n_eff)) == 1 and all(p is not None for p in pred)
 
 
-def test_a_backwards_clock_under_error_is_the_same_error():
+def test_a_backwards_clock_is_scored_and_refused_only_when_learned():
+    """Under the default `"error"`, `fit_predict` refuses a row before the last
+    learned clock, naming it; `predict` scores it against the state as it
+    stands, as it would a row at the last learned clock (task 120)."""
     df = _frame(n=60, groups=("a",))
-    specs = [_spec("ewridge", {}, on_clock_reset="error")]
+    specs = [_spec("ewridge", {})]
     bank = po.ModelBank(specs)
     bank.fit_predict(df.head(40))
     bad = df.tail(20).with_columns(
         t=pl.when(pl.arange(0, 20) == 7).then(pl.col("t") - 200.0).otherwise(pl.col("t"))
     )
-    with pytest.raises(ValueError, match=r"goes backwards by .* at row 7") as predict_err:
-        bank.predict(bad)
-    with pytest.raises(ValueError, match=r"goes backwards by .* at row 7") as fit_err:
-        po.ModelBank.load_bytes(bank.save_bytes(), specs).fit_predict(bad)
-    # The one difference: when scoring, every row is measured from the last
-    # learned row, not from the row before it in the frame.
-    back = bank.groups()["last_clock"][0] - bad["t"][7]
-    assert f"goes backwards by {back} at row 7" in str(predict_err.value)
-    strip = re.compile(r"backwards by [0-9.e+-]+ at")
-    assert strip.sub("", str(predict_err.value)) == strip.sub("", str(fit_err.value))
-    # Nothing was scored, and nothing changed.
-    assert not bank.predict(df.tail(20))["m"].struct.field("pred_y0").is_null().any()
+    snap = bank.save_bytes()
+    scored = bank.predict(bad)["m"]
+    assert bank.save_bytes() == snap
+    assert scored.equals(bank.predict(_at_the_last_clock(bank, bad, [7]))["m"])
+    assert not scored.struct.field("pred_y0").is_null().any()
+    back = bad["t"][6] - bad["t"][7]
+    with pytest.raises(ValueError, match=f"goes backwards by {back} at row 7"):
+        po.ModelBank.load_bytes(snap, specs).fit_predict(bad)
 
 
 # --- what predict does not need, and does not do -------------------------------
@@ -403,8 +415,9 @@ def test_holt_extrapolates_over_the_clock_distance():
     level, trend = out.struct.field("coef").to_list()[-1]
     assert trend > 0.2, "a rising series has a rising trend"
     for ti, p in zip(ahead["t"].to_list(), pred, strict=True):
-        # `on_clock_reset = "max"`: a backwards clock is the maximum step.
-        h = 20.0 if ti < last else min(ti - last, 20.0)
+        # A row before the last learned clock is scored as the state stands:
+        # a step of 0 (task 120).
+        h = 0.0 if ti < last else min(ti - last, 20.0)
         assert p == pytest.approx(level + trend * h, abs=1e-12), (ti, h)
 
 

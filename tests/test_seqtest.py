@@ -718,15 +718,23 @@ class TestEdgeCases:
         )
         restarted = unnested(
             po.ModelBank(
-                [spec(clock="t", max_dclock=10.0, on_clock_reset="reset_state")]
+                [
+                    spec(
+                        clock="t",
+                        max_dclock=10.0,
+                        on_clock_reset="reset_state",
+                        min_backwards_jump=0.0,
+                    )
+                ]
             ).fit_predict(back)
         )
         assert restarted["n_eff"][400] == 0.0 and restarted["n_eff"][399] == 399.0
         assert restarted[:400].equals(plain[:400], null_equal=True)
         fresh = unnested(po.ModelBank([spec()]).fit_predict(df[400:]))
         assert restarted[400:].equals(fresh, null_equal=True)
-        kept = unnested(po.ModelBank([spec(clock="t", max_dclock=10.0)]).fit_predict(back))
-        assert kept.equals(plain, null_equal=True)
+        # The default refuses the step back rather than absorb it (task 120).
+        with pytest.raises(ValueError, match="goes backwards by"):
+            po.ModelBank([spec(clock="t", max_dclock=10.0)]).fit_predict(back)
 
     def test_lazy_path_equals_bank(self):
         df = frame(n=2000, m=2, seed=36, null_every=5, groups=["p", "q"])

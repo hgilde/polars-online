@@ -9,16 +9,10 @@ use online_core::{OnlineModel, SeqTest, SeqTestCfg};
 use online_polars::{Bank, Spec, output_fields, output_index};
 use polars::prelude::*;
 
-/// Ungrouped, a spec here reads the two interleaved groups' clocks as one
-/// stream, which the clock's disorder checks (on by default) rightly refuse;
-/// the ungrouped branch switches them off, the tests being about the
-/// comparison, not the clock (design note of 2026-09-19).
+/// The fixture's clock is one clock over both groups, so an ungrouped spec
+/// reads it in order.
 fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
-    let g = if group {
-        r#""group": "g","#
-    } else {
-        r#""min_backwards_jump": 0,"#
-    };
+    let g = if group { r#""group": "g","# } else { "" };
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",
@@ -36,12 +30,7 @@ fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
 }
 
 fn compare(name: &str, a: &str, b: &str, group: bool) -> Spec {
-    // As `ridge`: the ungrouped branch switches the disorder checks off.
-    let g = if group {
-        r#""group": "g","#
-    } else {
-        r#""min_backwards_jump": 0,"#
-    };
+    let g = if group { r#""group": "g","# } else { "" };
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",
@@ -88,8 +77,9 @@ fn make_df(n: usize) -> DataFrame {
     for i in 0..n {
         let g = i % 2;
         group.push(format!("g{g}"));
-        clocks[g] += 1.0 + lcg().abs() * 3.0;
-        t.push(clocks[g]);
+        // One clock over both groups, so an ungrouped spec reads it in order.
+        clocks[0] += 1.0 + lcg().abs() * 3.0;
+        t.push(clocks[0]);
         let (a, b) = (lcg(), lcg());
         x0.push(if i % 37 == 5 { None } else { Some(a) });
         x1.push(Some(b));

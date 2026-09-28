@@ -42,7 +42,11 @@ REJECTED = [
         dict(halflife=10.0, ridge=[1e-6, 1e-6]),
         "ridge lists 0.000001 more than once",
     ),
-    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=-5.0), "max_dclock must be >= 0"),
+    (
+        po.spec.ewridge,
+        dict(halflife=10.0, clock="t", max_dclock=-5.0),
+        "max_dclock must be a finite number > 0",
+    ),
     (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=NAN), "max_dclock must not be NaN"),
     (
         po.spec.ewridge,
@@ -174,7 +178,32 @@ REJECTED = [
         'session_shrink does not apply with group_close = "session"',
     ),
     (po.spec.ewridge, dict(halflife=10.0, session_gap=5.0), "session_gap needs session"),
-    (po.spec.ewridge, dict(halflife=10.0, on_clock_reset="zero"), "on_clock_reset needs clock"),
+    (
+        po.spec.ewridge,
+        dict(halflife=10.0, on_clock_reset="reset_state", min_backwards_jump=1.0),
+        "on_clock_reset needs clock",
+    ),
+    # The policies that absorbed a step back are gone (task 120); the parser
+    # refuses them before a spec has a name, in test_clock_order.py.
+    # The cap is finite and above 0; a session gap finite or "reset".
+    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=INF), "max_dclock must be finite"),
+    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=0.0), "max_dclock must be > 0"),
+    (
+        po.spec.ewridge,
+        dict(halflife=10.0, clock="t", max_dclock=10.0, session="s", session_gap=INF),
+        "session_gap must be finite",
+    ),
+    # What a late row is, the caller says under "reset_state", and only there.
+    (
+        po.spec.ewridge,
+        dict(halflife=10.0, clock="t", max_dclock=10.0, on_clock_reset="reset_state"),
+        "min_backwards_jump is required",
+    ),
+    (
+        po.spec.ewridge,
+        dict(halflife=10.0, clock="t", max_dclock=10.0, min_backwards_jump=1.0),
+        'applies only under on_clock_reset = "reset_state"',
+    ),
     # The eight counts whose floor is 1 say so in the builder (D8).
     (
         po.spec.ewridge,
@@ -186,8 +215,6 @@ REJECTED = [
 ACCEPTED = [
     (po.spec.ewridge, dict(halflife=10.0, ridge=0.0)),
     (po.spec.ewridge, dict(halflife=10.0, ridge=[1e-6, 1e-3])),
-    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=INF)),
-    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=0.0)),
     (
         po.spec.ewridge,
         dict(halflife=10.0, clock="t", max_dclock=10.0, session="s", session_gap=0.0),
@@ -214,7 +241,16 @@ ACCEPTED = [
             long_halflife=100.0,
         ),
     ),
-    (po.spec.ewridge, dict(halflife=10.0, clock="t", max_dclock=10.0, on_clock_reset="zero")),
+    (
+        po.spec.ewridge,
+        dict(
+            halflife=10.0,
+            clock="t",
+            max_dclock=10.0,
+            on_clock_reset="reset_state",
+            min_backwards_jump=0.0,
+        ),
+    ),
 ]
 
 

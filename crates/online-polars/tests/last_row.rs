@@ -50,15 +50,13 @@ fn other_specs() -> Vec<Spec> {
         "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
         "halflife": 20.0, "max_dclock": 30.0, "group": "g"
     }"#;
-    // Ungrouped over the two interleaved groups, `c` sees their clocks as one
-    // stream; the disorder checks (on by default) would rightly refuse that,
-    // and are off here because the test is about the last row, not the clock.
+    // Ungrouped over the two interleaved groups, `c` reads the frame's one
+    // clock as one stream.
     let cov = r#"{
         "name": "c",
         "model": {"type": "ew_cov"},
         "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
-        "halflife": 20.0, "max_dclock": 30.0,
-        "min_backwards_jump": 0
+        "halflife": 20.0, "max_dclock": 30.0
     }"#;
     vec![
         serde_json::from_str(lasso).unwrap(),
@@ -82,8 +80,9 @@ fn make_df(n: usize) -> DataFrame {
     for i in 0..n {
         let g = i % 2;
         group.push(format!("g{g}"));
-        clocks[g] += 1.0 + lcg().abs() * 5.0;
-        t.push(clocks[g]);
+        // One clock over both groups, so the ungrouped `c` reads it in order.
+        clocks[0] += 1.0 + lcg().abs() * 5.0;
+        t.push(clocks[0]);
         let (a, b) = (lcg(), lcg());
         x0.push((i % 17 != 5).then_some(a));
         x1.push(Some(b));
@@ -255,10 +254,7 @@ fn predict_does_not_move_it_and_a_fresh_group_has_none() {
 
     // A group whose every row so far was skipped has a stream (it is listed
     // by `groups`) and no learned row: a row of nulls, `group` aside.
-    // Six rows of one group, so the fabricated group's clock is monotone:
-    // six consecutive rows interleave both groups' clocks and step back by
-    // less than `max_dclock`, which the disorder check refuses as a late
-    // row -- rightly, and beside the point here.
+    // Six rows of one group, so the fabricated group's clock is monotone.
     let skipped = df
         .lazy()
         .filter(col("g").eq(lit("g0")))

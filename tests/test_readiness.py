@@ -103,7 +103,7 @@ class TestSettledFrac:
         df = frame(40).with_columns(
             pl.when(pl.col("t") >= 20).then(pl.col("t") + 1e6).otherwise(pl.col("t")).alias("t")
         )
-        s = spec(clock="t", halflife=10.0, max_dclock=5.0, min_backwards_jump=0.0)
+        s = spec(clock="t", halflife=10.0, max_dclock=5.0)
         got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
         # Rows 1..19 are one unit apart (19 units before row 20); the jump
         # at row 20 counts 5, not 1e6, and is seen from row 21 on.
@@ -115,7 +115,13 @@ class TestSettledFrac:
         df = frame(40).with_columns(
             pl.when(pl.col("t") >= 20).then(pl.col("t") - 100.0).otherwise(pl.col("t")).alias("t")
         )
-        s = spec(clock="t", halflife=10.0, max_dclock=5.0, on_clock_reset="reset_state")
+        s = spec(
+            clock="t",
+            halflife=10.0,
+            max_dclock=5.0,
+            on_clock_reset="reset_state",
+            min_backwards_jump=0.0,
+        )
         got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
         # The reset row is a first row again: it decays by nothing.
         assert got[20] == 0.0 and got[21] == 0.0

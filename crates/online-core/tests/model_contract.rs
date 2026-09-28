@@ -1625,6 +1625,92 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
         "{kind}: only {ready} rows had every slot ready"
     );
     zero_weight_rows_only_advance_the_clock(&build, targets, binary, kind);
+    a_zero_weight_row_past_the_underflow_forgets(&build, targets, binary, kind);
+}
+
+/// Task 115 (c), decided 2026-09-28: a zero-weight row whose decay
+/// underflows to exactly 0 -- `2^-1075` rounds to 0, so from 1075 halflives
+/// on -- forgets the history, as the decay does. It used to keep it: the
+/// mean-form update is `0/0` there, the guard skipped the row whole, and the
+/// next row saw the old count (PLAN §12). "As the decay does" is the same row
+/// one halflife short, whose factor `2^-1074` is the smallest double: it
+/// ages the history to nothing, and the two streams must agree from there
+/// on. The row after the one that forgot reports no weight, unless the
+/// model's weight does not decay at all.
+///
+/// Predictions are compared too, except where the reference is not "the
+/// history aged to nothing": `kalman` adds `Q·d` to its covariance and
+/// `holt` carries its level along its trend, so a halflife more of gap is a
+/// different state for both; `ew_class` counts a class of subnormal weight
+/// as present and one of weight 0 as absent, a threshold rather than an age;
+/// and `hmm` one halflife short is not a sane state -- a subnormal history
+/// share leaves its co-moments and precision prior a few bits, and its
+/// densities NaN for 39 of the next 40 rows, which do not count towards its
+/// `n_eff` either (from about 1025 halflives; PLAN task 115 (c), measured
+/// 2026-09-28 and raised, not fixed). `hmm` keeps the first check alone.
+fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
+    build: &impl Fn() -> M,
+    targets: usize,
+    binary: bool,
+    kind: &'static str,
+) {
+    const NOT_COMPARED: [&str; 4] = ["kalman", "holt", "ew_class", "hmm"];
+    let row = |s: &mut u64| {
+        let x: Vec<f64> = (0..K).map(|_| lcg(s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| {
+                let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(s);
+                Some(if binary { f64::from(lin > 0.5) } else { lin })
+            })
+            .collect();
+        (x, y)
+    };
+    let run = |gap: f64| -> Vec<Step> {
+        let mut m = build();
+        let mut s = 20260928u64;
+        for i in 0..40 {
+            let (x, y) = row(&mut s);
+            m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let (x, y) = row(&mut s);
+        m.step(&x, &y, gap, 0.0);
+        (0..40)
+            .map(|_| {
+                let (x, y) = row(&mut s);
+                m.step(&x, &y, 1.0, 1.0)
+            })
+            .collect()
+    };
+    assert_eq!(decay().factor(1075.0 * HALFLIFE), 0.0);
+    assert!(decay().factor(1074.0 * HALFLIFE) > 0.0);
+    let forgot = run(1075.0 * HALFLIFE);
+    let aged = run(1074.0 * HALFLIFE);
+    assert!(
+        forgot[0].n_eff == 0.0 || forgot[0].n_eff == aged[0].n_eff,
+        "{kind}: the row after a zero-weight row 1075 halflives on reports n_eff {}, a \
+         history the decay forgot",
+        forgot[0].n_eff
+    );
+    let close = |a: f64, b: f64| {
+        a == b || (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + b.abs())
+    };
+    if kind == "hmm" {
+        return;
+    }
+    for (i, (a, b)) in forgot.iter().zip(&aged).enumerate() {
+        let preds = NOT_COMPARED.contains(&kind)
+            || a.pred.len() == b.pred.len()
+                && a.pred.iter().zip(&b.pred).all(|(p, q)| close(*p, *q));
+        assert!(
+            close(a.n_eff, b.n_eff) && preds,
+            "{kind}: row {i} after the zero-weight row: n_eff {} and {:?} where its decay \
+             underflowed, n_eff {} and {:?} one halflife short of that",
+            a.n_eff,
+            a.pred,
+            b.n_eff,
+            b.pred
+        );
+    }
 }
 
 /// Hard rules 8 and 9, together and without naming a decay: a zero-weight

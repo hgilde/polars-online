@@ -45,22 +45,22 @@ impl Decay {
     }
 }
 
-/// What to do when the raw clock delta is negative (docs/PLAN.md §3).
+/// What a clock that goes back within a session means (docs/PLAN.md §3 and
+/// task 120). Two policies: `"max"`, which took `max_dclock` as the step,
+/// and `"zero"`, which took none, were removed on 2026-09-28 -- a cap is not
+/// a step, and both absorbed a data bug into plausible, wrong output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnClockReset {
-    /// Treat the delta as `max_dclock` (default).
+    /// Refuse the row (the default). A backwards clock is usually a data
+    /// bug -- a mis-sorted chunk, or rows from two streams interleaved --
+    /// and absorbing it gives plausible but wrong output.
     #[default]
-    Max,
-    /// Treat the delta as zero.
-    Zero,
-    /// Reset the model state.
-    ResetState,
-    /// Refuse the row. A backwards clock is usually a data bug — a mis-sorted
-    /// chunk, or rows from two streams interleaved — and the other policies
-    /// absorb it silently, producing plausible but wrong output. This makes it
-    /// loud (PLAN §5: "the bank asserts monotonicity ... and errors loudly").
     Error,
+    /// The clock resets on purpose: a step back by more than
+    /// `min_backwards_jump` starts the model over, and one by no more than
+    /// it is a late row, refused as [`Disorder`].
+    ResetState,
 }
 
 /// Delta override applied on a session change.
@@ -77,26 +77,24 @@ pub enum SessionGap {
 pub struct ClockCfg {
     /// Ceiling on the clock delta a model sees between two rows it learns
     /// from: a row's own delta, and the total a run of skipped rows carries
-    /// into the next accepted one (review 2026-09-12, S3). Required when a
-    /// clock column is used; `f64::INFINITY` is valid for row-count clocks.
+    /// into the next accepted one (review 2026-09-12, S3), and the gap past
+    /// which two rows are no longer adjacent ([`ClockAdvance::capped`]). The
+    /// spec requires it finite and positive with a clock column (task 120);
+    /// `f64::INFINITY` is the row-count clock's, whose step is always 1.
     pub max_dclock: f64,
     pub on_clock_reset: OnClockReset,
     pub session_gap: Option<SessionGap>,
-    /// A backwards clock jump smaller than this, in clock units, is refused as
-    /// [`Disorder`] whatever `on_clock_reset` says: `max_dclock` is the most
-    /// two adjacent rows can be apart and a session is longer than that, so a
-    /// jump back by less than it is a late row, not a boundary. A jump of at
-    /// least this much takes the policy. `0` disables; the spec defaults it
-    /// to `max_dclock`, and to 0 under an infinite cap, which gives the check
-    /// nothing to compare against.
+    /// Under [`OnClockReset::ResetState`], a step back by no more than this,
+    /// in clock units, is a late row and is refused as [`Disorder`]; a
+    /// larger one resets the model. `0` resets on every step back. Unread
+    /// under [`OnClockReset::Error`], which refuses every step back; the spec
+    /// requires it with `"reset_state"` and refuses it with `"error"`.
     pub min_backwards_jump: f64,
 }
 
 impl Default for ClockCfg {
-    /// The disorder check **off** here: this is the bare core default. The
-    /// spec layer is where "on by default" lives (`min_backwards_jump =
-    /// max_dclock`), so a direct core caller opts in explicitly and the
-    /// core's own tests keep their literal meaning.
+    /// The bare core default: a row-count clock's infinite cap, and the
+    /// default policy, which refuses a step back.
     fn default() -> Self {
         Self {
             max_dclock: f64::INFINITY,
@@ -107,9 +105,9 @@ impl Default for ClockCfg {
     }
 }
 
-/// Why a backwards clock jump was refused as obviously out-of-order data,
-/// carried on [`ClockAdvance::disorder`] for the caller's message: the jump
-/// and the minimum it fell short of.
+/// Why a backwards clock jump was refused as a late row under
+/// `"reset_state"`, carried on [`ClockAdvance::disorder`] for the caller's
+/// message: the step and the minimum it did not exceed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Disorder {
     /// How far the clock stepped back, in clock units.
@@ -129,13 +127,13 @@ pub struct ClockAdvance {
     /// Whether the row was accepted (mirrors the `accept` argument).
     pub accepted: bool,
     /// Set when the raw delta was negative and the row is refused: under
-    /// `on_clock_reset` = [`OnClockReset::Error`], or -- whatever the policy
-    /// -- when the jump is smaller than `min_backwards_jump` (`disorder`
+    /// [`OnClockReset::Error`], or under [`OnClockReset::ResetState`] when
+    /// the step back is no larger than `min_backwards_jump` (`disorder`
     /// carries the numbers). The caller must turn this into an error naming
     /// the row. Carries the offending raw delta.
     pub backwards: Option<f64>,
-    /// With `backwards`: the jump and the minimum it fell short of, `None`
-    /// when it was the `error` policy alone.
+    /// With `backwards`: the step and the minimum it did not exceed, `None`
+    /// when it was the `error` policy.
     pub disorder: Option<Disorder>,
     /// The session id differs from the previous row's. Reported separately
     /// from `reset` so a caller can do something gentler than starting over —
@@ -256,7 +254,7 @@ impl ClockState {
     /// ```
     /// use online_core::{ClockCfg, ClockState, ClockValue, OnClockReset};
     ///
-    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Max, ..ClockCfg::default() };
+    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Error, ..ClockCfg::default() };
     /// let mut clock = ClockState::new();
     /// // The first row of a stream has nothing to be a delta from.
     /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1000.0)), None, true).d_clock, 0.0);
@@ -288,6 +286,31 @@ impl ClockState {
         clock: Option<ClockValue>,
         session: Option<u64>,
         accept: bool,
+    ) -> ClockAdvance {
+        self.step(cfg, clock, session, accept, false)
+    }
+
+    /// [`Self::advance`] for a row that is scored and not learned from: a
+    /// row before the last learned clock is scored against the state as it
+    /// stands -- a step of 0, never refused, never a reset -- whatever the
+    /// policy, since scoring changes nothing that a late row could corrupt
+    /// and re-scoring learned rows is ordinary (docs/PLAN.md task 120).
+    pub fn advance_scoring(
+        &mut self,
+        cfg: &ClockCfg,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> ClockAdvance {
+        self.step(cfg, clock, session, true, true)
+    }
+
+    fn step(
+        &mut self,
+        cfg: &ClockCfg,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+        scoring: bool,
     ) -> ClockAdvance {
         let raw = match (clock, self.prev_clock) {
             (Some(c), Some(p)) => Some(c.delta(p)),
@@ -328,45 +351,32 @@ impl ClockState {
                         }
                     }
                 } else if raw < 0.0 {
-                    // Obvious disorder is refused whatever the absorbing
-                    // policy says: a reset or a capped delta on shuffled or
-                    // interleaved rows is worse than stopping. One rule, off
-                    // at 0: `max_dclock` is the most two adjacent rows can be
-                    // apart and a session is longer than that, so a jump back
-                    // by less than `min_backwards_jump` (the spec defaults it
-                    // to `max_dclock`) is a late row, not a boundary. A jump
-                    // of at least that much takes the policy. Strict `<`: a
-                    // jump equal to the minimum meets it. The `error` policy
-                    // refuses every backwards jump already and keeps its own
-                    // message: the rule adds nothing there.
+                    // A step back within a session. Scored, it is the state
+                    // as it stands. Learned, `"error"` refuses it; under
+                    // `"reset_state"` a step back by no more than
+                    // `min_backwards_jump` is a late row and is refused too
+                    // -- inclusive, so a `Date` clock's one-day step back is
+                    // caught at a one-day minimum -- and a larger one starts
+                    // the model over.
                     let back = -raw;
-                    let refuses_all = matches!(cfg.on_clock_reset, OnClockReset::Error);
-                    let too_small = !refuses_all
-                        && cfg.min_backwards_jump > 0.0
-                        && back < cfg.min_backwards_jump;
-                    if too_small {
-                        disorder = Some(Disorder {
-                            back,
-                            min_backwards_jump: cfg.min_backwards_jump,
-                        });
-                        backwards = Some(raw);
+                    if scoring {
                         0.0
                     } else {
                         match cfg.on_clock_reset {
-                            OnClockReset::Max => {
-                                // The policy says "as far apart as they can
-                                // be", which is the ceiling: adjacency is
-                                // gone.
-                                capped = true;
-                                cfg.max_dclock
-                            }
-                            OnClockReset::Zero => 0.0,
-                            OnClockReset::ResetState => {
-                                reset = true;
-                                0.0
-                            }
                             OnClockReset::Error => {
                                 backwards = Some(raw);
+                                0.0
+                            }
+                            OnClockReset::ResetState if back <= cfg.min_backwards_jump => {
+                                disorder = Some(Disorder {
+                                    back,
+                                    min_backwards_jump: cfg.min_backwards_jump,
+                                });
+                                backwards = Some(raw);
+                                0.0
+                            }
+                            OnClockReset::ResetState => {
+                                reset = true;
                                 0.0
                             }
                         }
@@ -537,16 +547,11 @@ mod tests {
         assert!(!c.advance(&cfg, None, None, true).capped);
     }
 
+    /// A step back is refused or starts the model over; neither is a capped
+    /// gap (the removed `"max"` policy's step was the ceiling, and capped).
     #[test]
-    fn capped_follows_the_backwards_policy() {
-        // `max` says "as far apart as they can be", which is the ceiling:
-        // adjacency is gone, and the ring must go with it.
-        for (policy, want) in [
-            (OnClockReset::Max, true),
-            (OnClockReset::Zero, false),
-            (OnClockReset::ResetState, false),
-            (OnClockReset::Error, false),
-        ] {
+    fn a_step_back_caps_nothing() {
+        for policy in [OnClockReset::ResetState, OnClockReset::Error] {
             let cfg = ClockCfg {
                 max_dclock: 60.0,
                 on_clock_reset: policy,
@@ -554,12 +559,8 @@ mod tests {
             };
             let mut c = ClockState::new();
             c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
-            assert_eq!(
-                c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true)
-                    .capped,
-                want,
-                "{policy:?}"
-            );
+            let a = c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true);
+            assert!(!a.capped, "{policy:?}");
         }
     }
 
@@ -567,7 +568,6 @@ mod tests {
     fn a_session_gap_caps_only_when_it_is_over_the_ceiling() {
         let with_gap = |g: f64| ClockCfg {
             max_dclock: 60.0,
-            on_clock_reset: OnClockReset::Max,
             session_gap: Some(SessionGap::Gap(g)),
             ..Default::default()
         };
@@ -582,7 +582,6 @@ mod tests {
         // A session reset rebuilds the model, so it caps nothing.
         let cfg = ClockCfg {
             max_dclock: 60.0,
-            on_clock_reset: OnClockReset::Max,
             session_gap: Some(SessionGap::Reset),
             ..Default::default()
         };
@@ -605,53 +604,70 @@ mod tests {
     fn caps_and_negative_deltas() {
         // Mirrors test_compute_dclock_semantics in tests/reference.py.
         let t = [0.0, 10.0, 5.0, 6.0, 200.0];
-        let mut c = ClockState::new();
         let cfg = cfg(50.0);
+        // Scored: a step back is no step, and a gap past the cap is the cap.
+        let mut c = ClockState::new();
         let got: Vec<f64> = t
             .iter()
             .map(|&ti| {
-                c.advance(&cfg, Some(ClockValue::F64(ti)), None, true)
+                c.advance_scoring(&cfg, Some(ClockValue::F64(ti)), None)
                     .d_clock
             })
             .collect();
-        assert_eq!(got, vec![0.0, 10.0, 50.0, 1.0, 50.0]);
-
+        assert_eq!(got, vec![0.0, 10.0, 0.0, 1.0, 50.0]);
+        // Learned, the default policy refuses the step back ...
         let mut c = ClockState::new();
-        let zero = ClockCfg {
-            on_clock_reset: OnClockReset::Zero,
-            ..cfg
-        };
-        c.advance(&zero, Some(ClockValue::F64(0.0)), None, true);
-        c.advance(&zero, Some(ClockValue::F64(10.0)), None, true);
-        assert_eq!(
-            c.advance(&zero, Some(ClockValue::F64(5.0)), None, true)
-                .d_clock,
-            0.0
-        );
-
-        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true);
+        c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(5.0)), None, true);
+        assert_eq!(a.backwards, Some(-5.0));
+        assert!(!a.reset);
+        // ... and `reset_state` starts over past its minimum.
         let rst = ClockCfg {
             on_clock_reset: OnClockReset::ResetState,
+            min_backwards_jump: 2.0,
             ..cfg
         };
+        let mut c = ClockState::new();
         c.advance(&rst, Some(ClockValue::F64(0.0)), None, true);
         c.advance(&rst, Some(ClockValue::F64(10.0)), None, true);
         let a = c.advance(&rst, Some(ClockValue::F64(5.0)), None, true);
-        assert!(a.reset && a.d_clock == 0.0);
+        assert!(a.reset && a.d_clock == 0.0 && a.backwards.is_none());
+    }
+
+    /// Scoring never refuses and never resets: a row before the last
+    /// learned clock is scored against the state as it stands, under either
+    /// policy, and a late row's minimum does not apply.
+    #[test]
+    fn a_scored_step_back_is_the_state_as_it_stands() {
+        for policy in [OnClockReset::Error, OnClockReset::ResetState] {
+            let cfg = ClockCfg {
+                max_dclock: 50.0,
+                on_clock_reset: policy,
+                min_backwards_jump: 5.0,
+                ..Default::default()
+            };
+            let mut c = ClockState::new();
+            c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
+            for t in [99.0, 10.0] {
+                let a = c
+                    .clone()
+                    .advance_scoring(&cfg, Some(ClockValue::F64(t)), None);
+                assert_eq!(
+                    (a.d_clock, a.reset, a.backwards),
+                    (0.0, false, None),
+                    "{policy:?}"
+                );
+            }
+        }
     }
 
     /// A repeated clock value is a *zero* delta, not a backwards one: it must
     /// not be routed through `on_clock_reset`. (Found by `cargo mutants`:
-    /// nothing here distinguished `raw < 0.0` from `raw <= 0.0`, and under the
-    /// default `Max` policy that is a whole `max_dclock` of spurious decay.)
+    /// nothing here distinguished `raw < 0.0` from `raw <= 0.0`.)
     #[test]
     fn duplicate_clock_values_are_zero_deltas() {
-        for policy in [
-            OnClockReset::Max,
-            OnClockReset::Zero,
-            OnClockReset::ResetState,
-            OnClockReset::Error,
-        ] {
+        for policy in [OnClockReset::ResetState, OnClockReset::Error] {
             let mut c = ClockState::new();
             let cfg = ClockCfg {
                 max_dclock: 10.0,
@@ -669,14 +685,12 @@ mod tests {
                 "{policy:?}: repeated clock must give delta 0"
             );
             assert!(
-                !a.reset,
-                "{policy:?}: a repeated clock must not reset state"
+                !a.reset && a.backwards.is_none(),
+                "{policy:?}: a repeated clock is neither a reset nor a step back"
             );
-            // and a genuinely backwards clock still is handled by the policy
+            // and a genuinely backwards clock is handled by the policy
             let b = c.advance(&cfg, Some(ClockValue::F64(4.0)), None, true);
             match policy {
-                OnClockReset::Max => assert_eq!(b.d_clock, 10.0),
-                OnClockReset::Zero => assert_eq!(b.d_clock, 0.0),
                 OnClockReset::ResetState => assert!(b.reset),
                 OnClockReset::Error => assert_eq!(b.backwards, Some(-1.0)),
             }
@@ -758,14 +772,16 @@ mod tests {
         assert!(a.reset);
     }
 
-    /// A backwards jump smaller than `min_backwards_jump` is out-of-order
-    /// data whatever the policy: `max_dclock` is the most two adjacent rows
-    /// can be apart, so a jump back by less cannot be a session boundary.
-    /// Strict `<`: a jump equal to the minimum meets it and is a boundary.
+    /// Under `"reset_state"` a step back by no more than
+    /// `min_backwards_jump` is a late row and is refused; inclusive, so a
+    /// step equal to the minimum is caught (task 120: a `Date` clock's
+    /// one-day step back at a one-day minimum used to pass). A larger one
+    /// starts the model over.
     #[test]
-    fn a_backwards_jump_under_the_minimum_is_refused() {
+    fn a_step_back_no_larger_than_the_minimum_is_a_late_row() {
         let cfg = ClockCfg {
             max_dclock: 100.0,
+            on_clock_reset: OnClockReset::ResetState,
             min_backwards_jump: 100.0,
             ..Default::default()
         };
@@ -787,14 +803,15 @@ mod tests {
             })
         );
         assert_eq!(a.d_clock, 0.0);
-        // Equal to the minimum: a boundary, absorbed by the `max` policy.
-        let mut c = ClockState::new();
-        for t in [0.0, 10.0, 200.0] {
-            c.advance(&cfg, Some(ClockValue::F64(t)), None, true);
+        assert!(!a.reset);
+        for (back, late) in [(100.0, true), (100.5, false)] {
+            let mut c = ClockState::new();
+            c.advance(&cfg, Some(ClockValue::F64(200.0)), None, true);
+            let b = c.advance(&cfg, Some(ClockValue::F64(200.0 - back)), None, true);
+            assert_eq!(b.disorder.is_some(), late, "a step back of {back}");
+            assert_eq!(b.reset, !late, "a step back of {back}");
+            assert!(!b.capped);
         }
-        let b = c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
-        assert!(b.backwards.is_none() && b.disorder.is_none() && b.capped);
-        assert_eq!(b.d_clock, 100.0);
     }
 
     /// The very first delta is judged like any other: no warmup, no
@@ -803,6 +820,7 @@ mod tests {
     fn the_first_delta_is_judged_like_any_other() {
         let cfg = ClockCfg {
             max_dclock: 100.0,
+            on_clock_reset: OnClockReset::ResetState,
             min_backwards_jump: 100.0,
             ..Default::default()
         };
@@ -814,40 +832,32 @@ mod tests {
                 .is_some()
         );
         let mut c = ClockState::new();
-        c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
-        assert!(
-            c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true)
-                .disorder
-                .is_none()
-        );
+        c.advance(&cfg, Some(ClockValue::F64(150.0)), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true);
+        assert!(a.disorder.is_none() && a.reset);
     }
 
-    /// At 0 -- the core default -- every backwards jump takes the policy as
-    /// before, however small.
+    /// A minimum of 0 under `"reset_state"` says every step back is a reset,
+    /// however small.
     #[test]
-    fn the_check_off_leaves_the_policy_alone() {
+    fn a_minimum_of_zero_resets_on_every_step_back() {
         let cfg = ClockCfg {
             max_dclock: 1e9,
+            on_clock_reset: OnClockReset::ResetState,
             ..Default::default()
         };
         let mut c = ClockState::new();
         for t in [0.0, 10.0, 20.0] {
             c.advance(&cfg, Some(ClockValue::F64(t)), None, true);
         }
-        assert!(
-            c.advance(&cfg, Some(ClockValue::F64(19.0)), None, true)
-                .backwards
-                .is_none()
-        );
-        assert!(
-            c.advance(&cfg, Some(ClockValue::F64(18.0)), None, true)
-                .backwards
-                .is_none()
-        );
+        for t in [19.0, 18.9] {
+            let a = c.advance(&cfg, Some(ClockValue::F64(t)), None, true);
+            assert!(a.backwards.is_none() && a.reset, "{t}");
+        }
     }
 
-    /// The `error` policy refuses every backwards jump already and keeps its
-    /// own report: `disorder` stays `None` there.
+    /// The `error` policy refuses every backwards jump and reads no minimum:
+    /// `disorder` stays `None` there, whatever `min_backwards_jump` holds.
     #[test]
     fn the_error_policy_keeps_its_own_refusal() {
         let cfg = ClockCfg {
@@ -861,6 +871,11 @@ mod tests {
         let a = c.advance(&cfg, Some(ClockValue::F64(7.0)), None, true);
         assert_eq!(a.backwards, Some(-3.0));
         assert!(a.disorder.is_none());
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(500.0)), None, true);
+        let b = c.advance(&cfg, Some(ClockValue::F64(7.0)), None, true);
+        assert_eq!(b.backwards, Some(-493.0));
+        assert!(!b.reset);
     }
 
     #[test]
@@ -903,5 +918,82 @@ mod tests {
         assert_eq!(Decay::Halflife(f64::INFINITY).factor(123.0), 1.0);
         assert!((Decay::Lam(0.9).factor(2.0) - 0.81).abs() < 1e-15);
         assert_eq!(Decay::Halflife(10.0).factor(0.0), 1.0);
+    }
+}
+
+/// Task 120, decided 2026-09-28: no model ever receives a non-finite step.
+/// Every step a model is handed comes from [`ClockState::advance`] or
+/// [`ClockState::advance_scoring`], so the property is held here, over every
+/// configuration the spec lets through -- a finite positive cap with a clock
+/// and none without one, either policy with any finite minimum, a finite
+/// session gap or `"reset"` -- and clocks that step back, repeat, jump by
+/// `1e300` and change session anywhere. An infinite cap or session gap
+/// handed a model `+inf` at a step back or a session change before the
+/// decision (`holt` then predicted null for good).
+#[cfg(test)]
+mod finite_steps {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn cfg() -> impl Strategy<Value = (ClockCfg, bool)> {
+        (
+            prop_oneof![Just(None), (1e-9f64..1e12).prop_map(Some)],
+            any::<bool>(),
+            0.0f64..1e12,
+            prop_oneof![
+                Just(None),
+                Just(Some(SessionGap::Reset)),
+                (0.0f64..1e13).prop_map(|g| Some(SessionGap::Gap(g))),
+            ],
+        )
+            .prop_map(|(cap, reset, min, session_gap)| {
+                let temporal = cap.is_some();
+                (
+                    ClockCfg {
+                        // A row-count clock has no cap (`Spec::clock_cfg`).
+                        max_dclock: cap.unwrap_or(f64::INFINITY),
+                        on_clock_reset: if reset {
+                            OnClockReset::ResetState
+                        } else {
+                            OnClockReset::Error
+                        },
+                        session_gap,
+                        min_backwards_jump: min,
+                    },
+                    temporal,
+                )
+            })
+    }
+
+    fn clock() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            -1e300f64..1e300,
+            -1e6f64..1e6,
+            Just(0.0),
+            Just(1e300),
+            Just(-1e300),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn every_step_is_finite(
+            (cfg, with_clock) in cfg(),
+            rows in prop::collection::vec((clock(), 0u64..3, any::<bool>()), 1..40),
+        ) {
+            let mut learned = ClockState::new();
+            for (t, session, accept) in rows {
+                let c = with_clock.then_some(ClockValue::F64(t));
+                let scored = learned.clone().advance_scoring(&cfg, c, Some(session));
+                let a = learned.advance(&cfg, c, Some(session), accept);
+                for (what, d) in [("learned", a.d_clock), ("scored", scored.d_clock)] {
+                    prop_assert!(
+                        d.is_finite() && d >= 0.0 && d <= cfg.max_dclock,
+                        "{what} step {d} under {cfg:?}"
+                    );
+                }
+            }
+        }
     }
 }

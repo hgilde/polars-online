@@ -247,7 +247,7 @@ parameter for each:
 |---|---|
 | a **session** boundary, such as the start of a trading day, where the clock's jump is not elapsed time | applies a step you choose, `session_gap`, in place of the jump |
 | a **gap** in the clock, such as an hour with no rows | caps each step at `max_dclock`, so a quiet hour does not age the fit like a busy one |
-| a clock that **resets** or runs backwards between sessions | follows a policy, `on_clock_reset` |
+| a clock that **steps back**, such as a replayed day | refuses it, or starts the model over, by `on_clock_reset` |
 
 ```python
 timed = po.spec.ewridge(
@@ -255,19 +255,17 @@ timed = po.spec.ewridge(
     clock="ts",                           # a Datetime column, so every clock parameter is a duration
     halflife=pl.duration(minutes=10),     # a row's weight halves every ten minutes of ts
     max_dclock=pl.duration(minutes=5),    # the most the clock may step between two rows a model learns from;
-                                          # required with a clock
-    on_clock_reset="max",                 # a backwards clock: "max" (the step is max_dclock), "zero",
-                                          # "reset_state", or "error"
-    # A backwards jump smaller than min_backwards_jump (default max_dclock) is refused whatever
-    # the policy, and the bank is untouched: adjacent rows are never further apart than the cap
-    # and a session is longer, so that is a late row, not a boundary. 0 switches the check off.
+                                          # required with a clock, finite and above 0
+    on_clock_reset="reset_state",         # a step back: "error", the default, refuses the chunk;
+                                          # "reset_state" starts the model over ...
+    min_backwards_jump=pl.duration(minutes=1),  # ... unless the step is no larger than this: a late row,
+                                          # refused. Required with "reset_state"
     session="session",                    # a column whose value changes at a session boundary ...
     session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there, at most max_dclock;
                                           # "reset" starts the model over
 )
 # halflife=inf turns forgetting off. A list of halflives fits one model per value.
-# max_dclock=0 turns forgetting off; max_dclock=inf removes the cap. The cap also bounds the step
-# a run of skipped rows hands the row after them, however long the run.
+# The cap also bounds the step a run of skipped rows hands the row after them, however long the run.
 # ewridge only: session_shrink= and long_halflife= pull the fit partway back, at a session
 # boundary, toward a twin that forgets more slowly.
 
@@ -288,7 +286,7 @@ refuses either before it reads a row, naming the column, the parameter and
 the fix. It also refuses a spec that mixes the two kinds, and a duration
 finer than the clock can act on, such as `max_dclock="12h"` on a `Date`
 clock, which moves in days. `0` and `inf` mean the same in every unit, so
-they may stay numbers.
+where a parameter takes them they may stay numbers.
 
 A temporal clock is read in its own integer nanoseconds, so the same
 instants stored in milliseconds, microseconds or nanoseconds give the same
@@ -558,7 +556,7 @@ warns. The other two refuse a chunk before any of its rows is learned.
 
 | check | what it reads | when it finds disorder |
 |---|---|---|
-| the query | the plan handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` sits above it | raises `OrderNotGuaranteedWarning`, naming the step and its fix; the run goes on |
+| the query | the plan handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` sits above it, and a sort by several keys without `maintain_order=True` | raises `OrderNotGuaranteedWarning`, naming the step and its fix; the run goes on |
 | the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
 | the group keys | with `group_close="monotone"`, the keys in the column's own order | refuses the chunk on a key below one already closed, since a closed group cannot reopen |
 
@@ -568,46 +566,56 @@ be in clock order. Equal clock values are a gap of zero. A row with a null
 feature is skipped, but its clock is still checked. On a temporal clock the
 comparison is exact, in integer nanoseconds.
 
-**The size of a backwards step decides what it means:**
+**The policy and the size of a step back decide what it means:**
 
-| a step back of | is read as | and the bank |
+| a step back | is read as | and the bank |
 |---|---|---|
-| less than `min_backwards_jump` | rows out of order: adjacent rows are never further apart than `max_dclock`, and a session is longer | refuses the chunk, whatever `on_clock_reset` says |
-| at least `min_backwards_jump` | a boundary, such as a clock that restarts | follows `on_clock_reset`: `"max"`, the default, takes a gap of `max_dclock`, `"zero"` a gap of 0, `"reset_state"` restarts the model, and `"error"` refuses the chunk |
+| any size, under `on_clock_reset="error"`, the default | rows out of order | refuses the chunk |
+| no larger than `min_backwards_jump`, under `"reset_state"` | a late row, such as a transposed pair or a row a minute late | refuses the chunk |
+| larger than `min_backwards_jump`, under `"reset_state"` | a new start, such as a replayed day or a restarted feed | restarts the model |
 | any size, on a row whose `session` value changes | a new session, not a step | applies `session_gap`, or restarts the model under `session_gap="reset"` |
 
-`min_backwards_jump` defaults to `max_dclock`. Under an infinite
-`max_dclock` it defaults to 0, which switches the check off, since no step
-is then too large for two adjacent rows. Set it to 0 to switch it off
-yourself.
+`min_backwards_jump` is required with `"reset_state"` and refused with
+`"error"`, since only the caller knows how late a row can be. A step back
+equal to the minimum counts as late. `0` restarts the model at every step
+back.
 
 **A refused chunk leaves the bank as it was.** The bank runs the clock of
 every group of every spec over the chunk before it learns any row. So one
 late row in one group changes nothing, and the corrected chunk can be fed
-again. The error names the spec, the clock column, the row and the size of
-the step. It also says which setting refused the step, and how to change it:
+again. The error names the spec, the clock column, the size of the step and
+the row, counted from the start of the input however it arrives: one frame,
+batches, a plan or the CLI's file. On a temporal clock the step is a
+duration. The error also names the way out:
 
 ```text
-spec "m": clock column "t" goes backwards by 30 at row 6, less than min_backwards_jump = 60
-(which defaults to max_dclock: adjacent rows are never further apart, and a session is longer)
--- out-of-order rows, not a session boundary; the bank was not updated. Sort each group by the
-clock, or add a `session` column if these are real boundaries. ...
+spec "m": clock column "t" goes backwards by 30 at row 6 (on_clock_reset = "error", the default);
+the bank was not updated. Sort each group by the clock; to resume a saved state on input that
+overlaps it, feed ModelBank.skip_learned(frame); or, if a step back starts the stream over, set
+on_clock_reset = "reset_state" with a min_backwards_jump.
 ```
 
-**Scoring does not refuse a late row.** `predict` learns nothing, so a
-frame scored against a bank may start a little before the last clock the
-bank learned. Only `on_clock_reset="error"` refuses a backwards step there.
+**Resuming a saved bank on input that overlaps it** is a step back in every
+group, which `"error"` refuses. `bank.skip_learned(frame)` keeps only the rows
+after each group's last clock, so each row is learned once:
+`bank.fit_predict(bank.skip_learned(rerun))`. It takes a `LazyFrame` too.
 
-**The summary counts what a policy absorbed.** `bank.summary()` reports
+**Scoring does not refuse a late row.** `predict` learns nothing. A row
+before the last clock the bank learned is scored against the state as it
+stands, as a step of 0, under either policy.
+
+**The summary counts what a policy took.** `bank.summary()` reports
 `clock_backwards`, the rows whose clock fell below the previous row's
-within a session, and `resets`, the rows where a stream restarted. A
-nonzero `clock_backwards` under `"max"` or `"zero"` is disorder the
-settings let through.
+within a session, and `resets`, the rows where a stream restarted. Under
+`"reset_state"` each step back past the minimum counts once in each.
 
 **The query check is best-effort.** It reads the plan's `explain` text,
-and walks the plan only when that names a join, an aggregation or a
-`unique`. A step under a `sort` counts as ordered. A join with
-`maintain_order="left"` is followed on its left side only. A plan Polars
+and walks the plan only when that names a join, an aggregation, a `unique`
+or a `sort`. A step under a `sort` counts as ordered, except under a sort
+by several keys without `maintain_order=True`. That sort leaves rows with
+equal keys in no particular order: 2,109 of 10,000 rows moved when
+measured. A join with `maintain_order="left"` is followed on its left side
+only. A plan Polars
 cannot serialize passes without a warning, and the check never fails a run.
 `ModelBank.fit` does not warn when every spec is an accumulator with no
 decay, since those sums reach the same state in any order. For a plan
@@ -801,8 +809,12 @@ scored = bank.predict(today)                          # serve: score the rows, l
 
 # From a query
 lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")             # fit, then save at the last row
-lf.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")   # continue, then save again
-served = lf.online.predict("bank.state").collect()                                                # serve from the file
+later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # the next rows: continue, save again
+served = later.online.predict("bank.state").collect()                                             # serve from the file
+
+# Input that overlaps the state -- a rerun -- steps each group's clock back, which is refused;
+# skip_learned keeps the rows after each group's last clock, so each row is learned once:
+bank.fit_predict(bank.skip_learned(today))
 
 # The same file, in memory rather than on disk -- for a checkpoint that lives somewhere else:
 blob = bank.save_bytes()
@@ -811,7 +823,8 @@ bank = po.ModelBank.load_bytes(blob, specs=[spec])
 
 Loading names the problem it meets: `FileNotFoundError` when there is no
 file yet, and `ValueError` for a file that is not a bank, was written by a
-newer version, or holds a different model.
+newer version, holds a different model, or predates schema 19, whose clock
+settings no longer exist.
 
 ### Serving without learning
 

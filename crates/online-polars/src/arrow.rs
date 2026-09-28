@@ -126,6 +126,10 @@ pub struct ArrowChunk {
     index: PlHashMap<PlSmallStr, Vec<usize>>,
     /// `names` as a set, for [`Self::has`].
     name_set: PlHashSet<PlSmallStr>,
+    /// The input row this chunk's first row is: an error names `row_base +
+    /// i`, so a surface that feeds an input in chunks names the input's row,
+    /// not the chunk's (task 120). 0 unless [`Self::with_row_base`] says.
+    row_base: usize,
 }
 
 impl ArrowChunk {
@@ -186,7 +190,21 @@ impl ArrowChunk {
             names,
             index,
             name_set,
+            row_base: 0,
         })
+    }
+
+    /// The chunk, as rows `row_base..` of a longer input: what an error
+    /// counts its row from.
+    #[must_use]
+    pub fn with_row_base(mut self, row_base: usize) -> Self {
+        self.row_base = row_base;
+        self
+    }
+
+    /// The input row the chunk's first row is ([`Self::with_row_base`]).
+    pub fn row_base(&self) -> usize {
+        self.row_base
     }
 
     pub fn height(&self) -> usize {
@@ -469,6 +487,16 @@ fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResu
 /// made here, so the bank itself sees numbers and text and nothing else.
 ///
 pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChunk> {
+    chunk_from_frame_at(df, specs, 0)
+}
+
+/// [`chunk_from_frame`] for rows `row_base..` of a longer input, so that an
+/// error names the input's row ([`ArrowChunk::with_row_base`]).
+pub fn chunk_from_frame_at(
+    df: &DataFrame,
+    specs: &[Spec],
+    row_base: usize,
+) -> PolarsResult<ArrowChunk> {
     let names: Vec<PlSmallStr> = df.get_column_names().iter().map(|n| (*n).clone()).collect();
     // `group_close = "monotone"` reads keys in the *column's* order -- an
     // integer column numerically, a text one bytewise -- so a dtype with
@@ -520,7 +548,7 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
                 .iter()
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
-            let col = ArrowCol::Nanos(nanos_array(s)?);
+            let col = ArrowCol::Nanos(nanos_array(s, row_base)?);
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
             continue;
@@ -540,7 +568,7 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         have.insert((name.clone(), col.form()));
         cols.push((name.clone(), col));
     }
-    ArrowChunk::new(df.height(), cols, names)
+    Ok(ArrowChunk::new(df.height(), cols, names)?.with_row_base(row_base))
 }
 
 /// Each column's first reader, for the errors a cast can raise: the first
@@ -629,10 +657,12 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                     spec.name, clock, dtype, param, param, clock
                 );
             }
-            // A cap or a disorder threshold finer than the clock's own step
+            // A cap or a late-row threshold finer than the clock's own step
             // cannot act on the data: every step would be cut to the cap, so
-            // the clock would count rows, and no backwards jump could be
-            // smaller than the threshold, so the check would never fire.
+            // the clock would count rows, and no step back could be as small
+            // as the threshold, so every one would start the model over. A
+            // threshold of exactly one step does act: the comparison is
+            // inclusive (task 120).
             let tick: f64 = match dtype {
                 DataType::Date => 86_400.0,
                 DataType::Datetime(tu, _) | DataType::Duration(tu) => match tu {
@@ -661,8 +691,8 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                          rather than measure time"
                     }
                     "min_backwards_jump" => {
-                        "no backwards jump could be smaller, so the check would never fire \
-                         (0 switches it off)"
+                        "no step back could be as small, so every one would start the model \
+                         over, which 0 says directly"
                     }
                     _ => continue,
                 };
@@ -734,14 +764,14 @@ fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
 /// the clock. A `Date` or a coarse `Datetime` can reach past what
 /// nanoseconds in an `i64` hold, and such a value is refused by row. A
 /// nanosecond column is taken as it is, without a pass over it.
-fn nanos_array(s: &Series) -> PolarsResult<Int64Array> {
+fn nanos_array(s: &Series, row_base: usize) -> PolarsResult<Int64Array> {
     let per = nanos_per_unit(s.dtype())?;
     let phys = s.to_physical_repr();
     let too_far = |i: usize| {
         polars_err!(ComputeError:
             "clock column {:?} has an instant at row {} that nanoseconds cannot hold (before \
              1677 or after 2262)",
-            s.name(), i
+            s.name(), row_base + i
         )
     };
     let scaled = |i: usize, v: i64| v.checked_mul(per).ok_or_else(|| too_far(i));

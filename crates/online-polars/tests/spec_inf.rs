@@ -23,7 +23,7 @@ fn spec(top: &str, model: &str) -> Spec {
 }
 
 /// Where `inf` is a limit with a name: least squares, the whole history, no
-/// forgetting, a step nothing caps, the argmin.
+/// forgetting, the argmin.
 const MEANS_SOMETHING: [(&str, &str); 9] = [
     // The noise gate at `inf` is off: no ratio is ever above it.
     ("max_error_inflation = inf", "type = \"ew_ridge\""),
@@ -48,19 +48,33 @@ const MEANS_SOMETHING: [(&str, &str); 9] = [
 ];
 
 /// Where it is no setting: a step, a penalty, a tube or a threshold at `inf`.
-const MEANS_NOTHING: [(&str, &str, &str); 13] = [
+const MEANS_NOTHING: [(&str, &str, &str); 15] = [
     // A fraction of steady state has no infinite value; `>= 1` is refused.
     (
         "min_settled_frac = inf",
         "type = \"ew_ridge\"",
         "min_settled_frac",
     ),
-    // The disorder checks: `inf` would refuse every second jump, or every
-    // jump; `0` is the way to switch one off (design note of 2026-09-19).
+    // A late row's size: `inf` would refuse every step back, which
+    // `on_clock_reset = "error"` says directly.
     (
-        "clock = \"t\"\nmax_dclock = 10.0\nmin_backwards_jump = inf",
+        "clock = \"t\"\nmax_dclock = 10.0\non_clock_reset = \"reset_state\"\n\
+         min_backwards_jump = inf",
         "type = \"ew_ridge\"",
         "min_backwards_jump",
+    ),
+    // The cap is what a gap is a break against, and an infinite one handed a
+    // model an infinite step (task 120, decided 2026-09-28).
+    (
+        "clock = \"t\"\nmax_dclock = inf",
+        "type = \"ew_ridge\"",
+        "max_dclock",
+    ),
+    // An infinite session gap is a reset, which `"reset"` says.
+    (
+        "clock = \"t\"\nmax_dclock = 10.0\nsession = \"s\"\nsession_gap = inf",
+        "type = \"ew_ridge\"",
+        "session_gap",
     ),
     (
         "emit_drift = true\ndrift_delta = inf",

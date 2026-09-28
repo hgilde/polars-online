@@ -241,9 +241,8 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
             "w": w,
         }
     )
-    # The steps back are what the summary counts, so the clock's disorder
-    # checks (on by default; a half-step back is jitter to them and would
-    # refuse the chunk) are off in both specs.
+    # The steps back are what the summary counts, and the default policy
+    # refuses them, so both specs start over at one instead.
     reset_on_session = po.spec.ewridge(
         "rs",
         targets=["y"],
@@ -254,6 +253,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         session="sess",
         session_gap="reset",
         weight="w",
+        on_clock_reset="reset_state",
         min_backwards_jump=0.0,
     )
     reset_on_backwards = po.spec.ewridge(
@@ -270,7 +270,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
     feed(bank, df, 3)
     s = bank.summary().sort("spec")
     rb, rs = s.rows(named=True)
-    assert rs["session_changes"] == 2 and rs["resets"] == 2
+    assert rs["session_changes"] == 2 and rs["resets"] == 2 + 3
     # The step back at row 60 is also the s1 -> s2 boundary: a new session
     # owns its clock, so that one is a session change, not a step back.
     assert rs["clock_backwards"] == 3 and rs["rows_zero_weight"] == 10

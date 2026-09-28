@@ -38,7 +38,11 @@ def stream(n: int = 400, seed: int = 7) -> pl.DataFrame:
     and a block key that only increases, for the models that close groups."""
     rng = np.random.default_rng(seed)
     t = np.cumsum(rng.choice([0.5, 1.0, 1.5, 2.0], size=n))
-    t[[90, 250]] += 40.0
+    # Two gaps past the cap. Raising rows 90 and 250 alone, as this did until
+    # task 120, stepped the clock back on the row after each, which the
+    # removed `"max"` absorbed and the default now refuses.
+    t[90:] += 40.0
+    t[250:] += 40.0
     x = rng.standard_normal((n, 3))
     y = 0.5 + x @ np.array([1.0, -0.5, 0.0]) + 0.3 * rng.standard_normal(n)
     z = 0.2 * y + x[:, 2] + 0.3 * rng.standard_normal(n)

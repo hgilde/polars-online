@@ -504,12 +504,16 @@ impl Deco {
     /// and a test pins this one.
     fn advance(&mut self, u: &[f64], lam: f64, w: f64) {
         let w_new = lam * self.rho_w + w;
-        if w_new <= 0.0 {
+        if w_new <= 0.0 && self.rho_w <= 0.0 {
             // A zero-weight row at zero weight: advance the clock, learn
             // nothing, and do not divide 0/0 (hard rule 9).
             return;
         }
-        let b = w / w_new;
+        // A zero-weight row after a decay that took the whole history --
+        // `lam·W` is 0 from 1075 halflives on -- is the row one halflife
+        // short of it: `b` is 0 and the weight goes to 0, where the history
+        // used to be kept whole (task 115 (c), PLAN §12).
+        let b = if w_new > 0.0 { w / w_new } else { 0.0 };
         let n = self.rho_bar.len();
         for (m, &um) in u.iter().enumerate() {
             let bar = &mut self.rho_bar[m];

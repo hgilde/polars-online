@@ -788,7 +788,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 13 since
+    """The version a bank file names, held to the library's: 19 since
+    2026-09-28, when `on_clock_reset` lost `"max"` and `"zero"` and a bank
+    stopped loading any file from before it (task 120); 13 since
     2026-09-21, for the readiness statistics -- `ew_ridge`'s per-slot
     degrees of freedom and data shares, the stream's decay time and its
     notices (docs/WARMUP-AND-CONVERGENCE.md); 12 since 2026-09-20, when the
@@ -798,7 +800,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 18
+    assert po.schema_version() == 19
     assert sys.version_info >= (3, 12)
 
 

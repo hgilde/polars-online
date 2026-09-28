@@ -441,9 +441,9 @@ class TestExactness:
     def test_predict_propagates_over_the_clock_distance(self):
         # `predict(df)` scores each row as the next row of the stream: the
         # coefficients are propagated by `2^(-d/r)` for the row's clock
-        # distance from the last learned row (capped by `max_dclock`, and
-        # the cap itself for a backwards clock under `on_clock_reset =
-        # "max"`), while the emitted `coef` is the frozen state.
+        # distance from the last learned row (capped by `max_dclock`, and 0
+        # for a row before it, which is scored against the state as it
+        # stands: task 120), while the emitted `coef` is the frozen state.
         rng = np.random.default_rng(106)
         n = 300
         t = np.cumsum(rng.exponential(1.0, n))
@@ -482,7 +482,7 @@ class TestExactness:
         coef = np.array(out.struct.field("coef").to_list()[-1])
         pred = out.struct.field("pred_y0").to_numpy()
         for ti, x0, x1, p in zip(ahead["t"], ahead["x0"], ahead["x1"], pred, strict=True):
-            d = 20.0 if ti < last else min(ti - last, 20.0)
+            d = 0.0 if ti < last else min(ti - last, 20.0)
             phi = np.array([2.0 ** (-d / h) for h in r])
             want = np.array([1.0, x0, x1]) @ (phi * coef)
             assert p == pytest.approx(want, rel=1e-12, abs=1e-12), (ti, d)

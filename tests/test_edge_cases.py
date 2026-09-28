@@ -123,23 +123,19 @@ class TestWeights:
     # point here, and the readiness notice says so.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     @pytest.mark.parametrize("model", ["ewridge", "ew_cov"])
-    def test_a_zero_weight_row_keeps_the_history_when_its_decay_underflows(self, model):
-        """docs/PLAN.md §12, recorded and awaiting the user's decision: this
-        pins what the code does now, not what it should do.
-
-        A zero-weight row advances the clock and learns nothing (hard rule 9),
-        so the history should age by the row's gap. When the decay factor
-        ``2^(-gap/h)`` underflows to exactly 0 -- from 1075 halflives on,
-        capped or not -- the mean-form update is 0/0 (``lam*W + w = 0``), the
-        guard refuses it, and the history is kept un-aged, so the next row
-        sees the old count. At 1074 halflives the factor is 2^-1074 > 0 and
-        the history ages to nothing; a cap under 1075 halflives never lets
-        the factor reach 0. The fix §12 names (set the weight to 0, so the
-        next row starts over) changes that row's output and would flip the
-        ``kept`` assertions below."""
+    def test_a_zero_weight_row_forgets_the_history_its_decay_takes(self, model):
+        """docs/PLAN.md task 115 (c), decided 2026-09-28 (§12 found it): a
+        zero-weight row advances the clock and learns nothing (hard rule 9), so
+        the history ages by the row's gap -- all of it where the decay factor
+        ``2^(-gap/h)`` underflows to exactly 0, from 1075 halflives on. There
+        the mean-form update is 0/0 (``lam*W + w = 0``), and the guard used to
+        refuse it and keep the history un-aged, so the next row saw the old
+        count. Now the row is the decay alone, as one halflife short of it all
+        but is. `crates/online-core/tests/model_contract.rs` holds every model
+        to it."""
         n0 = 40
 
-        def n_eff_after(gap: float, w: float, cap: float = float("inf")) -> tuple[float, float]:
+        def n_eff_after(gap: float, w: float, cap: float = 1e9) -> tuple[float, float]:
             """``n_eff`` at the zero-weight (or weighted) row and at the row after it."""
             t = [*np.arange(float(n0)), n0 - 1 + gap, n0 + gap]
             rng = np.random.default_rng(0)
@@ -162,15 +158,15 @@ class TestWeights:
             n_eff = _f(_run(df, spec), "n_eff")
             return n_eff[n0], n_eff[n0 + 1]
 
-        # Aged: the factor is positive, however small.
+        # Aged to nothing: the factor is positive, however small.
         at, after = n_eff_after(1074.0, 0.0)
         assert 1.9 < at < 2.0 and after < 1e-300, (at, after)
         _, after = n_eff_after(5000.0, 0.0, cap=1000.0)
         assert after < 1e-300, after
-        # Kept: the factor is 0, uncapped or capped past 1075 halflives.
-        for gap, cap in [(1075.0, float("inf")), (5000.0, float("inf")), (5000.0, 2000.0)]:
+        # Forgotten: the factor is 0, from 1075 halflives on, capped or not.
+        for gap, cap in [(1075.0, 1e9), (5000.0, 1e9), (5000.0, 2000.0)]:
             at, after = n_eff_after(gap, 0.0, cap)
-            assert after == at, (gap, cap, at, after)
+            assert 1.9 < at < 2.0 and after == 0.0, (gap, cap, at, after)
         # A weighted row on the same gap starts over.
         _, after = n_eff_after(5000.0, 1.0, cap=2000.0)
         assert after == 1.0, after
@@ -281,31 +277,17 @@ class TestClockOrdering:
         b = pl.DataFrame({"t": [0.5, 1.5], "x0": [4.0, 5.0], "y0": [4.0, 5.0]})
         return a, b
 
-    def test_backwards_clock_across_chunks_uses_on_clock_reset(self):
-        # Documented behavior today: a backwards delta is routed through
-        # on_clock_reset, whether it comes from real data or a mis-sorted chunk.
+    def test_backwards_clock_across_chunks_is_refused_by_default(self):
+        # A backwards delta is judged whether it comes from real data or a
+        # mis-sorted chunk: the second chunk steps back from the first's last
+        # clock (0.5 < 2.0), and the default refuses it, naming the row.
         a, b = self._frames()
-        # The jump back is the point -- the policy's business -- so the disorder
-        # check that would refuse it as a late row stands aside.
-        spec = _spec(
-            clock="t",
-            max_dclock=4.0,
-            halflife=1.0,
-            on_clock_reset="max",
-            min_backwards_jump=0.0,
-        )
-        bank = po.ModelBank([spec])
-        out_a = bank.fit_predict(a)
-        out_b = bank.fit_predict(b)
-        # n_eff is reported before the row's update, so chunk b's first row
-        # still shows the count carried over from chunk a...
-        w_after_a = 0.5 * _f(out_a, "n_eff")[2] + 1.0  # = 1.75
-        assert _f(out_b, "n_eff")[0] == pytest.approx(w_after_a, rel=1e-12)
-        # ...and the capped delta shows up in the next row: the backwards jump
-        # (0.5 - 2.0) was clamped to max_dclock = 4, giving decay 0.5**4, not a
-        # reset (which would give 1.0) and not a zero delta (which would give
-        # w_after_a + 1).
-        assert _f(out_b, "n_eff")[1] == pytest.approx(w_after_a * 0.5**4 + 1.0, rel=1e-12)
+        bank = po.ModelBank([_spec(clock="t", max_dclock=4.0, halflife=1.0)])
+        bank.fit_predict(a)
+        before = bank.save_bytes()
+        with pytest.raises(ValueError, match="goes backwards by 1.5 at row 0"):
+            bank.fit_predict(b)
+        assert bank.save_bytes() == before
 
     def test_reset_state_variant_restarts_the_stream(self):
         a, b = self._frames()
@@ -395,9 +377,13 @@ class TestDegenerateClocks:
         # No decay at all: n_eff is just the row count.
         assert _f(out, "n_eff") == pytest.approx([0.0, 1.0, 2.0, 3.0])
 
-    def test_max_dclock_zero_disables_decay(self):
+    def test_max_dclock_zero_is_refused_and_no_decay_is_an_infinite_halflife(self):
+        # A cap of 0 froze the clock, and every positive gap then read as a
+        # break (task 120); no decay is `halflife = "inf"`.
+        with pytest.raises(ValueError, match="max_dclock must be > 0"):
+            _spec(clock="t", max_dclock=0.0, halflife=1.0)
         df = pl.DataFrame({"t": [0.0, 100.0, 500.0], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
-        out = _run(df, _spec(clock="t", max_dclock=0.0, halflife=1.0))
+        out = _run(df, _spec(clock="t", max_dclock=1e9, halflife=float("inf")))
         assert _f(out, "n_eff") == pytest.approx([0.0, 1.0, 2.0])
 
     def test_halflife_far_below_the_delta_forgets_almost_everything(self):
@@ -830,15 +816,14 @@ class TestStrictClock:
         )
 
     def _spec_for(self, policy, **kw):
-        # The policies themselves are under test, so the clock's disorder
-        # checks (on by default; they would refuse the fixture's small step
-        # back before any policy saw it) are off here.
+        # Under `"reset_state"` no step back is a late row here.
+        if policy == "reset_state":
+            kw.setdefault("min_backwards_jump", 0.0)
         return _spec(
             clock="t",
             max_dclock=10.0,
             halflife=5.0,
             on_clock_reset=policy,
-            min_backwards_jump=0.0,
             min_periods=0.0,
             **kw,
         )
@@ -850,14 +835,11 @@ class TestStrictClock:
         assert '"t"' in msg and "row 3" in msg and "0.5" in msg
         assert "sort" in msg.lower(), "the error should say how to fix it"
 
-    def test_other_policies_still_absorb_it(self):
-        neff = {
-            p: _f(_run(self._df(), self._spec_for(p)), "n_eff")
-            for p in ("max", "zero", "reset_state")
-        }
-        # each policy gives a genuinely different answer at the offending row
-        assert neff["reset_state"][3] == 0.0
-        assert neff["zero"][4] > neff["max"][4]
+    def test_reset_state_starts_over_at_it(self):
+        # The one policy left that takes a step back: the model starts over.
+        # (`"max"` and `"zero"`, which absorbed it, are gone: task 120.)
+        neff = _f(_run(self._df(), self._spec_for("reset_state")), "n_eff")
+        assert neff[3] == 0.0 and neff[4] == 1.0
 
     def test_error_policy_accepts_a_monotone_stream(self):
         good = pl.DataFrame(
@@ -873,8 +855,8 @@ class TestStrictClock:
         assert _f(out, "n_eff")[3] == pytest.approx(_f(out, "n_eff")[2] * 0.5 ** (0.0 / 5.0) + 1.0)
 
     def test_catches_a_mis_sorted_chunk_boundary(self):
-        # The motivating case: chunks fed out of order. Under "max" this is
-        # silently absorbed (T-E4); under "error" it is caught.
+        # The motivating case: chunks fed out of order. The removed "max"
+        # absorbed it silently (T-E4); "error", the default, catches it.
         a = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x0": [1.0] * 3, "y0": [1.0, 2.0, 3.0]})
         b = pl.DataFrame({"t": [0.5, 1.5], "x0": [1.0] * 2, "y0": [4.0, 5.0]})
         spec = self._spec_for("error")

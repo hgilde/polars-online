@@ -191,8 +191,7 @@ impl Cross {
     }
 
     /// The all-row mean and weight take the row, after every target has read
-    /// it. The weight by `EwCov::update`'s recursion, including its refusal
-    /// of a row that would leave no weight at all.
+    /// it. The weight by `EwCov::update`'s recursion.
     pub(crate) fn advance(&mut self, z: &[f64], lam: f64, w: f64, b: f64) {
         if b > 0.0 {
             use crate::comp::{add, dev};
@@ -206,10 +205,11 @@ impl Cross {
                 add(mi, lo, b * u);
             }
         }
-        let w_new = lam * self.w + w;
-        if w_new > 0.0 {
-            self.w = w_new;
-        }
+        // `EwCov::update`'s recursion, whose one refusal -- no weight at all,
+        // carried or added -- is a no-op here: that `W'` is 0 either way, at
+        // the head of a stream and after a decay that took everything (task
+        // 115 (c)).
+        self.w = lam * self.w + w;
     }
 
     /// Target `j`'s uncentred `E[z·y_j] = c_j + m_j·ȳ_j`.
@@ -632,8 +632,12 @@ impl Acc {
                     self.tm.learn(j, yj, a, b, lam, w);
                     *wj = wj_new;
                 }
-                Some(_) => {}
-                None => {
+                // Nothing carried and nothing added. At the head of a stream
+                // that leaves everything at 0; after a decay that took the
+                // whole history -- `lam·W_j` is 0 from 1075 halflives on --
+                // it is the decay alone, as for an absent target, where the
+                // history used to be kept whole (task 115 (c), PLAN §12).
+                Some(_) | None => {
                     self.tm.age(j, lam);
                     *wj *= lam;
                 }

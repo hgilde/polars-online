@@ -21,7 +21,7 @@
   target
   thread_pool_size
   unnest
-  schema_version = 18
+  schema_version = 19
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -31,7 +31,7 @@
   halflife = None
   lam = None
   max_dclock = None
-  on_clock_reset = 'max'
+  on_clock_reset = 'error'
   min_backwards_jump = None
   session = None
   session_gap = None
@@ -361,6 +361,7 @@
   save(self, path: 'str | Path') -> 'None'
   save_bytes(self) -> 'bytes'
   save_json(self, path: 'str | Path', *, pretty: 'bool' = True) -> 'None'
+  skip_learned(self, frame: 'pl.DataFrame | pl.LazyFrame') -> 'pl.DataFrame | pl.LazyFrame'
   solve_failures(self) -> 'dict[str, dict[str | None, int]]'
   specs
   summary(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'

@@ -20,6 +20,11 @@ use polars::prelude::*;
 /// `"key": value,` pairs -- `session_gap` among them, since the fixture has
 /// a session column.
 fn spec(name: &str, group: Option<&str>, halflife: &str, extra: &str) -> Spec {
+    spec_on("t", name, group, halflife, extra)
+}
+
+/// [`spec`] on another clock column.
+fn spec_on(clock: &str, name: &str, group: Option<&str>, halflife: &str, extra: &str) -> Spec {
     let g = group.map_or(String::new(), |g| format!(r#""group": "{g}","#));
     serde_json::from_str(&format!(
         r#"{{
@@ -27,7 +32,7 @@ fn spec(name: &str, group: Option<&str>, halflife: &str, extra: &str) -> Spec {
             "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"],
             "features": ["x0", "x1"],
-            "clock": "t",
+            "clock": "{clock}",
             "halflife": {halflife},
             "max_dclock": 30.0,
             "weight": "w",
@@ -73,16 +78,18 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
 /// frame's own and which shares the chunk's task pool with the others.
 fn all_specs(group: &str) -> Vec<Spec> {
     let mut specs = grouped_specs(group);
-    // Ungrouped, `solo` reads the forty interleaved groups' clocks as one
-    // stream, which the disorder checks (on by default) rightly refuse as
-    // out-of-order rows; they are off here because this spec is about the
-    // layout, not the clock (design note of 2026-09-19).
-    specs.push(spec(
+    // Ungrouped, `solo` would read the forty interleaved groups' clocks as
+    // one stream that steps back, which the default policy refuses; it reads
+    // the frame's own clock `tg` instead, because this spec is about the
+    // layout, not the clock. A frame sorted by group steps `tg` back at each
+    // group, where `solo` starts over.
+    specs.push(spec_on(
+        "tg",
         "solo",
         None,
         "60.0",
         r#""session_gap": 10.0, "coef_every": 1,
-           "min_backwards_jump": 0,"#,
+           "on_clock_reset": "reset_state", "min_backwards_jump": 0,"#,
     ));
     specs
 }
@@ -92,7 +99,8 @@ fn all_specs(group: &str) -> Vec<Spec> {
 /// and their first-seen order is not their sorted order; two rows are groups
 /// of their own (one of them the last row of the frame) and every 101st row
 /// has a null key. `g` is the String key and `gi` an Int32 key for the same
-/// partition; `id` is the frame row. A feature, the target and the weight
+/// partition; `id` is the frame row, and `tg` a clock over the whole frame
+/// for an ungrouped spec, three units a row. A feature, the target and the weight
 /// have nulls, the weight has zeros, the session changes at group-specific
 /// rows and is null now and then; `xi` and `xb` are an integer and a Boolean
 /// feature for the dtype test.
@@ -172,11 +180,13 @@ fn interleaved(n: usize, n_groups: usize, seed: u64) -> DataFrame {
             Some(format!("s{}", (clocks[slot] / 150.0).floor()))
         });
     }
+    let tg: Vec<f64> = id.iter().map(|&i| 3.0 * i as f64).collect();
     let df = df!(
         "id" => id,
         "g" => g,
         "gi" => gi,
         "t" => t,
+        "tg" => tg,
         "x0" => x0,
         "x1" => x1,
         "xi" => xi,

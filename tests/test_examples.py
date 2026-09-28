@@ -201,10 +201,15 @@ class TestBankToml:
 
     def test_resuming_from_that_state_continues_the_stream(self, data):
         """The README advertises `--resume`; this proves the state the previous
-        test wrote is loadable by the same config."""
+        test wrote is loadable by the same config. It resumes on the rows after
+        the state's: the same input again would step every group's clock back,
+        which the default refuses (task 120)."""
+        rows = pl.read_parquet(data / "in.parquet")
+        later = rows.with_columns(pl.col("t") - rows["t"].min() + rows["t"].max() + 1.0)
+        later.write_parquet(data / "later.parquet")
         res = self._cli(
             "--config", str(EXAMPLES / "bank.toml"),
-            "--input", str(data / "in.parquet"),
+            "--input", str(data / "later.parquet"),
             "--output", str(data / "out2.parquet"),
             "--resume", str(data / "bank.state"),
             # The config's own `save_state` is relative, so without this the

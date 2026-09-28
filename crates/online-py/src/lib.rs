@@ -2,6 +2,7 @@
 //! (Python dicts are serialized by the thin wrapper in
 //! `python/polars_online/`), and frames cross on the Arrow C Data Interface.
 
+use online_polars::online_core::ClockValue;
 use online_polars::{Bank, GroupKey, Spec, StructArray, chunk_from_frame, export_struct_to_c};
 use polars::prelude::PolarsError;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -222,13 +223,21 @@ impl PyModelBank {
     /// method while the first is inside it. The borrow refuses it -- a bank is
     /// one ordered stream and cannot be fed from two places at once -- and the
     /// refusal says so, rather than pyo3's "Already borrowed".
-    fn fit_predict(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PySeries>> {
+    ///
+    /// `row_base` is the input row the chunk's first row is, for a caller
+    /// that feeds an input in chunks: an error names the input's row.
+    #[pyo3(signature = (df, row_base=0))]
+    fn fit_predict(
+        slf: &Bound<'_, Self>,
+        df: PyDataFrame,
+        row_base: usize,
+    ) -> PyResult<Vec<PySeries>> {
         let mut this = slf.try_borrow_mut().map_err(|_| busy("fit_predict"))?;
         let bank = &mut this.inner;
         let df = df.into();
         let cols = slf
             .py()
-            .detach(|| bank.fit_predict(&df))
+            .detach(|| bank.fit_predict_from(&df, row_base))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(cols
             .into_iter()
@@ -240,13 +249,14 @@ impl PyModelBank {
     /// output columns `fit_predict` would produce, and no learning. A shared
     /// borrow, so scoring threads never refuse each other; only a
     /// `fit_predict` in flight does.
-    fn predict(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PySeries>> {
+    #[pyo3(signature = (df, row_base=0))]
+    fn predict(slf: &Bound<'_, Self>, df: PyDataFrame, row_base: usize) -> PyResult<Vec<PySeries>> {
         let this = slf.try_borrow().map_err(|_| busy("predict"))?;
         let bank = &this.inner;
         let df = df.into();
         let cols = slf
             .py()
-            .detach(|| bank.predict(&df))
+            .detach(|| bank.predict_from(&df, row_base))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(cols
             .into_iter()
@@ -516,6 +526,30 @@ impl PyModelBank {
             .groups()
             .into_iter()
             .map(|v| v.into_iter().map(|(k, n, c)| (k.0, n, c)).collect())
+            .collect())
+    }
+
+    /// Per spec: `(group, numeric clock, temporal clock in ns)` for every
+    /// group held, one of the two clocks set, or neither before the first
+    /// row and on a row-count clock.
+    #[allow(clippy::type_complexity)]
+    fn last_clocks(
+        slf: &Bound<'_, Self>,
+    ) -> PyResult<Vec<Vec<(Option<String>, Option<f64>, Option<i64>)>>> {
+        let this = slf.try_borrow().map_err(|_| busy("last_clocks"))?;
+        Ok(this
+            .inner
+            .last_clocks()
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|(k, c)| match c {
+                        Some(ClockValue::F64(t)) => (k.0, Some(t), None),
+                        Some(ClockValue::Ns(ns)) => (k.0, None, Some(ns)),
+                        None => (k.0, None, None),
+                    })
+                    .collect()
+            })
             .collect())
     }
 

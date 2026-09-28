@@ -722,12 +722,16 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     ).fit_predict(df)
     graded = po.ModelBank([grid]).fit_predict(df)
     out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
-    for name in ("ticks.parquet", "today.parquet"):
-        df.write_parquet(tmp_path / name)
+    # The rows after `df`'s, as "today" is after the stream a bank has
+    # learned: the same rows again would step every group's clock back,
+    # which the default refuses (task 120).
+    today = df.with_columns(pl.col("t") - df["t"].min() + df["t"].max() + 1.0)
+    df.write_parquet(tmp_path / "ticks.parquet")
+    today.write_parquet(tmp_path / "today.parquet")
     (tmp_path / "ticks").mkdir()  # the `ticks/*.parquet` glob: a stream in two files
     df[:200].write_parquet(tmp_path / "ticks" / "part-0.parquet")
     df[200:].write_parquet(tmp_path / "ticks" / "part-1.parquet")
-    df.write_csv(tmp_path / "today.csv")
+    today.write_csv(tmp_path / "today.csv")
     # `--input-format ipc` names a file whose extension does not say so.
     df.write_ipc(tmp_path / "feed.dat")
     fed = po.ModelBank([spec])
@@ -788,7 +792,11 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             )
             for s in ("AAA", "BBB", "CCC")
         ).sort("t"),
-        "today": df,
+        "today": today,
+        # The query form of `today`: the rows after the stream's.
+        "later": today.lazy(),
+        # `ModelBank.skip_learned`'s docstring: input that overlaps the state.
+        "rerun": df,
         "lf": df.lazy(),
         "spec": spec,
         "grid": grid,

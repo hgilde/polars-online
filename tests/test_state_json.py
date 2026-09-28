@@ -48,9 +48,10 @@ EVERY_MODEL = {
         "s",
         halflife=[INF, 10.0],
         clock="t",
-        max_dclock=INF,
+        # Finite, as a cap and a session gap must be since task 120.
+        max_dclock=1e9,
         session="g",
-        session_gap=INF,
+        session_gap=1e9,
         group="g",
         **B,
     ),

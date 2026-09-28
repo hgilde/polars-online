@@ -1685,11 +1685,15 @@ impl Spec {
     pub fn clock_scale(&self) -> Result<ClockScale, String> {
         let spans = self.clock_spans();
         let duration = spans.iter().find(|(_, s)| s.is_duration()).map(|(f, _)| *f);
-        let number = spans
-            .iter()
-            .find(|(_, s)| s.is_unit_bound_number())
-            .map(|(f, _)| *f)
-            .or_else(|| self.clock_rate());
+        // A rate first: it has no duration form, and its message names the
+        // parameter to give instead. With a finite cap required beside it
+        // (task 120), the cap would otherwise always be the number named.
+        let number = self.clock_rate().or_else(|| {
+            spans
+                .iter()
+                .find(|(_, s)| s.is_unit_bound_number())
+                .map(|(f, _)| *f)
+        });
         match (duration, number) {
             (Some(d), Some("lam")) => Err(format!(
                 "spec {:?}: {d} is a duration, and lam is a decay per clock unit, which has no \
@@ -1751,23 +1755,22 @@ pub struct Spec {
     pub halflife: Option<SpanList>,
     #[serde(default)]
     pub lam: Option<f64>,
-    /// Ceiling on the clock delta, in clock units; `"inf"` for none. It
-    /// caps the step between two rows a model learns from, so a run of
-    /// skipped rows hands the row after it at most this much clock (review
-    /// 2026-09-12, S3); a step the ceiling cut also clears `ew_cov`'s and
-    /// `marginal`'s lagged co-moments, adjacency being broken.
+    /// Ceiling on the clock delta, in clock units: finite and positive, and
+    /// required with a clock. It caps the step between two rows a model
+    /// learns from, so a run of skipped rows hands the row after it at most
+    /// this much clock (review 2026-09-12, S3); a step the ceiling cut is a
+    /// break, which clears `ew_cov`'s and `marginal`'s lagged co-moments
+    /// and releases `label_delay`'s held rows, adjacency being broken.
     #[serde(default)]
     pub max_dclock: Option<Span>,
     #[serde(default)]
     pub on_clock_reset: OnClockReset,
-    /// A backwards clock jump smaller than this, in clock units, is refused
-    /// as out-of-order rows whatever `on_clock_reset` says, and the bank is
-    /// untouched: `max_dclock` is the most two adjacent rows can be apart and
-    /// a session is longer than that, so a jump back by less is a late row,
-    /// not a boundary. Defaults to `max_dclock`, and to `0` (off) under an
-    /// infinite `max_dclock`, which gives it nothing to compare against; `0`
-    /// disables; `inf` is no setting. Needs `clock` (design note of
-    /// 2026-09-19, reduced to this one rule 2026-09-20).
+    /// Under `on_clock_reset = "reset_state"`, which requires it: a step
+    /// back no larger than this, in clock units, is a late row and is
+    /// refused, the bank untouched; a larger one starts the model over. `0`
+    /// starts over at every step back. Refused under `"error"`, which
+    /// refuses every step back. Finite and `>= 0`; needs `clock` (task 120,
+    /// decided 2026-09-28).
     #[serde(default)]
     pub min_backwards_jump: Option<Span>,
     #[serde(default)]
@@ -2136,23 +2139,48 @@ impl Spec {
                 self.name
             ));
         }
-        // A negative ceiling clips every delta to it, so the decay *grows*
-        // (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN poisons
-        // the clock. Zero freezes it (a documented way to switch decay off)
-        // and infinity removes the ceiling; both are legitimate.
-        if self
-            .max_dclock
-            .as_ref()
-            .is_some_and(|m| !non_negative(m.value()))
-        {
-            return Err(format!(
-                "spec {:?}: max_dclock must be >= 0 (0 disables decay, \"inf\" removes the ceiling)",
-                self.name
-            ));
+        // The cap is a cap on a step and nothing else (task 120, decided
+        // 2026-09-28). A negative one clipped every delta to it, so the decay
+        // *grew* (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN
+        // poisons the clock. Zero froze the clock, and every positive gap
+        // then read as a break, so `label_delay` released each held label on
+        // the next row: no decay is `halflife = "inf"`, or no clock. Infinity
+        // took the break away, and handed a model an infinite step at a
+        // session change.
+        if let Some(m) = &self.max_dclock {
+            let v = m.value();
+            if v == 0.0 {
+                return Err(format!(
+                    "spec {:?}: max_dclock must be > 0; a cap of 0 froze the clock. For \
+                     no decay set halflife = \"inf\", or leave out the clock to count rows",
+                    self.name
+                ));
+            }
+            if v == f64::INFINITY {
+                return Err(format!(
+                    "spec {:?}: max_dclock must be finite; it is the longest step a model \
+                     decays across, and a longer gap is a break. Give a cap longer than \
+                     any gap the stream should decay across in full",
+                    self.name
+                ));
+            }
+            if !(v.is_finite() && positive(v)) {
+                return Err(format!(
+                    "spec {:?}: max_dclock must be a finite number > 0",
+                    self.name
+                ));
+            }
         }
         let session_gap = match &self.session_gap {
             None => None,
-            Some(SessionGapSpec::Gap(g)) if !non_negative(g.value()) => {
+            Some(SessionGapSpec::Gap(g)) if g.value() == f64::INFINITY => {
+                return Err(format!(
+                    "spec {:?}: session_gap must be finite; to start over at a session \
+                     change set session_gap = \"reset\"",
+                    self.name
+                ));
+            }
+            Some(SessionGapSpec::Gap(g)) if !(g.value().is_finite() && non_negative(g.value())) => {
                 return Err(format!(
                     "spec {:?}: session_gap must be >= 0 or \"reset\"",
                     self.name
@@ -2178,37 +2206,51 @@ impl Spec {
                 self.name
             ));
         }
-        // The disorder check: `min_backwards_jump` must be >= 0 (0 disables;
-        // NaN and `inf` are no setting -- `inf` would refuse every backwards
-        // jump, which `on_clock_reset = "error"` says directly). Its default
-        // is where "on by default" lives: `max_dclock`, the most two adjacent
-        // rows can be apart, so a jump back by less than it cannot be a
-        // session boundary. An infinite cap gives the check nothing to
-        // compare against, so there the default is 0, off.
+        // What a late row is belongs to the caller: `min_backwards_jump` is
+        // required with `"reset_state"`, where a step back by no more than it
+        // is refused and a larger one starts over, and refused with
+        // `"error"`, which refuses every step back and reads no minimum. It
+        // has no default from the cap (task 120). `validate` names a missing
+        // clock first.
+        if self.clock.is_some() {
+            match (self.on_clock_reset, &self.min_backwards_jump) {
+                (OnClockReset::ResetState, None) => {
+                    return Err(format!(
+                        "spec {:?}: min_backwards_jump is required with on_clock_reset = \
+                         \"reset_state\": a step back no larger than it is a late row and \
+                         is refused, a larger one starts the model over (0 starts over at \
+                         every step back)",
+                        self.name
+                    ));
+                }
+                (OnClockReset::Error, Some(_)) => {
+                    return Err(format!(
+                        "spec {:?}: min_backwards_jump applies only under on_clock_reset = \
+                         \"reset_state\"; under \"error\", the default, every step back \
+                         is refused",
+                        self.name
+                    ));
+                }
+                _ => {}
+            }
+        }
         if self
             .min_backwards_jump
             .as_ref()
-            .is_some_and(|v| !(v.value().is_finite() && v.value() >= 0.0))
+            .is_some_and(|v| !(v.value().is_finite() && non_negative(v.value())))
         {
             return Err(format!(
-                "spec {:?}: min_backwards_jump must be finite and >= 0 (0 disables the \
-                 check; to refuse every backwards jump set on_clock_reset = \"error\")",
+                "spec {:?}: min_backwards_jump must be finite and >= 0 (0 starts over at \
+                 every step back)",
                 self.name
             ));
         }
-        let max_dclock = self.max_dclock.as_ref().map_or(f64::INFINITY, Span::value);
         Ok(ClockCfg {
-            max_dclock,
+            // A row-count clock steps by one row and has no cap.
+            max_dclock: self.max_dclock.as_ref().map_or(f64::INFINITY, Span::value),
             on_clock_reset: self.on_clock_reset,
             session_gap,
-            min_backwards_jump: self.min_backwards_jump.as_ref().map_or(
-                if max_dclock.is_finite() {
-                    max_dclock
-                } else {
-                    0.0
-                },
-                Span::value,
-            ),
+            min_backwards_jump: self.min_backwards_jump.as_ref().map_or(0.0, Span::value),
         })
     }
 
@@ -2751,7 +2793,7 @@ impl Spec {
         if self.on_clock_reset != OnClockReset::default() && self.clock.is_none() {
             return Err(format!("spec {:?}: on_clock_reset needs clock", self.name));
         }
-        // The disorder check reads the clock; given without one it would be
+        // A late row's size reads the clock; given without one it would be
         // silently ignored, and a key that does nothing is refused here.
         if self.min_backwards_jump.is_some() && self.clock.is_none() {
             return Err(format!(
@@ -3785,10 +3827,13 @@ mod clock_tests {
         let numbers = spec(r#", "clock": "t", "halflife": 600, "max_dclock": 300"#);
         assert_eq!(numbers.clock_scale(), Ok(ClockScale::Numbers("halflife")));
         // 0 and inf mean the same in every unit, so they bind a spec to neither.
-        let free = spec(r#", "clock": "t", "halflife": "inf", "max_dclock": "inf""#);
+        let free = spec(r#", "clock": "t", "halflife": "inf""#);
         assert_eq!(free.clock_scale(), Ok(ClockScale::Free));
-        let beside = spec(r#", "clock": "t", "halflife": "10m", "max_dclock": "inf""#);
-        assert_eq!(beside.clock_scale(), Ok(ClockScale::Durations("halflife")));
+        let beside = spec(r#", "clock": "t", "halflife": "inf", "max_dclock": "5m""#);
+        assert_eq!(
+            beside.clock_scale(),
+            Ok(ClockScale::Durations("max_dclock"))
+        );
         assert!(durations.validate().is_ok());
     }
 
@@ -3815,7 +3860,7 @@ mod clock_tests {
 
     #[test]
     fn a_duration_is_read_in_seconds_and_names_a_grid_as_written() {
-        let s = spec(r#", "clock": "t", "halflife": ["5m", "1h"], "max_dclock": "inf""#);
+        let s = spec(r#", "clock": "t", "halflife": ["5m", "1h"], "max_dclock": "1d""#);
         let decays = s.decays().unwrap();
         let labels: Vec<&str> = decays.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, vec!["@h5m", "@h1h"]);
@@ -3824,7 +3869,7 @@ mod clock_tests {
             online_core::Decay::Halflife(300.0),
             "a duration is read in seconds"
         );
-        let dup = spec(r#", "clock": "t", "halflife": ["5m", "300s"], "max_dclock": "inf""#);
+        let dup = spec(r#", "clock": "t", "halflife": ["5m", "300s"], "max_dclock": "1d""#);
         let err = dup.decays().unwrap_err();
         assert!(err.contains("300s more than once"), "{err}");
         assert!(matches!(

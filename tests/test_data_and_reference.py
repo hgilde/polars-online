@@ -76,14 +76,20 @@ def test_ridge_decay_matches_rls_exactly():
 
 
 def test_compute_dclock_semantics():
+    """Mirrors `caps_and_negative_deltas` in crates/online-core/src/clock.rs."""
     t = np.array([0.0, 10.0, 5.0, 6.0, 200.0])
-    d, r = compute_dclock(t, None, 5, max_dclock=50.0, on_clock_reset="max")
-    np.testing.assert_allclose(d, [0.0, 10.0, 50.0, 1.0, 50.0])
-    assert not r.any()
-    d, r = compute_dclock(t, None, 5, max_dclock=50.0, on_clock_reset="zero")
-    assert d[2] == 0.0
-    d, r = compute_dclock(t, None, 5, max_dclock=50.0, on_clock_reset="reset_state")
+    with pytest.raises(ValueError, match="row 2: the clock goes backwards by 5"):
+        compute_dclock(t, None, 5, max_dclock=50.0)
+    d, r = compute_dclock(
+        t, None, 5, max_dclock=50.0, on_clock_reset="reset_state", min_backwards_jump=2.0
+    )
     assert r[2] and d[2] == 0.0
+    np.testing.assert_allclose(d, [0.0, 10.0, 0.0, 1.0, 50.0])
+    # Inclusive: a step back as large as the minimum is a late row.
+    with pytest.raises(ValueError, match="row 2: a late row"):
+        compute_dclock(
+            t, None, 5, max_dclock=50.0, on_clock_reset="reset_state", min_backwards_jump=5.0
+        )
     ses = np.array([0, 0, 1, 1, 1])
     d, r = compute_dclock(t, ses, 5, max_dclock=50.0, session_gap=7.5)
     assert d[2] == 7.5  # session change overrides the negative delta

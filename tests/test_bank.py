@@ -194,7 +194,7 @@ class TestNullPolicyAndWarmup:
 
 
 class TestClockSemantics:
-    def _run(self, t, on_clock_reset="max", session=None, session_gap=None, **kw):
+    def _run(self, t, on_clock_reset="error", session=None, session_gap=None, **kw):
         n = len(t)
         data = {
             "t": t,
@@ -204,10 +204,10 @@ class TestClockSemantics:
         if session is not None:
             data["session"] = session
         df = pl.DataFrame(data)
-        # This class tests what each `on_clock_reset` policy does with a
-        # backwards clock, so the clock's disorder checks -- on by default,
-        # and they would refuse these small steps back as out-of-order rows
-        # before any policy saw them -- are off here.
+        # A step back under `"reset_state"` starts over whatever its size
+        # here: no step back is a late row.
+        if on_clock_reset == "reset_state":
+            kw.setdefault("min_backwards_jump", 0.0)
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
@@ -216,7 +216,6 @@ class TestClockSemantics:
             halflife=10.0,
             max_dclock=50.0,
             on_clock_reset=on_clock_reset,
-            min_backwards_jump=0.0,
             session="session" if session is not None else None,
             session_gap=session_gap,
             max_rows_between_solves=1,
@@ -237,14 +236,11 @@ class TestClockSemantics:
         n = self._neff(out)
         assert abs(n[2] - (0.5 ** (50.0 / 10.0) + 1.0)) < 1e-12
 
-    def test_negative_delta_max(self):
-        # Row 2's clock runs backwards (100 -> 50): treated as max_dclock.
-        out = self._run([0.0, 100.0, 50.0, 51.0])
-        n = self._neff(out)
-        w1 = 1.0 * 0.5 ** (50.0 / 10.0) + 1.0  # after row 1 (delta 100 capped to 50)
-        w2 = w1 * 0.5 ** (50.0 / 10.0) + 1.0  # after row 2 (negative -> max)
-        assert abs(n[2] - w1) < 1e-12
-        assert abs(n[3] - w2) < 1e-12
+    def test_a_negative_delta_is_refused_by_default(self):
+        # Row 2's clock runs backwards (100 -> 50). The removed `"max"` took
+        # the cap as the step; the default refuses it, naming the row.
+        with pytest.raises(ValueError, match="goes backwards by 50 at row 2"):
+            self._run([0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state(self):
         out = self._run([0.0, 10.0, 5.0], on_clock_reset="reset_state")

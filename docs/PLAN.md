@@ -92,19 +92,19 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the same decay.
 
 ### Clock semantics
-- Δ = clock − prev_clock, clipped to `[0, max_dclock]` (with `on_clock_reset="zero"`) or
-  Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`), or the
-  chunk is refused, naming the row, and the bank is untouched (`"error"`).
-- Δ<0 smaller than `min_backwards_jump` is refused whatever the policy, and the bank
-  is untouched (design note of 2026-09-19, reduced to this one rule 2026-09-20):
-  `max_dclock` is the most two adjacent rows can be apart and a session is longer
-  than that, so a jump back by less is a late row (one tick late, two sources never
-  merged), not a boundary. A jump of at least the minimum takes the policy. On by
-  default at `max_dclock`, off under an infinite cap; the error names the key, and
-  `0` switches it off. It guards what the bank *learns*: `predict` scores a row
-  before the last learned clock as the policy says, as it always did (re-scoring
-  learned rows is ordinary), and `"error"` refuses there as the user chose.
-- Session change ⇒ Δ := `session_gap` (or reset), regardless of the clock delta.
+- Δ = clock − prev_clock, capped at `max_dclock`, which is required with a clock and
+  finite and above 0: a cap on a step and nothing else (task 120, decided 2026-09-28).
+- Δ<0 within a session: `on_clock_reset="error"`, the default, refuses the chunk,
+  naming the row, and the bank is untouched. `"reset_state"` starts the model over,
+  unless the step back is no larger than `min_backwards_jump` (required there, refused
+  under `"error"`, and inclusive), which is a late row and is refused the same way.
+  `0` starts over at every step back. `"max"` (the cap as the step) and `"zero"` are
+  gone. It guards what the bank *learns*: `predict` scores a row before the last
+  learned clock against the state as it stands, a step of 0, under either policy.
+- No model ever receives a non-finite step; a property test over every configuration
+  the spec allows holds it (`clock.rs`, `finite_steps`).
+- Session change ⇒ Δ := `session_gap`, finite and at most the cap (or reset), regardless
+  of the clock delta.
 - First row of a group ⇒ Δ = 0.
 - The clock is per group.
 
@@ -2285,13 +2285,13 @@ note, not a task.
                   same_clock="include", partial="null",
                   complete="fwd_complete", name="fwd_vwap{split}"),
           ],
-          clock="ts", max_dclock=300.0, on_clock_reset="max",       # the spec's clock policy,
+          clock="ts", max_dclock=300.0, on_clock_reset="error",     # the spec's clock policy,
           session="date", session_gap=60.0, group="symbol",         # word for word
           load_state=None, save_state="windows.bin", chunk_rows=None,
       )
 
       po.stream.windows(frame, windows, *,
-                        clock=None, max_dclock=None, on_clock_reset="max",
+                        clock=None, max_dclock=None, on_clock_reset="error",
                         session=None, session_gap=None, group=None,
                         load_state=None, save_state=None, chunk_rows=None)
 
@@ -4564,7 +4564,9 @@ decision it needs, with a recommendation where there is one.
       accumulated weight: `halflife=1e12` solves once (a state field; the
       next schema bump). (c) §12: a weight-0 row after the decay underflows
       keeps the history, where `decay(0)` forgets it (recommended: forget)
-      — *a clock gap: reviewed with task 120*. (d) Task 80's raised calls: the
+      — *a clock gap: reviewed with task 120*. **Decided (forget) and built
+      2026-09-28 with task 120**, which records `hmm`'s subnormal edge,
+      left as is by the user's call. (d) Task 80's raised calls: the
       256 MiB window budget; a budget-refused bank refusing every later
       call; C24 part 2, `ftrl`'s penalties under a halflife; S30, `holt`
       with no level-only mode; S31, `n_eff` counting rows with a null target
@@ -4709,26 +4711,101 @@ decision it needs, with a recommendation where there is one.
       and a saved last time per group, checked on resume, which no sub-task
       owns).
 
-      **Questions to settle before building**, each with its trade-off (the
-      four that only task 106 raised went with it):
-      1. What step does a backward clock take under an infinite cap: a
-         reset, a refusal, or a finite default? A refusal breaks a
-         documented setting; today it poisons `holt` and `kalman`.
-      2. Does the column form apply the disorder rule per group, per stream,
-         or not at all? Per stream refuses feeds slightly out of order across
-         groups; not at all gives silent partial windows.
-      3. A minimum equal to the clock's step: refuse the setting, or document
-         that the check cannot fire? Refusing breaks a setup the tests use.
-      4. Is switching the check off under `max_dclock=0` intended?
-      5. Does resuming refuse a first row more than the cap behind the saved
-         clock, or do the docs only warn? A real restart and an accidental
-         rerun look the same to the bank.
-      6. `min_backwards_jump`'s docs justify its default by session
-         boundaries ("a jump back ... which cannot be a session boundary";
-         a larger one "takes the policy"): with a backward clock no longer a
-         session change, is that the wording wanted?
-      7. For 104: the planned loaders for old states are obsolete (the
-         pre-1.0 waiver of 2026-09-14): confirm.
+      **Decided 2026-09-28 (the user): `"max"` is removed from
+      `on_clock_reset`.** `max_dclock` is a cap on a step and nothing else
+      (the user: "Max dclock is meant to be a cap on dclock, where is it used
+      as a default?"). It had two other uses, and both confirmed findings
+      above come from them: the step a backward clock took under `"max"`
+      (clock.rs:356-361), infinite under an infinite cap, and the default of
+      `min_backwards_jump` (spec.rs:2202-2210).
+
+      **Decided 2026-09-28, every clock question (the user: "Resume should
+      get a helper. Remove inf as an option for max dclock. Remove zero
+      option. The rest as you suggest."):**
+      - `max_dclock` is required with a clock and must be finite and
+        positive: `0` is refused (it turned decay off, and every positive
+        gap then read as a break, so `label_delay` released every held
+        label on the next row -- measured: learning from row 1 where a
+        delay of 3 starts at row 3), pointing to `halflife="inf"` or no
+        clock; `inf` is refused (the cap is also what a gap is a break
+        against), pointing to a large finite cap.
+      - `on_clock_reset` keeps `"error"`, now the default, and
+        `"reset_state"`; `"max"` and `"zero"` are removed and refused by
+        name.
+      - `min_backwards_jump` has no default derived from the cap: it is
+        required with `"reset_state"` (the caller says what a late row is)
+        and refused with `"error"`, where every step back is refused anyway.
+        A step back no larger than it is a late row: the comparison is
+        inclusive, and the message states the step as a duration.
+      - `session_gap` is finite or `"reset"`; `inf` is refused, pointing
+        to `"reset"`. No model ever receives a non-finite step, which a
+        contract test holds for every model.
+      - A zero-weight row after the decay underflows forgets, as the decay
+        does (task 115 (c)).
+      - Resuming is the next chunk: an overlap takes the policy, which by
+        default refuses it. A helper returns each group's last learned
+        clock so a caller can skip what the state has learned, and
+        STATE-WORKFLOW says so.
+      - For later tasks: the column form (78, 104) checks disorder per
+        group, as the bank does; task 104's layout change gets no loader
+        (the pre-1.0 waiver of 2026-09-14).
+      - `sort` without `maintain_order` in the query check, and `embargo`'s
+        global order: a test first; changed only where it fails.
+      - With no decision needed: the session-change test (V14), property
+        tests whose clocks step back, the docs and comments that contradict
+        the code, error row numbers counted from the input's start, and
+        `refresh_time` reading a `Datetime` in integer nanoseconds.
+
+      **Built 2026-09-28**, every decision above but the two recorded for
+      later tasks (the column form's per-group rule, 78/104; no loaders for
+      104). The user added, while it was built: "Do not worry about old
+      specs" -- so a bank file before schema 19, which names `"max"` (the
+      old default, always written), is refused by its version
+      (`MIN_BANK_SCHEMA_VERSION`, bank.rs); a model's own state from 14 on
+      still loads, no model state having changed layout.
+      - The clock (clock.rs): `OnClockReset { Error (default), ResetState }`;
+        the late-row test is `back <= min_backwards_jump` under
+        `ResetState` only; `advance_scoring` gives a step back a step of 0
+        and never refuses or resets, which `predict` uses. A proptest,
+        `finite_steps`, holds every step finite and within the cap over
+        every configuration the spec lets through.
+      - The spec (spec.rs `clock_cfg`): the cap finite and above 0 (0 names
+        `halflife = "inf"`), `session_gap` finite or `"reset"`, the minimum
+        required with `"reset_state"` and refused with `"error"`. A clock's
+        refusal message gives a temporal step as a duration (`1d`, not
+        `86400`). `clock_scale` names a rate (`lam`, `q`) before a plain-number
+        cap, since a finite cap now always sits beside it.
+      - Resume: `ModelBank.skip_learned(frame)` (DataFrame or LazyFrame),
+        from `Bank::last_clocks`, exact in nanoseconds; STATE-WORKFLOW
+        "Resuming on input that overlaps the state".
+      - 115 (c): the zero-weight row after an underflowing decay forgets, in
+        `EwCov`, `EwDiag`, the gaps accumulators and `deco`; a contract test
+        over every model compares it with the row one halflife short.
+        **Found and raised, not fixed:** `hmm` one halflife short -- a
+        zero-weight row at a subnormal decay factor, from about 1025
+        halflives -- leaves its co-moments and precision prior a few bits,
+        and its densities NaN for up to 39 of the next 40 rows (measured at
+        1030 and 1074 halflives; 1000 and 1075 are fine). A threshold that
+        forgets a subnormal share (2^-1022) fixed 1030--1074 but not 1025;
+        one that would make it impossible (2^-53) changes shipped output at
+        about 57 halflives, a weekend on an hourly halflife. **Left as is
+        (the user, 2026-09-28: "very much at the edge")**: it needs a
+        zero-weight row about a thousand halflives on. The contract names
+        `hmm` where it skips the comparison.
+      - Rows are counted from the input's start: `ArrowChunk::row_base`,
+        `Bank::fit_predict_from`/`predict_from`, the plan form, `fit`,
+        `fit_predict_batches`, the CLI and `refresh_time`.
+      - `refresh_time` compares a temporal clock as the column's integer.
+      - Test first, then: a sort by **several keys** without
+        `maintain_order` reordered 2,109 of 10,000 rows against the stable
+        sort (polars 1.44.2), so the plan check reports it; by one key none
+        moved, pinned by `test_the_measurement_behind_the_sort_warning`, so
+        a change in polars shows. `embargo` on a frame sorted only within
+        its groups returned a group out of order: its docs now say it needs
+        the clock order across all rows and name the remedy; the bank
+        refuses the result by default, so it is not silent.
+      - V14's session-change test and the stepping-back property tests
+        (`test_properties.py`) are written.
 
 - [x] 121. **Test libraries under an open-source licence.** S–M. **Done
       2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against
@@ -8680,6 +8757,11 @@ online contract (E36–E42).
   `tests/test_edge_cases.py::TestWeights::test_a_zero_weight_row_keeps_the_history_when_its_decay_underflows`
   pins the current behaviour, and the decision on the fix is still the
   user's.
+
+  *Decided and built 2026-09-28 (task 115 (c), with task 120): the row
+  forgets.* It is the decay alone, as the row one halflife short all but is;
+  the test above became `test_a_zero_weight_row_forgets_the_history_its_decay_takes`,
+  and `model_contract.rs` holds every model to it.
 ## 13. `window`: an EW accumulator with a hard cutoff (2026-09-06)
 
 An exponentially weighted mean never forgets. A halflife of `h` leaves

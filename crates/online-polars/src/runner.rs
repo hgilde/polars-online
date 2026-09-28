@@ -645,7 +645,9 @@ fn run_with(
                 };
                 let height = chunk.height();
                 let t = Instant::now();
-                let out = augment(bank, chunk, opts.predict)?;
+                // `stats.rows` is the rows fed before this chunk, so an
+                // error names the input's row (task 120).
+                let out = augment(bank, chunk, opts.predict, stats.rows)?;
                 t_bank += t.elapsed();
                 let t = Instant::now();
                 deliver(out)?;
@@ -674,7 +676,7 @@ fn run_with(
                     Empty::Plan(lf) => lf.collect()?,
                     Empty::Frame(df) => df,
                 };
-                deliver(augment(bank, empty, opts.predict)?)?;
+                deliver(augment(bank, empty, opts.predict, 0)?)?;
             }
             if closed_writer.is_some() && !closed_sent {
                 // Nothing closed: the empty frame with the schema, as an
@@ -755,11 +757,16 @@ fn run_with(
 /// walk the columns' chunks in lockstep: an input frame that spans a
 /// row-group boundary arrives as several arrow chunks per column, and the
 /// bank's columns are one chunk each.
-fn augment(bank: &mut Bank, chunk: DataFrame, predict: bool) -> PolarsResult<DataFrame> {
+fn augment(
+    bank: &mut Bank,
+    chunk: DataFrame,
+    predict: bool,
+    row_base: usize,
+) -> PolarsResult<DataFrame> {
     let cols = if predict {
-        bank.predict(&chunk)?
+        bank.predict_from(&chunk, row_base)?
     } else {
-        bank.fit_predict(&chunk)?
+        bank.fit_predict_from(&chunk, row_base)?
     };
     // A readiness notice is a line on stderr, once per (spec, group,
     // instance), as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md

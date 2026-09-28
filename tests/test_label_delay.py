@@ -319,8 +319,8 @@ class TestTheStreamContract:
         n = 200
         clock = np.concatenate([np.arange(100.0), np.arange(100.0)])
         df = frame(n=n, seed=9).with_columns(t=pl.Series(clock))
-        # The jump back is what `reset_state` is being asked about, so the
-        # disorder check that would refuse it as a late row stands aside.
+        # The jump back is what `reset_state` is being asked about: no step
+        # back is a late row here.
         s = spec(label_delay=10.0, on_clock_reset="reset_state", min_backwards_jump=0.0)
         bank = po.ModelBank([s])
         bank.fit_predict(df)
@@ -494,6 +494,30 @@ class TestEmbargoItself:
         out = prep.embargo(df, clock="t", delay=1.0, weight="w").collect()
         assert out["w"].to_list() == [0.0, 3.0, 0.0, 4.0]
         assert out.columns == ["t", "x", "w", prep.ROLE]
+
+    def test_it_needs_the_clock_order_across_groups(self):
+        """Task 120, measured first: the copies are merged by the clock alone,
+        so a frame sorted within its groups but not across them comes back
+        with a group out of order, which a bank refuses by default; sorted by
+        the clock first, every group is in order."""
+        by_group = pl.DataFrame(
+            {
+                "g": ["a"] * 10 + ["b"] * 10,
+                "t": [100.0 + i for i in range(10)] + [float(i) for i in range(10)],
+                "x": [float(i % 10) for i in range(20)],
+                "y": [1.0] * 10 + [2.0] * 10,
+            }
+        )
+        s = spec(group="g", weight="_online_role_weight", max_dclock=5.0)
+        out = prep.embargo(by_group, clock="t", delay=3.0).collect()
+        assert out.filter(pl.col("g") == "b")["t"].is_sorted() is False
+        with pytest.raises(ValueError, match="goes backwards"):
+            po.ModelBank([s]).fit_predict(out)
+        fixed = prep.embargo(by_group.sort("t", maintain_order=True), clock="t", delay=3.0)
+        fixed = fixed.collect()
+        for g in ("a", "b"):
+            assert fixed.filter(pl.col("g") == g)["t"].is_sorted()
+        assert po.ModelBank([s]).fit_predict(fixed).height == 40
 
     def test_it_stays_lazy(self):
         df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})

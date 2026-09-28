@@ -36,7 +36,7 @@ def _df(n: int = 60, groups: tuple[str, ...] = ("a", "b", "c")) -> pl.DataFrame:
 def _grouped_bank() -> po.ModelBank:
     return po.ModelBank(
         [
-            po.spec.ewridge("m", group="g", clock="t", max_dclock=INF, **BASE),
+            po.spec.ewridge("m", group="g", clock="t", max_dclock=1e9, **BASE),
             po.spec.rls("r", **BASE),
         ]
     )
@@ -50,7 +50,7 @@ def test_repr_names_the_specs_groups_and_rows():
     assert repr(bank) == "ModelBank(['m', 'r'], groups=0, rows_seen=0)"
     bank.fit_predict(_df(60))
     assert repr(bank) == "ModelBank(['m', 'r'], groups=3, rows_seen=60)"
-    bank.fit_predict(_df(30))
+    bank.fit_predict(_df(30).with_columns(pl.col("t") + 60.0))
     assert bank.rows_seen() == 90
     assert repr(bank) == "ModelBank(['m', 'r'], groups=3, rows_seen=90)"
 
@@ -159,9 +159,10 @@ ROUNDTRIP_SPECS = [
         feature_sets={"a": ["x0"]},
         group="g",
         clock="t",
-        max_dclock=INF,
+        # Finite, as a cap and a session gap must be since task 120.
+        max_dclock=1e9,
         session="g",
-        session_gap=INF,
+        session_gap=1e9,
     ),
     po.spec.ewridge("reset", clock="t", max_dclock=5.0, session="g", session_gap="reset", **BASE),
     po.spec.kalman("k", coef_halflife=[INF, 10.0], q=[0.0, 1.0], **BASE),

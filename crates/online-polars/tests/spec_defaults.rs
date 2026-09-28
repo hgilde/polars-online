@@ -1,54 +1,72 @@
-//! The resolved default of `min_backwards_jump`: `max_dclock`, pinned as a
-//! number rather than through a refusal. `max_dclock` is the most two
-//! adjacent rows can be apart and a session is longer than that, so a jump
-//! back by less cannot be a boundary (2026-09-20). An infinite cap gives the
-//! check nothing to compare against, so there the default is 0, off. Explicit
-//! values win and `0` is off; `inf` is refused as no setting (`spec_inf.rs`).
-//! The halflife plays no part: it is the model's memory, not a session.
+//! The clock's settings as task 120 decided them (the user, 2026-09-28).
+//! `max_dclock` is a cap on a step and nothing else: finite and above 0.
+//! `min_backwards_jump` has no default derived from it -- the caller says
+//! what a late row is: it is required with `on_clock_reset =
+//! "reset_state"`, refused with `"error"`, the default, which refuses every
+//! step back and reads no minimum, and what is given is what the clock
+//! reads, `0` included. `session_gap` is finite or `"reset"`.
 
+use online_core::OnClockReset;
 use online_polars::Spec;
 
-fn resolved(top: &str) -> f64 {
+fn cfg(top: &str) -> Result<online_core::ClockCfg, String> {
     let text = format!(
         "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n{top}\n[model]\ntype = \"ew_ridge\"\n"
     );
     let spec: Spec = toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"));
     spec.clock_cfg()
-        .unwrap_or_else(|e| panic!("{e}"))
-        .min_backwards_jump
 }
 
+const CLOCK: &str = "halflife = 10.0\nclock = \"t\"\nmax_dclock = 100.0\n";
+
 #[test]
-fn the_default_is_max_dclock() {
-    assert_eq!(
-        resolved("halflife = 10.0\nclock = \"t\"\nmax_dclock = 100.0"),
-        100.0
+fn the_default_policy_refuses_a_step_back_and_reads_no_minimum() {
+    let c = cfg(CLOCK).unwrap();
+    assert_eq!(c.on_clock_reset, OnClockReset::Error);
+    assert_eq!(c.min_backwards_jump, 0.0);
+    let err = cfg(&format!("{CLOCK}min_backwards_jump = 5.0")).unwrap_err();
+    assert!(
+        err.contains("applies only under on_clock_reset = \"reset_state\""),
+        "{err}"
     );
 }
 
 #[test]
-fn the_halflife_plays_no_part() {
-    assert_eq!(
-        resolved("halflife = 100000.0\nclock = \"t\"\nmax_dclock = 100.0"),
-        100.0
-    );
+fn reset_state_requires_a_minimum_and_reads_the_one_given() {
+    let reset = format!("{CLOCK}on_clock_reset = \"reset_state\"\n");
+    let err = cfg(&reset).unwrap_err();
+    assert!(err.contains("min_backwards_jump is required"), "{err}");
+    // The cap plays no part: a minimum above it is the caller's to give.
+    for v in [0.0, 5.0, 500.0] {
+        let c = cfg(&format!("{reset}min_backwards_jump = {v:?}")).unwrap();
+        assert_eq!(c.min_backwards_jump, v);
+        assert_eq!(c.on_clock_reset, OnClockReset::ResetState);
+    }
 }
 
 #[test]
-fn an_infinite_cap_defaults_to_off() {
-    assert_eq!(
-        resolved("halflife = 10.0\nclock = \"t\"\nmax_dclock = inf"),
-        0.0
+fn max_dclock_is_finite_and_above_zero() {
+    let with = |v: &str| cfg(&format!("halflife = 10.0\nclock = \"t\"\nmax_dclock = {v}"));
+    let err = with("0.0").unwrap_err();
+    assert!(
+        err.contains("must be > 0") && err.contains("halflife = \"inf\""),
+        "{err}"
     );
+    let err = with("inf").unwrap_err();
+    assert!(err.contains("must be finite"), "{err}");
+    assert!(with("-5.0").unwrap_err().contains("finite number > 0"));
+    assert_eq!(with("1e-9").unwrap().max_dclock, 1e-9);
 }
 
 #[test]
-fn an_explicit_value_wins_including_zero_and_under_an_infinite_cap() {
-    let base = "halflife = 10.0\nclock = \"t\"\nmax_dclock = 100.0\n";
-    assert_eq!(resolved(&format!("{base}min_backwards_jump = 5.0")), 5.0);
-    assert_eq!(resolved(&format!("{base}min_backwards_jump = 0.0")), 0.0);
-    let inf = "halflife = 10.0\nclock = \"t\"\nmax_dclock = inf\n";
-    assert_eq!(resolved(&format!("{inf}min_backwards_jump = 5.0")), 5.0);
+fn session_gap_is_finite_or_reset() {
+    let with = |v: &str| cfg(&format!("{CLOCK}session = \"s\"\nsession_gap = {v}"));
+    let err = with("inf").unwrap_err();
+    assert!(
+        err.contains("must be finite") && err.contains("\"reset\""),
+        "{err}"
+    );
+    assert!(with("0.0").is_ok() && with("\"reset\"").is_ok());
 }
 
 /// The two readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), resolved:

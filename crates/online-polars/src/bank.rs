@@ -20,7 +20,7 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, f64_values};
+use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame_at, f64_values};
 use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
@@ -68,6 +68,16 @@ impl std::fmt::Display for GroupKey {
 /// and refuses a file with a duration by its version rather than by a type
 /// error deep in a spec.
 const BANK_FORMAT_VERSION: u32 = 3;
+
+/// The oldest schema a bank file loads from, above the models' own
+/// `online_core::MIN_SCHEMA_VERSION`: a bank file names every spec's
+/// `on_clock_reset`, and every one written before schema 19 names `"max"` --
+/// the old default, written whether or not the spec had a clock -- or
+/// `"zero"`, which no longer exist, and one under `"reset_state"` names no
+/// `min_backwards_jump` (docs/PLAN.md task 120, 2026-09-28). The user, the
+/// same day: "Do not worry about old specs". Refused by its version rather
+/// than by a parse error deep in a spec; pre-1.0, no loader is written.
+const MIN_BANK_SCHEMA_VERSION: u32 = 19;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -275,7 +285,7 @@ fn label_column(
                         "spec {:?}: label column {:?} has the value {:?} at row {}, which is \
                          not one of the classes {:?}; list every class the column can hold, \
                          or null the rows that should only be scored",
-                        spec.name, name, val, j, classes
+                        spec.name, name, val, chunk.row_base() + j, classes
                     ),
                 },
             },
@@ -399,7 +409,7 @@ fn extract(
                             "spec {:?}: strict_binary target column {:?} has the value {} at \
                              row {}, which is neither 0 nor 1; null the rows that should only \
                              be scored, or drop strict_binary to clamp them into [0, 1]",
-                            spec.name, c, v[j], source_row(layout, j)
+                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                         );
                     }
                 }
@@ -422,7 +432,7 @@ fn extract(
                             "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
                              expected rows between changepoints and must be > 1 (use null to \
                              fall back to the spec's own hazard)",
-                            spec.name, c, v[j], source_row(layout, j)
+                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                         );
                     }
                 }
@@ -442,7 +452,7 @@ fn extract(
         let bad = |j: usize| {
             polars_err!(ComputeError:
                 "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
-                spec.name, c, source_row(layout, j)
+                spec.name, c, chunk.row_base() + source_row(layout, j)
             )
         };
         Ok(Some(match chunk.clock(spec, c)? {
@@ -500,7 +510,7 @@ fn extract(
                     polars_bail!(ComputeError:
                         "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
                          weights must be >= 0 (use null to skip a row)",
-                        spec.name, c, v[j], source_row(layout, j)
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
                 // `rcov` sums returns over a block; a fractional weight has
@@ -514,7 +524,7 @@ fn extract(
                         polars_bail!(ComputeError:
                             "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \
                              (a realised covariance is a sum over returns, not a weighted mean)",
-                            spec.name, c, v[j], source_row(layout, j)
+                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                         );
                     }
                 }
@@ -541,8 +551,8 @@ fn extract(
     })
 }
 
-/// One stream's flat output buffers for a chunk. Fallible because a strict
-/// clock policy can refuse a row (`on_clock_reset = "error"`).
+/// One stream's flat output buffers for a chunk. Fallible because the clock
+/// policy can refuse a row (task 120).
 type StreamRows = PolarsResult<ChunkOut>;
 
 /// The [`ClosedRow`]s of one stream at the moment it closes: one per decay
@@ -693,6 +703,7 @@ fn check_monotone(
     n: usize,
     integer: bool,
     high_water: Option<&GroupKey>,
+    row_base: usize,
 ) -> PolarsResult<()> {
     use std::cmp::Ordering::*;
     if groups.is_empty() {
@@ -703,7 +714,7 @@ fn check_monotone(
             "spec {:?}: row {} has a null group; group_close = \"monotone\" orders the keys, \
              and a null has no place in that order (a null key is an ordinary group under \
              group_close = \"session\")",
-            spec.name, idx[0]
+            spec.name, row_base + idx[0]
         );
     }
     let mut slot = vec![usize::MAX; n];
@@ -727,7 +738,7 @@ fn check_monotone(
                  text otherwise (sort the input by {:?} under that same order -- a Categorical \
                  column sorts by its physical order unless you cast it to String -- or use \
                  group_close = \"session\")",
-                spec.name, r, groups[gi].0, groups[prev].0,
+                spec.name, row_base + r, groups[gi].0, groups[prev].0,
                 spec.group.as_deref().unwrap_or("")
             );
         }
@@ -752,7 +763,7 @@ fn check_monotone(
             polars_bail!(ComputeError:
                 "spec {:?}: row {}: group {} is below {}, which this bank has already closed \
                  past; a closed group cannot be reopened",
-                spec.name, groups[0].1[0], groups[0].0, hw
+                spec.name, row_base + groups[0].1[0], groups[0].0, hw
             );
         }
     }
@@ -790,6 +801,7 @@ fn process(
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
+    row_base: usize,
 ) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>) {
     type TaskOut = (Vec<(usize, StreamRows)>, Vec<ClosedRow>);
     let per_task: Vec<TaskOut> = work
@@ -852,7 +864,7 @@ fn process(
                             }
                         }
                         Err((raw, i, why)) => {
-                            outs.push((si, Err(backwards_clock(spec, raw, i, why))));
+                            outs.push((si, Err(backwards_clock(spec, raw, row_base + i, why))));
                             break 'segments;
                         }
                     }
@@ -885,24 +897,20 @@ fn score(
         .map(|(si, idx, base, stream)| {
             let spec = &specs[si];
             let sc = &cols[si];
-            let r = (|| {
-                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
-                stream
-                    .predict_chunk(
-                        spec,
-                        &cfgs[si],
-                        &sc.features,
-                        &sc.targets,
-                        sc.clock.as_ref(),
-                        sc.session.as_deref(),
-                        idx,
-                        base,
-                        &mut out,
-                    )
-                    .map_err(|(raw, i, why)| backwards_clock(spec, raw, i, why))?;
-                Ok(out)
-            })();
-            (si, r)
+            // Scoring refuses no clock (`Stream::predict_chunk`).
+            let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+            stream.predict_chunk(
+                spec,
+                &cfgs[si],
+                &sc.features,
+                &sc.targets,
+                sc.clock.as_ref(),
+                sc.session.as_deref(),
+                idx,
+                base,
+                &mut out,
+            );
+            (si, Ok(out))
         })
         .collect()
 }
@@ -1001,32 +1009,49 @@ fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> Polar
 
 /// The error for a refused backwards clock: names the spec, the column, the
 /// size of the step back, the row, and the way out. Under `on_clock_reset =
-/// "error"` (`why` is `None`) the way out is a sort or another policy; under
-/// a disorder rule it is the rule's numbers, the likely cause, and the exact
-/// key that disables that rule. Either way the bank was not updated.
+/// "error"`, the default (`why` is `None`), the way out is a sort, skipping
+/// what a resumed state has learned, or `"reset_state"`; under
+/// `"reset_state"` a step back no larger than `min_backwards_jump` is a late
+/// row, and the way out is a sort or a smaller minimum. Either way the bank
+/// was not updated.
 fn backwards_clock(spec: &Spec, raw: f64, row: usize, why: Option<Disorder>) -> PolarsError {
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     match why {
         None => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {} \
-             (on_clock_reset = \"error\"); the bank was not updated. Sort each \
-             group by the clock, or choose \"max\"/\"zero\"/\"reset_state\" to \
-             define what a backwards clock means.",
-            spec.name, column, -raw, row
+            "spec {:?}: clock column {:?} goes backwards by {} at row {} (on_clock_reset = \
+             \"error\", the default); the bank was not updated. Sort each group by the \
+             clock; to resume a saved state on input that overlaps it, feed \
+             ModelBank.skip_learned(frame); or, if a step back starts the stream over, set \
+             on_clock_reset = \"reset_state\" with a min_backwards_jump.",
+            spec.name, column, clock_amount(spec, -raw), row
         ),
         Some(Disorder {
             back,
             min_backwards_jump,
         }) => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {}, less than \
-             min_backwards_jump = {} (which defaults to max_dclock: adjacent rows are \
-             never further apart, and a session is longer) -- out-of-order rows, not \
-             a session boundary; the bank was not updated. Sort each group by the \
-             clock, or add a `session` column if these are real boundaries. To \
-             accept such jumps lower min_backwards_jump, set it to 0 to switch the \
-             check off, or set on_clock_reset to define what a backwards clock means.",
-            spec.name, column, back, row, min_backwards_jump
+            "spec {:?}: clock column {:?} goes backwards by {} at row {}, no more than \
+             min_backwards_jump = {}: a late row, not a new start; the bank was not \
+             updated. Sort each group by the clock, or lower min_backwards_jump if a step \
+             back this small starts the stream over (0 starts over at every one).",
+            spec.name, column, clock_amount(spec, back), row,
+            clock_amount(spec, min_backwards_jump)
         ),
+    }
+}
+
+/// A clock amount as the spec measures it: on a temporal clock a duration
+/// (`1d`, not `86400`), whose every clock parameter is one, `max_dclock`
+/// among them (task 120: a `Date` clock's refusal said `86400`); a number of
+/// the column's units otherwise.
+fn clock_amount(spec: &Spec, v: f64) -> String {
+    if spec
+        .max_dclock
+        .as_ref()
+        .is_some_and(crate::span::Span::is_duration)
+    {
+        crate::span::format_duration((v * 1e9).round() as i64)
+    } else {
+        crate::spec::num_label(v)
     }
 }
 
@@ -2294,6 +2319,26 @@ impl Bank {
             .collect()
     }
 
+    /// Per spec, every group's last clock -- the value its stream last
+    /// stepped through, which the next row is measured from -- exactly as the
+    /// stream keeps it: a temporal clock in integer nanoseconds, not the
+    /// seconds [`Self::groups`] reports. `None` before the first row and on
+    /// a row-count clock. What `ModelBank.skip_learned` compares a resumed
+    /// input against (task 120).
+    pub fn last_clocks(&self) -> Vec<Vec<(GroupKey, Option<online_core::ClockValue>)>> {
+        self.states
+            .iter()
+            .map(|hm| {
+                let mut v: Vec<_> = hm
+                    .iter()
+                    .map(|(k, s)| (k.clone(), s.clock.last_clock()))
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect()
+    }
+
     /// Forget the state of these groups -- in every spec, or in one -- and
     /// return how many streams were dropped. A dropped group starts cold if it
     /// appears again, exactly as a never-seen one would. `spec` is an index
@@ -2756,11 +2801,23 @@ impl Bank {
     /// rather than go on from there. And, on the first call only, a
     /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        self.fit_predict_from(df, 0)
+    }
+
+    /// [`Self::fit_predict`] for rows `row_base..` of a longer input: an
+    /// error names the input's row, not the chunk's (task 120). The chunked
+    /// surfaces -- the plan form, `fit`, the CLI -- pass the rows they have
+    /// fed before this chunk.
+    pub fn fit_predict_from(
+        &mut self,
+        df: &DataFrame,
+        row_base: usize,
+    ) -> PolarsResult<Vec<Column>> {
         // Before the frame is cast: a broken bank refuses the chunk whatever
         // is in it, and a column error would otherwise hide that and the cast
         // would be work thrown away (review 2026-09-17, second pass).
         self.refuse_if_broken()?;
-        let chunk = chunk_from_frame(df, &self.specs)?;
+        let chunk = chunk_from_frame_at(df, &self.specs, row_base)?;
         let arrays = self.fit_predict_arrow(&chunk)?;
         named_columns(&self.specs, arrays)
     }
@@ -2770,7 +2827,7 @@ impl Bank {
     /// spec order, with the same fields in the same order as the struct
     /// column the polars pair returns. The models, the state and the values
     /// are the same. [`Self::fit_predict`] is this method between
-    /// [`chunk_from_frame`], where every dtype decision about a frame is
+    /// [`crate::chunk_from_frame`], where every dtype decision about a frame is
     /// made, and naming each struct after its spec.
     pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         // Everything parallel below -- the `par_iter`s here and the
@@ -2833,6 +2890,7 @@ impl Bank {
                     n,
                     integer_keys[si],
                     self.high_water[si].as_ref(),
+                    chunk.row_base(),
                 )?;
             }
         }
@@ -2887,12 +2945,13 @@ impl Bank {
         // starting the big ones last leaves cores idle at the tail.
         work.sort_by_key(|(_, _, idx, _, _)| std::cmp::Reverse(idx.len()));
 
-        // Under `on_clock_reset = "error"` the chunk is refused as a whole:
-        // every stream checks its clock schedule on a copy before any model is
+        // A step back the policy refuses refuses the chunk as a whole: every
+        // stream checks its clock schedule on a copy before any model is
         // touched (docs/IMPROVEMENTS.md C3), so the bank is left exactly as it
         // was -- the streams the chunk would have created included, so that
         // `groups()` lists what the bank has learned from -- and the corrected
-        // chunk can be fed. A no-op under every other policy.
+        // chunk can be fed. A no-op where nothing can refuse: a row-count
+        // clock, or `"reset_state"` with a minimum of 0.
         let checked = work.par_iter().try_for_each(|(si, _, idx, base, stream)| {
             let sc = &cols[*si];
             stream
@@ -2903,7 +2962,9 @@ impl Bank {
                     idx,
                     *base,
                 )
-                .map_err(|(raw, i, why)| backwards_clock(&specs[*si], raw, i, why))
+                .map_err(|(raw, i, why)| {
+                    backwards_clock(&specs[*si], raw, chunk.row_base() + i, why)
+                })
         });
         if let Err(e) = checked {
             drop(work);
@@ -2925,7 +2986,7 @@ impl Bank {
         let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
-        let (rows1, closed1) = process(work1, specs, cfgs, &cols);
+        let (rows1, closed1) = process(work1, specs, cfgs, &cols, chunk.row_base());
         closed.extend(closed1);
         for (si, r) in rows1 {
             match r {
@@ -2953,7 +3014,7 @@ impl Bank {
                         compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
                 }
             }
-            let (rows2, closed2) = process(work2, specs, cfgs, &cols);
+            let (rows2, closed2) = process(work2, specs, cfgs, &cols, chunk.row_base());
             closed.extend(closed2);
             for (si, r) in rows2 {
                 match r {
@@ -3060,8 +3121,14 @@ impl Bank {
     ///
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        self.predict_from(df, 0)
+    }
+
+    /// [`Self::predict`] for rows `row_base..` of a longer input, as
+    /// [`Self::fit_predict_from`] is to [`Self::fit_predict`].
+    pub fn predict_from(&self, df: &DataFrame, row_base: usize) -> PolarsResult<Vec<Column>> {
         self.refuse_if_broken()?;
-        let chunk = chunk_from_frame(df, &self.specs)?;
+        let chunk = chunk_from_frame_at(df, &self.specs, row_base)?;
         let arrays = self.predict_arrow(&chunk)?;
         named_columns(&self.specs, arrays)
     }
@@ -3319,13 +3386,14 @@ impl Bank {
                 header.format_version, BANK_FORMAT_VERSION
             ));
         }
-        if !(online_core::MIN_SCHEMA_VERSION..=online_core::SCHEMA_VERSION)
-            .contains(&header.schema_version)
+        if !(MIN_BANK_SCHEMA_VERSION..=online_core::SCHEMA_VERSION).contains(&header.schema_version)
         {
             return Err(format!(
-                "state schema version {} not supported (this build loads {}..={})",
+                "state schema version {} not supported (this build loads {}..={}); a \
+                 bank saved before schema {MIN_BANK_SCHEMA_VERSION} names clock settings \
+                 that no longer exist, so refit it from its input",
                 header.schema_version,
-                online_core::MIN_SCHEMA_VERSION,
+                MIN_BANK_SCHEMA_VERSION,
                 online_core::SCHEMA_VERSION
             ));
         }
@@ -4867,7 +4935,7 @@ mod envelope_tests {
             (r#", "halflife": 50"#, 2),
             (r#", "clock": "t", "halflife": 600, "max_dclock": 300"#, 2),
             (
-                r#", "clock": "t", "halflife": "inf", "max_dclock": "inf""#,
+                r#", "clock": "t", "halflife": "inf", "max_dclock": 1e12"#,
                 2,
             ),
             (

@@ -6,7 +6,7 @@ import copy
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 import polars as pl
 
@@ -159,6 +159,57 @@ class ModelBank:
         index = None if spec is None else self._spec_index(spec)
         return self._native.drop_groups(list(keys), index)
 
+    @overload
+    def skip_learned(self, frame: pl.DataFrame) -> pl.DataFrame: ...
+
+    @overload
+    def skip_learned(self, frame: pl.LazyFrame) -> pl.LazyFrame: ...
+
+    def skip_learned(self, frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+        """The rows of ``frame`` the bank has not learned, for resuming a saved bank on
+        input that overlaps it.
+
+        A loaded bank resumes at the next row. Input that starts before the save, such
+        as a rerun of the day or a file that overlaps the last one, steps each group's
+        clock back to rows the state has already learned. The default
+        ``on_clock_reset = "error"`` refuses that chunk, and ``"reset_state"`` may read
+        it as a new start. This method keeps a row whose clock is after its group's
+        last clock in every spec that reads a clock, and every row of a group the bank
+        has not seen, so that each row is learned once:
+
+        .. code-block:: python
+
+            bank = po.ModelBank.load("bank.state")
+            out = bank.fit_predict(bank.skip_learned(rerun))
+
+        A row at a group's last clock counts as learned, so a stream that repeats a
+        clock value, saved between two rows with that value, loses the later ones. A
+        row with a null clock is kept, for :meth:`fit_predict` to judge. Row order is
+        kept, and a ``LazyFrame`` stays lazy. The comparison is exact: a temporal
+        clock is compared in the integer nanoseconds the bank keeps, whatever its unit
+        or time zone.
+
+        ``ValueError`` when no spec reads a clock (a row-count clock has no position
+        to resume from), when a spec's clock or group column is not in the frame, or
+        when a clock is temporal in the frame and was numeric in the bank, or the
+        other way round.
+        """
+        schema = frame.lazy().collect_schema()
+        keep: pl.Expr | None = None
+        for spec, groups in zip(self.specs, self._native.last_clocks(), strict=True):
+            clock = spec.get("clock")
+            if clock is None:
+                continue
+            unlearned = _unlearned(spec["name"], clock, spec.get("group"), groups, schema)
+            keep = unlearned if keep is None else keep & unlearned
+        if keep is None:
+            msg = (
+                "no spec reads a clock, so the bank has no position to resume from; a "
+                "row-count bank resumes at the next row, which only the caller knows"
+            )
+            raise ValueError(msg)
+        return frame.filter(keep)
+
     def _spec_index(self, spec: str | int) -> int:
         """A spec's position from its name or index: ``KeyError`` for a name
         the bank has not got, ``IndexError`` for a position it has not got."""
@@ -207,11 +258,11 @@ class ModelBank:
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would replace;
-        - a group's clock runs backwards under ``on_clock_reset = "error"``, or by
-          less than ``min_backwards_jump`` (default ``max_dclock``) under any
-          policy: adjacent rows are never further apart than the cap and a
-          session is longer, so that is a late row, not a boundary. The error
-          names the key, and ``0`` switches the check off.
+        - a group's clock runs backwards under ``on_clock_reset = "error"``, the
+          default, or by no more than ``min_backwards_jump`` under
+          ``"reset_state"``, where that is a late row rather than a new start. A
+          chunk that overlaps what a loaded state has learned is refused the same
+          way; :meth:`skip_learned` drops the overlap.
 
         A refused chunk leaves the bank exactly as it was, so the corrected chunk can
         be fed. The exception is a window past a refusing ``window_budget``
@@ -221,8 +272,14 @@ class ModelBank:
         ``save`` rather than go on from there; rebuild it from its last save.
         ``RuntimeError`` when the bank is in use on another thread (class docstring).
         """
+        return self._fit_predict_from(df, 0)
+
+    def _fit_predict_from(self, df: pl.DataFrame, row_base: int) -> pl.DataFrame:
+        """:meth:`fit_predict` for rows ``row_base..`` of a longer input: an error
+        names the input's row, not the chunk's. The chunked surfaces pass the rows
+        they have fed before the chunk."""
         self._check_frame(df, "fit_predict")
-        outs = self._native.fit_predict(df)
+        outs = self._native.fit_predict(df, row_base)
         self._warn_notices()
         return df.with_columns([pl.Series(s) for s in outs])
 
@@ -265,6 +322,9 @@ class ModelBank:
         than the group's current one is scored as the first row of a fresh stream,
         null with ``n_eff`` 0, because ``fit_predict`` would restart the stream there.
         A row that ``session_gap = "reset"`` would restart on is scored the same way.
+        A row before the group's last learned clock is scored against the state as it
+        stands, under either ``on_clock_reset``: scoring learns nothing, so it neither
+        refuses the row nor starts over.
 
         .. code-block:: python
 
@@ -276,8 +336,13 @@ class ModelBank:
         error, and ``RuntimeError`` only when a ``fit_predict`` is in flight on
         another thread.
         """
+        return self._predict_from(df, 0)
+
+    def _predict_from(self, df: pl.DataFrame, row_base: int) -> pl.DataFrame:
+        """:meth:`predict` for rows ``row_base..`` of a longer input, as
+        :meth:`_fit_predict_from` is to :meth:`fit_predict`."""
         self._check_frame(df, "predict")
-        outs = self._native.predict(df)
+        outs = self._native.predict(df, row_base)
         return df.with_columns([pl.Series(s) for s in outs])
 
     def fit_predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
@@ -463,8 +528,8 @@ class ModelBank:
         rows_seen = 0
         try:
             for chunk in source:
+                out = self._fit_predict_from(chunk, rows_seen)
                 rows_seen += chunk.height
-                out = self.fit_predict(chunk)
                 if path is not None:
                     rows = self.closed_groups()
                     if rows.height:
@@ -1312,3 +1377,71 @@ class ModelBank:
         # the builders made.
         obj._specs = _from_json(native.specs_json())
         return obj
+
+
+#: A temporal clock's physical value in nanoseconds, per unit, as the bank
+#: reads it (a ``Date`` counts days).
+_NANOS_PER = {"ms": 1_000_000, "us": 1_000, "ns": 1}
+_NANOS_PER_DAY = 86_400 * 1_000_000_000
+
+
+def _unlearned(
+    name: str,
+    clock: str,
+    group: str | None,
+    groups: list[tuple[str | None, float | None, int | None]],
+    schema: pl.Schema,
+) -> pl.Expr:
+    """True on the rows of one spec's input its state has not learned: a clock
+    after the group's last one, a group the bank has not seen, or a null clock
+    (:meth:`ModelBank.skip_learned`)."""
+    for column, role in ((clock, "clock"), (group, "group")):
+        if column is not None and column not in schema:
+            msg = f"spec {name!r}: {role} column {column!r} is not in the frame"
+            raise ValueError(msg)
+    dtype = schema[clock]
+    value: pl.Expr
+    if dtype == pl.Date:
+        value = pl.col(clock).cast(pl.Int64) * _NANOS_PER_DAY
+    elif isinstance(dtype, pl.Datetime | pl.Duration):
+        value = pl.col(clock).cast(pl.Int64) * _NANOS_PER[dtype.time_unit or "us"]
+    elif dtype.is_numeric():
+        value = pl.col(clock).cast(pl.Float64)
+    else:
+        msg = f"spec {name!r}: clock column {clock!r} has dtype {dtype}, which is not a clock"
+        raise ValueError(msg)
+    temporal = not dtype.is_numeric()
+    kind: type[pl.DataType] = pl.Int64 if temporal else pl.Float64
+    lasts: dict[str | None, float | int] = {}
+    for key, number, nanos in groups:
+        if number is None and nanos is None:
+            continue
+        if (nanos is not None) != temporal:
+            was, now = ("temporal", "numeric") if nanos is not None else ("numeric", "temporal")
+            msg = (
+                f"spec {name!r}: clock column {clock!r} is {now} in the frame and was "
+                f"{was} in the bank"
+            )
+            raise ValueError(msg)
+        seen = nanos if nanos is not None else number
+        assert seen is not None
+        lasts[key] = seen
+    last: pl.Expr
+    if group is None:
+        last = pl.lit(lasts.get(""), dtype=kind)
+    else:
+        named = {k: v for k, v in lasts.items() if k is not None}
+        last = (
+            pl.col(group)
+            .cast(pl.String)
+            .replace_strict(list(named), list(named.values()), default=None, return_dtype=kind)
+            if named
+            else pl.lit(None, dtype=kind)
+        )
+        if None in lasts:
+            last = (
+                pl.when(pl.col(group).is_null())
+                .then(pl.lit(lasts[None], dtype=kind))
+                .otherwise(last)
+            )
+    return value.is_null() | last.is_null() | (value > last)

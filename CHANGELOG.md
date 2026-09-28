@@ -7,7 +7,77 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **A clock that steps back is refused by default.** `on_clock_reset`
+  keeps `"error"`, now the default, and `"reset_state"`. `"max"` and
+  `"zero"` are gone. `"max"`, the old default, took the cap as the step, so
+  under an infinite cap a step back handed the models an infinite step, and
+  `holt` predicted null from there on. A spec that names either is refused.
+
+- **What a late row is, the caller says.** `min_backwards_jump` no longer
+  defaults to `max_dclock`. It is required with `"reset_state"`, where a step
+  back no larger than it is refused as a late row and a larger one starts
+  the model over, and refused with `"error"`, which refuses every step back.
+  A step back equal to the minimum is now late: a `Date` clock's one-day
+  step passed a one-day minimum before.
+
+- **`max_dclock` is finite and above 0, and `session_gap` is finite or
+  `"reset"`.** A cap of 0 froze the clock, and every gap then read as a
+  break, so `label_delay` released each held label on the next row: for no
+  decay, set `halflife="inf"`. An infinite cap took the break away; an
+  infinite session gap is `"reset"`.
+
+- **`predict` scores a row before the last learned clock against the state
+  as it stands**, as a step of 0, under either policy. `"error"` refused
+  such a row, `"reset_state"` scored it as a fresh stream, and `"max"`
+  scored it a whole cap on.
+
+- **A bank file from before this release is refused, by its version.**
+  Every one names an `on_clock_reset` that no longer exists (`"max"` was
+  written whether or not a spec had a clock). The bank now loads schema 19
+  only; refit from the input. A model's own state from schema 14 on still
+  loads.
+
+### Added
+
+- **`ModelBank.skip_learned(frame)`, for resuming on input that overlaps a
+  saved state.** It keeps each row after its group's last clock, in every
+  spec with a clock, and every row of a group the bank has not seen, so a
+  rerun learns each row once. It takes a `LazyFrame` too, and compares a
+  temporal clock in exact nanoseconds. docs/STATE-WORKFLOW.md has the
+  recipe.
+
 ### Fixed
+
+- **A zero-weight row forgets what its decay forgets.** Where the decay
+  factor underflows to 0, from 1075 halflives on, the update is 0/0, and
+  the guard used to keep the history whole, so the next row saw the old
+  weight. The row is now the decay alone, as one halflife short of it all
+  but is. Five models kept the history (`ewridge`, `lasso`, `kalman`,
+  `ew_cov`, `deco`) and `sgd` a scale; a contract test now holds every
+  model to it.
+
+- **An error names the row of the input, not of the chunk.** Fed in
+  chunks, by `fit`, `fit_predict_batches`, a plan or the CLI, a refused row
+  was counted from the start of its chunk. `refresh_time` counted the same
+  way.
+
+- **`refresh_time` compares a temporal clock exactly.** It read the clock
+  as a double, which on a `Datetime` in nanoseconds resolves 256 ns, so a
+  step back smaller than that passed as a tie. It reads the column's
+  integer now; the output column is unchanged.
+
+- **The plan check warns about a sort by several keys without
+  `maintain_order=True`.** It took any sort as settling the order, but such
+  a sort leaves rows with equal keys in no particular order: 2,109 of
+  10,000 rows moved when measured. A sort by one key was stable, and still
+  passes.
+
+- **`po.prep.embargo` says it needs the clock order across all rows.** It
+  merges by the clock alone, so a frame sorted only within its groups came
+  back with a group out of order. The docs said "as a stream must be",
+  which is each group's order; they name the remedy now.
 
 - **`coverage_<slot>` under `label_delay` counts the intervals the frame
   showed.** A held row was scored, when its label arrived, against the
@@ -35,9 +105,9 @@ carries breaking changes, and any change to the numbers a model returns.
   manylinux2014 image the wheels come from now, and the release refuses a
   binary that needs more than 2.17.
 
-- **State schema 18.** Under `label_delay` with a conformal interval, each
-  held row keeps the radius it was shown. 0.11.1 files (17) load, and their
-  held rows are scored against the radius at release, as before.
+- **State schema 19.** Under `label_delay` with a conformal interval, each
+  held row keeps the radius it was shown (schema 18), and the clock settings
+  changed (19, above).
 
 ### Performance
 
