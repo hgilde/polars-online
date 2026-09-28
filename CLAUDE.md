@@ -171,4 +171,12 @@ dependencies; `crate-type` is the publisher's choice).
   no `importorskip`. Never add it to the package's dependencies, which stay
   `polars`. `docs/TESTING.md`, "Libraries the package does not depend on", has
   the rules, and `tests/test_dependency_policy.py` checks them.
+- **An oracle comes from a third-party library wherever one computes the
+  quantity** (the user, 2026-09-27: "Is there no third party oracle
+  library?"). Write only the definition by hand, from the paper; let the
+  library compute it. In Rust tests, the only ones `cargo mutants` sees, use
+  `faer` (already an `online-core` dependency, independent of `solve.rs`);
+  in Python, scikit-learn, scipy or statsmodels, in
+  `tests/test_second_opinion.py`. Where the library is Python's alone, write
+  both. `docs/TESTING.md` has the rule beside the one above.
 - Docstrings state the math (update equations) for every model.

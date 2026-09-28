@@ -452,6 +452,26 @@ separate question, and three kinds of need have come up:
 | a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
 | interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
 
+**An oracle comes from a third-party library wherever one computes the
+thing checked.** The user asked, on 2026-09-27, while a Gaussian
+elimination was being written by hand as a ridge oracle: "Is there no third
+party oracle library?" An oracle written here can share a mistake with the
+code it checks, and a library's cannot. So before writing a longhand, look
+for a library that computes the same quantity, and write by hand only the
+definition, from the paper, such as the normal equations a fit must solve.
+
+| where the test is | library oracles | example |
+|---|---|---|
+| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, and independent of the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `faer`'s LU |
+| Python | scikit-learn, scipy, statsmodels, pandas, numpy | `TestEwRidgeIsSklearnsRidge` holds every `ewridge` solve to `sklearn.linear_model.Ridge`, 20 cases to 1e-8 |
+
+**A mutant can be killed only from Rust**, because `cargo mutants` runs
+`cargo test` and never the pytest suite. Where a library oracle exists only
+in Python, write both: the Rust test with `faer` doing the linear algebra,
+and the library's second opinion in `tests/test_second_opinion.py`. Where no
+library computes the quantity, the oracle is written from the paper, never
+from the code it checks.
+
 Four rules keep such a library from costing the package anything:
 
 1. **Declare it in the dev group, by name.** It must not arrive through
