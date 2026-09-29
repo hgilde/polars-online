@@ -4889,9 +4889,14 @@ decision it needs, with a recommendation where there is one.
       `save_state=callable`; E63's `weight_from`; a docstring pass under
       WRITING (L).
 
-- [ ] 119. **Housekeeping.** S; *the user's call*. The 13 remote branches
+- [x] 119. **Housekeeping.** S; *the user's call*. The 13 remote branches
       merged into `origin/main` (three point at release tags) and about 40
-      local branches, all merged.
+      local branches, all merged. **Done 2026-09-29** (the user: "Do task
+      119"): the 39 local branches went first; the 13 remote ones, each
+      checked merged into `origin/main` and with no open pull request, were
+      deleted with `git push origin --delete`. The tags three of them
+      pointed at, `v0.2.0`, `v0.9.0` and `v0.9.1`, remain; the remote holds
+      `main` alone.
 
 - [x] 120. **Rows out of order and clocks that go back: what an audit of
       2026-09-25 found. Needs extra review before any of it is built (the
