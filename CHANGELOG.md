@@ -68,7 +68,8 @@ carries breaking changes, and any change to the numbers a model returns.
   default's, to the bit. At 20,000 pairs it runs 2.7 times as fast at ten
   targets and 3.2 times at thirty, and a ten-target state is under half the
   size. Where a target is absent on some rows it is a different estimator,
-  as the docstring says. It takes no `window` and, for now, no `lags`.
+  as the docstring says. It takes `lags`, 4.6 times as fast with them at
+  ten targets, and no `window`.
 
 ### Changed
 

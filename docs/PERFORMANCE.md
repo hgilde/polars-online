@@ -3385,6 +3385,15 @@ The runs' checksums over every pair's numbers are equal at two and ten
 targets, every target present on every row. A saved bank at 2,000 features
 and ten targets is 0.39 MB against 0.87 MB.
 
+With `lags=1,2,5`, where the feature's autocovariance at each lag is kept
+per feature too, the same bench and checksums equal in every row:
+
+| targets | features | cross lags | `"per_target"` | `"shared"` | ratio |
+|---|---|---|---|---|---|
+| 1 | 10,000 | none | 82.7 ms | 84.4 ms | 1.0 |
+| 10 | 2,000 | none | 131.3 ms | 28.8 ms | 4.6 |
+| 10 | 2,000 | 1 | 157.5 ms | 62.0 ms | 2.5 |
+
 Two kernels came first, and both were slower. The first stepped every
 target inside the feature loop, which strides across the targets'
 covariances: 1.16 times the default's time through the bank at ten targets

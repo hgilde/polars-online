@@ -499,11 +499,20 @@ class TestSharedFeatureMoments:
                 own = other.filter(pick).row(0, named=True)
                 assert (own["var_x"] == pair["var_x"]) == (t == "y0"), (f, t)
 
-    def test_it_is_refused_with_a_window_lags_or_another_value(self):
+    def test_it_is_refused_with_a_window_or_another_value(self):
         with pytest.raises(ValueError, match='"shared" takes no window'):
             spec(feature_moments="shared", window=50.0)
-        with pytest.raises(ValueError, match='"shared" takes no lags'):
-            spec(feature_moments="shared", lags=[1])
         with pytest.raises(ValueError, match='must be "per_target" or "shared"'):
             spec(feature_moments="both")
         spec(feature_moments="per_target", window=50.0, lags=[1], window_lags=True)
+        spec(feature_moments="shared", lags=[1, 3], serial_rule="bartlett")
+
+    def test_with_lags_every_pair_is_per_targets_to_the_bit_where_every_target_is_present(self):
+        """The lagged moments, the lead/lag terms and ``n_serial`` included."""
+        df = frame(n=600, weights=True, clock=True, seed=7)
+        kw = dict(lags=[1, 2, 5], cross_lags=[1], serial_rule="geometric", **self.COMMON)
+        per = po.ModelBank([spec(**kw)])
+        per.fit_predict(df)
+        shared = po.ModelBank([spec(feature_moments="shared", **kw)])
+        shared.fit_predict(df)
+        assert shared.marginal("m").equals(per.marginal("m"), null_equal=True)

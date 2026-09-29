@@ -115,6 +115,25 @@ pub struct MarginalLags {
     /// read a state without it (`tests/state_encoding.rs`).
     #[serde(default)]
     cross_lags: Option<Vec<usize>>,
+    /// The feature's autocovariance kept once per feature, over every
+    /// learned row, where it is kept per target otherwise
+    /// ([`crate::FeatureMomentLayout::Shared`], docs/PLAN.md task 125): `cxx`
+    /// is `p` a lag, not `p·T`. Last, and not skipped, as `cross_lags` is.
+    #[serde(default)]
+    shared: bool,
+}
+
+/// A target's side of a row's lagged moments under shared feature moments
+/// ([`MarginalLags::update_shared`]): its mix `a = lam·W_t/W'_t` and `b =
+/// w/W'_t`, its value on the row, and its mean before the row, with the
+/// part the double leaves out.
+#[derive(Debug, Clone, Copy)]
+pub struct TargetLag {
+    pub a: f64,
+    pub b: f64,
+    pub yt: f64,
+    pub my: f64,
+    pub my_lo: f64,
 }
 
 /// The lag moments alone, as a `window`'s snapshot holds them (docs/PLAN.md
@@ -200,6 +219,7 @@ impl MarginalLags {
         t: usize,
         lags: Vec<usize>,
         cross_lags: Option<Vec<usize>>,
+        shared: bool,
     ) -> Result<Self, String> {
         if lags.is_empty() {
             return Err("marginal: lags must not be empty".into());
@@ -229,13 +249,19 @@ impl MarginalLags {
             t,
             lags,
             cyy: vec![vec![0.0; t]; l],
-            cxx: vec![vec![0.0; p * t]; l],
+            cxx: vec![vec![0.0; if shared { p } else { p * t }]; l],
             cxy: vec![vec![0.0; p * t]; n_cross],
             cyx: vec![vec![0.0; p * t]; n_cross],
             ring_x: VecDeque::with_capacity(max),
             ring_y: VecDeque::with_capacity(max),
             cross_lags,
+            shared,
         })
+    }
+
+    /// Whether the feature's autocovariance is kept once per feature.
+    pub fn is_shared(&self) -> bool {
+        self.shared
     }
 
     pub fn lags(&self) -> &[usize] {
@@ -281,7 +307,11 @@ impl MarginalLags {
             && self.cyy.iter().all(|v| v.len() == t)
             && self.cxx.len() == l
             && [&self.cxy, &self.cyx].iter().all(|m| m.len() == n_cross)
-            && [&self.cxx, &self.cxy, &self.cyx]
+            && self
+                .cxx
+                .iter()
+                .all(|v| v.len() == if self.shared { p } else { p * t })
+            && [&self.cxy, &self.cyx]
                 .iter()
                 .all(|m| m.iter().all(|v| v.len() == p * t))
             && self.ring_x.iter().all(|r| r.len() == p)
@@ -298,9 +328,10 @@ impl MarginalLags {
         self.cyy[li][t]
     }
 
-    /// `E_w[dx_t·dx_{t−ℓ}]` for the pair.
+    /// `E_w[dx_t·dx_{t−ℓ}]` for the pair: the feature's own under shared
+    /// feature moments, whatever the target.
     pub fn cxx(&self, li: usize, t: usize, j: usize) -> f64 {
-        self.cxx[li][t * self.p + j]
+        self.cxx[li][if self.shared { j } else { t * self.p + j }]
     }
 
     /// `E_w[dx_t·dy_{t−ℓ}]`: the feature now against the target `ℓ` rows
@@ -320,6 +351,88 @@ impl MarginalLags {
     pub fn clear(&mut self) {
         self.ring_x.clear();
         self.ring_y.clear();
+    }
+
+    /// Every lagged moment of one learned row under shared feature moments
+    /// (docs/PLAN.md task 125): per lag, the feature's autocovariance once,
+    /// with the row's own mix `row` over the model's weight, and each
+    /// present target's terms with its own, every deviation against the
+    /// means before the row -- the shared feature means `mx`, each target's
+    /// `my`. Element for element the expressions [`Self::update_target`]
+    /// uses, so where every target is on every learned row the moments are
+    /// its moments, to the bit.
+    pub fn update_shared(
+        &mut self,
+        x: &[f64],
+        row: Option<(f64, f64)>,
+        targets: &[Option<TargetLag>],
+        mx: &[f64],
+        mx_lo: &[f64],
+    ) {
+        use crate::comp::dev;
+        let (p, depth) = (self.p, self.ring_x.len());
+        let cross_of = self.cross_of();
+        for (li, &lag) in self.lags.iter().enumerate() {
+            let ci = cross_of[li];
+            if lag > depth {
+                // Nothing that far back yet: the moments age and wait.
+                if let Some((a, _)) = row {
+                    wait(a, &mut self.cxx[li]);
+                }
+                for (t, m) in targets.iter().enumerate() {
+                    let Some(m) = m else {
+                        continue;
+                    };
+                    self.cyy[li][t] *= m.a;
+                    if let Some(ci) = ci {
+                        let r = t * p..(t + 1) * p;
+                        wait(m.a, &mut self.cxy[ci][r.clone()]);
+                        wait(m.a, &mut self.cyx[ci][r]);
+                    }
+                }
+                continue;
+            }
+            let back = depth - lag;
+            let x_lag = &self.ring_x[back];
+            if let Some((a, b)) = row {
+                let l = Lagged {
+                    a,
+                    b,
+                    dy_now: 0.0,
+                    dy_lag: None,
+                    x,
+                    x_lag,
+                    mx,
+                    mx_lo,
+                };
+                step_xx(l, &mut self.cxx[li]);
+            }
+            for (t, m) in targets.iter().enumerate() {
+                let Some(m) = m else {
+                    continue;
+                };
+                let dy_now = dev(m.yt, m.my, m.my_lo);
+                // The target `lag` rows ago, against its mean now: a row
+                // where it was absent contributes nothing but the decay.
+                let dy_lag = self.ring_y[back][t].map(|v| dev(v, m.my, m.my_lo));
+                if let Some(ci) = ci {
+                    let r = t * p..(t + 1) * p;
+                    let l = Lagged {
+                        a: m.a,
+                        b: m.b,
+                        dy_now,
+                        dy_lag,
+                        x,
+                        x_lag,
+                        mx,
+                        mx_lo,
+                    };
+                    let (cxy, cyx) = (&mut self.cxy[ci], &mut self.cyx[ci]);
+                    step_cross(l, &mut cxy[r.clone()], &mut cyx[r]);
+                }
+                self.cyy[li][t] = step_cyy(m.a, m.b, dy_now, dy_lag, self.cyy[li][t]);
+            }
+        }
     }
 
     /// One target's lagged moments, before its pair moments advance.
@@ -615,6 +728,35 @@ pub(crate) fn step_all(l: Lagged<'_>, cxx: &mut [f64], cxy: &mut [f64], cyx: &mu
     }
 }
 
+/// The cross terms at a lag alone, where the feature's autocovariance is
+/// stepped once for every target ([`MarginalLags::update_shared`]): the
+/// expressions [`step_all`] gives them.
+#[inline]
+pub(crate) fn step_cross(l: Lagged<'_>, cxy: &mut [f64], cyx: &mut [f64]) {
+    use crate::comp::dev;
+    let (a, b, dy_now) = (l.a, l.b, l.dy_now);
+    let means = l.mx.iter().zip(l.mx_lo);
+    let cells = cxy.iter_mut().zip(cyx.iter_mut());
+    let each = l.x.iter().zip(l.x_lag).zip(means).zip(cells);
+    match l.dy_lag {
+        Some(dy_lag) => {
+            for (((&xj, &xl), (&m, &lo)), (xy, yx)) in each {
+                let dx_now = dev(xj, m, lo);
+                let dx_lag = dev(xl, m, lo);
+                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *xy = a * *xy + a * b * dx_now * dy_lag;
+            }
+        }
+        None => {
+            for (((_, &xl), (&m, &lo)), (xy, yx)) in each {
+                let dx_lag = dev(xl, m, lo);
+                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *xy *= a;
+            }
+        }
+    }
+}
+
 /// The target's own lagged moment `c`, stepped: `dy_lag` is its deviation
 /// `lag` rows back, `None` where it was absent then, which ages it alone.
 #[inline]
@@ -636,7 +778,7 @@ mod tests {
     fn a_lag_state_of_another_shape_is_refused() {
         let (p, t, lags) = (3, 2, vec![1usize, 2, 5]);
         let good = |cross: Option<Vec<usize>>| {
-            let mut m = MarginalLags::new(p, t, lags.clone(), cross).unwrap();
+            let mut m = MarginalLags::new(p, t, lags.clone(), cross, false).unwrap();
             m.push(&[1.0, 2.0, 3.0], &[Some(1.0), None]);
             m
         };
@@ -697,7 +839,7 @@ mod tests {
     /// panic (review 2026-09-26, B3).
     #[test]
     fn a_lag_state_with_an_overlong_or_uneven_ring_is_refused() {
-        let mut l = MarginalLags::new(2, 1, vec![1, 2], None).unwrap();
+        let mut l = MarginalLags::new(2, 1, vec![1, 2], None, false).unwrap();
         for i in 0..3 {
             l.push(&[i as f64, 0.0], &[Some(1.0)]);
         }

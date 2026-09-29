@@ -1117,9 +1117,10 @@ pub enum ModelKind {
         /// Where the feature moments are kept (docs/PLAN.md task 125):
         /// `"per_target"`, the default, keeps each pair's mean and variance of
         /// the feature over its target's rows; `"shared"` keeps one per
-        /// feature over every learned row, `p` where the default keeps `p·T`.
-        /// Refused with a window or lags, as the core says. Skipped when
-        /// absent, as `window_lags` is.
+        /// feature over every learned row, `p` where the default keeps `p·T`,
+        /// and under `lags` the feature's autocovariance with them. Refused
+        /// with a window, as the core says. Skipped when absent, as
+        /// `window_lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         feature_moments: Option<String>,
     },
@@ -3341,14 +3342,6 @@ impl Spec {
                              a window subtracts each pair's moments centred on the pair's own \
                              mean, and the shared mean also moves on rows the pair's target \
                              missed. Use feature_moments = \"per_target\" with a window.",
-                            self.name
-                        ));
-                    }
-                    Some("shared") if lags.as_ref().is_some_and(|l| !l.is_empty()) => {
-                        return Err(format!(
-                            "spec {:?}: marginal feature_moments = \"shared\" takes no lags yet: \
-                             the lagged moments keep the feature's autocovariance per target. \
-                             Use feature_moments = \"per_target\" with lags.",
                             self.name
                         ));
                     }

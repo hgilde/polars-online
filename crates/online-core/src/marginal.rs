@@ -62,9 +62,11 @@
 //! rows it is a different estimator: `mean_x` and `var_x` are the feature's
 //! over every learned row, and `cov` is the target's rows centred on that
 //! mean, so `corr`, `beta` and `t` move with them. That is sound where the
-//! absence says nothing about the feature. A window is refused: its
-//! subtraction reads each covariance as centred on the pair's own mean. So
-//! are lags, whose feature autocovariance is still kept per target.
+//! absence says nothing about the feature. Under `lags` the feature's
+//! autocovariance at each lag is kept per feature too, stepped with the
+//! row's mix, and the cross terms per pair with the target's
+//! ([`crate::MarginalLags::update_shared`]). A window is refused: its
+//! subtraction reads each covariance as centred on the pair's own mean.
 
 use serde::{Deserialize, Serialize};
 
@@ -256,14 +258,6 @@ impl MarginalCfg {
                  covariance as centred on the pair's own mean; the shared mean also moves on \
                  rows the pair's target missed, so the subtraction would not be the window's \
                  covariance. Use feature_moments = \"per_target\" with a window."
-                    .into(),
-            );
-        }
-        if self.shared() && !self.lags.is_empty() {
-            return Err(
-                "marginal: feature_moments = \"shared\" takes no lags yet; the lagged moments \
-                 keep the feature's autocovariance per target. Use feature_moments = \
-                 \"per_target\" with lags."
                     .into(),
             );
         }
@@ -704,6 +698,7 @@ impl Marginal {
                 cfg.n_targets,
                 cfg.lags.clone(),
                 cfg.cross_lags.clone(),
+                cfg.shared(),
             )?))
         };
         let windowed = cfg.window.is_some();
@@ -1126,6 +1121,29 @@ impl Marginal {
         let Some(lag) = self.lag.as_mut() else {
             return;
         };
+        if self.cfg.shared() {
+            // The feature's autocovariance once, with the row's mix over the
+            // model's weight before the row; each present target's terms
+            // with its own (docs/PLAN.md task 125).
+            let targets: Vec<Option<crate::TargetLag>> = y
+                .iter()
+                .enumerate()
+                .map(|(t, yt)| {
+                    let yt = (*yt)?;
+                    let w_new = lam * self.wt[t] + w;
+                    (w_new > 0.0).then(|| crate::TargetLag {
+                        a: lam * self.wt[t] / w_new,
+                        b: w / w_new,
+                        yt,
+                        my: self.my[t],
+                        my_lo: self.my_lo[t],
+                    })
+                })
+                .collect();
+            let row = shared_mix(lam, self.w_sum, w);
+            lag.update_shared(x, row, &targets, &self.mx, &self.mx_lo);
+            return;
+        }
         for (t, yt) in y.iter().enumerate() {
             // A target that is absent, or a row with no weight behind it or
             // on it, moves nothing: these are normalized moments and their
@@ -1967,7 +1985,7 @@ impl<'a> MarginalShard<'a> {
     /// the lags against the means before it, then the bins, then the runs
     /// and the pair moments -- `step`'s order, so the same numbers.
     pub fn run(&mut self) {
-        use crate::marglag::{Lagged, step_all, step_xx, wait};
+        use crate::marglag::{Lagged, step_all, step_cross, step_xx, wait};
         let job = self.job;
         let d = job.d;
         let (p, n_targets, n_lags) = (job.p, job.n_targets, job.cross_of.len());
@@ -1977,7 +1995,66 @@ impl<'a> MarginalShard<'a> {
         for r in 0..d.n {
             let x = &d.xs[r * p + j0..r * p + j1];
             let mixes = &d.mixes[r * n_targets..(r + 1) * n_targets];
-            if n_lags > 0 {
+            if n_lags > 0 && job.shared {
+                // One block of feature moments: the feature's autocovariance
+                // at each lag once, with the row's mix, and each present
+                // target's cross terms with its own, as
+                // `MarginalLags::update_shared` steps them.
+                let backs = &d.backs[r * n_lags..(r + 1) * n_lags];
+                let row = d.shared[r];
+                for (li, (&back, &ci)) in backs.iter().zip(job.cross_of).enumerate() {
+                    let Some(src) = back else {
+                        // Nothing that far back yet: the moments age and wait.
+                        if let Some((a, _)) = row {
+                            wait(a, self.cxx[li]);
+                        }
+                        for (t, mix) in mixes.iter().enumerate() {
+                            if let (Some(m), Some(ci)) = (*mix, ci) {
+                                wait(m.a, self.cxy[ci * n_targets + t]);
+                                wait(m.a, self.cyx[ci * n_targets + t]);
+                            }
+                        }
+                        continue;
+                    };
+                    let x_lag = &job.row_x(src)[j0..j1];
+                    if let Some((a, b)) = row {
+                        let lagged = Lagged {
+                            a,
+                            b,
+                            dy_now: 0.0,
+                            dy_lag: None,
+                            x,
+                            x_lag,
+                            mx: self.mx[0],
+                            mx_lo: self.mx_lo[0],
+                        };
+                        step_xx(lagged, self.cxx[li]);
+                    }
+                    let Some(ci) = ci else {
+                        continue;
+                    };
+                    for (t, mix) in mixes.iter().enumerate() {
+                        let Some(m) = *mix else {
+                            continue;
+                        };
+                        let lagged = Lagged {
+                            a: m.a,
+                            b: m.b,
+                            dy_now: m.dy,
+                            dy_lag: d.dy_lag[(r * n_targets + t) * n_lags + li],
+                            x,
+                            x_lag,
+                            mx: self.mx[0],
+                            mx_lo: self.mx_lo[0],
+                        };
+                        step_cross(
+                            lagged,
+                            self.cxy[ci * n_targets + t],
+                            self.cyx[ci * n_targets + t],
+                        );
+                    }
+                }
+            } else if n_lags > 0 {
                 let backs = &d.backs[r * n_lags..(r + 1) * n_lags];
                 for (t, mix) in mixes.iter().enumerate() {
                     let Some(m) = *mix else {
@@ -2200,7 +2277,10 @@ impl OnlineModel for Marginal {
                 // `t`, and the boxed parts exactly as the cfg asks (review
                 // 2026-09-18, B3).
                 let lag_ok = match &m.lag {
-                    Some(l) => l.has_shape(p, t, &m.cfg.lags, m.cfg.cross_lags.as_deref()),
+                    Some(l) => {
+                        l.has_shape(p, t, &m.cfg.lags, m.cfg.cross_lags.as_deref())
+                            && l.is_shared() == m.cfg.shared()
+                    }
                     None => m.cfg.lags.is_empty(),
                 };
                 let bins_ok = match (&m.bins, &m.cfg.bins) {
@@ -4591,6 +4671,15 @@ mod tests {
                 "shared feature moments",
                 with(&|c| c.feature_moments = FeatureMomentLayout::Shared),
             ),
+            (
+                "shared with lags",
+                with(&|c| {
+                    c.feature_moments = FeatureMomentLayout::Shared;
+                    c.lags = vec![1, 3, 8];
+                    c.cross_lags = Some(vec![3]);
+                    c.serial_rule = Some(SerialRule::Geometric);
+                }),
+            ),
             // A window takes no bins (`MarginalCfg::validate`); it takes lags,
             // whose moments its snapshots then hold (docs/PLAN.md task 137).
             ("window", with(&|c| c.window = Some(40.0))),
@@ -5263,8 +5352,13 @@ mod tests {
         let q = m.pair(t, j);
         [
             q.n_eff, q.n_kish, q.mean_x, q.var_x, q.mean_y, q.var_y, q.cov, q.corr, q.beta, q.t,
+            q.n_serial, q.t_serial, q.phi_x, q.phi_y,
         ]
         .iter()
+        .chain(&q.lagcorr_xx)
+        .chain(&q.lagcorr_yy)
+        .chain(&q.lagcorr_xy)
+        .chain(&q.lagcorr_yx)
         .map(|v| v.to_bits())
         .collect()
     }
@@ -5297,15 +5391,36 @@ mod tests {
     /// from one block of feature moments where the default keeps one a target.
     #[test]
     fn shared_feature_moments_are_per_target_to_the_bit_where_every_target_is_present() {
-        // One target runs the kernel's single pass, several its two.
+        // One target runs the kernel's single pass, several its two; the
+        // lags with every cross term, some and none.
+        let plain = |_: &mut MarginalCfg| {};
+        let every = |c: &mut MarginalCfg| {
+            c.lags = vec![1, 2, 5];
+            c.serial_rule = Some(SerialRule::Geometric);
+        };
+        let some = |c: &mut MarginalCfg| {
+            c.lags = vec![1, 3];
+            c.cross_lags = Some(vec![3]);
+            c.serial_rule = Some(SerialRule::Bartlett);
+        };
+        let none = |c: &mut MarginalCfg| {
+            c.lags = vec![1, 2];
+            c.cross_lags = Some(vec![]);
+        };
+        let cases: [&dyn Fn(&mut MarginalCfg); 4] = [&plain, &every, &some, &none];
         for (p, t) in [(4, 1), (4, 3)] {
-            shared_against_per_target(p, t);
+            for set in cases {
+                shared_against_per_target(p, t, set);
+            }
         }
     }
 
-    fn shared_against_per_target(p: usize, t: usize) {
-        let mut per = Marginal::new(cfg(p, t)).unwrap();
-        let mut one = Marginal::new(shared(p, t)).unwrap();
+    fn shared_against_per_target(p: usize, t: usize, set: &dyn Fn(&mut MarginalCfg)) {
+        let (mut a, mut b) = (cfg(p, t), shared(p, t));
+        set(&mut a);
+        set(&mut b);
+        let mut per = Marginal::new(a).unwrap();
+        let mut one = Marginal::new(b).unwrap();
         let mut s = 7u64;
         for i in 0..400 {
             let (x, y, d, w) = shared_row(&mut s, i, p, t);
@@ -5322,6 +5437,42 @@ mod tests {
         }
         assert_eq!((per.mx.len(), per.sxx.len()), (p * t, p * t));
         assert_eq!((one.mx.len(), one.sxx.len(), one.sxy.len()), (p, p, p * t));
+    }
+
+    /// Under the lags, with a target absent on every third row, the
+    /// feature's lagged autocorrelation is the feature's own over every
+    /// learned row: a `"per_target"` model whose one target is on every row
+    /// reads the same numbers, to the bit, since its target's mix is then
+    /// the row's.
+    #[test]
+    fn shared_lag_moments_are_the_features_over_every_learned_row() {
+        let p = 3;
+        let set = |c: &mut MarginalCfg| {
+            c.lags = vec![1, 2, 4];
+            c.cross_lags = Some(vec![1]);
+        };
+        let (mut a, mut b) = (shared(p, 2), cfg(p, 1));
+        set(&mut a);
+        set(&mut b);
+        let mut one = Marginal::new(a).unwrap();
+        let mut always = Marginal::new(b).unwrap();
+        let mut s = 13u64;
+        for i in 0..400 {
+            let (x, y, d, w) = shared_row(&mut s, i, p, 2);
+            let yy = [Some(y[0]), (i % 3 != 1).then_some(y[1])];
+            one.step(&x, &yy, d, w);
+            always.step(&x, &[Some(y[0])], d, w);
+            for j in 0..p {
+                let (q, r) = (one.pair(1, j), always.pair(0, j));
+                let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(&q.lagcorr_xx),
+                    bits(&r.lagcorr_xx),
+                    "row {i}, feature {j}"
+                );
+                assert_eq!(q.var_x.to_bits(), r.var_x.to_bits(), "row {i}, feature {j}");
+            }
+        }
     }
 
     /// The single pass under one target, with the target absent on every
@@ -5424,10 +5575,10 @@ mod tests {
         );
     }
 
-    /// `"shared"` takes no window and, for now, no lags; each refusal says
-    /// why and what to use instead.
+    /// `"shared"` takes no window; the refusal says why and what to use
+    /// instead. It takes lags.
     #[test]
-    fn shared_feature_moments_refuse_a_window_and_lags_by_name() {
+    fn shared_feature_moments_refuse_a_window_by_name() {
         let windowed = MarginalCfg {
             window: Some(40.0),
             ..shared(2, 2)
@@ -5441,11 +5592,7 @@ mod tests {
             lags: vec![1],
             ..shared(2, 2)
         };
-        let e = lagged.validate().unwrap_err();
-        assert!(
-            e.contains("\"shared\" takes no lags") && e.contains("per_target"),
-            "{e}"
-        );
+        lagged.validate().unwrap();
     }
 
     /// A shared state round-trips, and one whose feature moments are a pair's

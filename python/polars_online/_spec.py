@@ -3172,7 +3172,9 @@ def marginal(
         by at most 0.0065 and ``var_x`` by 2.5% at the median. At 20,000 pairs it
         runs 2.7 times as fast at ten targets and 3.2 times at thirty, the same at
         one, and a ten-target state is under half the size (docs/PERFORMANCE.md
-        §27). Refused with a ``window`` or ``lags``.
+        §27). With ``lags`` it keeps the feature's autocovariance per feature too,
+        and at ten targets runs 4.6 times as fast with no cross lags. Refused with
+        a ``window``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the

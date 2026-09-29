@@ -5235,7 +5235,7 @@ is not, since the model alone has `0.0` and `3.5` there.
       reference is "a relative_to reference"
       (`test_a_temporal_clock_is_not_a_target_or_a_reference_either`).
 
-- [ ] 125. **E72: `feature_moments="shared"` — a decision first.** M–L. The
+- [x] 125. **E72: `feature_moments="shared"` — a decision first.** M–L. The
       request says only `var_x` changes where a target is absent; not so.
       The batch identity it cites holds, but `sxy` is kept by a recursion
       centred on the feature's pre-row mean over the target's rows, and
@@ -5265,9 +5265,17 @@ is not, since the model alone has `0.0` and `3.5` there.
       measured moving `corr` by at most 0.0065 at a tenth absent. 2.7 times
       as fast at ten targets, 3.2 at thirty, level at one (PERFORMANCE
       §27). A window is refused by name: its subtraction reads a covariance
-      centred on the pair's own mean. **Open: the lags**, refused by name
-      for now; their feature autocovariance goes per feature with the row's
-      mix and the cross terms stay per pair, the same way.
+      centred on the pair's own mean. **The lags are built too:** the
+      feature's autocovariance at each lag per feature with the row's mix
+      (`MarginalLags::update_shared`, and the sharded job the same way),
+      the cross terms and `cyy` per target with its own; the pairs are
+      `"per_target"`'s to the bit with every cross lag, some and none, at
+      one target and three, and sharded; with a target absent, the
+      feature's lag correlation is a `"per_target"` model's whose target
+      is on every row, to the bit
+      (`shared_lag_moments_are_the_features_over_every_learned_row`). With
+      lags at ten targets it runs 4.6 times as fast, 2.5 with one cross lag
+      (PERFORMANCE §27).
 
 - [x] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
       **Done 2026-09-25**, as a batch of rows per fork-join, not one per

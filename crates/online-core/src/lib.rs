@@ -130,7 +130,7 @@ pub use marginal::{
     FeatureMomentLayout, Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule,
     ShardRunner, Shards, run_in_order,
 };
-pub(crate) use marglag::{LagMoments, MarginalLags, PairMix};
+pub(crate) use marglag::{LagMoments, MarginalLags, PairMix, TargetLag};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };

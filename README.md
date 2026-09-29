@@ -1833,7 +1833,8 @@ bit. At 20,000 pairs it runs 2.7 times as fast at ten targets and 3.2 times
 at thirty, and a ten-target state is under half the size. Where a target is
 absent on some rows, `var_x` is the feature's over every row and `cov` is
 centred on that mean. That is a different estimator, sound where the absence
-says nothing about the feature. It takes no `window` and no `lags`.
+says nothing about the feature. It takes `lags`, 4.6 times as fast with them
+at ten targets, and no `window`.
 
 Two views sit on top of that, both off unless asked for.
 
