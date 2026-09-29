@@ -62,6 +62,13 @@ carries breaking changes, and any change to the numbers a model returns.
   and statsmodels' `DescrStatsW`. Since an infinite `trend_halflife` became
   the whole history's drift, this is the way to ask for no trend.
   `trend_halflife` is refused beside it.
+- **`marginal(feature_moments="shared")`: many targets for less.** Each
+  feature keeps one mean and variance over every learned row, and each pair
+  only its covariance. Where every target is on every row the pairs are the
+  default's, to the bit. At 20,000 pairs it runs 2.7 times as fast at ten
+  targets and 3.2 times at thirty, and a ten-target state is under half the
+  size. Where a target is absent on some rows it is a different estimator,
+  as the docstring says. It takes no `window` and, for now, no `lags`.
 
 ### Changed
 

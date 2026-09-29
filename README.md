@@ -1825,6 +1825,16 @@ undefined: a constant feature, or `n_kish ≤ 2` for `t`. A bank loaded from a
 file reports the pairs the bank that saved it would, and one chunk or a
 thousand gives the same table to the bit.
 
+**`feature_moments="shared"`: many targets for less.** By default each pair
+keeps the feature's mean and variance over its own target's rows. Shared,
+each feature keeps one over every learned row, and each pair only its
+covariance. Where every target is on every row the table is the same, to the
+bit. At 20,000 pairs it runs 2.7 times as fast at ten targets and 3.2 times
+at thirty, and a ten-target state is under half the size. Where a target is
+absent on some rows, `var_x` is the feature's over every row and `cov` is
+centred on that mean. That is a different estimator, sound where the absence
+says nothing about the feature. It takes no `window` and no `lags`.
+
 Two views sit on top of that, both off unless asked for.
 
 **`lags`: is `t` telling the truth?** `t` is built on `n_kish`, which is

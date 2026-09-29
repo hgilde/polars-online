@@ -942,6 +942,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_budget: _,
             // A spec-level acceptance of the price, checked in `validate`.
             window_lags: _,
+            feature_moments,
             lags,
             serial_rule,
             cross_lags,
@@ -993,6 +994,16 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                         warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
                         budget_mib: bin_budget.map(|n| n.0),
                     })),
+                },
+                feature_moments: match feature_moments.as_deref() {
+                    None | Some("per_target") => online_core::FeatureMomentLayout::PerTarget,
+                    Some("shared") => online_core::FeatureMomentLayout::Shared,
+                    Some(other) => {
+                        return Err(format!(
+                            "marginal: unknown feature_moments {other:?}; expected \"per_target\" \
+                             or \"shared\""
+                        ));
+                    }
                 },
                 window: window.as_ref().map(Span::value),
                 window_every: *window_every,

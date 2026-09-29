@@ -1114,6 +1114,14 @@ pub enum ModelKind {
         /// absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_lags: Option<bool>,
+        /// Where the feature moments are kept (docs/PLAN.md task 125):
+        /// `"per_target"`, the default, keeps each pair's mean and variance of
+        /// the feature over its target's rows; `"shared"` keeps one per
+        /// feature over every learned row, `p` where the default keeps `p·T`.
+        /// Refused with a window or lags, as the core says. Skipped when
+        /// absent, as `window_lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feature_moments: Option<String>,
     },
     /// Dynamic equicorrelation (Engle & Kelly 2012; docs/ENHANCEMENTS.md
     /// E55): one number for the whole correlation matrix, `O(m)` a row where
@@ -3319,8 +3327,40 @@ impl Spec {
                 lags,
                 cross_lags,
                 window_lags,
+                feature_moments,
                 ..
             } => {
+                // Where the feature moments are kept (docs/PLAN.md task 125).
+                // The core refuses `"shared"` with a window or lags too, and
+                // says why; here it is refused where the spec is made.
+                match feature_moments.as_deref() {
+                    None | Some("per_target") => {}
+                    Some("shared") if window.is_some() => {
+                        return Err(format!(
+                            "spec {:?}: marginal feature_moments = \"shared\" takes no window: \
+                             a window subtracts each pair's moments centred on the pair's own \
+                             mean, and the shared mean also moves on rows the pair's target \
+                             missed. Use feature_moments = \"per_target\" with a window.",
+                            self.name
+                        ));
+                    }
+                    Some("shared") if lags.as_ref().is_some_and(|l| !l.is_empty()) => {
+                        return Err(format!(
+                            "spec {:?}: marginal feature_moments = \"shared\" takes no lags yet: \
+                             the lagged moments keep the feature's autocovariance per target. \
+                             Use feature_moments = \"per_target\" with lags.",
+                            self.name
+                        ));
+                    }
+                    Some("shared") => {}
+                    Some(other) => {
+                        return Err(format!(
+                            "spec {:?}: marginal feature_moments must be \"per_target\" or \
+                             \"shared\", got {other:?}",
+                            self.name
+                        ));
+                    }
+                }
                 // Lags under a window cost the snapshot its lag moments, and
                 // the spec says so by name before it pays (the user,
                 // 2026-09-28: "implement but with an api parameter that

@@ -79,6 +79,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                         }),
                         window,
                         window_every: window.map(|_| 1),
+                        feature_moments: online_core::FeatureMomentLayout::PerTarget,
                     };
                     let mut m = online_core::Marginal::new(cfg).unwrap();
                     // Bins have two states worth encoding: the warm-up hold with
@@ -278,6 +279,7 @@ fn a_bins_budget_round_trips_in_both_encodings() {
                 warm_rows: 4,
                 budget_mib,
             })),
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         };

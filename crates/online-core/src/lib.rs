@@ -127,8 +127,8 @@ pub use lasso::{Lasso, LassoCfg};
 pub use margbins::{BinCfg, BinRule};
 pub(crate) use margbins::{MarginalBins, edges_from};
 pub use marginal::{
-    Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule, ShardRunner, Shards,
-    run_in_order,
+    FeatureMomentLayout, Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule,
+    ShardRunner, Shards, run_in_order,
 };
 pub(crate) use marglag::{LagMoments, MarginalLags, PairMix};
 pub use model::{
@@ -320,8 +320,9 @@ pub use window::{
 ///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
 ///   target moments (task 136), and in `marginal` the lag moments (task
 ///   137); `deco` keeps one weight per correlation value (task 115 (h)),
-///   where a 19 file holds one for all, read as that weight on each. The
-///   rest are `#[serde(default)]`, so a 19 file loads: the
+///   where a 19 file holds one for all, read as that weight on each; and a
+///   `marginal`'s cfg names where its feature moments are kept (task 125).
+///   The rest are `#[serde(default)]`, so a 19 file loads: the
 ///   counter starts at 0, the bank sets the share from the spec, each
 ///   target's weight starts at the shared one its gate read, and a
 ///   `corrchange` has no monitoring period. A 19 build would do none of

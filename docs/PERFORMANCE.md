@@ -3366,3 +3366,32 @@ plans cannot be rebuilt from its record, so its figures stay as recorded.
 What §21 concluded holds: at width the walk is most of the path, 1.3 ms of
 2.3, and `explain` reads the wide plan in 0.003 ms, which is why the
 filter that skips the JSON saves nearly all of it.
+
+## 27. `marginal`'s shared feature moments (E72, task 125, 2026-09-29)
+
+`feature_moments="shared"` keeps one mean and one variance per feature over
+every learned row, and each pair only its covariance. On the model alone
+(`crates/online-core/examples/marg_bench.rs`, `moments=`), 4,000 rows at
+20,000 pairs, best of five runs, M4 Pro:
+
+| targets | features | `"per_target"` | `"shared"` | ratio |
+|---|---|---|---|---|
+| 1 | 10,000 | 23.2 ms | 23.5 ms | 1.0 |
+| 2 | 10,000 | 45.2 ms | 40.3 ms | 1.1 |
+| 10 | 2,000 | 44.9 ms | 16.5 ms | 2.7 |
+| 30 | 666 | 44.8 ms | 14.1 ms | 3.2 |
+
+The runs' checksums over every pair's numbers are equal at two and ten
+targets, every target present on every row. A saved bank at 2,000 features
+and ten targets is 0.39 MB against 0.87 MB.
+
+Two kernels came first, and both were slower. The first stepped every
+target inside the feature loop, which strides across the targets'
+covariances: 1.16 times the default's time through the bank at ten targets
+(0.037 s against 0.032 s at 2,000 features and rows).
+The one used now takes each feature's deviation into a buffer once, then
+runs one contiguous pass per target and one for the feature. The second
+kept the one-target pass inside that larger function, where it ran at 1.7
+times `pair_kernel`'s time on the same work. In a function of its own that
+takes the mixes by value, as `pair_kernel` does, it runs level with it.
+

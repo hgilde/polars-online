@@ -5250,7 +5250,24 @@ is not, since the model alone has `0.0` and `3.5` there.
       exact (every target on every learned row, else per-target moments);
       or decline.* Either way the shared means are pairs (task 101), the
       runs go per feature (task 94's windowed read), and a `window` needs
-      its own answer.
+      its own answer. **Decided 2026-09-29** (the user: "Do task 125",
+      on the recommendation to build it as that estimator and document
+      it). **The pair moments are built:** `feature_moments="shared"`
+      (`FeatureMomentLayout::Shared`) keeps `p` means (pairs, task 101) and
+      variances over every learned row and `p·T` covariances, unsplit and
+      sharded, bins as they were; the pairs are `"per_target"`'s to the bit
+      where every target is on every learned row
+      (`shared_feature_moments_are_per_target_to_the_bit_where_every_target_is_present`,
+      at one target and three, and the sharded stream); where one is
+      absent, the feature's moments are its column's `EwCov` over every
+      row to the bit and the covariance the stated recursion
+      (`shared_feature_moments_are_the_features_over_every_learned_row`),
+      measured moving `corr` by at most 0.0065 at a tenth absent. 2.7 times
+      as fast at ten targets, 3.2 at thirty, level at one (PERFORMANCE
+      §27). A window is refused by name: its subtraction reads a covariance
+      centred on the pair's own mean. **Open: the lags**, refused by name
+      for now; their feature autocovariance goes per feature with the row's
+      mix and the cross terms stay per pair, the same way.
 
 - [x] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
       **Done 2026-09-25**, as a batch of rows per fork-join, not one per

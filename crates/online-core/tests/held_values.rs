@@ -490,6 +490,7 @@ fn marginal_reports_a_stopped_feature_as_it_is() {
             serial_rule: None,
             cross_lags: None,
             bins: None,
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         })
@@ -651,6 +652,7 @@ fn a_held_target_is_reported_as_it_is() {
             serial_rule: None,
             cross_lags: None,
             bins: None,
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         })
@@ -877,6 +879,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             serial_rule: None,
             cross_lags: None,
             bins: None,
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         })
@@ -911,6 +914,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
                 warm_rows: 100,
                 budget_mib: None,
             })),
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         })
@@ -1077,6 +1081,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             serial_rule: None,
             cross_lags: None,
             bins: None,
+            feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
         })

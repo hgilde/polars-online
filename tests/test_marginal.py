@@ -456,3 +456,54 @@ def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
         assert pair["corr"] == last[f"corr_{f}_{t}"], (f, t)
         assert pair["var_x"] == last[f"var_{f}"], (f, t)
         assert pair["mean_y"] == last[f"mean_{t}"], (f, t)
+
+
+class TestSharedFeatureMoments:
+    """docs/PLAN.md task 125 (E72): ``feature_moments="shared"`` keeps one
+    mean and variance per feature, over every learned row, where the default
+    keeps them per pair; each pair keeps its covariance."""
+
+    COMMON = dict(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+
+    def test_every_pair_is_per_targets_to_the_bit_where_every_target_is_present(self):
+        """Zero-weight rows and clock gaps included: each target's mix is then
+        the row's, and each target's feature means the shared ones."""
+        df = frame(n=600, weights=True, clock=True, seed=5)
+        per = po.ModelBank([spec(**self.COMMON)])
+        per.fit_predict(df)
+        shared = po.ModelBank([spec(feature_moments="shared", **self.COMMON)])
+        shared.fit_predict(df)
+        assert shared.marginal("m").equals(per.marginal("m"), null_equal=True)
+
+    def test_the_feature_moments_are_the_columns_over_every_learned_row(self):
+        """With ``y1`` absent on every third row, a pair's ``mean_x`` and
+        ``var_x`` are the feature's own ``ew_cov`` over every learned row, to
+        the bit, for both targets; ``"per_target"`` reads ``y1``'s over its
+        own rows, and so reports others there."""
+        df = frame(n=600, weights=True, clock=True, null_target_every=3, seed=6)
+        shared = po.ModelBank([spec(feature_moments="shared", **self.COMMON)])
+        shared.fit_predict(df.head(-1))
+        per = po.ModelBank([spec(**self.COMMON)])
+        per.fit_predict(df.head(-1))
+        got, other = shared.marginal("m"), per.marginal("m")
+        for f in ("x0", "x1", "x2"):
+            # `ew_cov` reports before each row; the pairs are read after the
+            # last row, so it runs one row further (as the test above does).
+            cov = po.spec.ew_cov("c", features=[f], stats=["mean", "var"], **self.COMMON)
+            last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+            for t in ("y0", "y1"):
+                pick = (pl.col("feature") == f) & (pl.col("target") == t)
+                pair = got.filter(pick).row(0, named=True)
+                assert pair["mean_x"] == last[f"mean_{f}"], (f, t)
+                assert pair["var_x"] == last[f"var_{f}"], (f, t)
+                own = other.filter(pick).row(0, named=True)
+                assert (own["var_x"] == pair["var_x"]) == (t == "y0"), (f, t)
+
+    def test_it_is_refused_with_a_window_lags_or_another_value(self):
+        with pytest.raises(ValueError, match='"shared" takes no window'):
+            spec(feature_moments="shared", window=50.0)
+        with pytest.raises(ValueError, match='"shared" takes no lags'):
+            spec(feature_moments="shared", lags=[1])
+        with pytest.raises(ValueError, match='must be "per_target" or "shared"'):
+            spec(feature_moments="both")
+        spec(feature_moments="per_target", window=50.0, lags=[1], window_lags=True)

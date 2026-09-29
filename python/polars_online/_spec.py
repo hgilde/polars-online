@@ -2977,6 +2977,7 @@ def marginal(
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     window_lags: bool = False,
+    feature_moments: str = "per_target",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in the
@@ -3157,6 +3158,21 @@ def marginal(
         stood when it was made: a lagged moment has no re-centring identity, so
         against the rows inside the window it is a statistical estimate, as the
         whole history's is. Default ``False``.
+    ``feature_moments``
+        Where the feature's mean and variance are kept. ``"per_target"``, the
+        default, keeps them per pair, over the rows the pair's target was present.
+        ``"shared"`` keeps one per feature, over every learned row, and each pair
+        only its covariance. Where every target is on every learned row the two
+        report the same numbers, to the bit. Where a target is absent on some rows,
+        ``"shared"`` is a different estimator: ``mean_x`` and ``var_x`` are the
+        feature's over every learned row, and ``cov`` is the target's rows
+        centred on that mean, so ``corr``, ``beta`` and ``t`` move with it. That
+        is sound where the absence says nothing about the feature. With a tenth of
+        a target's rows absent at a halflife of 69 rows, measured, ``corr`` moved
+        by at most 0.0065 and ``var_x`` by 2.5% at the median. At 20,000 pairs it
+        runs 2.7 times as fast at ten targets and 3.2 times at thirty, the same at
+        one, and a ten-target state is under half the size (docs/PERFORMANCE.md
+        §27). Refused with a ``window`` or ``lags``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
@@ -3243,6 +3259,7 @@ def marginal(
         "window_every": window_every,
         "window_budget": window_budget,
         "window_lags": window_lags or None,
+        "feature_moments": None if feature_moments == "per_target" else feature_moments,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

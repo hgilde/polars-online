@@ -763,6 +763,7 @@ fn marginal_cfg() -> MarginalCfg {
         serial_rule: None,
         cross_lags: None,
         bins: None,
+        feature_moments: online_core::FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
     }

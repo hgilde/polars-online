@@ -113,6 +113,7 @@ fn main() {
                 budget_mib: None,
             })
         }),
+        feature_moments: online_core::FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
     };

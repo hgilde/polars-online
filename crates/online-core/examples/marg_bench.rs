@@ -13,7 +13,8 @@
 //! per feature (0, none), `features` (8), `absent`, the percentage of rows
 //! each target but the first is absent on (0), `lags` as a comma list (none),
 //! `cross`, the cross lags as a comma list or `none` (every lag), `rows`
-//! (1,000,000) and `runs` (25). `-- targets=9 bins=16` is E71's shape (docs/PLAN.md task 122), and
+//! (1,000,000), `runs` (25) and `moments`, `per_target` or `shared` (the
+//! feature moments' layout, docs/PLAN.md task 125). `-- targets=9 bins=16` is E71's shape (docs/PLAN.md task 122), and
 //! `-- targets=9 lags=1,2,5,10,20,50 cross=1` E70's (task 123). The last
 //! line is a checksum of every pair's numbers, so two builds that should
 //! agree to the bit can be seen to.
@@ -36,7 +37,7 @@ fn main() {
         })
         .collect();
     let known = [
-        "targets", "bins", "features", "absent", "lags", "cross", "rows", "runs",
+        "targets", "bins", "features", "absent", "lags", "cross", "rows", "runs", "moments",
     ];
     if let Some((k, _)) = args.iter().find(|(k, _)| !known.contains(&k.as_str())) {
         panic!("unknown argument {k:?}; expected one of {known:?}");
@@ -95,6 +96,11 @@ fn main() {
                     budget_mib: None,
                 })
             }),
+            feature_moments: match get("moments") {
+                None | Some("per_target") => FeatureMomentLayout::PerTarget,
+                Some("shared") => FeatureMomentLayout::Shared,
+                Some(other) => panic!("moments is per_target or shared, got {other:?}"),
+            },
             window: None,
             window_every: None,
         })

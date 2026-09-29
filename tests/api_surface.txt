@@ -254,6 +254,7 @@
     window_every = None
     window_budget = None
     window_lags = False
+    feature_moments = 'per_target'
     common
   micro:
     name
