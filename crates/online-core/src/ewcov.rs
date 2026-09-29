@@ -1044,6 +1044,48 @@ impl TargetMoments {
         self.q[t] = lam * lam * self.q[t] + w * w;
     }
 
+    /// The moments as a window's snapshot holds them (docs/PLAN.md task 136):
+    /// decayed by `lam` to the row the snapshot precedes, so `Q_t` by `lam²`
+    /// while a mean and a variance do not decay, and without the means' low
+    /// parts, which the truncation does not read.
+    pub(crate) fn decayed(&self, lam: f64) -> Self {
+        Self {
+            mean: self.mean.clone(),
+            var: self.var.clone(),
+            q: self.q.iter().map(|q| q * lam * lam).collect(),
+            mean_lo: Vec::new(),
+        }
+    }
+
+    /// The moments over the rows inside a window: these, less the snapshot
+    /// `old` taken `f` of decay ago, per target by the pooling identity the
+    /// Grams are truncated by ([`crate::truncated`]). `per[t]` is the
+    /// target's `(ratio, g) = (W_u/W_R, W/W_R)` from its weights, or `None`
+    /// when no row of it is left in the window, where the moments are NaN
+    /// and `Q_t` 0:
+    ///
+    /// ```text
+    /// m_R = m − ratio·d,   v_R = g·v − ratio·v_u − ratio·g·d²,   Q_R = Q − f²·Q_u,
+    /// d = m_u − m
+    /// ```
+    pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Self {
+        let n = self.mean.len();
+        let mut out = Self {
+            mean: vec![f64::NAN; n],
+            var: vec![f64::NAN; n],
+            q: vec![0.0; n],
+            mean_lo: Vec::new(),
+        };
+        for (t, p) in per.iter().enumerate() {
+            let Some((ratio, g)) = *p else { continue };
+            let d = old.mean[t] - self.mean[t];
+            out.mean[t] = self.mean[t] - ratio * d;
+            out.var[t] = (g * self.var[t] - ratio * old.var[t] - ratio * g * d * d).max(0.0);
+            out.q[t] = (self.q[t] - f * f * old.q[t]).max(0.0);
+        }
+        out
+    }
+
     /// A row where this target is null: time passes for its weight, and
     /// `Q_t` decays with the square of it, as in [`EwCov::decay`].
     #[inline]

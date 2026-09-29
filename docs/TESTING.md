@@ -100,7 +100,8 @@ tests, never in the API.
 of the surface. Clock semantics, null policy and warmup are cross-checked
 against the numpy oracles along the `ewridge`, `rls` and `kalman` paths. The
 lasso is checked against its own optimality conditions. `tests/test_river.py`
-compares FTRL, EW moments, quantile and Huber behavior against river. Huber,
+compares FTRL, EW moments, quantile and Huber behavior against river, and
+`tests/test_second_opinion.py` holds FTRL to Vowpal Wabbit end to end. Huber,
 quantile and FTRL also have numpy references at the *numeric* level (T-A3,
 T-A4).
 
@@ -118,6 +119,7 @@ T-A4).
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
 | FTRL | `river.optim.FTRLProximal`, row for row | 1e-12 | T-R1 |
+| FTRL end to end: both losses, the intercept, row weights with zeros, null targets, two targets, `l1` with `l2` | Vowpal Wabbit's `--ftrl`, `pred` and `coef` on every row | 1e-5, its single precision (measured 2.6e-6) | |
 | Kalman(q=0, fixed `obs_var`, `standardize=False`) | `river.linear_model.BayesianLinearRegression` | 3.6e-15 | T-R2 |
 | `EwCov` | `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr` | 1e-9 | T-R3 |
 | EW mean/var | `river.stats.EWMean` / `EWVar` | in the limit | T-R4 |
@@ -449,7 +451,7 @@ separate question, and three kinds of need have come up:
 | need | libraries | example |
 |---|---|---|
 | an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
-| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
 | interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
 
 **An oracle comes from a third-party library wherever one computes the
@@ -515,6 +517,17 @@ compares `sgd` with `SGDRegressor` live, where it quoted sklearn's R² from
 `huber` to `LinearRegression` in the review's exact limit and to
 `HuberRegressor` under outliers (T-S4), and `marginal`'s best split to a
 `DecisionTreeRegressor` stump (T-S12).
+
+**Vowpal Wabbit is taken** (task 115, 2026-09-29; the user: "find an
+alternative oracle for ftrl that supports more options"). Its `--ftrl`
+runs the recursion `ftrl.rs` states, and it reaches options river's
+comparison does not: the squared loss, row weights, the intercept and the
+model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
+to it on every row, to 1e-5, since VW computes in single precision. The
+wheel has no dependencies and ships for Python 3.12 to 3.14 on all three
+operating systems, so it sits in the dev group like the rest. None of the
+libraries checked forgets as a halflife does (river, VW, and Keras's
+`Ftrl`), so a finite halflife stays with `ftrl_ref` (T-A4).
 
 **Pathway is parked.** It would run the Pathway half of
 `examples/pathway_integration.py`, but it is under the Business Source
@@ -832,7 +845,9 @@ the two *models* end to end is not exact. **River's `LogisticRegression`
 predicts with the previous step's proximal weights**, while we follow McMahan
 Algorithm 1 and recompute from `z` at prediction time. That is a real
 semantic difference, and the ordering difference is itself pinned by a test
-rather than left as a surprise.
+rather than left as a surprise. Vowpal Wabbit's `--ftrl` recomputes its
+weights after each update, as Algorithm 1 does, so the end-to-end
+comparison is with it, in `tests/test_second_opinion.py`.
 
 **T-R2.** `TestKalmanIsBayesianLinearRegression` maps `p0 = 1/alpha` and
 `obs_var = 1/beta`, and matches exactly, to 3.6e-15, across three (alpha,

@@ -239,12 +239,12 @@ impl Lasso {
 
     /// The Grams the path is read from, one entry per Gram with the targets
     /// that read it, and the target moments: see `EwRidge::gram_parts`.
-    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<&TargetMoments>) {
+    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<TargetMoments>) {
         let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
         match self.view() {
             Some(v) => (
                 gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
-                None,
+                v.acc.tm,
             ),
             None => (
                 gram_parts(
@@ -254,7 +254,7 @@ impl Lasso {
                     &self.acc.wj,
                     gaps,
                 ),
-                Some(&self.acc.tm),
+                Some(self.acc.tm.clone()),
             ),
         }
     }

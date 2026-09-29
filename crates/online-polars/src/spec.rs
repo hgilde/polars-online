@@ -1039,8 +1039,8 @@ pub enum ModelKind {
         /// changes only the states that use it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lags: Option<Vec<usize>>,
-        /// `"truncated"` or `"geometric"`: how `n_serial` is formed from the
-        /// lags. Needs `lags`. Skipped when absent, as `lags` is.
+        /// `"truncated"`, `"bartlett"` or `"geometric"`: how `n_serial` is
+        /// formed from the lags. Needs `lags`. Skipped when absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         serial_rule: Option<String>,
         /// The lags to keep the cross-correlations at (E70, docs/PLAN.md
@@ -1100,6 +1100,14 @@ pub enum ModelKind {
         /// MiB (review 2026-09-12, P4).
         #[serde(default)]
         window_budget: Option<WindowBudgetSpec>,
+        /// Accept `lags` under a `window` at its price (docs/PLAN.md task
+        /// 137): each window snapshot then also holds the lag moments, `L·T
+        /// + (L + 2C)·p·T` doubles beside the `(3p + 5)·T` it holds without
+        /// them, adding about `(L + 2C)/3` times as many. Refused without both a
+        /// window and lags; the pair is refused without it. Skipped when
+        /// absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_lags: Option<bool>,
     },
     /// Dynamic equicorrelation (Engle & Kelly 2012; docs/ENHANCEMENTS.md
     /// E55): one number for the whole correlation matrix, `O(m)` a row where
@@ -3292,8 +3300,45 @@ impl Spec {
                 bin_warm_rows,
                 bin_edges,
                 bin_budget,
+                window,
+                lags,
+                cross_lags,
+                window_lags,
                 ..
             } => {
+                // Lags under a window cost the snapshot its lag moments, and
+                // the spec says so by name before it pays (the user,
+                // 2026-09-28: "implement but with an api parameter that
+                // documents the impact"; docs/PLAN.md task 137).
+                let n_lags = lags.as_ref().map_or(0, Vec::len);
+                match (window.is_some(), n_lags > 0, window_lags.unwrap_or(false)) {
+                    (true, true, false) => {
+                        let (p, t) = (self.k() as f64, self.m() as f64);
+                        let l = n_lags as f64;
+                        let c = cross_lags.as_ref().map_or(l, |c| c.len() as f64);
+                        let base = (3.0 * p + 5.0) * t;
+                        let more = l * t + (l + 2.0 * c) * p * t;
+                        return Err(format!(
+                            "spec {:?}: marginal lags under a window need window_lags = true. \
+                             Each window snapshot then also holds the lag moments: here {more} \
+                             doubles beside the {base} it holds without them, {:.1} times the \
+                             size (L·T + (L + 2C)·p·T against (3p + 5)·T, C the cross lags; \
+                             cross_lags = [] costs least, and n_serial does not read the cross \
+                             terms). Set window_lags = true to accept that, or drop the window \
+                             or the lags.",
+                            self.name,
+                            (base + more) / base
+                        ));
+                    }
+                    (window_set, lags_set, true) if !(window_set && lags_set) => {
+                        return Err(format!(
+                            "spec {:?}: marginal window_lags applies only with both a window and \
+                             lags",
+                            self.name
+                        ));
+                    }
+                    _ => {}
+                }
                 if bin_edges.is_some()
                     && (bins.is_some() || bin_rule.is_some() || bin_warm_rows.is_some())
                 {

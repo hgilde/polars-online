@@ -117,6 +117,64 @@ pub struct MarginalLags {
     cross_lags: Option<Vec<usize>>,
 }
 
+/// The lag moments alone, as a `window`'s snapshot holds them (docs/PLAN.md
+/// task 137). They are normalized moments and do not decay; a window
+/// truncates them in sum form with the target's weight, `W_t·C − f·W_u·C_u`
+/// over the window's weight -- the increments made inside the window, each
+/// centred at the mean as it stood, since a lagged moment has no re-centring
+/// identity (review 2026-09-12, V12) -- beside the pair moments the same
+/// snapshot holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LagMoments {
+    p: usize,
+    cyy: Vec<Vec<f64>>,
+    cxx: Vec<Vec<f64>>,
+    cxy: Vec<Vec<f64>>,
+    cyx: Vec<Vec<f64>>,
+}
+
+impl LagMoments {
+    pub fn cyy(&self, li: usize, t: usize) -> f64 {
+        self.cyy[li][t]
+    }
+
+    pub fn cxx(&self, li: usize, t: usize, j: usize) -> f64 {
+        self.cxx[li][t * self.p + j]
+    }
+
+    pub fn cxy(&self, ci: usize, t: usize, j: usize) -> f64 {
+        self.cxy[ci][t * self.p + j]
+    }
+
+    pub fn cyx(&self, ci: usize, t: usize, j: usize) -> f64 {
+        self.cyx[ci][t * self.p + j]
+    }
+
+    /// Whether these are the moments of the lags `lags` holds: the same
+    /// matrices at the same widths (review 2026-09-18, B3).
+    pub fn matches(&self, lags: &MarginalLags) -> bool {
+        let dims = |a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.len() == y.len())
+        };
+        self.p == lags.p
+            && dims(&self.cyy, &lags.cyy)
+            && dims(&self.cxx, &lags.cxx)
+            && dims(&self.cxy, &lags.cxy)
+            && dims(&self.cyx, &lags.cyx)
+    }
+}
+
+impl crate::Footprint for LagMoments {
+    fn footprint(&self) -> usize {
+        [&self.cyy, &self.cxx, &self.cxy, &self.cyx]
+            .iter()
+            .flat_map(|m| m.iter())
+            .map(|v| crate::window::floats(v))
+            .sum::<usize>()
+            + std::mem::size_of::<usize>()
+    }
+}
+
 /// What a lagged update must borrow from the pair update it accompanies, so
 /// the two centre and mix identically: the target's feature means `mx` and
 /// target mean `my` as they stand *before* this row, each with what its
@@ -182,6 +240,19 @@ impl MarginalLags {
 
     pub fn lags(&self) -> &[usize] {
         &self.lags
+    }
+
+    /// The moments as they stand, for a `window`'s snapshot (task 137); the
+    /// ring of raw rows is not in it, being the last `max(lags)` learned
+    /// rows, inside any window.
+    pub fn moments(&self) -> LagMoments {
+        LagMoments {
+            p: self.p,
+            cyy: self.cyy.clone(),
+            cxx: self.cxx.clone(),
+            cxy: self.cxy.clone(),
+            cyx: self.cyx.clone(),
+        }
     }
 
     /// The lags the cross moments are kept at, in order: `cxy` and `cyx`

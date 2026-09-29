@@ -22,11 +22,40 @@ carries breaking changes, and any change to the numbers a model returns.
   Table 2 in every cell (`docs/REGIMES.md` §9). `scalar=True` monitors the
   equicorrelation's mean instead of every pair.
 
+- **`marginal(serial_rule="bartlett")`.** Newey and West's weights on the
+  kept lags, `1 − l/(L + 1)` with `L` the longest, in the serial
+  correction behind `n_serial` and `t_serial`. The long lags, whose
+  estimates are noisiest, count less, and the bracket stays positive on a
+  pair where `"truncated"`'s goes below zero (two series whose
+  autocorrelations have opposite signs, at lag 1: 0.36 where
+  `"truncated"` has none).
+
+- **`marginal(window_lags=True)`: lags under a window.** `window` with
+  `lags` was refused, since the snapshots held no lag moments. They can
+  now, at a price the parameter documents: a snapshot gains `L·T + (L +
+  2C)·p·T` doubles beside its `(3p + 5)·T`, twice the size at one lag and
+  six times at five with the default cross lags. Without the parameter the
+  pair is still refused, and the message gives the spec's own numbers.
+  Under the window, `lagcorr`, `n_serial` and `t_serial` describe the rows
+  inside it.
+
+- **The Gram's target moments under a `window`.** `bank.gram()` and a
+  closed row reported `target_means`, `target_vars` and `target_n_kish` as
+  null for a windowed `ewridge` or `lasso`, since the window's snapshots
+  held no target moments. They carry them now, at three doubles a target
+  a snapshot (under 6 % of it from five features up), and the Gram reports
+  the window's.
+
 - **`since_change`, a new `corrchange` output.** On a flag it dates the
   change: the rows from the first changed one through the flag's. It uses
   the paper's Eq. 8 under `"sequential"`, the CUSUM's maximum under
   `"monitor"`, and the second window under `"window"`. It is null
   otherwise.
+- **Vowpal Wabbit is a second opinion for `ftrl` in the tests.** Its
+  `--ftrl` holds `pred` and `coef` on every row, to its single precision,
+  under both losses, with the intercept, row weights and null targets.
+  river's comparison checks the logistic state recursion alone. The package
+  still depends on polars alone.
 
 ### Changed
 
@@ -83,6 +112,14 @@ carries breaking changes, and any change to the numbers a model returns.
   weight, and `corrchange` its sequential monitoring period. A schema-19 file loads: the first count starts at 0, and each
   target's weight at the shared one its gate read. A 0.12.0 build refuses a
   schema-20 file by its version.
+
+### Performance
+
+- **The CLI writes NDJSON from one thread.** It serialized a slice per
+  thread, which on macOS's system allocator once ran from 4.8 s to 54 s on
+  3M rows. Measured again, one thread is the faster: 4.7 s against 5.0 s on
+  the example bank over 3M rows, with half the system time, and within
+  0.05 s of the same run to parquet.
 
 ### Fixed
 

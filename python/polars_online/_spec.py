@@ -2963,6 +2963,7 @@ def marginal(
     window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
+    window_lags: bool = False,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in the
@@ -3034,6 +3035,12 @@ def marginal(
         against it. ``"truncated"`` sums the kept lags as they are, and reports
         null ``n_serial`` and ``t_serial`` when that takes the bracket to zero or
         below (two series whose autocorrelations have opposite signs).
+        ``"bartlett"`` weights lag ``l`` by ``1 - l / (L + 1)``, ``L`` the longest
+        kept lag, as Newey and West do: the long lags, whose estimates are the
+        noisiest, count less, and over every lag ``1..L`` the bracket stays
+        positive where the lagged products form a positive-definite sequence.
+        With lags missing it can still reach zero, and is null there as under
+        ``"truncated"``.
         ``"geometric"`` fits ``rho(l) = phi^l`` per series by least squares on
         ``log rho`` over the kept lags with ``rho > 0`` and sums the tail in
         closed form, which is the right choice when both series are exponentially
@@ -3118,10 +3125,25 @@ def marginal(
         opposite sign average to nothing over a long history. ``window_every`` is
         the snapshot cadence and ``window_budget`` bounds each ring in MiB. The
         ``n_eff`` the struct writes and the one the table reports are the weight
-        inside the window. ``lags`` and ``window`` are refused together (the ring
-        of past rows is not something a window's snapshot truncates), and so are
-        ``bins`` and ``window`` (a snapshot of the histogram is ``bins`` times the
-        size of one).
+        inside the window. ``lags`` under a window take ``window_lags=True``,
+        below. ``bins`` and ``window`` are refused together (a snapshot of the
+        histogram is ``bins`` times the size of one).
+    ``window_lags``
+        Accept ``lags`` under a ``window``, and the memory that costs. Each of the
+        window's snapshots then also holds the lag moments, ``L*T + (L + 2*C)*p*T``
+        doubles beside the ``(3*p + 5)*T`` it holds without them, for ``L`` lags,
+        ``C`` cross lags, ``p`` features and ``T`` targets: they add about
+        ``(L + 2*C) / 3`` times its size. So a snapshot is twice the size at one
+        lag, and six times at five lags with the default cross lags (every
+        lag). ``cross_lags=[]`` costs
+        least, ``L*(p + 1)*T``, and ``n_serial`` does not read the cross terms.
+        The snapshots count in ``window_budget``. Without it, ``lags`` and
+        ``window`` together are refused with this spec's own numbers; with it,
+        and without both, it is refused. Each windowed lag moment is the sum of
+        the increments made inside the window, each centred at the mean as it
+        stood when it was made: a lagged moment has no re-centring identity, so
+        against the rows inside the window it is a statistical estimate, as the
+        whole history's is. Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
@@ -3207,6 +3229,7 @@ def marginal(
         "window": window,
         "window_every": window_every,
         "window_budget": window_budget,
+        "window_lags": window_lags or None,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

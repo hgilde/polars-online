@@ -130,7 +130,7 @@ pub use marginal::{
     Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule, ShardRunner, Shards,
     run_in_order,
 };
-pub(crate) use marglag::{MarginalLags, PairMix};
+pub(crate) use marglag::{LagMoments, MarginalLags, PairMix};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };
@@ -316,7 +316,9 @@ pub use window::{
 ///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
 ///   `min_periods` reads (task 115 (d)); `corrchange` keeps a `sequential`
 ///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
-///   (task 114). All are `#[serde(default)]`, so a 19 file loads: the
+///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
+///   target moments (task 136), and in `marginal` the lag moments (task
+///   137). All are `#[serde(default)]`, so a 19 file loads: the
 ///   counter starts at 0, the bank sets the share from the spec, each
 ///   target's weight starts at the shared one its gate read, and a
 ///   `corrchange` has no monitoring period. A 19 build would do none of

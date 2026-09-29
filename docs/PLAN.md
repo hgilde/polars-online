@@ -4706,7 +4706,18 @@ decision it needs, with a recommendation where there is one.
       whether river covers it: only at `halflife = inf`, where we are river
       to the bit; river has no forgetting, so a finite halflife is ours, and
       the build is river's formula with river's constant penalties on
-      decayed sums, whose cost is the shrinkage C24 measured; undecided); S30, `holt`
+      decayed sums, whose cost is the shrinkage C24 measured; undecided.
+      **A second oracle, 2026-09-29** (the user: "find an alternative
+      oracle for ftrl that supports more options"): Vowpal Wabbit's
+      `--ftrl`, in the dev group, holds `pred` and `coef` on every row to
+      1e-5, its single precision (measured 2.6e-6), under both losses, the
+      intercept, row weights with zeros, null targets, two targets and `l1`
+      with `l2`, where river's covers the logistic loss and the penalties,
+      on the state recursion alone (`TestFtrlIsVowpalWabbits`). The user allowed it a CI leg; none is
+      needed, since 9.11.9 ships wheels for 3.12 to 3.14 on all three OSes
+      (reported as missing for 3.14, read from the classifiers, which stop
+      at 3.13). None of river, VW or Keras's `Ftrl` forgets, so the penalty
+      question stays open); S30, `holt`
       with no level-only mode; S31, `n_eff` counting rows with a null target
       in `ftrl`, `pa` and `sgd` (hard rule 8). **S31 decided 2026-09-28
       (the user: "n eff should do what it does everywhere else") and
@@ -4731,9 +4742,18 @@ decision it needs, with a recommendation where there is one.
       sign-offs (P4's calls; decisions 1, 3, 4 and 5; D1's caveat to rule
       5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. (f) S18, Bartlett
       weights for `serial_rule`; S19, windowed target moments; C18, a
-      windowed lag ring — record as tasks or decline. (g) C8, the CLI's
+      windowed lag ring — record as tasks or decline. **Decided 2026-09-28
+      (the user: "Accept tasks s18, s19 as long as it doesn't add much
+      extra size, c18 all to be done after the current work"):** tasks
+      135, 136 and 137. (g) C8, the CLI's
       NDJSON on the system allocator: write it from one thread (the
-      mimalloc option is parked with the new libraries). (h) `deco` with a
+      mimalloc option is parked with the new libraries). **Built
+      2026-09-28** as low-hanging (the only fix not parked), after
+      re-measuring at HEAD on the three-spec example bank over 3M rows: the
+      slices ran 4.98–5.50 s with 2.1 s of system time and no tail, polars'
+      `BatchedWriter` on the writing thread 4.65–4.78 s with 1.1–1.2 s, and
+      parquet 4.65–4.73 s; so the one-thread writer is both the simpler and
+      the faster now (`ndjson_write`). (h) `deco` with a
       column that has no spread (found by task 112's test, 2026-09-27): a
       row learns only when every standardized value is finite, so while one
       column is constant -- from its first row, the only way its variance is
@@ -5566,6 +5586,85 @@ is not, since the model alone has `0.0` and `3.5` there.
       `lagcorr_xy[0]` and `lagcorr_yx[0]`; it now runs `cross_lags=[1, 2]`,
       about 3 % more state a pair at its defaults, the time not yet
       measured. A dated note there fits.
+
+- [x] 135. **S18: Bartlett weights for `marginal`'s serial rule.** S. The
+      user accepted it 2026-09-28 (task 115 (f)). `"truncated"` sums
+      `rho_x(l)·rho_y(l)` over lags at unit weight, which is not positive
+      by construction, so a mixed-sign pair drives the factor to or below
+      zero, where it now reports NaN (review 2026-09-12, S18). Newey–West's
+      weights `1 − l/(L+1)` keep it positive: a new `serial_rule`, held to
+      `statsmodels`' `cov_hac` with `weights_bartlett` in
+      `tests/test_second_opinion.py` and to a `faer`-free longhand in Rust.
+      No state: the weights apply where the factor is read. **Built
+      2026-09-28:** `serial_rule = "bartlett"`, `L` the longest kept lag,
+      sparse lags at their own `l`; positive by construction only for a
+      positive-definite sequence of products over every lag `1..=L` (the
+      factor is then `1ᵀC1/(L + 1)`), so a factor at or below zero is NaN
+      as under `"truncated"`. `the_bartlett_factor_is_its_definition`
+      (S18's pair, `+0.8`/`−0.8`, reads 0.36 where `"truncated"` has none)
+      and `TestTheBartlettSerialFactor`, which takes the weights from
+      `statsmodels`' `weights_bartlett` and the autocorrelations from its
+      `acf`.
+
+- [x] 136. **S19: the Gram's target moments under a `window`.** S–M. The
+      user accepted it 2026-09-28 "as long as it doesn't add much extra
+      size". Under a window, `target_means`, `target_vars` and
+      `target_n_kish` are `None`, since the snapshots hold no target
+      moments; snapshotting them restores them as the window's. The bytes a
+      snapshot gains are measured against its Gram before building, and
+      the entry records both. **Built 2026-09-28:** each snapshot carries
+      the target moments decayed to it (`TargetMoments::decayed`: the
+      means and variances as they stand, `Q` at `lam²`), and the view
+      truncates them by the pooling identity the Grams use, `m_R = m −
+      r·d`, `v_R = g·v − r·v_u − r·g·d²`, `Q_R = Q − f²·Q_u`
+      (`TargetMoments::truncated`); the export's Kish count reads each
+      part's own, windowed, target weights. The cost is exactly `3·T`
+      doubles a snapshot (`the_target_moments_add_three_doubles_a_target_to_a_snapshot`):
+      +0.1 % at `k = 50`, `T = 1`; +0.8 % at 50 and 10; +1.7 % at 10 and 1;
+      +4.5 % at 5 and 1; +5.5 % at 10 and 5; +15.8 % at one feature, whose
+      snapshot is 152 bytes. Held to a longhand over the in-window rows,
+      a gappy target included (`the_windowed_target_moments_are_the_rows_inside_it`),
+      and to `statsmodels`' `DescrStatsW` (`TestTheGramIsTheWindowsToo`). A
+      snapshot from before carries none, and the export says `None` until
+      the ring rolls over.
+
+- [x] 137. **C18: a lag ring under a `window` in `marginal`.** M. The
+      user accepted it 2026-09-28, with the same condition on size. Today
+      `window` with `lags` is refused (review 2026-09-12, C18), since the
+      lagged co-moments would come from the whole history beside windowed
+      variances. The lag moments are normalized moments on the same decay,
+      so a snapshot of them truncates as everything else does (V12). The
+      bytes a snapshot gains, `lags × pairs` and the target side, are
+      measured first; held to `statsmodels`' `acf` on the in-window rows,
+      as C18's test reads. **Measured 2026-09-28, and held for the user's
+      word on size:** a windowed lag moment is the sum of the increments
+      made inside the window, so every lag moment must be in the snapshot
+      -- `L·T` for `cyy`, `L·p·T` for `cxx` and `2C·p·T` for `cxy` and
+      `cyx` (`C` the cross lags, every lag unless `cross_lags` names fewer)
+      -- beside today's `MarginalMoments` of about `(3p + 5)·T` doubles.
+      The lag moments add about `(L + 2C)/3` of the snapshot's size: +100 %
+      at one lag, +500 % at five with the default cross lags, and +167 % at
+      five with `cross_lags=[]`, which `n_serial` does not read. Options:
+      build it at that price; build it only with `cross_lags=[]` under a
+      window (the serial correction without the lead/lag by-product); or
+      keep the refusal. **Decided 2026-09-28 (the user: "For c18 implement
+      but with an api parameter that documents the impact") and built:**
+      the spec's `window_lags` (`po.spec.marginal(window_lags=True)`,
+      default `False`) accepts the price, documented with the formula and
+      two examples; without it, `window` with `lags` is refused with the
+      spec's own numbers (`4 doubles beside the 8 it holds without them,
+      1.5 times the size` for one feature, one target, one lag), and
+      `window_lags` without both is refused. The core takes the pair: each
+      snapshot holds the lag moments (`LagMoments`, `marglag.rs`; counted
+      in `window_budget`), and a pair's lag moment under the window is `(W·C
+      − f·W_u·C_u)/W_R` for its target. Held exactly to an unwindowed
+      twin's sum form (`a_windowed_lag_moment_is_the_increments_inside_the_window`),
+      to `statsmodels`' `acf` of the in-window rows at 0.02 across a `phi`
+      change (`TestAWindowedLagIsTheWindows`), to the documented size
+      (`the_lag_moments_add_what_window_lags_says`), and bit for bit sharded
+      (`a_sharded_step_is_the_unsplit_step_to_the_bit`, a new window-with-
+      lags case). A state's snapshots are now checked for shape on load, the
+      pair moments' included, which were not.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

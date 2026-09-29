@@ -895,7 +895,7 @@ file:
 |---|---|---|
 | the three-stage pipeline | C7's one-thread loop (below) | 1.6–2.7× |
 | `ParquetSink`'s parallel page encoding | `BatchedWriter::write_batch` | 0.86 s against 1.55 s: the serial encode becomes the pace |
-| `ndjson_write`'s slice-per-thread | polars' NDJSON `BatchedWriter` | a 4× win under jemalloc (`po.run`: 1.04 s against ~4 s), and a defect under the system allocator (the CLI: 4.8–54 s against a steady 4.1 s); docs/IMPROVEMENTS.md C8 has the diagnosis and the two fixes |
+| ~~`ndjson_write`'s slice-per-thread~~ | polars' NDJSON `BatchedWriter` | a 4× win under jemalloc (`po.run`: 1.04 s against ~4 s), and a defect under the system allocator (the CLI: 4.8–54 s against a steady 4.1 s). **Removed 2026-09-28:** at HEAD the one-thread writer was the faster, 4.65–4.78 s against 4.98–5.50 s on 3M rows, with half the system time (docs/IMPROVEMENTS.md C8) |
 
 ### Why the bank is not a polars node
 

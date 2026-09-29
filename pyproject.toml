@@ -141,6 +141,13 @@ dev = [
     # for `sgd`, compared live where the tests quoted it. The floor is the
     # version measured.
     "scikit-learn>=1.9.1",
+    # A second FTRL-proximal beside river's (docs/PLAN.md task 115): Vowpal
+    # Wabbit's `--ftrl`, held to `ftrl` row by row in
+    # tests/test_second_opinion.py, with what river's comparison does not
+    # reach: the squared loss, row weights, the intercept and the model's
+    # own predictions. BSD-3-Clause, no dependencies, and wheels for every
+    # Python and OS that CI runs. The floor is the version measured.
+    "vowpalwabbit>=9.11.9",
     # scripts/doc_structure.py, WRITING's step-5 checks, run by
     # tests/test_doc_structure.py: a CommonMark parser with GitHub's tables
     # reads lists, code blocks and HTML as GitHub does, where a hand-rolled

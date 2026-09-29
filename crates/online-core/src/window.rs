@@ -268,6 +268,11 @@ impl<S> Snapshots<S> {
 
     /// Every snapshot held, oldest first, for a caller that must rewrite them
     /// in place: a state converted as it is read.
+    /// The snapshots, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = &S> {
+        self.ring.iter().map(|(_, s)| s)
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
         self.ring.iter_mut().map(|(_, s)| s)
     }

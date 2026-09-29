@@ -341,12 +341,22 @@ def test_add_intercept_moves_no_warm_up_where_there_is_no_intercept():
     assert first[0] == first[1], first
 
 
-def test_marginal_refuses_a_window_with_lags():
-    """The lag ring has no snapshot, so under a window every ``lagcorr`` was
-    the whole history's co-moment over the window's variance. ``ew_cov``
-    refuses the pair, and now so does ``marginal`` (C18)."""
-    with pytest.raises(ValueError, match="window and lags"):
+def test_marginal_takes_a_window_with_lags_only_by_name():
+    """Lags under a window cost each snapshot the lag moments (docs/PLAN.md
+    task 137), and the spec says so before it pays: without
+    ``window_lags=True`` the pair is refused with this spec's own numbers;
+    with it, it is taken; ``window_lags`` without both is refused. It was
+    refused outright (C18), since the lag ring kept no snapshot."""
+    with pytest.raises(ValueError, match="need window_lags = true") as exc:
         po.spec.marginal("m", halflife=10.0, window=50.0, lags=[1], **BASE)
+    # BASE's one feature and one target at one lag, the cross lag at it:
+    # L·T + (L + 2C)·p·T = 1 + 3 = 4 doubles beside (3p + 5)·T = 8.
+    assert "4 doubles beside the 8" in str(exc.value), exc.value
+    assert "1.5 times the size" in str(exc.value), exc.value
+    po.spec.marginal("m", halflife=10.0, window=50.0, lags=[1], window_lags=True, **BASE)
+    for kw in ({"window": 50.0}, {"lags": [1]}, {}):
+        with pytest.raises(ValueError, match="window_lags applies only with both"):
+            po.spec.marginal("m", halflife=10.0, window_lags=True, **kw, **BASE)
     po.spec.marginal("m", halflife=10.0, window=50.0, **BASE)
     po.spec.marginal("m", halflife=10.0, lags=[1], **BASE)
 

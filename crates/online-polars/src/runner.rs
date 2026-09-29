@@ -897,8 +897,7 @@ enum FormatWriter<'a> {
     Parquet(Box<ParquetSink<'a>>),
     Ipc(polars::io::ipc::BatchedWriter<Sink<'a>>),
     Csv(polars::io::csv::write::BatchedWriter<Sink<'a>>),
-    /// The file itself: NDJSON has no header or footer, and each frame is
-    /// serialized in slices on the thread pool (`ndjson_write`).
+    /// The file itself: NDJSON has no header or footer (`ndjson_write`).
     Ndjson(Sink<'a>),
 }
 
@@ -944,32 +943,18 @@ impl<'a> FormatWriter<'a> {
     }
 }
 
-/// `df` as JSON lines, serialized a slice per thread of polars' pool and
-/// written in order -- the same serializer as polars' batched NDJSON
-/// writer, which runs it over the whole frame on one thread and took five
-/// times as long as the bank.
+/// `df` as JSON lines, by polars' batched NDJSON writer on this thread
+/// (docs/IMPROVEMENTS.md C8, docs/PLAN.md task 115 (g)).
+///
+/// It serialized a slice per thread of polars' pool, which on macOS's
+/// system allocator -- the CLI has no allocator of its own -- ran anywhere
+/// from 4.8 s to 54 s on 3M rows (2026-09-02): every thread grew and freed
+/// multi-megabyte buffers, which that allocator hands to the kernel. Measured
+/// again on 2026-09-28, the three-spec example bank over 3M rows: this
+/// writer 4.65-4.78 s wall and 1.1-1.2 s system time against the slices'
+/// 4.98-5.50 s and 2.1 s, where parquet takes 4.65-4.73 s.
 fn ndjson_write(sink: &mut BufWriter<File>, df: &DataFrame) -> PolarsResult<()> {
-    use rayon::prelude::*;
-    let pool = &*polars_core::runtime::THREAD_POOL;
-    let rows = df.height();
-    let per = rows.div_ceil(pool.current_num_threads().max(1)).max(1024);
-    let parts: Vec<Vec<u8>> = pool.install(|| {
-        (0..rows)
-            .step_by(per)
-            .collect::<Vec<_>>()
-            .into_par_iter()
-            .map(|start| {
-                let mut buf = Vec::new();
-                polars::io::json::BatchedWriter::new(&mut buf)
-                    .write_batch(&df.slice(start as i64, per))?;
-                Ok(buf)
-            })
-            .collect::<PolarsResult<_>>()
-    })?;
-    for part in parts {
-        sink.write_all(&part)?;
-    }
-    Ok(())
+    polars::io::json::BatchedWriter::new(sink).write_batch(df)
 }
 
 /// Polars' batched parquet writer, encoding the columns of each row group in

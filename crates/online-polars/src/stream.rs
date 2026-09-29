@@ -933,6 +933,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window,
             window_every,
             window_budget: _,
+            // A spec-level acceptance of the price, checked in `validate`.
+            window_lags: _,
             lags,
             serial_rule,
             cross_lags,
@@ -958,9 +960,11 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     None => None,
                     Some("truncated") => Some(online_core::SerialRule::Truncated),
                     Some("geometric") => Some(online_core::SerialRule::Geometric),
+                    Some("bartlett") => Some(online_core::SerialRule::Bartlett),
                     Some(other) => {
                         return Err(format!(
-                            "marginal: unknown serial_rule {other:?}; expected \"truncated\" or \"geometric\""
+                            "marginal: unknown serial_rule {other:?}; expected \"truncated\", \
+                             \"bartlett\" or \"geometric\""
                         ));
                     }
                 },

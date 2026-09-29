@@ -294,7 +294,16 @@ Tests: `row_groups_need_not_align_with_chunk_rows` in
 debug assertion fires instead of the arrow panic. Its Python twin, a
 reproduction through `po.run`, went with task 83.
 
-### C8 — the CLI's NDJSON output is pathological on the system allocator — *proposed*
+### C8 — the CLI's NDJSON output is pathological on the system allocator — *done: fix 2, 2026-09-28*
+
+**Done (docs/PLAN.md task 115 (g)).** Re-measured first, at HEAD, on the
+three-spec example bank over 3M rows: the slice-per-thread writer no longer
+showed the tail (4.98–5.50 s wall over nine runs), but it cost 2.1 s of
+system time, and polars' `BatchedWriter` on the writing thread was faster:
+4.65–4.78 s wall and 1.1–1.2 s of system time, against 4.65–4.73 s for the
+same run to parquet. So fix 2 went in: the CLI writes NDJSON from one
+thread, links nothing new, and the allocator's convoy has nothing to
+contend on. The diagnosis below is as it was measured on 2026-09-02.
 
 Found on 2026-09-02 by measuring, one custom part at a time, whether the
 runner's hand-written pieces add anything over polars' plain batched

@@ -1253,12 +1253,12 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
     // the fit `coef` reports was solved from -- so the Gram solves to that fit;
     // it read the live ones, so a windowed spec's Gram and closed row carried
     // the whole history beside a `coef` solved on the window (review
-    // 2026-09-12, S19). The target moments are not truncated -- the window's
-    // snapshots do not carry them -- so under a window they are `None`: "this
-    // state cannot say".
-    let ((parts, tm), weights) = match model {
-        AnyModel::EwRidge(m) => (m.gram_parts(), m.target_weights()),
-        AnyModel::Lasso(m) => (m.gram_parts(), m.target_weights()),
+    // 2026-09-12, S19). The target moments are the window's too (task 136):
+    // the snapshots carry them, and a snapshot written before they did gives
+    // `None`, "this state cannot say", until the ring rolls over.
+    let (parts, tm) = match model {
+        AnyModel::EwRidge(m) => m.gram_parts(),
+        AnyModel::Lasso(m) => m.gram_parts(),
         AnyModel::EwCov(m) => {
             // No targets: the matrix is the whole output, and empty target
             // moments say so, where `None` would say "cannot tell".
@@ -1287,11 +1287,19 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
         }
         _ => return Vec::new(),
     };
-    let kish = tm.map(|t| t.n_kish(weights));
     parts
         .into_iter()
         .map(|p| {
             let pick = |v: &[f64]| p.targets.iter().map(|&j| v[j]).collect::<Vec<f64>>();
+            // Kish's count from the part's own target weights -- the
+            // window's under a window, which the moments are -- over `Q_t`.
+            let kish = tm.as_ref().map(|t| {
+                p.targets
+                    .iter()
+                    .zip(&p.target_weights)
+                    .map(|(&j, &w)| (t.q()[j] > 0.0).then(|| w * w / t.q()[j]))
+                    .collect::<Vec<Option<f64>>>()
+            });
             Gram {
                 group: key.clone(),
                 instance: label.to_string(),
@@ -1300,11 +1308,9 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
                 n_kish: p.cov.n_kish(),
                 means: p.cov.means().to_vec(),
                 comoments: p.cov.comoments().to_vec(),
-                target_means: tm.map(|t| pick(t.means())),
-                target_vars: tm.map(|t| pick(t.vars())),
-                target_n_kish: kish
-                    .as_ref()
-                    .map(|k| p.targets.iter().map(|&j| k[j]).collect()),
+                target_means: tm.as_ref().map(|t| pick(t.means())),
+                target_vars: tm.as_ref().map(|t| pick(t.vars())),
+                target_n_kish: kish,
                 cross_moments: p.cross_moments,
                 means_by_target: p.means_by_target,
                 cross_centred: p.cross_centred,

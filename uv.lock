@@ -1531,6 +1531,7 @@ dev = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "statsmodels" },
+    { name = "vowpalwabbit" },
 ]
 docs = [
     { name = "furo" },
@@ -1567,6 +1568,7 @@ dev = [
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "scipy", specifier = ">=1.18.1" },
     { name = "statsmodels", specifier = ">=0.15" },
+    { name = "vowpalwabbit", specifier = ">=9.11.9" },
 ]
 docs = [
     { name = "furo", specifier = ">=2024.8" },
@@ -2207,6 +2209,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
+]
+
+[[package]]
+name = "vowpalwabbit"
+version = "9.11.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/43/5a8abef090be79db23479fcc3ef2909c7f7ae58ca1a2dc71d0a14f51adce/vowpalwabbit-9.11.9.tar.gz", hash = "sha256:ff90d52858b73b8264ecf9259e436dccf1acff651c1bebd34042fcfb8bc886ec", size = 35868889, upload-time = "2026-09-27T23:38:23.146Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/db/11224954c157f5ae668caa344895717806d9c59a86bf18a0850dbbfb76b7/vowpalwabbit-9.11.9-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f202c0faaf79eff047944a36da2dd02444085731092c6ff725329537fd275523", size = 2292151, upload-time = "2026-09-27T23:37:57.102Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/b7/f0d4fc76b2d36febb28686971e51ad6dd33da36f0a0082518512c4fe7374/vowpalwabbit-9.11.9-cp312-cp312-macosx_11_0_x86_64.whl", hash = "sha256:39a6d31c4e6092cc6618b9dbc6fce78467da7b6fab7db02dc8dfac92b53b394a", size = 2489372, upload-time = "2026-09-27T23:37:58.875Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/77/39d368f35a1e08f35fd2d46f29fc0f8b99bd134313f71e619250997961f4/vowpalwabbit-9.11.9-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:019abcbee9da2a63c52ec3ac996d580a96f6c89ca0d3421ed31c804afab80ff9", size = 3030058, upload-time = "2026-09-27T23:38:01.175Z" },
+    { url = "https://files.pythonhosted.org/packages/99/24/727b0eafa8fb1d6fcd1515206405f88bd8ae668874322b3998b9941c3b6d/vowpalwabbit-9.11.9-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cd089ede3b7f1acc27e390c88f50df4b4ba8e25f383a5742b706ec0014a25165", size = 3502981, upload-time = "2026-09-27T23:38:02.803Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/5f/81b545e368f54e95b58a0f5f18356c08fe9a1bd30d8b722f84d604e0ea50/vowpalwabbit-9.11.9-cp312-cp312-win_amd64.whl", hash = "sha256:1f80593b27feb3fdd4ff3a783b51335f69316c295e89b3077116481206ca4fa1", size = 1978435, upload-time = "2026-09-27T23:38:04.155Z" },
+    { url = "https://files.pythonhosted.org/packages/05/4c/2a114073d50ae1054c6c7c0499dc2346971e5c5ff09ac8e17ebfdde98b95/vowpalwabbit-9.11.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:1291b420a1998fcdeccfe74f41b21ddbdf5a26a7f1246e20145397a45e65b137", size = 2292283, upload-time = "2026-09-27T23:38:05.814Z" },
+    { url = "https://files.pythonhosted.org/packages/00/0f/2b28d5d01096f2e650f124492787b63169605530baeb55d6ce2525100b37/vowpalwabbit-9.11.9-cp313-cp313-macosx_11_0_x86_64.whl", hash = "sha256:8526ec549e8a0a70f71bdd321b8712aff07d965520b2e7e389e562ab2c96742a", size = 2489322, upload-time = "2026-09-27T23:38:07.825Z" },
+    { url = "https://files.pythonhosted.org/packages/12/d7/8906f02fdaa57fcf83142d9dc11f30d5ed914c3625e3d92f2644e168057f/vowpalwabbit-9.11.9-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d8eeccb08e93b5a04515f2e9104ea8bc0604bca297bff39ac45e183647c7a8fa", size = 3030269, upload-time = "2026-09-27T23:38:09.908Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/14/3e6adad02627f03bbd44a0a4208155fb4b6e6f7c6359ee119d43933d3a4b/vowpalwabbit-9.11.9-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7126b6db71b80d617d3ee93ebb772d2d0350a2131fc4c60b5b5813d863b9b7e2", size = 3503081, upload-time = "2026-09-27T23:38:11.663Z" },
+    { url = "https://files.pythonhosted.org/packages/02/9c/80bbaf843a3d220c3f18b557250268d9db52731c061da0398696d7efe629/vowpalwabbit-9.11.9-cp313-cp313-win_amd64.whl", hash = "sha256:0386a5bc31460e7200210c9aa1fedf5a81ff2222b8f24ccacd9ff084ac259cff", size = 1978335, upload-time = "2026-09-27T23:38:13.191Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/88/28c5eb7396500af20c413679130ad843115d14442dd5237441e33d6cfc87/vowpalwabbit-9.11.9-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:e47b9bfd846a9a8d000ae7f1ecfeddbb70d746a19251571db854f029e15ba7ce", size = 2292853, upload-time = "2026-09-27T23:38:14.68Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/6c/bc6773d5ca1f95d526fb125278696bab175ce928001e8f92dc8a1d4b0d47/vowpalwabbit-9.11.9-cp314-cp314-macosx_11_0_x86_64.whl", hash = "sha256:0b3658384cce8a70f261236b2b61d400b8206935e6d120bf74cd0f5e40f6887f", size = 2489812, upload-time = "2026-09-27T23:38:16.242Z" },
+    { url = "https://files.pythonhosted.org/packages/20/0f/e0b1d78b54f29cde9be5850675e6308d7b45815c69df1ef645af50415725/vowpalwabbit-9.11.9-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2d27a4957e178cb1f169b79a8851262d4277c17349d1e3c97ca2c96f4266f2c1", size = 3031209, upload-time = "2026-09-27T23:38:17.709Z" },
+    { url = "https://files.pythonhosted.org/packages/85/b7/1b2347766f40b92cbe1b8636420de466164b7e39cd50e81d1ccc0a2250fc/vowpalwabbit-9.11.9-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2be21ad8709d6922b45cabd50d161f12a7187c5a402f1a844652a473e30e338e", size = 3503539, upload-time = "2026-09-27T23:38:19.117Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/93/8abd04c66075c40c7051eeb722ed7d28312035c4bc728c6fad955b2a0eff/vowpalwabbit-9.11.9-cp314-cp314-win_amd64.whl", hash = "sha256:06dfd136077f58cfb7368d1e367fa0481088ac2706ab23e2087f03011b29c221", size = 2038362, upload-time = "2026-09-27T23:38:20.944Z" },
 ]
 
 [[package]]

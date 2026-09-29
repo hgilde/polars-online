@@ -1047,9 +1047,10 @@ class TestTheGramIsTheWindowsToo:
     ``numpy.linalg.lstsq`` on the rows the last fit was read from, at
     ``0.5 ** (age / halflife)``: both ``coef()`` and the solve of the Gram must
     land on it. ``window=None`` is the control, where the two histories are
-    the same one. Under a window the Gram carries no target moments -- the
-    window's snapshots do not keep them -- and says so with ``None``, as it
-    does for a state written before they existed."""
+    the same one. The target moments are the window's too (task 136): the
+    weighted mean and variance of the in-window targets are ``statsmodels``'
+    ``DescrStatsW``, and Kish's count ``(Σw)² / Σw²``. Under a window they
+    were ``None``, since the snapshots held none."""
 
     @pytest.mark.parametrize("window", [None, 60.0])
     def test_the_gram_solves_to_the_fit_the_bank_reports(self, window):
@@ -1080,8 +1081,12 @@ class TestTheGramIsTheWindowsToo:
         g = bank.gram("m")[0]
         assert g["n_eff"] == pytest.approx(w.sum(), rel=1e-10)
         np.testing.assert_allclose(po.gram.solve(g, ridge=1e-10), want, atol=1e-6)
-        if window is not None:
-            assert g["target_means"] is None and g["target_vars"] is None
+        from statsmodels.stats.weightstats import DescrStatsW
+
+        moments = DescrStatsW(y[keep], weights=w)
+        assert g["target_means"] == pytest.approx([moments.mean], rel=1e-9)
+        assert g["target_vars"] == pytest.approx([moments.var], rel=1e-8)
+        assert g["target_n_kish"] == pytest.approx([w.sum() ** 2 / (w**2).sum()], rel=1e-9)
 
 
 class TestTheCrossMomentsAreCentred:
@@ -1575,6 +1580,104 @@ class TestAHopelessSerialFactorSaysSo:
             # NaN in the model, null in the frame, as `phi_x` is.
             assert row["n_serial"] is None, row["n_serial"]
             assert row["t_serial"] is None, row["t_serial"]
+
+
+class TestAWindowedLagIsTheWindows:
+    """C18, the review's T-S11, and task 137. Under a ``window`` the lag
+    moments are truncated as the pair's are, so ``lagcorr_xx`` is the
+    autocorrelation of the rows inside the window. The reference is
+    ``statsmodels``' ``acf`` of those rows, to the statistical tier T-S11
+    gives, 0.02: each windowed lag moment is the increments made inside the
+    window, centred at the mean as it stood, which ``acf``'s full-sample
+    mean does not reproduce to the bit. An AR(1) ``x`` changes ``phi`` from
+    0.2 to 0.8 at row 4500 of 5000 and the window is the last 500 rows, so
+    the whole history's autocorrelation is far from the window's: the
+    reading sat between the two before (live co-moment over windowed
+    variance), and the pair is refused without ``window_lags=True``."""
+
+    def test_lagcorr_is_the_acf_of_the_rows_inside_the_window(self):
+        import statsmodels.tsa.stattools as stattools
+
+        rng = np.random.default_rng(137)
+        n, change, window = 5000, 4500, 500
+        e = rng.normal(0.0, 1.0, n)
+        x = np.empty(n)
+        x[0] = e[0]
+        for t in range(1, n):
+            x[t] = (0.2 if t < change else 0.8) * x[t - 1] + e[t]
+        y = rng.normal(0.0, 1.0, n)
+        spec = po.spec.marginal(
+            "m",
+            targets=["y"],
+            features=["x"],
+            lags=[1, 2, 3],
+            halflife=float("inf"),
+            clock="t",
+            max_dclock=1.0,
+            window=float(window - 1),
+            window_lags=True,
+        )
+        bank = po.ModelBank([spec])
+        frame = pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y})
+        bank.fit_predict(frame)
+        row = bank.marginal("m").row(0, named=True)
+        inside = stattools.acf(x[-window:], nlags=3)[1:]
+        whole = stattools.acf(x, nlags=3)[1:]
+        np.testing.assert_allclose(row["lagcorr_xx"], inside, atol=0.02)
+        assert np.all(np.abs(inside - whole) > 0.15), (inside, whole)
+        assert row["n_eff"] == pytest.approx(window, rel=1e-12)
+
+
+class TestTheBartlettSerialFactor:
+    """Task 135 (S18's other half). ``serial_rule = "bartlett"`` weights lag
+    ``l`` by Newey and West's ``1 - l/(L + 1)``, ``L`` the longest kept lag.
+    ``statsmodels`` supplies both halves of the second opinion: the weights
+    (``sandwich_covariance.weights_bartlett``, the kernel its HAC estimator
+    uses) and the autocorrelations (``acf``), which our lag moments match to
+    the 0.02 tier T-S11 gives. The factor is then ``n_kish / n_serial``, to
+    rounding, from our own lag correlations and the library's weights. On
+    S18's pair, where ``"truncated"`` has no factor, this one has one."""
+
+    @pytest.mark.parametrize("phi_y", [0.8, -0.8])
+    def test_the_factor_takes_statsmodels_bartlett_weights(self, phi_y):
+        import statsmodels.stats.sandwich_covariance as sandwich
+        import statsmodels.tsa.stattools as stattools
+
+        rng = np.random.default_rng(135)
+        n, lags = 5000, [1, 2, 3, 4]
+
+        def ar1(phi: float) -> np.ndarray:
+            e = rng.normal(0.0, 1.0, n)
+            out = np.empty(n)
+            out[0] = e[0]
+            for t in range(1, n):
+                out[t] = phi * out[t - 1] + e[t]
+            return out
+
+        x, y = ar1(0.8), ar1(phi_y)
+        spec = po.spec.marginal(
+            "m",
+            targets=["y"],
+            features=["x"],
+            lags=lags,
+            serial_rule="bartlett",
+            halflife=float("inf"),
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
+        row = bank.marginal("m").row(0, named=True)
+        acf_x = stattools.acf(x, nlags=4)[1:]
+        acf_y = stattools.acf(y, nlags=4)[1:]
+        np.testing.assert_allclose(row["lagcorr_xx"], acf_x, atol=0.02)
+        np.testing.assert_allclose(row["lagcorr_yy"], acf_y, atol=0.02)
+        w = sandwich.weights_bartlett(max(lags))[1:]  # lags 1..L; the library's kernel
+        np.testing.assert_allclose(w, [1 - lag / 5 for lag in lags], rtol=1e-15)
+        factor = 1.0 + 2.0 * float(
+            np.sum(w * np.array(row["lagcorr_xx"]) * np.array(row["lagcorr_yy"]))
+        )
+        assert factor > 0.0, factor
+        assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
+        assert np.isfinite(row["t_serial"])
 
 
 def _gappy(n: int, seed: int, level: float) -> tuple[np.ndarray, np.ndarray]:
@@ -2485,3 +2588,168 @@ class TestEwRidgeIsSklearnsRidge:
             )
             want = c0 + fit.coef_ / rms
         np.testing.assert_allclose(got, want, rtol=1e-8, atol=1e-10)
+
+
+class TestFtrlIsVowpalWabbits:
+    """``ftrl`` without a halflife against Vowpal Wabbit's ``--ftrl``, on
+    every row: a second FTRL-proximal beside river's (T-R1), reaching the
+    options river's comparison does not (docs/PLAN.md task 115; the user:
+    "find an alternative oracle for ftrl that supports more options"). VW's
+    ``ftrl.cc`` runs the recursion ``ftrl.rs`` states, and predicts as
+    McMahan et al.'s Algorithm 1 does, from weights recomputed after the last
+    update, where river's ``LogisticRegression`` predicts with the step
+    before's. So the whole model is compared here: ``pred`` and ``coef`` on
+    every row, under both losses, with and without the intercept and row
+    weights (zeros among them), with null targets, two targets, and ``l1``
+    and ``l2`` together.
+
+    The mapping: ``--ftrl_alpha``, ``--ftrl_beta``, ``--l1`` and ``--l2`` are
+    ours by name. VW's constant feature is the intercept (``--noconstant``
+    without one). A row's weight is VW's importance, which scales the
+    gradient as ours does. VW's squared loss is ``(p - y)²``, with derivative
+    ``2(p - y)`` where ours is ``p - y``, so a row goes in at half its weight;
+    and VW clips a squared-loss prediction to the labels seen so far unless
+    it is given bounds, so the bounds are set wide. Its logistic loss takes
+    labels ``±1`` and has the same derivative in the margin as ours. A null
+    target is a VW prediction with no update.
+
+    VW computes in single precision, so the agreement is to its rounding:
+    measured at most ``3e-7`` on a probability, ``2.6e-6`` on a squared-loss
+    prediction and ``9e-7`` on a coefficient over 400 rows, against ``1e-5``
+    here. The control shows a slip in the mapping, the squared loss at its
+    full weight, missing by more than ``0.2``. None of the libraries checked
+    (river, VW, Keras's ``Ftrl``) forgets as a halflife does, so the finite
+    halflife stays with ``tests/reference.py``'s ``ftrl_ref`` and the
+    longhand and closed forms in ``ftrl.rs``'s tests (review 2026-09-12,
+    C24)."""
+
+    FEATURES = ("x0", "x1", "x2")
+    TARGETS = ("y0", "y1")
+    #: ``VW::details::CONSTANT``, the constant feature's hash
+    #: (``vw/core/constant.h``); pyvw does not expose it.
+    CONSTANT = 11650396
+    #: ``(alpha, beta, l1, l2)``: the defaults, and an ``l1`` that holds the
+    #: noise feature ``x2`` at exactly zero on about half the rows.
+    PENALTIES = {"defaults": (0.1, 1.0, 0.0, 1.0), "sparse": (0.5, 0.3, 2.0, 0.2)}
+    TOL = 1e-5
+
+    @staticmethod
+    def rows(loss, n=400, seed=11):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 3))
+        if loss == "logistic":
+            p0 = 1.0 / (1.0 + np.exp(-(0.4 + 1.5 * x[:, 0] - 0.5 * x[:, 1])))
+            p1 = 1.0 / (1.0 + np.exp(-(-0.3 + 0.8 * x[:, 1])))
+            y0 = (rng.random(n) < p0).astype(float)
+            y1 = (rng.random(n) < p1).astype(float)
+        else:
+            y0 = 0.4 + 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
+            y1 = -1.0 + 0.8 * x[:, 1] + rng.normal(0.0, 0.5, n)
+        w = rng.uniform(0.0, 2.0, n)
+        w[::17] = 0.0
+        return pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "x2": x[:, 2],
+                # Each target null on its own rows, so one learns where the
+                # other only predicts.
+                "y0": [None if i % 11 == 5 else v for i, v in enumerate(y0.tolist())],
+                "y1": [None if i % 7 == 3 else v for i, v in enumerate(y1.tolist())],
+                "w": w,
+            },
+            schema_overrides={"y0": pl.Float64, "y1": pl.Float64},
+        )
+
+    def ours(self, frame, loss, intercept, weighted, penalties):
+        alpha, beta, l1, l2 = self.PENALTIES[penalties]
+        spec = po.spec.ftrl(
+            "m",
+            targets=list(self.TARGETS),
+            features=list(self.FEATURES),
+            loss=loss,
+            add_intercept=intercept,
+            alpha=alpha,
+            beta=beta,
+            l1=l1,
+            l2=l2,
+            halflife=float("inf"),
+            min_periods=0.0,
+            coef_every=1,
+            **({"weight": "w"} if weighted else {}),
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        pred = np.column_stack([out.field(f"pred_{t}").to_numpy() for t in self.TARGETS])
+        coef = np.array(out.field("coef").to_list(), dtype=float)
+        return pred, coef.reshape(frame.height, len(self.TARGETS), -1)
+
+    def vws(self, frame, target, loss, intercept, weighted, penalties, *, half=True):
+        """VW's prediction on each row, before the row, and its weights after
+        it, intercept first as in ``coef``."""
+        import vowpalwabbit
+
+        alpha, beta, l1, l2 = self.PENALTIES[penalties]
+        args = [
+            "--ftrl",
+            f"--ftrl_alpha {alpha!r}",
+            f"--ftrl_beta {beta!r}",
+            f"--l1 {l1!r}",
+            f"--l2 {l2!r}",
+            "--quiet",
+            "-b 18",
+        ]
+        if loss == "logistic":
+            args += ["--loss_function logistic", "--link logistic"]
+        else:
+            args += ["--loss_function squared", "--min_prediction -1e9", "--max_prediction 1e9"]
+        if not intercept:
+            args.append("--noconstant")
+        vw = vowpalwabbit.Workspace(" ".join(args))
+        space = vw.hash_space(" ")
+        slots = [vw.hash_feature(f, space) for f in self.FEATURES]
+        if intercept:
+            slots.insert(0, self.CONSTANT)
+        # Hashing could put two features on one weight; these do not.
+        assert len({s % (1 << 18) for s in slots}) == len(slots)
+        pred, coef = [], []
+        for row in frame.iter_rows(named=True):
+            features = "| " + " ".join(f"{f}:{row[f]!r}" for f in self.FEATURES)
+            pred.append(vw.predict(features))
+            y = row[target]
+            if y is not None:
+                importance = row["w"] if weighted else 1.0
+                if loss == "logistic":
+                    label = "1" if y == 1.0 else "-1"
+                else:
+                    label = repr(y)
+                    if half:
+                        importance /= 2.0
+                vw.learn(f"{label} {importance!r} {features}")
+            coef.append([vw.get_weight(s) for s in slots])
+        vw.finish()
+        return np.array(pred), np.array(coef)
+
+    @pytest.mark.parametrize("penalties", ["defaults", "sparse"])
+    @pytest.mark.parametrize("weighted", [False, True])
+    @pytest.mark.parametrize("intercept", [False, True])
+    @pytest.mark.parametrize("loss", ["logistic", "squared"])
+    def test_every_row_is_vws(self, loss, intercept, weighted, penalties):
+        frame = self.rows(loss)
+        pred, coef = self.ours(frame, loss, intercept, weighted, penalties)
+        for j, target in enumerate(self.TARGETS):
+            want_pred, want_coef = self.vws(frame, target, loss, intercept, weighted, penalties)
+            np.testing.assert_allclose(pred[:, j], want_pred, rtol=0.0, atol=self.TOL)
+            np.testing.assert_allclose(coef[:, j], want_coef, rtol=0.0, atol=self.TOL)
+            if penalties == "sparse":
+                # The l1 branch ran: the noise feature sat at exactly zero on
+                # 49 to 242 of the 350 rows after the 50th, by case.
+                assert (coef[50:, j, -1] == 0.0).sum() >= 40, (target, loss)
+
+    def test_a_slip_in_the_mapping_misses(self):
+        """The control: VW's squared loss at the row's full weight, where the
+        mapping halves it, is off by more than 0.2, so ``1e-5`` separates a
+        right mapping from a wrong one by four orders of magnitude."""
+        frame = self.rows("squared")
+        pred, _ = self.ours(frame, "squared", True, True, "defaults")
+        slip, _ = self.vws(frame, "y0", "squared", True, True, "defaults", half=False)
+        assert np.abs(pred[:, 0] - slip).max() > 0.2

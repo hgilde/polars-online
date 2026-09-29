@@ -475,12 +475,12 @@ impl EwRidge {
     /// fit `coef` reports (review 2026-09-12, S19), and the target moments
     /// are `None`: the window's snapshots do not carry them, and the export
     /// says it cannot give them rather than giving the whole history's.
-    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<&TargetMoments>) {
+    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<TargetMoments>) {
         let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
         match self.view() {
             Some(v) => (
                 gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
-                None,
+                v.acc.tm,
             ),
             None => (
                 gram_parts(
@@ -490,7 +490,7 @@ impl EwRidge {
                     &self.acc.wj,
                     gaps,
                 ),
-                Some(&self.acc.tm),
+                Some(self.acc.tm.clone()),
             ),
         }
     }
@@ -4555,6 +4555,103 @@ mod tests {
                 (sig2 - rs / rw).abs() <= 1e-8 * sig2,
                 "row {i}: {sig2} against {}",
                 rs / rw
+            );
+        }
+    }
+
+    /// The target moments under a window are those of the rows inside it,
+    /// each target over the rows it was present on (docs/PLAN.md task 136):
+    /// its weight, mean, variance about the mean and `Q = Σw²`, weighted
+    /// `2^(-age / halflife)`. They were `None` under a window, since the
+    /// snapshots held none; the second target is missing on every third row.
+    #[test]
+    fn the_windowed_target_moments_are_the_rows_inside_it() {
+        let (halflife, window) = (30.0, 80.0);
+        let mut c = cfg(1, 2);
+        c.decay = Decay::Halflife(halflife);
+        c.window = Some(window);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 37u64;
+        let (mut t, mut ys, mut clock, mut checked) = (vec![], vec![], 0.0, 0);
+        for i in 0..160 {
+            let d = if i == 0 {
+                0.0
+            } else {
+                0.25 * (2.0 + (lcg(&mut s).abs() * 8.0).floor())
+            };
+            clock += d;
+            let x = [lcg(&mut s) * 4.0 - 2.0];
+            let y0 = 3.0 * x[0] + 1.0 + 0.5 * lcg(&mut s);
+            let y1 = (i % 3 != 0).then(|| 50.0 - x[0] + lcg(&mut s));
+            m.step(&x, &[Some(y0), y1], d, 1.0);
+            t.push(clock);
+            ys.push([Some(y0), y1]);
+            if i < 30 {
+                continue;
+            }
+            let (parts, tm) = m.gram_parts();
+            let tm = tm.expect("the snapshots carry the target moments");
+            for j in [0usize, 1] {
+                let kept: Vec<(f64, f64)> = (0..=i)
+                    .filter(|&r| clock - t[r] <= window)
+                    .filter_map(|r| ys[r][j].map(|y| (0.5f64.powf((clock - t[r]) / halflife), y)))
+                    .collect();
+                let w: f64 = kept.iter().map(|k| k.0).sum();
+                let q: f64 = kept.iter().map(|k| k.0 * k.0).sum();
+                let mean = kept.iter().map(|k| k.0 * k.1).sum::<f64>() / w;
+                let var = kept.iter().map(|k| k.0 * (k.1 - mean).powi(2)).sum::<f64>() / w;
+                let close = |a: f64, b: f64| (a - b).abs() <= 1e-8 * b.abs().max(1.0);
+                assert!(close(tm.means()[j], mean), "row {i}, target {j}: mean");
+                assert!(
+                    close(tm.vars()[j], var),
+                    "row {i}, target {j}: {} against {var}",
+                    tm.vars()[j]
+                );
+                assert!(close(tm.q()[j], q), "row {i}, target {j}: Q");
+                let part = parts.iter().find(|p| p.targets.contains(&j)).unwrap();
+                let at = part.targets.iter().position(|&x| x == j).unwrap();
+                assert!(close(part.target_weights[at], w), "row {i}, target {j}: W");
+            }
+            checked += 1;
+        }
+        assert!(checked > 100);
+    }
+
+    /// What the target moments add to a window's snapshot (docs/PLAN.md task
+    /// 136, the user's condition that it not add much): exactly `3·T`
+    /// doubles, the mean, variance and `Q` of each target, beside the Gram's
+    /// `k_total²` and the cross-moments. The shares are printed for PLAN.
+    #[test]
+    fn the_target_moments_add_three_doubles_a_target_to_a_snapshot() {
+        for (k, targets) in [
+            (1usize, 1usize),
+            (5, 1),
+            (10, 1),
+            (10, 5),
+            (50, 1),
+            (50, 10),
+        ] {
+            let mut c = cfg(k, targets);
+            c.window = Some(1e9);
+            c.min_periods = 0.0;
+            c.target_gaps = crate::TargetGaps::Pairwise;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 5u64;
+            for i in 0..3 {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let y: Vec<Option<f64>> = (0..targets).map(|_| Some(lcg(&mut s))).collect();
+                m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let snap = m.acc.snapshot(1.0);
+            let with = crate::Footprint::footprint(&snap);
+            let mut bare = snap.clone();
+            bare.tm = None;
+            let without = crate::Footprint::footprint(&bare);
+            assert_eq!(with - without, 3 * targets * 8, "k = {k}, T = {targets}");
+            println!(
+                "k = {k}, T = {targets}: {without} -> {with} bytes, +{:.1} %",
+                100.0 * (with - without) as f64 / without as f64
             );
         }
     }

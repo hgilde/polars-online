@@ -252,6 +252,7 @@
     window = None
     window_every = None
     window_budget = None
+    window_lags = False
     common
   micro:
     name

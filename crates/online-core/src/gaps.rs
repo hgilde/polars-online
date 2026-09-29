@@ -574,6 +574,11 @@ impl crate::Footprint for AccSnap {
         crate::Footprint::footprint(&self.grams)
             + crate::window::floats(&self.wj)
             + crate::Footprint::footprint(&self.cross)
+            + self.tm.as_ref().map_or(0, |t| {
+                crate::window::floats(t.means())
+                    + crate::window::floats(t.vars())
+                    + crate::window::floats(t.q())
+            })
     }
 }
 
@@ -663,6 +668,7 @@ impl Acc {
             grams: self.grams.snapshot(lam),
             wj: self.wj.iter().map(|w| w * lam).collect(),
             cross,
+            tm: Some(self.tm.decayed(lam)),
         }
     }
 
@@ -705,6 +711,10 @@ impl Acc {
                 per[j] = Some((wj_old / w, self.wj[j] / w));
             }
         }
+        // The target moments where the snapshot carries them (docs/PLAN.md
+        // task 136); a snapshot from before has none, and the Gram export
+        // then says `None` until the ring has rolled over.
+        let tm = old.tm.as_ref().map(|t| self.tm.truncated(t, f, &per));
         Some(match self.cross.truncated(&old.cross, f, &per) {
             Some(mut cross) => {
                 let grams = self.grams.truncated(&old.grams, f);
@@ -725,12 +735,18 @@ impl Acc {
                         }
                     }
                 }
-                AccView { grams, wj, cross }
+                AccView {
+                    grams,
+                    wj,
+                    cross,
+                    tm,
+                }
             }
             None => AccView {
                 grams: self.grams.grams.iter().map(empty).collect(),
                 wj: vec![0.0; m],
                 cross: Cross::new(m, k),
+                tm: tm.map(|t| t.truncated(&t, 1.0, &vec![None; m])),
             },
         })
     }
@@ -833,12 +849,17 @@ impl Acc {
 }
 
 /// [`Acc`] as a window's snapshot holds it: decayed to the row it precedes.
-/// The target moments are not in it, so a windowed Gram export reports none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AccSnap {
     grams: GramsSnap,
     wj: Vec<f64>,
     cross: Cross,
+    /// The target moments, `3·T` doubles beside a Gram's `k²` (docs/PLAN.md
+    /// task 136), so the Gram export under a window reports the window's
+    /// target means, variances and Kish counts. `None` in a snapshot written
+    /// before them, and last, so the positional encoding reads one.
+    #[serde(default)]
+    pub(crate) tm: Option<TargetMoments>,
 }
 
 impl AccSnap {
@@ -855,6 +876,9 @@ pub(crate) struct AccView {
     pub(crate) grams: Vec<EwCov>,
     pub(crate) wj: Vec<f64>,
     pub(crate) cross: Cross,
+    /// The target moments inside the window, where the snapshot carries
+    /// them.
+    pub(crate) tm: Option<TargetMoments>,
 }
 
 /// One Gram of a regression's accumulators, as the Gram export hands it back

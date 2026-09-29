@@ -75,9 +75,9 @@ pub struct MarginalCfg {
     pub lags: Vec<usize>,
     /// How `n_serial` is formed from the lags that were kept: `"truncated"`
     /// sums them as they are (a lower bound on the correction, so an upper
-    /// bound on `n_serial`), `"geometric"` fits one decay per series and
-    /// extrapolates the tail in closed form. `None` keeps the lag moments and
-    /// derives nothing.
+    /// bound on `n_serial`), `"bartlett"` weights lag `l` by `1 − l/(L + 1)`,
+    /// `"geometric"` fits one decay per series and extrapolates the tail in
+    /// closed form. `None` keeps the lag moments and derives nothing.
     #[serde(default)]
     pub serial_rule: Option<SerialRule>,
     /// Binned target moments per pair (docs/ENHANCEMENTS.md E67): the
@@ -127,6 +127,15 @@ pub enum SerialRule {
     /// series are exponentially weighted, and the reason the lags need not be
     /// dense. Needs at least two kept lags with `rho > 0` on each side.
     Geometric,
+    /// Newey and West's Bartlett weights on the kept lags: `1 + 2·Σ_l (1 −
+    /// l/(L + 1))·ρ_x(l)·ρ_y(l)`, `L` the longest kept lag (docs/PLAN.md
+    /// task 135). The weights shrink the long lags, where the estimates are
+    /// noisiest, and they are what keeps the factor positive for a
+    /// positive-definite sequence of products over every lag `1..=L` -- the
+    /// factor is then `1ᵀC1/(L + 1)` for the Toeplitz `C` of the products.
+    /// With lags missing, or on these EW estimates, that is not guaranteed,
+    /// and a factor at or below zero is NaN, as under `Truncated`.
+    Bartlett,
 }
 
 impl MarginalCfg {
@@ -168,19 +177,9 @@ impl MarginalCfg {
         if self.window.is_none() && self.window_every.is_some() {
             return Err("marginal: window_every needs `window`".into());
         }
-        // The lag ring keeps no snapshot, so under a window every lagged
-        // co-moment was the whole history's, divided by the window's
-        // variances: a hybrid of two histories in `lagcorr`, `n_serial` and
-        // what is built from them. `ew_cov` refuses the pair for the same
-        // reason (review 2026-09-12, C18).
-        if self.window.is_some() && !self.lags.is_empty() {
-            return Err(
-                "marginal: window and lags cannot be combined. The lag ring keeps no snapshot, \
-                 so a windowed lagcorr would divide the whole history's lagged co-moment by the \
-                 window's variances. Use one or the other."
-                    .into(),
-            );
-        }
+        // A window with lags snapshots the lag moments too (docs/PLAN.md
+        // task 137), at a price the spec layer asks the caller to accept by
+        // name (`window_lags`); the core takes the pair as it is.
         if let Some(b) = self.bins.as_ref() {
             b.validate(self.n_features, self.n_targets)?;
             if self.window.is_some() {
@@ -364,6 +363,12 @@ struct MarginalMoments {
     /// it, which then holds nothing.
     #[serde(default)]
     rows: Option<Vec<u64>>,
+    /// The lag moments, under a `window` with `lags` (docs/PLAN.md task 137):
+    /// `L·T + (L + 2C)·p·T` doubles beside the `(3p + 5)·T` above, `C` the
+    /// cross lags. Last, and not skipped, so both encodings read a snapshot
+    /// without it.
+    #[serde(default)]
+    lag: Option<crate::LagMoments>,
 }
 
 impl crate::Footprint for MarginalMoments {
@@ -381,6 +386,7 @@ impl crate::Footprint for MarginalMoments {
                 .rows
                 .as_ref()
                 .map_or(0, |r| std::mem::size_of_val(r.as_slice()))
+            + self.lag.as_ref().map_or(0, crate::Footprint::footprint)
     }
 }
 
@@ -455,7 +461,8 @@ impl Deferred {
 /// Bartlett's serial-dependence factor `1 + 2·Σ_l rho_x(l)·rho_y(l)`, and
 /// the two fitted decays when the rule is geometric.
 ///
-/// `"truncated"` sums the kept lags as they are. `"geometric"` fits
+/// `"truncated"` sums the kept lags as they are, and `"bartlett"` weights lag
+/// `l` by `1 − l/(L + 1)`, `L` the longest kept. `"geometric"` fits
 /// `rho(l) = phi^l` per series by least squares on `log rho` over the kept
 /// lags with `rho > 0` — a straight line through the origin in `l`, so
 /// `log phi = Σ l·log rho / Σ l²` — and sums the tail in closed form,
@@ -469,11 +476,16 @@ fn serial_factor(
     rho_y: &[f64],
 ) -> (f64, f64, f64) {
     match rule {
-        SerialRule::Truncated => {
+        SerialRule::Truncated | SerialRule::Bartlett => {
+            let longest = lags.iter().copied().max().unwrap_or(0) as f64;
             let mut sum = 0.0;
-            for (rx, ry) in rho_x.iter().zip(rho_y) {
+            for ((&l, rx), ry) in lags.iter().zip(rho_x).zip(rho_y) {
                 if rx.is_finite() && ry.is_finite() {
-                    sum += rx * ry;
+                    let w = match rule {
+                        SerialRule::Bartlett => 1.0 - l as f64 / (longest + 1.0),
+                        _ => 1.0,
+                    };
+                    sum += w * rx * ry;
                 }
             }
             // A factor at or below zero is an estimate outside the parameter
@@ -481,7 +493,9 @@ fn serial_factor(
             // -- and says nothing, as `Geometric` does, where a floor at
             // `f64::MIN_POSITIVE` reported an infinite count (review
             // 2026-09-12, S18). Uniform weights on the lags do not keep the
-            // sum positive; Bartlett's `1 − l/(L + 1)` would.
+            // sum positive; Bartlett's `1 − l/(L + 1)` do on a dense,
+            // positive-definite sequence, and fall back to this rule where
+            // the sequence is neither.
             let factor = 1.0 + 2.0 * sum;
             let factor = if factor > 0.0 { factor } else { f64::NAN };
             (factor, f64::NAN, f64::NAN)
@@ -877,15 +891,40 @@ impl Marginal {
             let sd_x = var_x.sqrt();
             let sd_y = var_y.sqrt();
             let norm = |v: f64, d: f64| if d > 0.0 { v / d } else { f64::NAN };
+            // Under a `window` each lag moment is truncated as the pair's
+            // are, in sum form with the target's weight: `(W_t·C −
+            // f·W_u·C_u) / W_R`, the increments made inside the window
+            // (docs/PLAN.md task 137). A snapshot without them -- none is
+            // taken unless the spec asks for lags under the window -- has no
+            // lag statistics to give.
+            let cut = self
+                .boundary()
+                .map(|(old, f)| old.lag.as_ref().map(|m| (f * old.wt[t], m)));
+            let at = |live: f64, then: &dyn Fn(&crate::LagMoments) -> f64| match cut {
+                None => live,
+                Some(None) => f64::NAN,
+                Some(Some((wo, m))) => {
+                    let wn = self.wt[t] - wo;
+                    if wn > crate::window::EMPTY_FRACTION * self.wt[t] && wn.is_finite() {
+                        (self.wt[t] * live - wo * then(m)) / wn
+                    } else {
+                        f64::NAN
+                    }
+                }
+            };
             for li in 0..lag.lags().len() {
-                lagcorr_xx.push(norm(lag.cxx(li, t, j), sd_x * sd_x));
-                lagcorr_yy.push(norm(lag.cyy(li, t), sd_y * sd_y));
+                let cxx = at(lag.cxx(li, t, j), &|m| m.cxx(li, t, j));
+                let cyy = at(lag.cyy(li, t), &|m| m.cyy(li, t));
+                lagcorr_xx.push(norm(cxx, sd_x * sd_x));
+                lagcorr_yy.push(norm(cyy, sd_y * sd_y));
             }
             // Over the cross lags, which are every lag unless `cross_lags`
             // names fewer (E70).
             for ci in 0..lag.cross_lags().len() {
-                lagcorr_xy.push(norm(lag.cxy(ci, t, j), sd_x * sd_y));
-                lagcorr_yx.push(norm(lag.cyx(ci, t, j), sd_x * sd_y));
+                let cxy = at(lag.cxy(ci, t, j), &|m| m.cxy(ci, t, j));
+                let cyx = at(lag.cyx(ci, t, j), &|m| m.cyx(ci, t, j));
+                lagcorr_xy.push(norm(cxy, sd_x * sd_y));
+                lagcorr_yx.push(norm(cyx, sd_x * sd_y));
             }
             if let Some(rule) = self.cfg.serial_rule {
                 let (factor, px, py) = serial_factor(rule, lag.lags(), &lagcorr_xx, &lagcorr_yy);
@@ -1082,6 +1121,7 @@ impl Marginal {
                 sxx: self.sxx.clone(),
                 sxy: self.sxy.clone(),
                 rows: Some(self.rows_t.clone()),
+                lag: self.lag.as_ref().map(|l| l.moments()),
             });
             win.clock = t;
             win.snaps.trim(t);
@@ -1880,11 +1920,26 @@ impl OnlineModel for Marginal {
                     (None, None) => true,
                     _ => false,
                 };
+                // Every snapshot at the same widths, its lag moments those of
+                // the lags the model keeps: a narrower one indexed out of
+                // bounds when a pair was read (B3).
+                let snaps_ok = m.win.as_ref().is_none_or(|w| {
+                    w.snaps.iter().all(|s| {
+                        [&s.wt, &s.qt, &s.my, &s.syy].iter().all(|v| v.len() == t)
+                            && [&s.mx, &s.sxx, &s.sxy].iter().all(|v| v.len() == p * t)
+                            && match (&s.lag, &m.lag) {
+                                (Some(sl), Some(l)) => sl.matches(l),
+                                (Some(_), None) => false,
+                                (None, _) => true,
+                            }
+                    })
+                });
                 if [&m.wt, &m.qt, &m.my, &m.syy].iter().any(|v| v.len() != t)
                     || [&m.mx, &m.sxx, &m.sxy].iter().any(|v| v.len() != p * t)
                     || m.cfg.min_periods.len() != t
                     || !lag_ok
                     || !bins_ok
+                    || !snaps_ok
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
                     return Err(StateError::Invalid(
@@ -2739,6 +2794,31 @@ mod tests {
         assert!((f - 2.28).abs() < 1e-12, "{f}");
     }
 
+    /// `"bartlett"` against its definition: lag `l` at `1 − l/(L + 1)`, `L`
+    /// the longest kept lag, sparse lags weighted by their own `l`. On S18's
+    /// pair, `+0.8` and `−0.8` at lag 1, the weight halves the product and
+    /// the factor is `1 − 0.64 = 0.36`, where `"truncated"` has none
+    /// (docs/PLAN.md task 135); a factor still at or below zero is NaN.
+    #[test]
+    fn the_bartlett_factor_is_its_definition() {
+        let (lags, rx, ry) = ([1usize, 2, 5], [0.7, 0.4, 0.1], [0.6, -0.2, 0.3]);
+        let want = 1.0
+            + 2.0
+                * ((1.0 - 1.0 / 6.0) * 0.42 + (1.0 - 2.0 / 6.0) * -0.08 + (1.0 - 5.0 / 6.0) * 0.03);
+        let (f, px, py) = serial_factor(SerialRule::Bartlett, &lags, &rx, &ry);
+        assert!((f - want).abs() < 1e-15, "{f} against {want}");
+        assert!(px.is_nan() && py.is_nan());
+        let (f, _, _) = serial_factor(SerialRule::Bartlett, &[1], &[0.8], &[-0.8]);
+        assert!((f - 0.36).abs() < 1e-15, "{f}");
+        let (f, _, _) = serial_factor(SerialRule::Truncated, &[1], &[0.8], &[-0.8]);
+        assert!(f.is_nan());
+        let (f, _, _) = serial_factor(SerialRule::Bartlett, &[1, 2], &[0.9, 0.0], &[-1.0, 0.0]);
+        assert!(f.is_nan(), "1 − 2·(2/3)·0.9 < 0: {f}");
+        // A lag the estimator could not read is left out, not zeroed twice.
+        let (f, _, _) = serial_factor(SerialRule::Bartlett, &[1, 2], &[0.5, f64::NAN], &[0.5, 0.3]);
+        assert!((f - (1.0 + 2.0 * (2.0 / 3.0) * 0.25)).abs() < 1e-15, "{f}");
+    }
+
     /// E66 tests 3 and 4, the ones the feature exists for. Two *independent*
     /// AR(1) series, so the true correlation is zero and `t` should be
     /// N(0,1) — but it is not: with both series smooth, the sample
@@ -3099,15 +3179,104 @@ mod tests {
         err(c.clone(), "2 entries for 1 targets");
         c.min_periods = vec![];
         err(c, "0 entries for 1 targets");
-        // The lag ring has no snapshot, so a window beside it reported the
-        // whole history's lagged co-moment over the window's variance;
-        // `ew_cov` refuses the pair, and so does this (review 2026-09-12,
-        // C18).
+        // A window with lags is taken since task 137: the snapshots hold the
+        // lag moments, and the spec layer asks for `window_lags` by name.
         let mut c = cfg(1, 1);
         c.window = Some(50.0);
         c.lags = vec![1];
-        err(c, "window and lags");
+        Marginal::new(c).unwrap();
         Marginal::new(cfg(3, 2)).unwrap();
+    }
+
+    /// A windowed lag moment is the increments made inside the window
+    /// (docs/PLAN.md task 137). An unwindowed twin's weight and moments,
+    /// after the row before the window's first and after the last, give it
+    /// in sum form, `(W·C − f·λ·W_u·C_u) / (W − f·λ·W_u)`, read through
+    /// `lagcorr` against the window's own variances. The target is missing
+    /// on every fifth row, where its moments hold and its weight ages.
+    #[test]
+    fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
+        let (hl, window, n) = (30.0, 50.0, 200usize);
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(hl);
+        c.lags = vec![1, 2];
+        c.cross_lags = Some(vec![1]);
+        c.min_periods = vec![0.0];
+        let mut live = Marginal::new(c.clone()).unwrap();
+        c.window = Some(window);
+        let mut win = Marginal::new(c).unwrap();
+        let mut s = 11u64;
+        let mut hist: Vec<(f64, Vec<f64>, Vec<f64>, f64)> = Vec::new();
+        for i in 0..n {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i % 5 != 0).then(|| x[0] + 0.3 * lcg(&mut s));
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            live.step(&x, &[y], d, 1.0);
+            win.step(&x, &[y], d, 1.0);
+            let l = live.lag.as_ref().unwrap();
+            hist.push((
+                live.wt[0],
+                (0..2).map(|li| l.cyy(li, 0)).collect(),
+                (0..2).map(|li| l.cxx(li, 0, 1)).collect(),
+                l.cxy(0, 0, 1),
+            ));
+        }
+        // The last row's clock is n − 1; the window keeps the rows at most
+        // `window` behind it, so the snapshot is the one before row `u`.
+        let lam = 0.5f64.powf(1.0 / hl);
+        let u = n - 1 - window as usize;
+        let f = 0.5f64.powf((n - 1 - u) as f64 / hl);
+        let (w_now, yy_now, xx_now, xy_now) = &hist[n - 1];
+        let (w_then, yy_then, xx_then, xy_then) = &hist[u - 1];
+        let wo = f * lam * w_then;
+        let cut = |now: f64, then: f64| (w_now * now - wo * then) / (w_now - wo);
+        let pair = win.pair(0, 1);
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-10 * b.abs().max(1.0);
+        for li in 0..2 {
+            let yy = cut(yy_now[li], yy_then[li]) / pair.var_y;
+            let xx = cut(xx_now[li], xx_then[li]) / pair.var_x;
+            assert!(
+                close(pair.lagcorr_yy[li], yy),
+                "lag {li}: {} against {yy}",
+                pair.lagcorr_yy[li]
+            );
+            assert!(
+                close(pair.lagcorr_xx[li], xx),
+                "lag {li}: {} against {xx}",
+                pair.lagcorr_xx[li]
+            );
+        }
+        let xy = cut(*xy_now, *xy_then) / (pair.var_x.sqrt() * pair.var_y.sqrt());
+        assert!(
+            close(pair.lagcorr_xy[0], xy),
+            "{} against {xy}",
+            pair.lagcorr_xy[0]
+        );
+        // The window truncated: the whole history's reads otherwise.
+        let whole = live.pair(0, 1);
+        assert!((whole.lagcorr_yy[0] - pair.lagcorr_yy[0]).abs() > 1e-4);
+    }
+
+    /// What the lag moments add to a window's snapshot (docs/PLAN.md task
+    /// 137): `L·T + (L + 2C)·p·T` doubles and the width, as `window_lags`
+    /// documents.
+    #[test]
+    fn the_lag_moments_add_what_window_lags_says() {
+        for (p, t, lags, cross) in [
+            (3usize, 1usize, vec![1usize], None),
+            (10, 2, vec![1, 2, 5], None),
+            (10, 2, vec![1, 2, 5], Some(vec![])),
+            (50, 1, vec![1, 5], Some(vec![1])),
+        ] {
+            let mut c = cfg(p, t);
+            c.lags = lags.clone();
+            c.cross_lags = cross.clone();
+            let m = Marginal::new(c).unwrap();
+            let got = crate::Footprint::footprint(&m.lag.as_ref().unwrap().moments());
+            let (l, cl) = (lags.len(), cross.as_ref().map_or(lags.len(), Vec::len));
+            let want = 8 * (l * t + (l + 2 * cl) * p * t) + std::mem::size_of::<usize>();
+            assert_eq!(got, want, "p = {p}, T = {t}, L = {l}, C = {cl}");
+        }
     }
 
     #[test]
@@ -4119,8 +4288,18 @@ mod tests {
                     }))
                 }),
             ),
-            // A window takes neither lags nor bins (`MarginalCfg::validate`).
+            // A window takes no bins (`MarginalCfg::validate`); it takes lags,
+            // whose moments its snapshots then hold (docs/PLAN.md task 137).
             ("window", with(&|c| c.window = Some(40.0))),
+            (
+                "window with lags",
+                with(&|c| {
+                    c.window = Some(40.0);
+                    c.lags = vec![1, 3];
+                    c.cross_lags = Some(vec![1]);
+                    c.serial_rule = Some(SerialRule::Bartlett);
+                }),
+            ),
             (
                 "window every 3",
                 with(&|c| {
@@ -4211,7 +4390,11 @@ mod tests {
                         }
                     }
                     // A window snapshot every row flushes every row.
-                    let most = if name == "window" { 1 } else { 2 };
+                    let most = if matches!(name, "window" | "window with lags") {
+                        1
+                    } else {
+                        2
+                    };
                     assert!(held >= most, "{name}: rows were held ({held})");
                     m.flush(&shards);
                     assert_eq!(m.held_rows(), 0);
