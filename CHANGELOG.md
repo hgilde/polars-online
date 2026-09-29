@@ -65,6 +65,12 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **A chunk past a refusing `window_budget` is refused whole.** The bank
+  replays each chunk's clock schedule on its window rings before it learns
+  a row, so it refuses such a chunk untouched and goes on as it was. It
+  used to find the overrun with the chunk half learned, and then refused
+  every later call. Under `drift_action="reset"`, whose resets depend on
+  the residuals, the old path remains.
 - **`deco` goes on learning past a column with no spread.** A column that
   has been constant from its first row has no standardised value. It is
   now left out of its block's sums, so its block reads the correlation

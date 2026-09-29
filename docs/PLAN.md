@@ -4703,7 +4703,16 @@ decision it needs, with a recommendation where there is one.
       makes, that predicts the ring and refuses the chunk untouched --
       recommended, with a test holding the prediction to the ring;
       **decided 2026-09-29**, the user: "115.1 follow your suggestion", the
-      pre-pass); C24 part 2, `ftrl`'s penalties under a halflife (the user asked
+      pre-pass, **and built**: `Stream::window_prepass` replays the chunk's
+      schedule on shadows of every ring -- `online_core::WindowShadow`, the
+      ring's own `offer` and `trim` on byte counts -- before any stream
+      runs, so the chunk is refused whole and the bank goes on; held to the
+      ring's own verdict in `crates/online-polars/tests/window_prepass.rs`,
+      seven cases at four chunkings, the same piece and the same words
+      against a bank run without it, whose reset and close cases fail with
+      either path switched off; under `drift_action = "reset"`, whose
+      resets depend on the residuals, it abstains and the broken bank
+      remains); C24 part 2, `ftrl`'s penalties under a halflife (the user asked
       whether river covers it: only at `halflife = inf`, where we are river
       to the bit; river has no forgetting, so a finite halflife is ours, and
       the build is river's formula with river's constant penalties on

@@ -706,12 +706,14 @@ def ewridge(
         ring reaches the bound. ``{"thin": mib}`` drops every other snapshot and
         doubles the spacing between the rest, as often as it takes; like
         ``window_every``, that can only shorten the window. ``{"refuse": mib}``
-        keeps the ring at the bound and refuses the chunk, naming the ring's size
-        and ``window_every``. The budget is checked as the rows are learned, so a
-        refused chunk has been partly learned. The bank then refuses every later
-        ``fit_predict``, ``predict`` and ``save``; rebuild it from its last save
-        (:meth:`polars_online.ModelBank.fit_predict`). Unset, a window refuses
-        past 256 MiB per ring; ``{"refuse": float("inf")}`` is no bound.
+        refuses the chunk, naming the ring's size and ``window_every``. The bank
+        replays each chunk's clock schedule on its rings before it learns a row, so
+        such a chunk is refused whole and the bank goes on as it was. Under
+        ``drift_action="reset"``, whose resets the replay cannot foresee, the ring
+        finds the overrun as the rows go in instead, and the bank then refuses
+        every later ``fit_predict``, ``predict`` and ``save``; rebuild it from its
+        last save (:meth:`polars_online.ModelBank.fit_predict`). Unset, a window
+        refuses past 256 MiB per ring; ``{"refuse": float("inf")}`` is no bound.
 
         ``n_eff``, ``sigma`` and ``resid_z`` are the window's too, so the spread
         describes the rows the fit describes; the spread keeps a ring of its own

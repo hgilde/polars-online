@@ -2121,11 +2121,18 @@ pub struct Bank {
     key_integer: Vec<Option<bool>>,
     /// Why the bank refuses to go on, once a chunk was refused after some
     /// of its rows had been learned. A window past a refusing
-    /// `window_budget` is found as the rows go in, not before, so by then
-    /// the streams hold rows whose output was never returned (review
-    /// 2026-09-12, P4). `fit_predict`, `predict` and `save_bytes` refuse;
-    /// reading the state (`gram`, `summary`, `to_json`) does not.
+    /// `window_budget` is found before any row goes in, by the pre-pass
+    /// ([`Stream::window_prepass`], docs/PLAN.md task 115 (d)), except where
+    /// the pre-pass cannot see it -- `drift_action = "reset"` -- and there
+    /// it is found as the rows go in, so the streams hold rows whose output
+    /// was never returned (review 2026-09-12, P4). `fit_predict`, `predict`
+    /// and `save_bytes` refuse; reading the state (`gram`, `summary`,
+    /// `to_json`) does not.
     broken: Option<String>,
+    /// Whether a chunk's window rings are replayed before any stream runs it
+    /// ([`Stream::window_prepass`]): on, except in a test that holds the
+    /// replay's verdict to the ring's own. Not state.
+    window_prepass: bool,
     /// Readiness notices raised and not yet taken
     /// ([`Self::take_notices`]); not state.
     notices: Vec<String>,
@@ -2316,6 +2323,7 @@ impl Bank {
             pca_prev: HashMap::new(),
             key_integer,
             broken: None,
+            window_prepass: true,
             notices: Vec::new(),
         })
     }
@@ -2799,6 +2807,14 @@ impl Bank {
         std::mem::take(&mut self.notices)
     }
 
+    /// Switch the window budget's pre-pass off, for a test that holds its
+    /// verdict to the ring's own (docs/PLAN.md task 115 (d)). Not for use: a
+    /// bank without it breaks on a chunk it would have refused whole.
+    #[doc(hidden)]
+    pub fn set_window_prepass(&mut self, on: bool) {
+        self.window_prepass = on;
+    }
+
     fn refuse_if_broken(&self) -> PolarsResult<()> {
         match &self.broken {
             None => Ok(()),
@@ -2823,14 +2839,17 @@ impl Bank {
     /// epoch integer), a clock with a null or non-finite value, a finite
     /// negative weight, or a group's clock running backwards under
     /// `on_clock_reset = "error"`; `Duplicate` for a spec named like an
-    /// input column, which its struct would replace. A refused chunk leaves
-    /// the bank exactly as it was -- no state is updated, no new group is
-    /// kept -- so the corrected chunk can be fed. The exception is a window
-    /// whose snapshots pass a refusing `window_budget` (`ComputeError`,
-    /// naming the ring's size and `window_every`): that is found as the rows
-    /// are learned, so the chunk is refused after some of it has been, and
-    /// every later `fit_predict`, `predict` and `save_bytes` is refused
-    /// rather than go on from there. And, on the first call only, a
+    /// input column, which its struct would replace; and a window whose
+    /// snapshots the chunk would take past a refusing `window_budget`
+    /// (`ComputeError`, naming the ring's size and `window_every`), found by
+    /// replaying the chunk's clock schedule on the rings before any row is
+    /// learned. A refused chunk leaves the bank exactly as it was -- no state
+    /// is updated, no new group is kept -- so the corrected chunk can be
+    /// fed. The exception is a window past its budget under `drift_action =
+    /// "reset"`, whose resets the replay cannot foresee: that is found as
+    /// the rows are learned, so the chunk is refused after some of it has
+    /// been, and every later `fit_predict`, `predict` and `save_bytes` is
+    /// refused rather than go on from there. And, on the first call only, a
     /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         self.fit_predict_from(df, 0)
@@ -3002,14 +3021,64 @@ impl Bank {
             return Err(e);
         }
 
+        // A ring the chunk would take past a refusing `window_budget` refuses
+        // it whole as well: every stream replays its schedule on shadows of
+        // its rings before any stream runs (docs/PLAN.md task 115 (d)), so
+        // the bank is left as it was, where it used to find the overrun with
+        // the chunk half learned and refuse every call after. A session close
+        // starts a fresh stream within the chunk, as `process` does.
+        if self.window_prepass {
+            let over = work
+                .par_iter()
+                .find_map_first(|(si, key, idx, base, stream)| {
+                    let (spec, sc) = (&specs[*si], &cols[*si]);
+                    let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
+                        (true, Some(sess)) => session_bounds(stream, sess, idx.len(), *base),
+                        _ => Vec::new(),
+                    };
+                    let mut starts = vec![0];
+                    starts.extend_from_slice(&bounds);
+                    let mut spare: Option<Stream> = None;
+                    for (seg, &start) in starts.iter().enumerate() {
+                        let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
+                        let s: &Stream = if seg == 0 {
+                            stream
+                        } else {
+                            spare.insert(Stream::new(spec).ok()?)
+                        };
+                        let run = &idx[start..end];
+                        if let Some((bytes, every)) = s.window_prepass(
+                            spec,
+                            &cfgs[*si],
+                            &sc.features,
+                            &sc.targets,
+                            sc.clock.as_ref(),
+                            sc.session.as_deref(),
+                            sc.weight.as_deref(),
+                            run,
+                            *base + start,
+                        ) {
+                            return Some(over_budget(spec, key, bytes, every));
+                        }
+                    }
+                    None
+                });
+            if let Some(e) = over {
+                drop(work);
+                forget(&mut self.states, &fresh);
+                return Err(e);
+            }
+        }
+
         // Two phases: a `seqtest` that compares two specs reads the residuals
         // they report for this chunk, so those run and assemble first, and
-        // the comparisons after (docs/ENHANCEMENTS.md E42). The clock check
+        // the comparisons after (docs/ENHANCEMENTS.md E42). The two checks
         // above covered both. What can still refuse the chunk is found as the
-        // rows go in -- a window past a refusing `window_budget` (review
-        // 2026-09-12, P4) -- by which time the streams have learned part of
-        // it: the `forget` paths below drop the streams the chunk created,
-        // and the bank marks itself `broken` rather than go on from there.
+        // rows go in -- a window past a refusing `window_budget` the pre-pass
+        // cannot see, under `drift_action = "reset"` (review 2026-09-12, P4)
+        // -- by which time the streams have learned part of it: the `forget`
+        // paths below drop the streams the chunk created, and the bank marks
+        // itself `broken` rather than go on from there.
         let (work2, work1): (Vec<_>, Vec<_>) = work
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());

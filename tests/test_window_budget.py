@@ -58,24 +58,41 @@ def test_past_the_budget_the_ring_thins_and_never_keeps_an_older_row():
     assert (thin < exact - 0.5).any(), "and past the budget it did thin"
 
 
-def test_past_the_budget_a_refusal_stops_the_run_naming_the_way_out():
-    """The budget is checked as the rows are learned, not before, so a chunk
-    refused for it has been partly learned -- unlike a chunk refused before
-    any stream is touched. The bank says so rather than go on: every later
-    ``fit_predict``, ``predict`` and ``save`` is refused, naming the budget."""
+def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
+    """The bank replays each chunk's clock schedule on the rings' shadows
+    before it learns a row (docs/PLAN.md task 115 (d)), so a chunk that would
+    take a ring past a refusing budget is refused whole, naming the way out,
+    and the bank is exactly as it was: it saves the same bytes, and takes
+    the chunk that fits. The ring found the overrun with the chunk half
+    learned before, and every later ``fit_predict``, ``predict`` and ``save``
+    was refused."""
     df = _frame()
     bank = po.ModelBank([_spec(window_budget={"refuse": TINY})])
     bank.fit_predict(df.head(1))
+    before = bank.save_bytes()
     with pytest.raises(ValueError, match="window_budget") as exc:
         bank.fit_predict(df.slice(1))
     assert "window_every" in str(exc.value)
-    for call in (
-        lambda: bank.fit_predict(df.head(1)),
-        lambda: bank.predict(df.head(1)),
-        bank.save_bytes,
-    ):
-        with pytest.raises(ValueError, match="cannot go on.*window_budget"):
-            call()
+    assert bank.save_bytes() == before, "nothing of the refused chunk was learned"
+    bank.predict(df.head(1))
+    bank.fit_predict(df.slice(1, 2))
+    # The same rows fed one chunk at a time reach the budget on the same row,
+    # refused there: the prediction is the ring's, whatever the chunking.
+    fed = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    fed.fit_predict(df.head(1))
+    reached = None
+    for i in range(1, df.height):
+        try:
+            fed.fit_predict(df.slice(i, 1))
+        except ValueError as e:
+            reached = (i, str(e))
+            break
+    assert reached is not None and "window_budget" in reached[1]
+    whole = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    whole.fit_predict(df.head(1))
+    whole.fit_predict(df.slice(1, reached[0] - 1))
+    with pytest.raises(ValueError, match="window_budget"):
+        whole.fit_predict(df.slice(reached[0], 1))
 
 
 def test_a_broken_bank_names_itself_before_a_bad_column():
@@ -86,14 +103,23 @@ def test_a_broken_bank_names_itself_before_a_bad_column():
     the column error would send the reader to a frame that is not the
     problem.
 
+    A bank breaks where the pre-pass cannot see the ring (docs/PLAN.md task
+    115 (d)): under ``drift_action="reset"``, whose resets depend on the
+    residuals, the ring's own refusal stops the run mid-chunk, as it did
+    everywhere before.
+
     The bad column is a text feature because the frame adapter refuses it
     while casting, which is what the old order ran first. A missing column
     would not tell the orders apart: the adapter leaves that to the bank."""
     df = _frame()
-    bank = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    bank = po.ModelBank(
+        [_spec(window_budget={"refuse": TINY}, emit_drift=True, drift_action="reset")]
+    )
     bank.fit_predict(df.head(1))
     with pytest.raises(ValueError, match="window_budget"):
         bank.fit_predict(df.slice(1))
+    with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+        bank.save_bytes()
     bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
     # The frame is bad on its own: a healthy bank refuses it for the column.
     with pytest.raises(ValueError, match='"x0" has dtype str; it must be numeric'):

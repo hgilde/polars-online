@@ -74,6 +74,88 @@ pub trait Footprint {
     fn footprint(&self) -> usize;
 }
 
+/// A snapshot reduced to its bytes: what a ring's shadow holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bytes(pub usize);
+
+impl Footprint for Bytes {
+    fn footprint(&self) -> usize {
+        self.0
+    }
+}
+
+/// A window's ring without its snapshots: each one's bytes where the ring
+/// holds the snapshot, the model's clock, and the bytes the model's next
+/// snapshot would hold. [`Self::learn`] is what a learned row does to the
+/// ring -- the ring's own [`Snapshots::offer`] and [`Snapshots::trim`], run on
+/// the shadow -- so a caller can find, before it runs a chunk's rows, whether
+/// they would take the ring past a refusing budget, and refuse the chunk
+/// with nothing learned (docs/PLAN.md task 115 (d)). A snapshot is taken at
+/// the size the model's would be now; a model whose snapshot grows within
+/// the chunk is seen short, and the ring's own refusal still stops it.
+#[derive(Debug, Clone)]
+pub struct WindowShadow {
+    clock: f64,
+    ring: Snapshots<Bytes>,
+    snapshot: usize,
+}
+
+impl WindowShadow {
+    /// The shadow of `ring`, whose model's clock is `clock`. Its snapshots
+    /// are taken at the newest one's size, or, in an empty ring, at the size
+    /// of the one `make` forms: the closure the model hands `offer`.
+    pub fn new<S: Footprint>(clock: f64, ring: &Snapshots<S>, make: impl FnOnce() -> S) -> Self {
+        let snapshot = match ring.ring.back() {
+            Some((_, s)) => s.footprint(),
+            None => make().footprint(),
+        };
+        Self {
+            clock,
+            ring: Snapshots {
+                window: ring.window,
+                every: ring.every,
+                since: ring.since,
+                ring: ring
+                    .ring
+                    .iter()
+                    .map(|(t, s)| (*t, Bytes(s.footprint())))
+                    .collect(),
+                limit: ring.limit.clone(),
+            },
+            snapshot,
+        }
+    }
+
+    /// A learned row `d_clock` after the last: the ring's offer and trim, as
+    /// the model's step makes them.
+    pub fn learn(&mut self, d_clock: f64) {
+        let t = self.clock + d_clock;
+        let snapshot = self.snapshot;
+        self.ring.offer(t, || Bytes(snapshot));
+        self.clock = t;
+        self.ring.trim(t);
+    }
+
+    /// What the ring would report: [`Snapshots::over_budget`].
+    pub fn over_budget(&self) -> Option<(usize, usize)> {
+        self.ring.over_budget()
+    }
+
+    /// Whether `rows` learned rows could take the ring past a refusing
+    /// budget at all: a row adds at most one snapshot, so a ring that fits
+    /// that many more needs no replay.
+    pub fn could_refuse(&self, rows: usize) -> bool {
+        match self.ring.limit.budget {
+            Some(b @ WindowBudget::Refuse(_)) => {
+                self.ring.limit.over.is_some()
+                    || (self.ring.limit.held + rows.saturating_mul(self.snapshot)) as f64
+                        > b.bytes()
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Bytes in a slice of floats, for a [`Footprint`].
 pub(crate) fn floats(v: &[f64]) -> usize {
     std::mem::size_of_val(v)

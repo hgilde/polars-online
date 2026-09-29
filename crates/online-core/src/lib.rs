@@ -147,7 +147,8 @@ pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 pub use window::{
-    Footprint, Moments, Snapshots, WindowBudget, truncated, truncated_mean, truncated_scalar,
+    Bytes, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated, truncated_mean,
+    truncated_scalar,
 };
 
 /// Version of the serialized model-state layout.

@@ -15,7 +15,7 @@
 //! the fit's. A thinning budget can move the two boundaries apart, each
 //! still inside the window, which is the promise.
 
-use online_core::{Decay, Footprint, Snapshots, WindowBudget, truncated_scalar};
+use online_core::{Decay, Footprint, Snapshots, WindowBudget, WindowShadow, truncated_scalar};
 use serde::{Deserialize, Serialize};
 
 /// The spread before a learned row, decayed to it: per slot, the weight and
@@ -83,6 +83,15 @@ impl ResidWindow {
     /// The budget is configuration, which a state does not carry.
     pub fn set_budget(&mut self, budget: Option<WindowBudget>) {
         self.snaps.set_budget(budget);
+    }
+
+    /// The ring's shadow (docs/PLAN.md task 115 (d)): each snapshot a spread
+    /// of `n_slots` slots, as `learn` takes one.
+    pub fn shadow(&self, n_slots: usize) -> WindowShadow {
+        WindowShadow::new(self.clock, &self.snaps, || Spread {
+            w: vec![0.0; n_slots],
+            var: vec![0.0; n_slots],
+        })
     }
 
     /// A refusing budget's overrun: the ring's bytes and its spacing.

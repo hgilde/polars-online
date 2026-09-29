@@ -9,7 +9,7 @@ use online_core::{
     KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState,
     OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
     Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError,
+    SlotMetrics, State, StateError, WindowShadow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -198,6 +198,11 @@ impl AnyModel {
     /// Bound the model's window ([`OnlineModel::set_window_budget`]).
     pub fn set_window_budget(&mut self, budget: Option<online_core::WindowBudget>) {
         dispatch!(self, m => m.set_window_budget(budget))
+    }
+
+    /// The model's window ring as a shadow ([`OnlineModel::window_shadow`]).
+    pub fn window_shadow(&self) -> Option<WindowShadow> {
+        dispatch!(self, m => m.window_shadow())
     }
 
     /// The weight-share cadence ([`OnlineModel::set_solve_share`]).
@@ -2550,6 +2555,162 @@ impl Stream {
         Ok(())
     }
 
+    /// Pass 1 of [`Self::process_chunk`]: the clock schedule of `rows`, on
+    /// a copy of the clock, with the clock and the count of accepted rows it
+    /// leaves. What it decides depends on the clock and the input columns
+    /// alone, never on the models, so the window budget's pre-pass
+    /// ([`Self::window_prepass`]) replays the schedule the run will follow. A
+    /// step back the policy refuses is handed back for the caller to name.
+    #[allow(clippy::too_many_arguments)]
+    fn schedule(
+        &self,
+        spec: &Spec,
+        cfg: &online_core::ClockCfg,
+        features: &FeatureRows,
+        clock: Option<&ClockCol>,
+        session: Option<&[u64]>,
+        weight: Option<&[f64]>,
+        rows: &[usize],
+        base: usize,
+        last: bool,
+    ) -> Result<(ClockState, u64, Vec<RowPlan>), ClockRefusal> {
+        let n_rows = rows.len();
+        let mut clock_state = self.clock.clone();
+        let mut rows_seen = self.rows_seen;
+        let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
+        for (ri, &row) in rows.iter().enumerate() {
+            let i = base + ri;
+            // Null arrives as NaN from extraction, so one `usable` covers
+            // null, NaN, infinity and the bound.
+            let w = weight.map(|w| w[i]);
+            let accept = all_usable(features.row(i)) && w.map(usable).unwrap_or(true);
+            let c = clock.map(|c| c.at(i));
+            // A clock below the previous row's, before the schedule decides
+            // what to do about it; the summary counts them (task 35).
+            let prev = clock_state.last_clock();
+            let below = matches!((c, prev), (Some(c), Some(p)) if c.is_before(p));
+            let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
+            // A step back the policy refuses: hand the offending delta (and,
+            // for a late row, the minimum) back so the caller can name the
+            // row and column.
+            if let Some(raw) = adv.backwards {
+                return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
+            }
+            if accept {
+                rows_seen += 1;
+            }
+            // The chunk's last row reports the coefficients; `last` says
+            // whether this run ends the chunk (`ChunkOut::run_rows`).
+            let want_coef = accept
+                && ((last && ri + 1 == n_rows)
+                    || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
+            plans.push(RowPlan {
+                ri,
+                i,
+                pending: usize::MAX,
+                d_clock: adv.d_clock,
+                reset: adv.reset,
+                blend: !adv.reset && adv.session_changed,
+                session_changed: adv.session_changed,
+                backwards: below && !adv.session_changed,
+                capped: adv.capped,
+                accept,
+                want_coef,
+                emit: true,
+                learn: true,
+                buffered: false,
+                w: w.unwrap_or(1.0),
+            });
+        }
+        Ok((clock_state, rows_seen, plans))
+    }
+
+    /// The first overrun a chunk's rows would give a window's ring past a
+    /// refusing budget -- the bytes and the spacing, as the ring would report
+    /// them -- found by replaying the chunk's schedule on shadows of every
+    /// ring ([`online_core::WindowShadow`]) before any model is touched
+    /// (docs/PLAN.md task 115 (d)). The bank refuses such a chunk whole; the
+    /// ring used to find the overrun with the chunk half learned, and the
+    /// bank then refused every call after it. `None` when no ring would
+    /// cross. `None` as well where the replay cannot see: under
+    /// `drift_action = "reset"`, whose resets depend on the residuals, and
+    /// for a snapshot that grows within the chunk. There the ring's own
+    /// refusal still stops the run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn window_prepass(
+        &self,
+        spec: &Spec,
+        cfg: &online_core::ClockCfg,
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        clock: Option<&ClockCol>,
+        session: Option<&[u64]>,
+        weight: Option<&[f64]>,
+        rows: &[usize],
+        base: usize,
+    ) -> Option<(usize, usize)> {
+        let mut live = self.window_shadows();
+        // A learned row adds at most one snapshot to a ring, and the rows a
+        // `label_delay` holds are learned in this chunk at the most.
+        let most = rows.len() + self.pending.len();
+        if !live.iter().any(|s| s.could_refuse(most)) {
+            return None;
+        }
+        if !self.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
+            return None;
+        }
+        let (_, _, mut plans) = self
+            .schedule(
+                spec, cfg, features, clock, session, weight, rows, base, false,
+            )
+            .ok()?;
+        let mut pending = self.pending.clone();
+        Self::apply_label_delay(
+            self.label_delay,
+            &mut pending,
+            &mut plans,
+            features,
+            targets,
+        );
+        // A reset rebuilds each instance's model and its residual ring, as
+        // `Instance::reset` does, so their shadows start empty.
+        let mut fresh: Option<Vec<WindowShadow>> = None;
+        for plan in &plans {
+            if plan.reset {
+                live = fresh
+                    .get_or_insert_with(|| {
+                        Stream::new(spec)
+                            .map(|s| s.window_shadows())
+                            .unwrap_or_default()
+                    })
+                    .clone();
+            }
+            // The rows `run_instance` steps the models on, with the delta it
+            // steps them with.
+            if !(plan.accept && plan.learn) {
+                continue;
+            }
+            for shadow in &mut live {
+                shadow.learn(plan.d_clock);
+                if let Some(over) = shadow.over_budget() {
+                    return Some(over);
+                }
+            }
+        }
+        None
+    }
+
+    /// A shadow of every window ring: each model's, then each instance's
+    /// residual ring.
+    fn window_shadows(&self) -> Vec<WindowShadow> {
+        let n_slots = self.n_slots();
+        self.models
+            .iter()
+            .filter_map(|(_, m)| m.window_shadow())
+            .chain(self.resid_win.iter().flatten().map(|r| r.shadow(n_slots)))
+            .collect()
+    }
+
     /// Process this stream's rows of one chunk, writing into flat per-slot
     /// buffers (docs/PERFORMANCE.md P1, P2).
     ///
@@ -2603,53 +2764,11 @@ impl Stream {
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
         // the stream exactly as it was.
-        let mut clock_state = self.clock.clone();
-        let mut rows_seen = self.rows_seen;
-        let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
-        for (ri, &row) in rows.iter().enumerate() {
-            let i = base + ri;
-            // Null arrives as NaN from extraction, so one `usable` covers
-            // null, NaN, infinity and the bound.
-            let w = weight.map(|w| w[i]);
-            let accept = all_usable(features.row(i)) && w.map(usable).unwrap_or(true);
-            let c = clock.map(|c| c.at(i));
-            // A clock below the previous row's, before the schedule decides
-            // what to do about it; the summary counts them (task 35).
-            let prev = clock_state.last_clock();
-            let below = matches!((c, prev), (Some(c), Some(p)) if c.is_before(p));
-            let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
-            // A step back the policy refuses: hand the offending delta (and,
-            // for a late row, the minimum) back so the caller can name the
-            // row and column.
-            if let Some(raw) = adv.backwards {
-                return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
-            }
-            if accept {
-                rows_seen += 1;
-                out.processed[ri] = true;
-            }
-            // The chunk's last row reports the coefficients; `last` says
-            // whether this run ends the chunk (`ChunkOut::run_rows`).
-            let want_coef = accept
-                && ((last && ri + 1 == n_rows)
-                    || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
-            plans.push(RowPlan {
-                ri,
-                i,
-                pending: usize::MAX,
-                d_clock: adv.d_clock,
-                reset: adv.reset,
-                blend: !adv.reset && adv.session_changed,
-                session_changed: adv.session_changed,
-                backwards: below && !adv.session_changed,
-                capped: adv.capped,
-                accept,
-                want_coef,
-                emit: true,
-                learn: true,
-                buffered: false,
-                w: w.unwrap_or(1.0),
-            });
+        let (clock_state, rows_seen, mut plans) = self.schedule(
+            spec, cfg, features, clock, session, weight, rows, base, last,
+        )?;
+        for plan in plans.iter().filter(|p| p.accept) {
+            out.processed[plan.ri] = true;
         }
 
         self.clock = clock_state;
@@ -2659,7 +2778,13 @@ impl Stream {
         // Rewrites the plan list into (release, ..., score this row) order,
         // and hands the released rows' values out beside it. Release depends
         // on the clock alone, so chunking cannot move a single one.
-        let released = self.apply_label_delay(&mut plans, features, targets);
+        let released = Self::apply_label_delay(
+            self.label_delay,
+            &mut self.pending,
+            &mut plans,
+            features,
+            targets,
+        );
 
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
@@ -2782,12 +2907,13 @@ impl Stream {
     ///
     /// Returns the released rows' values, indexed by `RowPlan::pending`.
     fn apply_label_delay(
-        &mut self,
+        label_delay: Option<f64>,
+        pending: &mut Vec<PendingRow>,
         plans: &mut Vec<RowPlan>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
     ) -> Vec<PendingRow> {
-        let Some(delay) = self.label_delay else {
+        let Some(delay) = label_delay else {
             return Vec::new();
         };
         let mut released: Vec<PendingRow> = Vec::new();
@@ -2827,9 +2953,9 @@ impl Stream {
                 // capped gap released them across the break (review
                 // 2026-09-12, C5). The same two rules as an accepted row's.
                 if plan.reset {
-                    self.pending.clear();
+                    pending.clear();
                 } else if plan.session_changed || plan.capped {
-                    for row in self.pending.drain(..) {
+                    for row in pending.drain(..) {
                         released.push(row);
                         out.push(replay(released.len() - 1, released.last().unwrap()));
                     }
@@ -2842,9 +2968,9 @@ impl Stream {
                 // here, not `delay` later, because the point of it is that
                 // the state is no longer about this stream. The rows waiting
                 // to teach that state go with it.
-                self.pending.clear();
+                pending.clear();
             } else {
-                for row in self.pending.iter_mut() {
+                for row in pending.iter_mut() {
                     row.remaining -= plan.d_clock;
                 }
                 // A session change and a capped gap both say the rows
@@ -2856,14 +2982,11 @@ impl Stream {
                 // the very break the clear was for
                 // (docs/REVIEW-E54-E64.md L2).
                 let ready = if plan.session_changed || plan.capped {
-                    self.pending.len()
+                    pending.len()
                 } else {
-                    self.pending
-                        .iter()
-                        .take_while(|r| r.remaining <= 0.0)
-                        .count()
+                    pending.iter().take_while(|r| r.remaining <= 0.0).count()
                 };
-                for row in self.pending.drain(..ready) {
+                for row in pending.drain(..ready) {
                     released.push(row);
                     out.push(replay(released.len() - 1, released.last().unwrap()));
                 }
@@ -2873,7 +2996,7 @@ impl Stream {
             // rides with it, so a session change or a blend reaches the
             // models in the same place in the sequence.
             let i = plan.i;
-            self.pending.push(PendingRow {
+            pending.push(PendingRow {
                 remaining: delay,
                 d_clock: plan.d_clock,
                 w: plan.w,

@@ -289,6 +289,14 @@ pub trait OnlineModel: Sized {
         None
     }
 
+    /// The window's ring as a [`crate::WindowShadow`], for a caller that
+    /// must know before it runs rows whether they would take the ring past
+    /// a refusing budget (docs/PLAN.md task 115 (d)). `None` for a model
+    /// without a window.
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        None
+    }
+
     /// Each target's own accumulated weight, with `n_eff`'s meaning --
     /// before this row's update and before its own decay, and inside the
     /// window under one -- for the per-target `min_periods` gate: the stream

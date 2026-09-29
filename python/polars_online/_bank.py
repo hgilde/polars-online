@@ -264,9 +264,12 @@ class ModelBank:
           chunk that overlaps what a loaded state has learned is refused the same
           way; :meth:`skip_learned` drops the overlap.
 
-        A refused chunk leaves the bank exactly as it was, so the corrected chunk can
-        be fed. The exception is a window past a refusing ``window_budget``
-        (``ValueError`` too, naming the ring's size and ``window_every``). That is
+        A chunk that would take a window past a refusing ``window_budget`` is
+        refused too (``ValueError``, naming the ring's size and ``window_every``),
+        found by replaying the chunk's clock schedule on the rings before any row is
+        learned. A refused chunk leaves the bank exactly as it was, so the corrected
+        chunk can be fed. The exception is a window past its budget under
+        ``drift_action="reset"``, whose resets the replay cannot foresee: that is
         found as the rows are learned, so the chunk is refused after some of it has
         been. The bank then refuses every later ``fit_predict``, ``predict`` and
         ``save`` rather than go on from there; rebuild it from its last save.

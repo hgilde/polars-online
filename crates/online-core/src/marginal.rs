@@ -1829,6 +1829,26 @@ impl OnlineModel for Marginal {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
+    /// The ring's shadow, its snapshots formed as the step forms them
+    /// (docs/PLAN.md task 115 (d)).
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        let win = self.win.as_ref()?;
+        Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
+            MarginalMoments {
+                w_sum: self.w_sum,
+                wt: self.wt.clone(),
+                qt: self.qt.clone(),
+                my: self.my.clone(),
+                syy: self.syy.clone(),
+                mx: self.mx.clone(),
+                sxx: self.sxx.clone(),
+                sxy: self.sxy.clone(),
+                rows: Some(self.rows_t.clone()),
+                lag: self.lag.as_ref().map(|l| l.moments()),
+            }
+        }))
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         // Rows held for a sharded flush were learned first: this row
         // follows them (`Marginal::step_sharded`).

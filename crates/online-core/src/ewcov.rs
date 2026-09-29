@@ -1857,6 +1857,15 @@ impl crate::OnlineModel for EwCovModel {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
+    /// The ring's shadow, its snapshots formed as the step forms them
+    /// (docs/PLAN.md task 115 (d)).
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        let win = self.win.as_ref()?;
+        Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
+            crate::Moments::of(&self.cov, 1.0)
+        }))
+    }
+
     fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.

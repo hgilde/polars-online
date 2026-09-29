@@ -618,6 +618,19 @@ impl OnlineModel for Lasso {
     fn window_over_budget(&self) -> Option<(usize, usize)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
+
+    /// The ring's shadow, its snapshots formed as the step forms them
+    /// (docs/PLAN.md task 115 (d)).
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        let win = self.win.as_ref()?;
+        Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
+            LassoMoments {
+                acc: self.acc.snapshot(1.0),
+                sel_w: self.sel_w.clone(),
+                sel_err: self.sel_err.clone(),
+            }
+        }))
+    }
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
         match self.window_weights() {

@@ -567,6 +567,22 @@ impl OnlineModel for EwClass {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
+    /// The ring's shadow, its snapshots formed as the step forms them
+    /// (docs/PLAN.md task 115 (d)).
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        let win = self.win.as_ref()?;
+        Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
+            ClassMoments {
+                n_eff: self.n_eff,
+                classes: self
+                    .classes
+                    .iter()
+                    .map(|c| crate::Moments::of(c, 1.0))
+                    .collect(),
+            }
+        }))
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.n_eff();

@@ -1733,7 +1733,7 @@ memory per ring, in MiB:
 
 | `window_budget` | when a chunk would take a ring past the cap |
 |---|---|
-| `{"refuse": 64}` | the chunk is refused, and the error names the ring's size and `window_every`. The bank then refuses every later call rather than go on from a chunk it has half learned, so rebuild it from its last save |
+| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the error names the ring's size and `window_every`; the bank goes on as it was. Under `drift_action="reset"` the overrun is found only as the rows go in, and the bank then refuses every later call, so rebuild it from its last save |
 | `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, which, like `window_every`, only ever shortens the window |
 | not given | the chunk is refused past 256 MiB |
 
