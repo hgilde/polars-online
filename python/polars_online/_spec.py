@@ -3304,6 +3304,15 @@ def deco(
     as the correlation; ``rho`` is not an ``ew_cov``'s ``corr`` over the columns,
     since the mean of a ratio is not the ratio of means.
 
+    A column whose variance is exactly zero -- constant from its first row, the
+    only way an EW variance is exactly zero -- has no standardised value, and is
+    left out of its block's sums, so ``n`` counts the columns that have one. Its
+    block reads the correlation among its other columns, and so does a pair it is
+    in; a block left with fewer than two has no ``u`` on the row. Each value keeps
+    its own weight ``W``: one with no ``u`` on a row learns nothing and does not
+    decay, while the others learn. ``loglik`` needs every column, and is null on
+    such a row.
+
     .. rubric:: Parameters
 
     ``dynamics``

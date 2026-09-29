@@ -318,7 +318,9 @@ pub use window::{
 ///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
 ///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
 ///   target moments (task 136), and in `marginal` the lag moments (task
-///   137). All are `#[serde(default)]`, so a 19 file loads: the
+///   137); `deco` keeps one weight per correlation value (task 115 (h)),
+///   where a 19 file holds one for all, read as that weight on each. The
+///   rest are `#[serde(default)]`, so a 19 file loads: the
 ///   counter starts at 0, the bank sets the share from the spec, each
 ///   target's weight starts at the shared one its gate read, and a
 ///   `corrchange` has no monitoring period. A 19 build would do none of

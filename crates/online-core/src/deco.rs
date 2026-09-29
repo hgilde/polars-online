@@ -45,6 +45,21 @@
 //! equicorrelation, and gives an alternative `u^var = 1 − (1/(n−1))·Σ(rᵢ −
 //! r̄)²`. This model offers the Lemma 2.3 form only.
 //!
+//! # A column with no spread
+//!
+//! A column whose variance is exactly zero -- one constant from its first
+//! row, the only way an EW variance is exactly zero -- has no standardised
+//! value, and is left out of its block's sums, so `n_A` above counts the
+//! columns that have one (docs/PLAN.md task 115 (h)). Its block reads the
+//! correlation among its other columns, and so does a pair it is in; a
+//! block left with fewer than two has no `u_A` on the row, and a pair with
+//! an empty side no `u_AB`. Each correlation value keeps its own weight
+//! `W`: a value with no estimate on a row learns nothing and does not
+//! decay, while the others learn. So while a column is flat, its block reads
+//! what the model without that column reads, to the bit. `loglik` needs
+//! every column, and is NaN on such a row. Until the decision, a row with
+//! any such column taught no value anything.
+//!
 //! # The log-likelihood
 //!
 //! `loglik` is the row's Gaussian log-density in standardised coordinates
@@ -200,9 +215,13 @@ pub struct Deco {
     /// The `"ew"` recursion run alongside as `"linear"`'s target; equal to
     /// `rho` under `"ew"`, and kept there too so the state is one shape.
     rho_bar: Vec<f64>,
-    /// Accumulated weight behind `rho_bar`. Not the diag's: a row whose `u`
-    /// is not finite teaches the level nothing, and must not decay it.
-    rho_w: f64,
+    /// Accumulated weight behind each `rho_bar`, one per value. Not the
+    /// diag's: a row whose `u` for a value is not finite teaches that value
+    /// nothing, and must not decay it. One weight served every value before
+    /// task 115 (h); a state written then holds a number, which
+    /// `weight_or_weights` reads as a list of one and `restore` widens.
+    #[serde(deserialize_with = "weight_or_weights")]
+    rho_w: Vec<f64>,
     /// What each `rho_bar` leaves out: the level is a pair no step is
     /// rounded off, as an `ew_cov`'s mean is ([`crate::comp`]; docs/PLAN.md
     /// task 101), so the identity `Deco::advance` states holds. Empty in a
@@ -223,7 +242,7 @@ impl Deco {
             blocks,
             rho: vec![f64::NAN; m],
             rho_bar: vec![f64::NAN; m],
-            rho_w: 0.0,
+            rho_w: vec![0.0; m],
             rho_bar_lo: vec![0.0; m],
         })
     }
@@ -271,41 +290,45 @@ impl Deco {
         2 * n_values(n_blocks) + 1
     }
 
-    /// `(S₁, S₂)` per block from the standardised row, and whether every
-    /// entry was finite.
-    fn block_sums(&self, r: &[f64]) -> (Vec<f64>, Vec<f64>, bool) {
-        let mut s1 = vec![0.0; self.blocks.len()];
-        let mut s2 = vec![0.0; self.blocks.len()];
+    /// `(S₁, S₂, n)` per block from the standardised row, over the entries
+    /// that are finite, and whether every entry was: a column with no spread
+    /// is left out of its block (see the module docs).
+    fn block_sums(&self, r: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, bool) {
+        let k = self.blocks.len();
+        let (mut s1, mut s2, mut n) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
         let mut ok = true;
         for (bi, b) in self.blocks.iter().enumerate() {
             for &i in b {
                 let ri = r[i];
-                ok &= ri.is_finite();
-                s1[bi] += ri;
-                s2[bi] += ri * ri;
+                if ri.is_finite() {
+                    s1[bi] += ri;
+                    s2[bi] += ri * ri;
+                    n[bi] += 1.0;
+                } else {
+                    ok = false;
+                }
             }
         }
-        (s1, s2, ok)
+        (s1, s2, n, ok)
     }
 
-    /// The row's equicorrelation estimates, in emission order. NaN entries
-    /// where the row says nothing (a zero-variance feature, an all-zero
-    /// block).
-    fn row_u(&self, s1: &[f64], s2: &[f64]) -> Vec<f64> {
+    /// The row's equicorrelation estimates, in emission order, from each
+    /// block's sums over the `n` columns that have a standardised value. NaN
+    /// where the row says nothing: a block with fewer than two such columns,
+    /// a pair with an empty side, an all-zero block.
+    fn row_u(&self, s1: &[f64], s2: &[f64], n: &[f64]) -> Vec<f64> {
         let k = self.blocks.len();
         let mut out = Vec::with_capacity(n_values(k));
-        for (bi, b) in self.blocks.iter().enumerate() {
-            let n = b.len() as f64;
-            out.push(if s2[bi] > 0.0 {
-                (s1[bi] * s1[bi] - s2[bi]) / ((n - 1.0) * s2[bi])
+        for bi in 0..k {
+            out.push(if n[bi] >= 2.0 && s2[bi] > 0.0 {
+                (s1[bi] * s1[bi] - s2[bi]) / ((n[bi] - 1.0) * s2[bi])
             } else {
                 f64::NAN
             });
         }
         for i in 0..k {
             for j in (i + 1)..k {
-                let d = (self.blocks[i].len() as f64 * self.blocks[j].len() as f64 * s2[i] * s2[j])
-                    .sqrt();
+                let d = (n[i] * n[j] * s2[i] * s2[j]).sqrt();
                 out.push(if d > 0.0 { s1[i] * s1[j] / d } else { f64::NAN });
             }
         }
@@ -389,13 +412,10 @@ impl Deco {
     fn read(&self, x: &[f64]) -> Vec<f64> {
         let mut r = Vec::with_capacity(x.len());
         self.standardise(x, &mut r);
-        let (s1, s2, ok) = self.block_sums(&r);
-        let m = self.rho.len();
-        let u = if ok {
-            self.row_u(&s1, &s2)
-        } else {
-            vec![f64::NAN; m]
-        };
+        let (s1, s2, n, ok) = self.block_sums(&r);
+        let u = self.row_u(&s1, &s2, &n);
+        // The density is over every column, so a row with one that has no
+        // standardised value has none (task 115 (h)).
         let loglik = if ok {
             self.loglik(&self.rho, &s1, &s2)
         } else {
@@ -423,12 +443,11 @@ impl crate::OnlineModel for Deco {
         let lam = self.cfg.decay.factor(d_clock);
         let mut r = Vec::with_capacity(x.len());
         self.standardise(x, &mut r);
-        let (s1, s2, ok) = self.block_sums(&r);
-        if ok && weight >= 0.0 {
-            let u = self.row_u(&s1, &s2);
-            if u.iter().all(|v| v.is_finite()) {
-                self.advance(&u, lam, weight);
-            }
+        let (s1, s2, n, _) = self.block_sums(&r);
+        if weight >= 0.0 {
+            // Each value learns from its own estimate, where the row has one
+            // (task 115 (h)).
+            self.advance(&self.row_u(&s1, &s2, &n), lam, weight);
         }
         self.diag.update(x, lam, weight);
         out
@@ -456,16 +475,21 @@ impl crate::OnlineModel for Deco {
         crate::check_schema(s)?;
         match &s.model {
             crate::ModelState::Deco(m) => {
-                let m = (**m).clone();
+                let mut m = (**m).clone();
                 // `blocks` is read from the state and indexes the features
                 // in `block_sums`, so it must be the cfg's own; the two
                 // correlation vectors are one per block pair (review
                 // 2026-09-18, B3).
                 let values = n_values(m.blocks.len());
+                // One weight served every value before task 115 (h).
+                if m.rho_w.len() == 1 && values > 1 {
+                    m.rho_w = vec![m.rho_w[0]; values];
+                }
                 if m.diag.k() != m.cfg.n_features
                     || m.blocks != m.cfg.resolved_blocks()
                     || m.rho.len() != values
                     || m.rho_bar.len() != values
+                    || m.rho_w.len() != values
                 {
                     return Err(crate::StateError::Invalid(
                         "deco: the state has the wrong shape".into(),
@@ -494,7 +518,9 @@ impl crate::OnlineModel for Deco {
 }
 
 impl Deco {
-    /// Move the level by one row's estimate.
+    /// Move each level by the row's estimate for it. A value whose estimate
+    /// is not finite learns nothing and keeps its weight undecayed, as the
+    /// whole row did before each value had its own (task 115 (h)).
     ///
     /// Written as `EwCov::update` writes its mean -- `ρ + b·(u − ρ)` as a
     /// pair ([`crate::comp`]), not the algebraically equal `a·ρ + b·u` -- so
@@ -503,19 +529,23 @@ impl Deco {
     /// sequence at the same halflife. The two forms differ in the last bit,
     /// and a test pins this one.
     fn advance(&mut self, u: &[f64], lam: f64, w: f64) {
-        let w_new = lam * self.rho_w + w;
-        if w_new <= 0.0 && self.rho_w <= 0.0 {
-            // A zero-weight row at zero weight: advance the clock, learn
-            // nothing, and do not divide 0/0 (hard rule 9).
-            return;
-        }
-        // A zero-weight row after a decay that took the whole history --
-        // `lam·W` is 0 from 1075 halflives on -- is the row one halflife
-        // short of it: `b` is 0 and the weight goes to 0, where the history
-        // used to be kept whole (task 115 (c), PLAN §12).
-        let b = if w_new > 0.0 { w / w_new } else { 0.0 };
         let n = self.rho_bar.len();
         for (m, &um) in u.iter().enumerate() {
+            if !um.is_finite() {
+                continue;
+            }
+            let w_old = self.rho_w[m];
+            let w_new = lam * w_old + w;
+            if w_new <= 0.0 && w_old <= 0.0 {
+                // A zero-weight row at zero weight: advance the clock, learn
+                // nothing, and do not divide 0/0 (hard rule 9).
+                continue;
+            }
+            // A zero-weight row after a decay that took the whole history --
+            // `lam·W` is 0 from 1075 halflives on -- is the row one halflife
+            // short of it: `b` is 0 and the weight goes to 0, where the
+            // history used to be kept whole (task 115 (c), PLAN §12).
+            let b = if w_new > 0.0 { w / w_new } else { 0.0 };
             let bar = &mut self.rho_bar[m];
             let lo = crate::comp::lo_slot(&mut self.rho_bar_lo, n, m);
             if bar.is_finite() {
@@ -549,9 +579,25 @@ impl Deco {
                     }
                 }
             };
+            self.rho_w[m] = w_new;
         }
-        self.rho_w = w_new;
     }
+}
+
+/// `rho_w` was one weight for every correlation value before task 115 (h);
+/// a state written then holds a number, read here as a list of one, which
+/// [`Deco`]'s `restore` widens to every value.
+fn weight_or_weights<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Weights {
+        One(f64),
+        Each(Vec<f64>),
+    }
+    Ok(match Weights::deserialize(d)? {
+        Weights::One(w) => vec![w],
+        Weights::Each(v) => v,
+    })
 }
 
 #[cfg(test)]
@@ -771,7 +817,7 @@ mod tests {
         .unwrap();
         let rho = [0.5, 0.2, 0.35];
         let r = [0.4, -1.1, 0.7, 0.25, -0.6];
-        let (s1, s2, ok) = m.block_sums(&r);
+        let (s1, s2, _, ok) = m.block_sums(&r);
         assert!(ok);
         let got = m.loglik(&rho, &s1, &s2);
 
@@ -1008,5 +1054,90 @@ mod tests {
         );
         assert_eq!(Deco::n_outputs_for(1), 3);
         assert_eq!(Deco::n_outputs_for(3), 13);
+    }
+
+    /// A column with no spread is left out of its block's sums (docs/PLAN.md
+    /// task 115 (h)): while it is constant, the model reads what the model
+    /// without it reads, `u` and `rho` to the bit, and `loglik`, which needs
+    /// every column, is NaN. No value learned on such a row before.
+    #[test]
+    fn a_column_without_spread_is_left_out_of_its_block() {
+        let mut four = Deco::new(cfg(4)).unwrap();
+        let mut three = Deco::new(cfg(3)).unwrap();
+        for (i, x) in stream(300, 3, 0.4, 7).iter().enumerate() {
+            let flat = [x[0], x[1], x[2], 2.0];
+            let got = four.step(&flat, &[], 1.0, 1.0).pred;
+            let want = three.step(x, &[], 1.0, 1.0).pred;
+            assert!(same(&got[..2], &want[..2]), "row {i}: {got:?} vs {want:?}");
+            assert!(got[2].is_nan(), "row {i}: no density without every column");
+        }
+        assert!(four.rho[0].is_finite(), "and it learned");
+    }
+
+    /// Each correlation value keeps its own weight (task 115 (h)). With a
+    /// flat column in block B, B's value has no estimate and stays NaN, while
+    /// A's learns -- as the one-block model over A's columns, to the bit, on
+    /// every row -- and the pair's learns from B's other column. Once the
+    /// column moves, every value learns.
+    #[test]
+    fn each_value_keeps_its_own_weight() {
+        let mut m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        let mut a = Deco::new(cfg(2)).unwrap();
+        for (i, row) in stream(600, 4, 0.4, 11).iter().enumerate() {
+            let mut x = row.clone();
+            if i < 300 {
+                x[3] = 2.0;
+            }
+            m.step(&x, &[], 1.0, 1.0);
+            a.step(&x[..2], &[], 1.0, 1.0);
+            assert!(
+                same(&m.rho[..1], &a.rho),
+                "row {i}: block A is its own model"
+            );
+            if i < 300 {
+                assert!(m.rho[1].is_nan(), "row {i}: B has one column with a spread");
+                assert!(
+                    i < 2 || m.rho[2].is_finite(),
+                    "row {i}: the pair learns from x2"
+                );
+            }
+        }
+        assert!(m.rho.iter().all(|v| v.is_finite()), "{:?}", m.rho);
+    }
+
+    /// A state written before task 115 (h) has one weight for every value:
+    /// it loads with that weight on each value, from the state itself (its
+    /// JSON, `rho_w` a number) and from the format a bank file holds.
+    #[test]
+    fn a_state_with_one_weight_for_every_value_loads() {
+        let mut m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        for x in stream(50, 4, 0.3, 3) {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        let mut v = serde_json::to_value(crate::OnlineModel::state(&m)).unwrap();
+        crate::window::json_edit(&mut v, "rho_w", &mut |x| *x = serde_json::json!(0.75));
+        let back =
+            <Deco as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap()).unwrap();
+        assert_eq!(back.rho_w, vec![0.75; 3]);
+        #[derive(Serialize)]
+        struct Written {
+            rho_w: f64,
+        }
+        #[derive(Deserialize)]
+        struct Read {
+            #[serde(deserialize_with = "super::weight_or_weights")]
+            rho_w: Vec<f64>,
+        }
+        let bytes = rmp_serde::to_vec_named(&Written { rho_w: 2.5 }).unwrap();
+        let read: Read = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(read.rho_w, vec![2.5]);
     }
 }

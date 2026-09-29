@@ -343,15 +343,17 @@ def test_a_null_feature_skips_the_row_and_a_zero_weight_learns_nothing():
     assert z["rho"][100] == want["rho"][100]
 
 
-def test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves():
-    """A column without spread has no standardized value, and ``deco`` learns
-    only from a row whose every standardized value is finite, so while one
-    column is constant -- here from the first row, the only way its variance
-    is exactly zero -- no block's ``rho`` moves, in its block or the other
-    (REVIEW-2026-09-18 §6; whether the other blocks should go on learning is
-    a decision, docs/PLAN.md task 115). What holds either way: ``n_eff``
-    advances, nothing NaN reaches the state, and once the column moves every
-    block learns again (task 112)."""
+def test_a_constant_column_is_left_out_and_every_other_value_learns():
+    """A column without spread has no standardized value, and is left out of
+    its block's sums (docs/PLAN.md task 115 (h), decided 2026-09-29). While
+    ``x3`` is constant -- from the first row, the only way its variance is
+    exactly zero -- block ``a`` learns as a ``deco`` over its own columns
+    does, to the bit; the pair learns from ``x2``; block ``b``, left with one
+    column that has a spread, has no ``rho``; and ``loglik``, which needs
+    every column, is null. Until the decision no value learned on such a
+    row. What held before holds still: ``n_eff`` advances, nothing NaN
+    reaches the state, and once the column moves every value learns (task
+    112)."""
     df = frame(n=900)
     i = pl.int_range(pl.len())
     df = df.with_columns(x3=pl.when(i < 300).then(pl.lit(2.0)).otherwise(pl.col("x3")))
@@ -365,12 +367,17 @@ def test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves(
     out = run(spec, df)
     n_eff = out["n_eff"].to_numpy()
     assert (np.diff(n_eff) > 0).all(), "the clock and the weight move on"
-    frozen = out["rho_a"][10:300]
-    assert frozen.n_unique() == 1, "no block learned while a column was constant"
+    alone = run(po.spec.deco("d", features=["x0", "x1"], halflife=HALFLIFE, min_periods=0.0), df)
+    np.testing.assert_array_equal(out["rho_a"].to_numpy(), alone["rho"].to_numpy())
+    flat = out[10:300]
+    assert flat["rho_b"].null_count() == flat.height, "b has one column with a spread"
+    assert flat["rho_a_b"].null_count() == 0
+    assert np.ptp(flat["rho_a_b"].to_numpy()) > 1e-3, "the pair learns from x2"
+    assert flat["loglik"].null_count() == flat.height, "no density without every column"
     for col in ("rho_a", "rho_b", "rho_a_b"):
         late = out[col][400:].to_numpy()
         assert np.isfinite(late).all(), col
-        assert np.ptp(late) > 1e-3, f"{col} learns again once the column moves"
+        assert np.ptp(late) > 1e-3, f"{col} learns once the column moves"
     assert out["loglik"][400:].is_finite().all()
 
 

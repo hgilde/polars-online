@@ -65,6 +65,13 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **`deco` goes on learning past a column with no spread.** A column that
+  has been constant from its first row has no standardised value. It is
+  now left out of its block's sums, so its block reads the correlation
+  among its other columns, and every other value learns as before. Each
+  correlation value keeps its own weight, and `loglik` is null on such a
+  row. Before, a row with any such column taught no value anything. A
+  saved state loads with its one weight on every value.
 - **`corrchange`'s long-run variance uses its paper's kernel.** Lag `l` is
   weighted `1 − l/γ`, as Wied, Krämer and Dehling (2012, Appendix A.1)
   write it, where it was Newey–West's `1 − l/(γ+1)`. The `"monitor"`

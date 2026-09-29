@@ -4778,7 +4778,17 @@ decision it needs, with a recommendation where there is one.
       decision. **Decided 2026-09-29** (the user: "115.4 your
       recommendation"): each correlation value keeps its own weight, a
       column with no standardized value is left out of the row's sums, and
-      `loglik` is null on such a row. Also (review 2026-09-28, pre-existing): under `dynamics =
+      `loglik` is null on such a row. **Built 2026-09-29:** while a column is
+      flat its block reads what the model without that column reads, `u`
+      and `rho` to the bit, and a block's value is the one-block model over
+      its own columns on every row
+      (`a_column_without_spread_is_left_out_of_its_block`,
+      `each_value_keeps_its_own_weight`,
+      `test_a_constant_column_is_left_out_and_every_other_value_learns`);
+      a value with no estimate neither learns nor decays, the rule the
+      whole row had. `rho_w` is one per value in schema 20, and a 19
+      state's single weight reads as that weight on each. Also (review
+      2026-09-28, pre-existing): under `dynamics =
       "linear"` a zero-weight row moves `rho` (`deco.rs`: `(1-α-β)·bar +
       α·u + β·rho` is recomputed whether or not `b` is 0), against hard
       rule 9; whether the linear form should hold `rho` still on such a row
