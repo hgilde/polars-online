@@ -160,6 +160,18 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **`ModelBank.fit` warns about row order for `huber` and `lasso`.** A fit
+  whose query does not fix its row order raises `OrderNotGuaranteedWarning`,
+  except where the state it leaves cannot depend on the order. `huber` and
+  `lasso` at `lam=1.0` were exempt, and neither qualifies. `huber` weighs
+  each row by the fit before it, so once it down-weights a row its sums
+  depend on the order: with one row in ten lifted by 5, a shuffle moved its
+  coefficients by 1.05e-02. The exemption had been measured on rows it never
+  down-weighted. `lasso`'s path points commute, but it selects its penalty
+  by out-of-sample error, and shuffles moved the penalty it selected from
+  0.01 to 0.1 and to 0.001. Both now warn, as the other models already did;
+  `ewridge` and `rls` stay exempt.
+
 - **`to_json` exports a bank with a column that never held a value.** The
   data summary starts each column's `min` and `max` at infinity, and a
   column no row gave a value keeps them: a target null on every row, or

@@ -37,6 +37,8 @@ are.
 | [24. A wide `marginal` through the bank](#24-a-wide-marginal-through-the-bank-the-cost-that-was-not-the-models-task-124-2026-09-25) | a wide spec's call costs far more than its model | |
 | [25. A wide `marginal` split across the pool](#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25) | a wide `marginal` spec, and whether `shards` splits its flush | |
 | [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
+| [27. `marginal`'s shared feature moments](#27-marginals-shared-feature-moments-e72-task-125-2026-09-29) | you keep many targets' pairs in one `marginal`, and want what `feature_moments="shared"` saves | |
+| [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 
 ## Reading this document
 
@@ -3404,3 +3406,116 @@ kept the one-target pass inside that larger function, where it ran at 1.7
 times `pair_kernel`'s time on the same work. In a function of its own that
 takes the mixes by value, as `pair_kernel` does, it runs level with it.
 
+## 28. The README's numbers, re-measured (2026-09-29)
+
+The README's throughput tables dated from 2026-09-06 and its Parallelism
+figures from 2026-09-04, and §26 had already measured `ewridge` 35–37%
+below the first. For the README's rewrite (docs/PLAN.md task 138) each was
+measured again, on an Apple M4 Pro at `5e96018`. The machine was shared:
+another project's jobs held from one to eleven of its fourteen cores, and
+each run below says what ran beside it.
+
+### The benchmark
+
+`scripts/benchmark.py --markdown`, 200k rows per run, best of 3. Run 1 went
+beside a load average of 21, most of it one process on eleven cores. Run 2
+went beside one process on about one core, and the README carries it:
+
+| configuration | notes | the README before (2026-09-06) | run 1 | run 2, the README now |
+|---|---|---:|---:|---:|
+| ew_ridge k=5 | 1 target, 1 halflife | 10,306,024 | 5,268,987 | 5,548,684 |
+| ew_ridge k=20 | 1 target, 1 halflife | 4,122,355 | 2,334,814 | 2,530,123 |
+| ew_ridge k=50 | 1 target, 1 halflife | 1,040,742 | 580,703 | 599,466 |
+| ew_ridge k=20, 1 target(s) | 1 halflife |  | 2,415,854 | 2,502,423 |
+| ew_ridge k=20, 10 target(s) | 1 halflife | 2,340,621 | 1,324,558 | 1,426,222 |
+| ew_ridge k=20, 1 halflife(s) | 1 target |  | 1,747,854 | 1,832,817 |
+| ew_ridge k=20, 5 halflife(s) | 1 target | 2,355,548 | 1,292,750 | 1,355,982 |
+| ew_ridge | k=20, 1 target |  | 2,403,837 | 2,523,016 |
+| rls | k=20, 1 target | 1,843,129 | 1,544,606 | 1,573,563 |
+| kalman | k=20, 1 target | 2,122,805 | 1,859,054 | 1,876,826 |
+| lasso | k=20, 1 target | 2,060,329 | 1,561,692 | 1,629,739 |
+| huber | k=20, 1 target | 4,175,881 | 3,154,844 | 3,267,509 |
+| ftrl | k=20, 1 target | 6,006,156 | 3,772,668 | 3,873,282 |
+| ew_ridge + conformal | k=20, 90% interval | 4,097,559 | 2,404,888 | 2,472,378 |
+| sgd | k=20, squared loss | 8,961,276 | 7,870,414 | 8,423,373 |
+| sgd, simplex | k=20, coef >= 0, sum 1 | 2,481,671 | 2,189,915 | 2,288,779 |
+| pa | k=20 | 11,150,059 | 7,506,920 | 8,284,518 |
+| kalman + revert | k=20, revert_halflife | 1,844,755 | 1,638,571 | 1,677,506 |
+| ew_cov | k=20: mean, std, corr (230 statistics) | 2,117,751 | 1,868,754 | 1,655,993 |
+| ew_cov, mahal | k=20: mean, mahal, mahal_q0.99 | 750,903 | 672,968 | 692,690 |
+| ew_class, full | k=20, 3 classes (QDA) | 495,968 | 457,864 | 466,466 |
+| ew_class, shared | k=20, 3 classes (LDA) | 577,082 | 513,267 | 531,384 |
+| ew_class, diagonal | k=20, 3 classes (naive Bayes) | 2,824,922 | 2,322,740 | 2,448,700 |
+| kmeans | 4 features, K=8 | 6,118,711 | 4,409,491 | 4,590,376 |
+| kmeans | k=20, K=8 | 3,103,963 | 2,338,365 | 2,383,197 |
+| micro | 4 features, eps=1 | 15,060,666 | 8,441,668 | 8,799,815 |
+| seqtest | sign of one column | 22,436,196 | 14,461,882 | 14,919,853 |
+| deco | k=20, ew dynamics | 2,666,809 | 2,048,008 | 2,093,753 |
+| deco, blocks | k=20 in 4 blocks | 1,892,836 | 1,515,718 | 1,563,248 |
+| hmm | 4 features, K=2 | 1,343,086 | 1,165,181 | 1,182,841 |
+| hmm | k=20, K=2 | 353,258 | 314,599 | 325,937 |
+| corrchange, monitor | 4 features, horizon 500 | 388,557 | 436,882 | 449,526 |
+| corrchange, window | 4 features, window 100, permute every 500 | 187,407 | 171,182 | 173,711 |
+| bocpd | 4 features, diag, max_run 200 | 1,009,075 | 850,871 | 884,387 |
+| bocpd | 4 features, diag, max_run 20 |  | 866,249 | 884,622 |
+| bocpd, gaussian | 4 features, full covariance, max_run 200 | 585,180 | 548,885 | 568,724 |
+| rcov | 4 features, kernel, groups of 1000 | 3,864,849 | 3,158,578 | 3,385,427 |
+| ew_cov, lags | k=20: mean, cov, lags 1-5 | 1,148,104 | 1,058,405 | 1,123,565 |
+
+**Between the two runs, rows moved by −11.4% to +10.4%**, and not all one
+way: `ew_cov`'s first row was faster under the heavier load. That is the noise
+here, so read a single row to about a tenth.
+
+**The drop since 2026-09-06 is larger than the noise.** `ewridge` at k=20
+went from 4.12M rows a second to 2.53M, and `micro` from 15.1M to 8.8M.
+§26 measured 0.10.0's wheel at 2.67M for the first, so most of the drop
+came before 0.11. It is not bisected here.
+
+**One halflife of the grid block is not the k=20 row.** The grid block runs
+at a halflife of 500, where every other single-halflife row uses 1,000.
+The default solve cadence solves once the weight learned since the last
+solve reaches `ln 2 / 50` of the fit's, which at unit weights is every
+`halflife / 50` rows: twice as often at 500. So that row reads 1,832,817
+against 2,530,123.
+
+### The Parallelism workloads
+
+`scripts/parallel_bench.py`, new in this pass, re-runs §12's three
+workloads. §12's inputs were not kept, so these are generated in the same
+shapes: interleaved groups on one clock, ten sessions, a linear target.
+The comparison with §12 is of workloads, not of rows.
+
+| workload | §12, 2026-09-04 | run 1 | run 2, the README now |
+|---|---:|---:|---:|
+| the ticks grid, six specs over 2.56M rows, 1 bank thread | 12.3 s | 32.74 s | 32.69 s |
+| the same, 14 bank threads | 2.22 s | 4.93 s | 4.92 s |
+| eight single-group specs, k=20 over 300k rows: one bank, one at a time | 130 ms, 515 ms | | 183 ms, 726 ms |
+| 12M rows over 64 groups, one spec of four features and two halflives, 14 Polars and 14 bank threads | 2.64 s, 1.14 GB | | 1.90 s, 0.85 GB |
+| the same, 4 Polars threads | 2.65 s, 0.76 GB | | 2.06 s, 0.61 GB |
+
+Run 1 went beside about two busy cores and run 2 beside five to eleven,
+and the grid came out within 0.2% in both. The eight-spec and 12M-row rows
+ran only beside the heavier load, so their parallel figures bound the time
+from above. The memory is the peak footprint `/usr/bin/time -l` reports,
+as in §12.
+
+The same session's `scripts/scaling_bench.py` read 638,305, 1,220,675,
+2,342,677, 4,244,422 and 4,911,878 rows a second at 1, 2, 4, 8 and 14
+threads, 7.7×, beside about one busy core. The README keeps §26's quieter
+8.4×.
+
+### The wheel's size
+
+0.12.0's wheels, from its GitHub release, and their contents unpacked:
+
+| wheel | to download | installed |
+|---|---:|---:|
+| macOS arm64 | 7.9 MB | 25.6 MB |
+| macOS x86_64 | 9.1 MB | 29.5 MB |
+| Linux aarch64, glibc | 8.1 MB | 26.5 MB |
+| Linux x86_64, glibc | 9.4 MB | 32.1 MB |
+| Linux x86_64, musl | 9.7 MB | 32.7 MB |
+| Windows x64 | 10.1 MB | 37.0 MB |
+
+The README's "about 19 MB to download and 59 MB installed" was measured on
+2026-09-02.

@@ -207,17 +207,18 @@ class OrderNotGuaranteedWarning(UserWarning):
     ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
     **Not raised by** :meth:`ModelBank.fit` **when every spec is an accumulator
-    with no decay** -- ``ewridge``, ``rls``, ``huber`` or ``lasso`` at
-    ``lam=1.0``, no ``window``, no session, no drift reset. Those sums commute,
+    with no decay** -- ``ewridge`` or ``rls`` at ``lam=1.0``, no ``window``, no
+    session, no drift reset. Those sums commute,
     so the state after that fit is the same whatever the order (to rounding:
     3.3e-16 over 200 rows), and ``fit`` keeps only the state. The exception is
     that narrow on purpose. It does not extend to ``fit_predict_batches`` or to
     the plan form, whose predictions are out-of-sample and so move with the
     order even where the coefficients do not (1.33 on the same rows); nor to a
     model whose update does not commute, which is every other one -- ``sgd``,
-    ``pa``, ``ftrl`` and ``quantile`` all differ materially with no decay at
-    all, so "no halflife" is not by itself a reason to expect order not to
-    matter. A spec option the check does not recognise counts as unsafe, so a
+    ``pa``, ``ftrl``, ``quantile`` and a reweighting ``huber`` all differ
+    materially with no decay at all, and ``lasso`` selects its penalty by an
+    out-of-sample error, so "no halflife" is not by itself a reason to expect
+    order not to matter. A spec option the check does not recognise counts as unsafe, so a
     key added later cannot quietly become exempt.
     """
 
@@ -450,12 +451,20 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 #: Models whose fit is an accumulation, so the state after a ``fit()`` is the
 #: same whatever order the rows arrived in -- **to rounding, never to the
 #: bit**: the Gram sums commute mathematically but not in floating point.
-#: Measured over 200 rows with no decay: ``ewridge`` 3.3e-16, ``rls`` 8.9e-16,
-#: ``huber`` 6.7e-16, ``lasso`` 7.8e-16. Every other model moves materially
-#: even with no decay at all, because its update is not commutative --
-#: ``sgd`` 5.9e-03, ``pa`` 5.1e-02, ``ftrl`` 3.3e-02, ``quantile`` 2.8e-03 --
-#: so "no halflife" is not on its own a reason to expect order not to matter.
-_ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls", "huber", "lasso"})
+#: Measured over 200 rows with no decay: ``ewridge`` 3.3e-16, ``rls`` 8.9e-16.
+#: Every other model moves materially even with no decay at all, because its
+#: update is not commutative -- ``sgd`` 5.9e-03, ``pa`` 5.1e-02, ``ftrl``
+#: 3.3e-02, ``quantile`` 2.8e-03 -- so "no halflife" is not on its own a
+#: reason to expect order not to matter. ``huber`` and ``lasso`` were listed
+#: here until 2026-09-29 (docs/PLAN.md task 139). ``huber`` read 6.7e-16 on
+#: rows no residual reached ``delta * sigma``, where every weight is 1; once
+#: it reweights, the fit before each row sets that row's weight, and with one
+#: row in ten lifted by 5 a shuffle moved its coefficients by 1.05e-02.
+#: ``lasso``'s path points commute to rounding, but ``lam_selected`` ranks
+#: them by out-of-sample error, and on the same rows shuffles moved the
+#: penalty it selects from 0.01 to 0.1 and to 0.001
+#: (``tests/test_order_hazards.py``).
+_ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls"})
 
 #: Spec keys that change the *path* a fit takes, with the only values that
 #: leave it order-free. Measured on the same rows: ``window`` 8.3e-03,
@@ -530,12 +539,6 @@ _ORDER_FREE_ANY = frozenset(
         "coef_prior",
         "solve_every",
         "max_rows_between_solves",
-        "huber_delta",
-        "cd_tol",
-        "l1_ratio",
-        "lasso_path",
-        "max_cd_iters",
-        "select_halflife",
         "emit_drift",
         "drift_delta",
         "drift_threshold",

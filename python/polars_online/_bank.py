@@ -599,16 +599,18 @@ class ModelBank:
         (:meth:`fit_predict_batches` says more).
 
         **With one exception, and it is this method's alone.** A fit whose every
-        spec is an accumulator with no decay -- ``ewridge``, ``rls``, ``huber`` or
-        ``lasso`` at ``lam=1.0``, no ``window``, no session, no drift reset --
-        reaches the same coefficients whatever order the rows arrived in, because
-        its sums commute. Measured to rounding, not to the bit: 3.3e-16 over 200
-        rows. Since :meth:`fit` returns nothing and keeps only the state, the
-        order genuinely does not matter there, and no warning is raised. It still
-        is for :meth:`fit_predict_batches` over the same specs, whose predictions
-        are out-of-sample and so move with the order (1.33 on those same rows),
-        and for every model whose update does not commute -- ``sgd``, ``pa``,
-        ``ftrl`` and ``quantile`` differ materially with no decay at all.
+        spec is an accumulator with no decay -- ``ewridge`` or ``rls`` at
+        ``lam=1.0``, no ``window``, no session, no drift reset -- reaches the same
+        coefficients whatever order the rows arrived in, because its sums commute.
+        Measured to rounding, not to the bit: 3.3e-16 over 200 rows. Since
+        :meth:`fit` returns nothing and keeps only the state, the order genuinely
+        does not matter there, and no warning is raised. It still is for
+        :meth:`fit_predict_batches` over the same specs, whose predictions are
+        out-of-sample and so move with the order (1.33 on those same rows), and
+        for every model whose update does not commute -- ``sgd``, ``pa``,
+        ``ftrl``, ``quantile`` and a reweighting ``huber`` differ materially with
+        no decay at all -- or that selects by an out-of-sample error, as
+        ``lasso`` does its penalty.
 
         .. code-block:: python
 
@@ -817,6 +819,14 @@ class ModelBank:
         ``resets``
             Rows at which ``session_gap = "reset"`` or ``on_clock_reset =
             "reset_state"`` restarted the stream.
+        ``settled_frac``, ``error_inflation``
+            The warm-up readings of the stream's first instance after the last row
+            (docs/WARMUP-AND-CONVERGENCE.md): how full the decay window is, and the
+            largest noise-gate ratio over its slots. Null where the model has no
+            such reading.
+        ``min_support_coef``, ``min_support_coef_feature``, ``n_coef``
+            The smallest coefficient's data share, the feature it belongs to, and
+            the coefficients per target, likewise.
 
         ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one the bank
         has not got), ``group`` to one group; a group never seen gives an empty frame.
@@ -954,16 +964,9 @@ class ModelBank:
             var_y = g["target_vars"][0]
             r2 = 1 - (var_y - beta[1:] @ g["comoments"][1:, 1:] @ beta[1:]) / var_y
 
-        Under a ``window`` everything here is the window's: the accumulators the fit
-        ``coef`` reports was solved from, so ``po.gram.solve`` on it is that fit. The
-        target moments are the exception, since the window's snapshots do not carry
-        them: ``target_means``, ``target_vars`` and ``target_n_kish`` are ``None``
-        there rather than the whole history's. A state saved before task 38 has none
-        of them either; ``n_kish``, ``target_means``, ``target_vars`` and
-        ``target_n_kish`` are ``None`` there for that state's whole remaining life.
-        The weight sums behind them cannot be replayed, and a ``sum(w**2)``
-        accumulated from the resume point against an ``n_eff`` from the whole stream
-        would report an effective size too large by the length of the history.
+        Under a ``window`` everything here is the window's, the target moments
+        included, since the window's snapshots carry them too, so ``po.gram.solve``
+        on it fits the window as it stood after the last row.
 
         The two moment forms differ, and mixing them gives a silently wrong answer
         rather than an error, so the bridging identities are worth stating. For a

@@ -5767,6 +5767,129 @@ is not, since the model alone has `0.0` and `3.5` there.
       lags case). A state's snapshots are now checked for shape on load, the
       pair moments' included, which were not.
 
+- [x] 138. **README rewrite against the current API, requested 2026-09-29.**
+      The user's words: "After the gate commit rewrite the readme after
+      analyzing the current state of the api and features. Be sure to
+      follow phrasing and writing guidelines". Task 89's rewrite is six
+      days old, and 363 lines have come in since, one task at a time. So
+      this pass runs `docs/WRITING.md` §6 again, against the code as it
+      stands at `5e96018`.
+
+      *Measured before* (a counting script to §6's rules: paragraph
+      boundaries, a list item its own paragraph, a bold rule split from the
+      sentence after it, a sentence allowed to open with a lowercase name):
+      13,282 prose words, 709 sentences averaging 18.7 words, 34 of 35+
+      words and 2 of 45+, no cost words (the one hit is "the
+      point-biserial correlation"), 43 tables, 61 python blocks, 10
+      top-level sections.
+
+      *The map.* The ten sections stay; three pieces move, each to the
+      section whose heading it serves (§2), and `←` says where from.
+
+    | section | subsections |
+    |---|---|
+    | Introduction | The idea · Four words · Install · A first fit · What you can rely on |
+    | How a bank sees a stream | What a spec names · Time and decay · A hard window (← `ew_cov`'s section: five models take `window`, and a reader of `ewridge`, `lasso`, `ew_class` or `marginal` never looked there; it sits beside the decay it is compared with) · A local fit along any feature · Convergence without a decay · Groups · Weights · Warm-up · Labels that arrive late · Nulls, and three ways to hold a row back · Row order and the two guarantees · Series that tick at their own times (← Running a bank, whose heading is the three ways to run one: this is how several series become one stream, beside `embargo`) |
+    | Running a bank | As a query · In a loop (+ `ModelBank.fit` and `fit_predict_batches`, which the memory table uses before any section shows them) · Output as Arrow · Outside a live Python process |
+    | Saving, loading and serving | Save and load · Serving without learning · What a state file holds · Reading a state without this library |
+    | Reading the fit | Coefficients · Output field names · The running sums behind a fit · One row per finished group (its accumulate-only pass ← `bank.fit`) · Reading a correlation matrix |
+    | Diagnostics, selection and evaluation | Per-row diagnostics (+ which models take them: the ten that predict a target; + each switch's tuning keyword) · Conformal intervals · Evaluating an output frame · Evaluating a stream too large to hold · Data whose truth is known |
+    | Models | the two tables · Linear models · Moments and correlation (`ew_cov` without `window`, which it now links to) · Clustering and classification · Sequential tests and regimes |
+    | Performance | Throughput (re-measured: the tables date from 2026-09-06) · Memory: which calls stream · Tuning memory with Polars' own settings · Chunk size · Parallelism · Against scikit-learn |
+    | Scope and integrations | What this is not · Pathway · Databases: DuckDB and ADBC |
+    | Versions, testing and development | Versioning and the Polars pin · Testing · Development · License |
+
+      *Constraints held.* Every anchor another file links to keeps its
+      heading text (`llms.txt`: introduction, how-a-bank-sees-a-stream,
+      models, against-scikit-learn; `docs/RUNNER.md`, `docs/REGIMES.md`,
+      `docs/OUTPUTS.md`, `docs/PERFORMANCE.md`, `docs/README.md` and
+      `scripts/outputs_doc.py` use eighteen more). Every `####` under
+      *Models* is a model, with its *API:* and *Rust:* lines, and the model
+      table keeps its header. Every python block runs in the namespace
+      `tests/test_production_hardening.py` gives it.
+
+      *The analysis.* Four agents checked the model families, Performance,
+      Scope and Versions against the code, and every finding acted on was
+      re-derived first; the introduction and the shared sections were
+      checked by hand. What the README said that the code does not:
+
+    | where | it said | the code |
+    |---|---|---|
+    | the model table | `huber` and `quantile` "solve", so converge to the batch answer in any row order | each row's weight comes from the fit before it: 9.2e-03 between two orders with outliers. A sixth kind, *reweight*, is theirs |
+    | the model table, `ewridge` | halflives are fitted from the same running sums | each halflife keeps its own |
+    | the accumulators | every one is a mean, and every second moment centred | `rls`, `ftrl` and adagrad keep decayed sums; `rls` a raw one |
+    | `ftrl` | river's no-halflife recursion as the rule, "agrees with river to 1e-12" | the penalty scale `m` under a halflife (C24); river and Vowpal Wabbit hold without one |
+    | `holt` | "let `emit_selected` choose" against a real model | `emit_selected` ranks one spec's own slots; `seqtest(a=, b=)` compares two specs |
+    | `sgd` | `l2` on every coefficient; `coef_min=inf` for no bound | not on the intercept; `-inf`, and `inf` is refused |
+    | `quantile` | the band's inside is `\|r\| ≤ h`; no warm-up | `\|r\| < h`; least-squares rows until three per coefficient |
+    | `kalman` | the halflife drives the noise estimate | and the standardization |
+    | `deco` | sums over every feature; one weight | a column with no spread left out; a weight per value; `rho` held at weight 0 under `"linear"` |
+    | `marginal` | `n_serial`'s bracket as one rule; one search per pair; 4.6× with lags; no `window` | three rules; one per feature; 4.6× with no cross lags; `window`, `window_lags` |
+    | `rcov` | `preavg` over `⌊θ√n⌋` less the bias | that is `psd=False`; the default is `⌈θ·n^0.6⌉` with no bias term |
+    | `ew_class` | "full" factorizes every class every row, 0.9M rows/s at 400k rows | only the row's class, outside a window; the figures were 200k rows, before the caching |
+    | `micro` | the nearest summary that can take the row; ARI 1.000 "with the `eps` above" | the nearest established one, then the nearest other; `eps` per shape |
+    | `corrchange` | size and power "held to" WKD's tables; `γ = 0` "keeps the size" | measured against them (0.031, 0.552), tested near 0.05; 0.04 to 0.09 |
+    | `hmm` | `state` the most probable filtered state; one limitation | the argmax of `p1`; the docstring's two |
+    | `bocpd` | `prune_below` makes it finite, flat at the default; the run length dates a correlation break in one to three rows | `max_run` bounds a stationary stream; 98 rows under `"gaussian"`, never under `"diag"` |
+    | `kmeans`, `micro` | a quiet feature counts 58 times its history | `2^(20/8)/0.1` is 56.6 |
+    | the output records | `ewridge`'s fields without `settled_frac`, `withheld_reason`, `support_coef`; `summary()` without its five readiness columns | both, since 0.9.0 |
+    | the grammar | no `__l{lambda}` | lasso's path |
+    | Throughput, Parallelism | 2026-09-04 and -06 figures | `ewridge` k=20 4.12M → 2.53M; the grid 12.3 s → 32.7 s (PERFORMANCE §28) |
+    | Install | 19 MB to download, 59 installed | 8–10 and 26–37 (0.12.0's wheels) |
+    | Testing | 976 and 3,265 tests; numpy and river as oracles | 1,149 and 3,597; eight Python libraries and `faer` |
+    | Versions | `~=0.9.0`; a cap is a patch *and* narrowing is breaking | `~=0.12.0`; narrowing is breaking but for the cap |
+    | Scope | the Pathway operator runs in a pipeline; ADBC's trap is a second query | the example runs the operator over batches; re-executing a cursor, both queries wrong |
+
+      Missing features, now documented: `ModelBank.fit` and
+      `fit_predict_batches`, `closed_groups(drop=)`, the diagnostics' tuning
+      keywords and which models take the diagnostics, `po.eval.unpack`,
+      `po.corr.equicorr_row`, `window` on five models, `window_lags`,
+      `serial_rule="bartlett"`, `strict_binary`, `select_halflife`, `p0`,
+      `share_p`, `max_clusters`, `update_every`, `psd`, `transition_prior`,
+      the Gram's target moments under a window. Docstrings with the same
+      stale facts were corrected with them: `ewridge`, `sgd`, `holt`,
+      `ew_class`, `marginal`, `deco`, `corrchange`, `bocpd` (its example
+      dated a run on a global row index across interleaved groups),
+      `ModelBank.gram` and `ModelBank.summary`, and two comments on `rcov`'s
+      window. `huber`'s and `lasso`'s order exemption is task 139.
+
+      **Done 2026-09-29.** Measured the same way before and after, on
+      paragraph boundaries:
+
+    | measure | before | after |
+    |---|---:|---:|
+    | prose words | 13,282 | 14,776, the added facts |
+    | sentences of 45+ words | 2 | 0 |
+    | sentences of 35+ words | 34 | 2, both 35 words |
+    | mean sentence, in words | 18.7 | 18.1 |
+    | cost words | 0 (one false hit) | 0 (the same false hit) |
+    | tables, as rendered | 43 | 48 |
+    | top-level sections | 10 | 10 |
+    | python blocks, all running | 61 | 61 |
+
+      Accounted as a diff: every number, backticked name and link the old
+      text had is in the new, in PERFORMANCE §12 or §28, or replaced by a
+      measurement or a correction named above. `scripts/doc_structure.py`
+      passes on every tracked file, and GitHub's renderer shows 48 tables,
+      88 code blocks and every in-page link landing.
+
+- [x] 139. **`ModelBank.fit`'s order exemption, narrowed to `ewridge` and
+      `rls`.** Found by task 138's analysis. `fit` skips
+      `OrderNotGuaranteedWarning` where the state it leaves cannot depend on
+      the row order, and `huber` and `lasso` at `lam=1.0` were on that
+      list. `huber`'s 6.7e-16 was measured on rows no residual reached
+      `delta * sigma`, so its reweighting never ran: with one row in ten
+      lifted by 5, a shuffle moves its coefficients by 1.05e-02. `lasso`'s
+      path points commute to rounding, but `lam_selected` ranks them by
+      out-of-sample error, and shuffles moved the penalty it selects from
+      0.01 to 0.1 and to 0.001. Tests first: both specs join
+      `test_what_is_not_order_free`, which failed for both on the old list,
+      and two premise tests show the reweighting firing on dozens of rows
+      and the selection moving while every coefficient holds to 1e-12. The
+      list, its measurement comment, the warning's docstring, `fit`'s
+      docstring, the README and ARROW-SOURCES say the same now, and the
+      keys only those two models take left the table.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

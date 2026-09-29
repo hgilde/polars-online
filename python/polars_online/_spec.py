@@ -573,8 +573,9 @@ def ewridge(
     The model keeps the exponentially weighted means of ``z z'`` and ``z y``, with
     ``z`` the features and the intercept in front, and solves the ridge normal
     equations from them on a schedule. The sums are the whole state, so several
-    ridge values, feature subsets and halflives are fitted from the same sums at
-    almost no extra cost, and the sums can be read back
+    ridge values and feature subsets are fitted from the same sums at almost no
+    extra cost (a list of halflives keeps one set of sums each), and the sums can
+    be read back
     (:meth:`polars_online.ModelBank.gram`), pooled and solved offline
     (:mod:`polars_online.gram`). Reach for it first. The other regressions here
     each cover a case it does not: coefficients that drift (:func:`kalman`),
@@ -2033,7 +2034,8 @@ def sgd(
         A cap on the gradient's magnitude. Default ``1e3``, not off, because
         ``poisson`` needs it: ``p = exp(eta)``, so a row that pushes ``eta`` up
         makes the next gradient exponentially larger and a constant rate diverges
-        within a few thousand rows. It never binds for an identity-link fit.
+        within a few thousand rows. It does not bind at ordinary scales for an
+        identity-link fit.
     ``scale_features``
         Take the step in standardized coordinates, which is the difference between
         one learning rate for every column and one per scale. Default ``False``.
@@ -2264,8 +2266,8 @@ def holt(
     The one model that takes no features -- the forecasting baseline a
     feature-based model should have to beat. If a regression cannot outperform
     "the series is going up at about this rate", its features are not earning
-    their place; run it in the same bank and compare ``sigma``, or let
-    ``emit_selected`` choose.
+    their place; run it in the same bank and compare the two ``sigma``, or let a
+    :func:`seqtest` with ``a`` and ``b`` say which predicts closer.
 
     .. rubric:: The fit
 
@@ -2446,7 +2448,7 @@ def kmeans(
         halflives of a feature going quiet -- a flag that stops firing, a
         sensor at rest -- a million at twenty, and the row on which the
         feature moves again is then infinitely far from every centre; floored,
-        the weight grows as ``2^(Q/8) / scale_floor``, 58 at twenty. The
+        the weight grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The
         long-run variance is tracked at eight times the halflife, a feature at
         a time, with each row's weight and deviation clipped against it and
         its start the medians of the feature's first five rows, so a row at
@@ -2609,7 +2611,7 @@ def micro(
         halflives of a feature going quiet -- a flag that stops firing, a
         sensor at rest -- a million at twenty, and the row on which the
         feature moves again is then infinitely far from every centre; floored,
-        the weight grows as ``2^(Q/8) / scale_floor``, 58 at twenty. The
+        the weight grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The
         long-run variance is tracked at eight times the halflife, a feature at
         a time, with each row's weight and deviation clipped against it and
         its start the medians of the feature's first five rows, so a row at
@@ -2757,9 +2759,10 @@ def ew_class(
         The shape: ``"full"`` (the default), a covariance per class; ``"shared"``,
         the weight-averaged one, so the decision boundaries are linear; or
         ``"diagonal"``, the variances alone, which cannot see a correlation.
-        ``"full"`` costs one ``k x k`` Cholesky per class per row (per class per
-        row under a ``window`` too, since a windowed covariance moves every row);
-        ``"shared"`` factorizes once per row.
+        ``"full"`` keeps each class's Cholesky factor and refactors only the class
+        a row teaches, one ``k x k`` factorization per learned row; under a
+        ``window`` every class's covariance moves on every row, so every class is
+        refactored. ``"shared"`` factorizes once per row.
     ``precision_prior``
         A ridge on every class covariance, in the features' units, so the first
         rows of a class, whose sample covariance is singular, are scored with a
@@ -3085,8 +3088,8 @@ def marginal(
         ``split_gain_t`` as a ranking, not a p-value: the cut was chosen by
         maximising over ``bins - 1`` candidates, which the statistic does not
         know. It uses ``n_serial`` in place of ``n_kish`` when ``serial_rule``
-        gives one. It costs ``O(bins)`` of state per pair and one binary search
-        per pair per row.
+        gives one. It costs ``O(bins)`` of state per pair, one search of the
+        edges per feature per row, and a constant per pair.
 
         The edges are fixed once and never move, so a bin means the same thing for
         the life of the stream. ``bin_edges`` sets them outright, as a list per
@@ -3221,7 +3224,8 @@ def marginal(
 
     As every builder does (:mod:`polars_online.spec`), and ``ValueError`` naming
     the problem for ``bin_edges`` that miss or add a feature, for ``bins`` beside
-    ``bin_edges``, for ``lags`` or ``bins`` beside ``window``, for ``bin_budget``
+    ``bin_edges``, for ``bins`` beside ``window``, for ``lags`` beside ``window``
+    without ``window_lags``, for ``bin_budget``
     without bins or not above 0, for bins past ``bin_budget``, and for ``shards``
     below 1 or a string other than ``"auto"``.
     """
@@ -3380,8 +3384,9 @@ def deco(
 
     With ``K`` named blocks the first two become ``u_<A>`` per block then
     ``u_<A>_<B>`` per pair, and ``rho_*`` likewise, with one ``loglik`` over all
-    of them. ``u`` and ``loglik`` are null until every feature has a positive
-    pre-row variance.
+    of them. ``u`` is null on a row where fewer than two of its block's columns
+    have a positive pre-row variance, and ``loglik`` on a row where any column
+    has none.
 
     .. rubric:: Example
 
@@ -3502,8 +3507,11 @@ def bocpd(
         parametrisation, which is how Adams and MacKay give their own finance
         example (``a = 1``, ``b = 1e-4``, ``hazard = 250``).
     ``prune_below``, ``max_run``
-        What keeps the run vector finite: the share of the mass below which a run
-        is dropped, and the run length every longer run is folded into.
+        The share of the mass below which a run is dropped (default ``1e-6``), and
+        the run length every longer run is folded into (default 10,000). A
+        changepoint collapses the runs to a few dozen, but a stream that does not
+        break spreads them over thousands of run lengths, and there ``max_run``
+        is the bound on the runs kept and on the work a row costs.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
@@ -3552,11 +3560,11 @@ def bocpd(
             hazard=250.0,            # the expected run length
             prior_nu=2.0, prior_scale=[2e-4],   # 2a and 2b: Adams and MacKay's own finance example
             emission="diag",
-            prune_below=1e-6,        # what makes the model finite
+            prune_below=1e-6,        # drop the runs thinner than this
         )
         out = po.ModelBank([b]).fit_predict(df).unnest("regime")
-        # the row each run began on
-        began = out.select(pl.int_range(pl.len()) - pl.col("run_mode"))
+        # the row each group's run began on, counted in the group's own rows
+        began = out.select(pl.int_range(pl.len()).over("stock_id") - pl.col("run_mode"))
 
     .. rubric:: Raises
 
@@ -3637,7 +3645,9 @@ def corrchange(
     reproduces the published 1.3581 at 5%. Over the pairs the statistic is the
     maximum and the level is ``alpha / npairs``. A span reports on its last row
     only, so a change is found at most ``span_rows`` rows late, against a null
-    with published tables, which ``tests/test_corrchange.py`` holds it to.
+    with published tables. ``docs/REGIMES.md`` §2 and §3 measure its size and
+    power against those tables, and ``tests/test_corrchange.py`` holds its size
+    near the nominal level.
 
     ``"sequential"`` is the monitoring procedure of Wied & Galeano (2013): a
     history taken as stable, then every row of a monitoring period tested against

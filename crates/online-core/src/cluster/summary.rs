@@ -422,7 +422,7 @@ impl FeatureMoments {
     /// of quiet, a million at twenty, and the row on which the feature moves
     /// again is then infinitely far from every centre, which the argmin
     /// cancels but a radius does not; floored, the weight grows as
-    /// `2^(Q / LONG_HALFLIVES) / scale_floor`, 58 at twenty (docs/PLAN.md
+    /// `2^(Q / LONG_HALFLIVES) / scale_floor`, about 57 at twenty (docs/PLAN.md
     /// task 102). A feature that is constant so far -- or whose variance has
     /// gone subnormal -- is measured in its own units rather than magnified
     /// without bound.

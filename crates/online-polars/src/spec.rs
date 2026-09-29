@@ -1179,7 +1179,8 @@ pub enum ModelKind {
         /// Observations averaged at each end; default 2, `1` is none.
         #[serde(default)]
         jitter: Option<usize>,
-        /// Pre-averaging window scale, `kₙ = ⌊θ√block_rows⌋`; default 1.
+        /// Pre-averaging window scale, `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`
+        /// (the default) and `⌊θ√block_rows⌋` without it; default 1.
         #[serde(default)]
         theta: Option<f64>,
         /// Clip negative eigenvalues at close; default true.

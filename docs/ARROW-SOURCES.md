@@ -593,8 +593,10 @@ denominated in a clock. Three tiers, in the order to consider them:
    time rather than rows. Decay still works, per row.
 
 2. **`fit()` over an order-free spec — the state really is
-   order-independent.** `ew_ridge`, `rls`, `huber` or `lasso` with no decay
-   (`lam = 1.0`, no `halflife`) and every path-changing key at its neutral
+   order-independent.** `ew_ridge` or `rls` with no decay (`lam = 1.0`, no
+   `halflife`; `huber` and `lasso` were listed until 2026-09-29, when a
+   reweighting `huber`'s sums and `lasso`'s selected penalty were measured to
+   move with the order, docs/PLAN.md task 139) and every path-changing key at its neutral
    value: no window, no session, no `label_delay`, no Gram blocking,
    `drift_action = "flag"`, the diagnostics off (`_ORDER_FREE_ONLY_WHEN` in
    `python/polars_online/_frame.py` is the full table). Then the sums commute

@@ -312,7 +312,8 @@ pub struct RcovCfg {
     pub bandwidth: Option<usize>,
     /// Observations averaged at each end, `m`. Default 2; `1` is no jitter.
     pub jitter: usize,
-    /// Pre-averaging window scale: `kₙ = ⌊θ√block_rows⌋`.
+    /// Pre-averaging window scale: `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`, the
+    /// default, and `⌊θ√block_rows⌋` without it ([`RcovCfg::window_for`]).
     pub theta: f64,
     /// Clip negative eigenvalues at close.
     pub psd: bool,

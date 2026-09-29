@@ -11,8 +11,8 @@ Rust core, Python API, and a standalone command line.
 | section | what it covers |
 |---|---|
 | [Introduction](#introduction) | [the idea](#the-idea) · [four words](#four-words) · [install](#install) · [a first fit](#a-first-fit) · [what you can rely on](#what-you-can-rely-on) |
-| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a local fit along any feature](#a-local-fit-along-any-feature) · [convergence without a decay](#convergence-without-a-decay) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) · [row order](#row-order-and-the-two-guarantees) |
-| [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [output as Arrow](#output-as-arrow) · [outside Python](#outside-a-live-python-process) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
+| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [convergence without a decay](#convergence-without-a-decay) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) · [row order](#row-order-and-the-two-guarantees) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
+| [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [output as Arrow](#output-as-arrow) · [outside Python](#outside-a-live-python-process) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [what a state file holds](#what-a-state-file-holds) · [a state as JSON](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [coefficients](#coefficients) · [output field names](#output-field-names) · [the running sums](#the-running-sums-behind-a-fit) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
 | [Diagnostics, selection and evaluation](#diagnostics-selection-and-evaluation) | [per-row diagnostics](#per-row-diagnostics) · [conformal intervals](#conformal-intervals) · [evaluating an output](#evaluating-an-output-frame) · [evaluating a stream too large to hold](#evaluating-a-stream-too-large-to-hold) · [simulated data](#data-whose-truth-is-known) |
@@ -57,10 +57,10 @@ pip install polars-online      # or: uv add polars-online
 
 | need | detail |
 |---|---|
-| Python | 3.12 or newer. One wheel per platform covers every CPython from 3.12 on, and CI runs the suite on each of 3.12, 3.13 and 3.14 |
+| Python | 3.12 or newer: one wheel per platform covers every CPython from 3.12 on. CI runs the suite on 3.12 and 3.14 on every operating system, and on 3.13 on Linux |
 | Polars | `polars>=1.34.0,<3`. The range is measured, not guaranteed: a weekly job and every release run the whole suite on the newest Polars ([Versioning and the Polars pin](#versioning-and-the-polars-pin)) |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries |
-| size | about 19 MB to download and 59 MB installed. The wheel carries its own copy of Polars' Rust half, so nothing beyond `polars` is needed at run time |
+| size | 8 to 10 MB to download and 26 to 37 MB installed, by platform, for 0.12.0. The wheel carries its own copy of Polars' Rust half, so nothing beyond `polars` is needed at run time |
 | optional | `numpy`, which only `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers need |
 
 From a checkout:
@@ -99,10 +99,11 @@ ols = po.spec.ewridge(
 )
 
 scored = pl.scan_parquet("today.parquet").online.predict("bank.state").collect()   # score; learn nothing
-flat = scored.online.unnest([ols])   # pred_ret, resid_ret, n_eff, coef_ret_intercept, coef_ret_signal_a, ...
+flat = scored.online.unnest([ols])   # pred_ret, resid_ret, n_eff, ..., coef_ret_intercept, coef_ret_signal_a, ...
 # Each spec adds one column, named after it, whose value in each row is a record of named fields:
 # the prediction pred_<target>, the residual resid_<target>, the effective number of observations
-# n_eff, the coefficients coef, and the diagnostics you switch on. unnest spreads them into columns.
+# n_eff, the coefficients coef, why a prediction is null (withheld_reason, under Warm-up), and the
+# diagnostics you switch on. unnest spreads them into columns.
 ```
 
 **One fit that follows the recent rows.** Give the same spec a clock and a
@@ -147,30 +148,33 @@ alone.
 |---|---|
 | **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any chunking** | one chunk or a thousand gives the same output, to the last bit |
-| **any thread count** | each (spec, group) pair is fitted on its own thread, and the count changes only the speed: with 64 groups, 14 threads process 8× the rows per second of one ([Parallelism](#parallelism)) |
+| **any thread count** | each (spec, group) pair is fitted on its own thread, and the count changes only the speed: with 64 groups, 14 threads process 8.4× the rows per second of one ([Parallelism](#parallelism)) |
 | **bounded memory** | memory is proportional to the models' state, not to the number of rows that have passed ([Memory](#memory-which-calls-stream)) |
 | **named mistakes** | every keyword is checked against its type, and a missing column is reported with the spec that wanted it and the role it had there |
-| **a tested claim** | 976 Rust tests and 3,265 Python cases (counted on 2026-09-25), against numpy and an independent implementation and on adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **a tested claim** | 1,149 Rust tests and 3,597 Python cases (counted on 2026-09-29), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
-A bank runs three ways, with the same numbers from each: inside a Polars
-query as above, in your own Python loop, or from a standalone command line
-with no live Python at all ([Running a bank](#running-a-bank)). What it has
-learned can be saved to a file and loaded back, to keep learning or to
-score new rows without learning ([Saving, loading and
-serving](#saving-loading-and-serving)). Residual spread, break detection, a
-choice among several settings and running accuracy are computed from what
-the models have already learned, so none of them sees the row it describes
-([Diagnostics, selection and
+A bank runs three ways, with the same numbers from each. It runs inside a
+Polars query as above, in your own Python loop, or from a standalone
+command line with no live Python at all ([Running a
+bank](#running-a-bank)). What it has learned can be saved to a file and
+loaded back, to keep learning or to score new rows without learning
+([Saving, loading and serving](#saving-loading-and-serving)). Residual
+spread, break detection, a choice among several settings and running
+accuracy are computed from what the models have already learned, so none
+of them sees the row it describes ([Diagnostics, selection and
 evaluation](#diagnostics-selection-and-evaluation)).
 
 ## How a bank sees a stream
 
 A model bank reads a stream of rows one chunk at a time. The parameters in
-this section belong to every model. They say which columns to read, how
-time and forgetting work, which rows belong to which model, how much each
-row counts, and when a model has seen enough to report. The
+this section say which columns to read, how time and forgetting work,
+which rows belong to which model, how much each row counts, and when a
+model has seen enough to report. Every model takes them except `window`,
+which five models take. The
 [`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html)
-reference gives each one's units and default.
+reference gives each one's units and default. The last subsection is the
+one step a stream may need before a bank reads it: series that tick at
+their own times, put on one grid.
 
 ### What a spec names
 
@@ -193,7 +197,7 @@ model then learns and predicts on that scale.
 ```python
 po.spec.ewridge(
     "fwd",
-    targets=["ret_5m", po.target("price_5m", relative_to="mid")],
+    targets=["ret_5m", po.target("price_5m", relative_to="mid")],   # learns and predicts price_5m - mid
     features=["x0", "x1"], halflife=600.0,
 )
 ```
@@ -205,7 +209,8 @@ po.spec.ewridge(
 | `"log_ratio"` | `ln(y / r)` | the same as `"ratio"` |
 
 `r` is read at the target's own row, so the target adds no look-ahead.
-`pred`, `resid`, `sigma` and the metrics are on the relative scale. The
+`pred`, `resid`, `sigma` and the metrics are on the relative scale, so a
+prediction of the level is `pred + r`, or `pred * r` for a ratio. The
 output fields carry the target's `name`, which is its column's by default.
 In the CLI's TOML the same target is a table:
 `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`.
@@ -261,8 +266,8 @@ timed = po.spec.ewridge(
     min_backwards_jump=pl.duration(minutes=1),  # ... unless the step is no larger than this: a late row,
                                           # refused. Required with "reset_state"
     session="session",                    # a column whose value changes at a session boundary ...
-    session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there, at most max_dclock;
-                                          # "reset" starts the model over
+    session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there, at most max_dclock:
+                                          # required with session. "reset" starts the model over
 )
 # halflife=inf turns forgetting off. A list of halflives fits one model per value.
 # The cap also bounds the step a run of skipped rows hands the row after them, however long the run.
@@ -296,10 +301,78 @@ nanoseconds before it becomes seconds, so a nanosecond timestamp keeps its
 nanoseconds whatever the stream's age. A clock must lie between the years
 1677 and 2262, the range nanoseconds in a 64-bit integer cover. Where a
 clock quantity reaches an output, it is in seconds: `holt`'s trend is per
-second, and `summary()` gives the clock's range as seconds since 1970. A
-huge finite halflife is
-not `inf`: `halflife=1e12` still forgets, and the schedules keyed to the
-halflife scale with it. Say `inf` for no forgetting.
+second, and `summary()` gives the clock's range as seconds since 1970.
+
+**A huge finite halflife is not `inf`.** `halflife=1e12` still forgets, a
+little. Its `settled_frac` stays near zero until the stream has run for
+about 10¹² clock units, so a `min_settled_frac` gate stays closed. A model
+that solves on a schedule solves by weight under it, where `inf` solves on
+every row. Say `inf` for no forgetting.
+
+### A hard window
+
+A halflife never forgets entirely: three halflives back still carries
+12.5% of the weight. `window=w` makes a row older than `w` clock units
+contribute exactly nothing. Five models take it: `ewridge`, `lasso`,
+`ew_cov`, `ew_class` and `marginal`.
+
+```
+weight(age) = 0.5 ** (age / halflife)   if age <= window
+            = 0                          otherwise
+```
+
+```python
+cut = po.spec.ew_cov(
+    "cut", features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=500.0,
+    window=1500.0,                 # a row older than this many clock units contributes exactly nothing
+    window_every=10,               # a snapshot every 10 rows: the boundary is the oldest snapshot inside the
+                                   # window, so a coarse cadence discards a little more than asked, never less
+    window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring, as the table below says
+)
+```
+
+Inside the window the weights are still exponential, so this is not a flat
+rolling mean, and the newest row still dominates. It is exact, because an
+exponentially weighted sum contains its own past: everything at or before a
+time `u` is `λ^(t−u)` times the running sum as it stood then. Subtracting
+that leaves precisely the rest. The model keeps a ring of past snapshots to
+do it, so its memory grows with the window as well as with the state. For
+an `ew_cov` over 20 columns, a 1,000-row window holds about 3 MB per group,
+divided by `window_every`. `window_budget` caps that
+memory per ring, in MiB:
+
+| `window_budget` | when a chunk would take a ring past the cap |
+|---|---|
+| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the bank goes on as it was. The error names the ring's size, `window_every` and the ways to raise the cap. Two overruns are found only as the rows go in: under `drift_action="reset"`, and where a snapshot grows within the chunk, as an `ewridge`'s or a `lasso`'s does when its targets first go missing on different rows. The bank then refuses every later call, so rebuild it from its last save |
+| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, which, like `window_every`, only ever shortens the window |
+| `{"refuse": float("inf")}` | nothing: no cap |
+| not given | the chunk is refused past 256 MiB |
+
+Four things to know before reading the numbers:
+
+| | |
+|---|---|
+| the clock is the **decayed** one | the step after `max_dclock` and any `session_gap` |
+| the edge is a **discontinuity** | a row ageing out drops its whole weight at once, so the series has small steps that a plain exponential average does not |
+| it is a **subtraction** | precision falls with the fraction discarded: negligible at a window of three halflives, worse as the window shortens toward the halflife |
+| `n_eff` is the weight inside the window | so `min_periods` gates on something that stops growing, and a clock gap longer than `window` empties it and reports nulls rather than stale numbers |
+
+What the window truncates depends on the model:
+
+| model | inside the window | refused beside `window` |
+|---|---|---|
+| `ewridge` | the sums the fit is solved from, and `sigma` and `resid_z` with them; the coefficients are the window's as of the last solve | `ridge_decay`, `session_shrink`, `gram_block_rows` |
+| `lasso` | the same, and the error that selects the penalty, so a feature with no evidence inside the window goes to exactly zero | |
+| `ew_cov` | every moment, and `mahal`, `partial_corr` and the principal components read from them | `lags`, `mahal_quantiles` |
+| `ew_class` | each class's moments, so the classifier follows class means that move | |
+| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t` describe the window; its lag moments, under `window_lags=True`, are an estimate rather than exact | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
+
+For `ew_cov`'s moments over a frame that fits in memory, Polars already
+does this: `df.rolling("t", period="3h").agg(...)` with an exponential
+weight gives the same number to 1e-14. The reasons to reach for the spec
+are a stream, a saved state, or the time. The rolling window recomputes
+each window, in `O(n·W)`, where this is `O(n)`: measured, the spec ran 24
+times as fast at a 74-row window and 1,100 times at a 4,680-row one.
 
 ### A local fit along any feature
 
@@ -332,20 +405,20 @@ recomputed from scratch at every row agrees with them to 1e-12.
 
 The kernel is one-sided, since a row is fitted on the rows before it and
 never after, so the fit follows a curve with a lag. The bandwidth trades
-that lag against noise. On `sin(x)` at a bandwidth of 0.25 the fit sits
-0.08 from the truth, where the best straight line sits 0.39; at a bandwidth
-of 1.0 it sits 0.29, most of the way back to the line. `features` need not
-include the clock column: with other features, the same fit is a
-regression whose coefficients move along the clock. Every model takes a
-clock, not only `ewridge`.
+that lag against noise. On `sin(x)` at a bandwidth of 0.25, the fit sits
+0.08 from the truth, where the best straight line sits 0.39. At a
+bandwidth of 1.0 it sits 0.29, most of the way back to the line.
+`features` need not include the clock column: with other features, the
+same fit is a regression whose coefficients move along the clock. Any
+model can take a feature as its clock.
 
 ### Convergence without a decay
 
 With decay off, `halflife=inf` or `lam=1.0`, a model that *solves* or
 *accumulates* converges to the batch fit it defines over every row it has
-seen, and row order does not reach that fit at all: forwards, backwards or
-shuffled gives the same coefficients. A model that *steps*, *filters* or
-*tests* depends on the order whether or not decay is on. [The model
+seen. Row order does not reach that fit at all: forwards, backwards or
+shuffled gives the same coefficients. A model that *reweights*, *steps*,
+*filters* or *tests* depends on the order whether or not decay is on. [The model
 table](#models) says which model learns which way, and each model's own
 section says what it converges to.
 
@@ -487,7 +560,9 @@ frame, or for an engine other than this one:
 
 ```python
 doubled = po.stream.embargo(lf, clock="t", delay=300.0)   # every row twice: a zero-weight copy to score at t,
-                                                            # and a copy to learn from at t + delay, in clock order
+                                                            # and a copy to learn from at t + delay, in clock order.
+                                                            # The input must be in clock order across all its rows,
+                                                            # not only within each group: sort by the clock first
 ```
 
 The built-in delay agrees with the doubled stream field by field, to the
@@ -556,7 +631,7 @@ warns. The other two refuse a chunk before any of its rows is learned.
 
 | check | what it reads | when it finds disorder |
 |---|---|---|
-| the query | the plan handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` sits above it, and a sort by several keys without `maintain_order=True` | raises `OrderNotGuaranteedWarning`, naming the step and its fix; the run goes on |
+| the query | the query handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` sits above it, and a sort by several keys without `maintain_order=True` | raises `OrderNotGuaranteedWarning`, naming the step and its fix; the run goes on |
 | the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
 | the group keys | with `group_close="monotone"`, the keys in the column's own order | refuses the chunk on a key below one already closed, since a closed group cannot reopen |
 
@@ -584,9 +659,9 @@ back.
 every group of every spec over the chunk before it learns any row. So one
 late row in one group changes nothing, and the corrected chunk can be fed
 again. The error names the spec, the clock column, the size of the step and
-the row, counted from the start of the input however it arrives: one frame,
-batches, a plan or the CLI's file. On a temporal clock the step is a
-duration. The error also names the way out:
+the row. The row is counted from the start of the input however it
+arrives: one frame, batches, a query or the CLI's file. On a temporal
+clock the step is a duration. The error also names the way out:
 
 ```text
 spec "m": clock column "t" goes backwards by 30 at row 6 (on_clock_reset = "error", the default);
@@ -609,18 +684,51 @@ stands, as a step of 0, under either policy.
 within a session, and `resets`, the rows where a stream restarted. Under
 `"reset_state"` each step back past the minimum counts once in each.
 
-**The query check is best-effort.** It reads the plan's `explain` text,
-and walks the plan only when that names a join, an aggregation, a `unique`
-or a `sort`. A step under a `sort` counts as ordered, except under a sort
-by several keys without `maintain_order=True`. That sort leaves rows with
-equal keys in no particular order: 2,109 of 10,000 rows moved when
-measured. A join with `maintain_order="left"` is followed on its left side
-only. A plan Polars
-cannot serialize passes without a warning, and the check never fails a run.
-`ModelBank.fit` does not warn when every spec is an accumulator with no
-decay, since those sums reach the same state in any order. For a plan
+**The query check is best-effort.** It reads the text of the query's
+`explain()`, and walks the query's steps only when that names a join, an
+aggregation, a `unique` or a `sort`. A step under a `sort` counts as
+ordered, except under a sort by several keys without `maintain_order=True`.
+That sort leaves rows with equal keys in no particular order: 2,109 of
+10,000 rows moved when measured. A join with `maintain_order="left"` is
+followed on its left side only. A query Polars cannot serialize passes
+without a warning, and the check never fails a run. `ModelBank.fit` does
+not warn when every spec is an `ewridge` or `rls` with no decay, window,
+session or drift reset. Their sums reach the same state in any order, to
+rounding, and `fit` keeps only the state. For a query
 whose order you know, silence the warning with
 `warnings.simplefilter("ignore", po.OrderNotGuaranteedWarning)`.
+
+### Series that tick at their own times
+
+Two series observed at different instants cannot be correlated directly. A
+fine common grid pushes the correlation toward zero, the Epps effect, and
+filling values forward invents observations that were never made.
+[`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time)
+puts them on the grid Barndorff-Nielsen, Hansen, Lunde and Shephard
+defined: a point wherever **every** series has ticked at least once since
+the last point, each carrying its last observed value.
+
+```python
+grid = po.stream.refresh_time(ticks,             # long input: one row per tick, the series named in a column
+                              series="symbol", names=["AAA", "BBB", "CCC"],
+                              clock="t", value="px")   # a DataFrame in, a DataFrame out
+# one row per grid point:
+#   time_refresh        the grid point
+#   AAA_value, ...      each series' last observed value at that point
+#   n_obs_AAA, ...      ticks of that series since the previous point: the staleness of its value
+#   retained_fraction   how much of the data survived -- read this before trusting a correlation
+```
+
+The grid runs at the pace of the slowest series, so a fast one loses most
+of its ticks, and `retained_fraction` says how many. `pairs=True` runs an
+independent two-series grid for each pair instead, which keeps far more
+when one series is slow. Rows must be in clock order within each `group`:
+a step back is an error naming the row, and nothing is interpolated. With
+`save_state=` and `load_state=` the grid resumes where a run stopped, part-way
+through an interval or not, as a bank does. The output looks
+synchronous and is not. Each value is up to one of its own inter-tick
+intervals old, and the series with the largest `n_obs` is the one holding
+the grid up.
 
 ## Running a bank
 
@@ -648,7 +756,8 @@ chunk at a time.
     .sink_parquet("fitted.parquet")                       # runs the query; memory is state + one chunk, however long the files
 )
 # "ridge" is one column whose value per row is a record of named fields:
-#   {pred_y__r0.000001, resid_y__r0.000001, pred_y__r0.1, resid_y__r0.1, n_eff, coef}
+#   {pred_y__r0.000001, resid_y__r0.000001, pred_y__r0.1, resid_y__r0.1,
+#    n_eff, settled_frac, withheld_reason, coef, support_coef}
 
 lf.online.fit_predict([spec]).head(5).collect()                           # learns from the first 5 rows and no more
 lf.online.predict(bank).collect()                                         # score against an existing bank; learn nothing
@@ -717,6 +826,15 @@ bank.groups()     # one row per (spec, group):
 # Groups live until dropped -- a long-running bank forgets the ones that have gone quiet:
 stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
 bank.drop_groups(stale["group"])           # they start over if they reappear
+
+# The same loop with the chunking done for you: a query is read chunk_rows rows at a time,
+# a DataFrame is one chunk, and an iterator of frames is fed as it comes.
+for out in po.ModelBank([spec]).fit_predict_batches(lf, chunk_rows=100_000):
+    ...
+
+# A run whose product is the state: learn from every row, keep no output.
+fitted = po.ModelBank([spec])
+fitted.fit(lf)
 ```
 
 A bank is one ordered stream, so it is not for two threads at once. A call
@@ -755,38 +873,6 @@ A scheduled job, or a deployment with no Python at all, runs the same bank
 from a file to a file: [docs/RUNNER.md](docs/RUNNER.md) has the standalone
 `online` command line. Same specs, same state file, same numbers.
 
-### Series that tick at their own times
-
-Two series observed at different instants cannot be correlated directly. A
-fine common grid pushes the correlation toward zero, the Epps effect, and
-filling values forward invents observations that were never made.
-[`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time)
-puts them on the grid Barndorff-Nielsen, Hansen, Lunde and Shephard
-defined: a point wherever **every** series has ticked at least once since
-the last point, each carrying its last observed value.
-
-```python
-grid = po.stream.refresh_time(ticks,             # long input: one row per tick, the series named in a column
-                              series="symbol", names=["AAA", "BBB", "CCC"],
-                              clock="t", value="px")   # a DataFrame in, a DataFrame out
-# one row per grid point:
-#   time_refresh        the grid point
-#   AAA_value, ...      each series' last observed value at that point
-#   n_obs_AAA, ...      ticks of that series since the previous point: the staleness of its value
-#   retained_fraction   how much of the data survived -- read this before trusting a correlation
-```
-
-The grid runs at the pace of the slowest series, so a fast one loses most
-of its ticks, and `retained_fraction` says how many. `pairs=True` runs an
-independent two-series grid for each pair instead, which keeps far more
-when one series is slow. Rows must be in clock order within each `group`:
-a step back is an error naming the row, and nothing is interpolated. With
-`save_state=` and `load_state=` the grid resumes where a run stopped, part-way
-through an interval or not, as a bank does. The output looks
-synchronous and is not. Each value is up to one of its own inter-tick
-intervals old, and the series with the largest `n_obs` is the one holding
-the grid up.
-
 ## Saving, loading and serving
 
 What a bank has learned, the running sums of every (spec, group), can be
@@ -821,10 +907,14 @@ blob = bank.save_bytes()
 bank = po.ModelBank.load_bytes(blob, specs=[spec])
 ```
 
-Loading names the problem it meets: `FileNotFoundError` when there is no
-file yet, and `ValueError` for a file that is not a bank, was written by a
-newer version, holds a different model, or predates schema 19, whose clock
-settings no longer exist.
+Loading names the problem it meets:
+
+| the file | raises |
+|---|---|
+| does not exist yet | `FileNotFoundError` |
+| is not a bank, or holds different specs from the `specs=` given | `ValueError` |
+| was written by a newer version of this package | `ValueError` |
+| was written before 0.12.0, whose clock settings no longer exist | `ValueError`: refit from the input |
 
 ### Serving without learning
 
@@ -851,7 +941,7 @@ bank.specs                # every spec back, as the dict its builder made -- a c
                           # the bank runs the state it was built from, so a list edited on the
                           # Python side would only ever mislabel what coef() reports
 bank.groups()             # spec, group, rows_processed, last_clock
-bank.output_fields()      # {'ridge': ['pred_y', 'resid_y', 'n_eff', 'coef'], ...}
+bank.output_fields()      # {'ridge': ['pred_y__r0.000001', ..., 'n_eff', 'settled_frac', 'withheld_reason', 'coef', ...]}
 bank.rows_seen()          # rows fed, over every chunk and group
 bank.solve_failures()     # per spec, per group: solves that needed jitter or kept the previous fit
 
@@ -888,6 +978,8 @@ fed = bank.summary("ridge")    # one row per group:
                                #   rows_zero_weight  advanced the clock and nothing else
                                #   weight_sum, clock_min, clock_max, last_clock
                                #   session_changes, clock_backwards, resets   what the clock rules met
+                               #   settled_frac, error_inflation, min_support_coef (and the feature it
+                               #   belongs to), n_coef   the warm-up readings after the last row
 cols = bank.describe("ridge")  # one row per input column per group: column, role, count, null_count, mean, std, min, max
                                # -- counting as the models count: a null, a NaN, an infinity or a magnitude
                                # beyond 1e100 is a null_count, not a value
@@ -966,8 +1058,9 @@ pred_{target}{combo}{instance}     combo    = ""            single ridge, no fea
 resid_{target}{combo}{instance}             | __r{ridge}     ridge grid
 sigma_{target}{combo}{instance}             | __{set}        feature sets, single ridge
 absresid_q{level}_{target}...               | __{set}_r{ridge}
-n_eff{instance}                    instance = ""            single halflife
-coef{instance}                              | @h{halflife}   halflife grid
+n_eff{instance}                             | __l{lambda}    lasso path
+coef{instance}                     instance = ""            single halflife
+                                            | @h{halflife}   halflife grid; a duration as its text, @h10m
 ```
 
 Numbers render as plain decimals in `[1e-6, 1e7)` and in compact
@@ -1039,13 +1132,14 @@ po.gram.merge([g, g])                                                     # pool
 po.gram.lasso_path(g, [0.1, 0.01])                                        # the lasso model's coordinate descent, offline
 ```
 
-Three things to know before reading the numbers:
+Four things to know before reading the numbers:
 
 | | why |
 |---|---|
 | `n_eff` counts weight, not rows | `n_kish = n_eff² / Σw²` is the number of equally weighted rows the moments are worth, which is what a standard error divides by. It does not fall when a stream goes quiet; `n_eff` does |
 | a spec can have several Grams | under the default `target_gaps="own_rows"`, a target that goes missing on different rows from the others is fitted from a Gram of its own. `gram()` returns one dict per Gram, each naming its `targets` |
 | `coef()` and `gram()` can disagree | `bank.coef()` is as of the model's last *solve*, which its `solve_every` schedule decides, while `gram()` is as of the last row |
+| under a `window`, a Gram is the window's | every array, the target moments included, covers the rows inside the window, so `po.gram.solve` on it fits the window |
 
 The [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
 reference states every array and the identities that relate them.
@@ -1066,10 +1160,11 @@ by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # a key below 
 bank = po.ModelBank([blocks])
 bank.fit_predict(by_block)
 
-closed = bank.closed_groups()          # one row per finished block: the gram() a driver would have read at that
-                                       # moment, bit for bit, plus the span's own rows_fed, rows_learned,
-                                       # clock_min, clock_max; coef for a model that has one; the
-                                       # eigendecomposition for an ew_cov with pca; a marginal's pairs
+closed = bank.closed_groups()          # one row per finished block, oldest first: the gram() a driver would have
+                                       # read at that moment, bit for bit, plus the span's own rows_fed,
+                                       # rows_learned, clock_min, clock_max; coef for a model that has one; the
+                                       # eigendecomposition for an ew_cov with pca; a marginal's pairs.
+                                       # Reading takes them out of the bank; drop=False reads and keeps them
 first = po.gram.from_row(closed.head(1))
 corr = po.gram.correlation(first)      # everything in po.gram works on it
 ```
@@ -1083,13 +1178,14 @@ group where its `session` value changes. Either way the last group never
 closes, since nothing proves it is finished, and it stays readable through
 `gram()`.
 
-A run also writes the same rows to a sidecar file. With no other output at
-all, that is the whole of an accumulate-only pass: read a stream that does
-not fit in memory, and write one row per block.
+A run can also write the same rows to a sidecar file: `closed_groups=` on
+`lf.online.fit_predict`, `fit_predict_batches` or `fit`. `fit` keeps no
+per-row output, so with it that is the whole of an accumulate-only pass:
+read a stream that does not fit in memory, and write one row per block.
 
 ```python
-for _ in by_block.lazy().online.fit_predict([blocks], closed_groups="blocks.parquet").collect_batches():
-    pass   # the per-row output is not wanted; only the sidecar file is
+po.ModelBank([blocks]).fit(by_block.lazy(), closed_groups="blocks.parquet")   # learn, and write each closed
+                                                                               # block's row to the file
 ```
 
 `by_block` and `blocks` are the ones built in the block above. The command
@@ -1127,6 +1223,7 @@ The rest of the module:
 | `loss` | how wrong a forecast correlation matrix was: `qlike`, `z_mse` or Engle–Colacito `minvar` |
 | `epps_invert` | the correlation at a coarser scale, from `ew_cov`'s lagged co-moments |
 | `shift` | the standardised absorption shift, `(fast − slow) / scale` |
+| `equicorr_row` | the equicorrelation estimate of one standardised row, the `u` `deco` computes per row |
 | `equicorr_loglik` | the Gaussian log-density of a standardised row under an equicorrelation matrix |
 
 The [API reference](https://hgilde.github.io/polars-online/corr.html) has
@@ -1142,6 +1239,12 @@ memory that does not grow with the stream.
 
 ### Per-row diagnostics
 
+Each switch below adds fields to a spec's output, one per *slot*: one
+prediction of one target, at one point of a grid. They read the residuals,
+so they belong to the ten [linear models](#linear-models), which predict a
+target, and any other model refuses them by name. The keywords that tune a
+switch sit under it, at their defaults.
+
 ```python
 diag = po.spec.ewridge(
     "diag", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=500.0,
@@ -1150,17 +1253,22 @@ diag = po.spec.ewridge(
     emit_resid_z=True,           # resid_z_<slot>:   resid / sigma -- how surprising the row was, in units of recent error
     emit_selected=True,          # selected_<t>, pred_<t>__selected: the ridge value, feature set or halflife with the
                                  #                   lowest EW out-of-sample error so far
-    emit_averaged=True,          # pred_<t>__averaged: softmax(-eta * EW error / the best's) blend over the same
-                                 #                   choices -- hedges where emit_selected commits
-    emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on the residuals;
-                                 #                   drift_action="reset" also starts the model over
+    emit_averaged=True,          # pred_<t>__averaged: every slot's prediction, weighted by exp(-eta * (its EW squared
+    average_eta=1.0,             #                   error over the best slot's - 1)); inf is emit_selected's choice.
+                                 #                   It hedges where emit_selected commits
+    emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on |resid| ...
+    drift_delta=0.5,             #                   ... with this tolerance, in units of the slot's sigma ...
+    drift_threshold=20.0,        #                   ... and this threshold;
+    drift_action="flag",         #                   "reset" also starts the model over at a break
     emit_metrics=True,           # ic_, r2_, hit_rate_<slot>: what po.eval computes, kept beside the model
     resid_quantiles=[0.5, 0.9],  # absresid_q<p>_<slot>: running quantiles of |resid| (the P² algorithm) --
                                  #                   an interval that assumes no distribution
-    emit_autocorr=True,          # autocorr_<slot>:  EW correlation of each residual with the previous one;
-                                 #                   non-zero means the model is missing something
+    emit_autocorr=True,          # autocorr_<slot>:  EW correlation of each residual with the one this many
+    resid_autocorr_lag=1,        #                   rows back; away from zero, the model is missing something
     conformal=0.9,               # lo_, hi_, coverage_<slot>: an interval at that coverage, assuming no
-                                 #                   distribution, and the coverage it has actually delivered
+                                 #                   distribution, and the coverage it has delivered;
+    conformal_rate=0.05,         #                   its radius grows by rate·sigma·coverage on a miss and
+                                 #                   shrinks by rate·sigma·(1 − coverage) on a hit
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
 ```
@@ -1171,11 +1279,13 @@ label rather than a signed target. Under their usual names, `hit_rate` is
 the accuracy at a 0.5 threshold, `r2` the Brier skill score against the
 running base rate, and `ic` the point-biserial correlation between the
 probability and the label. There is no streaming log loss;
-`po.eval.metrics(..., binary=True)` adds it over a collected frame. A
-target taken as a ratio (`po.target(..., relative="ratio")`) is positive by
-construction, so its `hit_rate` is agreement about 1, whether the ratio went
-up or down; a difference and a log ratio are about zero, as a plain target
-is.
+`po.eval.metrics(..., binary=True)` adds it over a collected frame.
+
+A target taken as a ratio (`po.target(..., relative="ratio")`) is positive
+by construction, so its `hit_rate` is agreement about 1: whether the ratio
+went up or down. A difference and a log ratio are about zero, as a plain
+target is. `po.eval.metrics` tests signs about zero, so hand it a ratio
+less 1.
 
 ### Conformal intervals
 
@@ -1203,6 +1313,8 @@ po.eval.rolling_metrics(out, "ridge", clock="t", window=3600.0)     # the same, 
 po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table, many specs: which had the lower error
 po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])        # is kalman closer? evidence per row -- the same test
                                                                     # the seqtest model runs inside a bank
+po.eval.unpack(out, "ridge")                                        # long form: one row per (row, slot), with slot,
+                                                                    # target, pred and y, for your own group_by
 ```
 
 ### Evaluating a stream too large to hold
@@ -1273,6 +1385,7 @@ when forgetting is off:
 |---|---|---|
 | **solve** | keeps running sums and computes its coefficients from them | converges to the batch answer, in any row order |
 | **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order |
+| **reweight** | solves from running sums, but lets the fit before each row decide how that row enters them | depends on the row order |
 | **step** | moves its coefficients a little on each row | depends on the row order |
 | **filter** | carries a belief forward from row to row | depends on the row order |
 | **test** | counts evidence as it goes | depends on the row order |
@@ -1283,14 +1396,14 @@ every parameter, and to its section below, which states its update rule:
 | model | learns by | what it is |
 |---|---|---|
 | **[Linear models](#linear-models)** | | |
-| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [math](#ewridge--ew-ridge-on-sufficient-statistics) | solve | exponentially weighted ridge regression, the workhorse; several ridge values, feature sets and halflives are fitted from the same running sums at almost no extra work |
+| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [math](#ewridge--ew-ridge-on-sufficient-statistics) | solve | exponentially weighted ridge regression, the workhorse; several ridge values and feature sets are solved from the same running sums at almost no extra work |
 | [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [math](#rls--recursive-least-squares) | solve | recursive least squares, in the numerically safe square-root form |
 | [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [math](#lasso--lasso-path-with-free-λ-selection) | solve | lasso and elastic-net path, with the penalty chosen as the stream runs |
 | [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [math](#kalman--random-walk-β-dynamic-linear-model) | filter | a Kalman filter whose coefficients drift as random walks |
-| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [math](#huber--quantile--robust-regression) | solve | robust and quantile regression |
+| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [math](#huber--quantile--robust-regression) | reweight | robust and quantile regression |
 | [`sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) · [math](#sgd--stochastic-gradient-descent) | step | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
 | [`pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) · [math](#pa--passive-aggressive-regression) | step | passive-aggressive regression, with no learning rate to tune |
-| [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [math](#ftrl--online-logistic-regression) | step | FTRL-proximal logistic regression, with an L1 penalty that zeroes coefficients |
+| [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [math](#ftrl--online-logistic-regression) | step | FTRL-proximal regression, logistic by default, with an L1 penalty that zeroes coefficients |
 | [`holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) · [math](#holt--holts-linear-trend) | step | Holt's linear trend, the baseline that uses no features |
 | **[Moments and correlation](#moments-and-correlation)** | | |
 | [`ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) · [math](#ew_cov--exponentially-weighted-moments) | accumulate | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and principal components |
@@ -1307,12 +1420,14 @@ every parameter, and to its section below, which states its update rule:
 | [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [math](#hmm--which-regime-are-we-in) | filter | a Gaussian hidden Markov model, filtered as the stream runs: `ew_class` without the labels, with a transition matrix that can be learned |
 | [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [math](#bocpd--how-long-has-this-regime-lasted) | filter | how long this regime has lasted: Adams & MacKay's run-length posterior, so the answer is the regime's age and not a flag |
 
-The running sums a model keeps are its *accumulators*. All of them are
-exponentially weighted **means**, not sums, so they stay bounded over a
-stream of any length. Second moments are kept **centred**, by a weighted
-Welford update, so a variance is right even when a feature sits far from
-zero. In the update rules, `z` is `[1, x]` when there is an intercept, `w`
-is the row's weight, `λ` the row's decay, and `W` the total weight so far.
+The running sums a model keeps are its *accumulators*. Most are
+exponentially weighted **means**, so they stay bounded over a stream of any
+length. `rls`'s matrix and the gradient sums of `ftrl` and of `sgd`'s
+adagrad are decayed sums instead. Where a model keeps second moments as
+means, they are **centred**, by a weighted Welford update, so a variance is
+right even when a feature sits far from zero. In the update rules, `z` is
+`[1, x]` when there is an intercept, `w` is the row's weight, `λ` the row's
+decay, and `W` the total weight so far.
 
 ### Linear models
 
@@ -1331,43 +1446,50 @@ schedule.
 W'   = λW + w                       n_eff, over every row
 W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
 S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   r_j' = (λW_j·r_j + w·z·y_j) / W_j'
-solve:  (S_j + ridge·D) β_j = r_j   D = I minus the intercept slot
+solve:  (S_j + ridge·D) β_j = r_j + ridge·D·β₀     D = I minus the intercept slot, β₀ = coef_prior (0 by default)
 ```
 
 ```python
 rr = po.spec.ewridge(
     "rr", targets=["y"], features=["x0", "x1", "x2"], clock="t", max_dclock=300.0, halflife=600.0,
     ridge=[1e-6, 0.1],             # one value, or a list: every value is solved from the same sums, so a grid is nearly free
-    feature_sets={"mkt": ["x0"], "all": ["x0", "x1", "x2"]},   # named subsets, likewise solved from one set of sums
+    feature_sets={"mkt": ["x0"], "all": ["x0", "x1", "x2"]},   # named subsets, likewise solved from one set of sums;
+                                   # only the sets named are fitted, so name the full set to fit it too
     solve_every=12.0,              # solve every 12 clock units (default: by weight, which is halflife/50 in steady
                                    # state; every row when halflife=inf or lam= is given)
     max_rows_between_solves=100,   # ... and at least every 100 rows, whatever the clock does
-    standardize=True,              # solve on the correlation matrix and undo afterwards; a feature with almost no
-                                   # variance is dropped rather than allowed to blow the solve up
+    standardize=True,              # solve on the correlation matrix and undo afterwards; a feature with zero
+                                   # variance is dropped from the solve rather than allowed to blow it up
     ridge_decay=False,             # True: the ridge is a fading warm start ("start at yesterday's fit"), not a
-                                   # permanent per-observation penalty -- because S is a mean, a plain ridge is permanent
+                                   # permanent per-observation penalty -- because S is a mean, a plain ridge is
+                                   # permanent. Refused beside standardize, a ridge or feature-set grid, or a window
     coef_prior=None,               # shrink toward a stated belief instead of toward zero
     target_gaps="own_rows",        # a target null on some rows is fitted on its own rows; "pairwise": one S over every row
 )
 ```
 
 Updating `S` takes O(k²) time per row for `k` features, and the solve is a
-Cholesky factorization. With decay off and `ridge=0` this is ordinary least
-squares over every row seen, in any row order. The coefficients match
-`numpy.linalg.lstsq` to 2e-13 forwards, backwards or shuffled, and 6M rows
-× 20 features from a parquet stream peak at 1.4 GB, against 3.97 GB for
-`lstsq` on the same rows. `halflife=inf` solves every row; a very long
-finite halflife solves by weight, once the rows since the last solve
-reach `ln 2 / 50` of the weight the fit holds (about 1.4 %), so it keeps
-solving as the stream grows. `solve_every=1000` on that stream takes 1.4 s
-instead of 11 s, with the coefficients at most 1000 rows out of date.
+Cholesky factorization. A near-singular system is retried with a small
+jitter on the diagonal, and `bank.solve_failures()` counts each retry. With
+decay off and `ridge=0` this is ordinary least squares over every row seen,
+in any row order. The coefficients match `numpy.linalg.lstsq` to 2e-13, fed
+forwards or backwards, and 6M rows × 20 features from a parquet stream
+peak at 1.4 GB, against 3.97 GB for `lstsq` on the same rows. `window=`
+cuts the history off at a fixed age ([A hard window](#a-hard-window)).
+
+`halflife=inf` solves every row. A finite halflife with no `solve_every`
+solves by weight: once the weight learned since the last solve reaches
+`ln 2 / 50` of the weight the fit holds, about 1.4 %. So a very long
+halflife keeps solving as the stream grows. `solve_every=1000` on the
+6M-row stream above takes 1.4 s instead of 11 s, with the coefficients at
+most 1000 rows out of date.
 
 `target_gaps` says which rows a target's `S_j` covers when the target is
 null on some of them. Under `"own_rows"`, the default, it covers exactly the
 rows the target is present on, so the target's fit is the fit of the frame
 with those nulls dropped. Targets present on the same rows share one `S`. A
 target that goes missing on a row where the others are present takes a
-copy and keeps its own from then on, so a bank of targets holds one `k × k`
+copy and keeps its own from then on. So a bank of targets holds one `k × k`
 matrix per pattern of missing rows. `"pairwise"` keeps one `S` over every
 row, the way pandas' `DataFrame.cov` takes a pairwise-complete covariance,
 and centres each target's `r_j` at its own rows' means. The two agree when
@@ -1409,15 +1531,15 @@ The coefficients move on every row. There is no solve schedule, so they
 are never out of date.
 
 ```
-A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j
+A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j        decayed sums, not means
 A₀ = ridge·I         b₀ = ridge·coef_prior
 ```
 
 ```python
 rls = po.spec.rls(
     "rls", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
-    ridge=1e-3,                    # A starts at ridge * I -- unlike ewridge, this penalizes the intercept too
-)                                  # a row with any null target is scored but not learned from, for every target,
+    ridge=1e-3,                    # A starts at ridge * I (default 1) -- unlike ewridge's default, this
+)                                  # penalizes the intercept too                                  # a row with any null target is scored but not learned from, for every target,
                                    # because the factor is shared between them
 ```
 
@@ -1435,28 +1557,44 @@ row, to better than 1e-9.
 
 Coordinate descent on the standardized running sums, started from the
 previous solution both along the path of penalties and from one solve to
-the next:
+the next. For each penalty `l` in `lasso_path`, with `C` the features'
+correlation matrix and `c_i` each feature's covariance with the target over
+the feature's standard deviation, until no coefficient moves by more than
+`cd_tol`:
 
 ```
 ρ_i = c_i − Σ_{j≠i} C_ij β_j
-β_i = soft(ρ_i, λ·l1_ratio) / (C_ii + λ(1 − l1_ratio))
+β_i = soft(ρ_i, l·l1_ratio) / (C_ii + l·(1 − l1_ratio))        soft(v, t) = sign(v)·max(|v| − t, 0)
 ```
+
+The slopes are then unscaled, and the intercept is `ȳ − m·β`, with `m` the
+features' means. The target
+is centred but not scaled, so the L1 threshold `l·l1_ratio` is in the
+target's units.
 
 ```python
 las = po.spec.lasso(
     "las", targets=["y"], features=["x0", "x1", "x2"], clock="t", max_dclock=300.0, halflife=600.0,
-    lasso_path=[0.1, 0.01, 0.001],   # the penalties; predictions for every one are computed anyway, so
+    lasso_path=[0.1, 0.01, 0.001],   # the penalties, decreasing; predictions for every one are computed anyway, so
                                      # lam_selected_<target> -- the one with the lowest EW out-of-sample squared
                                      # error so far, as it stood before the row -- adds no work of its own
+    select_halflife=None,            # the halflife of that error (default: the model's); inf ranks on the plain mean
     l1_ratio=1.0,                    # below 1: an elastic net
+    max_cd_iters=100, cd_tol=1e-10,  # the defaults; a descent that runs out of sweeps is counted in
+                                     # bank.solve_failures()
     target_gaps="own_rows",          # which rows a target null on some is fitted from, as for ewridge
 )
 ```
 
 It reads the running sums `ewridge` keeps, centred the same way, so a
 feature or a target far from zero loses the path no precision, and
-`target_gaps` means what it means there. The path is checked against the
-KKT conditions of its objective, and a penalized path point against
+`target_gaps` means what it means there. With decay off, every point of
+the path converges to its batch fit in any row order, but `lam_selected`
+does not: it ranks the points by out-of-sample error, which depends on the
+order. Under a `window` the error that picks the penalty is the window's
+too, so a feature with no evidence inside the window goes to exactly zero
+([A hard window](#a-hard-window)). The path is checked against the KKT
+conditions of its objective, and a penalized path point against
 statsmodels' elastic net on the target's own rows.
 
 #### `kalman` — random-walk-β dynamic linear model
@@ -1468,30 +1606,35 @@ filter.
 
 ```
 β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock    Φ = diag(2^(−Δclock/r_i))
-s   = zᵀP_j z + R_j/w                   k   = P_j z / s
-β_j ← β_j + k(y_j − zᵀβ_j)              P_j ← P_j − k zᵀP_j
+s   = zᵀP_j z + R_j/w                   K   = P_j z / s
+β_j ← β_j + K(y_j − zᵀβ_j)              P_j ← P_j − K zᵀP_j
 ```
 
 ```python
 revert = po.spec.kalman(
     "k", targets=["y"], features=["signal_a", "signal_b"], clock="t", max_dclock=10.0,
-    halflife=200.0,                   # the observation-noise estimate (the EW residual variance) forgets at this rate
-    coef_halflife=100.0,              # how fast a coefficient may drift, on standardized features: q_i = σ²(ln2 / h_i)²,
-                                      # matching EW-RLS's steady state; one number, or one per slot; inf pins a coefficient
+    halflife=200.0,                   # the observation-noise estimate (the EW residual variance) and the features'
+                                      # standardization forget at this rate
+    coef_halflife=100.0,              # required: how fast a coefficient may drift, on standardized features:
+                                      # q_i = σ²(ln2 / h_i)², matching EW-RLS's steady state; one number, or one per
+                                      # slot; inf pins a coefficient. q= gives the process noise outright instead
     revert_halflife=[float("inf"), 50.0, 50.0],   # by default a coefficient is a random walk and keeps its last value;
                                       # with this, a slope halves toward zero every 50 clock units while nothing is observed
                                       # -- a mean-reverting (AR(1)) prior; inf in the first slot leaves the intercept alone
     standardize=True,                 # the default; with standardize=False, q=0 and a fixed obs_var= this is exactly
                                       # Bayesian linear regression (river's BayesianLinearRegression to 3.6e-15)
+    p0=1.0,                           # the default: P starts at p0 * I
+    share_p=False,                    # the default: one P per target; True keeps one for all, driven by their mean σ²
 )
 out = po.ModelBank([revert]).fit_predict(df)
 ```
 
 Reverting helps a regressor that is only occasionally active: it is
 forgotten between its bursts instead of held at its last value, and a stale
-effect cannot persist through a run of null targets. The reversion acts in
-the standardized coordinates, so zero means "no effect" for a slope and
-"the target averages zero" for the intercept. A reverting slot's long-run
+effect cannot persist through a run of null targets. Under `standardize`,
+the default, the reversion acts in the standardized coordinates, so zero
+means "no effect" for a slope and "the target averages zero" for the
+intercept. A reverting slot's long-run
 prior variance is `q_i·Δclock/(1−φ_i²)`, where a random walk's grows without
 bound. `predict` moves the coefficients by the same `Φ` over the distance
 from the last learned row, capped by `max_dclock`, so a prediction far past
@@ -1509,8 +1652,9 @@ their weights are per target.
 ```
 huber:     the ridge update at weight  w · min(1, δσ / |r|)
 quantile:  one Newton step on the check loss, smoothed by a uniform kernel of half-width h = quantile_eps · σ
-           |r| ≤ h:  a least-squares row with target  y + 2h(τ − ½)
-           |r| > h:  adds  2h · ψ_τ(r) · z  to the cross-moment and nothing to the Gram,  ψ_τ(r) = τ − 1{r < 0}
+           |r| < h:  a least-squares row with target  y + 2h(τ − ½)
+           |r| ≥ h:  adds  w · 2h · ψ_τ(r) · z  to the cross-moment and nothing to the Gram,  ψ_τ(r) = τ − 1{r < 0},
+                     bounded so the fit at the row moves by at most the row's residual
            h is never narrower than (k/n)^{2/5} · σ, for the target's effective sample n
 ```
 
@@ -1518,15 +1662,22 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
                     huber_delta=1.5)      # a residual beyond huber_delta * sigma is down-weighted
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
-                       quantile=0.5,      # the level: 0.5 is a median regression
+                       quantile=0.5,      # the level, strictly between 0 and 1: 0.5 is a median regression
                        quantile_eps=0.2)  # the band the Newton step leans on, in units of sigma (default 0.2)
+# Both take ewridge's ridge=, standardize=, solve_every= and max_rows_between_solves=, meaning the same.
 ```
 
-The band's floor keeps a short halflife from leaving the Newton step
-nothing to lean on. A band holding fewer than one row per coefficient takes
-least-squares rows until it holds rows again, which rebuilds a fit that a
-row at the input bound has moved. Both models are held to numpy references
-to about 1e-13.
+`σ` is the plain EW standard deviation of the residuals, taken as 1 until
+one exists. The band's floor keeps a short halflife from leaving the Newton
+step nothing to lean on. Until a target's own rows weigh three per
+coefficient, `quantile` takes least-squares rows, and the same rule
+rebuilds the fit after a gap or a reset. A band holding less than one row
+per coefficient also takes least-squares rows until it holds rows again,
+which rebuilds a fit that a row at the input bound has moved. Both models
+are held to numpy references of their own recursions to about 1e-13.
+Against batch fits of the same objectives, scikit-learn's `HuberRegressor`
+and statsmodels' `QuantReg`, they land close but not equal, since each
+row's weight was set by the fit before it.
 
 #### `sgd` — stochastic gradient descent
 
@@ -1537,7 +1688,9 @@ baseline, and the only model here that takes count targets
 (`loss="poisson"`).
 
 ```
-eta = zᵀβ        p = link(eta)        gᵢ = (dL/d eta)·zᵢ·w + l2·βᵢ        βᵢ -= lrᵢ·gᵢ
+eta = zᵀβ        p = link(eta)        d = dL/d eta
+g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gradient; the intercept takes no l2
+βᵢ -= lrᵢ·gᵢ     lrᵢ = learning_rate, or learning_rate/(1 + n_eff)^power, or learning_rate/(√Gᵢ + 1e-8)
 ```
 
 | loss | link | `dL/d eta` |
@@ -1552,13 +1705,14 @@ eta = zᵀβ        p = link(eta)        gᵢ = (dL/d eta)·zᵢ·w + l2·βᵢ 
 ```python
 weights = po.spec.sgd(
     "w", targets=["y"], features=["signal_a", "signal_b", "x0"], halflife=200.0,
-    loss="squared",              # or huber, quantile, epsilon_insensitive, poisson (count targets), logistic (0/1 targets)
+    loss="squared",              # or huber, quantile, epsilon_insensitive, poisson (count targets), logistic (0/1 targets);
+                                 # huber_delta=, quantile= and eps= set those losses' constants, in the target's units
     learning_rate=0.01,
     schedule="constant",         # or inv_scaling (lr / (1 + n_eff)^power), or adagrad, whose running sum of squared
-                                 # gradients decays on the clock so an adapted rate opens up again after a long gap
+                                 # gradients Gᵢ decays on the clock so an adapted rate opens up again after a long gap
     clip_gradient=1e3,           # the default; with a log link one large count would make the next gradient
-                                 # exponentially bigger. Never binds for the identity-link losses
-    coef_min=0.0,                # bound each slope from below (one number, or one per feature; inf for none) ...
+                                 # exponentially bigger. It does not bind at ordinary scales for the other losses
+    coef_min=0.0,                # bound each slope from below (one number, or one per feature; -inf for none) ...
     coef_sum=1.0,                # ... and fix their total: after every step the slopes are moved to the nearest point
                                  # that satisfies all bounds (the Euclidean projection). The intercept is never constrained.
                                  # coef_min=0, coef_sum=1 is a long-only, fully invested portfolio;
@@ -1596,24 +1750,30 @@ pa = po.spec.pa(
 )                                # a row weight below 1 scales the step; above 1 it counts as 1
 ```
 
-PA keeps no running sums, so its coefficients have no halflife, and the
-clock drives only `n_eff`. It takes the same `coef_min`, `coef_max` and
+PA keeps no running sums, so its coefficients have no halflife. The clock
+drives only the weights: `n_eff`, and each target's own, which its
+`min_periods` reads. It takes the same `coef_min`, `coef_max` and
 `coef_sum` as `sgd`, with the projection applied after each update. The
 step then no longer meets the row's margin exactly, and a truth outside the
-allowed set is never reached, so keep `c` small: each row moves the fit
+allowed set is never reached. So keep `c` small: each row moves the fit
 only as far as `c` allows, and the projection takes the rest back.
 
 #### `ftrl` — online logistic regression
 
 *API:* [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) — *Rust:* [`ftrl.rs`](crates/online-core/src/ftrl.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ftrl)
 
-FTRL-proximal (McMahan et al. 2013) for binary targets, with its running
-sums decayed on the same clock as everything else:
+FTRL-proximal (McMahan et al. 2013): a gradient method whose L1 penalty
+zeroes a coefficient with too little evidence, so the fit is sparse, and
+whose per-coordinate rates adapt to each feature's history. Its sums decay
+on the model's clock, and under a halflife its penalties decay with them.
+With `b` the coefficients and `zz`, `n` and `d` the per-coordinate sums:
 
 ```
-β_i = 0 if |z_i| ≤ l1 else −(z_i − sgn(z_i)l1) / ((β + √n_i)/α + l2)
-p   = sigmoid(zᵀβ)     g_i = (p − y)·z_i·w
-z_i += g_i − ((√(n_i + g_i²) − √n_i)/α)·β_i      n_i += g_i²
+zz_i ← λzz_i      n_i ← λn_i      d_i ← λd_i
+b_i  = 0 if |zz_i| ≤ l1·m else −(zz_i − sign(zz_i)·l1·m) / (β/α·m + d_i + l2·m)
+p    = sigmoid(zᵀb)      g_i = (p − y)·z_i·w      s_i = (√(n_i + g_i²) − √n_i)/α
+zz_i += g_i − s_i·b_i      n_i += g_i²      d_i += s_i
+m    = W / W*, per target: its weight, over its weight on a clock that runs only on the rows that teach it
 ```
 
 ```python
@@ -1621,12 +1781,22 @@ click = po.spec.ftrl(
     "click", targets=["y"], features=["x0", "x1"], halflife=500.0,
     loss="logistic",             # the default: pred is a probability and resid = y - p. "squared": the linear
                                  # prediction -- a sparse linear regression with no solves and an L1 penalty
-    alpha=0.1, beta=1.0,         # the learning-rate scale and its smoothing
-    l1=0.01, l2=0.0,             # l1 zeroes a coefficient whose evidence is below it
-)
+    alpha=0.1, beta=1.0,         # the learning-rate scale and its smoothing (the defaults)
+    l1=0.01, l2=0.0,             # l1 zeroes a coefficient whose evidence is below it (defaults 0 and 1)
+    strict_binary=False,         # the default clamps a target outside [0, 1] into it; True refuses the chunk,
+)                                # naming the row
 ```
 
-The recursion agrees with river's FTRL to 1e-12, row for row.
+A row that teaches a target nothing, absent or at weight 0, ages the sums
+and the penalties alike, so the fit does not move, as `ewridge`'s does not.
+In steady state the penalties act as a ridge of `(1 − λ)(β/α + l2)` on the
+mean scale: a constant target of 5 settles at 4.65 at `halflife=100`, and
+at 4.96 at 1000. Without a halflife `m` is 1 and `d_i` is `√n_i/α`, which
+is river's FTRL: the two agree to 1e-12, row for row. Vowpal Wabbit's
+`--ftrl` gives the same prediction and coefficients on every row there, to
+its single precision, under both losses. No third-party library forgets as
+a halflife does, so the decayed form is held to a reference written from
+the recursion above.
 
 #### `holt` — Holt's linear trend
 
@@ -1635,28 +1805,38 @@ The recursion agrees with river's FTRL to 1e-12, row for row.
 The one model that takes no features: it extrapolates the target's own
 level and trend.
 
+With `s` the clock since the target was last observed, this row's step
+included, and `λ_l = 0.5^(s/level_halflife)`, `λ_b = 0.5^(s/trend_halflife)`:
+
 ```
-pred = l + b·Δt
-l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)      b' = (λ_b·V·b + w·(l' − l)/Δt)/(λ_b·V + w)
+pred = l + b·s
+l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)          W' = λ_l·W + w
+b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
 ```
 
 ```python
 baseline = po.spec.holt(
     "baseline", targets=["y"], clock="t", max_dclock=600.0,
-    level_halflife=200.0,        # how fast the level forgets, in clock units
-    trend_halflife=2000.0,       # how fast the trend forgets; inf is the whole history's drift
+    level_halflife=200.0,        # how fast the level forgets, in clock units: the spec's halflife by another
+                                 # name, so give one of the two
+    trend_halflife=2000.0,       # how fast the trend forgets (default four times the level's); inf is the whole
+                                 # history's drift
+    trend=True,                  # the default; False holds the trend at zero, and refuses trend_halflife
 )                                # coef is [level, trend] per target
 ```
 
 Level and trend are weighted means of what each row observes and what the
 model forecast, with `W` and `V` the weight each has gathered; a row at
 weight `w` counts `w` times. The trend is per clock unit, so on an
-irregular clock it extrapolates the right distance. With `trend=False` the
-trend stays at zero and the forecast is flat: simple exponential smoothing,
-whose level is the target's EW mean. There is no seasonal
-term, because a seasonal index is a `group` on the phase, which the bank
-already does. Run it in the same bank as a real model to see how much the
-regression actually adds: compare `sigma`, or let `emit_selected` choose.
+irregular clock it extrapolates the right distance. A row with a null
+target or weight 0 leaves the level and trend where they were, and its
+clock carries over to the next observation. With `trend=False` the
+forecast is flat: simple exponential smoothing, whose level is the
+target's EW mean. There is no seasonal term, because a seasonal index is a
+`group` on the phase, which the bank already does. Run it in the same bank
+as a real model to see how much the regression actually adds: compare the
+two `sigma`, or let a [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting)
+with `a` and `b` say which predicts closer.
 
 ### Moments and correlation
 
@@ -1675,15 +1855,20 @@ row, so an `ew_cov` output can be a feature for that same row without
 leaking it.
 
 ```
-W'   = λW + w        m'ᵢ = (λW·mᵢ + w·xᵢ) / W'      S'ᵢⱼ = (λW·Sᵢⱼ + w·xᵢxⱼ) / W'
-varᵢ = Sᵢᵢ − mᵢ²     covᵢⱼ = Sᵢⱼ − mᵢmⱼ             corrᵢⱼ = covᵢⱼ / √(varᵢ·varⱼ)
+W' = λW + w      a = λW / W'      b = w / W'      δ = x − m          (a + b = 1)
+m' = m + b·δ     C'ᵢⱼ = a·Cᵢⱼ + a·b·δᵢδⱼ
+varᵢ = Cᵢᵢ       covᵢⱼ = Cᵢⱼ      corrᵢⱼ = Cᵢⱼ / √(CᵢᵢCⱼⱼ)
 ```
+
+`m` and `C` are the weighted means of `x` and of `(x − m)(x − m)ᵀ`, updated
+in Welford's centred form. The raw form, `E[x xᵀ] − m mᵀ`, loses a
+variance when the columns sit far from zero.
 
 ```python
 mv = po.spec.ew_cov(
     "mv", features=["x0", "x1", "x2"], clock="t", max_dclock=300.0, halflife=500.0,
-    stats=["mean", "std", "corr", "partial_corr", "mahal"],   # any of mean, var, std, cov, corr, partial_corr, mahal;
-                                 # default mean + std + corr. [] is legal: learn the moments, write nothing but n_eff,
+    stats=["mean", "std", "corr", "partial_corr", "mahal"],   # any of mean, var, std, cov, corr, partial_corr, mahal,
+                                 # and lagcorr with lags=, below; default mean + std + corr. [] is legal: learn the moments, write nothing but n_eff,
                                  # and read them back with bank.gram("mv") -- the form for a wide set of columns
     precision_prior=1e-6,        # needed by partial_corr (the correlation of two columns with all the others held fixed,
                                  # read off (C + s*prior*I)^-1, O(k³), paid only when asked) and by mahal; fades as data arrives
@@ -1703,55 +1888,8 @@ is from what the columns have been doing *together*, in standard
 deviations. On Gaussian columns `mahal²` is χ² with `k` degrees of freedom,
 and with one column it is `|z|`.
 
-**`window`: a hard cutoff, not a softer decay.** A halflife never forgets
-entirely: three halflives back still carries 12.5% of the weight.
-`window=w` makes a row older than `w` clock units contribute exactly
-nothing:
-
-```
-weight(age) = 0.5 ** (age / halflife)   if age <= window
-            = 0                          otherwise
-```
-
-```python
-cut = po.spec.ew_cov(
-    "cut", features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=500.0,
-    window=1500.0,               # a row older than this many clock units contributes exactly nothing
-    window_every=10,             # snapshot every 10 rows: the boundary is the oldest snapshot still inside the window,
-)                                # so a coarse cadence discards a little more than asked, never less
-```
-
-Inside the window the weights are still exponential, so this is not a flat
-rolling mean, and the newest row still dominates. It is exact, because an
-exponentially weighted sum contains its own past: everything at or before a
-time `u` is `λ^(t−u)` times the running sum as it stood then, so
-subtracting that leaves precisely the rest. The model keeps a ring of past
-snapshots to do it, the one place here where memory grows with a *window*
-rather than with the state: about 3 MB per group for a 1,000-row window
-over 20 columns, divided by `window_every`. `window_budget` caps that
-memory per ring, in MiB:
-
-| `window_budget` | when a chunk would take a ring past the cap |
-|---|---|
-| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the error names the ring's size and `window_every`; the bank goes on as it was. Under `drift_action="reset"` the overrun is found only as the rows go in, and the bank then refuses every later call, so rebuild it from its last save |
-| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, which, like `window_every`, only ever shortens the window |
-| not given | the chunk is refused past 256 MiB |
-
-Four things to know before reading the numbers:
-
-| | |
-|---|---|
-| the clock is the **decayed** one | the step after `max_dclock` and any `session_gap` |
-| the edge is a **discontinuity** | a row ageing out drops its whole weight at once, so the series has small steps that a plain exponential average does not |
-| it is a **subtraction** | precision falls with the fraction discarded: negligible at `window = 3h`, worse as the window shortens toward the halflife |
-| `n_eff` is the weight inside the window | so `min_periods` gates on something that stops growing, and a clock gap longer than `window` empties it and reports nulls rather than stale numbers |
-
-If the data fits in memory and only the moments are wanted, Polars already
-does this: `df.rolling("t", period="3h").agg(...)` with an exponential
-weight gives the same number to 1e-14. The reasons to reach for the spec
-are a stream, a saved state, or the time: the rolling window recomputes
-each window, in `O(n·W)`, where this is `O(n)`, 15.8 s against 14 ms at
-200k rows and a 4,680-row window.
+A `window` cuts `ew_cov`'s history off at a fixed age, as [A hard
+window](#a-hard-window) describes for the five models that take one.
 
 **`lags`: how a column moves with another `ℓ` rows ago.** The same
 co-moments, kept one step further out. With `W` and `m` the weight and mean
@@ -1796,6 +1934,9 @@ S'_yy = a·S_yy + a·b·(y_t − m_y)²             S'_xx = a·S_xx + a·b·(x_j
 S'_xy = a·S_xy + a·b·(x_j − m_x)(y_t − m_y)    m' = m + b·(value − m)
 ```
 
+Each pair (feature `j`, target `t`) keeps its own `m_x`, `S_xx` and `S_xy`,
+over its target's rows.
+
 ```python
 pairs = po.spec.marginal("pairs", targets=["y", "ret"],
                          features=["x0", "x1", "x2", "signal_a", "signal_b"],
@@ -1816,14 +1957,14 @@ one_stock = bank.marginal("pairs", group="b0")   #   10 rows here: five features
 
 That is `ew_cov`'s arithmetic, so a pair's correlation is the one an
 `ew_cov` over the two columns would report, to the bit. A null target ages
-its own pairs, `W_t ← λW_t`, and teaches them nothing; a null feature skips
-the row, as everywhere. Nothing is written per row but `n_eff`: the pairs
-are the state, read back as a table. `corr`, `beta` and `t` are null until
-the target's `W_t` reaches `min_periods`, whose default of 3 exists because
-two rows give ±1 whatever the data. They are also null wherever they are
-undefined: a constant feature, or `n_kish ≤ 2` for `t`. A bank loaded from a
-file reports the pairs the bank that saved it would, and one chunk or a
-thousand gives the same table to the bit.
+its own pairs, `W_t ← λW_t` and `Q_t ← λ²Q_t`, and teaches them nothing; a
+null feature skips the row, as everywhere. Nothing is written per row but
+`n_eff`: the pairs are the state, read back as a table. `corr`, `beta` and
+`t` are null until the target's `W_t` reaches `min_periods`, whose default
+of 3 exists because two rows give ±1 whatever the data. They are also null
+wherever they are undefined: a constant feature, or `n_kish ≤ 2` for `t`.
+A bank loaded from a file reports the pairs the bank that saved it would,
+and one chunk or a thousand gives the same table to the bit.
 
 **`feature_moments="shared"`: many targets for less.** By default each pair
 keeps the feature's mean and variance over its own target's rows. Shared,
@@ -1834,7 +1975,7 @@ at thirty, and a ten-target state is under half the size. Where a target is
 absent on some rows, `var_x` is the feature's over every row and `cov` is
 centred on that mean. That is a different estimator, sound where the absence
 says nothing about the feature. It takes `lags`, 4.6 times as fast with them
-at ten targets, and no `window`.
+at ten targets and no cross lags, and no `window`.
 
 Two views sit on top of that, both off unless asked for.
 
@@ -1843,10 +1984,19 @@ the right count for unequal weights and says nothing about rows that
 resemble their neighbours. On a smooth stream, consecutive rows are nearly
 the same observation, so `t` claims evidence that is not there. Lags fix
 that. The pair's moments are kept at each lag too, the same statistic
-`ew_cov(lags=)` computes, to the bit, and `serial_rule` turns them into
-Bartlett's correction. Two *independent* AR(1) series with `φ = 0.9` and
-`0.8` come out at `t = 2.39` and `t_serial = 1.03`: the first looks like a
-finding, and the second is the truth.
+`ew_cov(lags=)` computes, to the bit. `serial_rule` turns them into a
+count that allows for the resemblance, after Bartlett (1935):
+`n_serial = n_kish / (1 + 2 Σ_l ρ_x(l)·ρ_y(l))`. Two *independent* AR(1)
+series with `φ = 0.9` and `0.8` come out at `t = 2.39`, and at
+`t_serial = 1.03` under `"geometric"`: the first looks like a finding, and
+the second is the truth.
+
+| `serial_rule` | the sum over the kept lags | suits |
+|---|---|---|
+| not given | not taken: `n_serial` and `t_serial` are null | |
+| `"truncated"` | as it stands; null where the bracket reaches zero or below, as for two series whose autocorrelations have opposite signs | dense lags |
+| `"bartlett"` | lag `l` weighted `1 − l/(L + 1)`, `L` the longest kept lag, as Newey and West weight it, so the noisiest lags count least | dense lags, where the long ones are noisy |
+| `"geometric"` | `ρ(l) = φˡ` fitted to each series, and the tail summed in closed form, `2φ_xφ_y/(1 − φ_xφ_y)`; `phi_x` and `phi_y` are reported | exponentially weighted series, whose lags need not be dense |
 
 **`bins`: what a correlation cannot see.** Everything above is linear, and
 a feature can be strongly related to a target with `corr` at zero: a
@@ -1870,7 +2020,7 @@ honest = po.spec.marginal(
 #                               *leads* its target, and one whose lagcorr_xy[0] does *follows* it. Not against a
 #                               forward-looking target: the target l rows back is built partly from the feature's
 #                               newest l rows, so every timely feature built from the same news beats corr there
-#   n_serial                    n_kish divided by 1 + 2 * sum(rho_x(l) * rho_y(l)) (Bartlett 1935)
+#   n_serial                    n_kish over the serial_rule's bracket, in the table above
 #   t_serial                    the same statistic as t, against that count
 #   phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"
 #   bin_edges                   the feature's edges, fixed once and never moved
@@ -1888,19 +2038,19 @@ since a lagged correlation is not bounded by one in a finite sample. A row
 where the target is missing ages its weight and holds the lag moments, as
 it holds the pair's.
 
-Binning keeps `O(bins)` of state per pair and does one binary search per
-pair per row, which is why it can run across ten thousand columns in the
-pass that gives them `corr`. A value that carries more than a bin's share,
-such as an indicator's zero, fills a bin of its own, and the rest share
-what is left, so the 5% of rows that carry the signal are not lost among
-the zeros. The warm-up rows are held and replayed, not spent: the histogram
-is what it would have been had the edges been known before the first row.
-The hold and the histogram are each refused past 256 MiB per group when the
-bank is built, and `bin_budget` moves that limit, with `float("inf")` for
-none. A
-feature keeps only the bins it can support, so a binary feature has two,
-and a constant one has a single bin and no split. Each bin's moments are
-kept the way every accumulator here is kept, so a target at `1e7` keeps its
+Binning keeps `O(bins)` of state per pair, and takes one search of the
+edges per feature per row and a constant per pair. That is why it can run
+across ten thousand columns in the pass that gives them `corr`. A value
+that carries more than a bin's share, such as an indicator's zero, fills a
+bin of its own, and the rest share what is left. So the 5% of rows that
+carry the signal are not lost among the zeros. The warm-up rows are held
+and replayed, not spent: the histogram is what it would have been had the
+edges been known before the first row. The hold and the histogram are each
+refused past 256 MiB, per group and per halflife, when the spec is built,
+and `bin_budget` moves that limit, with `float("inf")` for none. A feature
+keeps only the bins it can support, so a binary feature has two, and a
+constant one has a single bin and no split. Each bin's moments are kept
+the way every accumulator here is kept, so a target at `1e7` keeps its
 variance. Both views ride into `bank.closed_groups()` as `pair_*` columns:
 `pair_split_gain` as a list over the pairs, and `pair_lagcorr_xx` and
 `pair_bin_n` as lists of lists.
@@ -1909,13 +2059,27 @@ variance. Both views ride into `bank.closed_groups()` as `pair_*` columns:
 specs in parallel ([Parallelism](#parallelism)), so a wide `marginal` on
 one group is one thread's work. `shards=10` splits its pairs into ten
 ranges of features, each run on a thread of its own, a batch of rows at a
-time; `shards="auto"` sizes the split to the width and the pool, and
-leaves a narrow spec whole. The numbers are the same to the bit at any
-count, so a saved bank resumes under any count. At 10,000 features,
-nine targets, lags and bins, `"auto"` ran the bank 4.9 times as fast on
-14 threads; with the moments of one target alone, 1.2 times, since the
-bank's own work on each row does not split
+time. `shards="auto"` sizes the split to the width and the pool, and
+leaves a narrow spec whole; unset, the pairs run on the group's thread. The
+numbers are the same to the bit at any count, so a saved bank resumes
+under any count. At 10,000 features, nine targets, lags and bins, `"auto"`
+ran the bank 4.9 times as fast on 14 threads. With the moments of one
+target alone it ran 1.2 times as fast, since the bank's own work on each
+row does not split
 ([PERFORMANCE §25](docs/PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)).
+
+**`window`: the pairs over a recent stretch.** A `window` truncates every
+pair moment, so `corr`, `beta` and `t` describe the rows inside it and
+nothing else ([A hard window](#a-hard-window)). That matters most for a
+screen: two regimes of opposite sign average to nothing over a long
+history. `n_eff`, in the record and in the table, is the weight inside the
+window. `bins` are refused beside a window. `lags` under one need
+`window_lags=True`, which accepts what they cost: each snapshot then holds
+the lag moments too, twice its size at one lag and six times at five with
+the default cross lags. A windowed lag moment is an estimate, where the
+windowed pair moments are exact. A windowed `marginal` batches at most
+`window_every` rows, so `shards="auto"` does not split it at the default
+of one.
 
 #### `deco` — one correlation for the whole matrix
 
@@ -1927,22 +2091,24 @@ estimated from too little data to be worth moving. `deco` (Engle & Kelly
 2012) replaces them with their average and estimates that, in O(m) a row.
 The row is standardised against the means and variances as they stood
 before it, `r_i = (x_i − m_i)/√v_i`. With `S₁ = Σ r_i` and `S₂ = Σ r_i²`
-over `n` features, the row's estimate is their Lemma 2.3, and the level
-follows one of two dynamics, on the model's own clock:
+over the `n` features that have a standardised value, the row's estimate
+is their Lemma 2.3. The level then follows one of two dynamics, on the
+model's own clock:
 
 ```
 u = (S₁² − S₂) / ((n − 1)·S₂)        = mean of r_i·r_j over i ≠ j, over mean r_i²
 
-"ew":      W' = λW + w,  b = w/W'      ρ' = ρ + b·(u − ρ)
-"linear":  ρ' = (1 − α − β)·ρ̄' + α·u + β·ρ      (ρ̄ the "ew" level)
+"ew":      W' = λW + w,  b = w/W'      ρ' = ρ + b·(u − ρ)                       ρ = u at W = 0
+"linear":  ρ' = (1 − α − β)·ρ̄' + α·u + β·ρ      (ρ̄ the "ew" level)          ρ' = ρ at w = 0
 ```
 
 ```python
 eq = po.spec.deco(
     "eq", features=["x0", "x1", "x2"], clock="t", max_dclock=300.0, halflife=500.0,
-    dynamics="ew",               # the exponentially weighted mean of u: rho is exactly what an ew_cov(stats=["mean"]) over
-)                                # the u sequence would report. "linear": the paper's eq. 21 with correlation targeting,
-                                 # which needs alpha= and beta= with alpha + beta < 1
+    dynamics="ew",               # the exponentially weighted mean of u: rho is exactly what an ew_cov(stats=["mean"])
+)                                # over the rows that have a u would report. "linear": the paper's eq. 21, its intercept
+                                 # written as (1 - alpha - beta) * rho_bar, since a stream has no sample to fit a free
+                                 # one on; needs alpha= and beta=, each >= 0, with alpha + beta < 1
 blocked = po.spec.deco(
     "blocks", features=["x0", "x1", "x2", "signal_a"], halflife=500.0,
     blocks={"fast": ["x0", "x1"], "slow": ["x2", "signal_a"]},   # one number per block and one per pair of blocks --
@@ -1955,12 +2121,22 @@ out = df.online.fit_predict([eq, blocked])
 # with blocks:  u_fast, u_slow, u_fast_slow and their rho_* twins, and one loglik over all of them
 ```
 
-Two things to know. `u` is a **downward-biased** estimate of the
-equicorrelation, as the paper says: it is a ratio of two averages, so
-`E[u]` is about 0.20 for a true 0.30 at six columns. Use it as a signal
-that moves with the market's correlation, not as the correlation itself.
-And `rho` is not an `ew_cov`'s `corr` over the columns: the mean of a ratio
+**`u` is a downward-biased estimate of the equicorrelation**, as the paper
+says: it is a ratio of two averages, so `E[u]` is about 0.20 for a true
+0.30 at six columns. Use it as a signal that moves with the market's
+correlation, not as the correlation itself.
+
+**`rho` is not an `ew_cov`'s `corr` over the columns.** The mean of a ratio
 is not the ratio of the means, and the gap is large.
+
+**A column with no spread is left out.** A column constant from its first
+row has no standardised value, so its block's sums leave it out, and its
+block reads the correlation among its other columns. A block left with
+fewer than two has no `u`. Each correlation value keeps its own weight, so
+a value with no `u` on a row learns nothing and does not decay, and
+`loglik` is null on such a row. Under `"linear"`, a row's weight reaches
+`rho` only through `rho_bar`, since the paper's recursion has no row
+weights.
 
 #### `rcov` — a block's realised covariance, robust to noise
 
@@ -1972,9 +2148,10 @@ efficient price plus a measurement error, and the error's variance
 accumulates with every tick. And when the series are not observed together,
 the correlation is pulled toward zero. Published estimators remove both
 with sums over lags, which is exactly what a stream can accumulate. `rcov`
-has no decay and no per-row output but `n_eff`: its value is the block,
-written when the group closes, so it needs `group` and `group_close`, and
-the estimate rides in that row.
+takes no `halflife` or `lam`, since the block is its boundary, and writes
+no per-row output but `n_eff`. Its value is the block's, written when the
+group closes, so it needs `group` and `group_close`, and the estimate
+rides in that row.
 
 ```python
 r = po.spec.rcov(
@@ -1985,7 +2162,10 @@ r = po.spec.rcov(
                                  # "kernel": the multivariate realised kernel (Barndorff-Nielsen, Hansen, Lunde & Shephard
                                  #          2011), sum_h k(h/(H+1)) Gamma_h with Parzen weights and jittered end points
                                  # "preavg": the modulated realised covariance (Christensen, Kinnebrock & Podolskij 2010):
-                                 #          returns pre-averaged over k_n = floor(theta sqrt(n)), less the residual bias
+                                 #          returns pre-averaged over k_n = ceil(theta * block_rows^0.6) rows
+    psd=True,                    # the default: clip any negative eigenvalue and report psd_repaired. For "preavg",
+                                 # False is the balanced form, k_n = floor(theta * sqrt(block_rows)) less the bias
+                                 # term: the optimal rate, but not always positive semi-definite
     block_rows=2000,             # a sizing hint for the ring, needed when bandwidth= is left out: a longer block runs,
                                  # clipped, and reports bandwidth_used
     bandwidth=None,              # a fixed H; left out, H = ceil(c* xi^(4/5) n^(3/5)) with c* = 3.5134
@@ -2005,7 +2185,9 @@ estimator, and Parzen's 0.97 efficiency beats the quadratic spectral's
 0.93. A block too short to estimate from gives nulls, not an error. Nothing
 reads a future row: the jittered *end* point is formed at close from
 observations already in the state, and a product enters `Γ̂_h` only once
-both its legs are final. `weight` is read as 0 or 1 only, since a sum over
+both its legs are final. A clock gap past `max_dclock`, or a session
+change, splits the block into stretches, and no product pairs two returns
+across the break. `weight` is read as 0 or 1 only, since a sum over
 returns has no fractional row.
 
 ### Clustering and classification
@@ -2023,7 +2205,7 @@ every prediction here. Each centre is the exponentially weighted mean of
 the rows assigned to it, which is `ew_cov`'s mean recursion, per cluster.
 
 ```
-j*   = argmin_j ‖x − c_j‖²          distances in units of each feature's EW sd
+j*   = argmin_j ‖x − c_j‖²          distances in units of each feature's EW sd (standardize=False: raw units)
 n'_j = λn_j + w                      c'_j = c_j + (w/n'_j)(x − c_j)     for j = j*
 ```
 
@@ -2032,15 +2214,18 @@ km = po.spec.kmeans(
     "km", features=["x0", "x1", "x2"], clock="t", halflife=2000.0, max_dclock=300.0,
     k=3,
     warm_rows=100,               # seeding waits for this many rows (default 500), places the centres, replays the rows
-    seed_rule="lloyd",           # the best of ten k-means++ starts, by inertia: one start lands in the wrong partition
-                                 # a third of the time on five blobs in four dimensions
+    seed_rule="lloyd",           # the default: ten k-means++ starts, each refined by ten Lloyd iterations, and the one
+                                 # of least inertia kept. One start lands in the wrong partition a third of the time on
+                                 # five blobs in four dimensions. seed= keys the random draws
     split_merge=0.5,             # every split_merge_every rows, if the two closest centres are nearer than this times the
     split_merge_every=200,       # sum of their radii -- two centres in one blob -- one is freed and placed on the rows
-                                 # far from every centre. 0: plain sequential k-means
+                                 # far from every centre, once at least three such rows carry 5% of the weight since
+                                 # the last check. 0: plain sequential k-means, with no dead rule either
     dead_frac=0.05,              # a centre whose blob vanished fades; under this share of an equal share it is re-placed.
                                  # that takes log2(1/dead_frac) halflives: 4.3 at 0.05, 2 at 0.25
     scale_floor=0.1,             # the metric's variance is floored at this fraction of each feature's long-run variance
-)
+    update_every=1,              # the default: learned rows between applying each centre's batch; 1 is sequential
+)                                # k-means, and more a mini-batch one
 out = po.ModelBank([km]).fit_predict(df).unnest("km")
 # cluster   the nearest centre's label, before the row is learned from
 # dist      the distance to it;  dist2  the distance to the second-nearest
@@ -2056,9 +2241,9 @@ loses its centre whenever any row is far. The move cannot see one centre
 owning two blobs, whose rows are all within its own radius, and seeding
 with `lloyd` is what prevents that. The metric's variance is floored at a
 tenth of each feature's long-run variance (`scale_floor`), tracked at eight
-times the halflife: a feature quiet for twenty halflives then counts 58
-times what its history says, where `1/var` alone counted a million, and the
-row on which it moves again is not infinitely far from every centre.
+times the halflife. A feature quiet for twenty halflives then counts about
+57 times what its history says, where `1/var` alone counted a million. So
+the row on which it moves again is not infinitely far from every centre.
 
 #### `micro` — density-based clustering, any shape
 
@@ -2070,14 +2255,17 @@ and follows clusters that appear and vanish. It is DenStream's
 micro-clusters with a linking step over them. Each micro-cluster is a
 *summary*: a decayed weight `n`, a centre `c`, and a radius `r`, the
 exponentially weighted root-mean-square distance of its rows from the
-centre. Each row goes to the nearest summary that can take it without its
-radius passing `eps`, in units of each feature's exponentially weighted
-standard deviation. If none can, the row opens a new summary.
+centre. A row goes to the nearest *established* summary if that one can
+take it without its radius passing `eps`, in units of each feature's
+exponentially weighted standard deviation. Otherwise it goes to the
+nearest summary not yet established, on the same test, and failing both
+it opens a new summary.
 
 ```
 n_j  ← λ n_j                                               every summary
-j*   = nearest summary that keeps  a r²_j + a b ‖x − c_j‖² ≤ eps² p,
-       a = n_j/(n_j + 1),  b = 1/(n_j + 1);  else a new one at x
+j*   = the nearest established summary, if it keeps  a r²_j + a b ‖x − c_j‖² ≤ eps² p,
+       else the nearest other summary, if it does,  a = n_j/(n_j + 1),  b = 1/(n_j + 1);
+       else a new one at x
 n_j* ← n_j* + w     c_j* ← c_j* + (w/n_j*)(x − c_j*)     r²_j* ← min(·, eps² p)
 ```
 
@@ -2089,10 +2277,13 @@ mc = po.spec.micro(
     beta_mu=5.0,                 # a summary with at least this much weight is established
     prune_every=100,             # every this many rows: drop the light summaries, link the established ones -- centres
     macro_link=None,             # within L of each other share a label. L is read from the spacing the summaries show
-)                                # unless macro_link sets it (2 = link only summaries that touch)
+                                 # unless macro_link sets it (2 = link only summaries that touch)
+    max_clusters=200,            # the default cap on live summaries: past it the lightest is evicted, an
+                                 # unestablished one first
+)
 out = po.ModelBank([mc]).fit_predict(df).unnest("mc")
 out.select("cluster", "outlier", "n_clusters", "n_micro").tail(3)
-# cluster              the label of the nearest established summary; null while there is none
+# cluster              the label of the nearest established summary, on an outlier row too; null while there is none
 # dist                 the distance to that summary's centre
 # micro                the id of the summary this row goes to; ids only go up and are never reused
 # outlier              no established summary takes the row
@@ -2100,10 +2291,10 @@ out.select("cluster", "outlier", "n_clusters", "n_micro").tail(3)
 # coef                 the established summaries, one [id, label, n, radius, c_1 .. c_p] row each
 ```
 
-The metric's variance is floored as `kmeans`'s is (`scale_floor`, a tenth
-of each feature's long-run variance): a feature quiet for twenty halflives
-counts 58 times what its history says rather than a million, so the next row
-that moves it is not an outlier by that alone.
+The metric's variance is floored as `kmeans`'s is, at a tenth of each
+feature's long-run variance (`scale_floor`). A feature quiet for twenty
+halflives counts about 57 times what its history says rather than a
+million, so the next row that moves it is not an outlier by that alone.
 
 Every output is read before the row is learned from. A label is the
 smallest id in its chain, so it outlives everything but that summary. Both
@@ -2114,12 +2305,14 @@ ways to get `eps` wrong show in the outputs:
 | nearly every row is an `outlier`, and `cluster` stays null | too small: no summary reaches `beta_mu` before it is pruned | raise `eps` |
 | `n_micro` is about the number of clusters | too coarse: each cluster is one summary, so the derived `L` reads the spacing *between* clusters and bridges them into one | lower `eps`, or set `macro_link=2` |
 
-Measured at 20k rows with the `eps` above: moons, rings and five Gaussians
-in twenty dimensions all score ARI 1.000 against the truth, where `kmeans`
-cannot follow the first two. Noise drawn uniformly over the box is flagged
+Measured at 20k rows and a halflife of 3,000, moons, rings and five
+Gaussians in twenty dimensions all score ARI 1.000 against the truth.
+`eps` was 0.07, 0.1 and 0.3 for the three, and `kmeans` cannot follow the
+first two. At `eps=0.07`, noise drawn uniformly over the box is flagged
 `outlier` 94% of the time, and real rows 0.3% of the time. A cluster born
-mid-stream has a label within 200 rows, and one whose rows stop lingers
-`halflife · log2(n / beta_mu)`, with `n` the weight it had.
+mid-stream had a label 31 rows in, and a test holds that under 200. One
+whose rows stop lingers `halflife · log2(n / beta_mu)`, with `n` the weight
+it had.
 
 #### `ew_class` — Gaussian classification on `ew_cov` moments
 
@@ -2146,8 +2339,8 @@ cl = po.spec.ew_class(
     label="dir",                 # the label column; a null label scores the row and learns nothing from it
     classes=["down", "up"],      # declared up front: a label not in the list is an error naming the row.
                                  # integer and boolean columns work through their text: ["0", "1"], ["true", "false"]
-    covariance="shared",         # "full": each class its own covariance (QDA); "shared": pooled by class weight (LDA);
-                                 # "diagonal": variances only (Gaussian naive Bayes)
+    covariance="shared",         # "full", the default: each class its own covariance (QDA); "shared": pooled by class
+                                 # weight (LDA); "diagonal": variances only (Gaussian naive Bayes)
     precision_prior=0.1,         # the ridge that makes a class scoreable from its first row; fades as ew_cov's does
 )
 out = po.ModelBank([cl]).fit_predict(labelled).unnest("cl")
@@ -2159,13 +2352,17 @@ out.select("dir", "class", "p_up", "n_eff").tail(3)
 
 Every output is read before the row is learned from, so a row's
 probabilities never saw its own label. That is also how to score a stream
-whose labels arrive late: null the label and keep the features.
+whose labels arrive late: null the label and keep the features. `n_eff`
+counts every row the model accepts, labelled or not, while `π_c` counts
+the labelled rows' weights. A `window` makes each class's moments the
+window's, so the classifier can follow class means that move ([A hard
+window](#a-hard-window)).
 
-| `covariance` | what each class keeps | the right choice when | measured, 400k rows, 6 features, 3 classes |
+| `covariance` | what each class keeps | the right choice when | rows/s, 20 features, 3 classes ([Throughput](#throughput)) |
 |---|---|---|---|
-| `"full"` | its own covariance: one `k×k` Cholesky per class per row | in general | 0.9M rows/s |
-| `"shared"` | one covariance pooled by class weight, factorized once per row | the classes differ in location but not in spread; it then matches `"full"` to a fraction of a percent on the test data, with fewer parameters to learn | 1.8M rows/s |
-| `"diagonal"` | variances only | speed matters most; it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it | 5M rows/s |
+| `"full"` | its own covariance, and its Cholesky factor, which only the row's own class refactors (under a `window`, every class on every row) | in general | 0.47M |
+| `"shared"` | one covariance pooled by class weight, factorized once per row | the classes differ in location but not in spread; it then labels more than 98% of rows as `"full"` does in the tests, with fewer parameters to learn | 0.53M |
+| `"diagonal"` | variances only | speed matters most; it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it | 2.4M |
 
 On three Gaussian classes with their own covariances, the accuracy sits
 within 0.001 of the best any classifier could do given the generating
@@ -2225,8 +2422,9 @@ the size of the values is invisible: 60% small gains and 40% huge losses is
 The two sides' average is an e-value for the two-sided question.
 
 A trial is a row, so there is no `weight` and no `halflife`, and a spec that
-gives them is refused. `session`, or `on_clock_reset="reset_state"`,
-restarts the test. `a_suffix` and `b_suffix` pick a grid instance, such as
+gives them is refused. A session change restarts the test, and so does a
+step back past `min_backwards_jump` under `on_clock_reset="reset_state"`.
+`a_suffix` and `b_suffix` pick a grid instance, such as
 `"@h500"` or `"__r0.5@h500"`. A comparison inside a bank is
 chunk-invariant, saved with the state, and works a chunk at a time like
 everything else.
@@ -2244,8 +2442,8 @@ change.
 | `kind` | reports | against | a change is found |
 |---|---|---|---|
 | `"monitor"` | on a span's last row | the span's own correlation | at the span's end, up to `span_rows` rows late |
-| `"sequential"` | on every monitored row | a history of `span_rows` rows | as soon as it crosses a boundary |
-| `"window"` | on every row | the window before | as soon as the two windows differ |
+| `"sequential"` | on every monitored row but a cycle's first | a history of `span_rows` rows | as soon as it crosses a boundary |
+| `"window"` | on every row once both windows are full, `2·span_rows` rows in | the window before | as soon as the two windows differ |
 
 A parameter that belongs to another kind is refused, naming the kinds it
 applies to. On a flag, `since_change` dates the change: the rows from the
@@ -2264,16 +2462,21 @@ delta-method long-run standard deviation of `ρ̂`. Under the null, `Q`
 converges to `sup|B|` for a Brownian bridge `B`, so the critical value is
 the Kolmogorov quantile. It is computed from the series, not pinned, and it
 reproduces the published 1.3581 at 5%. `D̂`'s Bartlett kernel is the
-paper's, lag `l` at `1 − l/γ` with `γ = ⌊ln T⌋`. The test's size and power
-are held to the paper's own tables: `.035` at ρ = 0 and `T = 500`, and
-`.587` power on a `0.5 → 0.7` break. On a flag, `since_change` counts the
-rows after the CUSUM's maximum.
+paper's, lag `l` at `1 − l/γ` with `γ = ⌊ln T⌋`. Measured on the paper's
+own `t_5` design, the size is 0.031 at ρ = 0 and `T = 500`, where the
+paper's table gives .035. The power on a `0.5 → 0.7` break is 0.552, or
+0.582 size-adjusted, where it gives .587 ([docs/REGIMES.md
+§2–3](docs/REGIMES.md#2-is-the-monitor-the-size-its-paper-says)). A test
+holds the size near the nominal 0.05 on Gaussian pairs. On a flag,
+`since_change` counts the rows after the CUSUM's maximum.
 
 ```python
 c = po.spec.corrchange(
     "break", features=["x0", "x1"],
     kind="monitor",              # the constancy test above, or "window": how *big* the change is, below
     span_rows=500,               # nothing is reported until a span closes: a delay of at most this many rows
+    alpha=0.05,                  # the level, the default, spread over the pairs as alpha / npairs; alpha_adjust="none"
+                                 # does not. The statistic is the largest over the pairs
     scalar=False,                # True: run the test on the equicorrelation of the standardised row (deco's u) --
 )                                # one statistic however many columns, and a test of its level rather than of a pair
 out = df.online.fit_predict([c]).unnest("break")   # stat, crit, flag, since_flag, since_change
@@ -2304,8 +2507,9 @@ their Table 2 in every cell ([docs/REGIMES.md
 §9](docs/REGIMES.md#9-the-sequential-detector-against-its-paper)).
 
 `γ` trades early detection for late. Above 0 the boundary starts lower, so
-a change soon after the history is caught sooner, at a cost in size: 0.04
-to 0.09 at `γ` of 0 and 0.25, and 0.12 to 0.18 at 0.45, for a nominal 0.05.
+a change soon after the history is caught sooner, at a cost in size. For a
+nominal 0.05, the size runs 0.04 to 0.09 at `γ` of 0 and 0.25, and 0.12 to
+0.18 at 0.45.
 On a flag, `since_change` is the paper's Eq. 8, the argmax of the same
 CUSUM over the monitored rows before the flag.
 
@@ -2315,7 +2519,8 @@ s = po.spec.corrchange(
     kind="sequential",
     span_rows=500,               # 500 rows of history, assumed stable (kind="monitor" over them checks it)
     monitor_rows=1000,           # then each of up to 1000 rows tested as it arrives: the paper's T = 2
-    boundary_gamma=0.25,         # 0 keeps the size; 0.45 catches an early change soonest; 0.25 between
+    boundary_gamma=0.25,         # 0, the default, keeps the size nearest nominal; 0.45 catches an early change
+                                 # soonest; 0.25 between
 )
 ```
 
@@ -2326,7 +2531,10 @@ w = po.spec.corrchange(
     span_rows=100,
     n_perm=200, permute_every=500,   # ... against a permutation quantile: n_perm shuffles of the pooled rows between the
     perm_block=10,               # windows, in blocks of perm_block so rows that resemble their neighbours do not make the
-)                                # null too liberal; or give crit= as a number and skip the permutations entirely
+                                 # null too liberal; or give crit= as a number and skip the permutations entirely
+    seed=0,                      # the default: the same seed gives the same critical values
+    reset=False,                 # the default; True empties both windows at a flag
+)
 ```
 
 The window kind's null is a permutation, not a sign flip, because negating
@@ -2359,13 +2567,17 @@ h = po.spec.hmm(
     "regime", features=["x0", "x1"], halflife=500.0,
     k=2,                         # the number of hidden states
     precision_prior=1e-2,        # required: a state's centred co-moments start at zero, and a zero matrix has no density
-    warm_rows=400,               # seeds the states from this many learned rows with kmeans' rule; every output is null
-                                 # until then. Should span more than one regime, or the seeds are two halves of one
+    covariance="full",           # the default; "shared" or "diagonal", as for ew_class
+    warm_rows=400,               # seeds the states from this many learned rows with kmeans' rule (seed_rule="lloyd",
+                                 # seed=0); every output is null until then. Should span more than one regime, or the
+                                 # seeds are two halves of one
     means=None, covs=None,       # or give the states outright, and learn=False to freeze them
-)                                # exog_tvtp= drives the transition matrix from a column, through fixed tvtp_coef=
+    transition_prior=1.0,        # the default Dirichlet pseudo-count per cell of the transition matrix; transition=
+)                                # spreads it over a matrix of your own. exog_tvtp= drives the transitions from a
+                                 # column, through fixed tvtp_coef=
 out = df.online.fit_predict([h]).unnest("regime")
 # p_0, p_1      the filtered state, before the row;  p1_0, p1_1   the predicted state
-# state         the most probable one;  loglik   the row's surprise
+# state         the most probable state under p1;  loglik   the row's surprise
 ```
 
 Everything reported is read before the row is learned from. Each state's
@@ -2379,11 +2591,19 @@ from a clustering: on two-dimensional blobs 1.5 apart, a memoryless
 nearest-centre rule *given the true centres* is 85% right, and the filter is
 99% right.
 
-One limitation: a single extreme row can be captured by one state, and in
-mean form a state with zero responsibility keeps its moments. So a state
-that stops winning never forgets, and the mixture is left one state short.
-A larger `precision_prior`, given states, or cleaning upstream are the
-mitigations.
+Two limitations. **A single extreme row can be captured by one state**,
+and in mean form a state with zero responsibility keeps its moments. So a
+state that stops winning never forgets, and the mixture is left one state
+short. A larger `precision_prior`, given states, or cleaning upstream are
+the mitigations, though a ridge near the data's own variance halves every
+correlation. **A regime that lives only in the covariance needs covariances
+to start from.** The default seeding is k-means, and zero-mean states differ
+in nothing k-means can see, so it splits the rows by direction. On streams
+that stay in one of two zero-mean states, the filter then puts 57% of rows
+in the true state, against 98% given `covs` ([docs/REGIMES.md
+§1](docs/REGIMES.md#1-does-hmm-recover-the-stream-that-made-it)). Pass
+`means` and `covs`, or a feature in which the regime is a shift in
+location.
 
 #### `bocpd` — how long has this regime lasted?
 
@@ -2404,7 +2624,9 @@ changepoint: P(r_t = 0,   x_1:t) = Σ_r P(r_t-1 = r, x_1:t-1)·π_r·H
 Each run keeps its own conjugate sufficient statistics, so slot `r` holds
 exactly the `r` rows that hypothesis says came before this one in the run.
 Slot 0 holds none, so its predictive is the prior's, which is what makes
-"a new run starts here" a hypothesis the data can vote on.
+"a new run starts here" a hypothesis the data can vote on. There is no
+`halflife` or `lam`, and a spec that gives one is refused: the run-length
+posterior is what forgets, and `hazard` says how fast.
 
 ```python
 b = po.spec.bocpd(
@@ -2417,14 +2639,17 @@ b = po.spec.bocpd(
                                  # O(runs d²) a row and the one that can see a break in the *correlation* alone;
                                  # "robust": each row's contribution weighted by (pi(x)/pi(mode))**robust_beta, so one 20-sigma
                                  # row moves nothing (without it, that row is a changepoint at p_change 0.91)
-    prune_below=1e-6,            # drop the runs holding less than this share of the mass: what makes the model finite
-    max_run=None,                # fold every longer run into the last kept one: caps how much history any run holds
+    prune_below=1e-6,            # drop the runs holding less than this share of the mass
+    max_run=None,                # 10,000 by default: fold every longer run into the last kept one. In a stream that
+                                 # seldom breaks, this is what bounds the runs kept
     hazard_col=None,             # read the hazard per row from a column, declared in the target slot the way a weight is
 )
 out = df.online.fit_predict([b]).unnest("regime")
-run_started_at = pl.int_range(pl.len()) - pl.col("run_mode")
+started = out.with_columns(      # the row each group's current run began on, counted in the group's own rows
+    run_start=pl.int_range(pl.len()).over("stock_id") - pl.col("run_mode")
+)
 # p_change      P(r_t <= 1) given this row: the alarm
-# run_mode      the most likely run length, before the row -- so t - run_mode is the row the run began on
+# run_mode      the most likely run length, before the row: the run began run_mode rows before this one
 # run_mean      the posterior mean run length, before the row
 # pred_<f>      the pre-row predictive mean of each feature, mixed over runs
 # logscore      the row's log predictive density under that mixture
@@ -2435,67 +2660,75 @@ same quality of signal. `p_change` is a per-row likelihood ratio, so it is
 spiky, and its height depends on the size of the break against the prior
 scale. A ten-fold variance step takes it to 0.83 on the row itself, a
 four-sigma mean shift with a diffuse prior barely lifts it, and a change in
-correlation alone never moves it at all. The run length finds all three,
-one to three rows later, and dates each to the right row. `p_change` is
-`P(r ≤ 1)` rather than `P(r = 0)` because the changepoint branch and the
-growth branch share the same predictive, which makes the normalised mass at
+correlation alone never moves it at all. The run length finds the
+variance step and the mean shift one to three rows later, and dates each
+to the right row. A change in correlation alone reaches it only under
+`emission="gaussian"`, a median of 98 rows later ([docs/REGIMES.md
+§5](docs/REGIMES.md#5-two-changepoint-detectors-on-the-same-break)). `p_change` is
+`P(r ≤ 1)` rather than `P(r = 0)`. The changepoint branch and the growth
+branch share the same predictive, which makes the normalised mass at
 `r = 0` *exactly* `H` on every row, whatever the data. Row one of a group
 reports nothing, since `P(r ≤ 1)` is 1 there however the row looks.
 
 `robust_beta` is a trade-off: a whole new regime is a run of individually
 forgiven rows, so above about 0.2 nothing is ever detected again. The
-default of 0.1 ignores the outlier and still dates a four-sigma shift to
-the right row.
+default of 0.1 ignores the outlier and still finds a four-sigma shift
+within five rows, dated within a row of the right one.
 
 ## Performance
 
 ### Throughput
 
-Apple M-series, single process, best of 3, 200k rows per run
-(`uv run python scripts/benchmark.py --markdown`):
+An Apple M4 Pro, one process, best of 3, 200k rows per run, measured on
+2026-09-29 (`uv run python scripts/benchmark.py --markdown`;
+[PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29)
+has the run):
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 10,306,024 |
-| `ewridge` k=20 | 1 target, 1 halflife | 4,122,355 |
-| `ewridge` k=50 | 1 target, 1 halflife | 1,040,742 |
-| `ewridge` k=20 | 10 targets | 2,340,621 |
-| `ewridge` k=20 | 5 halflives | 2,355,548 |
-| `rls` | k=20, 1 target | 1,843,129 |
-| `kalman` | k=20, 1 target | 2,122,805 |
-| `lasso` | k=20, 1 target (3-point path) | 2,060,329 |
-| `huber` | k=20, 1 target | 4,175,881 |
-| `ftrl` | k=20, 1 target | 6,006,156 |
+| `ewridge` k=5 | 1 target, 1 halflife | 5,548,684 |
+| `ewridge` k=20 | 1 target, 1 halflife | 2,530,123 |
+| `ewridge` k=50 | 1 target, 1 halflife | 599,466 |
+| `ewridge` k=20 | 10 targets | 1,426,222 |
+| `ewridge` k=20 | 5 halflives, 500 to 2,500 | 1,355,982 |
+| `rls` | k=20, 1 target | 1,573,563 |
+| `kalman` | k=20, 1 target | 1,876,826 |
+| `lasso` | k=20, 1 target (3-point path) | 1,629,739 |
+| `huber` | k=20, 1 target | 3,267,509 |
+| `ftrl` | k=20, 1 target | 3,873,282 |
 
-Targets share one set of feature sums, so 10 targets take far less than 10×
-the time of one. Each halflife in a grid is its own set of sums, but they
-run in parallel, so a 5-halflife grid takes about 2× the time of one rather
-than 5×. `rls` is 1.3–2.1× slower for its square-root form, which is what
-keeps one extreme row from destroying it by cancellation.
+Targets share one set of feature sums, so 10 targets take 1.75 times as
+long as one, rather than 10 times. Each halflife in a grid is its own set
+of sums, but they run in parallel. So the 5-halflife grid takes 1.35 times
+as long as its shortest halflife alone, 1,832,817 rows a second, rather
+than 5 times. A shorter halflife solves more often, so that halflife of
+500 runs slower than the 1,000 every other row here uses. `rls` runs at 62% of
+`ewridge`'s speed for its square-root form, which is what keeps one
+extreme row from destroying it by cancellation.
 
 The other families, and the options that add work, on the same machine and
 rows:
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` + `conformal` | k=20, 90% interval | 4,097,559 |
-| `sgd` | k=20, squared loss | 8,961,276 |
-| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,481,671 |
-| `pa` | k=20 | 11,150,059 |
-| `kalman` | k=20, `revert_halflife` | 1,844,755 |
-| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,117,751 |
-| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 750,903 |
-| `ew_class` | k=20, 3 classes, full covariance | 495,968 |
-| `ew_class` | k=20, 3 classes, shared covariance | 577,082 |
-| `ew_class` | k=20, 3 classes, diagonal | 2,824,922 |
-| `kmeans` | 4 features, K=8 | 6,118,711 |
-| `kmeans` | k=20, K=8 | 3,103,963 |
-| `micro` | 4 features, `eps=1` | 15,060,666 |
-| `seqtest` | sign of one column | 22,436,196 |
+| `ewridge` + `conformal` | k=20, 90% interval | 2,472,378 |
+| `sgd` | k=20, squared loss | 8,423,373 |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,288,779 |
+| `pa` | k=20 | 8,284,518 |
+| `kalman` | k=20, `revert_halflife` | 1,677,506 |
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 1,655,993 |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 692,690 |
+| `ew_class` | k=20, 3 classes, full covariance | 466,466 |
+| `ew_class` | k=20, 3 classes, shared covariance | 531,384 |
+| `ew_class` | k=20, 3 classes, diagonal | 2,448,700 |
+| `kmeans` | 4 features, K=8 | 4,590,376 |
+| `kmeans` | k=20, K=8 | 2,383,197 |
+| `micro` | 4 features, `eps=1` | 8,799,815 |
+| `seqtest` | sign of one column | 14,919,853 |
 
 A conformal interval adds nothing measurable, because it reads the residual
 the model already has. A simplex constraint sorts `2k` breakpoints per row,
-which makes `sgd` about 4× slower. The Mahalanobis distance and the
+which makes `sgd` 3.7 times slower. The Mahalanobis distance and the
 full-covariance `ew_class` each factor a `k × k` matrix by Cholesky: once
 per row for `mahal`, and once per *learned* row for `ew_class`. `kmeans` and
 `micro` compute a distance to each centre, and `seqtest` a handful of
@@ -2505,26 +2738,30 @@ The correlation families, on the same machine and rows:
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `deco` | k=20, one equicorrelation | 2,666,809 |
-| `deco` | k=20 in 4 blocks | 1,892,836 |
-| `rcov` | 4 features, kernel, blocks of 1000 | 3,864,849 |
-| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,148,104 |
-| `hmm` | 4 features, K=2 | 1,343,086 |
-| `hmm` | k=20, K=2 | 353,258 |
-| `bocpd` | 4 features, diagonal | 1,009,075 |
-| `bocpd` | 4 features, full covariance | 585,180 |
-| `corrchange` | 4 features, monitor, `span_rows=500` | 388,557 |
-| `corrchange` | 4 features, window 100, permute every 500 | 187,407 |
+| `deco` | k=20, one equicorrelation | 2,093,753 |
+| `deco` | k=20 in 4 blocks | 1,563,248 |
+| `rcov` | 4 features, kernel, blocks of 1000 | 3,385,427 |
+| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,123,565 |
+| `hmm` | 4 features, K=2 | 1,182,841 |
+| `hmm` | k=20, K=2 | 325,937 |
+| `bocpd` | 4 features, diagonal, `max_run=200` | 884,387 |
+| `bocpd` | 4 features, full covariance, `max_run=200` | 568,724 |
+| `corrchange` | 4 features, monitor, `span_rows=500` | 449,526 |
+| `corrchange` | 4 features, window 100, permute every 500 | 173,711 |
 
 `deco` is one number for the whole matrix, computed in `O(m)` a row, which
 is why it runs at `ew_cov`'s speed and not at a covariance matrix's. `rcov`
 accumulates per row and computes its kernel only when the block closes.
 `hmm` factorizes a `k × k` covariance per state per row, which is
-`ew_class`'s work with the classes hidden. `bocpd` does `O(runs · d²)` work
-a row, and `prune_below` is what keeps it finite: at `prune_below=0` the
-run vector grows by one entry every row and the model is `O(rows²)`, while
-at the default it is flat in the length of the stream. The setting is a
-direct dial on throughput, on i.i.d. Gaussian rows:
+`ew_class`'s work with the classes hidden.
+
+`bocpd` does `O(runs · d²)` work a row, so its speed is the number of runs
+it keeps. With no bound, the run vector grows by one entry every row and a
+stream costs `O(rows²)`. A changepoint collapses the runs to a few dozen,
+but a stream that does not break spreads them over thousands of run
+lengths, and there `max_run`, 10,000 by default, is the bound.
+`prune_below` drops the runs thinner than itself, which makes it a direct
+dial on throughput. On 20,000 i.i.d. Gaussian rows with no `max_run`:
 
 | `prune_below` | rows/sec |
 |---|---:|
@@ -2554,28 +2791,32 @@ parquet in and parquet out:
 line, and it is flat too.
 
 Memory is three things: the state, the chunks in flight, and whatever
-Polars' reader has read ahead. What growth the two rows show is not the
-bank's: it is the memory allocator keeping pages it has freed, and nearly
-all the rest is Polars reading ahead in the parquet file. The read-ahead is sized from Polars' thread count, so
+Polars' reader has read ahead. The state does not grow with the stream,
+but a `window`'s snapshots and `marginal`'s bins grow with their settings,
+and each is capped per group, at 256 MiB by default. What growth the two
+rows show is not the bank's: it is the memory allocator keeping pages it
+has freed, and nearly all the rest is Polars reading ahead in the parquet
+file. The read-ahead is sized from Polars' thread count, so
 `POLARS_MAX_THREADS` shrinks it ([Parallelism](#parallelism)), and the
-settings below tune it directly. Every step after the bank in a query,
-such as a filter, a join, a group-by or writing the result, runs a chunk at
-a time, as Polars itself does. Polars' rules hold for the steps *around*
-the bank too: a rolling window over groups, with `.over("group")` or
-`group_by=`, makes Polars hold every row, 6.5 GB and 1.7 GB on the same
-rows against 0.25–0.28 GB without groups. A bank's `group=` keeps one set of
-running sums per group instead, and grows with the number of groups, not
-the number of rows.
+settings below tune it directly.
+
+Every step after the bank in a query, such as a filter, a join, a group-by
+or writing the result, runs a chunk at a time, as Polars itself does.
+Polars' rules hold for the steps *around* the bank too. A rolling window
+over groups, with `.over("group")` or `group_by=`, makes Polars hold every
+row: 6.5 GB and 1.7 GB on the same rows, against 0.25–0.28 GB without
+groups. A bank's `group=` keeps one set of running sums per group instead,
+and grows with the number of groups, not the number of rows.
 
 ### Tuning memory with Polars' own settings
 
 A bank's own memory is its state plus the chunks in flight, and neither
 grows with the stream. What does grow is Polars' read-ahead: the streaming
-engine prefetches row groups ahead of whatever consumes them, sized from
-the thread count, and while a bank is the slowest step, a local disk needs
-none of it. Three environment variables move it. All are Polars' own, all
-are read at run time rather than at import, and all can be set from
-Python:
+engine prefetches blocks of the parquet file ahead of whatever consumes
+them, sized from the thread count. While a bank is the slowest step, a
+local disk needs none of it. Three environment variables move it. All are
+Polars' own, all are read at run time rather than at import, and all can
+be set from Python:
 
 ```python
 import os
@@ -2585,25 +2826,25 @@ os.environ["POLARS_MAX_THREADS"] = "4"               # scales the same term, sin
 os.environ["POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET"] = "65536"   # a byte cap on the same read-ahead
 ```
 
-Measured on 8M rows by 12 columns in 80 row groups, as peak resident
-memory, with the allocator's page retention off, so that the figure is live
-data rather than the high-water mark of everything ever allocated:
+Measured on 8M rows by 12 columns in 80 blocks, as peak resident memory.
+The allocator's page retention was off, so that the figure is live data
+rather than the high-water mark of everything ever allocated:
 
 | what runs | default | prefetch 1 |
 |---|---:|---:|
 | `lf.online.fit_predict(...).sink_parquet(...)` | 1.63 GB | 1.12 GB |
 | `bank.fit_predict_batches(lf)` | 1.41 GB | 1.07 GB |
 
-The prefetch is read per scan, not once at import, so unlike
+The prefetch is read per scan, not once at import. So unlike
 `POLARS_MAX_THREADS` it can be set at any point before the scan that should
 use it, and a scan that has already run does not lock it in. Setting it in
 the shell, before the import or after the import all give the same number.
 
 Two things to know before comparing with other measurements. The gain
-depends on how much data one row group holds:
+depends on how much data one block holds.
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) reports a larger reduction on a
-file whose row groups hold 262,000 rows, where pinning the prefetch takes a
-run from 1.86 GB to 0.51 GB. So measure on your own files rather than
+file whose blocks hold 262,000 rows, where pinning the prefetch takes a
+query from 1.86 GB to 0.51 GB. So measure on your own files rather than
 carrying either ratio across. And the byte budget counts *compressed*
 bytes, which cost almost nothing for a memory-mapped local file, so it
 rarely binds.
@@ -2611,8 +2852,8 @@ rarely binds.
 ### Chunk size
 
 `chunk_rows` is how many rows the bank takes at a time: a keyword on
-`lf.online.fit_predict`, `lf.online.predict` and
-`ModelBank.fit_predict_batches`, 100,000 by default. With
+`lf.online.fit_predict`, `lf.online.predict`,
+`ModelBank.fit_predict_batches` and `ModelBank.fit`, 100,000 by default. With
 `ModelBank.fit_predict(df)`, the chunk is whatever frame you pass. It never
 changes the numbers: one chunk or a thousand gives the same output, and
 only where `coef` lands moves, since each stream reports its coefficients
@@ -2673,23 +2914,24 @@ scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
 ```
 
 Every chunk puts 6 × 64 stream tasks on the pool. On 2.56M rows over 64
-groups, that query takes 12.3 s at one thread and 2.2 s at fourteen. The
+groups, that query takes 32.7 s at one thread and 4.9 s at fourteen
+([PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29)). The
 output is one column per spec, which is what `compare_specs` reads, and one
 state file holds them all. Where the parallelism comes from:
 
 | source | measured |
 |---|---|
-| groups | k=20 over 64 groups: 1.02M, 1.91M, 3.52M, 6.44M and 8.20M rows/s at 1, 2, 4, 8 and 14 threads, 8.0× on a 14-core machine |
-| specs | eight single-group specs in one bank run in 130 ms, against 515 ms one at a time |
+| groups | k=20 over 64 groups: 0.52M, 1.04M, 1.91M, 3.56M and 4.40M rows/s at 1, 2, 4, 8 and 14 threads, 8.4× on a 14-core machine ([PERFORMANCE §26](docs/PERFORMANCE.md#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27)) |
+| specs | eight single-group specs in one bank run in 183 ms, against 726 ms one at a time |
 | halflives | each halflife in a grid is its own set of running sums, and the instances of a stream run alongside each other. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread |
 | Python | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` |
 
 The thread count is `POLARS_ONLINE_MAX_THREADS` for the bank's pool and
 `POLARS_MAX_THREADS` for Polars' readers and writers; unset, each is one
 thread per core. The bank builds its pool at the first bank call, and
-Polars builds its own at import, so each must be set before that point:
-as above, or in the shell (`POLARS_ONLINE_MAX_THREADS=8 python fit.py`),
-which is the form that always works. Set later, the variable is ignored,
+Polars builds its own at import, so each must be set before that point.
+Set it as above, or in the shell, the form that always works:
+`POLARS_ONLINE_MAX_THREADS=8 python fit.py`. Set later, the variable is ignored,
 and [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size)
 says what took effect (`pl.thread_pool_size()` for Polars'). A value that
 is not a count is refused by name at the first bank call. Threads change
@@ -2717,16 +2959,18 @@ import polars_online as po
    .sink_parquet("fit.parquet"))
 ```
 
-On 12M rows over 64 groups with one spec:
+On 12M rows over 64 groups with one spec of four features and two
+halflives:
 
 | Polars threads | bank threads | time | peak memory |
 |---:|---:|---:|---:|
-| 14 | 14 | 2.6 s | 1.1 GB |
-| 4 | 14 | 2.6 s | 0.8 GB |
+| 14 | 14 | 1.9 s | 0.85 GB |
+| 4 | 14 | 2.1 s | 0.61 GB |
 
-Keeping Polars at four threads uses a third less memory at the same speed.
-The pools never wait on each other, because a bank task never calls back into Polars'
-pool, so giving both more threads than there are cores slows neither.
+Keeping Polars at four threads holds 28% less memory, for 8% more time.
+The pools never wait on each other, because a bank task never calls back
+into Polars' pool, so giving both more threads than there are cores slows
+neither.
 
 ### Against scikit-learn
 
@@ -2737,16 +2981,17 @@ a first-order stochastic optimiser, whose answer depends on the learning
 rate, the schedule, the feature scaling and the row order. The primary
 regressions here are a different class of algorithm: `ewridge`, `rls`,
 `lasso`, `huber` and `quantile` accumulate sufficient statistics and solve,
-so there is no learning rate, and with decay off `ewridge` is ordinary
-least squares to 2e-13 of `numpy.linalg.lstsq`, in any row order. The
+so there is no learning rate. With decay off and `ridge=0`, `ewridge` is
+ordinary least squares to 2e-13 of `numpy.linalg.lstsq`, in any row order. The
 counterpart to `SGDRegressor` here is
 [`sgd`](#sgd--stochastic-gradient-descent), the cheap `O(k)` baseline.
 
-Measured on one generated stream of 100,000 rows with `k = 20`, each
-contender at its best over a sweep of its own settings
-(`scripts/sklearn_comparison.py`, scikit-learn 1.9.0;
+Measured on 2026-09-08 on one generated stream of 100,000 rows with
+`k = 20`, each contender at its best over a sweep of its own settings. The
+script is `scripts/sklearn_comparison.py`, on scikit-learn 1.9.0, and
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §19 has the full tables and the
-sweeps). The noise ceiling is the R² of the generating signal itself:
+sweeps. `po.spec.ewridge` solves on every row there. The noise ceiling is
+the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
 |---|---:|---:|---:|---|
@@ -2776,10 +3021,10 @@ stream's rows are evenly spaced.
 
 **Where the Gram wins: the first hundred rows of every group.** An exact
 solve is right as soon as its `X'X` is full rank, about `k` rows in, where
-a first-order method needs about `1/eta` rows per direction. On 500 groups
-of 200 rows, each group with its own coefficients and `k = 20`, R² by
-position in the group, with sklearn as one estimator and one scaler per
-group in a dict, row by row, and the bank as `group="g"`:
+a first-order method needs about `1/eta` rows per direction. The stream
+below is 500 groups of 200 rows, each group with its own coefficients and
+`k = 20`. sklearn runs one estimator and one scaler per group, in a dict,
+row by row, and the bank runs `group="g"`. R² by position in the group:
 
 | contender | rows 25–50 | rows 50–100 | rows 100–200 | rows/sec |
 |---|---:|---:|---:|---:|
@@ -2815,9 +3060,9 @@ once per 1,024 rows instead, for 7.2× the throughput, 379 rows a second,
 and no less memory. `sgd` is the `O(k)` answer here: 0.89 MB and 33,271
 rows a second at the same width. That is faster than sklearn's batch, with
 every prediction made from the state as it stands. `SGDRegressor` asked for
-the same, row by row, runs at 2,206 rows a second at that width, and the
-two agree, with a correlation of 0.999997 under `scale_features=True`,
-which is sklearn's own recipe of a scaler in front of the step. Both run at
+the same, row by row, runs at 2,206 rows a second at that width. The two
+agree, with a correlation of 0.999997 under `scale_features=True`, which is
+sklearn's own recipe of a scaler in front of the step. Both run at
 `learning_rate = 0.2 / k`, because an LMS step is stable only while
 `eta · |z|² < 2`, and a standardised row has `|z|² ≈ k`. The ecosystem is
 sklearn's: pipelines, `GridSearchCV`, calibration, and far more use. What
@@ -2829,25 +3074,29 @@ this library has is the stream.
 
 A model layer, not a stream-processing framework. It expects a frame that
 is already aligned, and, when a spec names a `clock`, each group's rows in
-clock order. It keeps a fixed amount of memory per stream. It deliberately
-does **not** provide:
+clock order. The one alignment it does itself is for series that tick at
+their own times ([`refresh_time`](#series-that-tick-at-their-own-times)).
+It keeps a fixed amount of memory per stream. It deliberately does **not**
+provide:
 
 | not provided | use instead |
 |---|---|
 | connectors or ingestion | whatever Polars can read |
 | event-time windowing, asof or interval joins | Polars expressions upstream, or a streaming framework such as [Pathway](https://pathway.com) |
-| watermarks or a late-arrival policy | nothing: `clock`, `max_dclock`, `on_clock_reset` and `session` describe time *within* a stream, not pipeline lateness. Under a `clock`, a row that arrives out of order is a data error, and `on_clock_reset="error"` says so |
+| watermarks or a late-arrival policy | nothing: `clock`, `max_dclock`, `on_clock_reset` and `session` describe time *within* a stream, not pipeline lateness. Under a `clock`, a row that arrives out of order is refused, and a label that arrives late is [`label_delay`](#labels-that-arrive-late)'s to hold back |
 | distributed execution | one process, with a thread pool across (spec × group) |
 
 ### Pathway
 
 Those boundaries make the two compose.
-[examples/pathway_integration.py](examples/pathway_integration.py) runs a
-`ModelBank` as a stateful operator inside a Pathway pipeline: Pathway does
-the ingestion, the event-time alignment and the windowing, and the bank
-does the model. Chunk invariance means the engine's batching cannot change
-the numbers, and `save_bytes` and `load_bytes` let a pipeline checkpoint
-carry the model state. Pathway is not a dependency; the example imports it
+[examples/pathway_integration.py](examples/pathway_integration.py) wraps a
+`ModelBank` as a stateful operator, the shape a Pathway pipeline calls:
+Pathway does the ingestion, the event-time alignment and the windowing,
+and the bank does the model. The example runs the operator over plain
+batches, checkpointing its state with `save_bytes` and `load_bytes`, and
+sketches the pipeline around it, which needs Pathway and an input
+connector to run. Chunk invariance means the engine's batching cannot
+change the numbers. Pathway is not a dependency; the example imports it
 lazily.
 
 ### Databases: DuckDB and ADBC
@@ -2855,11 +3104,16 @@ lazily.
 Databases compose the same way, through the Arrow PyCapsule interface.
 [examples/duckdb_cursors.py](examples/duckdb_cursors.py) and
 [examples/adbc_cursors.py](examples/adbc_cursors.py) sort a query by the
-clock and stream it into a bank, with no pyarrow. Each gives every lazy
-plan its own cursor, because a connection holds one open result, so a
-second plan built on the same connection breaks the first. DuckDB reports
-that: the broken plan yields no rows and raises `ConsumedSourceWarning`.
-ADBC does not: the broken plan returns wrong rows with no warning at all.
+clock and stream it into a bank, with no pyarrow and on py-polars 1.43.0
+or later. Each gives every lazy query its own cursor, because a cursor
+holds one open result:
+
+| the trap | DuckDB | ADBC |
+|---|---|---|
+| what springs it | a second query built on the same connection | the cursor executed again before its first query is read |
+| what comes back | the first query yields no rows | both queries come back wrong: on SQLite, 198,976 and 201,024 of 200,000 rows, out of order |
+| what says so | `ConsumedSourceWarning` | nothing |
+
 Both examples show the rule and the trap, and fail if either stops holding.
 DuckDB and ADBC are dev dependencies of this project, not dependencies of
 the package.
@@ -2879,10 +3133,13 @@ requirement is a range, because the two copies never meet. The floor is
 `LazyFrame.collect_batches`, which `lf.online.fit_predict` and
 `ModelBank.fit_predict_batches` read with, and which py-polars added in
 1.34.0. The suite passed on 1.34.0, 1.38.1 and 1.44.1 on 2026-09-02 and on
-2.0.0-rc.1 on 2026-09-18, with identical numbers, and passes on 1.44.2, the
-pin, at every change. `ModelBank` alone works from 1.28.1. A test
-asserts the pins, and the matrix is in
-[docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
+2.0.0-rc.1 on 2026-09-18, with identical numbers, and passes on 1.44.2,
+the pin, at every change. Run on 1.34.0 again on 2026-09-27, it found one
+bug in this package, since fixed. The examples that stream a DuckDB, ADBC
+or pyarrow source into a bank need 1.43.0, for `pl.scan_arrow_c_stream`,
+and two duration edge cases differ in Polars' own parser. `ModelBank`
+alone works from 1.28.1. A test asserts the Python pin and the range, and
+the matrix is in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
 #### Which interfaces carry a promise
 
@@ -2893,13 +3150,13 @@ guarantee:
 |---|---|---|
 | pyo3-polars' extension types | `ModelBank` | none beyond the latest definitions working with the latest Polars: provided "for convenience" |
 | the IO plugin | `lf.online.fit_predict` | none: documented, but `@unstable` in py-polars |
-| the Arrow PyCapsule interface | [`fit_predict_arrow`](#output-as-arrow) | an Arrow specification, which py-polars, pyarrow and duckdb all consume, so a break there would be Arrow's rather than Polars' |
+| the Arrow PyCapsule interface | [`fit_predict_arrow`](#output-as-arrow) | an Arrow specification, which py-polars and pyarrow consume, so a break there would be Arrow's rather than Polars' |
 
 The first two both stream, so a break on a new Polars is expected
-maintenance, not a surprise. A mismatch is an error, not a crash:
+maintenance, not a surprise. A mismatch is an error, not a crash.
 `ModelBank` moves data across the boundary through the Arrow C Data
-Interface, and a Polars without the two private methods it reads fails with
-a clean `AttributeError` before any data moves. The third narrows the
+Interface, and a Polars without the two private methods it reads fails
+with a clean `AttributeError` before any data moves. The third narrows the
 exposure rather than removing it: only the output side uses it today, and
 the frame still goes in as a Polars frame.
 
@@ -2907,7 +3164,9 @@ the frame still goes in as a Polars frame.
 
 A weekly job ([`polars-canary.yml`](.github/workflows/polars-canary.yml))
 drops the range from `pyproject.toml`, installs the newest py-polars,
-builds the wheel as CI does, and runs the whole suite. Only Polars moves in
+prereleases included, and builds the wheel as CI does. It then runs the
+suite, all but the opt-in soak tests and the checks of this repository's
+own pins. Only Polars moves in
 that run, so a red canary means Polars broke this library and nothing else
 did. The response is decided in advance: **cap** the range at the last
 release that passed, in a patch release, so no resolver hands anyone the
@@ -2920,8 +3179,8 @@ check at the moment it matters, in two legs (`release.yml`):
 | the next major | unpinned, prereleases allowed | no |
 
 The first is a promise. `<3` admits every 1.x and 2.x, so a resolver can
-hand someone a Polars newer than the one the wheel was built against the
-day after it ships, and a pass on the pinned version is not what the range
+hand someone a Polars newer than the one the wheel was built against, the
+day after it ships. A pass on the pinned version is not what the range
 says. The second is early warning. The steps for raising the ceiling to a
 new major are in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
@@ -2929,32 +3188,46 @@ new major are in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
 Semantic versioning. While pre-1.0, the **minor** version carries breaking
 changes and any change to the numbers a model returns, so pin the minor
-version, `~=0.9.0` for the 0.9 series, if you need stability. Widening the Polars range is a minor release, and
-narrowing it is a breaking one. Output field names are part of the API
+version, `~=0.12.0` for the 0.12 series, if you need stability. Widening
+the Polars range is a minor release. Narrowing it is a breaking one,
+except for the cap below a Polars that broke this library, above, which
+is a patch. Output field names are part of the API
 ([Output field names](#output-field-names)). See
 [CHANGELOG.md](CHANGELOG.md).
 
 ### Testing
 
-The guarantees above are only worth what checks them, so the suite is built
-around oracles and invariants rather than expected values typed in by
-hand: 976 Rust tests and 3,265 pytest cases (counted on 2026-09-25), all green on three
-operating systems. [docs/TESTING.md](docs/TESTING.md) is the ledger of what
-each part proves.
+The guarantees above are only worth what checks them. So the suite is
+built around oracles and invariants rather than expected values typed in
+by hand: 1,149 Rust tests and 3,597 pytest cases, counted on 2026-09-29,
+all green on three operating systems. [docs/TESTING.md](docs/TESTING.md)
+is the ledger of what each part proves.
 
 **Against references.** Each model is held to something it cannot share a
-bug with:
+bug with: a reference written from its documented recursion, and, wherever
+another library computes the same quantity, that library.
 
 | model | held against | agreement |
 |---|---|---|
-| `ewridge`, `rls` | numpy references | 1e-9 |
+| `ewridge`, `rls` | references written from the recursions | 1e-9 |
+| `ewridge` | scikit-learn's `Ridge` | 1e-8, relative |
 | `rls` | `ewridge(ridge_decay=True)` solved on every row | below 1e-9 |
-| `kalman` | numpy | about 1e-15 |
-| `huber`, `quantile` | numpy | about 1e-13 |
-| `ftrl` | numpy, and [river](https://riverml.xyz)'s FTRL row for row | about 1e-16, and 1e-12 |
-| `lasso` | the KKT conditions of its objective, rather than a ported solver | the conditions hold |
-| EW moments | river | in closed form and in the limit |
-| quantile and Huber | river | statistically |
+| `kalman` | a reference; filterpy's Kalman filter; [river](https://riverml.xyz)'s `BayesianLinearRegression`, the case with no drift | about 1e-15; 1e-9; 3.6e-15 |
+| `lasso` | the KKT conditions of its objective; a reference descent, for every prediction | the conditions hold; about 1e-14 |
+| `huber`, `quantile` | references; scikit-learn's `HuberRegressor` and statsmodels' `QuantReg`, batch fits of the same objectives | about 1e-13; statistically |
+| `sgd` | scikit-learn's `SGDRegressor`, one per group | R² within 0.03 |
+| `ftrl` | a reference; river's FTRL, row for row; Vowpal Wabbit's `--ftrl`, on every row | about 1e-16; 1e-12; its single precision |
+| `pa` | river's `PARegressor` | 1e-12 |
+| `holt` | statsmodels' `Holt`, once the weight saturates; pandas' `ewm(times=)`, without a trend | 1e-12; 1e-8 |
+| `ew_cov` and the EW moments | pandas' `ewm`; river | 1e-12; 1e-9 |
+| `ew_class`, `mahal` | scipy's multivariate normal and Mahalanobis distance | 1e-9 |
+| `marginal` | scipy's `binned_statistic` and a scikit-learn decision stump, for the bins; statsmodels' autocorrelations, for the serial count | 1e-9; 0.02 |
+| `bocpd` | the `bayesian_changepoint_detection` package | 1e-9, and `run_mode` exactly |
+| targets with gaps | statsmodels' weighted least squares, ridge and elastic net | 1e-7 |
+
+The Rust tests check the core's hand-written solves against `faer`'s, and
+`proptest` drives generated streams through every model against the same
+contract.
 
 **Invariants, for every model**, checked at the bank, and at the command
 line too where they apply:
@@ -2976,17 +3249,17 @@ row's own prediction.** An IC of about 0 on pure-noise targets says the
 same thing from the other side.
 
 **Fixed numbers.** There is one golden stream per model in the Rust core.
-The whole pipeline, from extraction through fan-out and diagnostics to
-struct assembly, is pinned to fixed output and compared on every operating
-system, so a divergence in Polars' vectorized paths on another CPU would
-show.
+The whole pipeline, from reading the columns through the models and the
+diagnostics to assembling each spec's output, is pinned to fixed output
+and compared on every operating system. So a divergence in Polars'
+vectorized paths on another CPU would show.
 
 **Hardening.** What the suite does to a bank on purpose:
 
 | attack | what must hold |
 |---|---|
 | everything at once | a 30k-row stream with every output switched on, compared by digest across chunkings, a mid-stream save and load, and thread counts |
-| weight scale | all weights ×1e±6 changes nothing but `n_eff` |
+| weight scale | all weights ×1e±6, with `min_periods` scaled alike, change nothing but `n_eff` |
 | parameter edges | `halflife` from `1e-3` to `inf` |
 | a corrupt state file | any byte flipped fails cleanly, and never panics |
 | concurrent misuse | two threads calling `fit_predict` at once get a clean error |
@@ -2999,25 +3272,31 @@ signature and every output field name, is a checked-in snapshot
 (`tests/api_surface.txt`), so a change is a reviewable diff. Every python
 block in this README runs, and so does every example in the API reference.
 Everything under `examples/` runs unmodified: the TOML through the real
-command line, the Pathway operator end to end, and the cursor examples
-against real DuckDB and SQLite databases. `docs/VALIDATION.md`, where the
+command line, the Pathway example's operator over plain batches, and the
+cursor examples against real DuckDB and SQLite databases. The state files
+each released wheel wrote are loaded, and held to what the CHANGELOG says
+of them. `docs/VALIDATION.md`, where the
 defaults were chosen, is regenerated and compared, so the numbers behind
 them cannot silently stop being true. A data file, a large file or
 generated output that gets tracked fails a test.
 
-**Where it runs.** `./scripts/gate.sh` runs before every commit:
-`cargo fmt`, `clippy -D warnings`, `cargo test`, `ruff`, `mypy`, the build,
-`pytest` and `sphinx -W`. CI runs the same on Ubuntu, Windows and macOS for
-every push and pull request. The release build writes a state file on macOS
-and continues the stream from it on Windows and Linux. The weekly canary
-runs the suite against the newest py-polars. Tests generate or download
-their own data, so there are no data files in the repository; downloads
-are cached under `.cache/` and skipped when offline.
+**Where it runs.**
+
+| when | what runs |
+|---|---|
+| before every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the build, `pytest` and `sphinx -W` |
+| every push and pull request | the tests on Ubuntu, Windows and macOS, on Python 3.12 and 3.14, and on 3.13 on Linux; the format, lint, type and documentation checks, on Linux; mutation testing of the lines the change touched, which fails on a mutant no test catches; and every output compared with the newest release's, bit for bit, as a report |
+| every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits |
+| weekly | the suite on the newest py-polars; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
+
+Tests generate or download their own data, so there are no data files in
+the repository; downloads are cached under `.cache/` and skipped when
+offline.
 
 ### Development
 
 ```sh
-uv sync                                                # Python env (CPython 3.12)
+uv sync                                                # Python env (CPython 3.12 or newer)
 ./scripts/gate.sh                                      # everything CI checks
 uv run cargo test --workspace --exclude online-py      # Rust tests
 uv run maturin develop --release -m crates/online-py/Cargo.toml
@@ -3026,6 +3305,9 @@ uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API refe
 uv run python scripts/validate.py > docs/VALIDATION.md # re-run the [validate] experiments
 uv run python scripts/regime_experiments.py all        # the docs/REGIMES.md experiments
 uv run python scripts/benchmark.py                     # throughput
+uv run python scripts/compare_release.py               # every output against the newest release's, bit for bit
+uv run pytest -m soak                                  # the opt-in 10M-row soak
+./scripts/mutants.sh --in-diff <(git diff main...)     # mutation testing of the code a branch touches
 ```
 
 Prerequisites: [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain

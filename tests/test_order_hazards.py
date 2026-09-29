@@ -411,6 +411,14 @@ def test_an_accumulator_with_no_decay_is_recognised_as_order_free():
             id="gradient-model",
         ),
         pytest.param(
+            po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0),
+            id="reweighting-model",
+        ),
+        pytest.param(
+            po.spec.lasso("m", targets=["y"], features=["x0"], lam=1.0, lasso_path=[0.1, 0.01]),
+            id="selecting-model",
+        ),
+        pytest.param(
             po.spec.ewridge(
                 "m",
                 targets=["y"],
@@ -488,6 +496,57 @@ def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():
     matter: this update is not commutative, and no decay does not change that."""
     grad = po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
     assert _spread(grad, _rows()) > 1e-6
+
+
+def _rows_with_outliers(n: int = 400) -> pl.DataFrame:
+    """`_rows()` with one row in ten lifted by 5, a hundred times the noise."""
+    frame = _rows(n)
+    return frame.with_columns(
+        y=pl.col("y") + pl.when(pl.int_range(pl.len()) % 10 == 3).then(5.0).otherwise(0.0)
+    )
+
+
+def test_a_robust_fits_coefficients_do_not_commute_once_it_reweights():
+    """`huber` weighs each row by `min(1, delta * sigma / |r|)`, with `r` read
+    against the fit before the row, so the sums it keeps depend on the order.
+    On `_rows()` no residual reaches `delta * sigma`, every weight is 1, and
+    the spread read 6.7e-16: that is how it was once listed as order free. A
+    green number from a path that never ran is not evidence, so the premise is
+    checked first: here the down-weighting fires, on dozens of rows."""
+    frame = _rows_with_outliers()
+    seen = po.spec.huber(
+        "m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0, emit_sigma=True
+    )
+    out = po.ModelBank([seen]).fit_predict(frame)["m"]
+    resid, sigma = out.struct.field("resid_y"), out.struct.field("sigma_y")
+    reweighted = int(((resid.abs() > 1.5 * sigma) & sigma.is_not_null()).sum())
+    assert reweighted > 20, f"only {reweighted} rows beyond delta * sigma: nothing was reweighted"
+    rob = po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    assert _spread(rob, frame) > 1e-6
+
+
+def test_a_lasso_selects_by_the_order_where_its_path_commutes():
+    """`lasso` at `lam=1.0` keeps every path point's coefficients from sums
+    that commute, but `lam_selected` ranks the points by their out-of-sample
+    error, and an out-of-sample error depends on the order. So the penalty a
+    `fit` leaves selected moves with a shuffle where no coefficient does."""
+    frame = _rows_with_outliers()
+    spec = po.spec.lasso(
+        "m", targets=["y"], features=["x0"], lam=1.0, lasso_path=[1.0, 0.1, 0.01, 0.001]
+    )
+
+    def fitted(f: pl.DataFrame) -> tuple[list[float], float]:
+        bank = po.ModelBank([spec])
+        bank.fit(f.lazy())
+        return bank.coef("m")["coef"].to_list(), bank.last_row("m")["lam_selected_y"].item()
+
+    coefs, chosen = fitted(frame)
+    moved = 0
+    for seed in range(8):
+        other, picked = fitted(frame.sample(fraction=1.0, shuffle=True, seed=seed))
+        assert max(abs(a - b) for a, b in zip(coefs, other, strict=True)) < 1e-12
+        moved += picked != chosen
+    assert moved, "the selection never moved: this stream no longer shows the premise"
 
 
 def test_predictions_move_even_where_the_coefficients_do_not():
