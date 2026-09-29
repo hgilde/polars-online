@@ -341,11 +341,11 @@ impl RcovCfg {
         let n = self.block_rows? as f64;
         Some(
             if self.psd {
-                // CKP §3's longer, PSD configuration. **The exponent is
-                // Hautsch-Podolskij's reading (1/2 + delta, delta = 0.1) and is
-                // the one thing in this model taken second-hand**; CKP §3 is the
-                // source, and if it disagrees this line and the dropped bias
-                // term move together (docs/PLAN.md §11a, task 50).
+                // CKP §3.4's longer, PSD configuration: `k_n / n^{1/2+δ} = θ +
+                // o(n^{−1/4+δ/2})` (their Eq. 16) at `δ = 0.1`, the choice
+                // they call optimal (Theorem 4 (ii), rate `n^{−1/5}`), and no
+                // bias term (Eq. 17). Read against the paper 2026-09-28
+                // (docs/PLAN.md task 114); the ceiling meets Eq. 16's bound.
                 (self.theta * n.powf(0.6)).ceil() as usize
             } else {
                 // CKP's own floor.
@@ -764,8 +764,8 @@ impl Rcov {
                 let (p1, p2) = (psi1(kn), psi2(kn));
                 let scale = n / (n - knf + 2.0) / (p2 * knf);
                 let bias = if self.cfg.psd {
-                    // CKP §3's PSD configuration drops the bias term with the
-                    // longer window (see `window_for`).
+                    // CKP §3.4's PSD configuration has no bias term with the
+                    // longer window (their Eq. 17; see `window_for`).
                     0.0
                 } else {
                     p1 / (self.cfg.theta * self.cfg.theta * p2) / (2.0 * n)

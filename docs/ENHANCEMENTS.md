@@ -421,7 +421,8 @@ The points that block left to the papers are answered in
 correction of substance for a reader of this section: E59's "sequential
 constancy monitor" cites Wied–Krämer–Dehling (2012), whose test is a
 *closed-sample* fluctuation test — the sequential form with a boundary is
-Wied & Galeano (2013), unread. Task 54 therefore ships the WKD test run
+Wied & Galeano (2013), unread then (read 2026-09-28 from their open SFB 823
+preprint; docs/PLAN.md task 114). Task 54 therefore ships the WKD test run
 span by span (a `horizon`, the paper's `D̂`, its size and power tables as
 the acceptance) and the Wied–Galeano detector is a follow-up item here
 once that paper has been read.

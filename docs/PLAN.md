@@ -4571,7 +4571,62 @@ decision it needs, with a recommendation where there is one.
       exponent for `rcov`'s `psd` window; ABK 2023's robust posterior for
       `bocpd` (*decision if `robust`'s numbers move, or it becomes a new
       name*); Wied & Galeano 2013's sequential detector (paywalled; *a new
-      `corrchange` kind, a decision*).
+      `corrchange` kind, a decision*). **Checked 2026-09-28 (the user: "Check
+      against papers that are not paywalled"; then, of Wied & Galeano,
+      "there seem to be many others that describe it exactly").** Every
+      paper is in `.cache/research/papers` with its text (PDFKit): WKD from
+      the Ruhr-Universität Bochum copy, CKP as arXiv 2602.19645, ABK as arXiv
+      2302.04759, and Wied & Galeano from their own open preprint, SFB 823
+      Discussion Paper 12/2012 (TU Dortmund Eldorado, version of 12 March
+      2012; the journal version may differ in detail), cross-checked against
+      Dette & Gösmann (arXiv 1802.07696, §5.1) and Pape, Galeano & Wied (SFB
+      823 DP 7/2017), which restate its boundary. Four results:
+      (1) **WKD's kernel: the code departs, the transcription was right.**
+      Appendix A.1 writes `D̂₁ = ΣₜΣᵤ k((t−u)/γ_T)VₜVᵤ'`, `k(x) = 1 − |x|` on
+      `|x| ≤ 1`, `γ_T = [log T]`: lag `l` at `1 − l/γ`, lag `γ` at 0.
+      `corrchange` uses `1 − l/(γ+1)` over lags `0..=γ` (Newey–West), in
+      `long_run_sd`, `scalar_stat` and the tests' oracles. Measured with an
+      independent numpy statistic that reproduces the library's `stat` to
+      1.7e-14 on real spans, 20,000 shared draws a cell: the size at WKD's
+      Table 1 cells (shared-scale `t_5`, 5 %) is 0.0397/0.0398, 0.0336/
+      0.0334, 0.0389/0.0394 at `T = 500` and 0.0388/0.0396, 0.0353/0.0358,
+      0.0382/0.0384 at `T = 1000` for `ρ = −0.5, 0, 0.5` (current/paper;
+      WKD 0.040, 0.035, 0.041, 0.038, 0.034, 0.039); the power at Table 2's
+      break (0.5 → 0.7 mid-span) is 0.5479/0.5509 at `T = 500` (WKD 0.587)
+      and 0.8132/0.8151 at 1000. *Decision:* follow the paper (recommended:
+      the model is documented as WKD's test, and the change is neutral to
+      slightly better) -- `corrchange`'s goldens move, and `bandwidth = 1`
+      becomes lag 0 alone -- or keep Newey–West and say so, as the module
+      docs now do. (2) **CKP §3.4: the code agrees; nothing moves.** Eq. 16
+      `k_n/n^{1/2+δ} = θ + o(n^{−1/4+δ/2})`, `0 < δ < 1/2`; Eq. 17 has no
+      bias term; Theorem 4 (ii) calls `δ = 0.1` optimal (rate `n^{−1/5}`).
+      `rcov`'s `⌈θ·n^{0.6}⌉` with the bias dropped is that; the "second-hand"
+      caveat in `window_for` is gone. (3) **ABK: `robust` is not it, and the
+      exact posterior does not fit a streaming model.** Theirs is Gaussian
+      over the natural parameters, `Σ⁻¹ += 2ωΛ(x)`, `μ = Σ(Σ⁻¹μ − 2ων(x))`
+      (Prop. 3.1, §3.4), robust through `m(x)` built from a reference `θ*`
+      (Prop. 3.2) that they take as the MLE on the whole data set, with `ω`
+      tuned by KL-matching the standard posterior on the first `t*` rows by
+      automatic differentiation; the predictive is closed-form for a Gaussian
+      with a changing mean, and with mean and variance both unknown (every
+      `bocpd` emission) they sample it (App. C.1). *Decision:* keep `robust`
+      as the β-power-weighted variant it is documented to be and drop the
+      "swap ABK in" follow-up (recommended), or build ABK as a new emission
+      with a warm-up `θ*`, a given `ω` and a seeded sampled predictive.
+      (4) **Wied & Galeano: the detector, exactly.** `V_k = D̂·(k/√m)·
+      (ρ̂^{m+k}_{m+1} − ρ̂^m_1)` (Eq. 1; `D̂` the inverse long-run standard
+      deviation, WKD's A.1 on the `m` historical rows), stop at `τ_m = min{k
+      ≤ [mT] : |V_k| > c·w(k/m)}` (Eq. 2), `w(b) = (1 + b)(b/(1 + b))^γ`,
+      `0 ≤ γ < 1/2` (Eq. 5; Dette & Gösmann and Pape et al. add a floor
+      `max(·, δ)` inside), `c(α)` from `P((T/(1+T))^{1/2−γ} sup_{0≤s≤1}
+      |W(s)|/s^γ > c) = α` (Eq. 7), their Table 1 at 5 %: `γ = 0`: 1.2870,
+      1.5578, 1.8158, 1.9980; `γ = 0.25`: 1.8001, 1.9924, 2.1684, 2.2467;
+      `γ = 0.45`: 2.6282, 2.6844, 2.7215, 2.7660, for `T = 0.5, 1, 2, 4`; the
+      changepoint `argmax_j D̂(j/√τ_m)|ρ̂^{m+j}_{m+1} − ρ̂^{m+τ_m−1}_{m+1}|`
+      over the monitoring rows alone (Eq. 8). Their Table 2 (GARCH pairs, 1000 draws): sizes
+      0.047–0.087 at `γ ≤ 0.25`, 0.106–0.174 at `γ = 0.45`. *Decision:* a
+      `kind = "sequential"` (a training span of `m` rows, then the detector
+      over at most `[mT]`), or not. It shares (1)'s kernel.
 
 - [ ] 115. **Decisions on behaviour that is built.** Each is S–M once
       decided; the evidence goes with it. (a) `share_p`: VALIDATION §4 shows
@@ -7289,7 +7344,8 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
 *Task 50 as built, 2026-09-06.* The design stood; five notes, one of them
 still open.
 
-- **CKP §3 was not read, and the source says so.** `psd = true`'s longer
+- **CKP §3 was not read, and the source says so** (read 2026-09-28, task
+  114: §3.4 agrees, `δ = 0.1` and no bias term). `psd = true`'s longer
   window is `kₙ = ⌈θ·n^{0.6}⌉` with the bias term dropped -- Hautsch &
   Podolskij's reading, as ANSWERS flagged. `RcovCfg::window_for` carries the
   comment; if §3 disagrees, that line and the dropped term move together.
@@ -7972,7 +8028,7 @@ it changed, in order of consequence:
   for `ω̂²`, with its deliberate upward bias stated). The one thing ANSWERS
   did not read — CKP §3's longer window for `psd=True` — is marked as the
   implementer's read; the draft's `δ = 0.1` is Hautsch–Podolskij's and
-  stands only if §3 agrees.
+  stands only if §3 agrees (it does: task 114, 2026-09-28).
 - **`po.corr`**: Higham's examples, distances, null vector, rank and
   iteration count are now the paper's, not memory's, and `nearest` is
   pinned to Algorithm 3.3 with his convergence test 4.1 and the three

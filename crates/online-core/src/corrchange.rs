@@ -27,15 +27,26 @@
 //! moments, `σ_x² = E[x²] − E[x]²` lost the level's digits: 1.2e-5 of `D̂`
 //! at a level of 1e5, and NaN at 1e8 (docs/PLAN.md task 103).
 //!
+//! **The kernel departs from the paper.** Lag `l` is weighted `1 − l/(γ+1)`,
+//! Newey–West's form, over lags `0..=γ`; WKD's `D̂₁ = ΣₜΣᵤ k((t−u)/γ_T)VₜVᵤ'`
+//! with `k(x) = 1 − |x|` (their Appendix A.1) weights it `1 − l/γ`, lag `γ`
+//! at 0. Measured 2026-09-28 at their Table 1 and 2 settings (20,000 shared
+//! draws a cell), the size moves by at most 0.0008 and the power by 0.003;
+//! whether to follow the paper is docs/PLAN.md task 114's open decision.
+//!
 //! Under the null `Q →_d sup|B|`, a Brownian bridge, whose quantiles are
 //! the Kolmogorov distribution -- computed from the series here rather than
 //! pinned, so a test can check it reproduces 1.3581 at 5 %.
 //!
 //! The paper's own form is *sequential*, with a boundary function, in Wied
-//! & Galeano (2013); nobody here has read it, so what ships is the closed
-//! test run over consecutive spans of `horizon` rows. The cost is a delay
-//! of at most `horizon` rows and the benefit is a null with published
-//! tables -- which is the whole point of the exercise.
+//! & Galeano (2013), read from their SFB 823 preprint (Discussion Paper
+//! 12/2012) on 2026-09-28, docs/PLAN.md task 114: the detector
+//! `V_k = D̂·(k/√m)·(ρ̂^{m+k}_{m+1} − ρ̂^m_1)` against `c·w(k/m)`, `w(b) =
+//! (1 + b)(b/(1 + b))^γ`, with `D̂` from the `m` historical rows and `c`
+//! simulated. What ships is the closed test run over consecutive spans of
+//! `horizon` rows. The cost is a delay of at most `horizon` rows and the
+//! benefit is a null with published tables -- which is the whole point of
+//! the exercise.
 //!
 //! # `window`: two adjacent windows
 //!

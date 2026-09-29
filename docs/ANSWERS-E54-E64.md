@@ -92,6 +92,14 @@ sequence of random variables*, Journal of Statistical Planning and
 Inference 143(1), 2013, 186–196 (paywalled; only its abstract was read). Its
 boundary and critical values must be taken from that paper; the §11a
 decision to do so is right, and no constant is offered here in its place.
+**Read 2026-09-28 (docs/PLAN.md task 114)** from the authors' open preprint,
+SFB 823 Discussion Paper 12/2012 (version of 12 March 2012): the detector is
+`V_k = D̂·(k/√m)·(ρ̂^{m+k}_{m+1} − ρ̂^m_1)` (Eq. 1), stopped at `τ_m = min{k ≤
+[mT] : |V_k| > c·w(k/m)}` (Eq. 2) with `w(b) = (1 + b)(b/(1 + b))^γ`, `0 ≤ γ <
+1/2` (Eq. 5), `D̂` WKD's Appendix A.1 estimator on the `m` historical rows
+(their A.1), and `c(α)` from `P((T/(1 + T))^{1/2−γ} sup_{0≤s≤1}|W(s)|/s^γ >
+c) = α` (Eq. 7; Table 1 at 5 %: 1.2870, 1.5578, 1.8158, 1.9980 at `γ = 0` for
+`T = 0.5, 1, 2, 4`). PLAN task 114 has the rest.
 Two things are certain from the 2012 paper alone: the multivariate
 extension is "pairwise comparisons, rejecting if the maximum of the
 statistics is too large", with the multiple-testing correction left open;
@@ -225,7 +233,11 @@ that can make it non-PSD in finite samples; "increasing the pre-averaging
 window length slightly" gives a PSD estimator at a slower rate. **Check:**
 the exact exponent of that longer window and the bias-correction term are
 in the paper's §3, which was not read for this note — take both from
-there rather than from §11a's `δ = 0.1`.
+there rather than from §11a's `δ = 0.1`. **Read 2026-09-28 (docs/PLAN.md
+task 114; arXiv 2602.19645, §3.4):** `k_n/n^{1/2+δ} = θ + o(n^{−1/4+δ/2})`
+for `0 < δ < 1/2` (Eq. 16), no bias term (Eq. 17), and `δ = 0.1` is the
+choice the paper calls optimal (Theorem 4 (ii), rate `n^{−1/5}`), so §11a's
+`δ = 0.1` stands.
 
 ### The kernel's bandwidth rule and end jitter
 
@@ -311,7 +323,8 @@ returns 1972–75 with a gamma prior on the inverse variance (`a = 1, b =
 step detected" test. **Not verified here:** the robust variant's
 closed-form posterior (Altamirano, Briol & Knoblauch, ICML 2023, PMLR 202);
 only its abstract was read — take the equations from the paper as §11a
-says.
+says. **Read 2026-09-28 (docs/PLAN.md task 114; arXiv 2302.04759):** see
+there and `bocpd.rs`'s module docs; it is not what `robust` computes.
 
 ---
 

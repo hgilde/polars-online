@@ -75,11 +75,17 @@
 //! it. The default the polars layer fills in is `0.1`.
 //!
 //! **It is not the diffusion-score-matching posterior of Altamirano, Briol
-//! & Knoblauch (2023)**: that paper was not read here, and this does not
-//! claim to be its equations. Swapping the exact ABK posterior in behind
-//! this name is a follow-up, and the behavioural test -- a 20-σ row that
-//! restarts the plain run and does not move this one -- is what either has
-//! to pass.
+//! & Knoblauch (2023)**, and does not claim to be its equations. Read
+//! 2026-09-28 (docs/PLAN.md task 114): theirs is a Gaussian posterior over
+//! the model's natural parameters, `Σ⁻¹ += 2ωΛ(x)`, `μ = Σ(Σ⁻¹μ − 2ων(x))`
+//! (their Prop. 3.1 and §3.4), made robust by a weight matrix `m(x)` built
+//! from a reference `θ*` (Prop. 3.2), which they take as the maximum
+//! likelihood estimate on the whole data set, with `ω` tuned by matching the
+//! standard posterior on the first rows. Its predictive is closed-form for a
+//! Gaussian with a changing mean; with mean and variance both unknown, as
+//! here, they sample it (their App. C.1). The behavioural test -- a 20-σ row
+//! that restarts the plain run and does not move this one -- is what any
+//! replacement has to pass.
 
 use serde::{Deserialize, Serialize};
 

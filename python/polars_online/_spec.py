@@ -3564,9 +3564,10 @@ def corrchange(
     series, not pinned, and it reproduces the published 1.3581 at 5%. Over the
     pairs the statistic is the maximum and the level is ``alpha / npairs``. The
     paper's own sequential form, with a boundary function, is Wied & Galeano
-    (2013), which nobody here has read; the closed test run span by span is what
-    ships. The cost is a delay of at most ``span_rows`` rows and the benefit a
-    null with published tables, which ``tests/test_corrchange.py`` holds it to.
+    (2013), a detector on a historical sample that is not built here; the closed
+    test run span by span is what ships. The cost is a delay of at most
+    ``span_rows`` rows and the benefit a null with published tables, which
+    ``tests/test_corrchange.py`` holds it to.
 
     ``"window"`` is ``norm(vech(R_pre - R_post))`` over two adjacent blocks of
     ``span_rows`` rows -- how big the change is, rather than whether the span was
