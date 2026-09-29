@@ -7,7 +7,48 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **`corrchange(kind="sequential")`: Wied and Galeano's (2013) detector.**
+  A cycle is `span_rows` rows of history, taken as stable, then up to
+  `monitor_rows` rows (default `span_rows`), each tested against the
+  history as it arrives: `|V_k| / w(k/m)`, the monitored rows' correlation
+  against the history's in units of its long-run standard deviation, over
+  the boundary `w(b) = (1 + b)(b/(1 + b))^boundary_gamma`. A flag, or the
+  period's last row, ends the cycle. The critical value is the paper's: at
+  `boundary_gamma=0` from the series of `sup|W|`, and above 0 solved as a
+  diffusion with an absorbing boundary, within 0.03 of the paper's Table 1.
+  On the paper's GARCH design the size is within two standard errors of its
+  Table 2 in every cell (`docs/REGIMES.md` §9). `scalar=True` monitors the
+  equicorrelation's mean instead of every pair.
+
+- **`since_change`, a new `corrchange` output.** On a flag it dates the
+  change: the rows from the first changed one through the flag's. It uses
+  the paper's Eq. 8 under `"sequential"`, the CUSUM's maximum under
+  `"monitor"`, and the second window under `"window"`. It is null
+  otherwise.
+
 ### Changed
+
+- **`corrchange`'s long-run variance uses its paper's kernel.** Lag `l` is
+  weighted `1 − l/γ`, as Wied, Krämer and Dehling (2012, Appendix A.1)
+  write it, where it was Newey–West's `1 − l/(γ+1)`. The `"monitor"`
+  statistic and the `scalar` one move with it. Their size moved by at most
+  0.001 a cell and their power by 0.009 at the paper's settings
+  (`docs/REGIMES.md` §2–3). At `bandwidth=1` only lag 0 is left.
+
+- **`corrchange` refuses a parameter that belongs to another kind.**
+  `crit`, `reset`, `seed`, `norm` and the permutation settings under
+  `"monitor"`, and `bandwidth` under `"window"`, were accepted and
+  ignored. A `crit` given to the monitor changed nothing, and `reset`
+  under it did not raise, though its documentation said it would. Each is
+  now refused, naming the kinds it applies to.
+
+- **The window budget's refusal says how to raise it.** When a spec sets
+  no `window_budget`, the refusal names the default of 256 MiB it ran
+  under, and it spells each way out: a larger `{"refuse": MiB}`, or
+  `{"refuse": inf}` for no bound, a larger `window_every`, or `{"thin":
+  MiB}`.
 
 - **The default solve cadence goes by weight.** `ewridge`, `lasso`, `huber`
   and `quantile` with no `solve_every` solved every `halflife / 50` of
@@ -38,12 +79,17 @@ carries breaking changes, and any change to the numbers a model returns.
   which now report null.
 
 - **State schema 20.** The four solving models keep the weight learned
-  since their last solve, and `pa`, `sgd`, `ftrl` and `rls` each target's
-  own weight. A schema-19 file loads: the first count starts at 0, and each
+  since their last solve, `pa`, `sgd`, `ftrl` and `rls` each target's own
+  weight, and `corrchange` its sequential monitoring period. A schema-19 file loads: the first count starts at 0, and each
   target's weight at the shared one its gate read. A 0.12.0 build refuses a
   schema-20 file by its version.
 
 ### Fixed
+
+- **A `scalar` `corrchange` monitor saved in the middle of a span loads.**
+  Its ring holds one value a row, the equicorrelation `u`, and the load
+  held those rows to the feature count and refused the state as the wrong
+  shape.
 
 - **`po.stream.refresh_time` under `.head(n)` saves the state behind the
   rows returned.** With `save_state`, it read the whole input and saved

@@ -95,6 +95,8 @@
     norm = 'l1'
     seed = None
     reset = False
+    monitor_rows = None
+    boundary_gamma = None
     common
   deco:
     name
@@ -874,6 +876,7 @@
     crit
     flag
     since_flag
+    since_change
     n_eff
     settled_frac
     withheld_reason

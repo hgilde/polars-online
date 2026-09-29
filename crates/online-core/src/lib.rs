@@ -59,6 +59,7 @@
 //! See `docs/PLAN.md` §2 and §4.
 
 mod bocpd;
+mod boundary;
 mod clock;
 mod cluster;
 mod comp;
@@ -313,11 +314,13 @@ pub use window::{
 ///   weight that makes a solve due, the default cadence under a finite
 ///   halflife (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
 ///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
-///   `min_periods` reads (task 115 (d)). All are `#[serde(default)]`, so a 19
-///   file loads: the counter starts at 0, the bank sets the share from the
-///   spec, and each target's weight starts at the shared one its gate read.
-///   A 19 build would do none of that, so a 20 file is refused there by its
-///   version.
+///   `min_periods` reads (task 115 (d)); `corrchange` keeps a `sequential`
+///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
+///   (task 114). All are `#[serde(default)]`, so a 19 file loads: the
+///   counter starts at 0, the bank sets the share from the spec, each
+///   target's weight starts at the shared one its gate read, and a
+///   `corrchange` has no monitoring period. A 19 build would do none of
+///   that, so a 20 file is refused there by its version.
 pub const SCHEMA_VERSION: u32 = 20;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`

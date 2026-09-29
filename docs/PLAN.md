@@ -4564,7 +4564,7 @@ decision it needs, with a recommendation where there is one.
       weekly, are the sharper measure of the same thing. CI keeps the
       Python figure it reports.
 
-- [ ] 114. **Four formulas checked against their papers.** S–M; needs the
+- [x] 114. **Four formulas checked against their papers.** S–M; needs the
       papers (none is in `.cache/research/papers`). WKD 2012's Bartlett
       kernel (`corrchange` weights lag `l` by `1 − l/(γ+1)`; the transcription
       reads `1 − l/γ`; a change moves `corrchange`'s goldens); CKP 2010 §3's
@@ -4627,11 +4627,45 @@ decision it needs, with a recommendation where there is one.
       0.047–0.087 at `γ ≤ 0.25`, 0.106–0.174 at `γ = 0.45`. *Decision:* a
       `kind = "sequential"` (a training span of `m` rows, then the detector
       over at most `[mT]`), or not. It shares (1)'s kernel.
+      **Decided 2026-09-28 (the user: "Your recommendation on WKD 2012 and
+      abk 2013, build wied & galeano 2013 has a corrchange be sure to
+      document well") and built.** (1) The kernel is WKD's, `1 − l/γ` over
+      lags `0..γ` (`long_run_sd`, `scalar_long_run_sd`); the oracles in
+      `the_statistic_is_its_definition` and
+      `the_scalar_statistic_is_its_definition` failed on the old kernel;
+      REGIMES §2–4 re-measured (size moved by at most 0.001 a cell, power by
+      0.009), with dated notes keeping the old figures. (3) `robust` stays,
+      ABK is not built; `bocpd.rs` says why. (4) `kind = "sequential"`:
+      `span_rows` rows of history (`m`), then up to `monitor_rows` rows
+      (default `span_rows`, `T = 1`) each tested as it arrives, `stat =
+      max_pairs |V_k|/w(k/m)`, the cycle ending at a flag or its last row;
+      `boundary_gamma` (default 0); `scalar` supported (the mean of `u`);
+      `crit` overrides. The critical value is Eq. 7 with `q_γ` from
+      `crates/online-core/src/boundary.rs`: the series of `sup|W|` at `γ =
+      0`, and above it the law solved, not simulated -- `U(t) =
+      e^{t/2}W(e^{−t})` is a stationary OU process, so `Z_γ ≤ c` is an OU
+      path inside the corridor `±c·e^{(1/2−γ)t}`, a Fokker–Planck equation
+      on `[−1, 1]` with absorbing ends (Scharfetter–Gummel, Crank–Nicolson;
+      matches the `γ = 0` series to 3e-6), within 0.03 of W&G's Table 1 and
+      above it in 11 of 12 cells, cached per `(α, γ)` and recomputed on
+      load (not state). Eq. 8 dates a flag as `since_change`, a new output
+      of every kind (`"monitor"`: after the CUSUM's argmax; `"window"`: the
+      second window). Size on W&G's GARCH design within two standard errors
+      of their Table 2 in all 24 cells (REGIMES §9, `regime_experiments.py
+      sequential`). With it, a parameter that belongs to another kind is
+      refused (`crit`, `reset` and the permutation knobs under `"monitor"`
+      were taken and ignored, though the docstring promised `reset` raised),
+      and a `scalar` monitor saved mid-span now loads (the shape check held
+      its `u` rows to the feature count). `SCHEMA_VERSION` 20 carries the
+      monitoring period.
 
 - [ ] 115. **Decisions on behaviour that is built.** Each is S–M once
       decided; the evidence goes with it. (a) `share_p`: VALIDATION §4 shows
       sharing better on both targets, and this plan keeps `False` because it
-      hurt one — re-measure, then decide. (b) The solve cadence by
+      hurt one — re-measure, then decide. **Decided 2026-09-28 (the user:
+      "Keep share p off"):** `False` stays; the re-measurement (VALIDATION
+      §4, 1.215e-6 against 1.279e-6 and 4.963e-6 against 4.987e-6) is on
+      data with no predictive signal. (b) The solve cadence by
       accumulated weight: `halflife=1e12` solves once (a state field; the
       next schema bump). **Decided 2026-09-28 (the user: "Do 115b") and
       built:** with no `solve_every` under a finite halflife, `ewridge`,
@@ -4655,8 +4689,24 @@ decision it needs, with a recommendation where there is one.
       — *a clock gap: reviewed with task 120*. **Decided (forget) and built
       2026-09-28 with task 120**, which records `hmm`'s subnormal edge,
       left as is by the user's call. (d) Task 80's raised calls: the
-      256 MiB window budget; a budget-refused bank refusing every later
-      call; C24 part 2, `ftrl`'s penalties under a halflife; S30, `holt`
+      256 MiB window budget (**decided 2026-09-28**, the user: "256 mib is
+      a good default window budget and on failure it should explain how to
+      raise it" -- kept, and the refusal now names the default when the
+      spec set none and spells each way out, `{"refuse": MiB}` larger or
+      `inf`, a larger `window_every`, `{"thin": MiB}`;
+      `over_budget_tests`); a budget-refused bank refusing every later
+      call (the user asked how the other budgets handle it: every other
+      one -- `gram_block_rows`, `marginal`'s `bin_budget` -- is sized from
+      the configuration and refuses before a row is learned; only the
+      window's depends on the rows. Options raised: keep the broken bank,
+      or a pre-pass over the chunk's clock, as the backwards-clock check
+      makes, that predicts the ring and refuses the chunk untouched --
+      recommended, with a test holding the prediction to the ring;
+      undecided); C24 part 2, `ftrl`'s penalties under a halflife (the user asked
+      whether river covers it: only at `halflife = inf`, where we are river
+      to the bit; river has no forgetting, so a finite halflife is ours, and
+      the build is river's formula with river's constant penalties on
+      decayed sums, whose cost is the shrinkage C24 measured; undecided); S30, `holt`
       with no level-only mode; S31, `n_eff` counting rows with a null target
       in `ftrl`, `pa` and `sgd` (hard rule 8). **S31 decided 2026-09-28
       (the user: "n eff should do what it does everywhere else") and

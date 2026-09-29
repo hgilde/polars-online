@@ -533,6 +533,8 @@ fn corrchange_golden() {
         norm: ChangeNorm::L1,
         seed: 5,
         reset: false,
+        monitor_rows: 0,
+        boundary_gamma: 0.0,
     })
     .unwrap();
     let mut out = Vec::new();
@@ -851,7 +853,10 @@ const GOLDEN_BOCPD: &[f64] = &[
 // carried the wrong powers of `σ_x` and `σ_y`, so `D̂` and every `Q` moved
 // where the two columns' variances differ, as this stream's do. The
 // finite-difference check in `corrchange.rs` is what the new numbers rest on.
-const GOLDEN_CORRCHANGE: &[f64] = &[0.8418929529846794, 0.7933802263147072, 0.787701333637405];
+// Regenerated 2026-09-28 (docs/PLAN.md task 114): the long-run variance's
+// kernel is WKD's `1 − l/γ`, where it was Newey–West's `1 − l/(γ+1)`
+// (0.8418929529846794, 0.7933802263147072, 0.787701333637405).
+const GOLDEN_CORRCHANGE: &[f64] = &[0.8103851544234802, 0.764942538158755, 0.6621041576121629];
 // Re-frozen 2026-09-06: `hmm`'s `min_periods` used to withhold a row from
 // the *update* as well as from the report, so the first rows of this stream
 // (`min_periods = 3`) never reached the filter. It now gates the report

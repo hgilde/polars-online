@@ -1,11 +1,14 @@
 """E59: has the correlation structure changed?
 
-Two tests with two nulls. The `monitor` kind is Wied, Krämer & Dehling's
+Three tests with three nulls. The `monitor` kind is Wied, Krämer & Dehling's
 closed-sample constancy test, and its critical value is a *published*
 distribution — so its size and power are held to their tables rather than to
-a number this implementation happened to produce. The `window` kind measures
-how big a change is, against a permutation null; that one is held to a
-longhand statistic and to behaving on a stationary stream.
+a number this implementation happened to produce. The `sequential` kind is
+Wied & Galeano's detector against a stable history (docs/PLAN.md task 114),
+whose critical values are held to their Table 1 and to a simulation of the
+law behind it. The `window` kind measures how big a change is, against a
+permutation null; that one is held to a longhand statistic and to behaving
+on a stationary stream.
 """
 
 import numpy as np
@@ -227,30 +230,43 @@ def test_reset_empties_the_windows_at_a_flag():
 # --- the shared contract -----------------------------------------------------
 
 
-@pytest.mark.parametrize("kind", ["monitor", "window"])
+KIND_KW = {
+    "monitor": {"span_rows": 150},
+    "window": {"kind": "window", "span_rows": 50, "n_perm": 30},
+    "sequential": {
+        "kind": "sequential",
+        "span_rows": 100,
+        "monitor_rows": 150,
+        "boundary_gamma": 0.25,
+    },
+}
+
+
+@pytest.mark.parametrize("kind", ["monitor", "window", "sequential"])
 @pytest.mark.parametrize("size", [1, 13, 300])
 def test_chunk_invariance(kind, size):
     df = pair(600, 0.4, seed=15)
-    kw = (
-        {"span_rows": 150}
-        if kind == "monitor"
-        else {"kind": "window", "span_rows": 50, "n_perm": 30}
-    )
+    kw = KIND_KW[kind]
     want = run(df, **kw)
     bank = po.ModelBank([spec(**kw)])
     got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])
     assert want.equals(got["c"].struct.unnest())
 
 
-def test_save_load_mid_stream():
+@pytest.mark.parametrize("kind", ["monitor", "sequential"])
+@pytest.mark.parametrize("cut", [60, 170, 300])
+def test_save_load_mid_stream(kind, cut):
+    """A state saved in a span, in a history or in a monitoring period goes
+    on as the unbroken stream does; the sequential kind's critical value is
+    recomputed on load, not stored."""
     df = pair(600, 0.4, seed=16)
-    s = spec(span_rows=150)
-    want = run(df, span_rows=150)
+    s = spec(**KIND_KW[kind])
+    want = run(df, **KIND_KW[kind])
     bank = po.ModelBank([s])
-    bank.fit_predict(df[:300])
+    bank.fit_predict(df[:cut])
     again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
-    got = again.fit_predict(df[300:])["c"].struct.unnest()
-    assert want[300:].equals(got)
+    got = again.fit_predict(df[cut:])["c"].struct.unnest()
+    assert want[cut:].equals(got)
 
 
 def test_a_capped_gap_abandons_the_span():
@@ -295,10 +311,10 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
         # flags or always does, and the permutation knobs.
-        ({"crit": float("nan")}, "crit must not be NaN"),
-        ({"crit": 0.0}, "crit is the critical value"),
-        ({"crit": -1.0}, "crit is the critical value"),
-        ({"crit": float("inf")}, "crit must be finite"),
+        ({"kind": "window", "crit": float("nan")}, "crit must not be NaN"),
+        ({"kind": "window", "crit": 0.0}, "crit is the critical value"),
+        ({"kind": "sequential", "crit": -1.0}, "crit is the critical value"),
+        ({"kind": "window", "crit": float("inf")}, "crit must be finite"),
         ({"bandwidth": 0}, "bandwidth must be >= 1"),
         (
             {"kind": "window", "span_rows": 20, "perm_block": 0},
@@ -317,6 +333,198 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
 def test_a_bad_spec_is_refused_by_name(kw, message):
     with pytest.raises(ValueError, match=message):
         spec(**kw)
+
+
+@pytest.mark.parametrize(
+    ("kind", "kw", "applies_to"),
+    [
+        ("monitor", {"crit": 2.0}, '"window" or "sequential"'),
+        ("monitor", {"reset": True}, '"window"'),
+        ("monitor", {"n_perm": 50}, '"window"'),
+        ("monitor", {"seed": 3}, '"window"'),
+        ("monitor", {"norm": "linf"}, '"window"'),
+        ("monitor", {"perm_block": 2}, '"window"'),
+        ("monitor", {"permute_every": 10}, '"window"'),
+        ("monitor", {"monitor_rows": 50}, '"sequential"'),
+        ("monitor", {"boundary_gamma": 0.2}, '"sequential"'),
+        ("window", {"bandwidth": 3}, '"monitor" or "sequential"'),
+        ("window", {"monitor_rows": 50}, '"sequential"'),
+        ("window", {"boundary_gamma": 0.2}, '"sequential"'),
+        ("sequential", {"n_perm": 50}, '"window"'),
+        ("sequential", {"reset": True}, '"window"'),
+        ("sequential", {"norm": "linf"}, '"window"'),
+        ("sequential", {"seed": 1}, '"window"'),
+    ],
+)
+def test_a_parameter_of_another_kind_is_refused(kind, kw, applies_to):
+    """A parameter that belongs to another kind is refused, naming the kinds
+    it applies to. They were taken and ignored: a ``crit`` given to
+    ``"monitor"`` changed nothing, and the docstring's promise that
+    ``reset`` under ``"monitor"`` raises was not kept (task 114)."""
+    param = next(iter(kw))
+    with pytest.raises(ValueError, match=f"{param} applies to kind = {applies_to}"):
+        spec(kind=kind, span_rows=50, **kw)
+
+
+@pytest.mark.parametrize("kw", [{"boundary_gamma": 0.5}, {"boundary_gamma": -0.1}])
+def test_the_boundary_exponent_is_below_a_half(kw):
+    with pytest.raises(ValueError, match=r"boundary_gamma must be in \[0, 0.5\)"):
+        spec(kind="sequential", span_rows=50, **kw)
+
+
+def test_the_monitoring_period_is_at_least_two_rows():
+    with pytest.raises(ValueError, match="monitor_rows of at least 2"):
+        spec(kind="sequential", span_rows=50, monitor_rows=1)
+
+
+# --- the sequential detector (Wied & Galeano 2013) ---------------------------
+
+
+def _sup_abs_bm_cdf(x):
+    """``P(sup_{0<=s<=1} |W(s)| <= x)``, the series (Feller 1951), written
+    from the formula rather than read from the library."""
+    k = np.arange(400)
+    n = 2 * k + 1
+    return float(4 / np.pi * np.sum((-1.0) ** k / n * np.exp(-(n**2) * np.pi**2 / (8 * x * x))))
+
+
+def _sup_abs_bm_quantile(p):
+    lo, hi = 0.0, 20.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if _sup_abs_bm_cdf(mid) < p else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+def _sequential_crit(m, ratio, gamma=0.0, **kw):
+    out = run(
+        pair(m + 5, 0.3),
+        kind="sequential",
+        span_rows=m,
+        monitor_rows=round(ratio * m),
+        boundary_gamma=gamma,
+        alpha_adjust="none",
+        **kw,
+    )
+    crits = out["crit"].drop_nulls().unique()
+    assert crits.len() == 1, crits
+    return crits[0]
+
+
+@pytest.mark.parametrize("ratio", [0.5, 1.0, 2.0, 4.0])
+def test_the_sequential_critical_value_at_gamma_zero_is_the_series(ratio):
+    """Wied & Galeano's Eq. 7 at ``γ = 0``: ``sqrt(T/(1+T))`` times the 95 %
+    point of ``sup|W|`` on ``[0, 1]``, 2.2414, with ``T = monitor_rows /
+    span_rows``."""
+    want = (ratio / (1 + ratio)) ** 0.5 * _sup_abs_bm_quantile(0.95)
+    assert _sequential_crit(100, ratio) == pytest.approx(want, abs=1e-6)
+    assert _sup_abs_bm_quantile(0.95) == pytest.approx(2.2414, abs=1e-4)
+
+
+#: Wied & Galeano's Table 1: 5 % critical values, simulated from 10,000
+#: paths on a grid of 10,000 points, for T = 0.5, 1, 2, 4.
+TABLE_1 = {
+    0.0: (1.2870, 1.5578, 1.8158, 1.9980),
+    0.25: (1.8001, 1.9924, 2.1684, 2.2467),
+    0.45: (2.6282, 2.6844, 2.7215, 2.7660),
+}
+
+
+@pytest.mark.parametrize("gamma", sorted(TABLE_1))
+def test_the_sequential_critical_values_are_wied_and_galeanos_table_1(gamma):
+    """Within 0.035 of every cell. Theirs sit below ours in 11 of 12, since a
+    grid reads the supremum low; the twelfth is above by 0.015, in a row of
+    theirs off the exact ``T``-scaling by 0.027, the spread 10,000 paths
+    leave."""
+    for ratio, theirs in zip((0.5, 1.0, 2.0, 4.0), TABLE_1[gamma], strict=True):
+        ours = _sequential_crit(100, ratio, gamma)
+        assert abs(ours - theirs) < 0.035, (gamma, ratio, ours, theirs)
+
+
+def test_the_boundary_law_matches_a_simulation():
+    """A second opinion on the solve above ``γ = 0``, independent of it:
+    20,000 Brownian paths on a grid of 4,000 points, the 95 % point of
+    ``sup |W(s)| / s^0.25``. A grid reads the supremum low (by about
+    ``0.58 / sqrt(4000)`` at ``γ = 0``) and the quantile of 20,000 draws is
+    good to about 0.015, so the solve sits above the simulation, by no
+    more than 0.05."""
+    gamma, n, batch = 0.25, 4000, 2000
+    rng = np.random.default_rng(114)
+    s = np.arange(1, n + 1) / n
+    sups = []
+    for _ in range(10):
+        w = np.cumsum(rng.standard_normal((batch, n)), axis=1) / np.sqrt(n)
+        sups.append(np.max(np.abs(w) / s**gamma, axis=1))
+    simulated = float(np.quantile(np.concatenate(sups), 0.95))
+    ours = _sequential_crit(100, 1.0, gamma) / 0.5 ** (0.5 - gamma)
+    assert simulated - 0.015 < ours < simulated + 0.05, (ours, simulated)
+
+
+def test_nothing_is_reported_in_the_history_or_on_the_first_monitored_row():
+    out = run(pair(260, 0.3), kind="sequential", span_rows=100, monitor_rows=100, crit=1e9)
+    live = [i for i, v in enumerate(out["stat"].to_list()) if v is not None]
+    # History 0..99, first monitored row 100 silent, 101..199 report, then a
+    # new history from row 200.
+    assert live == list(range(101, 200)), live[:5]
+
+
+def test_the_sequential_size_is_near_nominal_on_gaussian_pairs():
+    """Under the null the share of monitoring periods that end in a flag is
+    the size. On about 600 cycles of i.i.d. Gaussian pairs, ``m = 250``,
+    ``T = 1``, ``γ = 0``, at 5 %: a rate from 600 cycles has a standard
+    error of 0.009."""
+    m = 250
+    out = run(pair(300_000, 0.4, seed=31), kind="sequential", span_rows=m, alpha_adjust="none")
+    live = out["stat"].is_not_null()
+    periods = (live & ~live.shift(1, fill_value=False)).sum()
+    flags = out["flag"].fill_null(False).sum()
+    size = flags / periods
+    assert periods > 500
+    assert 0.025 < size < 0.075, (flags, periods, size)
+
+
+def _break(m, before, after, rho0, rho1, seed):
+    return pl.concat([pair(m + before, rho0, seed=seed), pair(after, rho1, seed=seed + 1)])
+
+
+def test_a_sequential_break_is_flagged_and_dated():
+    """History and 200 monitored rows at 0.3, then 0.8: a flag after the
+    break, dated by Eq. 8 to within 50 rows of it."""
+    m = 300
+    out = run(_break(m, 200, 400, 0.3, 0.8, 7), kind="sequential", span_rows=m, monitor_rows=600)
+    flagged = out.with_row_index("i").filter(pl.col("flag").fill_null(False))
+    assert flagged.height >= 1
+    first = flagged.row(0, named=True)
+    tau = first["i"] - m + 1  # the flag's place in the monitoring period
+    assert tau > 200, tau
+    assert abs((tau - first["since_change"]) - 200) <= 50, first
+
+
+def test_a_larger_boundary_exponent_finds_an_early_change_sooner():
+    """The trade ``boundary_gamma`` makes, as the paper measured it: a
+    change soon after the history (here 10 rows in) is flagged sooner at
+    0.45 than at 0, over twenty streams."""
+    m = 250
+    delays = {0.0: [], 0.45: []}
+    for seed in range(20):
+        df = _break(m, 10, 490, 0.2, 0.8, 100 + 2 * seed)
+        for gamma in delays:
+            out = run(
+                df, kind="sequential", span_rows=m, monitor_rows=500, boundary_gamma=gamma
+            ).with_row_index("i")
+            hit = out.filter(pl.col("flag").fill_null(False))
+            delays[gamma].append(hit["i"][0] - m - 10 if hit.height else 500)
+    assert np.median(delays[0.45]) < np.median(delays[0.0]), delays
+
+
+def test_since_change_is_null_except_on_a_flag():
+    for kind, kw in KIND_KW.items():
+        out = run(_break(200, 150, 250, 0.1, 0.9, 3), **kw)
+        flags = out["flag"].fill_null(False)
+        dated = out["since_change"]
+        assert dated.filter(~flags).null_count() == (~flags).sum(), kind
+        assert flags.any(), kind
+        assert dated.filter(flags).drop_nulls().min() >= 1, kind
 
 
 # --- the units of the data ---------------------------------------------------

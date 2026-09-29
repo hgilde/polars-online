@@ -96,10 +96,17 @@ MEANING: dict[str, str] = {
     "u": "the equicorrelation this row alone implies (Lemma 2.3, from the standardized row)",
     "rho": "the block's equicorrelation level, the smoothed value `u` is folded into",
     "loglik": "log-likelihood of the row under the fitted model",
-    "stat": "the test statistic for the span; null except on the row one is due",
+    "stat": (
+        "the test statistic for the span, the pair of windows or the monitored row; null "
+        "except on a row one is due"
+    ),
     "crit": "the critical value `stat` is compared against",
     "flag": "true on the row where `stat` crossed `crit`",
     "since_flag": "learned rows since the last flag",
+    "since_change": (
+        "on a flag, the rows since the change it dates, through the flag's row from the first "
+        "changed one; null otherwise"
+    ),
     "p_change": "`P(run length <= 1)`: the mass sitting on a change at or just before this row",
     "run_mode": "most likely run length *before* this row, so `t - run_mode` dates the regime",
     "run_mean": "posterior mean run length",

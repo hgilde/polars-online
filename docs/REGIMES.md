@@ -16,7 +16,8 @@ five, with two remedies for [series that tick at their own
 times](../README.md#series-that-tick-at-their-own-times): refresh-time
 sampling and the lagged co-moments of `ew_cov(lags=...)`. `deco` and
 `rcov` joined on 2026-09-27 (task 112), with `hmm` through a switch of
-regime and the size study at ten times the draws.
+regime and the size study at ten times the draws, and `corrchange`'s
+sequential detector on 2026-09-28 (task 114).
 
 | section | the question | measured on |
 |---|---|---|
@@ -29,11 +30,14 @@ regime and the size study at ten times the draws.
 | [6. The Epps effect, and the two ways out](#6-the-epps-effect-and-the-two-ways-out) | what asynchrony does to a correlation, and what recovers it | `po.stream.refresh_time`, `ew_cov(lags=...)` |
 | [7. `deco`: an equicorrelation that moves](#7-deco-an-equicorrelation-that-moves) | where `rho` settles, and how fast it follows a switch | `deco` |
 | [8. `rcov`: three estimators against each block's truth](#8-rcov-three-estimators-against-each-blocks-truth) | each estimator's error under noise and asynchrony | `rcov` |
-| [9. Running them](#9-running-them) | how to reproduce every number, and how long it takes | |
+| [9. The sequential detector against its paper](#9-the-sequential-detector-against-its-paper) | how often a monitoring period ends in a flag when nothing changed | `corrchange`, `kind="sequential"` |
+| [10. Running them](#10-running-them) | how to reproduce every number, and how long it takes | |
 
-Every number comes from `scripts/regime_experiments.py`, run on 2026-09-27.
-Sections 1 to 4 end with a dated note that keeps the figures they first
-reported, on 2026-09-06.
+Every number comes from `scripts/regime_experiments.py`, run on 2026-09-27;
+sections 2 to 4 and 9 on 2026-09-28, after task 114 put the monitor's
+kernel on its paper's. Sections 1 to 4 end with a dated note that keeps
+the figures they first reported, on 2026-09-06, and 2 to 4 one with the
+figures before task 114.
 
 ## 0. The short version
 
@@ -59,20 +63,29 @@ Set both from the data's scale
 Dehling (WKD) tabulate its size and power for "i.i.d. bivariate `t_5`
 innovations", a phrase two distributions fit. At 20,000 draws a cell, the
 size under the shared-scale reading is within 0.004 of their Table 1, and
-under the independent reading 0.007 and 0.008 above it where `rho` is 0,
-so the size points to the shared scale. The power is within 0.034 of
-their Table 2 under either. On Gaussian pairs the size runs from 0.041 to
-0.046 against the nominal 0.05, the level `tests/test_corrchange.py` holds
-it to
+under the independent reading 0.008 above it where `rho` is 0, so the
+size points to the shared scale. The power is within 0.035 of their Table
+2 under either. On Gaussian pairs the size runs from 0.041 to 0.047
+against the nominal 0.05, the level `tests/test_corrchange.py` holds it
+to
 ([§2](#2-is-the-monitor-the-size-its-paper-says),
 [§3](#3-and-is-it-the-power-its-paper-says)).
 
 **`D-hat`, the statistic's denominator, is exact on Gaussian pairs and
-biased low on a tail-dependent `t_5`.** On Gaussian pairs it averages 0.749
+biased low on a tail-dependent `t_5`.** On Gaussian pairs it averages 0.750
 against an asymptotic 0.750 at `T = 2000`. On the `t_5` it reads 18 % low
 at `T = 500` and 9 % low at `T = 2000`, and its scatter grows with `T`
 instead of shrinking. The monitor's size and power stay close to WKD's
 even so ([§4](#4-where-the-heavy-tails-go-d-hat)).
+
+**`corrchange`'s sequential detector is the size its paper says.** Wied
+and Galeano tabulate the rate at which a monitoring period ends in a flag
+when nothing changes, on GARCH pairs. Over about 1000 cycles a cell, on
+their design, the detector here is within 0.023 of their Table 2 at
+`boundary_gamma` of 0 and 0.25 and within 0.030 at 0.45, under two
+standard errors of the difference in every cell. At 0.45 both read 0.12
+to 0.18 against a nominal 0.05, as the paper warns
+([§9](#9-the-sequential-detector-against-its-paper)).
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(window)` finds a correlation break in a
@@ -205,12 +218,12 @@ so both are measured, with Gaussian pairs beside them:
 
 | T    | rho  | WKD Table 1 | t5 shared scale | t5 independent | Gaussian |
 |------|------|-------------|-----------------|----------------|----------|
-| 500  | -0.5 | 0.040       | 0.040           | 0.042          | 0.045    |
-| 500  | 0.0  | 0.035       | 0.031           | 0.042          | 0.041    |
+| 500  | -0.5 | 0.040       | 0.041           | 0.043          | 0.045    |
+| 500  | 0.0  | 0.035       | 0.031           | 0.043          | 0.041    |
 | 500  | 0.5  | 0.041       | 0.040           | 0.040          | 0.046    |
 | 1000 | -0.5 | 0.038       | 0.035           | 0.041          | 0.046    |
-| 1000 | 0.0  | 0.034       | 0.033           | 0.042          | 0.042    |
-| 1000 | 0.5  | 0.039       | 0.038           | 0.039          | 0.046    |
+| 1000 | 0.0  | 0.034       | 0.034           | 0.042          | 0.042    |
+| 1000 | 0.5  | 0.039       | 0.039           | 0.040          | 0.047    |
 
 The table holds 20,000 replications per cell, at a nominal level of 0.05,
 where a rate from 20,000 draws has a standard error of 0.0015. Each draw is
@@ -220,18 +233,25 @@ one span of `T` rows, tested once with `alpha_adjust="none"`.
 Table 1 in every cell.** The largest gap, at `T = 500` and `rho = 0`, is
 2.7 of this study's standard errors, and WKD's own figures carry a Monte
 Carlo error this study cannot see. Neither reading is liberal: no `t_5`
-cell is above 0.042.
+cell is above 0.043.
 
 **The independent reading does not match at `rho = 0`.** There it rejects
-0.042 at both lengths, 0.007 and 0.008 above WKD's figures, 4.7 and 5.3
-standard errors. Elsewhere it is within 0.003. So WKD's "bivariate `t_5`"
+0.043 and 0.042, 0.008 above WKD's figures at both lengths, 5.3 standard
+errors. Elsewhere it is within 0.003. So WKD's "bivariate `t_5`"
 is the shared-scale draw, a multivariate `t`, as far as the size can say.
 
-**On Gaussian pairs the size is 0.041 to 0.046**, a little under the
+**On Gaussian pairs the size is 0.041 to 0.047**, a little under the
 nominal 0.05. `tests/test_corrchange.py` holds the test to that level on
 Gaussian pairs at `T = 500`, for `rho` of 0 and 0.5, and again at 0.5 with
 one column multiplied by 100. No test holds the size to WKD's own figure.
 
+> **Measured 2026-09-27, before task 114 put the kernel on WKD's `1 −
+> l/γ` (it was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a
+> cell.** In the table's row order, the shared-scale `t_5` read 0.040,
+> 0.031, 0.040, 0.035, 0.033 and 0.038; the independent `t_5` 0.042, 0.042,
+> 0.040, 0.041, 0.042 and 0.039; Gaussian pairs 0.045, 0.041, 0.046, 0.046,
+> 0.042 and 0.046. No cell moved by more than 0.001.
+>
 > **Measured 2026-09-23, at 2000 replications a cell.** In the table's row
 > order, the shared-scale `t_5` read 0.045, 0.024, 0.043, 0.033, 0.035 and
 > 0.044; the independent `t_5` 0.046, 0.044, 0.041, 0.036, 0.041 and 0.041;
@@ -260,33 +280,39 @@ values:
 
 | T    | innovations | power | size-adjusted | empirical 95% | WKD Table 2 |
 |------|-------------|-------|---------------|---------------|-------------|
-| 500  | t5          | 0.553 | 0.582         | 1.321         | 0.587       |
-| 500  | t5_indep    | 0.585 | 0.613         | 1.327         |             |
-| 500  | normal      | 0.830 | 0.851         | 1.327         |             |
-| 1000 | t5          | 0.832 | 0.844         | 1.324         | 0.830       |
-| 1000 | t5_indep    | 0.832 | 0.857         | 1.307         |             |
-| 1000 | normal      | 0.994 | 0.994         | 1.355         |             |
+| 500  | t5          | 0.552 | 0.582         | 1.324         | 0.587       |
+| 500  | t5_indep    | 0.588 | 0.622         | 1.317         |             |
+| 500  | normal      | 0.833 | 0.846         | 1.337         |             |
+| 1000 | t5          | 0.830 | 0.848         | 1.321         | 0.830       |
+| 1000 | t5_indep    | 0.831 | 0.856         | 1.317         |             |
+| 1000 | normal      | 0.995 | 0.995         | 1.352         |             |
 
 The table holds 1000 replications per row, at a nominal level of 0.05.
 
-**Under both `t_5` readings the power is within 0.034 of WKD's Table 2.**
-At `T = 500`, where WKD give 0.587, the shared-scale draw reaches 0.553
+**Under both `t_5` readings the power is within 0.035 of WKD's Table 2.**
+At `T = 500`, where WKD give 0.587, the shared-scale draw reaches 0.552
 against the asymptotic value and 0.582 size-adjusted, and the independent
-draw 0.585 and 0.613. At `T = 1000` both draws reach 0.832 against WKD's
-0.830, and 0.844 and 0.857 size-adjusted.
+draw 0.588 and 0.622. At `T = 1000` the two draws reach 0.830 and 0.831
+against WKD's 0.830, and 0.848 and 0.856 size-adjusted.
 
-**On Gaussian pairs the power is well above WKD's figure:** 0.830 at
-`T = 500`, or 0.851 size-adjusted, and 0.994 at `T = 1000`.
+**On Gaussian pairs the power is well above WKD's figure:** 0.833 at
+`T = 500`, or 0.846 size-adjusted, and 0.995 at `T = 1000`.
 `tests/test_corrchange.py` holds the Gaussian power at `T = 500` above a
 floor set from WKD's 0.587, less a tolerance.
 
 **Read the size-adjusted column across distributions.** It takes its
 critical value from null draws of the same distribution and length, so a
 size that differs between distributions does not tilt it. Every empirical
-quantile, from 1.307 to 1.355, is below the asymptotic 1.3581. So the
+quantile, from 1.317 to 1.352, is below the asymptotic 1.3581. So the
 size-adjusted power is the higher of the two in every row but the last,
-where both are 0.994.
+where both are 0.995.
 
+> **Measured 2026-09-27, before task 114's kernel.** In the table's row
+> order, as power, size-adjusted and empirical 95 %: at `T = 500`, t5 read
+> 0.553, 0.582 and 1.321, t5_indep 0.585, 0.613 and 1.327, and normal 0.830,
+> 0.851 and 1.327. At `T = 1000`, t5 read 0.832, 0.844 and 1.324, t5_indep
+> 0.832, 0.857 and 1.307, and normal 0.994, 0.994 and 1.355.
+>
 > **Measured 2026-09-06, before the S3 fix of 2026-09-19, which corrected
 > `D-hat`'s gradient.** In the table's row order, as power, size-adjusted
 > and empirical 95 %: at `T = 500`, t5 read 0.525, 0.428 and 1.498,
@@ -311,33 +337,39 @@ actually used.
 
 | innovations | T    | mean  | median | sd    | asymptotic |
 |-------------|------|-------|--------|-------|------------|
-| normal      | 500  | 0.739 | 0.742  | 0.060 | 0.750      |
-| normal      | 2000 | 0.749 | 0.751  | 0.033 | 0.750      |
-| t5          | 500  | 1.071 | 1.020  | 0.257 | 1.299      |
-| t5          | 2000 | 1.184 | 1.097  | 0.353 | 1.299      |
-| t5_indep    | 500  | 0.811 | 0.796  | 0.113 | -          |
-| t5_indep    | 2000 | 0.828 | 0.815  | 0.073 | -          |
+| normal      | 500  | 0.741 | 0.743  | 0.058 | 0.750      |
+| normal      | 2000 | 0.750 | 0.750  | 0.031 | 0.750      |
+| t5          | 500  | 1.071 | 1.016  | 0.255 | 1.299      |
+| t5          | 2000 | 1.185 | 1.099  | 0.353 | 1.299      |
+| t5_indep    | 500  | 0.812 | 0.795  | 0.111 | -          |
+| t5_indep    | 2000 | 0.828 | 0.816  | 0.072 | -          |
 
 The table holds 200 replications per row, at `rho` = 0.5. The independent
 `t_5` has no closed form here, so its last column reads `-`.
 
-**On Gaussian pairs the estimator is right and tight.** It averages 0.739
-at `T = 500` and 0.749 at `T = 2000`, against 0.750. Its standard deviation
-falls from 0.060 to about 0.03 (0.033) as `T` grows fourfold. That is what
+**On Gaussian pairs the estimator is right and tight.** It averages 0.741
+at `T = 500` and 0.750 at `T = 2000`, against 0.750. Its standard deviation
+falls from 0.058 to about 0.03 (0.031) as `T` grows fourfold. That is what
 the delta method promises on data with light tails: right, consistent and
 quick.
 
 **On the shared-scale `t_5` it is biased low, and its scatter does not
-shrink.** Its mean is 1.071 at `T = 500` and 1.184 at `T = 2000`, against
-1.299: 18 % and 9 % low. Its median is lower still, 21 % and 16 % low, and
-its standard deviation grows from 0.257 to 0.353. The estimator's inputs
+shrink.** Its mean is 1.071 at `T = 500` and 1.185 at `T = 2000`, against
+1.299: 18 % and 9 % low. Its median is lower still, 22 % and 15 % low, and
+its standard deviation grows from 0.255 to 0.353. The estimator's inputs
 are fourth moments, and a `t_5` has a fourth moment only just, at
 `nu > 4`. Those inputs' own variance is infinite, so there is no rate at
 which the estimate settles. The independent `t_5` is steadier: its
-standard deviation falls from 0.113 to 0.073.
+standard deviation falls from 0.111 to 0.072.
 
 The size in §2 and the power in §3 are close to WKD's tables even so.
 
+> **Measured 2026-09-27, before task 114's kernel.** In the table's row
+> order, as mean, median and sd: normal read 0.739, 0.742 and 0.060, then
+> 0.749, 0.751 and 0.033; the shared-scale t5 1.071, 1.020 and 0.257, then
+> 1.184, 1.097 and 0.353; the independent t5 0.811, 0.796 and 0.113, then
+> 0.828, 0.815 and 0.073.
+>
 > **Measured 2026-09-06, before the S3 fix of 2026-09-19, which corrected
 > `D-hat`'s gradient.** In the table's row order, as mean, median and sd:
 > normal read 0.739, 0.739 and 0.063, then 0.750, 0.750 and 0.034. The
@@ -535,7 +567,74 @@ clips a negative eigenvalue where one appears, and the balanced form
 promises neither. For a correlation read on its own, the balanced form was
 the more accurate on these streams.
 
-## 9. Running them
+## 9. The sequential detector against its paper
+
+`kind="sequential"` is Wied and Galeano's (2013) monitoring procedure:
+`span_rows` rows of history, then each row of a monitoring period of
+`monitor_rows` rows tested against it as it arrives, until a flag or the
+period's end. Their `T` is `monitor_rows / span_rows`, and
+`boundary_gamma`, their `γ`, lowers the boundary early in the period. Its
+size is the share of monitoring periods that end in a flag when the
+correlation never changes. Their Table 2 gives it for two independent
+GARCH(1,1) series mixed to a correlation of 0.5, 1000 series a cell. Here
+each cell is one stream of about 1000 back-to-back cycles on the same
+design, and on Gaussian pairs beside it:
+
+| gamma | T   | m   | W&G Table 2 | GARCH | Gaussian |
+|-------|-----|-----|-------------|-------|----------|
+| 0.0   | 0.5 | 250 | 0.059       | 0.060 | 0.064    |
+| 0.0   | 0.5 | 500 | 0.058       | 0.049 | 0.059    |
+| 0.0   | 1.0 | 250 | 0.077       | 0.086 | 0.059    |
+| 0.0   | 1.0 | 500 | 0.069       | 0.052 | 0.060    |
+| 0.0   | 2.0 | 250 | 0.066       | 0.062 | 0.072    |
+| 0.0   | 2.0 | 500 | 0.054       | 0.066 | 0.053    |
+| 0.0   | 4.0 | 250 | 0.063       | 0.074 | 0.076    |
+| 0.0   | 4.0 | 500 | 0.071       | 0.059 | 0.049    |
+| 0.25  | 0.5 | 250 | 0.075       | 0.088 | 0.067    |
+| 0.25  | 0.5 | 500 | 0.079       | 0.064 | 0.062    |
+| 0.25  | 1.0 | 250 | 0.075       | 0.076 | 0.086    |
+| 0.25  | 1.0 | 500 | 0.064       | 0.043 | 0.070    |
+| 0.25  | 2.0 | 250 | 0.087       | 0.071 | 0.075    |
+| 0.25  | 2.0 | 500 | 0.063       | 0.072 | 0.060    |
+| 0.25  | 4.0 | 250 | 0.073       | 0.087 | 0.064    |
+| 0.25  | 4.0 | 500 | 0.077       | 0.054 | 0.061    |
+| 0.45  | 0.5 | 250 | 0.169       | 0.176 | 0.167    |
+| 0.45  | 0.5 | 500 | 0.125       | 0.155 | 0.123    |
+| 0.45  | 1.0 | 250 | 0.174       | 0.172 | 0.157    |
+| 0.45  | 1.0 | 500 | 0.136       | 0.139 | 0.135    |
+| 0.45  | 2.0 | 250 | 0.164       | 0.158 | 0.149    |
+| 0.45  | 2.0 | 500 | 0.138       | 0.116 | 0.123    |
+| 0.45  | 4.0 | 250 | 0.161       | 0.133 | 0.150    |
+| 0.45  | 4.0 | 500 | 0.128       | 0.134 | 0.131    |
+
+The nominal level is 0.05 in every row. The difference between two rates
+from 1000 draws has a standard error of about 0.011 at 0.07 and 0.016 at
+0.15.
+
+**On their design the detector is within two standard errors of their
+table in every cell.** The largest gaps are 0.023 at `boundary_gamma` of 0
+and 0.25 (at `T = 4`, `m = 500`) and 0.030 at 0.45 (at `T = 0.5`, `m =
+500`), in both directions. The critical values differ a little too: the
+paper simulates them on a grid, which reads the supremum low, and this
+solves the law behind them, so its values are higher in 11 of the 12
+cells of their Table 1, and within 0.03 of it in all
+(`crates/online-core/src/boundary.rs`).
+
+**Neither is the nominal 5 %, and the paper says so.** At 0 and 0.25 the
+size runs from 0.043 to 0.088, a little above 0.05 at `m = 250` and
+closer at 500, as their asymptotics expect. At 0.45 it runs from 0.116 to
+0.176: the boundary is low at the start, and a noisy early correlation
+crosses it. That is the price of catching an early change sooner, which
+`tests/test_corrchange.py` holds it to on a change ten rows in.
+
+**Gaussian pairs read the same as GARCH ones:** 0.049 to 0.086 at 0 and
+0.25, and 0.123 to 0.167 at 0.45. The paper's assumptions admit GARCH, and
+this design does not tell the two apart.
+
+`tests/test_corrchange.py` holds the Gaussian size at `m = 250`, `T = 1`
+between 0.025 and 0.075, and the critical values to the paper's Table 1.
+
+## 10. Running them
 
 ```sh
 uv run python scripts/regime_experiments.py all              # every experiment, in the order of the table below
@@ -546,16 +645,18 @@ uv run python scripts/regime_experiments.py size power dhat  # any of them by na
 |---|---|---|
 | `recovery` | [§1](#1-does-hmm-recover-the-stream-that-made-it) | 0.2 s |
 | `switch` | [§1](#through-a-switch) | 0.2 s |
-| `size` | [§2](#2-is-the-monitor-the-size-its-paper-says) | 249.4 s |
+| `size` | [§2](#2-is-the-monitor-the-size-its-paper-says) | 263.9 s |
 | `power` | [§3](#3-and-is-it-the-power-its-paper-says) | 8.5 s |
-| `dhat` | [§4](#4-where-the-heavy-tails-go-d-hat) | 2.3 s |
+| `dhat` | [§4](#4-where-the-heavy-tails-go-d-hat) | 2.2 s |
 | `delay` | [§5](#5-two-changepoint-detectors-on-the-same-break) | 1.3 s |
 | `epps` | [§6](#6-the-epps-effect-and-the-two-ways-out) | 3.9 s |
 | `deco` | [§7](#7-deco-an-equicorrelation-that-moves) | 0.1 s |
 | `rcov` | [§8](#8-rcov-three-estimators-against-each-blocks-truth) | 3.6 s |
+| `sequential` | [§9](#9-the-sequential-detector-against-its-paper) | 23.9 s |
 
-`all` runs them in that order, in 4 min 30 s of wall time. That was on
-2026-09-27, on an Apple M4 Pro (14 cores, 48 GB, macOS 15.7.3) with Python
+`all` runs them in that order, in about 5 min of wall time. That was on
+2026-09-27, and on 2026-09-28 for `size`, `power`, `dhat` and
+`sequential`, on an Apple M4 Pro (14 cores, 48 GB, macOS 15.7.3) with Python
 3.12.13, Polars 1.44.2 and a release build. It took 40.3 s on 2026-09-23,
 before the size study's draws went from 2000 to 20,000 a cell, and about
 36 seconds when this page was first written, on 2026-09-06. Every figure
@@ -568,5 +669,5 @@ downloads and nothing is cached. A different build can move the numbers,
 and the dated notes in sections 1 to 4 record where one did.
 
 The script is committed, and the gate does not run it: the size study
-alone is 20,000 replications a cell across three distributions, 249 s of
+alone is 20,000 replications a cell across three distributions, 264 s of
 the run.

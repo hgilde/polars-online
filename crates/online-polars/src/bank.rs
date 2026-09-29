@@ -993,15 +993,32 @@ fn compare_targets(
 /// bank that raises it has learned part of the chunk, and marks itself
 /// `broken`.
 fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> PolarsError {
+    polars_err!(ComputeError: "{}", over_budget_message(spec, key, bytes, every))
+}
+
+/// The words of [`over_budget`]: how far past which budget, and each way
+/// out spelled as the spec writes it -- a larger budget (the user,
+/// 2026-09-28: "on failure it should explain how to raise it"), a sparser
+/// ring, or thinning in place of refusing. A spec that sets no budget is
+/// told it ran under the default, which it never wrote.
+fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> String {
     let mib = spec.model.window_budget().map_or(0.0, |b| b.mib());
     let group = key
         .0
         .as_deref()
         .map_or(String::new(), |g| format!(" group {g:?}"));
-    polars_err!(ComputeError:
-        "spec {:?}{group}: the window's snapshots hold {:.3} MiB, past window_budget = \
-         {{\"refuse\": {mib}}}. Raise the budget, raise window_every ({every} now), or \
-         thin the snapshots instead ({{\"thin\": MiB}}).",
+    let named = spec.model.window_parts().and_then(|(_, b)| b).is_some();
+    let which = if named {
+        format!("window_budget = {{\"refuse\": {mib}}}")
+    } else {
+        format!("the default window_budget of {mib} MiB, which a spec gets when it sets none")
+    };
+    format!(
+        "spec {:?}{group}: the window's snapshots hold {:.3} MiB, past {which}. To allow more, \
+         set window_budget = {{\"refuse\": MiB}} with a larger number of MiB, or \
+         {{\"refuse\": inf}} for no bound (in Python, float(\"inf\")); to keep fewer \
+         snapshots, raise window_every ({every} now); or to thin them rather than refuse, set \
+         window_budget = {{\"thin\": MiB}}.",
         spec.name,
         bytes as f64 / (1024.0 * 1024.0)
     )
@@ -4154,8 +4171,9 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         return fields;
     }
     // corrchange is a test, not a model of the data: per instance the
-    // statistic, its critical value, the flag and the rows since the last
-    // one. Nothing is reported except where a span closes.
+    // statistic, its critical value, the flag, the rows since the last one
+    // and, on a flag, the rows since the change it dates. Nothing is
+    // reported except where a statistic is due.
     if matches!(spec.model, crate::ModelKind::CorrChange { .. }) {
         let labels = online_core::CorrChange::labels();
         let n_slots = labels.len();
@@ -4165,7 +4183,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 let at = mi * n_slots + slot;
                 let src = match l.as_str() {
                     "flag" => Source::Flag(at),
-                    "since_flag" => Source::Id(at),
+                    "since_flag" | "since_change" => Source::Id(at),
                     _ => Source::Stat(at),
                 };
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), l).decay(d).src(src);
@@ -4919,6 +4937,52 @@ fn assemble(
         arrays,
         None,
     ))
+}
+
+#[cfg(test)]
+mod over_budget_tests {
+    use super::{GroupKey, over_budget_message};
+    use crate::Spec;
+
+    fn spec(budget: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ew_ridge", "window": 50{budget}}},
+                "targets": ["y"], "features": ["x"], "halflife": 20}}"#
+        ))
+        .unwrap()
+    }
+
+    /// The refusal says how to raise the budget, spelled as a spec writes
+    /// it, and under the default says it was the default (the user,
+    /// 2026-09-28).
+    #[test]
+    fn the_refusal_says_how_to_raise_the_budget() {
+        let key = GroupKey(Some("a".into()));
+        let default = over_budget_message(&spec(""), &key, 300 << 20, 4);
+        for want in [
+            "the default window_budget of 256 MiB",
+            "window_budget = {\"refuse\": MiB} with a larger number of MiB",
+            "{\"refuse\": inf} for no bound",
+            "float(\"inf\")",
+            "raise window_every (4 now)",
+            "window_budget = {\"thin\": MiB}",
+            "group \"a\"",
+            "300.000 MiB",
+        ] {
+            assert!(default.contains(want), "{want:?} not in {default}");
+        }
+        let named = over_budget_message(
+            &spec(r#", "window_budget": {"refuse": 8}"#),
+            &GroupKey(None),
+            9 << 20,
+            1,
+        );
+        assert!(
+            named.contains("past window_budget = {\"refuse\": 8}"),
+            "{named}"
+        );
+        assert!(!named.contains("default"), "{named}");
+    }
 }
 
 #[cfg(test)]

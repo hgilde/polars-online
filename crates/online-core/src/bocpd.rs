@@ -83,9 +83,12 @@
 //! likelihood estimate on the whole data set, with `ω` tuned by matching the
 //! standard posterior on the first rows. Its predictive is closed-form for a
 //! Gaussian with a changing mean; with mean and variance both unknown, as
-//! here, they sample it (their App. C.1). The behavioural test -- a 20-σ row
-//! that restarts the plain run and does not move this one -- is what any
-//! replacement has to pass.
+//! here, they sample it (their App. C.1). A whole-data `θ*`, a tuned `ω`
+//! and a sampled predictive do not fit a streaming, deterministic model, so
+//! `robust` stays what it is, under its name, and ABK is not built (the
+//! user's decision, 2026-09-28). The behavioural test -- a 20-σ row that
+//! restarts the plain run and does not move this one -- is what it is held
+//! to.
 
 use serde::{Deserialize, Serialize};
 

@@ -1078,32 +1078,86 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         norm,
         seed,
         reset,
+        monitor_rows,
+        boundary_gamma,
     } = &spec.model
     else {
         return Err("not a corrchange spec".into());
     };
-    let kind = match kind.as_deref() {
-        None | Some("monitor") => CorrChangeKind::Monitor,
-        Some("window") => CorrChangeKind::Window,
+    let (kind, name) = match kind.as_deref() {
+        None | Some("monitor") => (CorrChangeKind::Monitor, "monitor"),
+        Some("window") => (CorrChangeKind::Window, "window"),
+        Some("sequential") => (CorrChangeKind::Sequential, "sequential"),
         Some(other) => {
             return Err(format!(
-                "unknown corrchange kind {other:?}; expected \"monitor\" or \"window\""
+                "unknown corrchange kind {other:?}; expected \"monitor\", \"sequential\" or \
+                 \"window\""
             ));
         }
     };
-    if span_rows.is_none() {
+    let Some(span_rows) = *span_rows else {
         return Err(format!(
-            "corrchange: kind = {:?} needs `span_rows`, the rows per comparison block",
+            "corrchange: kind = {name:?} needs `span_rows`, {}",
             match kind {
-                CorrChangeKind::Monitor => "monitor",
-                CorrChangeKind::Window => "window",
+                CorrChangeKind::Sequential =>
+                    "the rows of history each monitoring period is \
+                                               tested against",
+                _ => "the rows per comparison block",
             }
         ));
+    };
+    // A parameter that belongs to another kind is refused, not ignored: a
+    // `crit` given to `"monitor"` changed nothing, in silence. A value equal
+    // to the builders' default (`norm = "l1"`, `reset = false`) is taken as
+    // unset, since the Python builder writes those whether or not asked.
+    let refuse = |set: bool, param: &str, kinds: &str| -> Result<(), String> {
+        if set {
+            return Err(format!(
+                "corrchange: {param} applies to kind = {kinds}, not {name:?}"
+            ));
+        }
+        Ok(())
+    };
+    let (monitor, window, sequential) = (
+        kind == CorrChangeKind::Monitor,
+        kind == CorrChangeKind::Window,
+        kind == CorrChangeKind::Sequential,
+    );
+    if !window {
+        refuse(n_perm.is_some(), "n_perm", "\"window\"")?;
+        refuse(permute_every.is_some(), "permute_every", "\"window\"")?;
+        refuse(perm_block.is_some(), "perm_block", "\"window\"")?;
+        refuse(seed.is_some(), "seed", "\"window\"")?;
+        refuse(
+            norm.as_deref().is_some_and(|n| n != "l1"),
+            "norm",
+            "\"window\"",
+        )?;
+        refuse(
+            *reset == Some(true),
+            "reset",
+            "\"window\" (a \"monitor\" span and a \"sequential\" cycle end at their flag \
+             already)",
+        )?;
+    }
+    refuse(
+        monitor && crit.is_some(),
+        "crit",
+        "\"window\" or \"sequential\" (\"monitor\"'s is the Kolmogorov quantile)",
+    )?;
+    refuse(
+        window && bandwidth.is_some(),
+        "bandwidth",
+        "\"monitor\" or \"sequential\"",
+    )?;
+    if !sequential {
+        refuse(monitor_rows.is_some(), "monitor_rows", "\"sequential\"")?;
+        refuse(boundary_gamma.is_some(), "boundary_gamma", "\"sequential\"")?;
     }
     Ok(CorrChangeCfg {
         n_features: spec.k(),
         kind,
-        span_rows: span_rows.unwrap_or(0),
+        span_rows,
         alpha: alpha.unwrap_or(0.05),
         alpha_adjust: alpha_adjust.clone().unwrap_or_else(|| "bonferroni".into()),
         bandwidth: *bandwidth,
@@ -1124,6 +1178,13 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         },
         seed: seed.unwrap_or(0),
         reset: reset.unwrap_or(false),
+        // W&G's `T = 1`: as many rows monitored as the history has.
+        monitor_rows: if sequential {
+            monitor_rows.unwrap_or(span_rows)
+        } else {
+            0
+        },
+        boundary_gamma: boundary_gamma.unwrap_or(0.0),
     })
 }
 

@@ -22,7 +22,9 @@ denominator both of those depend on, against the value it estimates),
 refresh time and the lag inversion recover from it), ``deco`` (task 112 --
 does the equicorrelation follow a switch, and to what level?), ``rcov``
 (task 112 -- three estimators against each block's true correlation, under
-noise and asynchrony). ``all`` runs them in that order.
+noise and asynchrony), ``sequential`` (task 114 -- is
+`corrchange(kind="sequential")` the size Wied & Galeano's Table 2 says?).
+``all`` runs them in that order.
 """
 
 from __future__ import annotations
@@ -876,6 +878,83 @@ def rcov_blocks(seeds: int = 10) -> None:
     )
 
 
+def _garch_pair(n: int, rng: np.random.Generator, rho: float = 0.5) -> np.ndarray:
+    """Wied & Galeano's size design (their section 3): two independent
+    GARCH(1,1) series, ``h = 0.01 + 0.05 X^2 + 0.8 h`` and ``h = 0.01 + 0.1
+    Y^2 + 0.75 h`` with standard Gaussian innovations, each pair then
+    multiplied by the symmetric square root of ``[[1, rho], [rho, 1]]``."""
+    e = rng.standard_normal((n, 2))
+    out = np.empty((n, 2))
+    hx = hy = 0.01 / (1 - 0.85)
+    px = py = 0.0
+    for t in range(n):
+        hx = 0.01 + 0.05 * px * px + 0.8 * hx
+        hy = 0.01 + 0.1 * py * py + 0.75 * hy
+        px, py = np.sqrt(hx) * e[t, 0], np.sqrt(hy) * e[t, 1]
+        out[t] = px, py
+    c = np.sqrt(1 - rho * rho)
+    a, b = np.sqrt((1 + c) / 2), np.sqrt((1 - c) / 2)
+    return out @ np.array([[a, b], [b, a]])
+
+
+def _cycles_flagged(x: np.ndarray, m: int, ratio: float, gamma: float) -> tuple[int, int]:
+    """Flags and monitoring periods over one stream of back-to-back cycles."""
+    spec = po.spec.corrchange(
+        "c",
+        features=["x0", "x1"],
+        kind="sequential",
+        span_rows=m,
+        monitor_rows=int(m * ratio),
+        boundary_gamma=gamma,
+        alpha_adjust="none",
+    )
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
+    out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
+    live = out["stat"].is_not_null()
+    periods = int((live & ~live.shift(1, fill_value=False)).sum())
+    return int(out["flag"].fill_null(False).sum()), periods
+
+
+def sequential(cycles: int = 1000) -> None:
+    """Wied & Galeano (2013) Table 2: the rate at which a monitoring period
+    ends in a flag when the correlation never changes, which is the
+    sequential detector's size, on their GARCH design and on Gaussian
+    pairs. Their table has 1000 series a cell; here each cell is one stream
+    of about `cycles` back-to-back cycles, each a history and then its
+    monitoring period."""
+    _rule("Size: the sequential detector against Wied & Galeano Table 2")
+    published = {
+        (0.0, 0.5): (0.059, 0.058),
+        (0.0, 1.0): (0.077, 0.069),
+        (0.0, 2.0): (0.066, 0.054),
+        (0.0, 4.0): (0.063, 0.071),
+        (0.25, 0.5): (0.075, 0.079),
+        (0.25, 1.0): (0.075, 0.064),
+        (0.25, 2.0): (0.087, 0.063),
+        (0.25, 4.0): (0.073, 0.077),
+        (0.45, 0.5): (0.169, 0.125),
+        (0.45, 1.0): (0.174, 0.136),
+        (0.45, 2.0): (0.164, 0.138),
+        (0.45, 4.0): (0.161, 0.128),
+    }
+    rows = []
+    for (gamma, ratio), theirs in published.items():
+        for m, their in zip((250, 500), theirs, strict=True):
+            n = int(cycles * m * (1 + ratio))
+            cells = []
+            for draw in ("garch", "normal"):
+                rng = np.random.default_rng(_seed("sequential", gamma, ratio, m, draw))
+                x = _garch_pair(n, rng) if draw == "garch" else _draw(n, 0.5, rng, "normal")
+                flags, periods = _cycles_flagged(x, m, ratio, gamma)
+                cells.append(f"{flags / periods:.3f}")
+            rows.append([gamma, ratio, m, f"{their:.3f}", *cells])
+    _table(["gamma", "T", "m", "W&G Table 2", "GARCH", "Gaussian"], rows)
+    print(
+        f"\nabout {cycles} cycles a cell, nominal 0.05; a rate from 1000 draws has a"
+        " standard error of about 0.008 at 0.07 and 0.011 at 0.15"
+    )
+
+
 EXPERIMENTS = {
     "recovery": recovery,
     "switch": switch,
@@ -886,6 +965,7 @@ EXPERIMENTS = {
     "epps": epps,
     "deco": deco_track,
     "rcov": rcov_blocks,
+    "sequential": sequential,
 }
 
 

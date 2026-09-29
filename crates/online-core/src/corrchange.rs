@@ -27,12 +27,12 @@
 //! moments, `σ_x² = E[x²] − E[x]²` lost the level's digits: 1.2e-5 of `D̂`
 //! at a level of 1e5, and NaN at 1e8 (docs/PLAN.md task 103).
 //!
-//! **The kernel departs from the paper.** Lag `l` is weighted `1 − l/(γ+1)`,
-//! Newey–West's form, over lags `0..=γ`; WKD's `D̂₁ = ΣₜΣᵤ k((t−u)/γ_T)VₜVᵤ'`
-//! with `k(x) = 1 − |x|` (their Appendix A.1) weights it `1 − l/γ`, lag `γ`
-//! at 0. Measured 2026-09-28 at their Table 1 and 2 settings (20,000 shared
-//! draws a cell), the size moves by at most 0.0008 and the power by 0.003;
-//! whether to follow the paper is docs/PLAN.md task 114's open decision.
+//! The kernel is WKD's: `D̂₁ = ΣₜΣᵤ k((t−u)/γ_T)VₜVᵤ'` with `k(x) = 1 − |x|`
+//! (their Appendix A.1), so lag `l` is weighted `1 − l/γ` and lag `γ` not at
+//! all. Until docs/PLAN.md task 114 (the user's decision, 2026-09-28) it
+//! was Newey–West's `1 − l/(γ+1)` over lags `0..=γ`; measured at WKD's Table
+//! 1 and 2 settings, the change moved the size by at most 0.0008 and the
+//! power by 0.003. At `bandwidth = 1` only lag 0 is left.
 //!
 //! Under the null `Q →_d sup|B|`, a Brownian bridge, whose quantiles are
 //! the Kolmogorov distribution -- computed from the series here rather than
@@ -71,6 +71,9 @@ use crate::{Decay, EwDiag, SplitMix64};
 pub enum CorrChangeKind {
     Monitor,
     Window,
+    /// Wied & Galeano's (2013) detector: a history of `span_rows` rows, then
+    /// every row of a monitoring period tested against it.
+    Sequential,
 }
 
 /// The norm the `window` kind measures the change in.
@@ -154,6 +157,14 @@ pub struct CorrChangeCfg {
     pub seed: u64,
     /// Empty both rings and start over at a flag.
     pub reset: bool,
+    /// `sequential`: the rows monitored after each history, W&G's `⌊mT⌋`,
+    /// so their `T` is `monitor_rows / span_rows`.
+    #[serde(default)]
+    pub monitor_rows: usize,
+    /// `sequential`: the boundary's exponent `γ` in `w(b) = (1 + b)(b/(1 +
+    /// b))^γ`, `0 ≤ γ < 1/2`; 0 is the straight boundary `1 + b`.
+    #[serde(default)]
+    pub boundary_gamma: f64,
 }
 
 impl CorrChangeCfg {
@@ -192,6 +203,32 @@ impl CorrChangeCfg {
                          statistic is a maximum over the span"
                             .into(),
                     );
+                }
+                if self.bandwidth == Some(0) {
+                    return Err("corrchange: bandwidth must be >= 1".into());
+                }
+            }
+            CorrChangeKind::Sequential => {
+                if self.span_rows < 8 {
+                    return Err(
+                        "corrchange: kind = \"sequential\" needs span_rows of at least 8; the \
+                         history's long-run variance is read from them"
+                            .into(),
+                    );
+                }
+                if self.monitor_rows < 2 {
+                    return Err(
+                        "corrchange: kind = \"sequential\" needs monitor_rows of at least 2; \
+                         a correlation over the monitored rows needs two"
+                            .into(),
+                    );
+                }
+                if !(0.0..0.5).contains(&self.boundary_gamma) {
+                    return Err(format!(
+                        "corrchange: boundary_gamma must be in [0, 0.5) (got {}); at 1/2 the \
+                         boundary is crossed with probability 1 whatever the data",
+                        self.boundary_gamma
+                    ));
                 }
                 if self.bandwidth == Some(0) {
                     return Err("corrchange: bandwidth must be >= 1".into());
@@ -238,21 +275,58 @@ impl CorrChangeCfg {
         }
     }
 
-    /// The critical value: the Kolmogorov quantile under `monitor`, the
-    /// configured one under `window`.
-    fn fixed_crit(&self) -> Option<f64> {
-        match self.kind {
-            CorrChangeKind::Monitor => {
-                let a = if self.alpha_adjust == "bonferroni" {
-                    self.alpha / self.npairs() as f64
-                } else {
-                    self.alpha
-                };
-                Some(kolmogorov_quantile(a))
-            }
-            CorrChangeKind::Window => self.crit,
+    /// The level each pair is tested at: `alpha`, over the pairs under
+    /// Bonferroni.
+    fn pair_alpha(&self) -> f64 {
+        if self.alpha_adjust == "bonferroni" {
+            self.alpha / self.npairs() as f64
+        } else {
+            self.alpha
         }
     }
+
+    /// The critical value: the Kolmogorov quantile under `monitor`, the
+    /// configured one under `window`, and under `sequential` the configured
+    /// one or Wied & Galeano's (`crate::boundary::sequential_crit`).
+    fn fixed_crit(&self) -> Option<f64> {
+        match self.kind {
+            CorrChangeKind::Monitor => Some(kolmogorov_quantile(self.pair_alpha())),
+            CorrChangeKind::Window => self.crit,
+            CorrChangeKind::Sequential => self.crit.or_else(|| {
+                Some(crate::boundary::sequential_crit(
+                    self.pair_alpha(),
+                    self.boundary_gamma,
+                    self.monitor_rows as f64 / self.span_rows as f64,
+                ))
+            }),
+        }
+    }
+
+    /// Output slots per statistic: one per pair, or one for `scalar`.
+    fn width(&self) -> usize {
+        if self.scalar { 1 } else { self.n_features }
+    }
+}
+
+/// `sequential`'s monitoring period: what the history left, and the
+/// monitored rows so far (docs/PLAN.md task 114). Before it, while the
+/// history fills, the history is the model's `ring`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Monitoring {
+    /// Per pair (`a < b` in order), or the one `scalar` series: the
+    /// history's correlation, or the mean of `u`.
+    level: Vec<f64>,
+    /// And its long-run standard deviation, the inverse of W&G's `D̂`;
+    /// NaN where the history gives none (a constant column, a collinear
+    /// pair), and that pair has no verdict until the next history.
+    scale: Vec<f64>,
+    /// The monitored rows so far, `k − 1` on the `k`-th monitored row.
+    rows: Vec<Vec<f64>>,
+    /// Their running means, second moments and co-moments (per pair, in
+    /// the order of `level`), the mean-form (Welford) sums.
+    mean: Vec<f64>,
+    m2: Vec<f64>,
+    cross: Vec<f64>,
 }
 
 /// The constancy monitor; see the module docs.
@@ -272,12 +346,22 @@ pub struct CorrChange {
     perm_crit: Option<f64>,
     since_perm: usize,
     rng: SplitMix64,
+    /// `sequential`: the monitoring period in progress, `None` while the
+    /// history fills `ring` (and under the other kinds).
+    #[serde(default)]
+    monitoring: Option<Monitoring>,
+    /// `sequential`: the critical value, a function of the cfg alone. Not
+    /// state: it calls `exp`, whose last bits are the platform's, so it is
+    /// computed on construction and on load.
+    #[serde(skip)]
+    seq_crit: f64,
 }
 
 impl CorrChange {
     pub fn new(cfg: CorrChangeCfg) -> Result<Self, String> {
         cfg.validate()?;
         let d = cfg.n_features;
+        let seq_crit = Self::sequential_crit_of(&cfg);
         Ok(Self {
             ring: VecDeque::new(),
             diag: EwDiag::new(d),
@@ -286,8 +370,18 @@ impl CorrChange {
             perm_crit: None,
             since_perm: 0,
             rng: SplitMix64::new(cfg.seed),
+            monitoring: None,
+            seq_crit,
             cfg,
         })
+    }
+
+    /// `sequential`'s critical value, or NaN under the other kinds.
+    fn sequential_crit_of(cfg: &CorrChangeCfg) -> f64 {
+        match cfg.kind {
+            CorrChangeKind::Sequential => cfg.fixed_crit().unwrap_or(f64::NAN),
+            _ => f64::NAN,
+        }
     }
 
     pub fn cfg(&self) -> &CorrChangeCfg {
@@ -310,11 +404,12 @@ impl CorrChange {
             "crit".into(),
             "flag".into(),
             "since_flag".into(),
+            "since_change".into(),
         ]
     }
 
     pub fn n_outputs_for() -> usize {
-        4
+        5
     }
 
     /// The sample correlation of `rows[..n]` for the pair `(a, b)`.
@@ -409,10 +504,12 @@ impl CorrChange {
             })
             .collect();
         // Its Bartlett long-run variance: the lag-0 term once, each other
-        // lag's autocovariance twice.
+        // lag's autocovariance twice, at WKD's `k(l/γ)` (their Appendix A.1),
+        // which puts lag `γ` at 0; Newey–West's `1 − l/(γ+1)` stood here
+        // until docs/PLAN.md task 114.
         let mut v = 0.0;
-        for lag in 0..t.min(gamma.saturating_add(1)) {
-            let w = bartlett(lag as f64 / (gamma as f64 + 1.0));
+        for lag in 0..t.min(gamma) {
+            let w = bartlett(lag as f64 / gamma as f64);
             let mut acf = 0.0;
             for s in lag..t {
                 acf += xi[s] * xi[s - lag];
@@ -427,22 +524,51 @@ impl CorrChange {
     /// of `u` in place of the delta-method one. That is `scalar = true`'s
     /// statistic: the equicorrelation is already one number, so there is a
     /// mean to test and no pair.
+    #[cfg(test)]
     fn scalar_stat(&self, rows: &[Vec<f64>]) -> f64 {
+        self.scalar_stat_at(rows).0
+    }
+
+    /// [`Self::scalar_stat`], and the `j` its maximum is attained at.
+    fn scalar_stat_at(&self, rows: &[Vec<f64>]) -> (f64, usize) {
         let t = rows.len();
         if t < 4 {
-            return f64::NAN;
+            return (f64::NAN, 0);
         }
         let tf = t as f64;
         let u: Vec<f64> = rows.iter().map(|r| r[0]).collect();
         let mean = u.iter().sum::<f64>() / tf;
-        let v: Vec<f64> = u.iter().map(|x| x - mean).collect();
         let gamma = self
             .cfg
             .bandwidth
             .unwrap_or_else(|| ((tf).ln().floor() as usize).max(1));
+        let sd = Self::scalar_long_run_sd(&u, gamma);
+        if sd.is_nan() {
+            return (f64::NAN, 0);
+        }
+        let mut run = 0.0;
+        let (mut best, mut at) = (0.0f64, 0);
+        for (j, uj) in u.iter().enumerate() {
+            run += uj;
+            let jj = j as f64 + 1.0;
+            let q = (jj / tf.sqrt()) * (run / jj - mean).abs() / sd;
+            if q > best {
+                (best, at) = (q, j + 1);
+            }
+        }
+        (best, at)
+    }
+
+    /// The Bartlett long-run standard deviation of one series about its
+    /// mean, at WKD's `k(l/γ)`; NaN where it is not positive.
+    fn scalar_long_run_sd(u: &[f64], gamma: usize) -> f64 {
+        let t = u.len();
+        let tf = t as f64;
+        let mean = u.iter().sum::<f64>() / tf;
+        let v: Vec<f64> = u.iter().map(|x| x - mean).collect();
         let mut var = 0.0;
-        for lag in 0..t.min(gamma.saturating_add(1)) {
-            let w = bartlett(lag as f64 / (gamma as f64 + 1.0));
+        for lag in 0..t.min(gamma) {
+            let w = bartlett(lag as f64 / gamma as f64);
             for s in lag..t {
                 let term = w * v[s] * v[s - lag] / tf;
                 var += term;
@@ -452,24 +578,22 @@ impl CorrChange {
             }
         }
         if var.is_nan() || var <= 0.0 {
-            return f64::NAN;
+            f64::NAN
+        } else {
+            var.sqrt()
         }
-        let sd = var.sqrt();
-        let mut run = 0.0;
-        let mut best = 0.0f64;
-        for (j, uj) in u.iter().enumerate() {
-            run += uj;
-            let jj = j as f64 + 1.0;
-            let q = (jj / tf.sqrt()) * (run / jj - mean).abs() / sd;
-            if q > best {
-                best = q;
-            }
-        }
-        best
     }
 
     /// `Q` for one pair over the span in the ring.
+    #[cfg(test)]
     fn monitor_stat(&self, rows: &[Vec<f64>], a: usize, b: usize) -> f64 {
+        self.monitor_stat_at(rows, a, b).0
+    }
+
+    /// [`Self::monitor_stat`], and the `j` its maximum is attained at: the
+    /// last row before the change, as Wied & Galeano (2013, Eq. 8) date a
+    /// change from the same CUSUM.
+    fn monitor_stat_at(&self, rows: &[Vec<f64>], a: usize, b: usize) -> (f64, usize) {
         let t = rows.len();
         let gamma = self
             .cfg
@@ -478,14 +602,14 @@ impl CorrChange {
         let sd = Self::long_run_sd(rows, a, b, gamma);
         // NaN or non-positive: no scale to divide by.
         if sd.is_nan() || sd <= 0.0 {
-            return f64::NAN;
+            return (f64::NAN, 0);
         }
         let rho_t = Self::corr_of(rows, t, a, b);
         if !rho_t.is_finite() {
-            return f64::NAN;
+            return (f64::NAN, 0);
         }
         let tf = t as f64;
-        let mut best = 0.0f64;
+        let (mut best, mut at) = (0.0f64, 0);
         for j in 2..=t {
             let rj = Self::corr_of(rows, j, a, b);
             if !rj.is_finite() {
@@ -493,10 +617,196 @@ impl CorrChange {
             }
             let v = (j as f64 / tf.sqrt()) * (rj - rho_t).abs() / sd;
             if v > best {
-                best = v;
+                (best, at) = (v, j);
             }
         }
-        best
+        (best, at)
+    }
+
+    /// The pair `(a, b)`, `a < b`, at position `idx` in the order the pairs
+    /// are walked (`a` outer, `b` inner).
+    fn pair_at(d: usize, mut idx: usize) -> (usize, usize) {
+        for a in 0..d {
+            let row = d - a - 1;
+            if idx < row {
+                return (a, a + 1 + idx);
+            }
+            idx -= row;
+        }
+        unreachable!("pair index past the pairs")
+    }
+
+    /// `sequential`: what the history leaves the monitoring period -- per
+    /// pair the history's correlation and the long-run standard deviation
+    /// of it (the inverse of W&G's `D̂`, WKD's Appendix A.1 estimator on the
+    /// `m` history rows, bandwidth `⌊ln m⌋` unless given), or for `scalar`
+    /// the mean of `u` and its long-run standard deviation.
+    fn begin_monitoring(&self, history: &[Vec<f64>]) -> Monitoring {
+        let m = history.len();
+        let gamma = self
+            .cfg
+            .bandwidth
+            .unwrap_or_else(|| ((m as f64).ln().floor() as usize).max(1));
+        let (mut level, mut scale) = (Vec::new(), Vec::new());
+        if self.cfg.scalar {
+            let u: Vec<f64> = history.iter().map(|r| r[0]).collect();
+            level.push(u.iter().sum::<f64>() / m as f64);
+            scale.push(Self::scalar_long_run_sd(&u, gamma));
+        } else {
+            let d = self.cfg.n_features;
+            for a in 0..d {
+                for b in (a + 1)..d {
+                    level.push(Self::corr_of(history, m, a, b));
+                    let sd = Self::long_run_sd(history, a, b, gamma);
+                    scale.push(if sd > 0.0 { sd } else { f64::NAN });
+                }
+            }
+        }
+        let width = self.cfg.width();
+        let pairs = if self.cfg.scalar { 0 } else { level.len() };
+        Monitoring {
+            level,
+            scale,
+            rows: Vec::new(),
+            mean: vec![0.0; width],
+            m2: vec![0.0; width],
+            cross: vec![0.0; pairs],
+        }
+    }
+
+    /// `sequential`'s detector on the row that would be the `k`-th
+    /// monitored one: `max |V_k|/w(k/m)` over the pairs, `V_k = (k/√m)·
+    /// (ρ̂^{m+k}_{m+1} − ρ̂^m_1)/σ̂` (W&G's Eq. 1, their `D̂` being `1/σ̂`),
+    /// `w(b) = (1 + b)(b/(1 + b))^γ` (their Eq. 5), and the pair it is
+    /// attained at. `ρ̂^{m+k}_{m+1}` is the correlation of the monitored
+    /// rows with this one, from the mean-form sums a step on; NaN below two
+    /// rows, where a correlation is not defined.
+    fn sequential_stat(&self, mon: &Monitoring, row: &[f64]) -> (f64, usize) {
+        let k = mon.rows.len() + 1;
+        if k < 2 {
+            return (f64::NAN, 0);
+        }
+        let kf = k as f64;
+        let m = self.cfg.span_rows as f64;
+        let b = kf / m;
+        let w = (1.0 + b) * (b / (1.0 + b)).powf(self.cfg.boundary_gamma);
+        let factor = kf / m.sqrt();
+        let width = mon.mean.len();
+        let dev: Vec<f64> = (0..width).map(|i| row[i] - mon.mean[i]).collect();
+        let mean: Vec<f64> = (0..width).map(|i| mon.mean[i] + dev[i] / kf).collect();
+        if self.cfg.scalar {
+            let v = factor * (mean[0] - mon.level[0]) / mon.scale[0];
+            return (v.abs() / w, 0);
+        }
+        let d = self.cfg.n_features;
+        let (mut best, mut at) = (f64::NAN, 0);
+        let mut idx = 0;
+        for a in 0..d {
+            let m2a = mon.m2[a] + dev[a] * (row[a] - mean[a]);
+            for bb in (a + 1)..d {
+                let m2b = mon.m2[bb] + dev[bb] * (row[bb] - mean[bb]);
+                let c = mon.cross[idx] + dev[a] * (row[bb] - mean[bb]);
+                let den = (m2a * m2b).sqrt();
+                let rho = if den > 0.0 { c / den } else { f64::NAN };
+                let ratio = (factor * (rho - mon.level[idx]) / mon.scale[idx]).abs() / w;
+                if ratio.is_finite() && (best.is_nan() || ratio > best) {
+                    (best, at) = (ratio, idx);
+                }
+                idx += 1;
+            }
+        }
+        (best, at)
+    }
+
+    /// W&G's Eq. 8: on a flag at the `τ`-th monitored row, the change is
+    /// dated to `k̂ = argmax_{j ≤ τ−1} j·|ρ̂_j − ρ̂_{τ−1}|`, `ρ̂_j` the
+    /// correlation of the first `j` monitored rows (for `scalar`, the mean
+    /// of `u`), over the rows before the flag -- the history does not enter,
+    /// which they found distorted the estimate -- and the positive factor
+    /// `D̂/√τ` left out of an argmax. The output is `τ − k̂`, the rows from
+    /// the first changed one through the flag's; NaN below two rows.
+    fn sequential_since_change(&self, mon: &Monitoring, at: usize) -> f64 {
+        let n = mon.rows.len();
+        let prefix: Vec<f64> = if self.cfg.scalar {
+            let mut run = 0.0;
+            mon.rows
+                .iter()
+                .enumerate()
+                .map(|(j, r)| {
+                    run += r[0];
+                    run / (j + 1) as f64
+                })
+                .collect()
+        } else {
+            let (a, b) = Self::pair_at(self.cfg.n_features, at);
+            let (mut ma, mut mb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            mon.rows
+                .iter()
+                .enumerate()
+                .map(|(j, r)| {
+                    let jf = (j + 1) as f64;
+                    let (da, db) = (r[a] - ma, r[b] - mb);
+                    ma += da / jf;
+                    mb += db / jf;
+                    saa += da * (r[a] - ma);
+                    sbb += db * (r[b] - mb);
+                    sab += da * (r[b] - mb);
+                    let den = (saa * sbb).sqrt();
+                    if den > 0.0 { sab / den } else { f64::NAN }
+                })
+                .collect()
+        };
+        let Some(&last) = prefix.last() else {
+            return f64::NAN;
+        };
+        let (mut best, mut k_hat) = (f64::NEG_INFINITY, None);
+        for (j, p) in prefix.iter().enumerate() {
+            let score = (j + 1) as f64 * (p - last).abs();
+            if score.is_finite() && score > best {
+                (best, k_hat) = (score, Some(j + 1));
+            }
+        }
+        match (last.is_finite(), k_hat) {
+            (true, Some(k)) => (n + 1 - k) as f64,
+            _ => f64::NAN,
+        }
+    }
+
+    /// `sequential`: a learned row enters the history, or the monitoring
+    /// period. A full history starts the monitoring; a flag or the
+    /// period's last row ends it, and the next learned row starts a history.
+    fn advance_sequential(&mut self, row: Vec<f64>, flagged: bool) {
+        let (limit, scalar) = (self.cfg.monitor_rows, self.cfg.scalar);
+        let Some(mon) = self.monitoring.as_mut() else {
+            self.ring.push_back(row);
+            if self.ring.len() >= self.cfg.span_rows {
+                let history: Vec<Vec<f64>> = self.ring.drain(..).collect();
+                self.monitoring = Some(self.begin_monitoring(&history));
+            }
+            return;
+        };
+        // The same arithmetic as `sequential_stat`'s step, now kept.
+        let kf = (mon.rows.len() + 1) as f64;
+        let width = mon.mean.len();
+        let dev: Vec<f64> = (0..width).map(|i| row[i] - mon.mean[i]).collect();
+        for i in 0..width {
+            mon.mean[i] += dev[i] / kf;
+            mon.m2[i] += dev[i] * (row[i] - mon.mean[i]);
+        }
+        if !scalar {
+            // The pairs in `level`'s order: `a` outer, `b > a` inner.
+            let Monitoring { cross, mean, .. } = &mut *mon;
+            let mut cross = cross.iter_mut();
+            for (a, &da) in dev.iter().enumerate() {
+                for (xb, mb) in row[a + 1..].iter().zip(&mean[a + 1..]) {
+                    *cross.next().expect("one co-moment a pair") += da * (xb - mb);
+                }
+            }
+        }
+        mon.rows.push(row);
+        if flagged || mon.rows.len() >= limit {
+            self.monitoring = None;
+        }
     }
 
     /// The row standardised by the diag, for `scalar`.
@@ -624,24 +934,29 @@ impl CorrChange {
                 }
                 let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
                 rows.push(row);
-                let mut stat = f64::NAN;
+                let (mut stat, mut at) = (f64::NAN, 0);
                 if self.cfg.scalar {
-                    stat = self.scalar_stat(&rows);
+                    (stat, at) = self.scalar_stat_at(&rows);
                 } else {
                     for a in 0..self.cfg.n_features {
                         for b in (a + 1)..self.cfg.n_features {
-                            let q = self.monitor_stat(&rows, a, b);
+                            let (q, j) = self.monitor_stat_at(&rows, a, b);
                             if q.is_finite() && (stat.is_nan() || q > stat) {
-                                stat = q;
+                                (stat, at) = (q, j);
                             }
                         }
                     }
                 }
                 let crit = self.cfg.fixed_crit().unwrap_or(f64::NAN);
+                let flag = stat.is_finite() && crit.is_finite() && stat > crit;
                 pred[0] = stat;
                 pred[1] = crit;
-                pred[2] = f64::from(stat.is_finite() && crit.is_finite() && stat > crit);
+                pred[2] = f64::from(flag);
                 pred[3] = since as f64;
+                if flag && at > 0 {
+                    // The rows after the CUSUM's argmax, through this one.
+                    pred[4] = (rows.len() - at) as f64;
+                }
             }
             CorrChangeKind::Window => {
                 let w = self.cfg.span_rows;
@@ -657,11 +972,33 @@ impl CorrChange {
                 // The value **in force**: a redraw happens after the row is
                 // reported, so `predict` and `step` see the same one.
                 let crit = self.cfg.crit.or(self.perm_crit);
+                let flag = matches!((stat.is_finite(), crit), (true, Some(c)) if stat > c);
                 pred[0] = stat;
                 pred[1] = crit.unwrap_or(f64::NAN);
-                pred[2] =
-                    f64::from(matches!((stat.is_finite(), crit), (true, Some(c)) if stat > c));
+                pred[2] = f64::from(flag);
                 pred[3] = since as f64;
+                if flag {
+                    // The second window, by construction.
+                    pred[4] = w as f64;
+                }
+            }
+            CorrChangeKind::Sequential => {
+                let Some(mon) = &self.monitoring else {
+                    return pred;
+                };
+                if mon.rows.is_empty() {
+                    return pred;
+                }
+                let (stat, at) = self.sequential_stat(mon, &row);
+                let crit = self.seq_crit;
+                let flag = stat.is_finite() && crit.is_finite() && stat > crit;
+                pred[0] = stat;
+                pred[1] = crit;
+                pred[2] = f64::from(flag);
+                pred[3] = since as f64;
+                if flag {
+                    pred[4] = self.sequential_since_change(mon, at);
+                }
             }
         }
         pred
@@ -689,13 +1026,14 @@ impl crate::OnlineModel for CorrChange {
         self.n_eff = lam * self.n_eff + weight;
         let Some(row) = row else { return out };
         self.since_flag = Some(self.since_flag.unwrap_or(0) + 1);
-        self.ring.push_back(row);
         let flagged = out.pred[2] == 1.0;
         if flagged {
             self.since_flag = Some(0);
         }
         match self.cfg.kind {
+            CorrChangeKind::Sequential => self.advance_sequential(row, flagged),
             CorrChangeKind::Monitor => {
+                self.ring.push_back(row);
                 if self.ring.len() >= self.cfg.span_rows {
                     // Spans are disjoint by construction: the next row
                     // starts a new one, so `reset` has nothing to add here.
@@ -703,6 +1041,7 @@ impl crate::OnlineModel for CorrChange {
                 }
             }
             CorrChangeKind::Window => {
+                self.ring.push_back(row);
                 let w = self.cfg.span_rows;
                 while self.ring.len() > 2 * w {
                     self.ring.pop_front();
@@ -741,6 +1080,8 @@ impl crate::OnlineModel for CorrChange {
         self.ring.clear();
         self.perm_crit = None;
         self.since_perm = 0;
+        // And a `sequential` cycle across a break is not one cycle.
+        self.monitoring = None;
     }
 
     fn state(&self) -> crate::State {
@@ -751,15 +1092,28 @@ impl crate::OnlineModel for CorrChange {
         crate::check_schema(s)?;
         match &s.model {
             crate::ModelState::CorrChange(m) => {
-                let m = (**m).clone();
+                let mut m = (**m).clone();
                 // The diagnostics and every ring row at the cfg's width
-                // (review 2026-09-18, B3).
+                // (review 2026-09-18, B3); a `scalar` ring holds `u`.
                 let d = m.cfg.n_features;
-                if m.diag.k() != d || m.ring.iter().any(|r| r.len() != d) {
+                let width = m.cfg.width();
+                let wrong_mon = m.monitoring.as_ref().is_some_and(|mon| {
+                    let values = if m.cfg.scalar { 1 } else { m.cfg.npairs() };
+                    let pairs = if m.cfg.scalar { 0 } else { values };
+                    mon.level.len() != values
+                        || mon.scale.len() != values
+                        || mon.mean.len() != width
+                        || mon.m2.len() != width
+                        || mon.cross.len() != pairs
+                        || mon.rows.iter().any(|r| r.len() != width)
+                });
+                if m.diag.k() != d || m.ring.iter().any(|r| r.len() != width) || wrong_mon {
                     return Err(crate::StateError::Invalid(
                         "corrchange: the state has the wrong shape".into(),
                     ));
                 }
+                // Configuration, not state: recomputed on load.
+                m.seq_crit = Self::sequential_crit_of(&m.cfg);
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -821,7 +1175,31 @@ mod tests {
             norm: ChangeNorm::L1,
             seed: 3,
             reset: false,
+            monitor_rows: 0,
+            boundary_gamma: 0.0,
         }
+    }
+
+    /// A `sequential` cfg: `m` rows of history, `k` monitored.
+    fn seq_cfg(d: usize, m: usize, k: usize, gamma: f64) -> CorrChangeCfg {
+        CorrChangeCfg {
+            span_rows: m,
+            monitor_rows: k,
+            boundary_gamma: gamma,
+            ..cfg(d, CorrChangeKind::Sequential)
+        }
+    }
+
+    /// `d` columns with correlation `rho` between every two.
+    fn equicorrelated(n: &mut Normals, d: usize, rho: f64) -> Vec<f64> {
+        let f = n.normal();
+        (0..d)
+            .map(|_| rho.sqrt() * f + (1.0 - rho).sqrt() * n.normal())
+            .collect()
+    }
+
+    fn same(a: f64, b: f64) -> bool {
+        a == b || (a.is_nan() && b.is_nan())
     }
 
     /// A correlated Gaussian pair, by Box-Muller from a `SplitMix64`.
@@ -1149,7 +1527,8 @@ mod tests {
 
     /// `scalar = true`'s statistic against its definition written out: the
     /// Bartlett long-run variance of the one column, the lag-0 term once and
-    /// every other lag twice at weight `1 − l/(γ+1)`, then the CUSUM of its
+    /// every other lag twice at weight `k(l/γ) = 1 − l/γ`, WKD's Appendix
+    /// A.1 (lag `γ` at 0; docs/PLAN.md task 114), then the CUSUM of its
     /// running mean; at a bandwidth given and at the default `⌊ln T⌋`.
     #[test]
     fn the_scalar_statistic_is_its_definition() {
@@ -1171,7 +1550,7 @@ mod tests {
             let v: Vec<f64> = u.iter().map(|x| x - mean).collect();
             let mut var = 0.0;
             for lag in 0..=gamma.min(t - 1) {
-                let w = 1.0 - lag as f64 / (gamma as f64 + 1.0);
+                let w = 1.0 - lag as f64 / gamma as f64;
                 let mut acf = 0.0;
                 for s in lag..t {
                     acf += w * v[s] * v[s - lag] / tf;
@@ -1219,7 +1598,8 @@ mod tests {
         assert_eq!(m.scalarise(&x), want);
     }
 
-    /// `D̂` and `Q` against the same arithmetic written out.
+    /// `D̂` and `Q` against the same arithmetic written out, `D̂₁` as WKD's
+    /// Appendix A.1 writes it: `ΣₜΣᵤ k((t−u)/γ_T)VₜVᵤ'`, `k(x) = 1 − |x|`.
     #[test]
     fn the_statistic_is_its_definition() {
         let t = 60usize;
@@ -1245,7 +1625,7 @@ mod tests {
         let mut sigma = [[0.0f64; 5]; 5];
         for s in 0..t {
             for q in 0..t {
-                let w = bartlett((s as f64 - q as f64) / (gamma as f64 + 1.0));
+                let w = bartlett((s as f64 - q as f64) / gamma as f64);
                 if w == 0.0 {
                     continue;
                 }
@@ -1749,5 +2129,387 @@ mod tests {
             },
             "bandwidth must be >= 1",
         );
+    }
+
+    // --- sequential (Wied & Galeano 2013; docs/PLAN.md task 114) ---------
+
+    /// The detector against its definition, written out on the rows
+    /// themselves: the history's correlation and long-run sd per pair
+    /// (`corr_of`, `long_run_sd` at `⌊ln m⌋`), the monitored rows'
+    /// correlation from scratch, `V_k = (k/√m)(ρ̂_k − ρ̂_h)/σ̂`, the ratio to
+    /// `w(k/m) = (1 + k/m)((k/m)/(1 + k/m))^γ`, the maximum over the three
+    /// pairs, W&G's Eq. 8 on a flag, and the cycle: a history of `m`
+    /// learned rows, then at most `monitor_rows`, a new history after a flag
+    /// or the last of them. A break in the middle of the stream makes flags.
+    #[test]
+    fn the_sequential_detector_is_its_definition() {
+        let (d, m, limit, gamma) = (3usize, 40usize, 60usize, 0.25);
+        let mut model = CorrChange::new(seq_cfg(d, m, limit, gamma)).unwrap();
+        let crit = crate::boundary::sequential_crit(0.05 / 3.0, gamma, 1.5);
+        let bw = ((m as f64).ln().floor() as usize).max(1);
+        let mut n = Normals::new(41);
+        let (mut hist, mut mon): (Vec<Vec<f64>>, Vec<Vec<f64>>) = (vec![], vec![]);
+        let mut monitoring = false;
+        let (mut flags, mut stats) = (0, 0);
+        for i in 0..400 {
+            let x = equicorrelated(&mut n, d, if i < 200 { 0.2 } else { 0.85 });
+            let got = model.step(&x, &[], 1.0, 1.0).pred;
+            let mut want = [f64::NAN; 5];
+            if monitoring && !mon.is_empty() {
+                let mut rows = mon.clone();
+                rows.push(x.clone());
+                let k = rows.len() as f64;
+                let b = k / m as f64;
+                let w = (1.0 + b) * (b / (1.0 + b)).powf(gamma);
+                let (mut best, mut at) = (f64::NAN, (0, 0));
+                for a in 0..d {
+                    for bb in (a + 1)..d {
+                        let level = CorrChange::corr_of(&hist, m, a, bb);
+                        let sd = CorrChange::long_run_sd(&hist, a, bb, bw);
+                        let rho = CorrChange::corr_of(&rows, rows.len(), a, bb);
+                        let r = ((k / (m as f64).sqrt()) * (rho - level) / sd).abs() / w;
+                        if r.is_finite() && (best.is_nan() || r > best) {
+                            (best, at) = (r, (a, bb));
+                        }
+                    }
+                }
+                want[0] = best;
+                want[1] = crit;
+                want[2] = f64::from(best > crit);
+                if best > crit {
+                    let last = CorrChange::corr_of(&mon, mon.len(), at.0, at.1);
+                    let (mut top, mut k_hat) = (f64::NEG_INFINITY, 0);
+                    for j in 1..=mon.len() {
+                        let s = j as f64 * (CorrChange::corr_of(&mon, j, at.0, at.1) - last).abs();
+                        if s.is_finite() && s > top {
+                            (top, k_hat) = (s, j);
+                        }
+                    }
+                    // No finite score below two rows: no date.
+                    want[4] = if k_hat == 0 {
+                        f64::NAN
+                    } else {
+                        (mon.len() + 1 - k_hat) as f64
+                    };
+                }
+            }
+            for s in [0, 2, 4] {
+                assert!(
+                    (got[s] - want[s]).abs() <= 1e-9 * (1.0 + want[s].abs())
+                        || same(got[s], want[s]),
+                    "row {i}, slot {s}: {} against {}",
+                    got[s],
+                    want[s]
+                );
+            }
+            assert!(
+                same(got[1], want[1]) || (got[1] - want[1]).abs() < 1e-12,
+                "row {i}"
+            );
+            if got[0].is_finite() {
+                stats += 1;
+            }
+            let flagged = got[2] == 1.0;
+            flags += usize::from(flagged);
+            if !monitoring {
+                hist.push(x);
+                monitoring = hist.len() == m;
+            } else {
+                mon.push(x);
+                if flagged || mon.len() == limit {
+                    (monitoring, hist, mon) = (false, vec![], vec![]);
+                }
+            }
+        }
+        assert!(
+            flags >= 1 && stats > 100,
+            "{flags} flags, {stats} statistics"
+        );
+    }
+
+    /// A break in the correlation is flagged in the monitoring period, and
+    /// dated near where it happened: Eq. 8's estimate over the monitored
+    /// rows, `τ − k̂` rows from the first changed one through the flag.
+    #[test]
+    fn a_break_is_flagged_and_dated() {
+        let (m, limit, change) = (200usize, 400usize, 150usize);
+        let mut model = CorrChange::new(seq_cfg(2, m, limit, 0.0)).unwrap();
+        let mut n = Normals::new(5);
+        let mut found = None;
+        for i in 0..(m + limit) {
+            let rho = if i < m + change { 0.1 } else { 0.8 };
+            let out = model.step(&n.pair(rho), &[], 1.0, 1.0).pred;
+            if out[2] == 1.0 {
+                found = Some((i - m + 1, out[4]));
+                break;
+            }
+        }
+        let (tau, since) = found.expect("the break is flagged");
+        assert!(
+            tau > change,
+            "flagged at monitored row {tau}, before the break"
+        );
+        let dated = tau as f64 - since;
+        assert!(
+            (dated - change as f64).abs() <= 40.0,
+            "dated after monitored row {dated}, the change after {change}"
+        );
+    }
+
+    /// The cycle: `m` rows of history report nothing, the first monitored
+    /// row reports nothing (a correlation needs two rows), rows 2..=limit
+    /// report, and the next learned row starts a history. With a critical
+    /// value nothing crosses, cycles run back to back; with one everything
+    /// crosses, each flag ends its cycle at once.
+    #[test]
+    fn the_cycle_restarts_after_its_period_and_after_a_flag() {
+        let (m, limit) = (10usize, 5usize);
+        let pattern = |crit: f64| {
+            let mut model = CorrChange::new(CorrChangeCfg {
+                crit: Some(crit),
+                ..seq_cfg(2, m, limit, 0.0)
+            })
+            .unwrap();
+            let mut n = Normals::new(9);
+            (0..40)
+                .map(|_| model.step(&n.pair(0.3), &[], 1.0, 1.0).pred[0].is_finite())
+                .collect::<Vec<bool>>()
+        };
+        // 10 history, 1 silent, 4 reporting: a period of 15.
+        let never = pattern(1e9);
+        for (i, &live) in never.iter().enumerate() {
+            let at = i % 15;
+            assert_eq!(live, (11..15).contains(&at), "row {i}");
+        }
+        // Every statistic flags, so each cycle is 10 + 2 rows.
+        let always = pattern(1e-12);
+        for (i, &live) in always.iter().enumerate() {
+            assert_eq!(live, i % 12 == 11, "row {i}");
+        }
+    }
+
+    /// `scalar = true`: the same detector on the mean of `u`, the
+    /// equicorrelation of the standardized row, with the history's mean and
+    /// Bartlett long-run sd of `u` written out.
+    #[test]
+    fn the_scalar_sequential_detector_is_its_definition() {
+        let (d, m, limit) = (4usize, 30usize, 45usize);
+        let mut model = CorrChange::new(CorrChangeCfg {
+            scalar: true,
+            ..seq_cfg(d, m, limit, 0.1)
+        })
+        .unwrap();
+        let crit = crate::boundary::sequential_crit(0.05, 0.1, 1.5);
+        let bw = ((m as f64).ln().floor() as usize).max(1);
+        let mut n = Normals::new(3);
+        let (mut hist, mut mon): (Vec<f64>, Vec<f64>) = (vec![], vec![]);
+        let (mut monitoring, mut stats) = (false, 0);
+        for i in 0..300 {
+            let x = equicorrelated(&mut n, d, if i < 150 { 0.2 } else { 0.7 });
+            let u = model.scalarise(&x);
+            let got = model.step(&x, &[], 1.0, 1.0).pred;
+            if !u.is_finite() {
+                continue;
+            }
+            if monitoring && !mon.is_empty() {
+                let k = (mon.len() + 1) as f64;
+                let mean = (mon.iter().sum::<f64>() + u) / k;
+                let level = hist.iter().sum::<f64>() / m as f64;
+                let tf = m as f64;
+                let v: Vec<f64> = hist.iter().map(|h| h - level).collect();
+                let mut var = 0.0;
+                for lag in 0..bw.min(m) {
+                    let w = 1.0 - lag as f64 / bw as f64;
+                    let acf: f64 = (lag..m).map(|s| v[s] * v[s - lag]).sum::<f64>() / tf;
+                    var += w * acf * if lag == 0 { 1.0 } else { 2.0 };
+                }
+                let b = k / tf;
+                let w = (1.0 + b) * (b / (1.0 + b)).powf(0.1);
+                let want = ((k / tf.sqrt()) * (mean - level) / var.sqrt()).abs() / w;
+                assert!(
+                    (got[0] - want).abs() <= 1e-9 * (1.0 + want),
+                    "row {i}: {} against {want}",
+                    got[0]
+                );
+                assert!((got[1] - crit).abs() < 1e-12);
+                stats += 1;
+            } else {
+                assert!(got[0].is_nan(), "row {i}");
+            }
+            if !monitoring {
+                hist.push(u);
+                monitoring = hist.len() == m;
+            } else {
+                mon.push(u);
+                if got[2] == 1.0 || mon.len() == limit {
+                    (monitoring, hist, mon) = (false, vec![], vec![]);
+                }
+            }
+        }
+        assert!(stats > 50, "{stats}");
+    }
+
+    /// A zero-weight row is reported as the next monitored row would be and
+    /// then not learned: the stream around it is the stream without it.
+    #[test]
+    fn a_zero_weight_row_is_not_a_monitored_row() {
+        let mut n = Normals::new(21);
+        let rows: Vec<Vec<f64>> = (0..120).map(|_| n.pair(0.4)).collect();
+        let mut with = CorrChange::new(seq_cfg(2, 40, 60, 0.2)).unwrap();
+        let mut without = with.clone();
+        for (i, x) in rows.iter().enumerate() {
+            if i == 70 {
+                let ghost = with.step(&[3.0, -3.0], &[], 1.0, 0.0).pred;
+                let as_if = without.predict(&[3.0, -3.0], 1.0).pred;
+                assert!(ghost.iter().zip(&as_if).all(|(a, b)| same(*a, *b)));
+            }
+            let (a, b) = (
+                with.step(x, &[], 1.0, 1.0).pred,
+                without.step(x, &[], 1.0, 1.0).pred,
+            );
+            assert!(a.iter().zip(&b).all(|(p, q)| same(*p, *q)), "row {i}");
+        }
+    }
+
+    /// `predict` is the step's answer without the step, on every row of a
+    /// cycle; a break (`clear_lags`) starts a new history.
+    #[test]
+    fn sequential_predict_is_the_step_and_a_break_restarts_the_cycle() {
+        let mut n = Normals::new(8);
+        let mut m = CorrChange::new(seq_cfg(2, 20, 30, 0.3)).unwrap();
+        for _ in 0..120 {
+            let x = n.pair(0.5);
+            let want = m.predict(&x, 1.0).pred;
+            let got = m.step(&x, &[], 1.0, 1.0).pred;
+            assert!(want.iter().zip(&got).all(|(a, b)| same(*a, *b)));
+        }
+        m.clear_lags();
+        assert!(m.monitoring.is_none() && m.ring.is_empty());
+        for _ in 0..20 {
+            assert!(m.step(&n.pair(0.5), &[], 1.0, 1.0).pred[0].is_nan());
+        }
+        assert!(m.monitoring.is_some(), "twenty rows are a history");
+    }
+
+    /// A state saved in the history, in the monitoring period, and -- for
+    /// `scalar`, whose ring holds `u` -- in a `monitor` span, loads and goes
+    /// on to the bit. A `scalar` monitor saved mid-span was refused on load:
+    /// the shape check held its one-value rows to the feature count.
+    #[test]
+    fn a_state_saved_mid_cycle_goes_on_to_the_bit() {
+        let cases = [
+            seq_cfg(3, 30, 50, 0.2),
+            CorrChangeCfg {
+                scalar: true,
+                ..seq_cfg(3, 30, 50, 0.0)
+            },
+            CorrChangeCfg {
+                scalar: true,
+                span_rows: 30,
+                ..cfg(3, CorrChangeKind::Monitor)
+            },
+        ];
+        for c in cases {
+            for cut in [10usize, 45, 70] {
+                let mut n = Normals::new(cut as u64);
+                let rows: Vec<Vec<f64>> =
+                    (0..130).map(|_| equicorrelated(&mut n, 3, 0.3)).collect();
+                let mut whole = CorrChange::new(c.clone()).unwrap();
+                let mut first = CorrChange::new(c.clone()).unwrap();
+                for x in &rows[..cut] {
+                    whole.step(x, &[], 1.0, 1.0);
+                    first.step(x, &[], 1.0, 1.0);
+                }
+                let bytes = rmp_serde::to_vec_named(&first.state()).unwrap();
+                let mut back = CorrChange::restore(&rmp_serde::from_slice(&bytes).unwrap())
+                    .unwrap_or_else(|e| panic!("{:?} at {cut}: {e}", c.kind));
+                for (i, x) in rows[cut..].iter().enumerate() {
+                    let (a, b) = (
+                        whole.step(x, &[], 1.0, 1.0).pred,
+                        back.step(x, &[], 1.0, 1.0).pred,
+                    );
+                    assert!(
+                        a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()),
+                        "{:?} cut {cut}, row {i}: {a:?} vs {b:?}",
+                        c.kind
+                    );
+                }
+            }
+        }
+    }
+
+    /// `since_change` on the older kinds: a `monitor` flag dates the change
+    /// after the CUSUM's argmax, `T − j*` rows through the span's last; a
+    /// `window` flag says the second window. Null where nothing flags.
+    #[test]
+    fn the_older_kinds_date_their_flags_too() {
+        let t = 200usize;
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let mut n = Normals::new(2);
+        let rows: Vec<Vec<f64>> = (0..t)
+            .map(|i| n.pair(if i < 120 { 0.0 } else { 0.9 }))
+            .collect();
+        let mut last = vec![];
+        for x in &rows {
+            last = m.step(x, &[], 1.0, 1.0).pred;
+        }
+        assert_eq!(last[2], 1.0, "a break of 0 to 0.9 is flagged");
+        let fresh = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let (_, j) = fresh.monitor_stat_at(&rows, 0, 1);
+        assert_eq!(last[4], (t - j) as f64);
+        assert!((last[4] - 80.0).abs() <= 25.0, "{}", last[4]);
+
+        let mut w = CorrChange::new(CorrChangeCfg {
+            span_rows: 50,
+            crit: Some(1e-9),
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let outs: Vec<Vec<f64>> = (0..120)
+            .map(|_| w.step(&n.pair(0.3), &[], 1.0, 1.0).pred)
+            .collect();
+        for o in &outs {
+            if o[2] == 1.0 {
+                assert_eq!(o[4], 50.0);
+            } else {
+                assert!(o[4].is_nan());
+            }
+        }
+    }
+
+    /// The configurations `sequential` refuses, by name.
+    #[test]
+    fn a_bad_sequential_configuration_is_refused_by_name() {
+        let bad = |c: CorrChangeCfg, msg: &str| {
+            let e = CorrChange::new(c).unwrap_err();
+            assert!(e.contains(msg), "{e}");
+        };
+        bad(seq_cfg(2, 7, 10, 0.0), "span_rows of at least 8");
+        bad(seq_cfg(2, 20, 1, 0.0), "monitor_rows of at least 2");
+        for g in [0.5, -0.1, f64::NAN, f64::INFINITY] {
+            bad(seq_cfg(2, 20, 10, g), "boundary_gamma must be in [0, 0.5)");
+        }
+        bad(
+            CorrChangeCfg {
+                bandwidth: Some(0),
+                ..seq_cfg(2, 20, 10, 0.0)
+            },
+            "bandwidth must be >= 1",
+        );
+        // And a given critical value replaces the computed one.
+        let m = CorrChange::new(CorrChangeCfg {
+            crit: Some(2.5),
+            ..seq_cfg(2, 20, 10, 0.2)
+        })
+        .unwrap();
+        assert_eq!(m.seq_crit, 2.5);
     }
 }

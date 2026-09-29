@@ -1230,16 +1230,20 @@ pub enum ModelKind {
     /// Has the correlation structure changed? (docs/ENHANCEMENTS.md E59)
     ///
     /// `"monitor"` is Wied, Krämer & Dehling's closed-sample constancy
-    /// test, run over consecutive spans of `span_rows` rows; `"window"` is
+    /// test, run over consecutive spans of `span_rows` rows; `"sequential"`
+    /// is Wied & Galeano's detector, a history of `span_rows` rows and then
+    /// every row of a monitoring period tested against it; `"window"` is
     /// the size of the change between two adjacent blocks of `span_rows`,
-    /// against a fixed threshold or a permutation critical value.
+    /// against a fixed threshold or a permutation critical value. A
+    /// parameter that belongs to another kind is refused.
     #[serde(rename = "corrchange")]
     CorrChange {
-        /// `"monitor"` (default) or `"window"`.
+        /// `"monitor"` (default), `"sequential"` or `"window"`.
         #[serde(default)]
         kind: Option<String>,
-        /// Rows per comparison block, required by both kinds: the span
-        /// `"monitor"` tests for constancy (at least 8), or the length of
+        /// Rows per comparison block, required by every kind: the span
+        /// `"monitor"` tests for constancy (at least 8), the history
+        /// `"sequential"` monitors against (at least 8), or the length of
         /// each of the two adjacent blocks `"window"` compares (at least 3).
         #[serde(default)]
         span_rows: Option<usize>,
@@ -1249,15 +1253,16 @@ pub enum ModelKind {
         /// `"bonferroni"` (default) over the pairs, or `"none"`.
         #[serde(default)]
         alpha_adjust: Option<String>,
-        /// `"monitor"`: the Bartlett bandwidth, `⌊ln T⌋` when unset.
+        /// `"monitor"` and `"sequential"`: the Bartlett bandwidth, `⌊ln T⌋`
+        /// (or `⌊ln span_rows⌋`) when unset.
         #[serde(default)]
         bandwidth: Option<usize>,
-        /// `"monitor"`: run the CUSUM on the equicorrelation of the
+        /// `"monitor"` and `"sequential"`: test the equicorrelation of the
         /// standardised row instead of every pair.
         #[serde(default)]
         scalar: Option<bool>,
         /// `"window"`: a fixed critical value; unset draws a permutation
-        /// one.
+        /// one. `"sequential"`: replaces Wied & Galeano's.
         #[serde(default)]
         crit: Option<f64>,
         #[serde(default)]
@@ -1274,9 +1279,18 @@ pub enum ModelKind {
         #[serde(default)]
         seed: Option<u64>,
         /// Empty the rings at a flag and start over (`"window"` only;
-        /// `"monitor"`'s spans are disjoint already).
+        /// `"monitor"`'s spans are disjoint already, and a `"sequential"`
+        /// cycle ends at its flag).
         #[serde(default)]
         reset: Option<bool>,
+        /// `"sequential"`: the rows monitored after each history, Wied &
+        /// Galeano's `⌊mT⌋`; default `span_rows` (`T = 1`).
+        #[serde(default)]
+        monitor_rows: Option<usize>,
+        /// `"sequential"`: the boundary's exponent `γ`, `0 ≤ γ < 1/2`;
+        /// default 0.
+        #[serde(default)]
+        boundary_gamma: Option<f64>,
     },
     /// Bayesian online changepoint detection (docs/ENHANCEMENTS.md E61): a
     /// posterior over how long the current run has lasted, updated one row

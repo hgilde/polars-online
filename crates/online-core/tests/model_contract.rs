@@ -172,6 +172,11 @@ const KEEPS_LAGS: &[&str] = &["rcov", "corrchange", "ew_cov", "marginal"];
 /// helper cannot ask for 300 rows with every slot ready.
 const SPARSE_OUTPUT: &[&str] = &["corrchange"];
 
+/// Slots null by design except on a flag, which the ready count leaves out:
+/// `corrchange`'s `since_change` dates a change only where one is flagged
+/// (docs/PLAN.md task 114).
+const ONLY_ON_A_FLAG: &[(&str, usize)] = &[("corrchange", 4)];
+
 fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
     assert_eq!(r.kind, kind, "state kind");
     assert!(r.lags_are_a_no_op || KEEPS_LAGS.contains(&kind));
@@ -898,26 +903,40 @@ fn corrchange_cfg() -> CorrChangeCfg {
         norm: ChangeNorm::L1,
         seed: 5,
         reset: false,
+        monitor_rows: 0,
+        boundary_gamma: 0.0,
     }
 }
 
 #[test]
 fn corrchange() {
-    // A test, not a model of the data: no targets, four slots (the
-    // statistic, its critical value, the flag and the rows since the last
-    // one), and `n_eff` on the shared recursion.
-    let m = CorrChange::new(corrchange_cfg()).unwrap();
-    assert_eq!(m.n_targets(), 0);
-    assert_eq!(m.n_features(), K);
-    assert_eq!(m.n_outputs(), 4, "stat, crit, flag, since_flag");
-    let r = probe_with(m, 0, Some(&CorrChange::n_eff));
-    assert_eq!(r.kind, "corrchange");
-    assert_eq!(r.pred_len, r.n_outputs);
-    assert_eq!(r.n_eff[0], 0.0);
-    assert_eq!(r.n_eff[1], 1.0);
-    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
-    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
-    assert!(r.roundtrips);
+    // A test, not a model of the data: no targets, five slots (the
+    // statistic, its critical value, the flag, the rows since the last one
+    // and since the change it dates), and `n_eff` on the shared recursion.
+    // The sequential kind (Wied & Galeano) keeps the same contract.
+    for kind in [CorrChangeKind::Monitor, CorrChangeKind::Sequential] {
+        let m = CorrChange::new(CorrChangeCfg {
+            kind,
+            monitor_rows: 15,
+            ..corrchange_cfg()
+        })
+        .unwrap();
+        assert_eq!(m.n_targets(), 0);
+        assert_eq!(m.n_features(), K);
+        assert_eq!(
+            m.n_outputs(),
+            5,
+            "stat, crit, flag, since_flag, since_change"
+        );
+        let r = probe_with(m, 0, Some(&CorrChange::n_eff));
+        assert_eq!(r.kind, "corrchange");
+        assert_eq!(r.pred_len, r.n_outputs);
+        assert_eq!(r.n_eff[0], 0.0);
+        assert_eq!(r.n_eff[1], 1.0);
+        assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+        assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+        assert!(r.roundtrips, "{kind:?}");
+    }
 }
 
 fn bocpd_cfg() -> BocpdCfg {
@@ -1610,7 +1629,13 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
         let p = m.predict_with(&x, &y, d);
         let step = m.step(&x, &y, d, w);
         same_step(kind, i, &p, &step);
-        if step.pred.iter().all(|v| v.is_finite()) {
+        let flagged_only = |slot: usize| ONLY_ON_A_FLAG.contains(&(kind, slot));
+        if step
+            .pred
+            .iter()
+            .enumerate()
+            .all(|(slot, v)| v.is_finite() || flagged_only(slot))
+        {
             ready += 1;
         }
     }

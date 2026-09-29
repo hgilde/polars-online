@@ -1303,7 +1303,7 @@ every parameter, and to its section below, which states its update rule:
 | [`ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) · [math](#ew_class--gaussian-classification-on-ew_cov-moments) | accumulate | Gaussian classification, QDA, LDA or naive Bayes, with one set of running moments per class: a label column in, class probabilities out |
 | **[Sequential tests and regimes](#sequential-tests-and-regimes)** | | |
 | [`seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) · [math](#seqtest--a-sequential-test-of-a-sign-by-betting) | test | a sequential test of a sign by betting, giving evidence you can read at any row: on its own, of a column's sign; with `a` and `b`, of whether one spec of the bank predicts closer than another |
-| [`corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) · [math](#corrchange--has-the-correlation-structure-changed) | test | has the correlation structure changed: the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
+| [`corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) · [math](#corrchange--has-the-correlation-structure-changed) | test | has the correlation structure changed: the Wied–Krämer–Dehling constancy test span by span, the Wied–Galeano detector row by row against a stable history, or the size of a change between two windows against a permutation null |
 | [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [math](#hmm--which-regime-are-we-in) | filter | a Gaussian hidden Markov model, filtered as the stream runs: `ew_class` without the labels, with a transition matrix that can be learned |
 | [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [math](#bocpd--how-long-has-this-regime-lasted) | filter | how long this regime has lasted: Adams & MacKay's run-length posterior, so the answer is the regime's age and not a flag |
 
@@ -2224,8 +2224,19 @@ is the same computation over a frame you already have.
 
 *API:* [`po.spec.corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) — *Rust:* [`corrchange.rs`](crates/online-core/src/corrchange.rs) — *Outputs:* [fields](docs/OUTPUTS.md#corrchange)
 
-Two tests, for two questions: has the correlation been constant, and how
-big is the change.
+Three tests, for three questions: was the correlation constant over a
+span, has it left the level a stable history set, and how big is the
+change.
+
+| `kind` | reports | against | a change is found |
+|---|---|---|---|
+| `"monitor"` | on a span's last row | the span's own correlation | at the span's end, up to `span_rows` rows late |
+| `"sequential"` | on every monitored row | a history of `span_rows` rows | as soon as it crosses a boundary |
+| `"window"` | on every row | the window before | as soon as the two windows differ |
+
+A parameter that belongs to another kind is refused, naming the kinds it
+applies to. On a flag, `since_change` dates the change: the rows from the
+first changed one through the flag's.
 
 `kind="monitor"` is the **closed-sample** constancy test of Wied, Krämer
 and Dehling (2012), run over consecutive spans of `span_rows` rows. At the
@@ -2239,9 +2250,11 @@ with `ρ̂_j` the correlation of the span's first `j` rows, and `D̂` the
 delta-method long-run standard deviation of `ρ̂`. Under the null, `Q`
 converges to `sup|B|` for a Brownian bridge `B`, so the critical value is
 the Kolmogorov quantile. It is computed from the series, not pinned, and it
-reproduces the published 1.3581 at 5%. The test's size and power are held
-to the paper's own tables: `.035` at ρ = 0 and `T = 500`, and `.587` power
-on a `0.5 → 0.7` break.
+reproduces the published 1.3581 at 5%. `D̂`'s Bartlett kernel is the
+paper's, lag `l` at `1 − l/γ` with `γ = ⌊ln T⌋`. The test's size and power
+are held to the paper's own tables: `.035` at ρ = 0 and `T = 500`, and
+`.587` power on a `0.5 → 0.7` break. On a flag, `since_change` counts the
+rows after the CUSUM's maximum.
 
 ```python
 c = po.spec.corrchange(
@@ -2250,7 +2263,47 @@ c = po.spec.corrchange(
     span_rows=500,               # nothing is reported until a span closes: a delay of at most this many rows
     scalar=False,                # True: run the test on the equicorrelation of the standardised row (deco's u) --
 )                                # one statistic however many columns, and a test of its level rather than of a pair
-out = df.online.fit_predict([c]).unnest("break")   # stat, crit, flag, since_flag
+out = df.online.fit_predict([c]).unnest("break")   # stat, crit, flag, since_flag, since_change
+```
+
+`kind="sequential"` is the **monitoring procedure** of Wied and Galeano
+(2013). A cycle is `span_rows` rows of history, taken as stable, then up to
+`monitor_rows` rows, each tested against the history as it arrives. From
+the history it reads each pair's correlation `ρ̂_h` and its long-run
+standard deviation `D̂`, with the estimator above. The `k`-th monitored row
+then reports
+
+```
+V_k  = (k/√m)·(ρ̂_k − ρ̂_h) / D̂           m = span_rows, ρ̂_k over the k monitored rows
+stat = max over pairs of |V_k| / w(k/m)
+w(b) = (1 + b)·(b/(1 + b))^γ               γ = boundary_gamma, 0 ≤ γ < 1/2
+```
+
+and flags where `stat` passes `crit`. A flag, or the period's last row, ends
+the cycle, and the next row starts a new history. The critical value is the
+paper's Eq. 7: with `T = monitor_rows/span_rows`, `crit = (T/(1+T))^(1/2−γ)·q`,
+where `q` is a quantile of `sup_{0<s≤1} |W(s)|/s^γ` for a Brownian motion `W`.
+At `γ = 0` it has a series, and `crit` is 1.5849 at 5 % and `T = 1`. Above 0
+the paper simulates it; here it is solved as a diffusion with an absorbing
+boundary ([`boundary.rs`](crates/online-core/src/boundary.rs)), within 0.03 of
+the paper's Table 1. The detector's size is within two standard errors of
+their Table 2 in every cell ([docs/REGIMES.md
+§9](docs/REGIMES.md#9-the-sequential-detector-against-its-paper)).
+
+`γ` trades early detection for late. Above 0 the boundary starts lower, so
+a change soon after the history is caught sooner, at a cost in size: 0.04
+to 0.09 at `γ` of 0 and 0.25, and 0.12 to 0.18 at 0.45, for a nominal 0.05.
+On a flag, `since_change` is the paper's Eq. 8, the argmax of the same
+CUSUM over the monitored rows before the flag.
+
+```python
+s = po.spec.corrchange(
+    "watch", features=["x0", "x1"],
+    kind="sequential",
+    span_rows=500,               # 500 rows of history, assumed stable (kind="monitor" over them checks it)
+    monitor_rows=1000,           # then each of up to 1000 rows tested as it arrives: the paper's T = 2
+    boundary_gamma=0.25,         # 0 keeps the size; 0.45 catches an early change soonest; 0.25 between
+)
 ```
 
 ```python

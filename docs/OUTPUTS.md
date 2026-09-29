@@ -283,10 +283,11 @@ hand: change the generator, then run
 
 | field | meaning |
 |---|---|
-| `stat` | the test statistic for the span; null except on the row one is due |
+| `stat` | the test statistic for the span, the pair of windows or the monitored row; null except on a row one is due |
 | `crit` | the critical value `stat` is compared against |
 | `flag` | true on the row where `stat` crossed `crit` |
 | `since_flag` | learned rows since the last flag |
+| `since_change` | on a flag, the rows since the change it dates, through the flag's row from the first changed one; null otherwise |
 | `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
