@@ -932,8 +932,14 @@ const GOLDEN_QUANTILE: &[f64] = &[
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a halflife the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.
-const GOLDEN_FTRL_SQUARED: &[f64] = &[0.318866480347192, 1.8508278392193374, -0.059916896139190254];
-const GOLDEN_FTRL: &[f64] = &[0.49383104846406345, 0.5878407507142388, 0.4533087802341688];
+// Both moved on 2026-09-29 (docs/PLAN.md task 115 (d)): under a halflife the
+// penalties now age with the sums, so the fit no longer shrinks between rows.
+const GOLDEN_FTRL_SQUARED: &[f64] = &[
+    0.31755217793601365,
+    1.8450090309450071,
+    -0.05909108310584128,
+];
+const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5899321334553916, 0.45251642778855805];
 // Regenerated for docs/PLAN.md task 74 (2026-09-08): `scale_features`
 // standardises against the moments with the row admitted, so every
 // prediction of this scaled fit moved.

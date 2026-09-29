@@ -4727,7 +4727,29 @@ decision it needs, with a recommendation where there is one.
       allowed it a CI leg; none is needed, since 9.11.9 ships wheels for
       3.12 to 3.14 on all three OSes (reported as missing for 3.14, read
       from the classifiers, which stop at 3.13). None of river, VW or
-      Keras's `Ftrl` forgets, so the penalty question stays open); S30,
+      Keras's `Ftrl` forgets, so the penalty question stays open. **Decided
+      2026-09-29** (the user asked whether to change the behaviour only
+      under the EWMA, then: "Build it"): not a switch keyed on the decay,
+      which is discontinuous in the halflife -- at `halflife = 10^6` the
+      weight-scaled penalties would be near zero for 1.4M rows, full at
+      `inf` -- but a per-target scale `m = W/W*` on `beta/alpha`, `l1` and
+      `l2`, `W*` the target's weight on a clock that runs only on the rows
+      that teach it; the steady state stays the prior against the window
+      (4.65 at `halflife = 100`, 0 bias at `inf`), and only the drift of a
+      fit with no data goes. **Built:** a row that teaches nothing -- the
+      target absent, weight 0, a refused label -- leaves every coefficient
+      and prediction to the bit, through a total gap and 100,000
+      halflives, where 100 clock units had taken the fit to 0.748 of
+      itself at `halflife = 100` (`a_row_that_teaches_nothing_leaves_the_fit`);
+      the decay waits per target until the next row that teaches it, so
+      the sums cannot underflow; held to the decayed form written out, to
+      1e-12 across gaps of 1 to 2,000 clock units and weights of 0 to 2
+      (`the_penalty_scale_is_the_longhands_across_gaps`), and to
+      `ftrl_ref` moved to the same rule (the Python oracles, with nulls and
+      zero weights under halflives of 150 and 100). At `inf` the fit is
+      river's and VW's as before; the two golden signatures at halflife 40
+      moved; state schema 20 gains three vectors per target, a 19 state
+      loading with `m = 1`); S30,
       `holt` with no level-only mode (**decided 2026-09-29**, the user:
       "115.3 do your suggestion", **and built**: `holt(trend=False)` holds
       the trend at zero for a flat forecast, simple exponential smoothing,

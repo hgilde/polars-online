@@ -315,7 +315,9 @@ pub use window::{
 ///   weight that makes a solve due, the default cadence under a finite
 ///   halflife (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
 ///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
-///   `min_periods` reads (task 115 (d)); `corrchange` keeps a `sequential`
+///   `min_periods` reads, and `ftrl` each target's penalty scale, its weight
+///   on the clock of the rows that teach it and the decay it is owed (task
+///   115 (d)), a 19 file loading with the scale at 1; `corrchange` keeps a `sequential`
 ///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
 ///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
 ///   target moments (task 136), and in `marginal` the lag moments (task

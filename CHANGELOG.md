@@ -73,6 +73,16 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **`ftrl`'s fit holds still on rows that teach it nothing.** Under a
+  halflife its penalties were constants against sums that decay, so a row
+  with no target, or at weight 0, shrank every coefficient toward zero: to
+  0.748 of itself over one halflife at `halflife = 100`. The penalties now
+  take a per-target scale that ages with the sums on such rows and comes
+  back as the target's rows return, so the fit does not move without data,
+  as `ewridge`'s does not. The steady state is unchanged, and without a
+  halflife the fit is river's and Vowpal Wabbit's as before. Every `ftrl`
+  under a halflife reports new numbers, since it no longer shrinks between
+  rows either.
 - **A chunk past a refusing `window_budget` is refused whole.** The bank
   replays each chunk's clock schedule on its window rings before it learns
   a row, so it refuses such a chunk untouched and goes on as it was. It

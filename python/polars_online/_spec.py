@@ -1645,21 +1645,26 @@ def ftrl(
 
         n_i   <- lam * n_i ;  zz_i <- lam * zz_i ;  d_i <- lam * d_i
         b_i   = 0 if |zz_i| <= l1 else -(zz_i - sign(zz_i) l1) / (r_i + l2)
-        r_i   = beta / alpha + d_i                 (under a halflife)
+        r_i   = beta / alpha + d_i                 (under a halflife, with l1, l2 and
+                                                    beta / alpha times m, below)
               = (beta + sqrt(n_i)) / alpha         (without one: river's closed form)
         p     = sigmoid(z . b)                     (z . b itself under loss="squared")
         g_i   = (p - y) * z_i * w
         s_i   = (sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha
         zz_i += g_i - s_i * b_i ;  n_i += g_i^2 ;  d_i += s_i
 
-    Under a halflife the penalties are constants on the sums' scale, so they act
-    as a mean-scale ridge of ``(1 - lam) * (beta / alpha + l2)``, and a row with
-    no target and a clock of ``t`` scales every coefficient by ``lam**t * (d + c)
-    / (lam**t * d + c)``, ``c = beta / alpha + l2`` -- about 0.75 over one
-    halflife at ``halflife = 100``, where :func:`ewridge`'s fit does not move. For
-    forgetting without that shrinkage, reset a ``halflife = inf`` model on a
-    ``session``, or use :func:`sgd` or :func:`ewridge`. Without a halflife the fit
-    is river's ``FTRLProximal`` to the bit.
+    Under a halflife the penalties ``beta / alpha``, ``l1`` and ``l2`` take a
+    per-target scale ``m = W / W*``: ``W`` the target's weight, decayed on every
+    row, and ``W*`` the same on a clock that runs only on the rows that teach
+    it. A row that teaches the target nothing -- absent, at weight 0, or a label
+    ``strict_binary`` refuses -- ages the sums and the penalties alike, so the
+    fit does not move, as :func:`ewridge`'s does not; the rows that teach it
+    bring ``m`` back toward 1. Held constant, the penalties shrank the fit to
+    0.75 of itself over one halflife of such rows at ``halflife = 100``. In
+    steady state they act as a mean-scale ridge of ``(1 - lam) * (beta / alpha +
+    l2)``: a constant 5 settles at 4.65 at ``halflife = 100`` and 4.96 at 1000.
+    Without a halflife ``m`` is 1, and the fit is river's ``FTRLProximal`` to the
+    bit.
 
     .. rubric:: Parameters
 
