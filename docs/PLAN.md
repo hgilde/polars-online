@@ -4836,7 +4836,22 @@ decision it needs, with a recommendation where there is one.
 
 - [ ] 117. **Python versions.** S–L. A 3.15 CI leg when it ships (October;
       recommended); free-threaded builds (non-`abi3` wheels; not yet); a
-      floor below 3.12 (no).
+      floor below 3.12 (no). **Measured 2026-09-29 on 3.15.0rc2** (the user
+      asked for a leg now; recommended against until 3.15.0 ships): the
+      abi3 wheel installs and a bank fits and predicts, and the suite ran
+      2,083 passed, 1,508 failed, all but five outside this package. On
+      3.15.0rc2, polars 1.44.2's Series methods that dispatch through an
+      expression -- `struct.field`, `fill_nan`, `is_null`, `abs` -- return
+      `None`, and a datetime Series cannot be built; our own `bank.coef()`
+      and `po.sim` call two of them, so they fail with it. Four test
+      libraries have no cp315 wheel -- pyarrow, duckdb, the ADBC driver
+      manager, vowpalwabbit -- and their sources need C++ toolchains, so
+      `uv sync` would fail on the leg. Every failure traced goes back to
+      one of those two (one `seqtest` test was not traced alone). The five
+      were one bug of ours on every Python: `to_json` refused a bank with
+      a column that never held a value; fixed. Re-run when polars and
+      those four ship 3.15 support, then add the leg and the classifier
+      together.
 
 - [ ] 118. **Ideas waiting on a need** — kept so they are not lost; none is
       to be built without one, *each the user's call*: `log_loss` in

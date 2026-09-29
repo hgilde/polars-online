@@ -25,13 +25,20 @@ use crate::stream::usable;
 /// [`usable`] -- finite and within the input bound -- and a null otherwise:
 /// polars nulls arrive as NaN, so "null" here is null, NaN, an infinity or
 /// a magnitude the models would not accept.
+///
+/// The identities are infinite, and a column no row gave a value keeps
+/// them, so `min` and `max` are written as tags in JSON, as every other
+/// non-finite float is: without it `ModelBank.to_json` refused such a bank
+/// as a dropped value (found 2026-09-29). The binary state is unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColumnStats {
     pub count: u64,
     pub nulls: u64,
     pub mean: f64,
     pub m2: f64,
+    #[serde(with = "online_core::humanfloat::f64_or_tag")]
     pub min: f64,
+    #[serde(with = "online_core::humanfloat::f64_or_tag")]
     pub max: f64,
 }
 

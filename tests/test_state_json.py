@@ -119,6 +119,41 @@ def test_a_non_finite_is_tagged_rather_than_nulled():
     assert all(d == {"Halflife": "inf"} for d in found), found
 
 
+def _column_stats(node):
+    """Every column's summary in a state's JSON: the dicts with a count, a
+    null count and the range."""
+    if isinstance(node, dict):
+        if {"count", "nulls", "min", "max"} <= node.keys():
+            yield node
+        for v in node.values():
+            yield from _column_stats(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _column_stats(v)
+
+
+@pytest.mark.parametrize("how", ["a target null on every row", "every row skipped"])
+def test_a_column_that_never_held_a_value_exports(how):
+    """The data summary starts each column's ``min`` and ``max`` at ``inf``
+    and ``-inf``, and a column no row gave a usable value keeps them. The
+    export refused such a bank as a dropped value, on every Python; it
+    writes them tagged, as every other non-finite float (found running the
+    suite on Python 3.15, 2026-09-29)."""
+    df = _df()
+    if how == "a target null on every row":
+        spec = po.spec.ewridge("s", halflife=10.0, **B)
+        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("y"))
+    else:
+        spec = po.spec.ewridge("s", halflife=10.0, weight="w", **B)
+        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("w"))
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    doc = json.loads(bank.to_json())
+    empty = [c for c in _column_stats(doc) if c["count"] == 0]
+    assert empty, "a column with no value is in the summary"
+    assert all(c["min"] == "inf" and c["max"] == "-inf" for c in empty), empty
+
+
 def test_the_export_is_the_state_and_not_a_summary():
     """Same envelope, same specs, one entry per (spec, group) as the bank
     holds -- not a digest of them."""

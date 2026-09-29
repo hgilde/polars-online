@@ -150,6 +150,13 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **`to_json` exports a bank with a column that never held a value.** The
+  data summary starts each column's `min` and `max` at infinity, and a
+  column no row gave a value keeps them: a target null on every row, or
+  every row skipped for its weight. The export refused such a bank as a
+  dropped value. It now writes them as `"inf"` and `"-inf"`, as it writes
+  every other non-finite float; the binary state is unchanged.
+
 - **A `scalar` `corrchange` monitor saved in the middle of a span loads.**
   Its ring holds one value a row, the equicorrelation `u`, and the load
   held those rows to the feature count and refused the state as the wrong
