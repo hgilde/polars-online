@@ -310,6 +310,15 @@ def test_holt_takes_its_level_halflife_once():
     po.spec.holt("m", targets=["y"], level_halflife=20.0)
 
 
+def test_holt_takes_a_trend_halflife_only_with_a_trend():
+    """``trend=False`` holds the trend at zero (docs/PLAN.md task 115, S30),
+    so a ``trend_halflife`` beside it would be read by nothing."""
+    with pytest.raises(ValueError, match="trend_halflife applies only with a trend"):
+        po.spec.holt("m", targets=["y"], halflife=20.0, trend_halflife=80.0, trend=False)
+    po.spec.holt("m", targets=["y"], halflife=20.0, trend=False)
+    po.spec.holt("m", targets=["y"], halflife=20.0, trend_halflife=80.0)
+
+
 @pytest.mark.parametrize(
     "builder,kw",
     [

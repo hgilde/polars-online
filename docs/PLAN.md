@@ -4702,7 +4702,8 @@ decision it needs, with a recommendation where there is one.
       or a pre-pass over the chunk's clock, as the backwards-clock check
       makes, that predicts the ring and refuses the chunk untouched --
       recommended, with a test holding the prediction to the ring;
-      undecided); C24 part 2, `ftrl`'s penalties under a halflife (the user asked
+      **decided 2026-09-29**, the user: "115.1 follow your suggestion", the
+      pre-pass); C24 part 2, `ftrl`'s penalties under a halflife (the user asked
       whether river covers it: only at `halflife = inf`, where we are river
       to the bit; river has no forgetting, so a finite halflife is ours, and
       the build is river's formula with river's constant penalties on
@@ -4713,12 +4714,19 @@ decision it needs, with a recommendation where there is one.
       1e-5, its single precision (measured 2.6e-6), under both losses, the
       intercept, row weights with zeros, null targets, two targets and `l1`
       with `l2`, where river's covers the logistic loss and the penalties,
-      on the state recursion alone (`TestFtrlIsVowpalWabbits`). The user allowed it a CI leg; none is
-      needed, since 9.11.9 ships wheels for 3.12 to 3.14 on all three OSes
-      (reported as missing for 3.14, read from the classifiers, which stop
-      at 3.13). None of river, VW or Keras's `Ftrl` forgets, so the penalty
-      question stays open); S30, `holt`
-      with no level-only mode; S31, `n_eff` counting rows with a null target
+      on the state recursion alone (`TestFtrlIsVowpalWabbits`). The user
+      allowed it a CI leg; none is needed, since 9.11.9 ships wheels for
+      3.12 to 3.14 on all three OSes (reported as missing for 3.14, read
+      from the classifiers, which stop at 3.13). None of river, VW or
+      Keras's `Ftrl` forgets, so the penalty question stays open); S30,
+      `holt` with no level-only mode (**decided 2026-09-29**, the user:
+      "115.3 do your suggestion", **and built**: `holt(trend=False)` holds
+      the trend at zero for a flat forecast, simple exponential smoothing,
+      whose level is the EW mean of the observations -- held to pandas'
+      `ewm(times=)` at 2.2e-12 and to `DescrStatsW` at 5.6e-16
+      (`TestALevelOnlyHoltIsAnEwMean`), and to its definition in `holt.rs`;
+      `trend_halflife` is refused beside it, and a config without the field
+      loads with the trend on, so no schema bump); S31, `n_eff` counting rows with a null target
       in `ftrl`, `pa` and `sgd` (hard rule 8). **S31 decided 2026-09-28
       (the user: "n eff should do what it does everywhere else") and
       built:** measured first, every model emits the shared weight as
@@ -4738,9 +4746,13 @@ decision it needs, with a recommendation where there is one.
       (the whole sweep) and a test in each model's file; the oracles
       (`rls_ref`, `ftrl_ref`, `rls_paths_ref`, `pa_ref`, `sgd_ref`) gate the
       same way. `sgd`'s `inv_scaling` rate still reads the shared weight.
-      The rest of (d) is open. (e) The 2026-09-12 review's
+      Of (d), only `ftrl`'s penalties are open. (e) The 2026-09-12 review's
       sign-offs (P4's calls; decisions 1, 3, 4 and 5; D1's caveat to rule
-      5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. (f) S18, Bartlett
+      5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. **Approved
+      2026-09-29** (the user: "115.5 approve all"): decisions 1, 4 and 5
+      stand, 3 went with task 136, P4's calls are (d)'s two budget items,
+      and S1, D2 and B7 stand; D1's caveat is in `CLAUDE.md`'s rule 5, and
+      each review document records its sign-off. (f) S18, Bartlett
       weights for `serial_rule`; S19, windowed target moments; C18, a
       windowed lag ring — record as tasks or decline. **Decided 2026-09-28
       (the user: "Accept tasks s18, s19 as long as it doesn't add much
@@ -4763,7 +4775,10 @@ decision it needs, with a recommendation where there is one.
       (`test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves`
       pins that much). Whether the other blocks should go on learning, and
       the constant column's own block too (from its other columns), is the
-      decision. Also (review 2026-09-28, pre-existing): under `dynamics =
+      decision. **Decided 2026-09-29** (the user: "115.4 your
+      recommendation"): each correlation value keeps its own weight, a
+      column with no standardized value is left out of the row's sums, and
+      `loglik` is null on such a row. Also (review 2026-09-28, pre-existing): under `dynamics =
       "linear"` a zero-weight row moves `rho` (`deco.rs`: `(1-α-β)·bar +
       α·u + β·rho` is recomputed whether or not `b` is 0), against hard
       rule 9; whether the linear form should hold `rho` still on such a row

@@ -2248,6 +2248,7 @@ def holt(
     targets: TargetList,
     level_halflife: float | Duration | None = None,
     trend_halflife: float | Duration | None = None,
+    trend: bool = True,
     features: list[str] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -2294,6 +2295,12 @@ def holt(
         How fast the trend forgets, in clock units. Default four times the level
         halflife; ``inf`` is the whole history's drift, not a trend pinned at
         zero.
+    ``trend``
+        ``False`` fits the level alone: the trend is held at zero and the forecast
+        is flat, which is simple exponential smoothing. The level is then the
+        weighted mean of the observations, each at its weight times ``0.5 ** (age
+        / level_halflife)``, which is pandas' ``ewm(adjust=True)`` for unit
+        weights. ``trend_halflife`` is refused beside it. Default ``True``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group``, the
@@ -2314,7 +2321,7 @@ def holt(
     ``coef``
         ``[level, trend]`` per target, the whole state; :func:`coef_index` names
         the two. Null for a target not yet observed, which has no level to
-        report.
+        report. The trend is 0 under ``trend=False``.
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. :meth:`polars_online.ModelBank.predict` extrapolates over the
@@ -2341,6 +2348,10 @@ def holt(
         "level_halflife": level_halflife,
         "trend_halflife": trend_halflife,
     }
+    if not trend:
+        # Absent when on, as the Rust spec leaves it out, so a bank reports
+        # the dict this made (`ModelBank.specs`).
+        model["trend"] = False
     return _common(name, model, targets=targets, features=features or [], **common)
 
 

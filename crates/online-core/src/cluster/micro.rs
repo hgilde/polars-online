@@ -1176,6 +1176,7 @@ mod tests {
             level_halflife: 10.0,
             trend_halflife: 40.0,
             min_periods: 0.0,
+            trend: true,
         })
         .unwrap()
         .state();

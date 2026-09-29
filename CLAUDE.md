@@ -58,7 +58,9 @@ cargo run -p online-cli -- --config examples/bank.toml
 4. Models live in `online-core` behind the `OnlineModel` trait and know nothing about
    Polars, Python, or clocks-as-columns. Plumbing lives in `online-polars` / `online-py`.
 5. State files are versioned msgpack and must load on both OSes; bump `SCHEMA_VERSION`
-   on any layout change and keep a loader for the previous version.
+   on any layout change and keep a loader for the previous version. Pre-1.0 exception
+   (the user, 2026-09-14 and 2026-09-28): a state saved before the next release need
+   not load, so raise `MIN_SCHEMA_VERSION` instead of writing a loader (`lib.rs`).
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` means the same thing in every model**: the accumulated weight *before* this

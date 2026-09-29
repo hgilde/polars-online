@@ -451,6 +451,7 @@ fn holt_cfg() -> HoltCfg {
         level_halflife: HALFLIFE,
         trend_halflife: 4.0 * HALFLIFE,
         min_periods: 3.0,
+        trend: true,
     }
 }
 
@@ -1023,6 +1024,7 @@ fn restoring_the_wrong_model_is_an_error_that_names_both() {
         level_halflife: 10.0,
         trend_halflife: 40.0,
         min_periods: 0.0,
+        trend: true,
     })
     .unwrap();
     let s = holt.state();

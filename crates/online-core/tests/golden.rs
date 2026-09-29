@@ -463,6 +463,7 @@ fn holt_golden() {
         level_halflife: 10.0,
         trend_halflife: 40.0,
         min_periods: 3.0,
+        trend: true,
     })
     .unwrap();
     check("holt", &signature_of(&mut m, 0, false), GOLDEN_HOLT);

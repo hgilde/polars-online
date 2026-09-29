@@ -32,6 +32,14 @@
 //! the level takes in, where it had changed nothing -- the trend holds, since
 //! a move over no clock has no slope.
 //!
+//! **Without a trend** (`trend = false`) the trend is held at zero and the
+//! forecast is flat, `pred = l`: simple exponential smoothing. The level is
+//! then the weighted mean of the observations, each at its weight times
+//! `λ_l` per clock unit of its age, `Σ w·λ_l^age·y / Σ w·λ_l^age`, which
+//! pandas' `ewm(adjust=True)` computes for unit weights (docs/PLAN.md task
+//! 115, S30). Since S30 an infinite `trend_halflife` is the whole history's
+//! drift, so this is the only way to ask for no trend.
+//!
 //! On a row that observes every target, `s` is the row's own delta `d`.
 //! Deriving the decays from halflives keeps the parameter meaning the same
 //! as everywhere else in this library: a halflife is in clock units, so an
@@ -63,6 +71,15 @@ pub struct HoltCfg {
     #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub trend_halflife: f64,
     pub min_periods: f64,
+    /// `false` holds the trend at zero: the level alone, with a flat
+    /// forecast (see the module docs). A config written before the switch
+    /// has none and loads with the trend on, what it was produced under.
+    #[serde(default = "default_true")]
+    pub trend: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl HoltCfg {
@@ -228,8 +245,9 @@ impl OnlineModel for Holt {
             let prev_level = self.level[j];
             self.level[j] = (held * p + weight * yj) / (held + weight);
             self.w_level[j] = held + weight;
-            // A move over no clock has no slope: the trend holds.
-            if s > 0.0 {
+            // A move over no clock has no slope: the trend holds. Without a
+            // trend it stays at zero.
+            if self.cfg.trend && s > 0.0 {
                 let held = lam_b * self.w_trend[j];
                 let slope = (self.level[j] - prev_level) / s;
                 self.trend[j] = (held * self.trend[j] + weight * slope) / (held + weight);
@@ -341,6 +359,7 @@ mod tests {
             level_halflife: level,
             trend_halflife: trend,
             min_periods: 0.0,
+            trend: true,
         }
     }
 
@@ -464,6 +483,7 @@ mod tests {
             level_halflife: 4.0,
             trend_halflife: 9.0,
             min_periods: 2.5,
+            trend: true,
         };
         let (want_pred, want_level, want_trend, want_w) = reference(&c, &ys, &ds, &ws);
 
@@ -493,6 +513,7 @@ mod tests {
             level_halflife: 10.0,
             trend_halflife: 40.0,
             min_periods: 3.0,
+            trend: true,
         };
         let mut m = Holt::new(c).unwrap();
         assert_eq!(m.n_eff(), 0.0, "nothing seen yet");
@@ -588,6 +609,7 @@ mod tests {
             level_halflife: 8.0,
             trend_halflife: 30.0,
             min_periods: 0.0,
+            trend: true,
         };
         let mut m = Holt::new(c).unwrap();
         for i in 0..600 {
@@ -966,5 +988,58 @@ mod tests {
             preds[199],
             ys[199]
         );
+    }
+
+    /// `trend = false` holds the trend at zero (docs/PLAN.md task 115, S30):
+    /// the forecast is flat and the level is the weighted mean of the
+    /// observations, each at its weight times `0.5^(age/level_halflife)`,
+    /// written here from that definition. The clock is irregular, and a null
+    /// and a zero weight are among the rows, which observe nothing.
+    #[test]
+    fn without_a_trend_the_level_is_the_weighted_mean_of_the_observations() {
+        let ds = [0.0, 1.0, 0.25, 7.0, 1.0, 1.0, 0.5, 13.0, 2.0, 1.0, 1.0, 3.0];
+        let ws = [1.0, 0.5, 2.0, 1.0, 0.25, 1.0, 3.0, 1.0, 0.0, 1.0, 1.5, 1.0];
+        let mut s = 5u64;
+        let mut ys: Vec<Option<f64>> = (0..ds.len())
+            .map(|i| Some(3.0 + 0.8 * i as f64 + lcg(&mut s)))
+            .collect();
+        ys[5] = None;
+        let mut m = Holt::new(HoltCfg {
+            trend: false,
+            ..cfg(4.0, 9.0)
+        })
+        .unwrap();
+        let (mut clock, mut seen) = (0.0, Vec::<(f64, f64, f64)>::new());
+        for (i, ((&y, &d), &w)) in ys.iter().zip(&ds).zip(&ws).enumerate() {
+            clock += d;
+            let pred = m.step(&[], &[y], d, w).pred[0];
+            let at = |&(t, w, _): &(f64, f64, f64)| w * 0.5f64.powf((clock - t) / 4.0);
+            let num: f64 = seen.iter().map(|o| at(o) * o.2).sum();
+            let den: f64 = seen.iter().map(at).sum();
+            if seen.is_empty() {
+                assert!(pred.is_nan(), "row {i}: nothing observed yet");
+            } else {
+                let want = num / den;
+                assert!(
+                    (pred - want).abs() < 1e-12 * want.abs(),
+                    "row {i}: {pred} vs {want}"
+                );
+            }
+            if let Some(y) = y.filter(|_| w > 0.0) {
+                seen.push((clock, w, y));
+            }
+            assert_eq!(m.trend()[0], 0.0, "row {i}: the trend never moves");
+            assert_eq!(m.coefficients()[0][1], 0.0, "row {i}: and reports 0");
+        }
+        assert_eq!(seen.len(), 10, "a null and a zero weight observe nothing");
+    }
+
+    /// A config written before the switch has no `trend`, and loads with the
+    /// trend on: what that state was produced under.
+    #[test]
+    fn a_config_written_before_the_trend_switch_keeps_its_trend() {
+        let json = r#"{"n_targets": 1, "level_halflife": 10.0, "trend_halflife": 40.0, "min_periods": 0.0}"#;
+        let c: HoltCfg = serde_json::from_str(json).expect("loads without the field");
+        assert!(c.trend, "the omitted field is the trend on");
     }
 }

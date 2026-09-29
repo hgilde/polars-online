@@ -100,6 +100,13 @@ C22's forgotten clock -- `holt`'s forecast across two unlearned rows as
    release, we are pre 1.0 and we can change things now"), so the loaders
    of item 6 are gone with their fixtures.
 
+**Signed off 2026-09-29** (the user: "115.5 approve all"; docs/PLAN.md task
+115 (e)): items 1, 4 and 5 stand. Item 3 went with task 136, which
+snapshots the target moments, so a window's Gram now reports them. P4's
+two calls, the 256 MiB default and the budget-refused bank, are task 115
+(d)'s: the default stays, and a pre-pass will refuse the chunk before any
+row is learned.
+
 **Where the review's own text was wrong** (found by testing it): a window
 keeps rows whose age is *at most* `window` (T-S10 said "less than"); S20's
 example, two reflected clouds, never flips -- a component has to cross the
@@ -216,7 +223,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | P1, P3 | **fixed** (batch 3a) — `predict` and `n_eff` read the window's weights alone (`Acc::window_weights`, `EwCovModel::window_n_eff`), and `lasso`'s selection one target's errors (`window_sel_err`), instead of the O(k²) view, which is built now only to solve or to read statistics. Bit-identical: guard tests hold the cheap reads to the view on every row, through a clock gap that empties the window. Measured with `examples/window_bench.rs` at k = 200, a window of 1000 and `window_every` 25: a windowed `ewridge` row 34.6 → 17.2 µs (11.3 without a window), an accumulate-only windowed `ew_cov` row 28.1 → 9.8 µs (5.9 without) |
 | P2 | **fixed** (batch 3a) — `Instance::reset` builds its own instance at its own decay; it built every instance of the grid and kept one |
 | P4, P5 | **fixed** (batch 3b), on the user's decisions of 2026-09-15 (`docs/PLAN.md` task 80). P4: `window_budget = {"thin": MiB}` or `{"refuse": MiB}` on the five windowed kinds, and a window with no budget refuses past 256 MiB per ring (**my default, raised**). A refusing ring stops at the budget -- the snapshot that would cross is not kept, and none is made after -- and the chunk is refused. The budget is found as the rows go in, so by then the bank has learned part of the chunk: it refuses every later `fit_predict`, `predict` and `save` rather than go on (**a design call, raised**). P5: the runner drains after every chunk and hands each drain to the sidecar's writer; `fit_predict_batches(closed_groups=)` drains after every batch and writes however the chunks stop; `closed_groups()` says the queue is bounded only by draining it. On the old build all fourteen tests failed for their findings' reasons |
-| D1 | not taken: excluded by the user (2026-09-14) -- hard rule 5, on backward file compatibility, stays as written |
+| D1 | not taken: excluded by the user (2026-09-14) -- hard rule 5, on backward file compatibility, stays as written. **Taken 2026-09-29**, the user: "115.5 approve all" (docs/PLAN.md task 115 (e)): `CLAUDE.md`'s rule 5 carries the pre-1.0 exception in one sentence, pointing to `lib.rs` |
 | D2 | **fixed** (batch 1) — one ladder, `factorize`, under `solve_spd` and `SpdFactor::of`; the solve is bit-identical, and a guard test holds the two to the same rung on a well-posed, a singular and an indefinite matrix |
 | D3, D4, D5 | **fixed** (batch 1) — `Kalman::coefficients`, `robust`'s module doc and `sgd`'s `scale_features` now say what the review says they left out. D4's `HuberRegressor` comparison is sklearn's, which the tests take since task 121 (`tests/test_second_opinion.py`, T-S4) |
 | D6 | **fixed** (batch 1), and **short of the whole story** (raised). The window's note has been right since C17, as the review says; the test's "about eight significant figures" was never the window. Its oracle, `direct_window_fit`, put the ridge on the intercept, which the model leaves unpenalized, and at `ridge = 1e-8` that alone is the `3.8e-8` the `1e-6` tolerance hid. With the intercept free the two agree to `1.2e-14` over 284 comparisons, and the test holds `1e-12` |

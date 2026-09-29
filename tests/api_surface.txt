@@ -182,6 +182,7 @@
     targets
     level_halflife = None
     trend_halflife = None
+    trend = True
     features = None
     common
   huber:

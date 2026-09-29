@@ -56,6 +56,12 @@ carries breaking changes, and any change to the numbers a model returns.
   under both losses, with the intercept, row weights and null targets.
   river's comparison checks the logistic state recursion alone. The package
   still depends on polars alone.
+- **`holt(trend=False)`, the level alone.** The trend is held at zero and
+  the forecast is flat: simple exponential smoothing, whose level is the
+  target's exponentially weighted mean. It is held to pandas' `ewm(times=)`
+  and statsmodels' `DescrStatsW`. Since an infinite `trend_halflife` became
+  the whole history's drift, this is the way to ask for no trend.
+  `trend_halflife` is refused beside it.
 
 ### Changed
 

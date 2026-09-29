@@ -192,6 +192,7 @@ pub const INPUT_BOUND: f64 = 1e100;
 ///     level_halflife: 2.0,
 ///     trend_halflife: 4.0,
 ///     min_periods: 2.0,
+///     trend: true,
 /// })?;
 /// for t in 0..60 {
 ///     model.step(&[], &[Some(t as f64)], 1.0, 1.0);

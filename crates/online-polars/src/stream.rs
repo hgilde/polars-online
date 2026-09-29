@@ -813,6 +813,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::Holt {
             level_halflife,
             trend_halflife,
+            trend,
         } => {
             // Default the level to the spec's own halflife, so `halflife` means
             // the same thing here as it does for every other model.
@@ -832,6 +833,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 level_halflife: level,
                 trend_halflife: trend_halflife.as_ref().map_or(level * 4.0, Span::value),
                 min_periods: spec.min_periods_or_default(),
+                trend: trend.unwrap_or(true),
             };
             Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
         }

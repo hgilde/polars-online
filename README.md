@@ -1651,7 +1651,9 @@ baseline = po.spec.holt(
 Level and trend are weighted means of what each row observes and what the
 model forecast, with `W` and `V` the weight each has gathered; a row at
 weight `w` counts `w` times. The trend is per clock unit, so on an
-irregular clock it extrapolates the right distance. There is no seasonal
+irregular clock it extrapolates the right distance. With `trend=False` the
+trend stays at zero and the forecast is flat: simple exponential smoothing,
+whose level is the target's EW mean. There is no seasonal
 term, because a seasonal index is a `group` on the phase, which the bank
 already does. Run it in the same bank as a real model to see how much the
 regression actually adds: compare `sigma`, or let `emit_selected` choose.

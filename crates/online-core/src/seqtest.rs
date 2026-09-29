@@ -537,6 +537,7 @@ mod tests {
             level_halflife: 1.0,
             trend_halflife: 1.0,
             min_periods: 0.0,
+            trend: true,
         })
         .unwrap();
         assert!(matches!(

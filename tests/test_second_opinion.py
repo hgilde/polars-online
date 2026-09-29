@@ -1377,6 +1377,81 @@ class TestHoltAcrossAMissingObservation:
         np.testing.assert_allclose(got[~skip], want, rtol=1e-12)
 
 
+class TestALevelOnlyHoltIsAnEwMean:
+    """``holt(trend=False)`` holds the trend at zero (docs/PLAN.md task 115,
+    S30), so the forecast is flat and the level is the exponentially weighted
+    mean of the target's observations. pandas' ``ewm(times=, adjust=True)``
+    computes that mean on an irregular clock, passing a null by its time as
+    ``holt`` does; statsmodels' ``DescrStatsW`` computes the weighted one,
+    each observation at its weight times ``0.5 ** (age / halflife)``. The
+    row's prediction is the mean through the row before it. Measured:
+    ``5.6e-16`` against ``DescrStatsW`` and ``2.2e-12`` against pandas, whose
+    time clock carries an error of its own; with the trend on, the forecasts
+    part from the mean by up to 1.2."""
+
+    HALFLIFE = 7.0
+
+    @staticmethod
+    def rows(weighted, n=300, seed=21):
+        rng = np.random.default_rng(seed)
+        t = np.cumsum(rng.uniform(0.2, 3.0, n))
+        y = 5.0 + 0.02 * t + rng.normal(0.0, 1.0, n)
+        y[rng.random(n) < 0.1] = np.nan
+        w = rng.uniform(0.0, 2.0, n) if weighted else np.ones(n)
+        return t, y, w
+
+    def fit(self, t, y, w, **kw):
+        frame = pl.DataFrame({"t": t, "y": y, "w": w}).with_columns(pl.col("y").fill_nan(None))
+        spec = po.spec.holt(
+            "m",
+            targets=["y"],
+            clock="t",
+            max_dclock=1e9,
+            level_halflife=self.HALFLIFE,
+            min_periods=0.0,
+            weight="w",
+            coef_every=1,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
+        return out.field("pred_y").to_numpy(), np.array(out.field("coef").to_list(), float)
+
+    def test_the_level_is_pandas_ewm(self):
+        import pandas as pd
+
+        t, y, w = self.rows(weighted=False)
+        pred, coef = self.fit(t, y, w, trend=False)
+        times = pd.to_datetime(np.round(t * 1e9).astype("int64"), unit="ns")
+        mean = (
+            pd.Series(y)
+            .ewm(halflife=pd.Timedelta(self.HALFLIFE, "s"), times=times, adjust=True)
+            .mean()
+            .to_numpy()
+        )
+        # pandas' own error on a time clock is about 1e-9 (docs/TESTING.md).
+        np.testing.assert_allclose(pred[1:], mean[:-1], rtol=1e-8)
+        assert np.isnan(pred[0])
+        assert (coef[1:, 1] == 0.0).all(), "the trend is held at zero"
+        # The control: with the trend on, the same rows forecast elsewhere.
+        with_trend, _ = self.fit(t, y, w)
+        assert np.nanmax(np.abs(with_trend[1:] - mean[:-1])) > 0.1
+
+    def test_a_weighted_level_is_descrstatsw(self):
+        from statsmodels.stats.weightstats import DescrStatsW
+
+        t, y, w = self.rows(weighted=True)
+        pred, _ = self.fit(t, y, w, trend=False)
+        seen = ~np.isnan(y) & (w > 0.0)
+        for i in range(1, len(y)):
+            before = seen[:i]
+            if not before.any():
+                assert np.isnan(pred[i])
+                continue
+            age = t[i - 1] - t[:i][before]
+            stats = DescrStatsW(y[:i][before], weights=w[:i][before] * 0.5 ** (age / self.HALFLIFE))
+            assert pred[i] == pytest.approx(stats.mean, rel=1e-12), i
+
+
 class TestBocpdAtALevel:
     """C23. ``bocpd`` kept each run's sums raw, ``Σw·x`` and ``Σw·x²``, and
     formed the scatter as ``Σw·x² − n·x̄²`` on every row, for every run --

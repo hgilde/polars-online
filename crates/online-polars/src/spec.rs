@@ -851,6 +851,12 @@ pub enum ModelKind {
         /// halflife.
         #[serde(default)]
         trend_halflife: Option<Span>,
+        /// `false` fits the level alone: the trend is held at zero and the
+        /// forecast is flat, simple exponential smoothing (docs/PLAN.md task
+        /// 115, S30). `trend_halflife` is refused beside it. Skipped when
+        /// absent: the trend is on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trend: Option<bool>,
     },
     Rls {
         /// Prior strength: `A0 = ridge I`, i.e. `P0 = I / ridge`. Scalar only
@@ -1680,6 +1686,7 @@ impl Spec {
             ModelKind::Holt {
                 level_halflife,
                 trend_halflife,
+                ..
             } => {
                 put(&mut out, "level_halflife", level_halflife.as_ref());
                 put(&mut out, "trend_halflife", trend_halflife.as_ref());
@@ -2903,7 +2910,15 @@ impl Spec {
             ModelKind::Holt {
                 level_halflife,
                 trend_halflife,
+                trend,
             } => {
+                if *trend == Some(false) && trend_halflife.is_some() {
+                    return Err(format!(
+                        "spec {:?}: holt trend_halflife applies only with a trend; trend = false \
+                         holds it at zero",
+                        self.name
+                    ));
+                }
                 // One knob under two names: the level and `n_eff` followed
                 // `level_halflife`, and `sigma` and the diagnostics the
                 // spec's decay (review 2026-09-12, S22).
