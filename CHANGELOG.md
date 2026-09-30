@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
-## [Unreleased]
+## [0.13.0] — 2026-09-30
 
 ### Added
 
@@ -168,6 +168,13 @@ carries breaking changes, and any change to the numbers a model returns.
   diagonal for the scales. The Cholesky factor solves in place. Every output
   is the same to the bit. Where every row solves, `ewridge` is 8% faster at
   k=5, 14% at k=20 and 19% at k=50; at the default cadence, 3 to 10%.
+
+- **`ftrl` takes a target's penalties once a row, not once a coefficient.**
+  Its penalties now take the target's scale (Changed, above), and computed
+  per coefficient that cost `ftrl` 18% of its rows a second. Taken once per
+  target, the same operations in the same order, the outputs are the same to
+  the bit. Against 0.12.0 `ftrl` is still 11% slower under a halflife and 6%
+  without one: the scale's division and the per-target weights, once a row.
 
 - **The CLI writes NDJSON from one thread.** It serialized a slice per
   thread, which on macOS's system allocator once ran from 4.8 s to 54 s on

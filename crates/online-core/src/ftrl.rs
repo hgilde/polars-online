@@ -189,6 +189,17 @@ pub struct Ftrl {
     coef: Vec<f64>,
 }
 
+/// A target's penalties as its weights read them ([`Ftrl::penalties`]):
+/// under a halflife `l1`, `beta / alpha` and `l2` each times the target's
+/// scale, else river's `l1`, `beta` and `l2`.
+#[derive(Clone, Copy)]
+struct Penalties {
+    forgets: bool,
+    l1: f64,
+    base: f64,
+    l2: f64,
+}
+
 impl Ftrl {
     pub fn new(cfg: FtrlCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -226,13 +237,42 @@ impl Ftrl {
     /// Proximal weights implied by the current FTRL state, per target.
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         (0..self.cfg.n_targets)
-            .map(|j| (0..self.cfg.k_total()).map(|i| self.weight(j, i)).collect())
+            .map(|j| {
+                let pen = self.penalties(j);
+                (0..self.cfg.k_total())
+                    .map(|i| self.weight(pen, j, i))
+                    .collect()
+            })
             .collect()
     }
 
     #[inline]
-    fn weight(&self, j: usize, i: usize) -> f64 {
-        self.weight_of(self.zz[j][i], self.n[j][i], self.prox[j][i], self.scale[j])
+    fn weight(&self, pen: Penalties, j: usize, i: usize) -> f64 {
+        self.weight_of(pen, self.zz[j][i], self.n[j][i], self.prox[j][i])
+    }
+
+    /// Target `j`'s penalties as its weights read them, taken once for all
+    /// of its coordinates: `k` of them a row, each recomputing the same
+    /// products and the `beta / alpha` quotient, had cost `ftrl` 18% of its
+    /// rows a second once the penalties took the target's scale. The same
+    /// operations in the same order, so the same bits.
+    fn penalties(&self, j: usize) -> Penalties {
+        if self.forgets() {
+            let scale = self.scale[j];
+            Penalties {
+                forgets: true,
+                l1: self.cfg.l1 * scale,
+                base: self.cfg.beta / self.cfg.alpha * scale,
+                l2: self.cfg.l2 * scale,
+            }
+        } else {
+            Penalties {
+                forgets: false,
+                l1: self.cfg.l1,
+                base: self.cfg.beta,
+                l2: self.cfg.l2,
+            }
+        }
     }
 
     /// Whether the sums decay at all. Without a halflife the rate is river's
@@ -250,30 +290,30 @@ impl Ftrl {
     /// proximal steps, and the penalties take the target's `scale`; without
     /// one it is `sqrt(n)/alpha`, which `d` telescopes to, and the penalties
     /// are river's (review 2026-09-12, C24; the module docs).
-    fn weight_of(&self, zz: f64, n: f64, prox: f64, scale: f64) -> f64 {
-        if self.forgets() {
-            let l1 = self.cfg.l1 * scale;
-            if zz.abs() <= l1 {
+    fn weight_of(&self, pen: Penalties, zz: f64, n: f64, prox: f64) -> f64 {
+        if pen.forgets {
+            if zz.abs() <= pen.l1 {
                 return 0.0;
             }
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            let rate = self.cfg.beta / self.cfg.alpha * scale + prox + self.cfg.l2 * scale;
+            // `beta / alpha * scale + prox + l2 * scale`, left to right.
+            let rate = pen.base + prox + pen.l2;
             // No evidence and no prior left -- a total gap takes both to 0 --
             // is no fit, not 0/0.
             return if rate > 0.0 {
-                -(zz - sgn * l1) / rate
+                -(zz - sgn * pen.l1) / rate
             } else {
                 0.0
             };
         }
-        if zz.abs() <= self.cfg.l1 {
+        if zz.abs() <= pen.l1 {
             0.0
         } else {
             // Never zero here: `|zz| > l1 >= 0`, or `zz` is NaN, so `< 0` and
             // `<= 0` agree (scripts/mutants_equivalent.toml).
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            let rate = (self.cfg.beta + n.sqrt()) / self.cfg.alpha;
-            -(zz - sgn * self.cfg.l1) / (rate + self.cfg.l2)
+            let rate = (pen.base + n.sqrt()) / self.cfg.alpha;
+            -(zz - sgn * pen.l1) / (rate + pen.l2)
         }
     }
 
@@ -315,8 +355,9 @@ impl OnlineModel for Ftrl {
         let mut pred = vec![f64::NAN; m];
         for j in 0..m {
             // Proximal weights from the state before this row's update.
+            let pen = self.penalties(j);
             for i in 0..k {
-                self.coef[i] = self.weight(j, i);
+                self.coef[i] = self.weight(pen, j, i);
             }
             let raw: f64 = self.zbuf.iter().zip(&self.coef).map(|(z, b)| z * b).sum();
             // The two losses share everything but the link; the gradient is
@@ -407,10 +448,11 @@ impl OnlineModel for Ftrl {
             if self.w_target[j] < self.cfg.min_periods {
                 continue;
             }
+            let pen = self.penalties(j);
             let raw: f64 = (0..k)
                 .map(|i| {
                     let z = if i < off { 1.0 } else { x[i - off] };
-                    z * self.weight(j, i)
+                    z * self.weight(pen, j, i)
                 })
                 .sum();
             *p = match self.cfg.loss {

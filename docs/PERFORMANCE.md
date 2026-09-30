@@ -41,6 +41,7 @@ are.
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 | [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why task 87's cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [task 87's cost](#task-87s-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read-task-140) |
 | [30. Where every row solves](#30-where-every-row-solves-2026-09-29) | your stream solves on every row, and you want what that path lost since 0.5.1 and what task 141 won back | [bisecting the solve](#bisecting-the-solve) · [where the time went](#where-the-time-went) · [the change](#the-change-task-141) |
+| [31. 0.13.0 against 0.12.0](#31-0130-against-0120-2026-09-29) | you want this release's speed against the last, and the one slowdown it found and halved | |
 
 ## Reading this document
 
@@ -3764,3 +3765,49 @@ the same scripts as §29:
 | §19's 500 groups × 200 rows | 3,422,801 | 3,765,320 |
 | 6M rows, `halflife=inf`, each row solved | 14.9 s | 12.8 s |
 | `predict` against learning, k=5 and k=20 | 1.85×, 2.82× | 1.81×, 2.79× |
+
+## 31. 0.13.0 against 0.12.0 (2026-09-29)
+
+Before the release, `scripts/benchmark.py` ran under the 0.12.0 wheel and
+this build, two rounds each in turn, at load 3.1 to 3.6. Every `ewridge`
+configuration was 5 to 47% faster (§29, §30), `bocpd` with a full
+covariance 6% faster from the in-place solves, and seven configurations
+over 5% slower. Five rounds each on those seven, at load 9 to 11, beside
+three controls:
+
+| configuration | 0.12.0 | this build | change |
+|---|---:|---:|---:|
+| `ftrl`, k=20 | 4,656,121 | 3,835,548 | −17.6% |
+| `lasso`, k=20 | 1,693,724 | 1,617,928 | −4.5% |
+| `deco` | 2,303,645 | 2,247,016 | −2.5% |
+| `deco`, 4 blocks | 1,679,594 | 1,627,649 | −3.1% |
+| `rls`, k=20 | 1,573,940 | 1,604,970 | +2.0% |
+| `corrchange`, monitor | 450,332 | 448,240 | −0.5% |
+| `micro`, 4 features | 8,994,524 | 9,171,525 | +2.0% |
+| `seqtest` | 14,837,712 | 15,200,792 | +2.4% |
+| `sgd`, `kalman`, `pa`, the controls | | | −1.0% to +1.4% |
+
+Only `ftrl` moved past the rounds' scatter. `lasso`'s 4.5% is the default
+cadence by weight, which solves more often early in a stream, and
+`deco`'s 3% is its per-value weights. `ftrl`'s penalties had taken the
+target's scale inside the per-coefficient weight, so each row recomputed
+`l1 · s`, `β / α · s` and `l2 · s` for every coefficient, the quotient
+included. They are now taken once per target, in the same order, so the
+bits stay: the release probe's 292 fields, and 1,008,642 floats over
+`ftrl`'s branches, are identical. Five rounds at load 13, the `sgd` control
+within 1%:
+
+| `ftrl`, k=20 | 0.12.0 | `d0f8616` | penalties once per target |
+|---|---:|---:|---:|
+| halflife 1000 | 4.60M | 3.75M, −18.6% | 4.08M, −11.4% |
+| no halflife | 4.91M | 4.28M, −12.7% | 4.61M, −6.1% |
+
+What remains is, per target and row, the scale's division, the weight on
+the teaching clock and the target's own weight: the corrections' cost, as
+the CHANGELOG says.
+
+`scripts/compare_release.py` against 0.12.0 found 11 fields different,
+all declared: `ridge_window`, `lasso` and `enet` from the default cadence
+by weight (with `solve_every = halflife / 50`, the old rule, this build is
+0.12.0 to the bit on all three), `ftrl` from its penalties' scale, and
+`corrchange`'s `stat` from its kernel, with `since_change` new.
