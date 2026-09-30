@@ -152,6 +152,16 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Performance
 
+- **`ewridge` takes its readiness shares only when they are read.** Since
+  0.9.0 every solve formed the diagonal of `A⁻¹`, `O(k³)`, for each
+  coefficient's data share and the noise gate's `edf`. A solve now keeps its
+  factor, and the shares are computed when a `coef` row, `summary()` or a
+  save reads them, or at the end of the chunk. The gate reads them only
+  where `edf`'s bound, one per coefficient, cannot decide. Every output and
+  every saved state is the same to the bit. `ewridge` learns 16% more rows a
+  second at k=20, 41% at k=50, and 42% where every row solves; with
+  `coef_every=1`, which reads the shares on every row, it is 1 to 3% slower.
+
 - **The CLI writes NDJSON from one thread.** It serialized a slice per
   thread, which on macOS's system allocator once ran from 4.8 s to 54 s on
   3M rows. Measured again, one thread is the faster: 4.7 s against 5.0 s on

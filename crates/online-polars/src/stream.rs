@@ -172,10 +172,15 @@ impl AnyModel {
         }
     }
 
-    /// Learn every row a sharded step holds ([`Self::step_sharded`]).
+    /// End a run of rows: learn every row a sharded step holds
+    /// ([`Self::step_sharded`]), and take the readiness shares of every
+    /// solve an `ewridge` left unread, dropping the factors they wait on
+    /// ([`online_core::EwRidge::settle_readiness`], docs/PLAN.md task 140).
     pub fn flush(&mut self, shards: usize) {
-        if let AnyModel::Marginal(m) = self {
-            m.flush(&on_the_pool(shards));
+        match self {
+            AnyModel::Marginal(m) => m.flush(&on_the_pool(shards)),
+            AnyModel::EwRidge(m) => m.settle_readiness(),
+            _ => {}
         }
     }
 
@@ -231,6 +236,12 @@ impl AnyModel {
     /// without one.
     pub fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
         dispatch!(self, m => m.error_inflation_into(out))
+    }
+
+    /// The same for the noise gate at `limit`, where a bound may stand in
+    /// below it ([`OnlineModel::error_inflation_gate_into`]).
+    pub fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+        dispatch!(self, m => m.error_inflation_gate_into(out, limit))
     }
 
     /// The same for one row's features
@@ -3725,9 +3736,17 @@ fn run_instance(
         // else a row is gated on (docs/WARMUP-AND-CONVERGENCE.md §2): how
         // settled the instance is, and the noise gate's ratio per slot where
         // the model has one -- plus the row's own, when the field is asked
-        // for.
+        // for. The gate and its warning read only which side of
+        // `max_error_inflation` a slot is on, and the largest ratio when one
+        // is at or above it, so a model may put a bound below the limit in
+        // place of a ratio that costs it an `O(k³)` read (docs/PLAN.md task
+        // 140); `summary` reads the exact one.
         let settled = settled_frac(inst.decay, *inst.decay_time + *inst.pending_clock);
-        let has_infl = inst.model.get().error_inflation_into(&mut sc.infl);
+        let max_infl = inst.spec.max_error_inflation_or_default();
+        let has_infl = inst
+            .model
+            .get()
+            .error_inflation_gate_into(&mut sc.infl, max_infl);
         let has_row_infl = inst.spec.emit_error_inflation
             && inst
                 .model
@@ -3785,7 +3804,6 @@ fn run_instance(
         // did, the ridge keeping `edf` a hair under it.
         // `inf` is off: an infinite ratio -- the model unsolved -- is then
         // the model's own null, not this gate's.
-        let max_infl = inst.spec.max_error_inflation_or_default();
         if has_infl && max_infl.is_finite() {
             for (slot, p) in step.pred.iter_mut().enumerate() {
                 if sc.infl.get(slot).is_some_and(|&r| r >= max_infl) {

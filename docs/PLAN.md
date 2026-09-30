@@ -110,7 +110,9 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
 
 ### Null policy
 - Null in any feature ⇒ row skipped entirely: outputs null, no update, clock still advances.
-- Null in target j ⇒ `pred_j` emitted, `resid_j` null, no update for j; other targets update.
+- Null in target j ⇒ `pred_j` emitted, `resid_j` null, no update for j; other targets update,
+  except in `rls`, whose targets share one factor and so update none. In `ewridge` and `lasso`
+  the row stays in the other targets' Gram under either `target_gaps`.
 - NaN, ±inf and `|v| > online_core::INPUT_BOUND` (1e100) in a feature, target or weight count
   as null (IMPROVEMENTS C2); models must stay finite and keep learning for anything inside the
   bound (`tests/model_contract.rs`).
@@ -5889,6 +5891,65 @@ is not, since the model alone has `0.0` and `3.5` there.
       list, its measurement comment, the warning's docstring, `fit`'s
       docstring, the README and ARROW-SOURCES say the same now, and the
       keys only those two models take left the table.
+
+- [x] 140. **Task 87's inverse diagonal, on every solve** (the user, after
+      task 138 found the README's throughput 40–50% stale: "find which
+      change caused the throughput drop"). S–M; *the user's call*. The
+      bisect is PERFORMANCE §29: task 87 took `ewridge` 26% at k=20
+      (`11e3ccb` 3.65M rows a second, `3e0b359` 2.69M), the clock checks
+      (`7965035`), compensated means (task 101) and the floored cluster
+      metric (task 102) the rest, each the price of a correction. Task 87's
+      is not: `EwRidge::solve` forms `A⁻¹`'s diagonal on every solve, for
+      each coefficient's data share and the noise gate's `edf`, and at HEAD
+      that costs 7% at k=5, 21% at k=20 and 46% at k=50 (a build with the
+      diagonal replaced by zeros). A cheaper direct method recovers
+      nothing: the squared column norms of `L⁻¹`, written two ways, ran no
+      faster than faer's inverse. Options:
+      (a) **Compute it when it is read**, from the factor the solve keeps:
+      on `coef` rows (by default one per group per chunk), in `summary()`
+      and the `ReadinessWarning`, and for the noise gate only while it can
+      bind. `edf` is at most one per kept column plus one, so once
+      `sqrt(1 + (1 + k) / n_kish)` is below `max_error_inflation` the gate
+      is open whatever `edf` is. Every value read is the same bits as
+      today; the memory is a `k × k` factor per system, which
+      `emit_error_inflation` keeps already. Recommended.
+      (b) Every m-th solve: values stale between, and a new setting.
+      (c) Keep it, and let the README's throughput say so, as it now does.
+
+      **Built 2026-09-29, option (a), on the user's "Build the fix".** A
+      solve no longer takes the diagonal. It keeps its factor in a
+      `Pending`, shared by the slots the system answers, and the shares
+      are computed on the first read and kept (`OnceLock`). A `coef` row
+      reads them, and so do `summary()` and a save, which writes the shares
+      a read would give, so the state layout is unchanged and needs no
+      schema bump. The end of each run stores them and drops the factor,
+      so a factor lives only while its stream runs. The noise gate reads
+      `error_inflation_gate_into`. Where a solve is unread and the ratio of
+      the bound, `sqrt(1 + (edf0 + k) / n_kish)`, is below
+      `max_error_inflation`, the bound stands in, since the computed `edf`
+      rounds to no more than it. Where the ratio could reach the limit, the
+      gate reads the exact value, and so does the unreachable-gate
+      warning's worst ratio. **The bound needed a guard these options
+      missed.** A share can be NaN: with no ridge, an inverse that
+      overflowed gives `1 − 0·∞`. The exact ratio is then infinite and the
+      row is withheld, where the bound would have passed it. Features near
+      `1e-155` fitted through the origin do it, and the test for it failed
+      before the guard. `SpdFactor::inverse_is_finite` bounds every
+      quantity the two triangular solves form, in `O(k²)` from the
+      comparison matrix, and the bound stands in only where that holds. In
+      its test it certified 2,181 factors and none of the 1,675 whose
+      diagonal was not finite. **No value moves**: 18 `ewridge` workloads
+      against `80df0ac`, every float of every frame, the state saved
+      mid-stream and at the end, and every warning, the same to the bit.
+      **Speed** (PERFORMANCE §29): +16% at k=20 and +41.5% at k=50, 82% and
+      92% of the stub's ceiling; k=5's +3.5% is within noise; +42% where
+      every row solves. `coef_every=1`, which reads the shares on every row,
+      pays 1 to 3% for the bookkeeping. The README's `ewridge` rates are
+      re-measured, with `rls`'s beside them and the `predict` ratio, and so
+      are three solve-every-row figures stale since 0.9.0. Its Parallelism
+      figures at k=20 were not: at load 4, a 14-thread run times the other
+      jobs. Found on the way, not investigated: where every row solves, even
+      the stub runs 23% below §19's rate of 2026-09-08.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

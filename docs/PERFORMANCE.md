@@ -39,6 +39,7 @@ are.
 | [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
 | [27. `marginal`'s shared feature moments](#27-marginals-shared-feature-moments-e72-task-125-2026-09-29) | you keep many targets' pairs in one `marginal`, and want what `feature_moments="shared"` saves | |
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
+| [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why task 87's cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [task 87's cost](#task-87s-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read-task-140) |
 
 ## Reading this document
 
@@ -3519,3 +3520,149 @@ threads, 7.7×, beside about one busy core. The README keeps §26's quieter
 
 The README's "about 19 MB to download and 59 MB installed" was measured on
 2026-09-02.
+
+## 29. The drop since 0.2.0, bisected (2026-09-29)
+
+§28 found `ewridge` at k=20 running 2.53M rows a second, where the README
+had said 4.12M since 2026-09-06. The user asked which change caused it.
+
+### Method
+
+Every published release from 0.2.0 to 0.12.0 was installed from PyPI into
+a venv of its own, each with py-polars 1.44.2, and timed on five of
+`scripts/benchmark.py`'s configurations: 200k rows, best of 3, in a fresh
+process, over three rounds that visit every version in turn, so load that
+drifts during a run spreads evenly. Inside an interval where a drop fell,
+commits were built in a worktree with a target directory of its own, and
+timed the same way beside the release wheels at either end, which each
+build reproduced to about 1%. The machine was shared, at load averages of
+2 to 7, so a step under 5% is near the noise. Rows per second, best of
+three rounds:
+
+| release | `ewridge` k=20 | `ewridge` k=5 | `sgd` k=20 | `seqtest` | `micro`, 4 features |
+|---|---:|---:|---:|---:|---:|
+| 0.2.0 | 3.82M | 9.71M | 8.29M | 20.89M | 14.68M |
+| 0.5.1 | 3.80M | 9.10M | 10.77M | 20.86M | 14.70M |
+| 0.6.0 | 3.54M | 8.42M | 10.18M | 19.88M | 14.17M |
+| 0.7.4 | 3.56M | 8.29M | 10.06M | 19.71M | 13.93M |
+| 0.8.0 | 3.40M | 7.60M | 8.97M | 18.82M | 13.51M |
+| 0.9.0 | 2.62M | 6.03M | 9.02M | 16.48M | 11.91M |
+| 0.10.0 | 2.55M | 5.93M | 8.74M | 16.38M | 11.88M |
+| 0.11.1 | 2.38M | 5.41M | 8.67M | 16.30M | 9.32M |
+| 0.12.0 | 2.52M | 5.74M | 8.43M | 16.62M | 9.12M |
+
+### The causes
+
+| commit | change | what it costs | builds either side |
+|---|---|---|---|
+| `3e0b359`, 0.9.0 | task 87, readiness | `ewridge` −26% at k=20 and −25% at k=5; every other model −10 to −13%. All of it in the stream's per-chunk processing, none in assembling the output | `11e3ccb` 3.65M, `3e0b359` 2.69M |
+| `7965035`, 0.8.0 | the out-of-order clock checks | about 10 ns a row on a spec with a clock: `sgd` −10%, `ewridge` −7% at k=5 and −3% at k=20; nothing on `seqtest` or this `micro`, which have none | `0b664b8` 3.57M, `7965035` 3.45M |
+| `4ee7c3b`, 0.11.1 | task 101, compensated means | `ewridge` −6% at k=20, −3% at k=5 | `2d8b2ac` 2.57M, `4ee7c3b` 2.42M |
+| `ae34d91`, 0.11.1 | task 102, the floored cluster metric | `micro` −15% | `4ee7c3b` 11.94M, `ae34d91` 10.11M (`micro`) |
+| 0.5.1 to 0.6.0 | the review round of 2026-09-13, task 81's `target_gaps`, task 80 | `ewridge` −4%, −3% and −1%, each near the noise | `ea99161`, `0e25a44`, `66b2585` |
+
+Everything but task 87's first cost is the price of a correction the
+review rounds asked for: a clock rule, a precision, a metric that cannot
+blow up. Task 87's is not.
+
+### Task 87's cost: the inverse's diagonal on every solve
+
+Profiled with symbols (`CARGO_PROFILE_RELEASE_STRIP=none`, `sample`), the
+added time sits under `EwRidge::solve` → `SpdFactor::inverse_diagonal`,
+which forms `A⁻¹` by solving the Cholesky factor against the `k × k`
+identity to keep its diagonal: 577 of `process_chunk`'s 3,600 samples at
+k=20, against 60 for the rest of the solve. Each solve reads it for every
+coefficient's data share, `1 − λ (A⁻¹)_jj`, and for the effective degrees
+of freedom the noise gate's `sqrt(1 + edf / n_kish)` reads. The solve runs
+about every 20 rows at a halflife of 1,000. What it costs at HEAD
+(`80df0ac`), measured by building it with the diagonal replaced by zeros,
+which moves the readiness numbers and so measures only the ceiling:
+
+| `ewridge` | HEAD | without the diagonal | per row |
+|---|---:|---:|---:|
+| k=5 | 5.51M | 5.88M, +7% | 11 ns |
+| k=20 | 2.42M | 2.93M, +21% | 71 ns |
+| k=50 | 0.60M | 0.88M, +46% | 521 ns |
+
+**A cheaper algorithm does not recover it.** The diagonal of `A⁻¹` is the
+squared column norms of `L⁻¹`, a sixth of the arithmetic of the whole
+inverse. Two versions of that, row-wise and column-wise on a contiguous
+copy of `L`, agreed with the inverse to 4e-15, 78–94% of values to the bit,
+and ran no faster: at these sizes faer's inverse is already at the cost of
+any direct method. What can go is how often it runs. The shares are read
+on `coef` rows, which by default are one per group per chunk, by
+`summary()`, and by the noise gate only while it can still bind: `edf` is
+at most one per kept column plus one, so once `sqrt(1 + (1 + k) / n_kish)`
+is below `max_error_inflation` the gate is open whatever `edf` is. PLAN
+task 140 has the options.
+
+### The fix: the shares when they are read (task 140)
+
+The user chose option (a). A solve keeps its factor, and the shares are
+computed on the first read: a `coef` row, `summary()`, a save, or the noise
+gate where the bound on `edf` cannot decide. The end of each run takes the
+rest and drops the factors. PLAN task 140 has the mechanism, and the guard
+the bound turned out to need.
+
+**No value moves.** Eighteen `ewridge` workloads were compared with
+`80df0ac` to the bit. They cover every solve path, 37 groups, a ridge grid
+over feature sets, a window, a drift reset, two targets with nulls, both
+readiness warnings, and the LazyFrame path. That is 8,299,122 floats in 164
+frames, 36 state files saved mid-stream and at the end, byte for byte, and
+79 warnings.
+
+**The speed.** Rows a second, best of five rounds that visit every build in
+turn, at load 3.9 to 4.1, each venv on py-polars 1.44.2. The stub is the
+build above with the diagonal replaced by zeros, so it is the ceiling:
+
+| `ewridge` | `80df0ac` | the stub | task 140 |
+|---|---:|---:|---:|
+| k=5 | 5.70M | 6.10M, +7.0% | 5.90M, +3.5% |
+| k=20 | 2.50M | 2.99M, +19.6% | 2.90M, +16.0% |
+| k=50 | 0.621M | 0.902M, +45.3% | 0.878M, +41.5% |
+| k=20, `coef_every=1` | 1.59M | 1.79M, +13.1% | 1.54M, −3.0% |
+
+That is 82% of the ceiling at k=20 and 92% at k=50; k=5's step is within
+the ±2% the rounds scatter by. `coef_every=1` reads the shares on every
+row, so there is nothing to save, and the bookkeeping costs 1 to 3%. That
+bookkeeping is the rest of the ceiling: four small allocations a solve, and
+the `O(k²)` check that lets the bound stand in. The check's first version
+read the factor an element at a time through faer's indexing and gave back
+4% at k=50. It now runs down contiguous columns.
+
+The README's rows that run `ewridge`, re-measured on the final build with
+`scripts/benchmark.py`'s configurations, at load 4.4:
+
+| configuration | §28 | after task 140 |
+|---|---:|---:|
+| `ewridge` k=5 | 5,548,684 | 5,667,783 |
+| `ewridge` k=20 | 2,530,123 | 2,877,462 |
+| `ewridge` k=50 | 599,466 | 842,762 |
+| `ewridge` k=20, 10 targets | 1,426,222 | 1,541,145 |
+| `ewridge` k=20, halflife 500 | 1,832,817 | 2,211,610 |
+| `ewridge` k=20, 5 halflives | 1,355,982 | 1,625,454 |
+| `ewridge` + `conformal` | 2,472,378 | 2,894,950 |
+| `rls`, beside them | 1,573,563 | 1,614,468 |
+
+§9's comparison of `predict` with learning, re-run on its million-row
+stream: `predict` scores 1.85 times as fast at k=5 and 2.82 times at k=20.
+
+Where every row solves, the diagonal's share of the time is larger, and so
+is the bookkeeping's. The README had three such figures, measured before
+task 87 and carried since. Re-timed on each build at load 2.6 to 4.3, best
+of three except the 6M-row stream:
+
+| workload | the README had | `80df0ac` | the stub | task 140 |
+|---|---:|---:|---:|---:|
+| §19's stream, refit every row | 575,000 rows/s | 290,094 | 443,670 | 410,729 |
+| §19's 500 groups × 200 rows | 5,130,803 rows/s | 2,602,698 | 3,624,726 | 3,422,801 |
+| 6M rows, `halflife=inf`, each row solved | 11 s | 20.9 s | 13.8 s | 14.9 s |
+
+Task 140 recovers 79% of the stub's gain on the first row. The groups row
+runs 500 streams on the pool, so it moves with the machine's load; a second
+run gave 3.14M. Even the stub runs 23% below the rate §19 recorded on
+2026-09-08. This section's bisect timed the default cadence, where that gap
+does not show, so what costs a stream that solves every row is unexplained.
+The README's Parallelism figures at k=20, §26's thread sweep over 64 groups
+and §28's eight specs, predate the fix and were not re-run: at load 4, a
+14-thread run would time the other jobs as much as this one.

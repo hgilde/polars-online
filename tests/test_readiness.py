@@ -402,6 +402,37 @@ class TestInvariants:
             assert field(one, name).equals(field(two, name)), name
         assert reasons(one) == reasons(two)
 
+    @pytest.mark.parametrize("limit", [1.05, math.sqrt(2), 3.0])
+    def test_the_gate_decides_alike_whether_the_shares_are_read_or_not(self, limit):
+        """A solve's data shares and ``edf`` are taken only when something
+        reads them (docs/PLAN.md task 140): a ``coef`` row, or the noise gate
+        where the bound ``edf <= 1 + k`` cannot decide. Read on every row or
+        only at each chunk's end, every field is the same, on both sides of
+        the gate and with a cadence that leaves solves unread across rows."""
+        df = frame(400, k=6)
+        kw = dict(
+            features=[f"x{j}" for j in range(6)],
+            halflife=60.0,
+            max_rows_between_solves=4,
+            max_error_inflation=limit,
+            emit_error_inflation=True,
+        )
+
+        def run(every: int) -> pl.DataFrame:
+            bank = po.ModelBank([spec(coef_every=every, **kw)])
+            return pl.concat([bank.fit_predict(df[i : i + 100]) for i in range(0, 400, 100)])
+
+        read, unread = run(1), run(10_000)
+        for name in ("pred_y", "resid_y", "error_inflation_y", "n_eff", "settled_frac"):
+            assert field(read, name).equals(field(unread, name)), name
+        assert reasons(read) == reasons(unread)
+        # Each chunk's last row reads the shares either way.
+        ends = [99, 199, 299, 399]
+        for name in ("coef", "support_coef"):
+            assert field(read, name).gather(ends).equals(field(unread, name).gather(ends)), name
+        why = reasons(read)
+        assert "above_max_error_inflation" in why and None in why, set(why)
+
     def test_withheld_reason_is_categorical_not_string(self):
         out = po.ModelBank([spec()]).fit_predict(frame(30))
         dtype = (

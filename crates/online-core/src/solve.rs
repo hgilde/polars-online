@@ -121,6 +121,58 @@ impl SpdFactor {
         (0..k).map(|i| x[(i, i)]).collect()
     }
 
+    /// Whether [`Self::inverse_diagonal`] is sure to come out as numbers,
+    /// told in `O(k²)` without taking it (docs/PLAN.md task 140). A factor
+    /// faer accepts can still overflow its inverse -- a Gram near `1e-309`
+    /// has pivots near `1e-155` -- and past an infinity the two triangular
+    /// solves can form `∞ − ∞`. With `M(L)` the comparison matrix, `|l_jj|`
+    /// on the diagonal and `−|l_ij|` off it, `|L⁻¹| ≤ M(L)⁻¹` entrywise
+    /// (`L = D(I − N)` with `N` nilpotent, so `L⁻¹ = Σ Nᵖ D⁻¹`), and
+    /// `M(L)⁻¹ ≥ 0`, so each of its entries is at most its row's sum,
+    /// `z = M(L)⁻¹ 1`: one substitution whose terms are all nonnegative, so
+    /// nothing cancels. With `b = max z` bounding every entry of `L⁻¹` and
+    /// `L⁻ᵀ`, and `l` every entry of `L`, each quantity the two solves form
+    /// is at most `k² · max(l, 1) · max(b, 1)²`; held to `1e300`, eight
+    /// orders below overflow, nothing overflows, and past positive pivots
+    /// only an infinity makes a NaN. `false` claims nothing: the diagonal
+    /// may still be finite.
+    ///
+    /// The substitution runs by columns, over contiguous slices: once `z_i`
+    /// is known, column `i` below the diagonal adds `|l_ji| · z_i` to each
+    /// later row's sum. An entry of `L` that is not finite needs no check of
+    /// its own: `z_i > 0`, so it makes its row's `z` infinite or NaN, which
+    /// the check on each `z` refuses.
+    pub fn inverse_is_finite(&self) -> bool {
+        let l = self.llt.L();
+        let k = l.nrows();
+        let mut z = vec![1.0f64; k];
+        let mut l_max = 1.0f64;
+        for i in 0..k {
+            let Some(col) = l.col(i).try_as_col_major() else {
+                return false;
+            };
+            let col = col.as_slice();
+            let d = col[i];
+            if !(d > 0.0 && d.is_finite()) {
+                return false;
+            }
+            let zi = z[i] / d;
+            if zi.is_nan() || zi > 1e150 {
+                return false;
+            }
+            z[i] = zi;
+            l_max = l_max.max(d);
+            for (s, &v) in z[i + 1..].iter_mut().zip(&col[i + 1..]) {
+                let v = v.abs();
+                l_max = l_max.max(v);
+                *s += v * zi;
+            }
+        }
+        let b = z.iter().fold(1.0f64, |a, &v| a.max(v));
+        let k = k as f64;
+        k * k * l_max * b * b <= 1e300
+    }
+
     /// Quadratic forms `d_jᵀ A⁻¹ d_j` for the `m` column vectors of `d`
     /// (column-major `k x m`), each clamped at zero: it is a squared norm,
     /// and rounding in the solve must not hand the caller a negative one.
@@ -285,5 +337,54 @@ mod tests {
         let (x, jit) = solve_spd(&a, &[1.0, 1.0], 2, 1).unwrap();
         assert!(jit > 0);
         assert!(x.iter().all(|v| v.is_finite()));
+    }
+
+    /// `inverse_is_finite` is sound: over matrices at every scale from the
+    /// subnormal to near overflow, well and badly conditioned, whenever it
+    /// says so the diagonal of `A⁻¹` is finite; and diagonals that are not
+    /// finite are among them, for it to catch (docs/PLAN.md task 140).
+    #[test]
+    fn inverse_is_finite_never_passes_a_diagonal_that_is_not() {
+        let mut s = 1u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let (mut certified, mut not_finite) = (0, 0);
+        for exp in [
+            -320, -312, -310, -309, -308, -305, -300, -200, -100, 0, 100, 150, 154,
+        ] {
+            let scale: f64 = format!("1e{exp}").parse().unwrap();
+            for k in 1..=6 {
+                for shift in [0.0, 1e-8, 1.0] {
+                    for _ in 0..20 {
+                        // `scale · (B Bᵀ + shift · I)`.
+                        let b: Vec<f64> = (0..k * k).map(|_| next()).collect();
+                        let mut a = vec![0.0; k * k];
+                        for i in 0..k {
+                            for j in 0..k {
+                                let v: f64 = (0..k).map(|l| b[i * k + l] * b[j * k + l]).sum();
+                                a[i * k + j] = scale * (v + if i == j { shift } else { 0.0 });
+                            }
+                        }
+                        let Some(f) = SpdFactor::of(&a, k) else {
+                            continue;
+                        };
+                        let finite = f.inverse_diagonal(k).iter().all(|v| v.is_finite());
+                        if f.inverse_is_finite() {
+                            certified += 1;
+                            assert!(finite, "scale 1e{exp}, k {k}: {a:?}");
+                        }
+                        not_finite += usize::from(!finite);
+                    }
+                }
+            }
+        }
+        assert!(
+            certified > 0 && not_finite > 0,
+            "{certified} certified, {not_finite} not finite: both must occur"
+        );
     }
 }

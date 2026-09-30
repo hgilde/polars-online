@@ -575,25 +575,27 @@ where `label_delay` lands it once.
 
 A null in any feature, or in the weight, skips the row: its outputs are
 null, no update happens, and the clock still advances. A null in one
-target still writes that target's `pred`, leaves its `resid` null, and
-skips only that target's update. NaN, ±inf and any magnitude above `1e100`
-count as null, so sentinel values never reach a model.
+target still writes that target's `pred` and leaves its `resid` null. It
+skips that target's update alone, except in `rls`, whose targets share
+one factor, so the row updates none of them. NaN, ±inf and any magnitude
+above `1e100` count as null, so sentinel values never reach a model.
 
 Three ways keep a row from teaching a model, and they differ:
 
 | | the row is scored | the clock advances | the fit moves | `n_eff` | use it to |
 |---|---|---|---|---|---|
 | **weight `0`** | yes | yes | no | keeps decaying, so a long stretch can fall below `min_periods` | keep a row's place in the stream |
-| **a null target** | yes | yes | as the model decides; its section says | counts the row; the target's own weight, which its `min_periods` reads, only decays | leave a label out |
+| **a null target** | yes | yes | not that target's, except under `target_gaps="pairwise"` | counts the row; the target's own weight, which its `min_periods` reads, only decays | leave a label out |
 | **`predict`** | yes | no | no | frozen | serve |
 
-In `ewridge` and `lasso` under the default `target_gaps="own_rows"`, a
-null target's fit does not move: its sums cover only the rows it is
-present on, and a row without it only ages them. Under
-`target_gaps="pairwise"` the feature sums take the row and the target's
-sums do not, so the coefficients wander with the feature noise. `predict`
-is also the fast path: `ewridge` scores at 1.8–2.9× its learning
-throughput.
+In `ewridge` and `lasso` a null target does not take the row from the
+other targets' Gram. Under the default `target_gaps="own_rows"`, a target
+missing where the others are present takes a copy of the Gram and keeps
+its own from then on. The copy only ages over the rows the target lacks,
+so its fit holds still. Under `"pairwise"` the one Gram learns every row,
+so a null target's coefficients drift with the feature noise. `predict`
+is also the fast path: `ewridge` scores 1.9 to 2.8 times as fast as it
+learns.
 
 ### Row order and the two guarantees
 
@@ -1481,7 +1483,7 @@ cuts the history off at a fixed age ([A hard window](#a-hard-window)).
 solves by weight: once the weight learned since the last solve reaches
 `ln 2 / 50` of the weight the fit holds, about 1.4 %. So a very long
 halflife keeps solving as the stream grows. `solve_every=1000` on the
-6M-row stream above takes 1.4 s instead of 11 s, with the coefficients at
+6M-row stream above takes 1.5 s instead of 15 s, with the coefficients at
 most 1000 rows out of date.
 
 `target_gaps` says which rows a target's `S_j` covers when the target is
@@ -1539,8 +1541,8 @@ A₀ = ridge·I         b₀ = ridge·coef_prior
 rls = po.spec.rls(
     "rls", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
     ridge=1e-3,                    # A starts at ridge * I (default 1) -- unlike ewridge's default, this
-)                                  # penalizes the intercept too                                  # a row with any null target is scored but not learned from, for every target,
-                                   # because the factor is shared between them
+)                                  # penalizes the intercept too
+# A row with any null target is scored but learned from for no target: the factor is shared.
 ```
 
 The model stores the Cholesky factor of `A`, updated row by row with Givens
@@ -2682,27 +2684,29 @@ within five rows, dated within a row of the right one.
 An Apple M4 Pro, one process, best of 3, 200k rows per run, measured on
 2026-09-29 (`uv run python scripts/benchmark.py --markdown`;
 [PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29)
-has the run):
+has the run). The `ewridge` rows, and `rls` beside them, were re-measured
+the same day, once `ewridge` took its readiness shares only when read
+([§29](docs/PERFORMANCE.md#the-fix-the-shares-when-they-are-read-task-140)):
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 5,548,684 |
-| `ewridge` k=20 | 1 target, 1 halflife | 2,530,123 |
-| `ewridge` k=50 | 1 target, 1 halflife | 599,466 |
-| `ewridge` k=20 | 10 targets | 1,426,222 |
-| `ewridge` k=20 | 5 halflives, 500 to 2,500 | 1,355,982 |
-| `rls` | k=20, 1 target | 1,573,563 |
+| `ewridge` k=5 | 1 target, 1 halflife | 5,667,783 |
+| `ewridge` k=20 | 1 target, 1 halflife | 2,877,462 |
+| `ewridge` k=50 | 1 target, 1 halflife | 842,762 |
+| `ewridge` k=20 | 10 targets | 1,541,145 |
+| `ewridge` k=20 | 5 halflives, 500 to 2,500 | 1,625,454 |
+| `rls` | k=20, 1 target | 1,614,468 |
 | `kalman` | k=20, 1 target | 1,876,826 |
 | `lasso` | k=20, 1 target (3-point path) | 1,629,739 |
 | `huber` | k=20, 1 target | 3,267,509 |
 | `ftrl` | k=20, 1 target | 3,873,282 |
 
-Targets share one set of feature sums, so 10 targets take 1.75 times as
+Targets share one set of feature sums, so 10 targets take 1.87 times as
 long as one, rather than 10 times. Each halflife in a grid is its own set
-of sums, but they run in parallel. So the 5-halflife grid takes 1.35 times
-as long as its shortest halflife alone, 1,832,817 rows a second, rather
+of sums, but they run in parallel. So the 5-halflife grid takes 1.36 times
+as long as its shortest halflife alone, 2,211,610 rows a second, rather
 than 5 times. A shorter halflife solves more often, so that halflife of
-500 runs slower than the 1,000 every other row here uses. `rls` runs at 62% of
+500 runs slower than the 1,000 every other row here uses. `rls` runs at 56% of
 `ewridge`'s speed for its square-root form, which is what keeps one
 extreme row from destroying it by cancellation.
 
@@ -2711,7 +2715,7 @@ rows:
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` + `conformal` | k=20, 90% interval | 2,472,378 |
+| `ewridge` + `conformal` | k=20, 90% interval | 2,894,950 |
 | `sgd` | k=20, squared loss | 8,423,373 |
 | `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,288,779 |
 | `pa` | k=20 | 8,284,518 |
@@ -2990,8 +2994,10 @@ Measured on 2026-09-08 on one generated stream of 100,000 rows with
 `k = 20`, each contender at its best over a sweep of its own settings. The
 script is `scripts/sklearn_comparison.py`, on scikit-learn 1.9.0, and
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §19 has the full tables and the
-sweeps. `po.spec.ewridge` solves on every row there. The noise ceiling is
-the R² of the generating signal itself:
+sweeps. `po.spec.ewridge` solves on every row there, and its rates in this
+section were re-measured on 2026-09-29, after it began taking its readiness
+shares only when read ([§29](docs/PERFORMANCE.md#the-fix-the-shares-when-they-are-read-task-140)).
+The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
 |---|---:|---:|---:|---|
@@ -2999,7 +3005,7 @@ the R² of the generating signal itself:
 | `SGDRegressor`, row by row | 0.9829 | 0.9899 | 3,400 | every row before it |
 | `SGDRegressor`, batches of 1,000 | 0.9830 | 0.9820 | 2,200,000 | every row before its *batch* |
 | `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
-| `po.spec.ewridge` | **0.9831** | **0.9907** | 575,000 | every row before it |
+| `po.spec.ewridge` | **0.9831** | **0.9907** | 411,000 | every row before it |
 
 **Accuracy is not the difference.** Everything reaches the ceiling on the
 stationary stream, and the row-by-row contenders are within 0.001 of each
@@ -3031,7 +3037,7 @@ row by row, and the bank runs `group="g"`. R² by position in the group:
 | noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
 | `SGDRegressor` per group, at its best | 0.7277 | 0.9242 | 0.9789 | 3,342 |
 | `po.spec.sgd`, `scale_features=True`, the same step | 0.7182 | 0.9213 | 0.9788 | 18,519,660 |
-| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 5,130,803 |
+| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 3,422,801 |
 
 The `sgd` row uses sklearn's step. The 0.01 of R² between the two `sgd` rows
 is where the *prediction* is standardised. sklearn's loop standardises the

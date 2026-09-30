@@ -323,6 +323,17 @@ pub trait OnlineModel: Sized {
         false
     }
 
+    /// [`Self::error_inflation_into`] for the noise gate at `limit`, which
+    /// reads only which side of `limit` each slot is on: exact wherever the
+    /// ratio could reach `limit`, while below it a bound may stand in, so a
+    /// model can skip work the gate would not look at (docs/PLAN.md task
+    /// 140). The largest value is then exact whenever any slot is at or
+    /// above `limit`. The default is the exact statistic.
+    fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+        let _ = limit;
+        self.error_inflation_into(out)
+    }
+
     /// The same for *this* row's features: `sqrt(1 + h(x))` per slot with
     /// `h(x) = x' Σ̂⁻¹ x / n_kish`, the leverage of the row against the
     /// factor the fit came from, so a row whose `x` leans on a direction the

@@ -51,6 +51,9 @@
 //! Predictions use the last solved coefficients (out-of-sample by construction:
 //! the solve happens after the row's update, the pred before it).
 
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
+
 use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
@@ -352,7 +355,9 @@ pub struct EwRidge {
     /// (docs/WARMUP-AND-CONVERGENCE.md §2): the effective degrees of freedom
     /// and each coefficient's data share per slot, and -- under
     /// `keep_factor` -- the systems the per-row leverage is read against.
-    #[serde(default)]
+    /// A solve's shares wait until something reads them, and a save writes
+    /// them as a read would (`Pending`, `serialize_settled`).
+    #[serde(default, serialize_with = "serialize_settled")]
     ready: Readiness,
     /// Keep each solve's system so the per-row leverage can be answered
     /// ([`EwRidge::set_keep_factor`]). Configuration that travels with the
@@ -681,6 +686,7 @@ impl EwRidge {
         ready.edf.resize(m * nc, f64::NAN);
         ready.support.resize(m * nc, vec![f64::NAN; k_total]);
         ready.system_of.resize(m * nc, usize::MAX);
+        ready.pending.resize(m * nc, None);
         let mut factors = std::mem::take(&mut self.factors).0;
         let keep_factor = self.keep_factor;
         // With a `window`, the fit is solved from the truncated accumulators:
@@ -811,7 +817,7 @@ impl EwRidge {
                     }
                 };
 
-                if let Some(solved) = solved {
+                if let Some(mut solved) = solved {
                     for (jj, &j) in readers.iter().enumerate() {
                         for (ai, &zi) in zidx.iter().enumerate() {
                             beta[j * nc + ci][zi] = solved.sol[jj * kc + ai];
@@ -825,32 +831,49 @@ impl EwRidge {
                     // standardiser dropped has share 0; the intercept is not
                     // a share. The effective degrees of freedom are the
                     // shares summed, plus one for an eliminated intercept,
-                    // which the data alone determines.
-                    let kk = solved.keep.len();
-                    let mut sup = vec![f64::NAN; k_total];
+                    // which the data alone determines. `A⁻¹`'s diagonal is
+                    // `O(k³)`, and a solve runs every few rows, so it is
+                    // taken when something reads it: a `coef` row, the
+                    // noise gate where its bound does not decide, `summary`,
+                    // a save, or the end of the run (`Pending`; docs/PLAN.md
+                    // task 140).
                     let is_intercept = |pos: usize| self.cfg.add_intercept && pos == 0;
+                    let mut sup0 = vec![f64::NAN; k_total];
                     for (pos, &zi) in zidx.iter().enumerate() {
                         if !is_intercept(pos) {
-                            sup[zi] = 0.0;
+                            sup0[zi] = 0.0;
                         }
                     }
-                    let mut edf = if solved.centred { 1.0 } else { 0.0 };
-                    if let Some(factor) = solved.factor.as_ref() {
-                        let inv = factor.inverse_diagonal(kk);
+                    let edf0 = if solved.centred { 1.0 } else { 0.0 };
+                    let factor = solved.factor.take();
+                    let kept = if keep_factor { factor.clone() } else { None };
+                    let pending = factor.map(|factor| {
                         let lam = solved.shift + factor.jitter();
-                        for (i2, &pos) in solved.keep.iter().enumerate() {
-                            let share = (1.0 - lam * inv[i2]).clamp(0.0, 1.0);
-                            edf += share;
-                            if !is_intercept(pos) {
-                                sup[zidx[pos]] = share;
-                            }
-                        }
-                    }
+                        Arc::new(Pending {
+                            numbers: lam.is_finite() && factor.inverse_is_finite(),
+                            lam,
+                            to: solved
+                                .keep
+                                .iter()
+                                .map(|&pos| (!is_intercept(pos)).then(|| zidx[pos]))
+                                .collect(),
+                            factor,
+                            edf0,
+                            sup0: sup0.clone(),
+                            shares: OnceLock::new(),
+                        })
+                    });
                     let at = g * nc + ci;
                     for &j in &readers {
                         let slot = j * nc + ci;
-                        ready.edf[slot] = edf;
-                        ready.support[slot].clone_from(&sup);
+                        match &pending {
+                            Some(p) => ready.pending[slot] = Some(Arc::clone(p)),
+                            None => {
+                                ready.edf[slot] = edf0;
+                                ready.support[slot].clone_from(&sup0);
+                                ready.pending[slot] = None;
+                            }
+                        }
                         ready.system_of[slot] = at;
                     }
                     if keep_factor {
@@ -863,7 +886,7 @@ impl EwRidge {
                             scale: solved.scale,
                             gram: g,
                         });
-                        factors[at] = solved.factor;
+                        factors[at] = kept;
                     }
                 } else if let Some(prev) = &self.beta {
                     // Total failure even with jitter: keep the previous
@@ -1164,6 +1187,68 @@ impl EwRidge {
         windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
     }
 
+    /// `sqrt(1 + edf / n_kish)` per slot, as it stands before the row
+    /// ([`OnlineModel::error_inflation_into`]): exact wherever the ratio
+    /// could reach `limit`. Where a solve's shares have not been taken and
+    /// are sure to be numbers, the ratio of the `edf` bound stands in if it
+    /// is already below `limit`: the computed ratio is no larger, since
+    /// each step to it rounds monotonically, so a gate at `limit` decides
+    /// the same either way. `f64::NEG_INFINITY` asks for every value exact.
+    fn inflation_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        out.clear();
+        out.resize(m * nc, f64::INFINITY);
+        // Below the model's own floor -- fewer effective observations than
+        // its first solve needs -- the estimation variance is unbounded, and
+        // the solves the schedule ran before it read degenerate Grams: the
+        // ratio is infinite there, as `predict` withholds there.
+        if self.beta.is_none()
+            || self.ready.edf.len() != m * nc
+            || self.n_eff() < self.cfg.min_periods
+        {
+            return true;
+        }
+        let kish = self.gram_kish();
+        for j in 0..m {
+            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+                continue;
+            };
+            for c in 0..nc {
+                let slot = j * nc + c;
+                if n > 0.0 {
+                    if let Some(bound) = self.ready.edf_bound_at(slot) {
+                        let ratio = (1.0 + bound / n).sqrt();
+                        if ratio < limit {
+                            out[slot] = ratio;
+                            continue;
+                        }
+                    }
+                }
+                let edf = self.ready.edf_at(slot);
+                if n > 0.0 && edf.is_finite() {
+                    out[slot] = (1.0 + edf / n).sqrt();
+                }
+            }
+        }
+        true
+    }
+
+    /// Take the shares of every solve nothing has read yet, and drop the
+    /// factors they were read from (docs/PLAN.md task 140): what the stream
+    /// calls at the end of each run, so a factor is held only while its
+    /// stream runs. The values are the ones a read would have given.
+    pub fn settle_readiness(&mut self) {
+        self.ready.settle();
+    }
+
+    /// Slots whose readiness shares still hold the factor of the solve they
+    /// come from, read or not (docs/PLAN.md task 140): 0 once
+    /// [`Self::settle_readiness`] has run, as it does at the end of every
+    /// run of a stream.
+    pub fn pending_readiness(&self) -> usize {
+        self.ready.pending.iter().flatten().count()
+    }
+
     /// The `z` slot `zi` of a feature row, without the augmentation buffer:
     /// the intercept's constant 1, else the feature.
     #[inline]
@@ -1269,6 +1354,134 @@ struct Readiness {
     systems: Vec<Option<System>>,
     /// Per slot, its index into `systems`.
     system_of: Vec<usize>,
+    /// Per slot, the last solve, until the end of the run stores its
+    /// shares: while one is here, it is the slot's `edf` and `support`,
+    /// computed on the first read, and the two stored above are an earlier
+    /// solve's. Not state: a save writes the shares it would give
+    /// (`serialize_settled`), and the end of a run stores them and drops
+    /// the factor ([`Readiness::settle`]), so the memory lasts only while a
+    /// stream runs (docs/PLAN.md task 140).
+    #[serde(skip)]
+    pending: Vec<Option<Arc<Pending>>>,
+}
+
+/// One solve's shares, taken when something reads them (docs/PLAN.md task
+/// 140). `A⁻¹`'s diagonal is `O(k³)` and a solve runs every few rows:
+/// taken at every solve, it cost `ewridge` up to 21% of its throughput at
+/// `k = 20` and 46% at `k = 50` (docs/PERFORMANCE.md §29). Something reads
+/// it far less often: a `coef` row, by default one per group per chunk,
+/// and the noise gate only while its bound cannot decide. The arithmetic is
+/// the solve's, in its order, so the shares are the same bits whenever they
+/// are taken.
+#[derive(Debug)]
+struct Pending {
+    factor: SpdFactor,
+    /// The penalty on the diagonal plus the jitter the factor needed.
+    lam: f64,
+    /// Per kept column, in the factor's order: the accumulator slot its
+    /// share goes to, or `None` for an intercept, which is not a share.
+    to: Vec<Option<usize>>,
+    /// The degrees of freedom before any share: 1 for an eliminated
+    /// intercept.
+    edf0: f64,
+    /// `support` before any share: NaN outside the combo and in the
+    /// intercept, 0 for a column the standardiser dropped.
+    sup0: Vec<f64>,
+    /// Every share is sure to be a number: `lam` is finite and so is `A⁻¹`'s
+    /// diagonal ([`SpdFactor::inverse_is_finite`]). A share can be NaN --
+    /// no ridge and an inverse that overflowed make `1 − 0·∞` -- and then
+    /// the exact ratio is infinite, which the bound would not say.
+    numbers: bool,
+    shares: OnceLock<(f64, Vec<f64>)>,
+}
+
+impl Pending {
+    /// The effective degrees of freedom and every coefficient's data share,
+    /// computed on the first read.
+    fn shares(&self) -> &(f64, Vec<f64>) {
+        self.shares.get_or_init(|| {
+            let inv = self.factor.inverse_diagonal(self.to.len());
+            let mut edf = self.edf0;
+            let mut sup = self.sup0.clone();
+            for (i2, to) in self.to.iter().enumerate() {
+                let share = (1.0 - self.lam * inv[i2]).clamp(0.0, 1.0);
+                edf += share;
+                if let Some(zi) = *to {
+                    sup[zi] = share;
+                }
+            }
+            (edf, sup)
+        })
+    }
+
+    /// Above or at the `edf` the shares would give, without taking them,
+    /// where they are sure to be numbers: each is then in `[0, 1]`, and
+    /// adding numbers no larger rounds to nothing larger, so `edf0 + k`
+    /// bounds the computed sum too. `None` where a share might be NaN.
+    fn edf_bound(&self) -> Option<f64> {
+        self.numbers.then_some(self.edf0 + self.to.len() as f64)
+    }
+}
+
+impl Readiness {
+    /// Slot `s`'s effective degrees of freedom.
+    fn edf_at(&self, s: usize) -> f64 {
+        match self.pending.get(s) {
+            Some(Some(p)) => p.shares().0,
+            _ => self.edf[s],
+        }
+    }
+
+    /// Slot `s`'s data shares, `k_total` long.
+    fn support_at(&self, s: usize) -> &[f64] {
+        match self.pending.get(s) {
+            Some(Some(p)) => &p.shares().1,
+            _ => &self.support[s],
+        }
+    }
+
+    /// A bound on slot `s`'s `edf` when its shares have not been taken yet
+    /// and are sure to be numbers; `None` when the exact value costs
+    /// nothing more to read, or a bound could not stand in for it.
+    fn edf_bound_at(&self, s: usize) -> Option<f64> {
+        match self.pending.get(s) {
+            Some(Some(p)) if p.shares.get().is_none() => p.edf_bound(),
+            _ => None,
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.iter().any(Option::is_some)
+    }
+
+    /// Take every pending solve's shares into the stored ones and drop the
+    /// factors they were read from.
+    fn settle(&mut self) {
+        for (s, slot) in self.pending.iter_mut().enumerate() {
+            if let Some(p) = slot.take() {
+                let (edf, sup) = p.shares();
+                self.edf[s] = *edf;
+                self.support[s].clone_from(sup);
+            }
+        }
+    }
+
+    /// A copy with every pending solve's shares taken: what the state holds.
+    fn settled(&self) -> Self {
+        let mut r = self.clone();
+        r.settle();
+        r
+    }
+}
+
+/// `Readiness` as the state carries it: every pending solve's shares taken,
+/// so a save writes the values a read would give, whenever it comes.
+fn serialize_settled<S: serde::Serializer>(r: &Readiness, s: S) -> Result<S::Ok, S::Error> {
+    if r.has_pending() {
+        r.settled().serialize(s)
+    } else {
+        r.serialize(s)
+    }
 }
 
 /// Two floats are the same value when their bits are: the intercept's share
@@ -1279,16 +1492,27 @@ fn same_bits(a: &[f64], b: &[f64]) -> bool {
 }
 
 impl PartialEq for Readiness {
+    /// On the values a read gives: a pending solve's shares, not the stale
+    /// ones stored beneath them.
     fn eq(&self, other: &Self) -> bool {
-        same_bits(&self.edf, &other.edf)
-            && self.support.len() == other.support.len()
-            && self
-                .support
+        let (a, b) = (settled_view(self), settled_view(other));
+        same_bits(&a.edf, &b.edf)
+            && a.support.len() == b.support.len()
+            && a.support
                 .iter()
-                .zip(&other.support)
-                .all(|(a, b)| same_bits(a, b))
-            && self.systems == other.systems
-            && self.system_of == other.system_of
+                .zip(&b.support)
+                .all(|(x, y)| same_bits(x, y))
+            && a.systems == b.systems
+            && a.system_of == b.system_of
+    }
+}
+
+/// A `Readiness` as its values stand, borrowed where nothing is pending.
+fn settled_view(r: &Readiness) -> Cow<'_, Readiness> {
+    if r.has_pending() {
+        Cow::Owned(r.settled())
+    } else {
+        Cow::Borrowed(r)
     }
 }
 
@@ -1350,33 +1574,15 @@ impl OnlineModel for EwRidge {
     /// §2.1). Infinite before the first solve and where the Gram has no
     /// weight.
     fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
-        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        out.clear();
-        out.resize(m * nc, f64::INFINITY);
-        // Below the model's own floor -- fewer effective observations than
-        // its first solve needs -- the estimation variance is unbounded, and
-        // the solves the schedule ran before it read degenerate Grams: the
-        // ratio is infinite there, as `predict` withholds there.
-        if self.beta.is_none()
-            || self.ready.edf.len() != m * nc
-            || self.n_eff() < self.cfg.min_periods
-        {
-            return true;
-        }
-        let kish = self.gram_kish();
-        for j in 0..m {
-            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
-                continue;
-            };
-            for c in 0..nc {
-                let slot = j * nc + c;
-                let edf = self.ready.edf[slot];
-                if n > 0.0 && edf.is_finite() {
-                    out[slot] = (1.0 + edf / n).sqrt();
-                }
-            }
-        }
-        true
+        self.inflation_into(out, f64::NEG_INFINITY)
+    }
+
+    /// The gate needs only which side of `limit` a slot is on, so where a
+    /// solve's shares have not been taken and the `edf` bound already puts
+    /// the ratio below it, the bound stands in and the `O(k³)` read waits
+    /// (docs/PLAN.md task 140).
+    fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+        self.inflation_into(out, limit)
     }
 
     /// `sqrt(1 + h(x))` per slot, `h(x)` the row's leverage against the
@@ -1436,7 +1642,11 @@ impl OnlineModel for EwRidge {
     fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
         self.beta.as_ref()?;
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        (self.ready.support.len() == m * nc).then(|| self.ready.support.clone())
+        (self.ready.support.len() == m * nc).then(|| {
+            (0..m * nc)
+                .map(|s| self.ready.support_at(s).to_vec())
+                .collect()
+        })
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
@@ -4289,6 +4499,9 @@ mod tests {
         let (mut m, _) = fitted(c, 30, 3);
         m.set_keep_factor(true);
         m.solve();
+        // Stored, so the changes below reach the values a read gives rather
+        // than the stale ones a pending solve stands over.
+        m.settle_readiness();
         let base = m.ready.clone();
         assert_eq!(base, base.clone());
         assert!(!base.systems.is_empty() && !base.support.is_empty());
@@ -4305,6 +4518,217 @@ mod tests {
             change(&mut r);
             assert_ne!(r, base, "change {i} went unseen");
         }
+    }
+
+    /// Slots whose solve's shares nothing has read yet (docs/PLAN.md task
+    /// 140).
+    fn unread(m: &EwRidge) -> usize {
+        m.ready
+            .pending
+            .iter()
+            .flatten()
+            .filter(|p| p.shares.get().is_none())
+            .count()
+    }
+
+    /// Slot-major floats as bits: NaN is itself, and `-0` is not `0`.
+    fn bits(v: Option<Vec<Vec<f64>>>) -> Option<Vec<u64>> {
+        v.map(|v| v.into_iter().flatten().map(f64::to_bits).collect())
+    }
+
+    /// One configuration per solve path -- centred plain and standardized,
+    /// raw and scaled through the origin, `ridge_decay`, a window, a grid
+    /// over feature sets -- each solving every third row, so a solve waits
+    /// unread across rows, beside one solving every row. `fitted`'s second
+    /// target is absent on every third row, so it keeps a Gram of its own.
+    fn lazy_cfgs() -> Vec<(&'static str, EwRidgeCfg)> {
+        let base = || {
+            let mut c = cfg(3, 2);
+            c.decay = Decay::Halflife(25.0);
+            c.min_periods = 0.0;
+            c.solve_every = 3.0;
+            c.max_rows_between_solves = 100;
+            c
+        };
+        let mut out = Vec::new();
+        let mut c = base();
+        c.ridge = vec![0.3];
+        out.push(("centred plain", c));
+        let mut c = base();
+        c.standardize = true;
+        c.ridge = vec![1e-8, 0.5];
+        c.feature_sets = vec![("a".into(), vec![0, 1]), ("b".into(), vec![1, 2])];
+        out.push(("centred standardized, a grid over feature sets", c));
+        let mut c = base();
+        c.add_intercept = false;
+        c.ridge = vec![0.2];
+        out.push(("raw through the origin", c));
+        let mut c = base();
+        c.add_intercept = false;
+        c.standardize = true;
+        out.push(("scaled through the origin", c));
+        let mut c = base();
+        c.ridge_decay = true;
+        c.ridge = vec![3.0];
+        out.push(("ridge_decay", c));
+        let mut c = base();
+        c.standardize = true;
+        c.window = Some(12.0);
+        out.push(("a window", c));
+        let mut c = base();
+        c.solve_every = 0.0;
+        c.max_rows_between_solves = 1;
+        out.push(("a solve every row", c));
+        out
+    }
+
+    /// A solve's shares wait until something reads them (docs/PLAN.md task
+    /// 140), and they are read from the solve's own factor, so the
+    /// accumulators moving on cannot reach them: taken at the solve, rows
+    /// later, only at the end, stored at every row or written by a save,
+    /// they are the same bits, and so is the state.
+    #[test]
+    fn a_late_read_gives_the_bits_a_read_at_the_solve_gives() {
+        for (name, c) in lazy_cfgs() {
+            let (_, rows) = fitted(c.clone(), 60, 11);
+            let new = || EwRidge::new(c.clone()).unwrap();
+            // Read at every row, at every fifth, never, and stored at every
+            // row.
+            let (mut eager, mut late, mut never, mut stored) = (new(), new(), new(), new());
+            let (mut infl, mut want_infl) = (Vec::new(), Vec::new());
+            let mut read_late = 0;
+            for (i, (x, y, w)) in rows.iter().enumerate() {
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                for m in [&mut eager, &mut late, &mut never, &mut stored] {
+                    m.step(x, y, d, *w);
+                }
+                let want = bits(eager.support_coef());
+                eager.error_inflation_into(&mut want_infl);
+                stored.settle_readiness();
+                assert!(
+                    stored.ready.pending.iter().all(Option::is_none),
+                    "{name}: settled, nothing waits"
+                );
+                assert_eq!(bits(stored.support_coef()), want, "{name}, row {i}");
+                if i % 5 == 4 {
+                    // Unread, and from a solve rows back: the accumulators
+                    // have moved since.
+                    if late.rows_since_solve > 0 {
+                        read_late += unread(&late);
+                    }
+                    assert_eq!(bits(late.support_coef()), want, "{name}, row {i}");
+                    late.error_inflation_into(&mut infl);
+                    assert!(same_bits(&infl, &want_infl), "{name}, row {i}");
+                }
+            }
+            if c.max_rows_between_solves > 1 {
+                assert!(read_late > 0, "{name}: no read came rows after its solve");
+            }
+            let waiting = unread(&never);
+            assert!(waiting > 0, "{name}: nothing was left for the save to take");
+            let bytes = |m: &EwRidge| rmp_serde::to_vec_named(&m.state()).unwrap();
+            let want = bytes(&eager);
+            assert_eq!(
+                bytes(&never),
+                want,
+                "{name}: a save of {waiting} unread slots"
+            );
+            assert_eq!(bytes(&late), want, "{name}");
+            assert_eq!(bytes(&stored), want, "{name}");
+            assert!(
+                never == eager,
+                "{name}: compared on the values a read gives"
+            );
+            let back = EwRidge::restore(&rmp_serde::from_slice(&want).unwrap()).unwrap();
+            assert_eq!(
+                bits(back.support_coef()),
+                bits(eager.support_coef()),
+                "{name}"
+            );
+        }
+    }
+
+    /// The noise gate reads only which side of `max_error_inflation` a slot
+    /// is on, so where a solve is unread and the `edf` bound puts the ratio
+    /// below the limit, the bound stands in (docs/PLAN.md task 140). The
+    /// decision is the exact ratio's at every row and limit; the ratio is
+    /// exact wherever it reaches the limit, and so is the largest, which
+    /// the unreachable-gate warning names; the bound is never below the
+    /// exact ratio.
+    #[test]
+    fn the_gate_bound_decides_as_the_exact_ratio_would() {
+        let (mut stood_in, mut read_at_limit) = (0, 0);
+        for (name, c) in lazy_cfgs() {
+            let (_, rows) = fitted(c.clone(), 60, 13);
+            for limit in [1.05, std::f64::consts::SQRT_2, 3.0] {
+                let mut m = EwRidge::new(c.clone()).unwrap();
+                let (mut gate, mut exact) = (Vec::new(), Vec::new());
+                for (i, (x, y, w)) in rows.iter().enumerate() {
+                    // The gate first: the exact read below takes the shares.
+                    let has = m.error_inflation_gate_into(&mut gate, limit);
+                    stood_in += unread(&m);
+                    assert_eq!(has, m.error_inflation_into(&mut exact));
+                    let at = format!("{name}, row {i}, limit {limit}: {gate:?} against {exact:?}");
+                    assert_eq!(gate.len(), exact.len(), "{at}");
+                    for (&g, &e) in gate.iter().zip(&exact) {
+                        assert_eq!(g >= limit, e >= limit, "{at}");
+                        if e >= limit {
+                            assert_eq!(g.to_bits(), e.to_bits(), "{at}");
+                            read_at_limit += usize::from(e.is_finite());
+                        } else {
+                            assert!(e <= g, "{at}");
+                        }
+                    }
+                    let worst = |v: &[f64]| v.iter().cloned().fold(0.0, f64::max);
+                    if exact.iter().any(|&e| e >= limit) {
+                        assert_eq!(worst(&gate).to_bits(), worst(&exact).to_bits(), "{at}");
+                    }
+                    m.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+                }
+            }
+        }
+        assert!(
+            stood_in > 0 && read_at_limit > 0,
+            "the bound stood in for {stood_in} slots, the exact ratio was read at the limit \
+             for {read_at_limit}: each branch must run"
+        );
+    }
+
+    /// A share can be NaN: a factor faer accepts can still overflow its
+    /// inverse, and with no ridge `1 − 0·∞` is NaN. The exact ratio is then
+    /// infinite and the gate withholds, so the bound may stand in only where
+    /// the inverse is certain to come out as numbers
+    /// ([`SpdFactor::inverse_is_finite`]). Features near `1e-155`, raw and
+    /// through the origin, put the Gram near `1e-309`.
+    #[test]
+    fn a_share_that_is_not_a_number_withholds_whichever_way_the_gate_reads() {
+        let mut c = cfg(3, 1);
+        c.add_intercept = false;
+        c.ridge = vec![0.0];
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let limit = std::f64::consts::SQRT_2;
+        let (mut gate, mut exact) = (Vec::new(), Vec::new());
+        let (mut s, mut not_a_number) = (7, 0);
+        for i in 0..40 {
+            let x: Vec<f64> = (0..3).map(|j| 3e-155 * (lcg(&mut s) + j as f64)).collect();
+            let y = x.iter().sum::<f64>() + 1e-156 * lcg(&mut s);
+            m.error_inflation_gate_into(&mut gate, limit);
+            m.error_inflation_into(&mut exact);
+            assert_eq!(
+                gate[0] >= limit,
+                exact[0] >= limit,
+                "row {i}: {gate:?} against {exact:?}"
+            );
+            if m.beta.is_some() && m.ready.edf_at(0).is_nan() {
+                not_a_number += 1;
+            }
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(
+            not_a_number > 0,
+            "no share came out NaN, so the case never ran"
+        );
     }
 
     #[test]
