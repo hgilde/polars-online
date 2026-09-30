@@ -9,6 +9,20 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Added
 
+- **`po.stream.with_windows`: exponentially weighted means with a hard cutoff,
+  looking back and looking ahead** (task 78). `po.window.ewm` describes a
+  trailing EWMA over the rows less than `horizon` older, and
+  `po.window.lookahead_rewm` its mirror over the rows less than `horizon`
+  later, weighted most on the next row: a forward VWAP, as a label. Any
+  number of windows run in one pass, each kept as running sums in a
+  two-stack queue: O(1) a row, and memory one window of the rows that count
+  in it. A per-window `weight`, and `split=(column, [values])` for one output
+  per listed value beside the total, so a buy-side, a sell-side and an
+  all-trades VWAP come from one window. The clock policy is a spec's, or a
+  spec's own with `like=spec`: a gap past `max_dclock` or a session change
+  ends the windows open across it, and a reset discards them. The rows a
+  look-ahead holds are the input's own chunks, not copies, and a saved state
+  keeps them for the next run.
 - **A release is tested on the newest NumPy and on its next release
   candidate.** NumPy is the optional extra (`polars-online[numpy]`), and
   every other run used the locked version. The newest NumPy now blocks a

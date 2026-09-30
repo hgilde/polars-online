@@ -1,0 +1,128 @@
+"""A forward reverse-EWMA over a time window, alone and as an embargoed
+target, against polars' `rolling` recipe (docs/PERFORMANCE.md §32).
+
+    uv run python scripts/windows_bench.py [OUTDIR]
+
+The input is about two rows a second (exponential gaps), three in ten of them
+trades, one group: the stream docs/PLAN.md task 78 measured `rolling` on. It
+is generated, seeded, into OUTDIR (default `.cache/windows_bench`, which git
+ignores) and reused by later runs. Each case runs in a fresh process, parquet
+in and `sink_parquet` out, and prints its wall time and peak RSS:
+
+- `with_windows`: `lf.online.with_windows([lookahead_rewm(...)])`;
+- `rolling`: `rolling(period=H, offset="0s", closed="none")`, with each
+  window's weights taken from its own anchor;
+- `embargoed`: the window as an `ewridge` target learned `H` after its row
+  (`label_delay=H`, `like=spec`), in one query;
+- `model alone`: the same spec over the window's column, already written;
+- `scan and sink`: the file read and written, the floor under all of them.
+"""
+
+from __future__ import annotations
+
+import os
+import resource
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CASES = ("with_windows", "rolling", "embargoed", "model alone", "scan and sink")
+RUNS = [(1_000_000, "1m"), (4_000_000, "1m"), (16_000_000, "1m"), (4_000_000, "4m")]
+
+
+def make(path: Path, n: int) -> None:
+    import numpy as np
+    import polars as pl
+
+    rng = np.random.default_rng(0)
+    t = np.cumsum(rng.exponential(0.5, n))
+    trade = rng.random(n) < 0.3
+    mid = 100 + np.cumsum(rng.normal(size=n)) * 0.01
+    pl.DataFrame(
+        {
+            "ts": (t * 1e9).astype(np.int64),
+            "mid": mid,
+            "price": np.where(trade, mid + rng.normal(size=n) * 0.02, np.nan),
+            "quantity": np.where(trade, rng.integers(1, 10, n), 0).astype(float),
+            "signal_a": rng.normal(size=n),
+            "signal_b": rng.normal(size=n),
+        }
+    ).with_columns(
+        pl.col("ts").cast(pl.Datetime("ns")),
+        pl.col("price").fill_nan(None),
+    ).write_parquet(path)
+
+
+def one(out: Path, case: str, n: int, h: str) -> None:
+    """Run one case in this process and print its line."""
+    import polars as pl
+
+    import polars_online as po
+
+    lf = pl.scan_parquet(out / f"ticks_{n}.parquet")
+    spec = po.spec.ewridge(
+        "fwd",
+        targets=["fwd_vwap"],
+        features=["signal_a", "signal_b"],
+        clock="ts",
+        max_dclock="5m",
+        halflife="30m",
+        label_delay=h,
+    )
+    window = po.window.lookahead_rewm(
+        "price", weight="quantity", halflife="10s", horizon=h, name="fwd_vwap"
+    )
+    columns = out / f"windows_{n}_{h}.parquet"
+    start = time.perf_counter()
+    if case == "with_windows":
+        plan = lf.online.with_windows([window], clock="ts", max_dclock="5m")
+        target = columns
+    elif case == "embargoed":
+        plan = lf.online.with_windows([window], like=spec).online.fit_predict([spec])
+        target = out / "embargoed.parquet"
+    elif case == "model alone":
+        plan = pl.scan_parquet(columns).online.fit_predict([spec])
+        target = out / "model.parquet"
+    elif case == "rolling":
+        lam = 2.0 ** (-1.0 / 10.0)
+        w = pl.col("quantity") * pl.col("price").is_not_null().cast(pl.Float64)
+        age = (pl.col("ts") - pl.col("ts").min()).dt.total_nanoseconds().cast(pl.Float64) / 1e9
+        f = pl.lit(lam).pow(age)
+        plan = lf.rolling(index_column="ts", period=h, offset="0s", closed="none").agg(
+            ((w * f * pl.col("price").fill_null(0.0)).sum() / (w * f).sum()).alias("fwd_vwap")
+        )
+        target = out / "rolling.parquet"
+    else:
+        plan = lf
+        target = out / "copy.parquet"
+    plan.sink_parquet(target)
+    secs = time.perf_counter() - start
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    gb = peak / 1e9 if sys.platform == "darwin" else peak * 1024 / 1e9
+    print(f"{case:14} rows {n:>11,}  H {h:>3}  {secs:7.2f} s  peak RSS {gb:5.2f} GB", flush=True)
+
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--one":
+        one(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5])
+        return
+    out = Path(sys.argv[1] if len(sys.argv) > 1 else ".cache/windows_bench")
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"load: {os.getloadavg()[0]:.1f}", flush=True)
+    for n in sorted({n for n, _ in RUNS}):
+        path = out / f"ticks_{n}.parquet"
+        if not path.exists():
+            make(path, n)
+    for n, h in RUNS:
+        for case in CASES:
+            if case == "scan and sink" and h != "1m":
+                continue
+            subprocess.run(
+                [sys.executable, __file__, "--one", str(out), case, str(n), h], check=True
+            )
+    print(f"load: {os.getloadavg()[0]:.1f}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

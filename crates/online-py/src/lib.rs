@@ -35,6 +35,12 @@ static ALLOC: pyo3_polars::PolarsAllocator = pyo3_polars::PolarsAllocator::new()
 /// `invalid spec: targets: invalid type: string "y", expected a sequence`
 /// rather than `... at line 1 column 42` (docs/IMPROVEMENTS.md U2).
 pub(crate) fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, String> {
+    parse_json(json, "spec")
+}
+
+/// [`from_json`] for any `what` the Python side sends: the error says
+/// `invalid {what}: <path>: <message>`.
+fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, String> {
     let mut de = serde_json::Deserializer::from_str(json);
     serde_path_to_error::deserialize(&mut de).map_err(|e| {
         let path = e.path().to_string();
@@ -50,7 +56,7 @@ pub(crate) fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T,
         } else {
             format!("{path}: ")
         };
-        format!("invalid spec: {at}{msg}")
+        format!("invalid {what}: {at}{msg}")
     })
 }
 
@@ -675,6 +681,92 @@ impl PyRefreshTime {
     }
 }
 
+/// `po.stream.with_windows` (`online_polars::WindowsRun`, docs/PLAN.md task 78):
+/// fed a stream's chunks in order, it returns the rows each chunk resolved,
+/// with every window's columns beside them. The rows a forward window holds
+/// stay here, as the input's own chunks, until their horizons pass.
+#[pyclass(name = "Windows", module = "polars_online._polars_online")]
+struct PyWindows {
+    inner: online_polars::WindowsRun,
+}
+
+/// The error for a run reached from a second thread while a call is on the
+/// first: one stream, fed from one place.
+fn windows_busy(what: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "Windows.{what}: the run is in use on another thread; it is one ordered stream"
+    ))
+}
+
+#[pymethods]
+impl PyWindows {
+    /// A run of `config` (the JSON `po.stream.with_windows` writes) over an input
+    /// whose schema is `input`'s, a frame of no rows.
+    #[new]
+    fn new(config: &str, input: PyDataFrame) -> PyResult<Self> {
+        let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
+        Ok(Self {
+            inner: online_polars::WindowsRun::new(config, input.0.schema())
+                .map_err(PyValueError::new_err)?,
+        })
+    }
+
+    /// A run that goes on from a saved state, which must have been saved by
+    /// the same call.
+    #[staticmethod]
+    fn load_bytes(state: &[u8], config: &str, input: PyDataFrame) -> PyResult<Self> {
+        let config = parse_json(config, "windows").map_err(PyValueError::new_err)?;
+        Ok(Self {
+            inner: online_polars::WindowsRun::load_bytes(state, config, input.0.schema())
+                .map_err(PyValueError::new_err)?,
+        })
+    }
+
+    /// The state, written to `path` whole or not at all.
+    fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
+        let this = slf.try_borrow().map_err(|_| windows_busy("save"))?;
+        this.inner
+            .save(std::path::Path::new(path))
+            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
+    }
+
+    /// The rows this chunk resolved, in order; with `limit`, rows are fed
+    /// only until `limit` are out (`WindowsRun::feed`).
+    #[pyo3(signature = (df, limit=None))]
+    fn feed(slf: &Bound<'_, Self>, df: PyDataFrame, limit: Option<usize>) -> PyResult<PyDataFrame> {
+        let mut this = slf.try_borrow_mut().map_err(|_| windows_busy("feed"))?;
+        Ok(PyDataFrame(
+            this.inner.feed(&df.0, limit).map_err(|e| run_err(&e))?,
+        ))
+    }
+
+    /// The end of the input: every row still held, its open forward windows
+    /// null.
+    fn finish(slf: &Bound<'_, Self>) -> PyResult<PyDataFrame> {
+        let mut this = slf.try_borrow_mut().map_err(|_| windows_busy("finish"))?;
+        Ok(PyDataFrame(this.inner.finish().map_err(|e| run_err(&e))?))
+    }
+
+    /// The columns the windows read: what a source reads however narrow
+    /// the query's projection.
+    fn needed(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
+        let this = slf.try_borrow().map_err(|_| windows_busy("needed"))?;
+        Ok(this.inner.needed())
+    }
+
+    /// Rows fed and not yet out.
+    fn held(slf: &Bound<'_, Self>) -> PyResult<usize> {
+        let this = slf.try_borrow().map_err(|_| windows_busy("held"))?;
+        Ok(this.inner.held())
+    }
+
+    /// Contributing rows the windows' queues hold.
+    fn queued(slf: &Bound<'_, Self>) -> PyResult<usize> {
+        let this = slf.try_borrow().map_err(|_| windows_busy("queued"))?;
+        Ok(this.inner.queued())
+    }
+}
+
 #[pyfunction]
 fn format_of_path(path: &str) -> PyResult<&'static str> {
     online_polars::Format::from_path(std::path::Path::new(path))
@@ -800,6 +892,7 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelBank>()?;
     m.add_class::<PyArrowStruct>()?;
     m.add_class::<PyRefreshTime>()?;
+    m.add_class::<PyWindows>()?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;

@@ -3842,3 +3842,47 @@ because one thread is 87% faster, not because more threads are slower.
 | eight single-group specs, one at a time | 726 ms | 641 ms |
 | 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
 | 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
+
+## 32. Windowed means against the `rolling` recipe (task 78, 2026-09-30)
+
+A forward reverse-EWMA over a time window -- `lookahead_rewm("price",
+weight="quantity", halflife="10s", horizon=H)`, the next `H` of trades
+weighted most on the next one -- on the stream task 78 measured `rolling`
+on: about two rows a second (exponential gaps), three in ten of them
+trades, parquet in and `sink_parquet` out, one group. Each run is its own
+process, peak RSS from `getrusage`, 14 cores at load 2.9 before the sweep.
+Four cases:
+
+- **`with_windows`**: the window alone, `lf.online.with_windows([...])`.
+- **`rolling`**: the recipe the design day measured,
+  `rolling(index_column="ts", period=H, offset="0s", closed="none")` with
+  each window's weights from its own anchor. It agrees with `with_windows`
+  to 1.7e-13 on every row whose window closed (100,000 rows).
+- **embargoed**: the window as an `ewridge` target, learned `H` after its
+  row: `label_delay=H` on the spec, `like=spec` on the window, one query.
+- **model alone**: the same spec on the window's column, already written.
+
+| rows | `H` | `with_windows` | `rolling` | embargoed | model alone | scan and sink |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1M | 1m | 0.11 s, 0.21 GB | 1.51 s, 2.75 GB | 0.43 s, 0.35 GB | 0.39 s, 0.32 GB | 0.05 s, 0.20 GB |
+| 4M | 1m | 0.42 s, 0.47 GB | 4.69 s, 4.85 GB | 1.48 s, 0.60 GB | 1.45 s, 0.60 GB | 0.12 s, 0.46 GB |
+| 16M | 1m | 1.63 s, 1.02 GB | 18.98 s, 5.13 GB | 5.77 s, 1.21 GB | 5.58 s, 1.10 GB | 0.46 s, 1.01 GB |
+| 4M | 4m | 0.42 s, 0.47 GB | 27.07 s, 18.32 GB | 2.13 s, 0.60 GB | 2.13 s, 0.58 GB | |
+
+- **The window costs the file, and nothing that grows.** Its peak is the
+  plain scan-and-sink's to 0.01 GB at every size, so the growth with rows
+  is Polars reading and writing parquet. A 4-minute window costs what a
+  1-minute one does, where `rolling`'s memory went from 4.85 to 18.32 GB.
+- **Speed:** 9.5 to 9.8 million rows a second, 11 times the recipe's at
+  one minute and 64 times at four.
+- **Embargoed costs what the model costs**: 1.48 s against 1.45 s, and
+  5.77 s against 5.58 s at 16M rows. The longer delay's 2.13 s is the
+  model's own: its `label_delay` buffer counts every held row down each
+  row, and four minutes hold four times the rows.
+
+`scripts/windows_bench.py` makes the data and runs every case; the recipe
+and the window read the same file. A second run of the script, at load 4.6
+rising to 9.5 with the recipe's own threads, moved every memory figure less
+than 7%, and every time of the window and the model less than 6% but one:
+0.17 s for the first 1M-row window, the run's first process. The recipe's
+times moved up to 13%, and the sub-second scan-and-sink's up to a third.

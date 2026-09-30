@@ -11,7 +11,7 @@ Rust core, Python API, and a standalone command line.
 | section | what it covers |
 |---|---|
 | [Introduction](#introduction) | [the idea](#the-idea) · [four words](#four-words) · [install](#install) · [a first fit](#a-first-fit) · [what you can rely on](#what-you-can-rely-on) |
-| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [convergence without a decay](#convergence-without-a-decay) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) · [row order](#row-order-and-the-two-guarantees) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
+| [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [convergence without a decay](#convergence-without-a-decay) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) · [row order](#row-order-and-the-two-guarantees) · [series that tick at their own times](#series-that-tick-at-their-own-times) · [windowed means](#windowed-means-looking-back-or-ahead) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [output as Arrow](#output-as-arrow) · [outside Python](#outside-a-live-python-process) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [what a state file holds](#what-a-state-file-holds) · [a state as JSON](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [coefficients](#coefficients) · [output field names](#output-field-names) · [the running sums](#the-running-sums-behind-a-fit) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
@@ -731,6 +731,115 @@ through an interval or not, as a bank does. The output looks
 synchronous and is not. Each value is up to one of its own inter-tick
 intervals old, and the series with the largest `n_obs` is the one holding
 the grid up.
+
+### Windowed means, looking back or ahead
+
+A trailing EWMA with a hard cutoff, and its mirror image looking forward,
+are columns Polars has no cheap form of: a `rolling` window gathers its
+rows again for every row.
+[`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows)
+keeps each window's weighted sums in a queue instead, at the same small
+cost a row however long the window, and runs any number of windows over a
+stream in one pass. The windows are described with
+[`po.window`](https://hgilde.github.io/polars-online/window.html). The
+examples here read `trades`: quotes, each with a `mid`, and trades between
+them with a `side`, a `quantity` and a `price`, null on the quotes, for two
+symbols on the clock `ts`.
+
+| | `ewm` | `lookahead_rewm` |
+|---|---|---|
+| the window of row *t* | the rows at or before *t*, less than `horizon` older | the rows after *t*, less than `horizon` later |
+| the weight | largest on *t*, halving every `halflife` back | largest on the next row, halving every `halflife` forward |
+| when a row goes out | as it arrives | once its horizon has passed on the clock |
+| `partial`, by default | `"keep"`: the first horizon of a group is a warm-up | `"null"`: a gap or a session change cut the window short |
+| in a model | an input: it reads only the past | a target, learned `horizon` late; never an input |
+
+#### Windows as columns
+
+On its own, `po.stream.with_windows` adds columns and changes nothing else.
+It is also a method, `lf.online.with_windows(windows, ...)`, for a chain:
+
+```python
+windows = [
+    po.window.ewm("mid", halflife="5s", horizon="1m"),           # the quotes less than a minute old
+    po.window.lookahead_rewm("price", weight="quantity",          # the next minute's trades, weighted most
+                             split=("side", ["buy", "sell"]),     # on the next one: all trades, buys, sells
+                             halflife="10s", horizon="1m", name="fwd_vwap{split}"),
+]
+out = po.stream.with_windows(trades, windows, clock="ts", max_dclock="5m", group="symbol")
+# a DataFrame in, a DataFrame out: every input column, then mid_ewm_5s_1m,
+# fwd_vwap, fwd_vwap_buy and fwd_vwap_sell
+
+(trades.lazy()
+    .online.with_windows(windows, clock="ts", max_dclock="5m", group="symbol")
+    .sink_parquet("with_windows.parquet"))     # a query in, a query out: it streams, holding the
+                                               # rows of about one horizon until they can go out
+```
+
+Measured on 16M rows at two a second, a one-minute look-ahead ran at 9.8
+million rows a second, in the memory Polars needs to read and write the
+file. The `rolling` recipe for the same column took 12 times as long and
+5 GB, and a four-minute window took it 18 GB on a quarter of the rows
+([PERFORMANCE.md §32](docs/PERFORMANCE.md#32-windowed-means-against-the-rolling-recipe-task-78-2026-09-30)).
+Only rows whose value and weight are both present, and the weight not zero,
+enter a window, so quotes interleaved with trades cost a VWAP nothing. The
+clock is a spec's, in the same words: a gap longer than `max_dclock` or a
+session change ends every window open across it, and a reset discards them.
+A row still inside its horizon when the input ends is null, unless
+`save_state=` keeps it for the next run.
+
+#### Windows as a model's inputs and target
+
+The columns are ordinary columns, so a model in the same query can learn
+from them. A trailing window is an input, and a look-ahead is a target:
+
+```python
+clock = dict(clock="ts", max_dclock="5m", group="symbol")    # one clock for the windows and the model
+spec = po.spec.ewridge("edge", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
+                       halflife="30m", label_delay="1m", **clock)   # the target is known a minute late
+fitted = (
+    trades.lazy()
+    .online.with_windows([
+        po.window.ewm("mid", halflife=["5s", "30s"], horizon="2m", name="mid_{halflife}"),
+        po.window.lookahead_rewm("price", weight="quantity", halflife="10s", horizon="1m",
+                                 name="fwd_vwap"),
+    ], **clock)
+    .with_columns(trend_5s=pl.col("mid") - pl.col("mid_5s"),       # the inputs read only the past
+                  trend_30s=pl.col("mid") - pl.col("mid_30s"),
+                  fwd_edge=pl.col("fwd_vwap") - pl.col("mid"))     # the target reads the next minute
+    .online.fit_predict([spec])
+    .collect()
+)
+```
+
+When the inputs are columns of the input, one name for the window and the
+embargo says it all, and `like=spec` gives the window the model's clock:
+
+```python
+H = "1m"                                                    # the window, and the embargo
+spec = po.spec.ewridge("fwd", targets=["fwd_vwap"], features=["mid"],
+                       clock="ts", max_dclock="5m", halflife="30m",
+                       label_delay=H)                       # each target learned H after its row
+fitted = (
+    trades.lazy()
+    .online.with_windows([po.window.lookahead_rewm("price", weight="quantity", halflife="10s",
+                                                   horizon=H, name="fwd_vwap")],
+                         like=spec)                         # the window reads the spec's clock
+    .online.fit_predict([spec])
+    .collect()
+)
+```
+
+Each row is scored where it sits, and learned from once its target is
+known. That takes `label_delay` at least the look-ahead's horizon, on the
+same clock, and a horizon no longer than `max_dclock`. The model adds the
+time of the rows it skips, for a null input, to the next row it learns
+from, and a step the cap cuts short releases every row it is holding back.
+A look-ahead window longer than the cap can still be open at that row, over
+rows the model has not reached. When the model's
+inputs are columns of the input rather than windows, `like=spec` takes the
+clock from the spec itself, and makes the look-ahead null on every row the
+spec would not learn from.
 
 ## Running a bank
 

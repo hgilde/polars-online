@@ -21,6 +21,10 @@ into clock order. It is the recipe a spec's ``label_delay`` runs natively,
 written out in polars: useful for seeing what the delay does, for a model that
 has no ``label_delay``, and as the oracle the native path is tested against.
 
+:func:`with_windows` adds exponentially weighted means with a hard cutoff, looking
+back or ahead, described with :mod:`polars_online.window`: any number of them
+in one pass, each row out once every window over it has closed.
+
 :func:`refresh_time` puts asynchronous series on a common grid by
 Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time rule: a grid point
 wherever every series has ticked at least once since the last one. The scan is
@@ -36,17 +40,32 @@ This module was ``polars_online.prep`` until 0.12.0, and ``refresh_time``'s
 
 from __future__ import annotations
 
+import json
+import math
+import numbers
+import warnings
 from collections.abc import Iterator, Sequence
-from typing import overload
+from typing import Any, overload
 
 import polars as pl
 from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
-from polars_online._duration import Duration, clock_nanoseconds
-from polars_online._frame import State, _read_state, _save_path
+from polars_online._duration import Duration, clock_nanoseconds, duration_text
+from polars_online._frame import (
+    ConsumedSourceWarning,
+    State,
+    _explain_named,
+    _is_python_scan,
+    _plan_text,
+    _read_state,
+    _save_path,
+    _user_stacklevel,
+    _warn_if_order_unspecified,
+)
+from polars_online.window import Window
 
-__all__ = ["embargo", "refresh_time"]
+__all__ = ["embargo", "refresh_time", "with_windows"]
 
 #: Column :func:`embargo` adds to say which copy of a row this is.
 ROLE = "_online_role"
@@ -406,4 +425,305 @@ def refresh_time(
             rt.save(save_path)
 
     plan = register_io_source(source, schema=schema, validate_schema=True)
+    return plan if isinstance(lf, pl.LazyFrame) else plan.collect()
+
+
+#: The clock keywords ``like=`` takes from a spec, and refuses beside it.
+_CLOCK_KEYS = (
+    "clock",
+    "max_dclock",
+    "on_clock_reset",
+    "min_backwards_jump",
+    "session",
+    "session_gap",
+    "group",
+)
+
+
+def _clock_value(value: Any, who: str, key: str) -> Any:
+    """A clock quantity as the JSON the Rust side reads: a duration as its
+    text, an infinity as ``"inf"``, NaN refused."""
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        x = float(value)
+        if math.isnan(x):
+            raise ValueError(f"{who}: {key} must not be NaN")
+        return ("inf" if x > 0 else "-inf") if math.isinf(x) else value
+    return duration_text(value, who, key)
+
+
+@overload
+def with_windows(
+    lf: pl.LazyFrame,
+    windows: Sequence[Window],
+    *,
+    clock: str | None = None,
+    max_dclock: float | Duration | None = None,
+    on_clock_reset: str | None = None,
+    min_backwards_jump: float | Duration | None = None,
+    session: str | None = None,
+    session_gap: float | Duration | None = None,
+    group: str | None = None,
+    like: dict[str, Any] | None = None,
+    chunk_rows: int | None = None,
+    load_state: State | None = None,
+    save_state: State | None = None,
+) -> pl.LazyFrame: ...
+
+
+@overload
+def with_windows(
+    lf: pl.DataFrame,
+    windows: Sequence[Window],
+    *,
+    clock: str | None = None,
+    max_dclock: float | Duration | None = None,
+    on_clock_reset: str | None = None,
+    min_backwards_jump: float | Duration | None = None,
+    session: str | None = None,
+    session_gap: float | Duration | None = None,
+    group: str | None = None,
+    like: dict[str, Any] | None = None,
+    chunk_rows: int | None = None,
+    load_state: State | None = None,
+    save_state: State | None = None,
+) -> pl.DataFrame: ...
+
+
+def with_windows(
+    lf: pl.LazyFrame | pl.DataFrame,
+    windows: Sequence[Window],
+    *,
+    clock: str | None = None,
+    max_dclock: float | Duration | None = None,
+    on_clock_reset: str | None = None,
+    min_backwards_jump: float | Duration | None = None,
+    session: str | None = None,
+    session_gap: float | Duration | None = None,
+    group: str | None = None,
+    like: dict[str, Any] | None = None,
+    chunk_rows: int | None = None,
+    load_state: State | None = None,
+    save_state: State | None = None,
+) -> pl.LazyFrame | pl.DataFrame:
+    """Windowed EWMAs over a stream, looking back and ahead, in one pass.
+
+    Each description from :mod:`polars_online.window` adds its columns, named by
+    its template; the input's columns come through unchanged, in order. For row
+    *t* at clock ``tau_t``, over the rows *j* in its window that count:
+
+    .. code-block:: text
+
+        y_t = sum_j w_j * lam**|tau_j - tau_a| * v_j / sum_j w_j * lam**|tau_j - tau_a|
+        lam = 2 ** (-1 / halflife)
+
+    over ``(tau_t - horizon, tau_t]`` for :func:`~polars_online.window.ewm` and
+    ``(tau_t, tau_t + horizon)`` for :func:`~polars_online.window.lookahead_rewm`.
+    Over ``trades``, quotes with a ``mid`` and trades between them with a
+    ``side``, a ``quantity`` and a ``price``, a trailing mean of the mid and
+    forward VWAPs of all trades, buys and sells:
+
+    .. code-block:: python
+
+        out = po.stream.with_windows(
+            trades,
+            [
+                po.window.ewm("mid", halflife="5s", horizon="1m"),
+                po.window.lookahead_rewm(
+                    "price", weight="quantity", split=("side", ["buy", "sell"]),
+                    halflife="10s", horizon="1m", name="fwd_vwap{split}",
+                ),
+            ],
+            clock="ts", max_dclock="5m", group="symbol",
+        )
+
+    **The clock is a spec's**, in the same words: ``clock`` (with none, one unit
+    is one row), ``max_dclock`` (required with a clock; a longer gap is a break),
+    ``on_clock_reset`` (``"error"``, the default, or ``"reset_state"`` with
+    ``min_backwards_jump``), ``session`` and ``session_gap`` (a number, a
+    duration or ``"reset"``), and ``group``, whose groups each have their own
+    clock and windows. A horizon is measured on that policy clock, after the cap
+    and the session gap. A gap longer than ``max_dclock`` or a session change
+    ends every window open across it -- a partial window, under the
+    description's ``partial`` -- and a reset discards them: null, and never
+    dropped. The rows must be in clock order across groups, as one stream: the
+    clock is also read in input order, under the same policy, so a step back
+    there is refused or, past ``min_backwards_jump`` under ``"reset_state"``,
+    resets every group; a session change or a gap there ends every group's
+    windows. ``like=spec`` takes all of this from a spec instead, and with it
+    the spec's rule for the rows it learns from: a look-ahead is null on a row
+    whose features or weight the spec could not use, as the target the model
+    learns is never learned there. Any clock keyword beside ``like=`` is refused.
+
+    **Rows leave in input order**, each once every window over it has closed:
+    with only :func:`~polars_online.window.ewm` windows, as it arrives; with a
+    look-ahead, once its horizon has passed, so the output trails the input by
+    the longest horizon. A group that falls silent holds every later row for at
+    most ``max_dclock`` of the stream's time: past that its next row is certain
+    to open with a gap past the cap, so its windows end then. A row-count clock
+    has no such bound. The rows a look-ahead holds are kept as the input's own
+    chunks, not copied, so the memory is one horizon of input whatever its width,
+    and the windows' own sums are one horizon of the rows that count in them.
+
+    **It resumes.** ``save_state`` writes the windows' sums and the rows still
+    waiting for a horizon, which the next run, given ``load_state``, emits first:
+    feeding a stream in two runs gives what one run gives. Without it, a row
+    whose horizon has not passed when the input ends is emitted unresolved,
+    null. Under a slice of the output (``.head(n)``) the input is read only up to
+    the row that resolved the *n*-th row, so a saved state goes on from there.
+    A state resumes only the call that saved it, on the same kind of clock.
+
+    ``ValueError`` for a description, a clock policy or a column that cannot
+    run, an output name that collides, a ``load_state`` another call saved, and
+    -- naming the row -- a refused step back, a weight below zero and an
+    unlisted split value under ``unlisted="error"``; ``TypeError`` for
+    something that is not a description, or a clock keyword beside ``like=``;
+    ``FileNotFoundError`` for a ``load_state`` that is not there or a
+    ``save_state`` whose directory is not.
+    """
+    who = "with_windows"
+    descriptions = list(windows)
+    for d in descriptions:
+        if not (isinstance(d, dict) and d.get("kind") in ("ewm", "lookahead_rewm")):
+            raise TypeError(
+                f"{who}: windows must be po.window.ewm or po.window.lookahead_rewm "
+                f"descriptions, got {type(d).__name__} {d!r}"
+            )
+    given = {
+        "clock": clock,
+        "max_dclock": max_dclock,
+        "on_clock_reset": on_clock_reset,
+        "min_backwards_jump": min_backwards_jump,
+        "session": session,
+        "session_gap": session_gap,
+        "group": group,
+    }
+    config: dict[str, Any] = {"windows": descriptions}
+    if like is not None:
+        if not (isinstance(like, dict) and isinstance(like.get("features"), list)):
+            raise TypeError(
+                f"{who}: like must be a spec, such as po.spec.ewridge(...), got {like!r}"
+            )
+        clash = [k for k, v in given.items() if v is not None]
+        if clash:
+            raise TypeError(
+                f"{who}: like= takes the clock policy from spec {like.get('name')!r}; leave out "
+                f"{', '.join(clash)}"
+            )
+        policy = {k: like.get(k) for k in _CLOCK_KEYS}
+        weight = like.get("weight")
+        config["like"] = {
+            "spec": str(like.get("name")),
+            "accept": [*like["features"], *([weight] if weight is not None else [])],
+        }
+    else:
+        policy = given
+    for key, value in policy.items():
+        if value is None:
+            continue
+        if key in ("max_dclock", "min_backwards_jump", "session_gap"):
+            value = _clock_value(value, who, key)
+        config[key] = value
+    config_json = json.dumps(config)
+
+    lazy = lf.lazy()
+    in_schema = lazy.collect_schema()
+    rows = chunk_rows if chunk_rows is not None else _native.default_chunk_rows()
+    if rows < 1:
+        msg = f"chunk_rows must be at least 1, got {rows}"
+        raise ValueError(msg)
+    # The two plan checks a bank makes of its input, made here of this one's:
+    # a bank after this sees only this source, and not the plan beneath it.
+    plan_text = _plan_text(lazy)
+    _warn_if_order_unspecified(
+        lazy, who, plan_text, reads="a window is taken over rows in row order", before="the windows"
+    )
+    python_scan = _is_python_scan(lazy, plan_text)
+    # Read now, as a bank's `load_state` is: a plan collected twice goes on
+    # from the same state, whatever the file holds by then.
+    loaded = _read_state(load_state) if load_state is not None else None
+    save_path = _save_path(save_state)
+    empty = pl.DataFrame(schema=in_schema)
+
+    def build() -> _native.Windows:
+        if loaded is not None:
+            return _native.Windows.load_bytes(loaded, config_json, empty)
+        return _native.Windows(config_json, empty)
+
+    # Built once now, so a description or a column that cannot run is
+    # reported while the plan is built, as polars reports its own errors.
+    first = build()
+    schema = first.feed(empty).schema
+    needed = set(first.needed())
+
+    def source(
+        with_columns: list[str] | None,
+        predicate: pl.Expr | None,
+        n_rows: int | None,
+        batch_size: int | None,
+    ) -> Iterator[pl.DataFrame]:
+        # Polars does not re-apply the three pushdowns after a Python source,
+        # so each is honoured here (`_frame.py` explains the order). The
+        # slice counts *output* rows, and the run reads the input only up to
+        # the row that resolved the last one wanted, so a saved state goes on
+        # from there whatever the chunk size. A projection reaches the input
+        # only when no state is loaded or saved: the rows a state holds are
+        # the input's whole rows, for whatever the next run asks of them.
+        w = build()
+        plan = lazy
+        if with_columns is not None and loaded is None and save_path is None:
+            wanted = set(with_columns) | needed
+            plan = plan.select([c for c in in_schema.names() if c in wanted])
+        seen = 0
+        read = 0
+
+        def done(out: pl.DataFrame) -> pl.DataFrame:
+            if predicate is not None:
+                out = out.filter(predicate)
+            if with_columns is not None:
+                out = out.select(with_columns)
+            return out
+
+        sliced = False
+        for chunk in plan.collect_batches(chunk_size=rows, maintain_order=True):
+            read += chunk.height
+            out = w.feed(chunk, None if n_rows is None else n_rows - seen)
+            seen += out.height
+            yield done(out)
+            if n_rows is not None and seen >= n_rows:
+                sliced = True
+                break
+        if not sliced and save_path is None:
+            # The input's end: what still waits for a horizon is unresolved.
+            out = w.finish()
+            if n_rows is not None:
+                out = out.head(n_rows - seen)
+            yield done(out)
+        # Reached once the input is fed, or the slice is: not on a run the
+        # caller abandons, nor one the windows ended with an error.
+        if save_path is not None:
+            w.save(save_path)
+        # As the bank warns (`ConsumedSourceWarning`): no rows at all from a
+        # Python scan is the shape of a spent single-use stream.
+        if python_scan and read == 0 and n_rows != 0:
+            warnings.warn(
+                ConsumedSourceWarning(
+                    f"{who}: the plan yielded no rows, and its source is a Python scan -- "
+                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
+                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
+                    "is consumed once: collected a second time it yields nothing, with no "
+                    "error. Rebuild the plan per collect (call `pl.scan_arrow_c_stream(...)` "
+                    "inside the loop, not outside it). If the source really is empty, "
+                    'silence this with warnings.simplefilter("ignore", '
+                    "polars_online.ConsumedSourceWarning)."
+                ),
+                stacklevel=_user_stacklevel(),
+            )
+
+    plan = register_io_source(
+        source,
+        schema=schema,
+        validate_schema=True,
+        is_pure=save_path is None,
+        **_explain_named(f"with_windows: {len(descriptions)} description(s)"),
+    )
     return plan if isinstance(lf, pl.LazyFrame) else plan.collect()

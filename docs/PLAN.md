@@ -2167,15 +2167,19 @@ note, not a task.
       `cb6c57c` (task 80): a reset on a skipped row now clears the buffer,
       and a session change or capped gap on one releases it.
 
-- [ ] 78. **E69, windowed EWMAs in both directions, as a column utility —
-      recorded 2026-09-11, designed the same day, not built.** Split
+- [x] 78. **E69, windowed EWMAs in both directions, as a column utility —
+      recorded 2026-09-11, designed the same day, built 2026-09-30** (the
+      user: "Implement this", scope 78c + 78d). Split
       2026-09-25 (the user: "several unrelated changes under one heading"):
       the rename of `po.prep` is task 105, the backward-clock rule 106
       (discarded the same day),
       windows as regression targets 104, relative targets 107. This entry
       keeps the windows themselves and the record of the design day; the
       moved passages are in those tasks, word for word. **Its rules at a
-      clock that goes back need extra review** (task 120).
+      clock that goes back** were settled by the user at the build
+      (2026-09-30): task 120's policy, sessions included, on the stream's
+      clock as on each group's (*Built*, at the end of this entry, which
+      records every place the build departs from the design text below).
       The user's ask: "Is it possible to have a look ahead that generates a
       reverse ewma on the forward pass? For example a target of a regression
       may be not the forward price but the reverse ewma of rows starting with
@@ -2423,7 +2427,9 @@ note, not a task.
         open window too, as a large gap would (*One clock, both forms*), so
         a clock that restarts is accepted. Feeds interleaved out of clock
         order are not handled. A `head(n)` stops reading one horizon
-        past its nth row.
+        past its nth row. *(Superseded at the build: a silent group is cut
+        after `max_dclock`, not closed after `horizon`, and a clock that goes
+        back takes task 120's policy; see Built, points 2 and 3.)*
 
       #### One clock, both forms
 
@@ -2465,6 +2471,9 @@ note, not a task.
 
       #### A clock that goes back
 
+      *(Settled at the build by the user, 2026-09-30; see Built, point 3.
+      The two rules below are the design day's, kept as the record.)*
+
       **A backward clock is not a session change** (the user, 2026-09-25;
       task 106, which said it was, is discarded). A step back smaller than
       `min_backwards_jump` refuses the chunk, and a larger one takes
@@ -2492,19 +2501,21 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 78c. **The window core** in `online-polars`: the anchored
+      - [x] 78c. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
             group, with a per-row weight; queues that admit only
             contributing rows, one per split category plus the total; its
             clock stepped by the stream layer's own `ClockState`, with the
             capped-gap, session and reset events ending or discarding
             windows as `apply_label_delay` does; serialisable. Unit-tested
-            alone.
-      - [ ] 78d. **`po.window.*` and `po.stream.windows`** on it, as an IO
+            alone. *Built 2026-09-30: `crates/online-polars/src/windows.rs`.*
+      - [x] 78d. **`po.window.*` and `po.stream.windows`** on it, as an IO
             source the way `refresh_time` is: waiting rows held as the input's
             chunks and sliced out when their windows close, each window's
             queues its own; `split`, `unlisted`, `total` and the `{split}`
-            name field; the clock-policy keywords and `like=spec`.
+            name field; the clock-policy keywords and `like=spec`. *Built
+            2026-09-30: `windows_frame.rs`, `python/polars_online/window.py`,
+            `stream.with_windows` (renamed from `windows` at the build).*
       - 78a, 78b, 78e and 78f moved: the rename is task 105, the backward
         clock 106 (discarded), descriptions as spec targets 104, relative
         targets 107.
@@ -2555,6 +2566,107 @@ note, not a task.
       - Memory independent of row width: the same stream with 2 and with 200
         pass-through columns, where the waiting rows must cost their chunks
         and not a copy.
+
+      #### Built (2026-09-30)
+
+      The core is `crates/online-polars/src/windows.rs`, tested alone against
+      a brute-force loop that steps the same `ClockState`s and computes every
+      window from its definition, over every clock event, both clock forms and
+      a row-count clock (480 streams); nine bugs planted one at a time in the
+      core were each caught. The frame layer is `windows_frame.rs`; the
+      Python surface is `po.window` and `po.stream.with_windows`
+      (`tests/test_windows.py`: the definition, polars' `rolling` recipe as
+      the third-party oracle, the interleaved trades, every event, chunk
+      invariance at 1, 7, 64 and 1000, a save and load at every row). Where
+      the build departs from the design text above:
+
+      1. **The backward window is `(τ_t − horizon, τ_t]`**: "less than
+         `horizon` older", where the design said "no more than". It is the
+         interval `rolling` takes by default, which the tests hold it to.
+      2. **A window closes on its own group's clock; a silent group is cut
+         after `max_dclock`, not closed after `horizon`.** The design closed a
+         window once *any* row passed its horizon. But the model releases a
+         group's waiting rows as *cut* when that group's next row opens with a
+         gap past the cap, so a window whose group then fell silent would have
+         been complete in the column and cut in the model. What is certain
+         early is only the gap: once the stream's clock is more than
+         `max_dclock` past a group's last row, its next row must open with a
+         longer gap, so its open windows are cut then. The output's delay is
+         bounded by `max_dclock` of the stream's time, not the horizon; a
+         row-count clock steps each group only on its own rows and has no
+         bound (documented).
+      3. **The stream's own clock follows task 120, sessions included** (the
+         user, 2026-09-30: "Task 120 policy including session parameters as
+         well"). The rows step one `ClockState` in input order across groups,
+         under the call's policy, beside each group's own: a step back either
+         refuses is refused, naming the row; a reset there discards every
+         group's open windows; a session change or a capped gap there ends
+         them. It matches each group's clock when the stream is one stream in
+         clock order with one session column, the input the docs require.
+      4. **Policy time restarts at every event.** A group's `τ` is its time
+         since its first row or its last event, so a double resolves it as
+         finely as the stretch between events allows, whatever the stream's
+         age (the rule of task 88).
+      5. **`like=spec`** reads the spec's clock keywords and `features` and
+         `weight`: a row whose features and weight are all usable is one the
+         spec learns from (`stream.rs`'s rule), and a look-ahead is null on
+         any other. The row still steps the clock and counts in other rows'
+         windows. A clock keyword beside `like=` is a `TypeError`.
+      6. **Left for task 104's parity**, where the column form meets the
+         model row by row: (a) a group silent past the cap whose next row
+         opens a *reset* -- the column cuts at the silence, the model discards
+         at that row; under `partial="null"`, the default, both are null; (b)
+         the horizon test is `τ_now − τ_t ≥ horizon` on a per-group running
+         sum, where the `label_delay` buffer counts `remaining -= d_clock` per
+         waiting row, and the two can round apart at an exact tie on a clock
+         whose steps are not exact in binary; (c) every row steps the
+         column's clock as if accepted, so the cap on the *total* a run of
+         skipped rows carries (review 2026-09-12, S3) is the model's alone.
+      7. **The state** is versioned msgpack: the call, the core, and the held
+         input rows as Arrow IPC. A state resumes only the call that saved it,
+         on the same kind of clock, over the same columns. A projection
+         reaches the input only when no state is loaded or saved, so a saved
+         row is whole for whatever the next run asks of it. `ClockCfg`'s own
+         derive writes `session_gap = "reset"` as a unit that msgpack reads
+         back as no gap at all; the state stores the policy in a tagged form
+         instead (the bank never saves a `ClockCfg`, so it is unaffected).
+      8. **Names and columns.** Output columns follow the input's, in
+         description order, each description's windows columns × halflives
+         × horizons, a split's total first. `complete` is one column per
+         description and horizon, since every window of a description with
+         one horizon has the same flags; its template may use `{horizon}`.
+         A name that collides with another output or an input column is
+         refused, as is a template field a window has no value for.
+      9. **Evidence for memory** is the queues and the buffers: at 1, 10
+         and 100 quotes per trade the queues' peak is flat
+         (`test_queues_follow_the_rows_that_count`), and the held rows share
+         the input's Arrow buffers, the wide text column's included
+         (`held_rows_are_the_input_itself`, by pointer). The `rolling`
+         recipe's own memory was measured on the design day (the table
+         above) and is not re-measured in the tests.
+      10. **Renamed `po.stream.with_windows`** (the user, 2026-09-30: "The
+          function name windows does not convey what it does"). `with_` is
+          Polars' own verb for a frame with columns added (`with_columns`,
+          `with_row_index`, and PySpark's `withColumn`), and `windows` alone
+          collides with what Polars' guide calls window functions,
+          `.over(...)`. The descriptions keep `po.window`, as `with_columns`
+          keeps its expressions; the design text above keeps the old name.
+      11. **As a model's target** (the README, *Windows as a model's inputs
+          and target*): `label_delay` at least the horizon, on the windows'
+          clock, and a horizon no longer than `max_dclock`. The model folds
+          skipped rows' time into the next row it learns from and releases
+          its buffer when the cap cuts that step short; the column sees no
+          gap there, so a look-ahead longer than the cap could still be open
+          at the release, over rows the model has not reached. Within the
+          cap every such step closes the windows first. Then each row is
+          predicted by a model that learned only targets whose windows
+          closed before it: the purge condition, row by row. The one
+          imprecision is point 6(b)'s tie, for task 104.
+      12. **Measured** (docs/PERFORMANCE.md §32): 9.5 to 9.8 million rows a
+          second at the memory of reading and writing the file, flat in the
+          window's length; the `rolling` recipe 11 to 64 times slower, at
+          4.9 to 5.1 GB for one minute and 18.3 GB for four. The window as
+          an embargoed target adds at most 0.2 s to the model's own time.
 
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
@@ -3855,7 +3967,7 @@ note, not a task.
       description from task 78 is accepted as a spec target: the forward
       `lookahead_rewm` is a label, learned with `label_delay = horizon`
       on the `label_delay` FIFO, and a split description is several
-      targets in one spec. `po.stream.windows(..., like=spec)` then shows,
+      targets in one spec. `po.stream.with_windows(..., like=spec)` then shows,
       on every row the model learns from, the target it learned, to the
       bit. **Touches clock events** (a capped gap, a session change, a
       reset and a backward step end or discard a window): **needs extra
@@ -3911,7 +4023,7 @@ note, not a task.
 
       The user's requirement, 2026-09-11: "the same window spec passed to
       windows shows the target that the model used". Stated precisely, for
-      `po.stream.windows(lf, [w], like=spec)` against `spec` with `w` as a
+      `po.stream.with_windows(lf, [w], like=spec)` against `spec` with `w` as a
       target: **on every row the model learns from, the column equals the
       target it learned, to the bit; on every other row the column is
       null.** Checked against the code (`apply_label_delay`,
@@ -4009,7 +4121,7 @@ note, not a task.
 
       1. **Frame first, the same kind back** — `LazyFrame` in gives a
          `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
-         does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
+         does. Chaining is Polars' own `lf.pipe(po.stream.with_windows, [...])`;
          nothing is added to `lf.online` for these.
       2. **One vocabulary, the specs'**: `clock`, `max_dclock`,
          `on_clock_reset`, `session`, `session_gap`, `group`, `halflife`,

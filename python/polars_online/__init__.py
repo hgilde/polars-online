@@ -17,7 +17,8 @@ the mid, with :func:`target`.
 Around them: :mod:`polars_online.eval` scores the output;
 :mod:`polars_online.gram` solves and diagnoses the running sums a bank
 exports; :mod:`polars_online.corr` repairs and reads correlation matrices;
-:mod:`polars_online.stream` transforms a plan: late labels, asynchronous series;
+:mod:`polars_online.stream` transforms a plan: late labels, asynchronous series,
+windowed EWMAs looking back or ahead (described with :mod:`polars_online.window`);
 :mod:`polars_online.sim` simulates streams whose truth is known.
 
 Errors follow one contract throughout, and each docstring says which of it
@@ -40,6 +41,7 @@ from polars_online import (
     sim,
     spec,
     stream,
+    window,
 )
 from polars_online._bank import ModelBank
 from polars_online._frame import (
@@ -78,6 +80,7 @@ __all__ = [
     "spec",
     "stream",
     "target",
+    "window",
     "Target",
     "thread_pool_size",
     "unnest",

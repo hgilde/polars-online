@@ -663,6 +663,34 @@ def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
     return bank.closed_groups()
 
 
+def _trades(n: int = 3000) -> pl.DataFrame:
+    """Quotes, each with a `mid`, and trades between them -- three rows in ten
+    -- with a `side`, a `quantity` and a `price`, null on the quotes; two
+    symbols, about two rows a second on the clock `ts`."""
+    rng = np.random.default_rng(7)
+    trade = rng.random(n) < 0.3
+    start = datetime(2024, 1, 2, 9, 30)
+    ts = [start + timedelta(microseconds=int(u)) for u in np.cumsum(rng.exponential(5e5, n))]
+    mid = 100 + np.cumsum(rng.normal(0.0, 0.01, n))
+    return pl.DataFrame(
+        {
+            "ts": ts,
+            "symbol": rng.choice(["AAA", "BBB"], n),
+            "mid": mid,
+            "side": [
+                s if k else None for s, k in zip(rng.choice(["buy", "sell"], n), trade, strict=True)
+            ],
+            "quantity": [
+                float(q) if k else None for q, k in zip(rng.integers(1, 10, n), trade, strict=True)
+            ],
+            "price": [
+                float(m + e) if k else None
+                for m, e, k in zip(mid, rng.normal(0.0, 0.02, n), trade, strict=True)
+            ],
+        }
+    )
+
+
 def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     """What the README's prose has already introduced by the time a block runs:
     a frame with every column it names, a spec with the grid its field-name
@@ -792,6 +820,9 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             )
             for s in ("AAA", "BBB", "CCC")
         ).sort("t"),
+        # The "windowed means" section's stream: quotes with a mid, and
+        # trades between them, for two symbols on the clock `ts`.
+        "trades": _trades(),
         "today": today,
         # The query form of `today`: the rows after the stream's.
         "later": today.lazy(),

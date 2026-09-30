@@ -120,7 +120,7 @@ fn null_session_hash() -> u64 {
 /// literally named `"\0<null>"` indistinguishable from null, silently sharing
 /// one session with it. Any string that lands on the null hash (the sentinel
 /// itself, or a 2^-64 accident) is nudged to a neighbouring value instead.
-fn session_hash(v: Option<&str>) -> u64 {
+pub(crate) fn session_hash(v: Option<&str>) -> u64 {
     match v {
         None => null_session_hash(),
         Some(s) => {

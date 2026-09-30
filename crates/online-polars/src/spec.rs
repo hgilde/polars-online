@@ -1631,6 +1631,142 @@ pub enum ClockScale {
     Durations(&'static str),
 }
 
+/// A clock policy in a caller's own words: a spec's, or `po.stream.with_windows`'
+/// (docs/PLAN.md task 78: one set of clock rules, stated once).
+pub(crate) struct ClockPolicy<'a> {
+    /// How a message names the caller: `spec "name"`, or `windows`.
+    pub who: &'a str,
+    pub clock: Option<&'a str>,
+    pub max_dclock: Option<&'a Span>,
+    pub on_clock_reset: OnClockReset,
+    pub min_backwards_jump: Option<&'a Span>,
+    pub session: Option<&'a str>,
+    pub session_gap: Option<&'a SessionGapSpec>,
+    /// For a spec, whether it closes its groups on a session change, which
+    /// stands in for `session_gap`; `None` for a caller with no model, whose
+    /// messages speak of its windows.
+    pub spec_closes_on_session: Option<bool>,
+}
+
+/// The [`ClockCfg`] a clock policy asks for, or why it cannot run.
+pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
+    let who = p.who;
+    let model = p.spec_closes_on_session.is_some();
+    if p.clock.is_some() && p.max_dclock.is_none() {
+        return Err(format!("{who}: max_dclock is required when clock is given"));
+    }
+    // The cap is a cap on a step and nothing else (task 120, decided
+    // 2026-09-28). A negative one clipped every delta to it, so the decay
+    // *grew* (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN
+    // poisons the clock. Zero froze the clock, and every positive gap
+    // then read as a break, so `label_delay` released each held label on
+    // the next row: no decay is `halflife = "inf"`, or no clock. Infinity
+    // took the break away, and handed a model an infinite step at a
+    // session change.
+    if let Some(m) = p.max_dclock {
+        let v = m.value();
+        if v == 0.0 {
+            return Err(format!(
+                "{who}: max_dclock must be > 0; a cap of 0 froze the clock. For \
+                     no decay set halflife = \"inf\", or leave out the clock to count rows"
+            ));
+        }
+        if v == f64::INFINITY {
+            return Err(if model {
+                format!(
+                    "{who}: max_dclock must be finite; it is the longest step a model \
+                     decays across, and a longer gap is a break. Give a cap longer than \
+                     any gap the stream should decay across in full"
+                )
+            } else {
+                format!(
+                    "{who}: max_dclock must be finite; it is the longest step a window \
+                     spans, and a longer gap ends every window open across it. Give a cap \
+                     longer than any gap a window should span"
+                )
+            });
+        }
+        if !(v.is_finite() && positive(v)) {
+            return Err(format!("{who}: max_dclock must be a finite number > 0"));
+        }
+    }
+    let session_gap = match p.session_gap {
+        None => None,
+        Some(SessionGapSpec::Gap(g)) if g.value() == f64::INFINITY => {
+            return Err(format!(
+                "{who}: session_gap must be finite; to start over at a session \
+                     change set session_gap = \"reset\""
+            ));
+        }
+        Some(SessionGapSpec::Gap(g)) if !(g.value().is_finite() && non_negative(g.value())) => {
+            return Err(format!("{who}: session_gap must be >= 0 or \"reset\""));
+        }
+        Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.value())),
+        Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
+        Some(SessionGapSpec::Word(w)) => {
+            return Err(format!(
+                "{who}: session_gap must be a number, a duration or \"reset\", got {w:?}"
+            ));
+        }
+    };
+    // `group_close = "session"` is itself the prescription for a session
+    // change -- emit the span and start over -- so it takes the place of
+    // `session_gap` rather than sitting beside it (E54); `validate`
+    // refuses the pair.
+    if p.session.is_some() && session_gap.is_none() && p.spec_closes_on_session != Some(true) {
+        return Err(if model {
+            format!(
+                "{who}: session_gap is required when session is given (or \
+                 group_close = \"session\", which closes the group at the change instead)"
+            )
+        } else {
+            format!("{who}: session_gap is required when session is given")
+        });
+    }
+    // What a late row is belongs to the caller: `min_backwards_jump` is
+    // required with `"reset_state"`, where a step back by no more than it
+    // is refused and a larger one starts over, and refused with
+    // `"error"`, which refuses every step back and reads no minimum. It
+    // has no default from the cap (task 120). `validate` names a missing
+    // clock first.
+    if p.clock.is_some() {
+        match (p.on_clock_reset, p.min_backwards_jump) {
+            (OnClockReset::ResetState, None) => {
+                return Err(format!(
+                    "{who}: min_backwards_jump is required with on_clock_reset = \
+                         \"reset_state\": a step back no larger than it is a late row and \
+                         is refused, a larger one starts {} over (0 starts over at \
+                         every step back)",
+                    if model { "the model" } else { "every window" }
+                ));
+            }
+            (OnClockReset::Error, Some(_)) => {
+                return Err(format!(
+                    "{who}: min_backwards_jump applies only under on_clock_reset = \
+                         \"reset_state\"; under \"error\", the default, every step back \
+                         is refused"
+                ));
+            }
+            _ => {}
+        }
+    }
+    if p.min_backwards_jump
+        .is_some_and(|v| !(v.value().is_finite() && non_negative(v.value())))
+    {
+        return Err(format!(
+            "{who}: min_backwards_jump must be finite and >= 0 (0 starts over at \
+                 every step back)"
+        ));
+    }
+    Ok(ClockCfg {
+        // A row-count clock steps by one row and has no cap.
+        max_dclock: p.max_dclock.map_or(f64::INFINITY, Span::value),
+        on_clock_reset: p.on_clock_reset,
+        session_gap,
+        min_backwards_jump: p.min_backwards_jump.map_or(0.0, Span::value),
+    })
+}
+
 impl Spec {
     /// Every clock-unit value this spec sets, with its parameter's name, in
     /// [`CLOCK_FIELDS`] order. A `halflife` grid gives one entry per value.
@@ -2172,124 +2308,15 @@ impl Spec {
     }
 
     pub fn clock_cfg(&self) -> Result<ClockCfg, String> {
-        if self.clock.is_some() && self.max_dclock.is_none() {
-            return Err(format!(
-                "spec {:?}: max_dclock is required when clock is given",
-                self.name
-            ));
-        }
-        // The cap is a cap on a step and nothing else (task 120, decided
-        // 2026-09-28). A negative one clipped every delta to it, so the decay
-        // *grew* (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN
-        // poisons the clock. Zero froze the clock, and every positive gap
-        // then read as a break, so `label_delay` released each held label on
-        // the next row: no decay is `halflife = "inf"`, or no clock. Infinity
-        // took the break away, and handed a model an infinite step at a
-        // session change.
-        if let Some(m) = &self.max_dclock {
-            let v = m.value();
-            if v == 0.0 {
-                return Err(format!(
-                    "spec {:?}: max_dclock must be > 0; a cap of 0 froze the clock. For \
-                     no decay set halflife = \"inf\", or leave out the clock to count rows",
-                    self.name
-                ));
-            }
-            if v == f64::INFINITY {
-                return Err(format!(
-                    "spec {:?}: max_dclock must be finite; it is the longest step a model \
-                     decays across, and a longer gap is a break. Give a cap longer than \
-                     any gap the stream should decay across in full",
-                    self.name
-                ));
-            }
-            if !(v.is_finite() && positive(v)) {
-                return Err(format!(
-                    "spec {:?}: max_dclock must be a finite number > 0",
-                    self.name
-                ));
-            }
-        }
-        let session_gap = match &self.session_gap {
-            None => None,
-            Some(SessionGapSpec::Gap(g)) if g.value() == f64::INFINITY => {
-                return Err(format!(
-                    "spec {:?}: session_gap must be finite; to start over at a session \
-                     change set session_gap = \"reset\"",
-                    self.name
-                ));
-            }
-            Some(SessionGapSpec::Gap(g)) if !(g.value().is_finite() && non_negative(g.value())) => {
-                return Err(format!(
-                    "spec {:?}: session_gap must be >= 0 or \"reset\"",
-                    self.name
-                ));
-            }
-            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.value())),
-            Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
-            Some(SessionGapSpec::Word(w)) => {
-                return Err(format!(
-                    "spec {:?}: session_gap must be a number, a duration or \"reset\", got {w:?}",
-                    self.name
-                ));
-            }
-        };
-        // `group_close = "session"` is itself the prescription for a session
-        // change -- emit the span and start over -- so it takes the place of
-        // `session_gap` rather than sitting beside it (E54); `validate`
-        // refuses the pair.
-        if self.session.is_some() && session_gap.is_none() && !self.closes_on_session() {
-            return Err(format!(
-                "spec {:?}: session_gap is required when session is given (or \
-                 group_close = \"session\", which closes the group at the change instead)",
-                self.name
-            ));
-        }
-        // What a late row is belongs to the caller: `min_backwards_jump` is
-        // required with `"reset_state"`, where a step back by no more than it
-        // is refused and a larger one starts over, and refused with
-        // `"error"`, which refuses every step back and reads no minimum. It
-        // has no default from the cap (task 120). `validate` names a missing
-        // clock first.
-        if self.clock.is_some() {
-            match (self.on_clock_reset, &self.min_backwards_jump) {
-                (OnClockReset::ResetState, None) => {
-                    return Err(format!(
-                        "spec {:?}: min_backwards_jump is required with on_clock_reset = \
-                         \"reset_state\": a step back no larger than it is a late row and \
-                         is refused, a larger one starts the model over (0 starts over at \
-                         every step back)",
-                        self.name
-                    ));
-                }
-                (OnClockReset::Error, Some(_)) => {
-                    return Err(format!(
-                        "spec {:?}: min_backwards_jump applies only under on_clock_reset = \
-                         \"reset_state\"; under \"error\", the default, every step back \
-                         is refused",
-                        self.name
-                    ));
-                }
-                _ => {}
-            }
-        }
-        if self
-            .min_backwards_jump
-            .as_ref()
-            .is_some_and(|v| !(v.value().is_finite() && non_negative(v.value())))
-        {
-            return Err(format!(
-                "spec {:?}: min_backwards_jump must be finite and >= 0 (0 starts over at \
-                 every step back)",
-                self.name
-            ));
-        }
-        Ok(ClockCfg {
-            // A row-count clock steps by one row and has no cap.
-            max_dclock: self.max_dclock.as_ref().map_or(f64::INFINITY, Span::value),
+        clock_cfg_of(&ClockPolicy {
+            who: &format!("spec {:?}", self.name),
+            clock: self.clock.as_deref(),
+            max_dclock: self.max_dclock.as_ref(),
             on_clock_reset: self.on_clock_reset,
-            session_gap,
-            min_backwards_jump: self.min_backwards_jump.as_ref().map_or(0.0, Span::value),
+            min_backwards_jump: self.min_backwards_jump.as_ref(),
+            session: self.session.as_deref(),
+            session_gap: self.session_gap.as_ref(),
+            spec_closes_on_session: Some(self.closes_on_session()),
         })
     }
 

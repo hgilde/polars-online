@@ -21,10 +21,13 @@ in the same state.
 ``ModelBank(specs).fit_predict(df)`` in one call. ``online.unnest(specs)``
 takes a bank's output apart: each spec's struct column becomes its fields as
 columns, with the ``coef`` list as one named column per coefficient
-(:func:`polars_online.spec.coef_fields`). Both namespaces are attached at
-import, which no type checker can see; :func:`fit_predict`, :func:`predict`
-and :func:`unnest` are the same calls with the frame as the first argument,
-visibly typed.
+(:func:`polars_online.spec.coef_fields`). ``online.with_windows(windows)``
+adds windowed means, looking back or ahead, as columns
+(:func:`polars_online.stream.with_windows`), so a query can add them and fit
+on them in one chain. Both namespaces are attached at import, which no type
+checker can see; :func:`fit_predict`, :func:`predict`, :func:`unnest` and
+:func:`polars_online.stream.with_windows` are the same calls with the frame
+as the first argument, visibly typed.
 """
 
 from __future__ import annotations
@@ -34,9 +37,9 @@ import os
 import re
 import sys
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from types import FrameType
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import polars as pl
 from polars.io.plugins import register_io_source
@@ -44,6 +47,10 @@ from polars.io.plugins import register_io_source
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank
 from polars_online._spec import coef_fields, output_index, target_columns
+
+if TYPE_CHECKING:
+    from polars_online._duration import Duration
+    from polars_online.window import Window
 
 __all__ = [
     "ConsumedSourceWarning",
@@ -158,11 +165,21 @@ def _explain_kwargs(specs: Iterable[dict[str, Any]]) -> dict[str, Any]:
         return {}
     names = [str(spec.get("name", "?")) for spec in specs]
     detail = ", ".join(names)
-    out: dict[str, Any] = {
-        "explain_name": "polars-online",
-        "explain_detail": f"{len(names)} spec(s): {detail}" if names else "no specs",
-    }
-    return out
+    return _explain_named(f"{len(names)} spec(s): {detail}" if names else "no specs")
+
+
+def _explain_named(detail: str) -> dict[str, Any]:
+    """:func:`_explain_kwargs` for any of this package's sources: the name
+    ``polars-online`` and ``detail``, when the installed polars takes them."""
+    import inspect
+
+    try:
+        takes = inspect.signature(register_io_source).parameters
+    except (TypeError, ValueError):  # pragma: no cover - a C or wrapped callable
+        return {}
+    if "explain_name" not in takes:
+        return {}
+    return {"explain_name": "polars-online", "explain_detail": detail}
 
 
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
@@ -586,20 +603,28 @@ def _order_free(specs: Any) -> bool:
     return True
 
 
-def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str, plan_text: str | None = None) -> None:
+def _warn_if_order_unspecified(
+    lf: pl.LazyFrame,
+    what: str,
+    plan_text: str | None = None,
+    *,
+    reads: str = "an online model learns in row order",
+    before: str = "the bank",
+) -> None:
     """Warn, naming ``what`` the caller called, when ``lf`` has a node whose
     output order is not guaranteed. ``plan_text`` is ``explain``'s output when
-    the caller already has it (see :func:`_plan_text`)."""
+    the caller already has it (see :func:`_plan_text`). ``reads`` says why the
+    order matters to the caller, and ``before`` names it in the fix."""
     hazards = _order_hazards(lf, plan_text)
     if not hazards:
         return
     msg = (
-        f"{what}: the plan's row order is not guaranteed, and an online model learns in "
-        f"row order. {len(hazards)} node(s) leave it unspecified: " + "; ".join(hazards) + ". "
+        f"{what}: the plan's row order is not guaranteed, and {reads}. "
+        f"{len(hazards)} node(s) leave it unspecified: " + "; ".join(hazards) + ". "
         "The streaming engine that runs the plan may deliver rows in an order lf.collect() "
         "would not, and it may differ between runs. Give the plan a fixed order -- "
         'maintain_order="left" on a join, maintain_order=True on a group_by, a sort after '
-        "a unique() or before the bank -- or, for a plan whose order is fixed by other "
+        f"a unique() or before {before} -- or, for a plan whose order is fixed by other "
         'means, warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).'
     )
     warnings.warn(OrderNotGuaranteedWarning(msg), stacklevel=_user_stacklevel())
@@ -1025,6 +1050,56 @@ class LazyFrameOnlineNamespace:
         """
         return _unnest_lazy(self._lf, specs)
 
+    def with_windows(
+        self,
+        windows: Sequence[Window],
+        *,
+        clock: str | None = None,
+        max_dclock: float | Duration | None = None,
+        on_clock_reset: str | None = None,
+        min_backwards_jump: float | Duration | None = None,
+        session: str | None = None,
+        session_gap: float | Duration | None = None,
+        group: str | None = None,
+        like: dict[str, Any] | None = None,
+        chunk_rows: int | None = None,
+        load_state: State | None = None,
+        save_state: State | None = None,
+    ) -> pl.LazyFrame:
+        """The plan's rows plus one column per window, as a plan that streams:
+        :func:`polars_online.stream.with_windows` as a method, so a query can add
+        windowed means and fit on them in one chain.
+
+        .. code-block:: python
+
+            fitted = (
+                trades.lazy()
+                .online.with_windows([po.window.ewm("mid", halflife="5s", horizon="1m")],
+                                     clock="ts", max_dclock="5m", group="symbol")
+                .collect()
+            )
+
+        Every argument, and everything raised, is
+        :func:`~polars_online.stream.with_windows`'s.
+        """
+        from polars_online.stream import with_windows
+
+        return with_windows(
+            self._lf,
+            windows,
+            clock=clock,
+            max_dclock=max_dclock,
+            on_clock_reset=on_clock_reset,
+            min_backwards_jump=min_backwards_jump,
+            session=session,
+            session_gap=session_gap,
+            group=group,
+            like=like,
+            chunk_rows=chunk_rows,
+            load_state=load_state,
+            save_state=save_state,
+        )
+
 
 @pl.api.register_dataframe_namespace("online")
 class DataFrameOnlineNamespace:
@@ -1092,6 +1167,44 @@ class DataFrameOnlineNamespace:
         per coefficient. Raises what the plan form does, on the call.
         """
         return self._df.select(_unnest_exprs(self._df.schema, _specs_of(specs, "unnest")))
+
+    def with_windows(
+        self,
+        windows: Sequence[Window],
+        *,
+        clock: str | None = None,
+        max_dclock: float | Duration | None = None,
+        on_clock_reset: str | None = None,
+        min_backwards_jump: float | Duration | None = None,
+        session: str | None = None,
+        session_gap: float | Duration | None = None,
+        group: str | None = None,
+        like: dict[str, Any] | None = None,
+        chunk_rows: int | None = None,
+        load_state: State | None = None,
+        save_state: State | None = None,
+    ) -> pl.DataFrame:
+        """The frame plus one column per window:
+        :func:`polars_online.stream.with_windows` as a method, as
+        :meth:`LazyFrameOnlineNamespace.with_windows` is for a plan.
+        """
+        from polars_online.stream import with_windows
+
+        return with_windows(
+            self._df,
+            windows,
+            clock=clock,
+            max_dclock=max_dclock,
+            on_clock_reset=on_clock_reset,
+            min_backwards_jump=min_backwards_jump,
+            session=session,
+            session_gap=session_gap,
+            group=group,
+            like=like,
+            chunk_rows=chunk_rows,
+            load_state=load_state,
+            save_state=save_state,
+        )
 
 
 @overload

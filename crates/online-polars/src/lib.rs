@@ -52,6 +52,8 @@ mod spec;
 mod stream;
 mod summary;
 mod targets;
+mod windows;
+mod windows_frame;
 
 pub use arrow::{
     ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, chunk_from_frame_at,
@@ -90,3 +92,8 @@ pub use stream::{
 };
 pub use summary::{ColumnStats, DataSummary, Role};
 pub use targets::{Relative, TargetDef, Targets};
+pub use windows::{
+    Direction, Emitted, Partial, Refusal, RowIn, SameClock, SplitDef, SplitValue, Unlisted,
+    WindowDef, Windows,
+};
+pub use windows_frame::{Description, Kind, Like, SplitSpec, SplitWord, WindowsConfig, WindowsRun};
