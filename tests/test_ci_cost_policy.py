@@ -371,7 +371,17 @@ class TestTheLinuxPrepIsOneAction:
                 assert "fuse-ld=lld" not in run and "/usr/share/dotnet" not in run, (
                     f"{name}:{job} copies the prep again"
                 )
-        assert len(callers) == 5, callers
+        # Every caller by name, so a new one is a decision: the two NumPy
+        # jobs were added on 2026-09-30.
+        assert sorted(callers) == [
+            "ci.yml:test",
+            "leakcheck.yml:native",
+            "mutants.yml:changed",
+            "polars-canary.yml:latest-polars",
+            "polars-canary.yml:next-numpy",
+            "release.yml:next-numpy",
+            "release.yml:next-polars",
+        ], callers
 
     def test_a_local_action_follows_the_checkout(self):
         """A local action is read from the checked-out tree."""

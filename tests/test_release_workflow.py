@@ -88,12 +88,44 @@ def test_ci_groups_per_caller_so_a_release_and_a_push_do_not_cancel():
 
 
 def test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing():
-    assert _needs("publish") == {"version", "ci", "sdist", "build", "read-state", "next-polars"}
+    assert _needs("publish") == {
+        "version",
+        "ci",
+        "sdist",
+        "build",
+        "read-state",
+        "next-polars",
+        "next-numpy",
+    }
     assert JOBS["publish"]["environment"] == "pypi"
     assert _needs("tag") == {"version", "publish"}
     assert _needs("release") == {"version", "tag"}
     for job in ("publish", "tag", "release"):
         assert JOBS[job]["if"] == "inputs.publish", job
+
+
+def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
+    """NumPy is the one optional dependency, `numpy>=1.24` with no ceiling,
+    and every other job runs on the locked NumPy (the user, 2026-09-30:
+    "test on the next release candidate of that too as we do with polars").
+    Its newest stable is inside what the extra promises, so that leg holds
+    back the upload; its next release candidate is early warning. Only NumPy
+    moves, so a red leg names it."""
+    job = JOBS["next-numpy"]
+    legs = job["strategy"]["matrix"]["include"]
+    blocking = [leg for leg in legs if leg["blocking"]]
+    advisory = [leg for leg in legs if not leg["blocking"]]
+    assert len(blocking) == 1 and blocking[0]["prerelease"] == ""
+    assert len(advisory) == 1 and advisory[0]["prerelease"] == "--prerelease=allow"
+    assert job["continue-on-error"] == "${{ !matrix.blocking }}"
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    assert "uv sync ${{ matrix.prerelease }} --upgrade-package numpy" in runs
+    assert not any("--upgrade-package polars" in r for r in runs)
+    assert any("pytest" in r for r in runs)
+    canary = _load("polars-canary.yml")["jobs"]["next-numpy"]
+    canary_runs = [str(s.get("run", "")) for s in canary["steps"]]
+    assert "uv sync --prerelease=allow --upgrade-package numpy" in canary_runs
+    assert any("pytest" in r for r in canary_runs)
 
 
 def test_the_tag_is_on_the_tested_sha():

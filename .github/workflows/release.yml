@@ -422,6 +422,47 @@ jobs:
       # the marker's description in pyproject.toml.
       - run: uv run pytest -q -m "not soak and not pins"
 
+  next-numpy:
+    name: the suite on ${{ matrix.leg }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Blocking. The optional extra declares `numpy>=1.24` with no
+          # ceiling, so the newest stable NumPy is inside the promise.
+          - leg: the newest NumPy
+            prerelease: ""
+            blocking: true
+          # Advisory. NumPy's next release candidate while one is out;
+          # otherwise this resolves to the newest stable again.
+          - leg: NumPy's next release candidate
+            prerelease: --prerelease=allow
+            blocking: false
+    continue-on-error: ${{ !matrix.blocking }}
+    # NumPy is this package's one optional dependency (`polars-online[numpy]`,
+    # which `po.sim`, `po.corr`, `po.gram` and `ModelBank.gram` import).
+    # Every other job runs on the locked NumPy, so, as with Polars
+    # above, a release could otherwise ship untested on the NumPy a user's
+    # resolver picks the day after (the user, 2026-09-30: "we should test on
+    # the next release candidate of that too as we do with polars"). Only
+    # NumPy moves: `--upgrade-package numpy` keeps every other package at
+    # its locked version, so a red leg means NumPy broke this library.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: free disk and use a leaner linker
+        uses: ./.github/actions/linux-build-prep
+      - run: uv sync ${{ matrix.prerelease }} --upgrade-package numpy
+      - name: versions in play
+        run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run pytest -q -m "not soak and not pins"
+
   # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
   # owner as a required reviewer (self-review allowed -- with one reviewer,
   # preventing it would deadlock every release), so this job parks on "Review
@@ -439,7 +480,7 @@ jobs:
   # release.yml, environment pypi); the first publish claimed the name.
   publish:
     name: publish to PyPI
-    needs: [version, ci, sdist, build, read-state, next-polars]
+    needs: [version, ci, sdist, build, read-state, next-polars, next-numpy]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15

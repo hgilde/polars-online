@@ -11,7 +11,7 @@
 # It is also the evidence for moving the range. That only works if a red
 # canary means *Polars broke us* and nothing else -- so this job has to be
 # as reliable as CI, not less, and only one thing may vary in it.
-name: Polars canary
+name: Polars and NumPy canary
 
 on:
   schedule:
@@ -102,4 +102,27 @@ jobs:
       # VALIDATION.md check, whose header records the polars version) --
       # meaningless with polars unpinned, and
       # the first run of this job was red on exactly one of them.
+      - run: uv run pytest -q -m "not soak and not pins"
+
+  next-numpy:
+    name: test against NumPy's next release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    # NumPy is the one optional dependency (`polars-online[numpy]`,
+    # `numpy>=1.24`, no ceiling to drop), and every other job runs on the
+    # locked NumPy. Its release candidates allowed and nothing else moved, a
+    # red run means NumPy broke this library, a release before it ships (the
+    # user, 2026-09-30). The Rust side does not link NumPy, so no cargo tests.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: free disk and use a leaner linker
+        uses: ./.github/actions/linux-build-prep
+      - run: uv sync --prerelease=allow --upgrade-package numpy
+      - name: versions in play
+        run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins"

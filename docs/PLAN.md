@@ -5974,6 +5974,24 @@ is not, since the model alone has `0.0` and `3.5` there.
       back at 0.8.0's rate; at the default cadence, +3 to +10%. Left: about
       twenty allocations a solve.
 
+- [x] 142. **NumPy's newest and next versions, tested as Polars's are** (the
+      user, 2026-09-30: "Since numpy is an optional dependency we should
+      test on the next release candidate of that too as we do with
+      polars"). S. NumPy is the one optional extra (`numpy>=1.24`, no
+      ceiling), and every job ran on the locked NumPy: 2.5.2, where PyPI has
+      2.5.3. **Built:** `release.yml` gains `next-numpy`, two legs like
+      `next-polars`: the newest NumPy blocks the publish, and its next
+      release candidate (`--prerelease=allow`) is advisory. Only NumPy is
+      upgraded, so a red leg names it. `polars-canary.yml` gains the same
+      advisory run weekly. On 2026-09-30 NumPy's candidates on PyPI,
+      2.4.0rc1 and 2.5.0rc1, are older than 2.5.3, so both legs resolve to
+      2.5.3 until the first 2.6 or 3.0 candidate. `tests/test_release_workflow.py`
+      holds the legs, and `test_ci_cost_policy.py` now names the prep
+      action's callers. A workflow change, so the next release rehearses
+      first, with publish off. Left as it is: the extra has no ceiling, so a
+      NumPy 3.0 that breaks this library blocks every release until it is
+      fixed or capped, the trade the Polars range makes too.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

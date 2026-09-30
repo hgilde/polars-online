@@ -24,7 +24,8 @@ with its evidence.
 A release is dispatched, and `.github/workflows/release.yml` does the rest:
 dispatched on `main` with `publish` on, it runs CI on all three OSes, builds
 every wheel and the CLI, runs the state hand-off and the suite on the newest
-Polars, waits for approval, uploads to PyPI, and only then creates the tag
+Polars and the newest NumPy, waits for approval, uploads to PyPI, and only
+then creates the tag
 `v<version>` on the sha it tested, and the GitHub release. With `publish`
 off, the same run is the rehearsal, and tags and uploads nothing. A tag
 pushed by hand starts nothing. Three things make it safe: a gate in front of
@@ -55,7 +56,8 @@ emails when one is waiting.
 **The job asks for approval only after every job it needs is green.** On
 2026-09-06 that list read `needs: [sdist, build, read-state]`; since
 2026-09-10 (`e6da97c`) it also names `next-polars`, which tests the newest
-Polars at the release, and since 2026-09-27 `version` and `ci`:
+Polars at the release, since 2026-09-27 `version` and `ci`, and since
+2026-09-30 `next-numpy`:
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
@@ -65,6 +67,7 @@ Polars at the release, and since 2026-09-27 `version` and `ci`:
 | `build` | all six wheels, and the command-line binaries | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
 | `next-polars` | the whole suite, in two legs: on the newest Polars the declared range admits, and on the next major | the first leg only; the second is advisory |
+| `next-numpy` | the whole suite, in two legs: on the newest NumPy, which the optional extra's `numpy>=1.24` admits, and on NumPy's next release candidate, with only NumPy upgraded | the first leg only; the second is advisory |
 | `publish to PyPI` | the upload | it is the gate |
 | `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels and CLI binaries | no: they run after the upload |
 
@@ -311,7 +314,7 @@ floor, so a change to either has to change both.
 made on the measurements in
 [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10).
 Two hedges back it, as the note in `pyproject.toml` records:
-`polars-canary.yml` runs the suite against the latest polars weekly. `release.yml` runs it again at every tag, on the
+`polars-canary.yml` runs the suite against the latest polars weekly, and in a second job against NumPy's next release candidate. `release.yml` runs it again at every tag, on the
 newest version the range admits, and blocks the release if it fails. A third
 hedge went with task 85: the expression plugin's ABI was version-negotiated,
 and refused to load rather than misbehave. What remains on the paths that

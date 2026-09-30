@@ -3190,6 +3190,12 @@ day after it ships. A pass on the pinned version is not what the range
 says. The second is early warning. The steps for raising the ceiling to a
 new major are in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
+NumPy, the one optional dependency (`polars-online[numpy]`, `numpy>=1.24`),
+is held the same way. The canary installs its next release candidate each
+week, and every release runs the suite on the newest NumPy, which blocks
+the publish, and on its next release candidate, which does not. Only NumPy
+moves in those runs, so a red one names it.
+
 #### This package's own versioning
 
 Semantic versioning. While pre-1.0, the **minor** version carries breaking
@@ -3292,8 +3298,8 @@ generated output that gets tracked fails a test.
 |---|---|
 | before every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the build, `pytest` and `sphinx -W` |
 | every push and pull request | the tests on Ubuntu, Windows and macOS, on Python 3.12 and 3.14, and on 3.13 on Linux; the format, lint, type and documentation checks, on Linux; mutation testing of the lines the change touched, which fails on a mutant no test catches; and every output compared with the newest release's, bit for bit, as a report |
-| every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits |
-| weekly | the suite on the newest py-polars; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
+| every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, and on the newest NumPy |
+| weekly | the suite on the newest py-polars, and on NumPy's next release candidate; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
 
 Tests generate or download their own data, so there are no data files in
 the repository; downloads are cached under `.cache/` and skipped when

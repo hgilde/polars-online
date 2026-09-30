@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Added
+
+- **A release is tested on the newest NumPy and on its next release
+  candidate.** NumPy is the optional extra (`polars-online[numpy]`), and
+  every other run used the locked version. The newest NumPy now blocks a
+  publish, as the newest Polars in range does, and NumPy's next release
+  candidate is an early warning, at the release and in the weekly canary.
+
 ## [0.13.0] — 2026-09-30
 
 ### Added
