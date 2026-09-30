@@ -162,6 +162,13 @@ carries breaking changes, and any change to the numbers a model returns.
   second at k=20, 41% at k=50, and 42% where every row solves; with
   `coef_every=1`, which reads the shares on every row, it is 1 to 3% slower.
 
+- **`ewridge`'s solve copies and divides less.** Without `standardize` it
+  reads its system straight from the feature sums, where it copied them
+  and divided every entry by a scale of 1; with it, it reads only their
+  diagonal for the scales. The Cholesky factor solves in place. Every output
+  is the same to the bit. Where every row solves, `ewridge` is 8% faster at
+  k=5, 14% at k=20 and 19% at k=50; at the default cadence, 3 to 10%.
+
 - **The CLI writes NDJSON from one thread.** It serialized a slice per
   thread, which on macOS's system allocator once ran from 4.8 s to 54 s on
   3M rows. Measured again, one thread is the faster: 4.7 s against 5.0 s on

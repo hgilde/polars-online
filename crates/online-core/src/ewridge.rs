@@ -1052,21 +1052,21 @@ impl EwRidge {
         let kc = zidx.len();
         let kf = kc - 1;
         let mr = readers.len();
-        let mut c = vec![0.0; kf * kf];
-        for i in 0..kf {
-            for j in 0..kf {
-                c[i * kf + j] = cov.cov(zidx[i + 1], zidx[j + 1]);
-            }
-        }
-        let (s, keep): (Vec<f64>, Vec<usize>) = if self.cfg.standardize {
-            let s = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
+        // The system is read straight from the Gram, `C`'s entries as they
+        // are needed: the scales and the kept columns need only its
+        // diagonal. Unstandardized, every scale is 1 and every column is
+        // kept, and a division or product by 1 gives back the same bits, so
+        // none is made: at a solve a row the `k²` copy and divisions were a
+        // sixth of the solve (docs/PERFORMANCE.md §29).
+        let standardize = self.cfg.standardize;
+        let var = |i: usize| cov.cov(zidx[i + 1], zidx[i + 1]);
+        let (s, keep): (Vec<f64>, Vec<usize>) = if standardize {
+            let s = (0..kf).map(|i| var(i).max(0.0).sqrt()).collect();
             // A genuinely constant feature is dropped (coefficient 0) rather
             // than blowing up; with centered accumulators its variance is
             // exactly zero.
             let keep = (0..kf)
-                .filter(|&i| {
-                    crate::variance_is_usable(c[i * kf + i], cov.raw(zidx[i + 1], zidx[i + 1]))
-                })
+                .filter(|&i| crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1])))
                 .collect();
             (s, keep)
         } else {
@@ -1078,27 +1078,44 @@ impl EwRidge {
         if kk > 0 {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
-                for (j2, &j) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = c[i * kf + j] / (s[i] * s[j]);
+                let row = &mut asub[i2 * kk..(i2 + 1) * kk];
+                if standardize {
+                    for (a, &j) in row.iter_mut().zip(&keep) {
+                        *a = cov.cov(zidx[i + 1], zidx[j + 1]) / (s[i] * s[j]);
+                    }
+                } else {
+                    for (a, &j) in row.iter_mut().zip(&keep) {
+                        *a = cov.cov(zidx[i + 1], zidx[j + 1]);
+                    }
                 }
-                asub[i2 * kk + i2] += ridge;
+                row[i2] += ridge;
             }
             let mut bsub = vec![0.0; kk * mr];
             for (jj, &j) in readers.iter().enumerate() {
                 for (i2, &i) in keep.iter().enumerate() {
-                    bsub[jj * kk + i2] = cross.c[j][zidx[i + 1]] / s[i];
+                    let z = zidx[i + 1];
+                    bsub[jj * kk + i2] = if standardize {
+                        cross.c[j][z] / s[i]
+                    } else {
+                        cross.c[j][z]
+                    };
                     // Warm prior: shrink toward coef_prior rather than toward
                     // zero. It lives in original units, and on the
                     // standardized scale a coefficient is beta * sd.
                     if let Some(c0) = &self.cfg.coef_prior {
-                        bsub[jj * kk + i2] += ridge * c0[j][zidx[i + 1]] * s[i];
+                        bsub[jj * kk + i2] += if standardize {
+                            ridge * c0[j][z] * s[i]
+                        } else {
+                            ridge * c0[j][z]
+                        };
                     }
                 }
             }
             let (sol, factor) = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
-                    out[jj * kc + i + 1] = sol[jj * kk + i2] / s[i];
+                    let v = sol[jj * kk + i2];
+                    out[jj * kc + i + 1] = if standardize { v / s[i] } else { v };
                 }
             }
             system = Some((asub, factor));

@@ -40,6 +40,7 @@ are.
 | [27. `marginal`'s shared feature moments](#27-marginals-shared-feature-moments-e72-task-125-2026-09-29) | you keep many targets' pairs in one `marginal`, and want what `feature_moments="shared"` saves | |
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 | [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why task 87's cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [task 87's cost](#task-87s-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read-task-140) |
+| [30. Where every row solves](#30-where-every-row-solves-2026-09-29) | your stream solves on every row, and you want what that path lost since 0.5.1 and what task 141 won back | [bisecting the solve](#bisecting-the-solve) · [where the time went](#where-the-time-went) · [the change](#the-change-task-141) |
 
 ## Reading this document
 
@@ -3662,7 +3663,104 @@ Task 140 recovers 79% of the stub's gain on the first row. The groups row
 runs 500 streams on the pool, so it moves with the machine's load; a second
 run gave 3.14M. Even the stub runs 23% below the rate §19 recorded on
 2026-09-08. This section's bisect timed the default cadence, where that gap
-does not show, so what costs a stream that solves every row is unexplained.
+does not show; §30 bisects it.
 The README's Parallelism figures at k=20, §26's thread sweep over 64 groups
 and §28's eight specs, predate the fix and were not re-run: at load 4, a
 14-thread run would time the other jobs as much as this one.
+
+## 30. Where every row solves (2026-09-29)
+
+§29 left one gap open: with a solve on every row, even its stub ran 23%
+below the rate §19 recorded on 2026-09-08. The user asked for it next
+("Solve-every-row speed").
+
+### Bisecting the solve
+
+Every release, then the builds §29 left between them, on
+`scripts/sklearn_comparison.py`'s stream: 100k rows, `ridge=1e-6`,
+`min_periods=50`, `halflife=inf`, `max_rows_between_solves=1`. Best of
+three rounds that visit every build in turn, at load 1.7 to 4.8. Rows a
+second at k=20:
+
+| build | rows/s | step |
+|---|---:|---:|
+| 0.5.1 | 546k to 559k | |
+| `ea99161`, the library batch of the 2026-09-12 review | 500k | −10.6% |
+| 0.6.0 to `11e3ccb` | 485k to 501k | within noise |
+| `3e0b359`, task 87 | 300k | −40% |
+| 0.12.0 | 292k | |
+| §29's stub, `80df0ac` without the diagonal | 448k | |
+| `3c9fbf6`, task 140 | 412k | |
+
+The review's step is spread over its commits: `d3312bc`, halfway, already
+loses 8% at k=50. Each commit is a correctness fix, above all N1's centred
+cross-moments and centred solve, so the step is their price rather than
+one change to take back. Against `11e3ccb`, the last build before task 87,
+the stub is 9.5% down: task 87's per-row readiness work, and a little
+since. Task 140's bookkeeping takes 8% more.
+
+### Where the time went
+
+A build of `3c9fbf6` with symbols, sampled while it looped the stream: at
+k=20, `EwRidge::solve` is 90% of a row. Of the solve:
+
+| part | share |
+|---|---:|
+| the Cholesky factorization | 34% |
+| the solve's own code: the centred system copied out of the Gram, then divided by its scales | 23% |
+| the coefficients' two triangular solves, mostly faer's per-call matrices for one right-hand side | 13% |
+| the system copied into faer's matrix through a closure | 8% |
+| the finiteness check behind task 140's bound | 5% |
+| zeroed buffers | 3% |
+
+The scales are all 1 when the solve does not standardize, and dividing by
+1 returns its operand. At k=50 the factorization is 55%.
+
+### The change (task 141)
+
+Four changes, none of which moves a bit:
+
+| change | why the bits stay |
+|---|---|
+| unstandardized, the centred system is read straight from the Gram, with no copy of `C` and none of the `k²` divisions or products by 1 | a division or product by 1 returns its operand |
+| standardized, only `C`'s diagonal is read for the scales and the kept columns, and each entry is divided as it is taken | the same entries, divided by the same scales |
+| `SpdFactor::solve`, `quad_forms` and `inverse_diagonal` solve in place on the right-hand side's own matrix | faer's `solve` is a zeroed copy of it, from the same allocator, solved in place |
+| `SpdFactor`'s `ln det` is taken on its first read | the same sum, when `bocpd`, `deco`, `ew_class` or `hmm` reads it; `ewridge` never does |
+
+The A/B against `80df0ac` now has 20 workloads, among them `coef_prior`
+with and without `standardize`: 8,635,324 floats in 182 frames, 40 state
+files and 79 warnings, the same to the bit. Rows a second, best of five
+interleaved rounds at load 2.7 to 3.5 where every row solves, and of three
+at load 5.8 to 6.2 at the default cadence:
+
+| `ewridge` | every row, `3c9fbf6` | task 141 | default cadence, `3c9fbf6` | task 141 |
+|---|---:|---:|---:|---:|
+| k=5 | 1,328k | 1,434k, +8.0% | 5.81M | 5.99M, +3.2% |
+| k=20 | 425k | 482k, +13.5% | 2.88M | 3.06M, +6.5% |
+| k=50 | 81.5k | 96.9k, +19.0% | 0.860M | 0.945M, +9.9% |
+| k=20, halflife 100 | 418k | 487k, +16.6% | | |
+| k=20, `standardize` | 401k | 438k, +9.2% | | |
+| k=20, `coef_every=1` | | | 1.56M | 1.61M, +3.0% |
+
+At k=20 a solve on every row is back at 0.8.0's rate. 0.5.1's is 12%
+higher still: the review's fixes and the readiness work. What is left of
+the solve's own overhead is about twenty allocations a solve, not taken
+here.
+
+The README's figures, re-measured on this build at load 3.2 to 3.5, with
+the same scripts as §29:
+
+| configuration | after task 140 | after task 141 |
+|---|---:|---:|
+| `ewridge` k=5 | 5,667,783 | 6,199,532 |
+| `ewridge` k=20 | 2,877,462 | 3,068,424 |
+| `ewridge` k=50 | 842,762 | 946,975 |
+| `ewridge` k=20, 10 targets | 1,541,145 | 1,653,010 |
+| `ewridge` k=20, halflife 500 | 2,211,610 | 2,443,773 |
+| `ewridge` k=20, 5 halflives | 1,625,454 | 1,714,699 |
+| `ewridge` + `conformal` | 2,894,950 | 3,070,074 |
+| `rls`, beside them | 1,614,468 | 1,662,687 |
+| §19's stream, refit every row | 410,729 | 480,202 |
+| §19's 500 groups × 200 rows | 3,422,801 | 3,765,320 |
+| 6M rows, `halflife=inf`, each row solved | 14.9 s | 12.8 s |
+| `predict` against learning, k=5 and k=20 | 1.85×, 2.82× | 1.81×, 2.79× |

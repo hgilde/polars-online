@@ -594,7 +594,7 @@ missing where the others are present takes a copy of the Gram and keeps
 its own from then on. The copy only ages over the rows the target lacks,
 so its fit holds still. Under `"pairwise"` the one Gram learns every row,
 so a null target's coefficients drift with the feature noise. `predict`
-is also the fast path: `ewridge` scores 1.9 to 2.8 times as fast as it
+is also the fast path: `ewridge` scores 1.8 to 2.8 times as fast as it
 learns.
 
 ### Row order and the two guarantees
@@ -1483,7 +1483,7 @@ cuts the history off at a fixed age ([A hard window](#a-hard-window)).
 solves by weight: once the weight learned since the last solve reaches
 `ln 2 / 50` of the weight the fit holds, about 1.4 %. So a very long
 halflife keeps solving as the stream grows. `solve_every=1000` on the
-6M-row stream above takes 1.5 s instead of 15 s, with the coefficients at
+6M-row stream above takes 1.5 s instead of 13 s, with the coefficients at
 most 1000 rows out of date.
 
 `target_gaps` says which rows a target's `S_j` covers when the target is
@@ -2685,28 +2685,28 @@ An Apple M4 Pro, one process, best of 3, 200k rows per run, measured on
 2026-09-29 (`uv run python scripts/benchmark.py --markdown`;
 [PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29)
 has the run). The `ewridge` rows, and `rls` beside them, were re-measured
-the same day, once `ewridge` took its readiness shares only when read
-([§29](docs/PERFORMANCE.md#the-fix-the-shares-when-they-are-read-task-140)):
+the same day, after tasks 140 and 141 made `ewridge`'s solve cheaper
+([§30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)):
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 5,667,783 |
-| `ewridge` k=20 | 1 target, 1 halflife | 2,877,462 |
-| `ewridge` k=50 | 1 target, 1 halflife | 842,762 |
-| `ewridge` k=20 | 10 targets | 1,541,145 |
-| `ewridge` k=20 | 5 halflives, 500 to 2,500 | 1,625,454 |
-| `rls` | k=20, 1 target | 1,614,468 |
+| `ewridge` k=5 | 1 target, 1 halflife | 6,199,532 |
+| `ewridge` k=20 | 1 target, 1 halflife | 3,068,424 |
+| `ewridge` k=50 | 1 target, 1 halflife | 946,975 |
+| `ewridge` k=20 | 10 targets | 1,653,010 |
+| `ewridge` k=20 | 5 halflives, 500 to 2,500 | 1,714,699 |
+| `rls` | k=20, 1 target | 1,662,687 |
 | `kalman` | k=20, 1 target | 1,876,826 |
 | `lasso` | k=20, 1 target (3-point path) | 1,629,739 |
 | `huber` | k=20, 1 target | 3,267,509 |
 | `ftrl` | k=20, 1 target | 3,873,282 |
 
-Targets share one set of feature sums, so 10 targets take 1.87 times as
+Targets share one set of feature sums, so 10 targets take 1.86 times as
 long as one, rather than 10 times. Each halflife in a grid is its own set
-of sums, but they run in parallel. So the 5-halflife grid takes 1.36 times
-as long as its shortest halflife alone, 2,211,610 rows a second, rather
+of sums, but they run in parallel. So the 5-halflife grid takes 1.43 times
+as long as its shortest halflife alone, 2,443,773 rows a second, rather
 than 5 times. A shorter halflife solves more often, so that halflife of
-500 runs slower than the 1,000 every other row here uses. `rls` runs at 56% of
+500 runs slower than the 1,000 every other row here uses. `rls` runs at 54% of
 `ewridge`'s speed for its square-root form, which is what keeps one
 extreme row from destroying it by cancellation.
 
@@ -2715,7 +2715,7 @@ rows:
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` + `conformal` | k=20, 90% interval | 2,894,950 |
+| `ewridge` + `conformal` | k=20, 90% interval | 3,070,074 |
 | `sgd` | k=20, squared loss | 8,423,373 |
 | `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,288,779 |
 | `pa` | k=20 | 8,284,518 |
@@ -2995,8 +2995,8 @@ Measured on 2026-09-08 on one generated stream of 100,000 rows with
 script is `scripts/sklearn_comparison.py`, on scikit-learn 1.9.0, and
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §19 has the full tables and the
 sweeps. `po.spec.ewridge` solves on every row there, and its rates in this
-section were re-measured on 2026-09-29, after it began taking its readiness
-shares only when read ([§29](docs/PERFORMANCE.md#the-fix-the-shares-when-they-are-read-task-140)).
+section were re-measured on 2026-09-29, after tasks 140 and 141 made its
+solve cheaper ([§30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)).
 The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
@@ -3005,7 +3005,7 @@ The noise ceiling is the R² of the generating signal itself:
 | `SGDRegressor`, row by row | 0.9829 | 0.9899 | 3,400 | every row before it |
 | `SGDRegressor`, batches of 1,000 | 0.9830 | 0.9820 | 2,200,000 | every row before its *batch* |
 | `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
-| `po.spec.ewridge` | **0.9831** | **0.9907** | 411,000 | every row before it |
+| `po.spec.ewridge` | **0.9831** | **0.9907** | 480,000 | every row before it |
 
 **Accuracy is not the difference.** Everything reaches the ceiling on the
 stationary stream, and the row-by-row contenders are within 0.001 of each
@@ -3037,7 +3037,7 @@ row by row, and the bank runs `group="g"`. R² by position in the group:
 | noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
 | `SGDRegressor` per group, at its best | 0.7277 | 0.9242 | 0.9789 | 3,342 |
 | `po.spec.sgd`, `scale_features=True`, the same step | 0.7182 | 0.9213 | 0.9788 | 18,519,660 |
-| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 3,422,801 |
+| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 3,765,320 |
 
 The `sgd` row uses sklearn's step. The 0.01 of R² between the two `sgd` rows
 is where the *prediction* is standardised. sklearn's loop standardises the

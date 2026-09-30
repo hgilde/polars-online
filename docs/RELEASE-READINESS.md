@@ -128,7 +128,7 @@ in its tree, and the test is pure Rust. The sixth is why the Linux jobs had
 never once restored a cache. Rehearsal one never reached it, because the
 sccache wrapper failed first and hid it.
 
-**The Linux CLI binaries need glibc 2.39, the build runner's own.**
+**0.11.1's Linux CLI binaries needed glibc 2.39, the build runner's own.**
 Measured on 0.11.1's release assets on 2026-09-27, from each binary's
 version requirements (`.gnu.version_r`), for x86_64 and aarch64 alike:
 
@@ -138,16 +138,16 @@ version requirements (`.gnu.version_r`), for x86_64 and aarch64 alike:
 | `GLIBC_2.35` | `hypot`, in libm | hard |
 | `GLIBC_2.39` | `pidfd_getpid` and `pidfd_spawnp`, which Rust's standard library uses to spawn a process | weak symbols, but the version requirement is not marked weak, so the loader refuses the binary without it |
 
-So the CLI starts on Ubuntu 24.04, Debian 13 or newer, and not on Ubuntu
+So that CLI started on Ubuntu 24.04, Debian 13 or newer, and not on Ubuntu
 22.04 (2.35), Debian 12 (2.36) or RHEL 9 (2.34). This was read from the
 files, not run on an older glibc: the machine that measured it has no
-container runtime. The binaries are built on the runner's own image, not
+container runtime. The binaries were built on the runner's own image, not
 in the manylinux2014 container the wheels come from (the wheels are
-`manylinux_2_17`), so the floor follows the image and rises when
-`ubuntu-latest` moves to 26.04.
+`manylinux_2_17`), so the floor followed the image and would have risen
+when `ubuntu-latest` moved to 26.04.
 
-**From the next release the Linux CLI is built in that manylinux2014
-image, at glibc 2.17** (the user's decision, 2026-09-28; [PLAN](PLAN.md)
+**Since 0.12.0 the Linux CLI is built in that manylinux2014 image, at
+glibc 2.17** (the user's decision, 2026-09-28; [PLAN](PLAN.md)
 task 115 (i)). `release.yml`'s build job runs `cargo build` in
 `quay.io/pypa/manylinux2014_<arch>`, the image for the runner's own
 architecture, with Rust installed inside it as maturin-action installs it
@@ -155,10 +155,9 @@ there; a `docker run` step, since the image's glibc is too old for the
 actions' JavaScript to run as a job container. `scripts/glibc_floor.py`
 then reads the binary's version requirements and fails the job above 2.17,
 before anything is uploaded. On 0.11.1's x86_64 binary it reports 2.39 and
-refuses it. **No run on GitHub has built it yet**: the change is untested
-until a dispatched run, and a rehearsal (`publish` off) is the way to try
-it first. Until a release carries it, a deployment on an older glibc builds
-the CLI from a checkout.
+refuses it. The 0.12.0 rehearsal was the first run to build it (run
+36448809775 on `36e468c`): the binaries need glibc 2.16 on x86_64 and 2.17
+on aarch64, and 0.12.0 shipped them.
 
 ### Compare with the last release, bit for bit (2026-09-24)
 

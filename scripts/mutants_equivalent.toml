@@ -111,7 +111,7 @@ agree on every value it takes"""
 file = "crates/online-core/src/ewridge.rs"
 function = "EwRidge::solve_centred"
 mutation = "replace + with *"
-line_has = "crate::variance_is_usable(c[i * kf + i], cov.raw(zidx[i + 1], zidx[i + 1]))"
+line_has = "crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1]))"
 why = """both mutants are inside the second argument, and `variance_is_usable` \
 ignores it (it tests the variance alone since the review of 2026-09-12); \
 `zidx[i * 1]` is still in range, so nothing is computed differently"""

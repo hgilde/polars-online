@@ -4661,7 +4661,7 @@ decision it needs, with a recommendation where there is one.
       its `u` rows to the feature count). `SCHEMA_VERSION` 20 carries the
       monitoring period.
 
-- [ ] 115. **Decisions on behaviour that is built.** Each is S–M once
+- [x] 115. **Decisions on behaviour that is built.** Each is S–M once
       decided; the evidence goes with it. (a) `share_p`: VALIDATION §4 shows
       sharing better on both targets, and this plan keeps `False` because it
       hurt one — re-measure, then decide. **Decided 2026-09-28 (the user:
@@ -4779,7 +4779,8 @@ decision it needs, with a recommendation where there is one.
       (the whole sweep) and a test in each model's file; the oracles
       (`rls_ref`, `ftrl_ref`, `rls_paths_ref`, `pa_ref`, `sgd_ref`) gate the
       same way. `sgd`'s `inv_scaling` rate still reads the shared weight.
-      Of (d), only `ftrl`'s penalties are open. (e) The 2026-09-12 review's
+      (d) is done: `ftrl`'s penalties, its last item, are built above. (e)
+      The 2026-09-12 review's
       sign-offs (P4's calls; decisions 1, 3, 4 and 5; D1's caveat to rule
       5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. **Approved
       2026-09-29** (the user: "115.5 approve all"): decisions 1, 4 and 5
@@ -4846,8 +4847,12 @@ decision it needs, with a recommendation where there is one.
       `quay.io/pypa/manylinux2014_$(uname -m)`, and
       `scripts/glibc_floor.py` fails the build job above 2.17 before any
       upload (`tests/test_release_workflow.py` holds the shape; the script
-      refuses 0.11.1's binary at 2.39). Untested on GitHub until the next
-      dispatched run; a rehearsal first is the way to try it.
+      refuses 0.11.1's binary at 2.39). The 0.12.0 rehearsal built it (run
+      36448809775 on `36e468c`: 2.16 on x86_64, 2.17 on aarch64), and 0.12.0
+      shipped it.
+
+      **Done 2026-09-29:** every item, (a) to (i) and S30, is decided and
+      built.
 
 - [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
       defaults move, so *the scope is the user's*. A readiness statistic for
@@ -5950,6 +5955,24 @@ is not, since the model alone has `0.0` and `3.5` there.
       figures at k=20 were not: at load 4, a 14-thread run times the other
       jobs. Found on the way, not investigated: where every row solves, even
       the stub runs 23% below §19's rate of 2026-09-08.
+
+- [x] 141. **Solve-every-row speed** (the user, after task 140 found §29's
+      stub 23% below §19's rate where every row solves: "Solve-every-row
+      speed"). S–M. PERFORMANCE §30 has the bisect: at k=20, 0.5.1 ran
+      546k rows a second, the 2026-09-12 review's library batch took
+      10.6% (N1's centred solve and the rest, spread over its commits),
+      task 87 took 40%, and after task 140 it was 412k. A profile put 90%
+      of a row in the solve: its own copy of the centred system and `k²`
+      divisions by scales of 1 (23%), faer's per-call matrices for one
+      right-hand side (13%), and the factorization's input copy (8%).
+      **Built 2026-09-29:** unstandardized, the solve reads the Gram
+      straight, with no divisions by 1; standardized, it reads only `C`'s
+      diagonal for its scales; `SpdFactor` solves in place, as faer's own
+      `solve` does after its copy; `ln det` is taken when read. No bit
+      moves: 20 workloads against `80df0ac`, `coef_prior` among them. Every
+      row solving, +8% at k=5, +13.5% at k=20 and +19% at k=50, with k=20
+      back at 0.8.0's rate; at the default cadence, +3 to +10%. Left: about
+      twenty allocations a solve.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

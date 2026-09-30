@@ -1,6 +1,8 @@
 //! Shared dense solves: Cholesky via `faer` with a jittered-diagonal fallback
 //! (docs/PLAN.md §7). Never NaN silently; callers count `solve_failures`.
 
+use std::sync::OnceLock;
+
 use faer::Side;
 use faer::linalg::solvers::Llt;
 use faer::prelude::*;
@@ -59,7 +61,9 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
 #[derive(Clone, Debug)]
 pub struct SpdFactor {
     llt: Llt<f64>,
-    log_det: f64,
+    /// `ln det`, taken on the first read: `ewridge`'s solves never read it,
+    /// and at one solve a row its `k` logarithms were 1% of the row.
+    log_det: OnceLock<f64>,
     attempts: u32,
     jitter: f64,
 }
@@ -68,11 +72,9 @@ impl SpdFactor {
     /// Factorize `A` (row-major `k*k`), or `None` if every jitter fails.
     pub fn of(a: &[f64], k: usize) -> Option<Self> {
         let (llt, attempts, jitter) = factorize(a, k)?;
-        let l = llt.L();
-        let log_det = 2.0 * (0..k).map(|i| l[(i, i)].ln()).sum::<f64>();
         Some(Self {
             llt,
-            log_det,
+            log_det: OnceLock::new(),
             attempts,
             jitter,
         })
@@ -80,7 +82,10 @@ impl SpdFactor {
 
     /// `ln det` of the matrix factorized (jitter included).
     pub fn log_det(&self) -> f64 {
-        self.log_det
+        *self.log_det.get_or_init(|| {
+            let l = self.llt.L();
+            2.0 * (0..l.nrows()).map(|i| l[(i, i)].ln()).sum::<f64>()
+        })
     }
 
     /// Jitter attempts the factorization needed; 0 when `A` factorized as given.
@@ -101,7 +106,11 @@ impl SpdFactor {
     /// bit, since both are this factor's `solve`.
     pub fn solve(&self, b: &[f64], k: usize, m: usize) -> Vec<f64> {
         debug_assert_eq!(b.len(), k * m);
-        let x = self.llt.solve(Mat::from_fn(k, m, |i, j| b[j * k + i]));
+        // faer's `solve` is a zeroed copy of its right-hand side solved in
+        // place; this is that, on the right-hand side's own matrix, with one
+        // allocation and one copy fewer.
+        let mut x = Mat::from_fn(k, m, |i, j| b[j * k + i]);
+        self.llt.solve_in_place(&mut x);
         let mut out = vec![0.0; k * m];
         for j in 0..m {
             for i in 0..k {
@@ -117,7 +126,8 @@ impl SpdFactor {
     /// and the effective degrees of freedom are read from
     /// (docs/WARMUP-AND-CONVERGENCE.md §2.2).
     pub fn inverse_diagonal(&self, k: usize) -> Vec<f64> {
-        let x = self.llt.solve(Mat::<f64>::identity(k, k));
+        let mut x = Mat::<f64>::identity(k, k);
+        self.llt.solve_in_place(&mut x);
         (0..k).map(|i| x[(i, i)]).collect()
     }
 
@@ -178,8 +188,8 @@ impl SpdFactor {
     /// and rounding in the solve must not hand the caller a negative one.
     pub fn quad_forms(&self, d: &[f64], k: usize, m: usize) -> Vec<f64> {
         debug_assert_eq!(d.len(), k * m);
-        let rhs = Mat::from_fn(k, m, |i, j| d[j * k + i]);
-        let x = self.llt.solve(&rhs);
+        let mut x = Mat::from_fn(k, m, |i, j| d[j * k + i]);
+        self.llt.solve_in_place(&mut x);
         let mut q = vec![0.0; m];
         for (j, qj) in q.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -203,7 +213,7 @@ impl SpdFactor {
 /// same computation split so the factor can be kept.
 pub fn quad_forms_logdet(a: &[f64], d: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, f64, u32)> {
     let f = SpdFactor::of(a, k)?;
-    Some((f.quad_forms(d, k, m), f.log_det, f.attempts))
+    Some((f.quad_forms(d, k, m), f.log_det(), f.attempts))
 }
 
 /// `beta · [1, x]` when `add_intercept`, else `beta · x`, summed left to
