@@ -148,7 +148,7 @@ alone.
 |---|---|
 | **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any chunking** | one chunk or a thousand gives the same output, to the last bit |
-| **any thread count** | each (spec, group) pair is fitted on its own thread, and the count changes only the speed: with 64 groups, 14 threads process 8.4× the rows per second of one ([Parallelism](#parallelism)) |
+| **any thread count** | each (spec, group) pair is fitted on its own thread, and the count changes only the speed: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
 | **bounded memory** | memory is proportional to the models' state, not to the number of rows that have passed ([Memory](#memory-which-calls-stream)) |
 | **named mistakes** | every keyword is checked against its type, and a missing column is reported with the spec that wanted it and the role it had there |
 | **a tested claim** | 1,149 Rust tests and 3,597 Python cases (counted on 2026-09-29), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
@@ -2918,15 +2918,15 @@ scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
 ```
 
 Every chunk puts 6 × 64 stream tasks on the pool. On 2.56M rows over 64
-groups, that query takes 32.7 s at one thread and 4.9 s at fourteen
-([PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29)). The
+groups, that query takes 29.0 s at one thread and 4.3 s at fourteen
+([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)). The
 output is one column per spec, which is what `compare_specs` reads, and one
 state file holds them all. Where the parallelism comes from:
 
 | source | measured |
 |---|---|
-| groups | k=20 over 64 groups: 0.52M, 1.04M, 1.91M, 3.56M and 4.40M rows/s at 1, 2, 4, 8 and 14 threads, 8.4× on a 14-core machine ([PERFORMANCE §26](docs/PERFORMANCE.md#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27)) |
-| specs | eight single-group specs in one bank run in 183 ms, against 726 ms one at a time |
+| groups | k=20 over 64 groups: 0.98M, 1.89M, 3.44M, 5.98M and 7.08M rows/s at 1, 2, 4, 8 and 14 threads, 7.3× on a 14-core machine ([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)) |
+| specs | eight single-group specs in one bank run in 155 ms, against 641 ms one at a time |
 | halflives | each halflife in a grid is its own set of running sums, and the instances of a stream run alongside each other. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread |
 | Python | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` |
 
@@ -2968,10 +2968,10 @@ halflives:
 
 | Polars threads | bank threads | time | peak memory |
 |---:|---:|---:|---:|
-| 14 | 14 | 1.9 s | 0.85 GB |
-| 4 | 14 | 2.1 s | 0.61 GB |
+| 14 | 14 | 1.6 s | 0.86 GB |
+| 4 | 14 | 1.9 s | 0.58 GB |
 
-Keeping Polars at four threads holds 28% less memory, for 8% more time.
+Keeping Polars at four threads holds 33% less memory, for 15% more time.
 The pools never wait on each other, because a bank task never calls back
 into Polars' pool, so giving both more threads than there are cores slows
 neither.

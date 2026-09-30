@@ -41,7 +41,7 @@ are.
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 | [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why task 87's cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [task 87's cost](#task-87s-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read-task-140) |
 | [30. Where every row solves](#30-where-every-row-solves-2026-09-29) | your stream solves on every row, and you want what that path lost since 0.5.1 and what task 141 won back | [bisecting the solve](#bisecting-the-solve) · [where the time went](#where-the-time-went) · [the change](#the-change-task-141) |
-| [31. 0.13.0 against 0.12.0](#31-0130-against-0120-2026-09-29) | you want this release's speed against the last, and the one slowdown it found and halved | |
+| [31. 0.13.0 against 0.12.0](#31-0130-against-0120-2026-09-29) | you want this release's speed against the last, the one slowdown it found and halved, or the Parallelism figures on it | [Parallelism, re-measured](#the-parallelism-figures-re-measured) |
 
 ## Reading this document
 
@@ -3811,3 +3811,34 @@ all declared: `ridge_window`, `lasso` and `enet` from the default cadence
 by weight (with `solve_every = halflife / 50`, the old rule, this build is
 0.12.0 to the bit on all three), `ftrl` from its penalties' scale, and
 `corrchange`'s `stat` from its kernel, with `since_change` new.
+
+### The Parallelism figures, re-measured
+
+The README's Parallelism figures were §26's and §28's, from before tasks
+140 and 141. Re-run on 0.13.0 at load 1.9 to 2.1, with Spotlight holding one
+core. `scripts/scaling_bench.py --markdown` runs each thread count once in a
+fresh process, and the 8- and 14-thread points moved 20% between runs, so
+this is the best of three:
+
+| threads | §26 | 0.13.0 | speedup |
+|---:|---:|---:|---:|
+| 1 | 522,984 | 976,436 | 1.0× |
+| 2 | 1,038,346 | 1,885,490 | 1.9× |
+| 4 | 1,911,813 | 3,444,557 | 3.5× |
+| 8 | 3,555,819 | 5,977,673 | 6.1× |
+| 14 | 4,398,367 | 7,083,585 | 7.3× |
+
+Its 64 groups each see every 64th row, so each group's `halflife=1000`
+spans about 16 of its rows and every row solves: one thread gained what
+§30's solve-every-row stream gained. The speedup is lower than §26's 8.4×
+because one thread is 87% faster, not because more threads are slower.
+`scripts/parallel_bench.py`, the README's other Parallelism workloads:
+
+| workload | §28 | 0.13.0 |
+|---|---:|---:|
+| the ticks grid, 2.56M rows, one thread | 32.7 s | 29.0 s |
+| the ticks grid, fourteen threads | 4.9 s | 4.26 s |
+| eight single-group specs, one bank | 183 ms | 155 ms |
+| eight single-group specs, one at a time | 726 ms | 641 ms |
+| 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
+| 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
