@@ -5874,10 +5874,37 @@ is not, since the model alone has `0.0` and `3.5` there.
         in entries written before this one; what they build takes the new.
       - **An old name is refused with a message naming the new one**
         (`max_dclock was renamed gap_cap`), in Python and in TOML: no alias,
-        and no bare "unknown field".
+        and no bare "unknown field". Outputs simply change (the user,
+        2026-10-02: no backward compatibility there): nothing reads an old
+        field name back, so there is nothing to refuse.
       - **The builder refuses two outputs that render to one field name**,
         as the bank already does at `fit_predict`; `output_fields` listed the
-        duplicate.
+        duplicate. The message names the inputs that collided, features
+        included: it said "rename a target or grid label" whatever the
+        cause, and for `pc0_var` the cause was a feature.
+
+      #### The outputs (decided 2026-10-02, the user: "Yes")
+
+      Beyond the outputs in the table above (`weight_sum`, `zscore_`,
+      `partial_corr_`, `penalty_selected_`):
+
+    | now | becomes | why |
+    |---|---|---|
+    | `n_eff` in `closed_groups` (and `pair_n_eff`), `coef()`, `last_row()`, `marginal()`, `gram()` keys and `po.eval`'s sums | `weight_sum` (`pair_weight_sum`) | `summary()` already calls this number `weight_sum`, so it had two names. |
+    | `withheld_reason` value `below_min_periods` | `below_min_weight` | Follows the parameter. |
+    | `coef()` column `lambda` | `penalty` | Follows `penalty_selected_<t>`. |
+    | PCA loadings `pc<j>_<feature>` | `pc<j>_loading_<feature>` | A feature named `var`, `share` or `score` collided with the component's own fields (measured 2026-10-02: `pc0_var` twice, refused at `fit_predict`). |
+    | `bocpd`'s `logscore` | `loglik` | `hmm` and `deco` call the same quantity, the row's log predictive density, `loglik`. |
+    | `hmm`'s `p_<k>`, `p1_<k>` | `filtered_<k>`, `predicted_<k>` | `p1` is cryptic; the docs call them the filtered and the predicted state. |
+    | `absresid_q<p>_<slot>` | `abs_resid_q<p>_<slot>` | The one fused word in the grammar; matches `mahal_q<p>`. |
+    | `micro`'s field `micro` | `micro_id` | The id of the summary the row goes to, not its model's name. |
+
+      Kept, checked: `pred_`, `resid_`, `sigma_`, `lo_`, `hi_`, `coverage_`,
+      `ic_`, `r2_`, `hit_rate_`, `autocorr_`, `drift_`, `selected_`,
+      `settled_frac`, `support_coef`, `error_inflation_`, the slot labels
+      (`__<set>`, `_r`, `__l`, `@h`), `describe()`'s columns (Polars' own
+      `describe` names), `closed_groups`' counters and clock range, and the
+      standard names of `rcov` (`omega2`, `iq`) and `seqtest` (`log_e_`).
       - Kept, deliberately: `clock`, `session`, `session_gap`, `group`,
         `group_close`, `weight`, `coef_every`, the `emit_*` family, the `@h`
         labels, the models' standard notation (`q`, `p0`, `obs_var`; FTRL's
@@ -5895,7 +5922,10 @@ is not, since the model alone has `0.0` and `3.5` there.
       the new one, from Python and from TOML; no old name left in the live
       docs (a search, never truncated); a target named `z_y` beside `y`
       accepted with `emit_zscore`; two outputs with one name refused by the
-      builder.
+      builder, naming the inputs; a feature named `var`, `share` or `score`
+      accepted beside `pca`; the same number under one name in every frame
+      (`weight_sum` in the fields, `summary()`, `closed_groups`, `coef()`,
+      `last_row()`, `marginal()`, `gram()` and `po.eval`).
 
 - [x] 145. **`session_shrink` mixes data, not weight -- built
       2026-10-02.** Size S. `ewridge`'s blend toward its slow twin at a
