@@ -5806,7 +5806,8 @@ is not, since the model alone has `0.0` and `3.5` there.
 - [ ] 144. **Window expressions take Polars' names and semantics -- planned,
       not built.** Where Polars has a parameter for the same thing, task
       143's operators take its name, values, default and meaning, and the
-      specs take `half_life`. Size M, with 143.
+      specs take `half_life`; the rest of the public names follow (below).
+      Size L, with 143.
 
     | Polars (`rolling_mean_by`, `ewm_mean_by`) | the window operators |
     |---|---|
@@ -5843,10 +5844,58 @@ is not, since the model alone has `0.0` and `3.5` there.
         Ships in the release that renames `label_delay` to `embargo` (task
         104), so specs break once.
 
+      #### The rest of the public names (decided 2026-10-02, the user: "Add all")
+
+      Each name was checked against Polars, against the rest of the API,
+      and against what it does. All ship in the same release as
+      `half_life` and `embargo`, with no aliases.
+
+    | now | becomes | why |
+    |---|---|---|
+    | `max_dclock` | `gap_cap` | "dclock" is internal shorthand. It caps how much clock one step counts, and a capped step is a break; "gap" is the library's word, as in `session_gap`. Not `max_gap`, which reads as a limit on the gaps allowed. |
+    | `window` (specs) | `window_size` | Polars' name, and the window operators'. `window_every`, `window_budget` and `window_lags` keep theirs. |
+    | `n_eff` | `weight_sum` | It is a weight, not a sample size (task 148); in statistics n_eff is Kish's effective sample size, which this library calls `n_kish`. In every output field (`weight_sum@h<h>`), the `closed_groups` columns (`pair_n_eff` becomes `pair_weight_sum`), the `gram()` keys and CLAUDE.md's rule 8. |
+    | `min_periods` | `min_weight` | It compares that weight. Polars renamed its own `min_periods` to `min_samples`, which counts rows, so neither name says what ours does. |
+    | `resid_z_<t>`, `emit_resid_z` | `zscore_<t>`, `emit_zscore` | `resid_` is a prefix of `resid_z_`, so a target named `z_y` made `resid_z_y` two fields (measured 2026-10-02: the builder accepted the spec and listed it twice, and `fit_predict` refused it). The one prefix collision in the output grammar. |
+    | `pcorr_<a>_<b>` (`ew_cov`) | `partial_corr_<a>_<b>` | The stat is asked for as `"partial_corr"`. |
+    | `scale_features` (`sgd`) | `standardize` | Every other model's name for it. |
+    | `on_clock_reset` + `min_backwards_jump` | `restart_after_step_back` | One rule in two vocabularies, the second required by one value of the first and refused by the other. Unset, a step back is an error; given a clock amount, a step back at least that large restarts the state and a smaller one is still refused. In the specs and in `with_windows`. A clock rule, so it gets the extra review task 120 calls for. |
+    | `ridge_decay` (bool) | `ridge_scale="mean"` or `"sum"` | Names the difference: a penalty on the mean moments, permanent, against a prior on the sums, fading (task 151's two families). Default `"mean"`. |
+    | `lam_selected_<t>` (`lasso`) | `penalty_selected_<t>` | `lam` is the decay factor. It keeps that name: Polars' alternative to `half_life` is `alpha`, which `ftrl`, `deco` and `corrchange` already use. |
+    | `add_intercept` | `fit_intercept` | scikit-learn's name for the same switch. |
+    | `max_cd_iters`, `cd_tol` (`lasso`) | `max_iter`, `tol` | scikit-learn's `Lasso`. |
+    | `reset` (`corrchange`) | `reset_on_flag` | "Reset" already names a clock event. |
+
+      - **Everywhere a name appears**: the spec builders, the Rust `Spec`,
+        the command line's TOML (`examples/bank.toml`), `with_windows` and
+        its frame methods, error messages, output fields, `closed_groups`
+        columns, `gram()` keys, docstrings, the README, the reference pages,
+        `llms.txt` and CLAUDE.md. The rest of this plan keeps the old names
+        in entries written before this one; what they build takes the new.
+      - **An old name is refused with a message naming the new one**
+        (`max_dclock was renamed gap_cap`), in Python and in TOML: no alias,
+        and no bare "unknown field".
+      - **The builder refuses two outputs that render to one field name**,
+        as the bank already does at `fit_predict`; `output_fields` listed the
+        duplicate.
+      - Kept, deliberately: `clock`, `session`, `session_gap`, `group`,
+        `group_close`, `weight`, `coef_every`, the `emit_*` family, the `@h`
+        labels, the models' standard notation (`q`, `p0`, `obs_var`; FTRL's
+        and DCC's `alpha` and `beta`; DenStream's `beta_mu`; PA's `c`), and
+        the model names (`ew_cov`, `ew_class` against Polars' `ewm_`: a
+        model rename breaks more than any parameter).
+      - Specs are stored in saved states, so the bank's
+        `MIN_SCHEMA_VERSION` rises once for all of it.
+
       Tests: each `closed` value in both directions against Polars'
       `rolling` on the same rows, equal timestamps included; `min_samples`
       against Polars'; a backward window's output waiting for the next
-      distinct timestamp, chunked anywhere.
+      distinct timestamp, chunked anywhere. For the names: the API surface
+      snapshot's diff is exactly this table; every old name refused naming
+      the new one, from Python and from TOML; no old name left in the live
+      docs (a search, never truncated); a target named `z_y` beside `y`
+      accepted with `emit_zscore`; two outputs with one name refused by the
+      builder.
 
 - [x] 145. **`session_shrink` mixes data, not weight -- built
       2026-10-02.** Size S. `ewridge`'s blend toward its slow twin at a
