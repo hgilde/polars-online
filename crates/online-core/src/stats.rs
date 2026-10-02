@@ -3,13 +3,12 @@
 //! Two diagnostics that complement `EwCov`'s moments and answer questions a
 //! standard deviation cannot:
 //!
-//! - [`P2Quantile`] — the P² algorithm (Jain & Chlamtac, 1985: "The P²
-//!   algorithm for dynamic calculation of quantiles and histograms without
-//!   storing observations", CACM 28(10), 1076-1085). Tracks a
-//!   quantile in **five numbers**, no window and no sorting, which makes
-//!   distribution-free intervals affordable on a stream. A residual
-//!   distribution with fat tails has a 99th percentile far above `2.33·σ`, and
-//!   only a quantile estimate will say so.
+//! - [`EwQuantile`] — an exponentially weighted quantile sketch, DDSketch's
+//!   buckets decayed on the model's clock, within `tanh(1/128)` of the
+//!   exponentially weighted quantile at every level at once. A residual
+//!   distribution with fat tails has a 99th percentile far above `2.33·σ`,
+//!   and only a quantile estimate will say so. It replaced P² (Jain &
+//!   Chlamtac, 1985), which never forgot (docs/PLAN.md task 146).
 //! - [`EwAutoCorr`] — exponentially weighted lag-`k` autocorrelation. Residual
 //!   autocorrelation is the classic sign that a model is mis-specified: an
 //!   out-of-sample residual stream should look like noise, and does not when a
@@ -17,112 +16,283 @@
 
 use serde::{Deserialize, Serialize};
 
-/// P² quantile estimator: five markers, updated per observation.
+/// Buckets per octave of [`EwQuantile`]: a bucket spans a ratio of at most
+/// `e^(1/64)`, so its representative is within [`EW_QUANTILE_ALPHA`] of every
+/// value in it.
+const BINS: f64 = 64.0;
+
+/// The relative accuracy of [`EwQuantile`]: `tanh(1 / (2 · BINS))`, about
+/// 0.78%.
+pub const EW_QUANTILE_ALPHA: f64 = 0.007_812_341_058_161_014;
+
+/// The decay a sketch takes before its buckets are rescaled to it.
+const RENORM: f64 = 5.421_010_862_427_522e-20; // 2^-64
+
+/// An end bucket lighter than this share of the total is dropped when the
+/// sketch is rescaled.
+const PRUNE: f64 = 1e-12;
+
+/// An exponentially weighted quantile of non-negative values: DDSketch
+/// (Masson, Rim & Lee, 2019, "DDSketch: a fast and fully-mergeable quantile
+/// sketch with relative-error guarantees", PVLDB 12(12), 2195-2205), its
+/// bucket weights decayed on the model's clock (docs/PLAN.md task 146).
+///
+/// A value `v = m · 2^e`, `m` in `[1, 2)`, lands in bucket `⌊64 (e + m − 1)⌋`:
+/// `e + m − 1` is `log2 v` interpolated linearly between powers of two, so
+/// the index is exact arithmetic on the float's bits and no libm result
+/// enters the state. Its slope against `log2 v` is at least `ln 2`, so a
+/// bucket spans a ratio of at most `e^(1/64)`, and its representative
+/// `2 lo hi / (lo + hi)` is within `α = tanh(1/128)` of every value in it. A
+/// value below the smallest normal float counts as 0.
+///
+/// Each row multiplies every bucket by its decay `λ`, and a value adds its
+/// weight `w` to its bucket. The quantile at `p` is the representative of
+/// the first bucket, ascending, at which the cumulative weight reaches `p`
+/// of the total -- the bucket holding the smallest `x` with `W(≤ x) ≥ p W`,
+/// the exponentially weighted quantile -- so the estimate is within `α` of
+/// it, relatively. One sketch answers every level.
+///
+/// The decay is kept as one factor beside the buckets and folded into them
+/// every 64 halvings, when an end bucket under `1e-12` of the total is
+/// dropped; each level keeps the bucket its quantile sits in and the weight
+/// below it, so a row costs a few comparisons, not a walk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct P2Quantile {
-    p: f64,
-    /// Marker heights, ascending.
-    q: [f64; 5],
-    /// Marker positions (1-based, as in the paper).
-    n: [f64; 5],
-    /// Desired marker positions.
-    np: [f64; 5],
-    /// Increments for the desired positions.
-    dn: [f64; 5],
-    count: usize,
+pub struct EwQuantile {
+    /// The levels reported, each in (0, 1).
+    levels: Vec<f64>,
+    /// Bucket weights from index `lo` up, each over `scale`.
+    buckets: Vec<f64>,
+    lo: i32,
+    /// The weight of the values read as 0, over `scale`.
+    zero: f64,
+    /// `zero` plus every bucket.
+    total: f64,
+    /// The decay since the buckets were last rescaled: a stored weight times
+    /// `scale` is the weight.
+    scale: f64,
+    /// Per level, the bucket its quantile is in (`None`: the zero bucket) and
+    /// the stored weight below that bucket.
+    at: Vec<Option<i32>>,
+    below: Vec<f64>,
 }
 
-impl P2Quantile {
-    /// `p` is the quantile level in (0, 1).
-    pub fn new(p: f64) -> Result<Self, String> {
-        if !(0.0..=1.0).contains(&p) || p == 0.0 || p == 1.0 {
-            return Err("P2Quantile: p must be in (0, 1)".into());
+impl EwQuantile {
+    pub fn new(levels: &[f64]) -> Result<Self, String> {
+        if levels.iter().any(|p| !(*p > 0.0 && *p < 1.0)) {
+            return Err("EwQuantile: every level must be in (0, 1)".into());
         }
         Ok(Self {
-            p,
-            q: [0.0; 5],
-            n: [1.0, 2.0, 3.0, 4.0, 5.0],
-            np: [1.0, 1.0 + 2.0 * p, 1.0 + 4.0 * p, 3.0 + 2.0 * p, 5.0],
-            dn: [0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0],
-            count: 0,
+            levels: levels.to_vec(),
+            buckets: Vec::new(),
+            lo: 0,
+            zero: 0.0,
+            total: 0.0,
+            scale: 1.0,
+            at: vec![None; levels.len()],
+            below: vec![0.0; levels.len()],
         })
     }
 
-    pub fn count(&self) -> usize {
-        self.count
+    /// The levels this sketch reports, in the order [`EwQuantile::get`]
+    /// takes them.
+    pub fn levels(&self) -> &[f64] {
+        &self.levels
     }
 
-    /// The estimate, or `None` until five observations have been seen.
-    pub fn get(&self) -> Option<f64> {
-        (self.count >= 5).then_some(self.q[2])
+    /// The bucket of a positive normal value.
+    fn index(v: f64) -> i32 {
+        let bits = v.to_bits();
+        let e = ((bits >> 52) & 0x7ff) as i32 - 1023;
+        let m = (bits & ((1u64 << 52) - 1)) as f64 / (1u64 << 52) as f64;
+        // `64 e + ⌊64 m⌋`, not `⌊64 (e + m)⌋`: the sum would round `m` off at
+        // a large `e`, and carry a value just under a power of two into the
+        // next octave -- past the top one at `f64::MAX`.
+        64 * e + (m * BINS).floor() as i32
     }
 
-    /// Parabolic prediction, falling back to linear when it would break the
-    /// ordering of the markers (the paper's condition).
-    fn adjust(&mut self, i: usize, d: f64) {
-        let d_sign = if d >= 0.0 { 1.0 } else { -1.0 };
-        let (qm, q0, qp) = (self.q[i - 1], self.q[i], self.q[i + 1]);
-        let (nm, n0, np_) = (self.n[i - 1], self.n[i], self.n[i + 1]);
-        let parabolic = q0
-            + d_sign / (np_ - nm)
-                * ((n0 - nm + d_sign) * (qp - q0) / (np_ - n0)
-                    + (np_ - n0 - d_sign) * (q0 - qm) / (n0 - nm));
-        self.q[i] = if qm < parabolic && parabolic < qp {
-            parabolic
-        } else if d_sign > 0.0 {
-            q0 + (qp - q0) / (np_ - n0)
+    /// `2^(y)` interpolated as [`EwQuantile::index`] reads it, `y = e + m − 1`.
+    fn value_at(y: f64) -> f64 {
+        let e = y.floor();
+        let m = 1.0 + (y - e);
+        let biased = e as i64 + 1023;
+        if biased >= 2047 {
+            return f64::INFINITY;
+        }
+        m * f64::from_bits((biased as u64) << 52)
+    }
+
+    /// The value reported for bucket `k`, `2 lo hi / (lo + hi)` of its
+    /// bounds; the top bucket's upper bound is `2^1024`, so the ratio is
+    /// taken an octave down, where both are finite.
+    fn representative(k: i32) -> f64 {
+        let (y0, y1) = (f64::from(k) / BINS, f64::from(k + 1) / BINS);
+        let lo = Self::value_at(y0);
+        let hi = Self::value_at(y1);
+        let r = if hi.is_finite() {
+            lo / hi
         } else {
-            q0 - (qm - q0) / (nm - n0)
+            Self::value_at(y0 - 1.0) / Self::value_at(y1 - 1.0)
         };
-        self.n[i] += d_sign;
+        lo * (2.0 / (1.0 + r))
     }
 
-    pub fn update(&mut self, x: f64) {
-        if !x.is_finite() {
+    fn weight(&self, at: Option<i32>) -> f64 {
+        match at {
+            None => self.zero,
+            Some(k) => self.buckets[(k - self.lo) as usize],
+        }
+    }
+
+    fn next(&self, at: Option<i32>) -> Option<Option<i32>> {
+        let end = self.lo + self.buckets.len() as i32;
+        match at {
+            None if self.buckets.is_empty() => None,
+            None => Some(Some(self.lo)),
+            Some(k) if k + 1 < end => Some(Some(k + 1)),
+            Some(_) => None,
+        }
+    }
+
+    fn prev(&self, at: Option<i32>) -> Option<Option<i32>> {
+        match at {
+            None => None,
+            Some(k) if k > self.lo => Some(Some(k - 1)),
+            Some(_) => Some(None),
+        }
+    }
+
+    /// Move level `l`'s pointer to the bucket its quantile is in.
+    fn settle(&mut self, l: usize) {
+        let target = self.levels[l] * self.total;
+        loop {
+            let at = self.at[l];
+            if self.below[l] + self.weight(at) < target {
+                if let Some(n) = self.next(at) {
+                    self.below[l] += self.weight(at);
+                    self.at[l] = n;
+                    continue;
+                }
+            } else if self.below[l] >= target {
+                if let Some(p) = self.prev(at) {
+                    self.at[l] = p;
+                    self.below[l] -= self.weight(p);
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    /// Every pointer and the total from the buckets, by a walk.
+    fn rebuild(&mut self) {
+        self.total = self.zero + self.buckets.iter().sum::<f64>();
+        for l in 0..self.levels.len() {
+            self.at[l] = None;
+            self.below[l] = 0.0;
+            self.settle(l);
+        }
+    }
+
+    /// The clock moves on by a step whose decay is `lam`.
+    pub fn age(&mut self, lam: f64) {
+        self.scale *= lam;
+        if self.scale < RENORM {
+            self.rescale();
+        }
+    }
+
+    /// Fold the decay into the buckets, drop the ends that no longer count,
+    /// and rebuild the pointers from the rescaled weights.
+    fn rescale(&mut self) {
+        let s = self.scale;
+        self.zero *= s;
+        self.buckets.iter_mut().for_each(|b| *b *= s);
+        self.scale = 1.0;
+        let total = self.zero + self.buckets.iter().sum::<f64>();
+        let floor = PRUNE * total;
+        let keep_from = self.buckets.iter().position(|b| *b > floor);
+        match keep_from {
+            None => {
+                self.buckets.clear();
+                self.lo = 0;
+            }
+            Some(first) => {
+                let last = self
+                    .buckets
+                    .iter()
+                    .rposition(|b| *b > floor)
+                    .unwrap_or(first);
+                self.buckets.truncate(last + 1);
+                self.buckets.drain(..first);
+                self.lo += first as i32;
+            }
+        }
+        if self.zero <= floor {
+            self.zero = 0.0;
+        }
+        self.rebuild();
+    }
+
+    /// One value `v >= 0` at weight `w > 0`; anything else is not seen.
+    pub fn add(&mut self, v: f64, w: f64) {
+        if !(v >= 0.0 && v.is_finite() && w > 0.0 && w.is_finite()) {
             return;
         }
-        if self.count < 5 {
-            self.q[self.count] = x;
-            self.count += 1;
-            if self.count == 5 {
-                self.q.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            }
-            return;
-        }
-        self.count += 1;
-
-        // Which cell does x fall into, and stretch the ends if it is outside.
-        let k = if x < self.q[0] {
-            self.q[0] = x;
-            0
-        } else if x >= self.q[4] {
-            self.q[4] = x;
-            3
+        let s = w / self.scale;
+        let at = if v < f64::MIN_POSITIVE {
+            self.zero += s;
+            None
         } else {
-            (0..4)
-                .find(|&i| self.q[i] <= x && x < self.q[i + 1])
-                .unwrap_or(3)
-        };
-
-        for i in (k + 1)..5 {
-            self.n[i] += 1.0;
-        }
-        for i in 0..5 {
-            self.np[i] += self.dn[i];
-        }
-
-        for i in 1..4 {
-            let d = self.np[i] - self.n[i];
-            if (d >= 1.0 && self.n[i + 1] - self.n[i] > 1.0)
-                || (d <= -1.0 && self.n[i - 1] - self.n[i] < -1.0)
-            {
-                self.adjust(i, d);
+            let k = Self::index(v);
+            if self.buckets.is_empty() {
+                self.lo = k;
+                self.buckets.push(0.0);
+            } else if k < self.lo {
+                let grow = (self.lo - k) as usize;
+                self.buckets.splice(0..0, std::iter::repeat_n(0.0, grow));
+                self.lo = k;
+            } else if k >= self.lo + self.buckets.len() as i32 {
+                self.buckets.resize((k - self.lo + 1) as usize, 0.0);
             }
+            self.buckets[(k - self.lo) as usize] += s;
+            Some(k)
+        };
+        self.total += s;
+        for l in 0..self.levels.len() {
+            // `None` sorts before every bucket, as the zero bucket does.
+            if at < self.at[l] {
+                self.below[l] += s;
+            }
+            self.settle(l);
         }
+    }
+
+    /// The quantile at level `l`, or `None` before any weight.
+    pub fn get(&self, l: usize) -> Option<f64> {
+        if self.total <= 0.0 || self.total.is_nan() {
+            return None;
+        }
+        Some(match self.at[l] {
+            None => 0.0,
+            Some(k) => Self::representative(k),
+        })
+    }
+
+    /// Back to no weight, at the same levels.
+    pub fn reset(&mut self) {
+        *self = Self::new(&self.levels).expect("the levels were valid");
     }
 }
 
 /// Exponentially weighted lag-`k` autocorrelation of a stream.
+///
+/// The variance is the EW mean of every value's squared deviation, at weight
+/// `W`; the cross term the EW mean of each pair's product, at a weight `W_c`
+/// of its own, since a value with no partner `k` back -- the first `k` of a
+/// stream, and of each stretch after [`EwAutoCorr::clear_lags`] -- forms no
+/// pair. Both weights decay on the clock, by [`EwAutoCorr::age`] on a step
+/// with no value. Where every value has its partner, `W_c = W` and the two
+/// share one recursion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwAutoCorr {
     lag: usize,
@@ -139,6 +309,9 @@ pub struct EwAutoCorr {
     /// square, and took their ratio to 1.
     #[serde(default)]
     mean_lo: f64,
+    /// The weight behind `cross`: the pairs' (docs/PLAN.md task 146).
+    #[serde(default)]
+    w_pairs: f64,
 }
 
 impl EwAutoCorr {
@@ -154,6 +327,7 @@ impl EwAutoCorr {
             var: 0.0,
             cross: 0.0,
             mean_lo: 0.0,
+            w_pairs: 0.0,
         })
     }
 
@@ -166,11 +340,25 @@ impl EwAutoCorr {
 
     /// `None` until a lagged pair has been seen. `var > 0` is reached at the
     /// second distinct observation, but for `lag >= 2` no pair exists yet
-    /// then, so the buffer's own fill is the gate rather than the variance
+    /// then, so the pairs' weight is the gate rather than the variance
     /// (review 2026-09-18, D1).
     pub fn get(&self) -> Option<f64> {
-        (self.buf.len() == self.lag + 1 && self.var > 0.0)
-            .then(|| (self.cross / self.var).clamp(-1.0, 1.0))
+        (self.w_pairs > 0.0 && self.var > 0.0).then(|| (self.cross / self.var).clamp(-1.0, 1.0))
+    }
+
+    /// The clock moves on by a step whose decay is `lam`, with no value.
+    pub fn age(&mut self, lam: f64) {
+        self.w *= lam;
+        self.w_pairs *= lam;
+    }
+
+    /// The values behind this one are no longer adjacent to it -- a gap
+    /// capped by `max_dclock`, or a session change -- so none of them is a
+    /// partner for the next: the buffer goes, and the moments stay
+    /// (docs/PLAN.md task 146, as `OnlineModel::clear_lags` does for a
+    /// model's rings).
+    pub fn clear_lags(&mut self) {
+        self.buf.clear();
     }
 
     /// One observation with decay factor `lam`.
@@ -180,6 +368,7 @@ impl EwAutoCorr {
     /// in [−1, 1] by construction.
     pub fn update(&mut self, x: f64, lam: f64) {
         if !x.is_finite() {
+            self.age(lam);
             return;
         }
         self.buf.push(x);
@@ -192,11 +381,15 @@ impl EwAutoCorr {
         let d = crate::comp::dev(x, self.mean, self.mean_lo);
         self.var = a * self.var + a * b * d * d;
         if self.buf.len() == self.lag + 1 {
-            let lagged = self.buf[0];
-            self.cross =
-                a * self.cross + a * b * d * crate::comp::dev(lagged, self.mean, self.mean_lo);
+            // `a d` is `x` about the mean it joins; the partner is about the
+            // mean before it, as the variance's Welford step has it.
+            let wp_new = lam * self.w_pairs + 1.0;
+            let (ap, bp) = (lam * self.w_pairs / wp_new, 1.0 / wp_new);
+            let lagged = crate::comp::dev(self.buf[0], self.mean, self.mean_lo);
+            self.cross = ap * self.cross + a * bp * d * lagged;
+            self.w_pairs = wp_new;
         } else {
-            self.cross *= a;
+            self.w_pairs *= lam;
         }
         crate::comp::add(&mut self.mean, &mut self.mean_lo, b * d);
         self.w = w_new;
@@ -363,160 +556,172 @@ mod tests {
         (*state >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    #[test]
-    fn p2_matches_the_empirical_quantile() {
-        for p in [0.1, 0.5, 0.9, 0.99] {
-            let mut est = P2Quantile::new(p).unwrap();
-            let mut s = 3u64;
-            let mut all: Vec<f64> = Vec::new();
-            for _ in 0..20000 {
-                let x = lcg(&mut s) * 10.0;
-                est.update(x);
-                all.push(x);
+    /// The exponentially weighted quantile by its definition, from every
+    /// value and its weight as it now stands: the smallest value whose
+    /// cumulative weight, ascending, reaches `p` of the total.
+    fn ew_quantile(seen: &[(f64, f64)], p: f64) -> f64 {
+        let mut v = seen.to_vec();
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let total: f64 = v.iter().map(|x| x.1).sum();
+        let mut cum = 0.0;
+        for (x, w) in &v {
+            cum += w;
+            if cum >= p * total {
+                return *x;
             }
-            all.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let truth = all[((all.len() as f64) * p) as usize];
-            let got = est.get().unwrap();
-            assert!(
-                (got - truth).abs() < 0.3,
-                "p={p}: P2 said {got}, empirical {truth}"
-            );
         }
+        v.last().unwrap().0
     }
 
+    /// Task 146: every level within `α` of the definition, row by row, on
+    /// irregular steps and weights, with zeros, through a tenfold fall in
+    /// scale -- which a sketch that never forgot (P²) missed by ninefold.
     #[test]
-    fn p2_is_accurate_on_skewed_data_that_forces_the_linear_fallback() {
-        // `adjust` prefers a parabolic prediction and falls back to linear
-        // when the parabola would break the markers' ordering -- the paper's
-        // condition. Uniform data rarely trips it, so the existing accuracy
-        // test leaves the fallback and its two directions unexercised. A
-        // heavy-tailed, strongly skewed stream trips it constantly.
-        for p in [0.05, 0.25, 0.5, 0.75, 0.95] {
-            let mut est = P2Quantile::new(p).unwrap();
-            let mut s = 23u64;
-            let mut all: Vec<f64> = Vec::new();
-            for i in 0..20000 {
-                // Exponential-ish tail, with periodic large excursions in both
-                // directions so both the upward and downward marker moves run.
-                let u = (lcg(&mut s) + 1.0) * 0.5;
-                let mut x = -(1.0 - u.min(1.0 - 1e-12)).ln();
-                if i % 97 == 0 {
-                    x *= 50.0;
-                }
-                if i % 89 == 0 {
-                    x = -x;
-                }
-                est.update(x);
-                all.push(x);
-            }
-            all.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let truth = all[((all.len() as f64) * p) as usize];
-            let got = est.get().unwrap();
-            let spread = all[all.len() - 1] - all[0];
-            assert!(
-                (got - truth).abs() < 0.02 * spread,
-                "p={p}: P2 said {got}, empirical {truth} (spread {spread})"
-            );
-        }
-    }
-
-    #[test]
-    fn p2_markers_stay_ordered_and_bracket_the_data() {
-        // The invariant the fallback exists to protect. If `adjust` ever moved
-        // a marker past its neighbour the estimate would be meaningless, and
-        // the accuracy tests would only notice if it happened to move far.
-        let mut est = P2Quantile::new(0.9).unwrap();
-        let mut s = 29u64;
-        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for i in 0..5000 {
-            let x = if i % 13 == 0 {
-                100.0 * lcg(&mut s)
+    fn an_ew_quantile_is_within_alpha_of_the_definition() {
+        let levels = [0.01, 0.1, 0.5, 0.9, 0.99];
+        let mut q = EwQuantile::new(&levels).unwrap();
+        let h = 15.0;
+        let mut s = 41u64;
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        for i in 0..3000 {
+            let lam = (-(2.0 * lcg(&mut s) / h)).exp2();
+            q.age(lam);
+            seen.iter_mut().for_each(|e| e.1 *= lam);
+            let scale = if i < 1500 { 1.0 } else { 0.1 };
+            let v = if i % 37 == 0 {
+                0.0
             } else {
-                lcg(&mut s)
+                -scale * lcg(&mut s).max(1e-300).ln()
             };
-            est.update(x);
-            lo = lo.min(x);
-            hi = hi.max(x);
-            // The markers are only meaningful once the first five points have
-            // been sorted into them, which is also when `get` starts reporting.
-            if est.count < 5 {
+            let w = 0.5 + lcg(&mut s);
+            q.add(v, w);
+            seen.push((v, w));
+            if i % 7 != 0 {
                 continue;
             }
-            for w in est.q.windows(2) {
-                assert!(w[0] <= w[1], "row {i}: markers out of order {:?}", est.q);
-            }
-            for w in est.n.windows(2) {
-                assert!(w[0] < w[1], "row {i}: positions out of order {:?}", est.n);
-            }
-            if let Some(q) = est.get() {
-                assert!(q >= lo && q <= hi, "row {i}: {q} outside [{lo}, {hi}]");
+            for (l, &p) in levels.iter().enumerate() {
+                let (got, want) = (q.get(l).unwrap(), ew_quantile(&seen, p));
+                assert!(
+                    (got - want).abs() <= EW_QUANTILE_ALPHA * want * (1.0 + 1e-9),
+                    "row {i}, p = {p}: {got} against {want}"
+                );
             }
         }
+        assert_eq!(q.get(0), Some(0.0), "the zeros hold the lowest level");
+    }
+
+    /// A short halflife folds the decay in every 32 rows and drops the end
+    /// buckets nothing reaches; the answer holds through it, and the
+    /// buckets stay within the range the recent values span.
+    #[test]
+    fn rescaling_and_pruning_keep_the_answer_and_bound_the_memory() {
+        let mut q = EwQuantile::new(&[0.5, 0.95]).unwrap();
+        let lam = 0.25; // two halvings a row
+        let mut s = 43u64;
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        for i in 0..20_000 {
+            q.age(lam);
+            seen.iter_mut().for_each(|e| e.1 *= lam);
+            // A huge value early on, then values over 2^0 .. 2^20.
+            let v = if i == 10 {
+                1e200
+            } else {
+                (20.0 * lcg(&mut s)).exp2()
+            };
+            q.add(v, 1.0);
+            seen.push((v, 1.0));
+        }
+        for (l, p) in [0.5, 0.95].into_iter().enumerate() {
+            let (got, want) = (q.get(l).unwrap(), ew_quantile(&seen, p));
+            assert!((got - want).abs() <= EW_QUANTILE_ALPHA * want * (1.0 + 1e-9));
+        }
+        assert!(q.buckets.len() <= 21 * 64, "{} buckets", q.buckets.len());
     }
 
     #[test]
-    fn p2_costs_five_numbers_not_a_window() {
-        // The point of P2: state is constant regardless of stream length.
-        let mut est = P2Quantile::new(0.9).unwrap();
-        let mut s = 5u64;
+    fn nothing_is_reported_without_weight_and_a_full_decay_forgets_all() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        assert_eq!(q.get(0), None);
+        for (v, w) in [
+            (1.0, 0.0),
+            (f64::NAN, 1.0),
+            (-1.0, 1.0),
+            (f64::INFINITY, 1.0),
+        ] {
+            q.add(v, w);
+            assert_eq!(q.get(0), None, "({v}, {w}) is not seen");
+        }
+        q.add(3.0, 1.0);
+        assert!(q.get(0).is_some());
+        q.age(0.0);
+        assert_eq!(q.get(0), None, "a decay of 0 forgets everything");
+        q.add(5.0, 2.0);
+        let got = q.get(0).unwrap();
+        assert!((got - 5.0).abs() <= EW_QUANTILE_ALPHA * 5.0);
+    }
+
+    /// The bucket is read off the float's bits: a power of two starts one,
+    /// and every value's representative is within `α` of it, from the
+    /// smallest normal float to the largest.
+    #[test]
+    fn the_bucket_is_exact_on_the_bits_and_within_alpha() {
+        for k in [-1022, -1, 0, 1, 10, 1023] {
+            assert_eq!(EwQuantile::index(2f64.powi(k)), 64 * k, "2^{k}");
+        }
+        assert_eq!(EwQuantile::index(1.5), 32);
+        let mut s = 47u64;
+        let check = |v: f64| {
+            let rep = EwQuantile::representative(EwQuantile::index(v));
+            assert!(
+                (rep - v).abs() <= EW_QUANTILE_ALPHA * v * (1.0 + 1e-12),
+                "{v}: {rep}"
+            );
+        };
+        check(f64::MIN_POSITIVE);
+        check(f64::MAX);
         for _ in 0..100_000 {
-            est.update(lcg(&mut s));
+            check((2000.0 * lcg(&mut s) - 1000.0).exp2() * (1.0 + lcg(&mut s)));
         }
-        let bytes = rmp_serde::to_vec(&est).unwrap();
-        assert!(bytes.len() < 300, "state grew to {} bytes", bytes.len());
-    }
-
-    /// The reason to track a quantile rather than infer one from sigma: on a
-    /// fat-tailed stream a Gaussian interval is simply the wrong number, and
-    /// the error is not even in a predictable direction. Here 0.5%
-    /// contamination inflates sigma enormously while barely moving the 99th
-    /// percentile, so `mean + 2.33·sd` overshoots by an order of magnitude.
-    #[test]
-    fn p2_tracks_a_fat_tailed_quantile_where_sigma_cannot() {
-        let mut est = P2Quantile::new(0.99).unwrap();
-        let mut s = 7u64;
-        let (mut sum, mut sq, mut n) = (0.0, 0.0, 0.0);
-        let mut all = Vec::new();
-        for i in 0..50000 {
-            let x = if i % 200 == 0 { 100.0 } else { lcg(&mut s) };
-            est.update(x);
-            all.push(x);
-            sum += x;
-            sq += x * x;
-            n += 1.0;
-        }
-        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let truth = all[(all.len() as f64 * 0.99) as usize];
-        let sd = (sq / n - (sum / n).powi(2)).sqrt();
-        let gaussian_99 = sum / n + 2.33 * sd;
-
-        let p2_err = (est.get().unwrap() - truth).abs();
-        let gaussian_err = (gaussian_99 - truth).abs();
-        assert!(
-            p2_err < 0.5,
-            "P2 should track the empirical quantile: {p2_err}"
-        );
-        assert!(
-            gaussian_err > 10.0 * p2_err.max(1e-9),
-            "the Gaussian guess ({gaussian_99}) should be far off the truth ({truth})"
-        );
     }
 
     #[test]
-    fn p2_is_none_before_five_points() {
-        let mut est = P2Quantile::new(0.5).unwrap();
-        for i in 0..4 {
-            est.update(i as f64);
-            assert!(est.get().is_none());
+    fn the_levels_share_one_sketch_and_stay_ordered() {
+        let levels = [0.05, 0.25, 0.5, 0.75, 0.95];
+        let mut q = EwQuantile::new(&levels).unwrap();
+        let mut s = 53u64;
+        for _ in 0..5000 {
+            q.age(0.99);
+            q.add(lcg(&mut s) * 10.0, 1.0);
+            let got: Vec<f64> = (0..levels.len()).map(|l| q.get(l).unwrap()).collect();
+            assert!(got.windows(2).all(|w| w[0] <= w[1]), "{got:?}");
         }
-        est.update(5.0);
-        assert!(est.get().is_some());
     }
 
     #[test]
-    fn p2_rejects_bad_levels() {
-        assert!(P2Quantile::new(0.0).is_err());
-        assert!(P2Quantile::new(1.0).is_err());
+    fn a_saved_sketch_goes_on_as_the_live_one() {
+        let mut live = EwQuantile::new(&[0.5, 0.9]).unwrap();
+        let mut s = 59u64;
+        for _ in 0..500 {
+            live.age(0.9);
+            live.add(lcg(&mut s), 1.0);
+        }
+        let bytes = rmp_serde::to_vec(&live).unwrap();
+        let mut back: EwQuantile = rmp_serde::from_slice(&bytes).unwrap();
+        for _ in 0..500 {
+            let v = lcg(&mut s);
+            live.age(0.9);
+            back.age(0.9);
+            live.add(v, 1.0);
+            back.add(v, 1.0);
+        }
+        assert_eq!(live, back);
+    }
+
+    #[test]
+    fn levels_outside_the_open_unit_interval_are_refused() {
+        for bad in [0.0, 1.0, -0.5, f64::NAN] {
+            assert!(EwQuantile::new(&[0.5, bad]).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -603,159 +808,60 @@ mod tests {
         assert!(ac.get().is_some(), "none after the fourth observation");
     }
 
-    /// The P² algorithm as Jain & Chlamtac (1985) give it in their Box 1,
-    /// written from the paper with its 1-based markers and its names, not
-    /// from [`P2Quantile`]: the oracle the mutation pass's survivors asked
-    /// for (docs/TESTING.md, "Mutation survivors"). A non-finite observation
-    /// is skipped, which is `P2Quantile`'s contract, not the paper's.
-    struct PaperP2 {
-        /// Marker heights `q_1..q_5`, positions `n_i`, desired positions
-        /// `n'_i` and their increments `dn'_i`; index 0 is unused.
-        q: [f64; 6],
-        n: [f64; 6],
-        nd: [f64; 6],
-        dn: [f64; 6],
-        first: Vec<f64>,
+    /// Task 146: a break clears the buffer and keeps the moments, so the
+    /// estimate stands, the next value pairs with nothing, and the one after
+    /// pairs with it -- not with anything from before the break.
+    #[test]
+    fn clearing_the_lags_keeps_the_estimate_and_pairs_nothing_across_it() {
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        let mut s = 61u64;
+        let mut prev = 0.0;
+        for _ in 0..500 {
+            prev = 0.8 * prev + (lcg(&mut s) - 0.5);
+            ac.update(prev, 0.99);
+        }
+        let before = ac.get().unwrap();
+        ac.clear_lags();
+        assert_eq!(ac.get(), Some(before), "the estimate stands");
+        let (cross, w_pairs) = (ac.cross, ac.w_pairs);
+        ac.update(5.0, 0.99);
+        assert_eq!(ac.cross, cross, "no pair across the break");
+        assert_eq!(ac.w_pairs, 0.99 * w_pairs, "the pairs' weight only ages");
+        ac.update(-5.0, 0.99);
+        assert_eq!(
+            ac.buf,
+            vec![5.0, -5.0],
+            "the pair is the two since the break"
+        );
+        assert_eq!(ac.w_pairs, 0.99 * (0.99 * w_pairs) + 1.0);
     }
 
-    impl PaperP2 {
-        fn new(p: f64) -> Self {
-            Self {
-                q: [0.0; 6],
-                n: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
-                nd: [0.0, 1.0, 1.0 + 2.0 * p, 1.0 + 4.0 * p, 3.0 + 2.0 * p, 5.0],
-                dn: [0.0, 0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0],
-                first: Vec::new(),
-            }
-        }
-
-        fn seen(&self) -> usize {
-            self.first.len() + (self.n[5] - 5.0) as usize
-        }
-
-        fn observe(&mut self, x: f64) {
-            if !x.is_finite() {
-                return;
-            }
-            // Initialization: the first five observations, sorted.
-            if self.first.len() < 5 {
-                self.first.push(x);
-                if self.first.len() == 5 {
-                    let mut s = self.first.clone();
-                    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                    self.q[1..=5].copy_from_slice(&s);
-                }
-                return;
-            }
-            // B1: the cell k with q_k <= x < q_(k+1), stretching an extreme.
-            let k = if x < self.q[1] {
-                self.q[1] = x;
-                1
-            } else if x < self.q[2] {
-                1
-            } else if x < self.q[3] {
-                2
-            } else if x < self.q[4] {
-                3
-            } else if x <= self.q[5] {
-                4
+    /// A step with no value ages both weights, so the clock reaches the
+    /// tracker on every row: two steps' decay before a value is one step's
+    /// decay of their product.
+    #[test]
+    fn a_step_with_no_value_ages_both_weights() {
+        let mut s = 67u64;
+        let xs: Vec<f64> = (0..300).map(|_| lcg(&mut s)).collect();
+        let (mut aged, mut once) = (EwAutoCorr::new(2).unwrap(), EwAutoCorr::new(2).unwrap());
+        for (i, &x) in xs.iter().enumerate() {
+            if i % 3 == 0 {
+                aged.age(0.9);
+                aged.update(x, 0.8);
+                once.update(x, 0.9 * 0.8);
             } else {
-                self.q[5] = x;
-                4
-            };
-            // B2: shift the markers above the cell, and every desired position.
-            for i in k + 1..=5 {
-                self.n[i] += 1.0;
-            }
-            for i in 1..=5 {
-                self.nd[i] += self.dn[i];
-            }
-            // B3: move markers 2..4 one position toward where they belong,
-            // parabolically unless that would break their order.
-            for i in 2..=4 {
-                let d = self.nd[i] - self.n[i];
-                if (d >= 1.0 && self.n[i + 1] - self.n[i] > 1.0)
-                    || (d <= -1.0 && self.n[i - 1] - self.n[i] < -1.0)
-                {
-                    let d = d.signum();
-                    let (q, n) = (self.q, self.n);
-                    let parabolic = q[i]
-                        + d / (n[i + 1] - n[i - 1])
-                            * ((n[i] - n[i - 1] + d) * (q[i + 1] - q[i]) / (n[i + 1] - n[i])
-                                + (n[i + 1] - n[i] - d) * (q[i] - q[i - 1]) / (n[i] - n[i - 1]));
-                    self.q[i] = if q[i - 1] < parabolic && parabolic < q[i + 1] {
-                        parabolic
-                    } else {
-                        let j = if d > 0.0 { i + 1 } else { i - 1 };
-                        q[i] + d * (q[j] - q[i]) / (n[j] - n[i])
-                    };
-                    self.n[i] += d;
-                }
+                aged.update(x, 0.95);
+                once.update(x, 0.95);
             }
         }
-    }
-
-    /// Marker by marker against the paper, after every observation, on
-    /// streams built to reach every branch: ties at the extreme and interior
-    /// markers (a tie at `q_(k+1)` belongs to cell `k+1`), values past both
-    /// extremes, and non-finite values, which must change nothing.
-    #[test]
-    fn p2_follows_the_paper_marker_by_marker() {
-        for p in [0.1, 0.5, 0.9] {
-            let mut est = P2Quantile::new(p).unwrap();
-            let mut paper = PaperP2::new(p);
-            let mut s = 29u64;
-            for t in 0..3000usize {
-                let x = match t % 17 {
-                    _ if t < 5 => lcg(&mut s) * 10.0,
-                    3 => est.q[2],
-                    5 => est.q[1],
-                    7 => est.q[0],
-                    9 => est.q[4],
-                    11 => -100.0 - lcg(&mut s),
-                    13 => 100.0 + lcg(&mut s),
-                    15 => [f64::NAN, f64::INFINITY, f64::NEG_INFINITY][t % 3],
-                    _ => lcg(&mut s) * 10.0,
-                };
-                est.update(x);
-                paper.observe(x);
-                assert_eq!(est.count(), paper.seen(), "p={p}, t={t}");
-                if paper.first.len() == 5 {
-                    assert_eq!(est.q[..], paper.q[1..], "heights, p={p}, t={t}, x={x}");
-                    assert_eq!(est.n[..], paper.n[1..], "positions, p={p}, t={t}");
-                    assert_eq!(est.np[..], paper.nd[1..], "desired, p={p}, t={t}");
-                    assert_eq!(est.get(), Some(paper.q[3]), "p={p}, t={t}");
-                } else {
-                    assert_eq!(est.get(), None, "p={p}, t={t}");
-                }
-            }
-        }
-    }
-
-    /// The same, on discrete data: values in {0, 1, 2, 3}, so markers tie
-    /// with each other as well as with the data. The first five repeat the
-    /// minimum, so the two lowest markers start equal, and an observation at
-    /// that value belongs to the second cell, not the first (`q_1 <= x <
-    /// q_2` fails when `x = q_2`).
-    #[test]
-    fn p2_follows_the_paper_on_discrete_data() {
-        for p in [0.25, 0.5, 0.75] {
-            let mut est = P2Quantile::new(p).unwrap();
-            let mut paper = PaperP2::new(p);
-            let mut s = 41u64;
-            for (t, x) in [0.0, 0.0, 2.0, 1.0, 3.0]
-                .into_iter()
-                .chain((0..2000).map(|_| (lcg(&mut s) * 4.0).floor()))
-                .enumerate()
-            {
-                est.update(x);
-                paper.observe(x);
-                if paper.first.len() == 5 {
-                    assert_eq!(est.q[..], paper.q[1..], "heights, p={p}, t={t}, x={x}");
-                    assert_eq!(est.n[..], paper.n[1..], "positions, p={p}, t={t}, x={x}");
-                }
-            }
-        }
+        assert!((aged.get().unwrap() - once.get().unwrap()).abs() < 1e-12);
+        assert!((aged.w - once.w).abs() < 1e-12 * once.w);
+        assert!((aged.w_pairs - once.w_pairs).abs() < 1e-12 * once.w_pairs);
+        // A non-finite value is a step with no value.
+        let mut nan = once.clone();
+        nan.update(f64::NAN, 0.5);
+        once.age(0.5);
+        assert_eq!(nan, once);
     }
 
     #[test]

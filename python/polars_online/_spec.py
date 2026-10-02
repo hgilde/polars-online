@@ -1810,11 +1810,12 @@ def ew_cov(
         read (O(k³), only when asked for), and like an RLS prior it fades as data
         accumulates.
     ``mahal_quantiles``
-        Levels at which to keep a running quantile of the past ``mahal`` scores
-        (``mahal_q<p>``, the P² algorithm): a threshold from the stream's own
-        history instead of a table, so ``mahal > mahal_q0.99`` is one row in a
-        hundred without assuming a distribution. The row's own score joins after
-        it is read.
+        Levels at which to keep the exponentially weighted quantile of the past
+        ``mahal`` scores (``mahal_q<p>``), at the model's halflife and each
+        row's weight, within ``tanh(1/128)`` (0.78%) of the exact one: a
+        threshold from the stream's own history instead of a table, so ``mahal
+        > mahal_q0.99`` is one row in a hundred without assuming a
+        distribution. The row's own score joins after it is read.
     ``pca``, ``pca_every``
         Track the top ``pca`` principal components of the covariance: per
         component ``j`` the fields ``pc<j>_var`` (its eigenvalue), ``pc<j>_share``
@@ -2037,6 +2038,12 @@ def sgd(
         or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). AdaGrad's sum of squared
         gradients and ``n_eff`` both decay on the model's clock, so an annealed or
         adapted rate opens up again after a long gap instead of staying frozen.
+        The coefficients themselves do not decay: every row's step moves them,
+        so under ``"constant"`` their memory is in rows, about ``1 / (lr *
+        E[z**2])`` of them, whatever the clock between rows. ``halflife``
+        reaches ``n_eff`` and ``min_periods``, the scaler and AdaGrad's sum,
+        not the coefficients: at halflife 10 and 10,000 a constant rate fits
+        the same slopes.
     ``l2``
         A ridge on every step, on the slopes only: the intercept is not
         penalised. Default 0.0.
@@ -3327,10 +3334,13 @@ def deco(
                    rho' = rho                                  (at w = 0)
 
     where ``rho_bar`` is the ``"ew"`` recursion run alongside as the target of the
-    linear one. A row of weight 0 moves neither: it advances the clock and learns
-    nothing, as everywhere. Otherwise the linear recursion has no row weights, as
-    the paper's has none: a positive weight reaches ``rho`` only through
-    ``rho_bar``, so rows of weight 0.5 and 2 move it by the same ``alpha * u``.
+    linear one. The ``"ew"`` dynamics run on the clock; the linear one steps once
+    per row, as a DCC model's does, so a gap capped at ``max_dclock`` moves
+    ``rho`` by one row's ``alpha * u``, as a millisecond does. A row of weight 0
+    moves neither: it advances the clock and learns nothing, as everywhere.
+    Otherwise the linear recursion has no row weights, as the paper's has none:
+    a positive weight reaches ``rho`` only through ``rho_bar``, so rows of
+    weight 0.5 and 2 move it by the same ``alpha * u``.
     Two departures from the paper, on purpose. Its eq. 21 has a free intercept and
     applies correlation targeting to the DCC ``Q`` recursion, not to the linear
     one; writing the intercept as ``(1 - alpha - beta) * rho_bar`` is
@@ -3910,7 +3920,10 @@ def hmm(
         Pi_kl = (A_kl + tau_kl) / sum_l (A_kl + tau_kl)
 
     with ``tau`` a Dirichlet pseudo-count per cell, which is what keeps a
-    never-visited row of ``Pi`` a distribution.
+    never-visited row of ``Pi`` a distribution. A transition is one row: ``Pi``
+    applies once per row whatever the clock between rows, so a weekend is one
+    step, and the counts decay on the clock but grow by ``w`` per row, so the
+    staying probability rises with the rows' density.
 
     Two limitations worth knowing. A single extreme row can be captured by one
     state, moving its mean far from the data; in mean form a state with zero

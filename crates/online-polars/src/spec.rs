@@ -731,8 +731,9 @@ pub enum ModelKind {
         /// Prior for the precision matrix, required by "partial_corr" and "mahal".
         #[serde(default)]
         precision_prior: Option<f64>,
-        /// Quantile levels of the past Mahalanobis scores to track with P²,
-        /// one `mahal_q<p>` field each; needs "mahal" in `stats` (E37).
+        /// Quantile levels of the past Mahalanobis scores, exponentially
+        /// weighted at the model's halflife, one `mahal_q<p>` field each;
+        /// needs "mahal" in `stats` (E37, docs/PLAN.md task 146).
         #[serde(default)]
         mahal_quantiles: Option<Vec<f64>>,
         /// Principal components to track, each `pc<j>_var`, `pc<j>_share`,
@@ -2058,10 +2059,11 @@ pub struct Spec {
     /// narrows it by `0.05·sigma·α`.
     #[serde(default)]
     pub conformal_rate: Option<f64>,
-    /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: a P²
-    /// estimate of that quantile of `|resid|` (ENHANCEMENTS E23). Five numbers
-    /// per level, no window — a distribution-free interval where `sigma` only
-    /// gives a Gaussian one.
+    /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: the
+    /// exponentially weighted quantile of `|resid|` at the model's halflife
+    /// and each row's weight (ENHANCEMENTS E23, docs/PLAN.md task 146), from
+    /// one decaying sketch per slot within `tanh(1/128)` of the exact one --
+    /// a distribution-free interval where `sigma` only gives a Gaussian one.
     #[serde(default)]
     pub resid_quantiles: Option<Vec<f64>>,
     /// Emit `autocorr_<slot>`: EW lag-`resid_autocorr_lag` autocorrelation of

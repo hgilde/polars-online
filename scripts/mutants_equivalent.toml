@@ -11,23 +11,6 @@
 
 [[equivalent]]
 file = "crates/online-core/src/stats.rs"
-function = "P2Quantile::adjust"
-mutation = "replace > with >="
-line_has = "} else if d_sign > 0.0 {"
-why = "d_sign is +1 or -1 by construction, so > 0 and >= 0 agree on every value it takes"
-
-[[equivalent]]
-file = "crates/online-core/src/stats.rs"
-function = "P2Quantile::adjust"
-mutation = "replace < with <="
-line_has = "self.q[i] = if qm < parabolic && parabolic < qp {"
-why = """the two differ only when the parabolic prediction lands exactly on a \
-neighbouring marker. When that marker is one position away, the linear \
-fallback then gives the same height; otherwise it takes an exact \
-floating-point coincidence, which no input can be built to reach"""
-
-[[equivalent]]
-file = "crates/online-core/src/stats.rs"
 function = "SlotMetrics::update"
 mutation = "replace > with >="
 line_has = "if denom > 0.0 {"

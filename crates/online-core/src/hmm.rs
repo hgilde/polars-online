@@ -42,7 +42,10 @@
 //! ```
 //!
 //! with `τ` a Dirichlet pseudo-count per cell, which is what keeps a
-//! never-visited row of `Π` a distribution. **Not** the EW mean of
+//! never-visited row of `Π` a distribution. A transition is one row: `Π`
+//! applies once per row whatever the clock between rows, so a weekend is one
+//! step, and `A` decays on the clock but grows by `w` per row, so the
+//! staying probability rises with the rows' density (docs/PLAN.md task 146). **Not** the EW mean of
 //! `pₖ(t−1)·pₗ(t)/pₖ(t−1)`: that ratio is `pₗ(t)`, whose mean does not
 //! depend on `k` and cannot identify a transition matrix at all.
 //!

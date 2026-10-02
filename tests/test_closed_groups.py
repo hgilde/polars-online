@@ -788,7 +788,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 20 since
+    """The version a bank file names, held to the library's: 21 since
+    2026-10-02, when the stream's diagnostics moved onto the clock and a
+    bank stopped loading any file from before it (task 146); 20 since
     2026-09-28, when the solve cadence went by weight (task 115 (b)); 19 the
     same day, when `on_clock_reset` lost `"max"` and `"zero"` and a bank
     stopped loading any file from before it (task 120); 13 since
@@ -801,7 +803,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 20
+    assert po.schema_version() == 21
     assert sys.version_info >= (3, 12)
 
 

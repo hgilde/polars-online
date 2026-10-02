@@ -7,6 +7,8 @@ so every model gets the same definition (the models' own internal `sigma2`
 fields serve different purposes and are not all present or comparable).
 """
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
@@ -23,6 +25,17 @@ MODELS = [
     ("ftrl", {}),
 ]
 IDS = [m[0] for m in MODELS]
+
+
+def _ew_quantile(values, weights, p):
+    """The exponentially weighted quantile by definition: the smallest value
+    whose cumulative weight, ascending, reaches ``p`` of the total."""
+    order = np.argsort(values, kind="stable")
+    cum = np.cumsum(weights[order])
+    return float(values[order][np.searchsorted(cum, p * cum[-1])])
+
+
+ALPHA = math.tanh(1 / 128)  # the sketch's relative accuracy (task 146)
 
 
 def _df(n=400, seed=0, shock_at=None, noise=0.5, binary=False):
@@ -372,6 +385,30 @@ class TestDriftDetection:
         flags, _ = self._flags(df)
         assert flags.sum() == 0, f"{flags.sum()} false positives on a stationary stream"
 
+    def test_a_burst_counts_the_same_at_any_row_density(self):
+        """Task 146: the excess is integrated over the clock, so the same
+        30-unit burst of error is flagged at the same clock whether the rows
+        during it are one or four to a unit; counting rows flagged it about
+        four times sooner at four. The noise's size is fixed and only its
+        sign drawn, so both densities see the same error, and the halflife
+        is long, so ``sigma`` -- which each row reads from before it, and
+        which lags further behind a moving scale where rows are sparser --
+        barely moves inside the burst. Measured: 211.0 at both; 0.12.0's
+        detector, counting rows, flagged at 211.0 and 202.0."""
+        first = {}
+        for per_unit in (1, 4):
+            rng = np.random.default_rng(7)
+            t = np.arange(0.0, 400.0, 1.0 / per_unit)
+            x = rng.standard_normal(t.size)
+            size = np.where((t >= 200.0) & (t < 230.0), 0.8, 0.2)
+            noise = size * rng.choice([-1.0, 1.0], t.size)
+            df = pl.DataFrame({"t": t, "x0": x, "y0": 2 * x + noise})
+            flags, _ = self._flags(df, clock="t", max_dclock=5.0, halflife=1000.0)
+            hits = t[flags]
+            first[per_unit] = float(hits[0]) if hits.size else None
+        assert first[1] is not None and 205.0 <= first[1] < 230.0, first
+        assert first[4] is not None and abs(first[4] - first[1]) <= 1.0, first
+
     def test_threshold_trades_sensitivity_for_noise(self):
         df = self._df()
         eager, _ = self._flags(df, drift_threshold=2.0)
@@ -697,6 +734,49 @@ class TestResidualDistribution:
         truth = np.nanquantile(r[np.isfinite(r)], 0.9)
         assert self._last(out, "absresid_q0.9_y0") == pytest.approx(truth, rel=0.15)
 
+    def test_the_quantile_forgets_on_the_clock(self):
+        """Task 146: each level is the exponentially weighted quantile of
+        the residuals so far, at the model's halflife, to the sketch's
+        relative accuracy ``tanh(1/128)``. P² never forgot: 3,000 rows after
+        the noise fell tenfold at a halflife of 10, its 0.9 quantile read
+        1.55 where the recent one is 0.166."""
+        rng = np.random.default_rng(8)
+        n, h = 4000, 10.0
+        x = rng.standard_normal(n)
+        noise = np.where(np.arange(n) < 1000, 1.0, 0.1)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
+        levels = [0.1, 0.5, 0.9, 0.99]
+        # `min_periods` under the weight's ceiling at this halflife, ~14.9.
+        out = self._fit(df, halflife=h, min_periods=5.0, resid_quantiles=levels)
+        r = np.abs(np.array(out["m"].struct.field("resid_y0").to_list(), dtype=float))
+        lam = 0.5 ** (1 / h)
+        for i in (300, 1100, 1500, 3999):
+            seen = np.flatnonzero(np.isfinite(r[:i]))
+            assert seen.size > 200, (i, seen.size)
+            w = lam ** (i - 1 - seen.astype(float))
+            for p in levels:
+                want = _ew_quantile(r[seen], w, p)
+                got = out["m"].struct.field(f"absresid_q{p}_y0").to_list()[i]
+                assert abs(got - want) <= ALPHA * want * (1 + 1e-9), (i, p, got, want)
+
+    def test_autocorr_pairs_nothing_across_a_break(self):
+        """Task 146: a residual pairs only with the one ``lag`` back inside
+        the same run of adjacent rows. A gap capped by ``max_dclock`` and a
+        session change both end the run, as they clear the models' rings, so
+        with a break before every row nothing ever pairs."""
+        rng = np.random.default_rng(9)
+        n = 300
+        x = rng.standard_normal(n)
+        y = 2 * x + rng.standard_normal(n)
+        for kw, extra in (
+            (dict(clock="t", max_dclock=5.0), {"t": 10.0 * np.arange(n)}),
+            (dict(session="s", session_gap=1.0), {"s": np.arange(n) % 2}),
+        ):
+            df = pl.DataFrame({"x0": x, "y0": y} | extra)
+            out = self._fit(df, emit_autocorr=True, **kw)
+            got = out["m"].struct.field("autocorr_y0").to_list()
+            assert all(v is None for v in got), kw
+
     def test_autocorr_is_near_zero_for_a_well_specified_model(self):
         rng = np.random.default_rng(4)
         n = 20000
@@ -871,13 +951,18 @@ class TestStreamingMetrics:
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
 
-def test_p2_quantiles_withhold_below_five_residuals_and_span_extreme_levels():
-    """P² places five markers, so with too few residuals it reports null, not
-    a bogus value; and it accepts levels out at 0.001 / 0.999, ordered
-    (review 2026-09-18, phase 4)."""
-    out = po.ModelBank([_spec(min_periods=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=6))
+def test_quantiles_are_null_until_a_residual_and_span_extreme_levels():
+    """A quantile is null until the first residual has been folded in, and
+    is that residual's bucket from the next row on (task 146: P² needed
+    five); and it accepts levels out at 0.001 / 0.999, ordered (review
+    2026-09-18, phase 4)."""
+    out = po.ModelBank([_spec(min_periods=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=8))
+    st = out["m"].struct
     name = next(f.name for f in out.schema["m"].fields if f.name.startswith("absresid_q"))
-    assert out["m"].struct.field(name).to_list() == [None] * 6
+    got, r = st.field(name).to_list(), st.field("resid_y0").to_list()
+    first = next(i for i, v in enumerate(r) if v is not None)
+    assert got[: first + 1] == [None] * (first + 1)
+    assert got[first + 1] == pytest.approx(abs(r[first]), rel=ALPHA)
     out2 = po.ModelBank([_spec(resid_quantiles=[0.001, 0.5, 0.999])]).fit_predict(_df(n=500))
     names = [f.name for f in out2.schema["m"].fields if f.name.startswith("absresid_q")]
     last = [out2["m"].struct.field(nm).to_list()[-1] for nm in names]

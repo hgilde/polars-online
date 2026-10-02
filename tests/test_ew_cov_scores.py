@@ -406,6 +406,28 @@ class TestCalibration:
         assert q50 == pytest.approx(np.quantile(m[-100_000:], 0.5), rel=0.02)
         assert q99 == pytest.approx(math.sqrt(CHI2_99[k]), rel=0.03)
 
+    def test_the_quantiles_are_the_ew_ones_at_the_halflife(self):
+        """Task 146: ``mahal_q<p>`` is the exponentially weighted quantile of
+        the past distances at the model's halflife, to ``tanh(1/128)``
+        relatively, so it follows a covariance change as the distances do."""
+        n, k, h = 3000, 3, 50.0
+        X, _ = gaussian(n, k, 21)
+        X[1500:] *= 4.0
+        s = spec(k, stats=["mahal"], mahal_quantiles=[0.5, 0.9], halflife=h, min_periods=5.0)
+        out = po.ModelBank([s]).fit_predict(frame(X))
+        d = field(out, "mahal")
+        lam = 0.5 ** (1 / h)
+        alpha = math.tanh(1 / 128)
+        for i in (400, 1510, 1600, 2999):
+            seen = np.flatnonzero(np.isfinite(d[:i]))
+            w = lam ** (i - 1 - seen.astype(float))
+            order = np.argsort(d[seen], kind="stable")
+            cum = np.cumsum(w[order])
+            for p in (0.5, 0.9):
+                want = float(d[seen][order][np.searchsorted(cum, p * cum[-1])])
+                got = field(out, f"mahal_q{p}")[i]
+                assert abs(got - want) <= alpha * want * (1 + 1e-9), (i, p, got, want)
+
     def test_injected_outliers_are_flagged(self):
         n, k = 100_000, 6
         X, _ = gaussian(n, k, 12)
@@ -760,9 +782,10 @@ class TestEdgeCases:
         m, q = field(out, "mahal"), field(out, "mahal_q0.5")
         first_score = int(np.argmax(np.isfinite(m)))
         first_q = int(np.argmax(np.isfinite(q)))
-        assert first_q == first_score + 5, (
-            "P² needs five scores, and the row's own is not one of them"
-        )
+        # The row's own score is not one of them, and one is enough: the
+        # sketch reports from its first (task 146; P² needed five).
+        assert first_q == first_score + 1
+        assert q[first_q] == pytest.approx(m[first_score], rel=math.tanh(1 / 128))
 
     def test_large_k_runs_and_is_calibrated(self):
         n, k = 5_000, 40

@@ -5869,41 +5869,42 @@ is not, since the model alone has `0.0` and `3.5` there.
       old blend its oracle misses by 3.5e-2 to 8.4e-2, with the Gram's
       normalisation for the targets by 5.0e-4 to 9.1e-4.
 
-- [ ] 146. **A clock parameter acts on the clock -- planned, not built.**
-      Size M. Every parameter in clock units acts on the policy clock, so
-      its effect does not change when rows arrive more or less densely at
-      the same clock; anything that counts rows says so in its docs, and a
-      lag counts rows only between gaps. Measured on 0.13.0 where marked;
-      the rest found by reading the code, and measured as each is fixed.
-
-      - **`kalman`'s `coef_halflife`** (measured): the process noise
-        `q_i = σ² (ln 2 / h)²` is added per clock unit, but a Kalman gain
-        grows with the square root of the noise, so the coefficients'
-        memory is about `h · sqrt(d)` for rows `d` apart: adapting to a
-        slope step took 74, 38 and 13 clock units at rows 1, 0.25 and 0.04
-        apart with `coef_halflife=50`, where `ewridge` at halflife 50 took
-        44 to 59. The documented promise, EW-RLS's steady-state gain, holds
-        at any spacing when the noise added per row is `σ² (ln 2 · d /
-        h)²`. Recommended: that, so `coef_halflife` is a clock halflife;
-        the alternative keeps the random walk and documents the `sqrt(d)`.
-        The user's call.
+- [x] 146. **A clock parameter acts on the clock -- built 2026-10-02,
+      but for `kalman`'s `coef_halflife`, which is task 150.** Size M.
+      Every parameter in clock units acts on the policy clock, so its
+      effect does not change when rows arrive more or less densely at the
+      same clock; anything that counts rows says so in its docs, and a lag
+      counts rows only between gaps. Measured on 0.13.0 where marked; the
+      rest found by reading the code, and measured as each is fixed.
       - **Drift detection** (measured): `emit_drift`'s Page-Hinkley test
-        adds one excess per scored row to an undecayed mean, so the same
-        30-unit burst flagged at 4 rows a unit and not at 1. It
+        added one excess per scored row to an undecayed mean, so the same
+        30-unit burst flagged at 4 rows a unit and not at 1. It now
         accumulates `d · (e − mean − δ)` against a mean decayed at the
-        model's halflife, so `drift_threshold` is in σ times clock units.
-        WARMUP-AND-CONVERGENCE §7.1's coefficient CUSUM is built the same
-        way from the start.
+        model's halflife, so `drift_threshold` is in σ times clock units; a
+        row with no residual ages the mean. At rows one unit apart with no
+        decay it is the classic test, so its unit tests run unchanged with
+        `d = 1`, `λ = 1`. WARMUP-AND-CONVERGENCE §7.1's coefficient CUSUM
+        is to be built the same way from the start.
       - **`resid_quantiles` and `mahal_quantiles`** (measured): the P²
-        estimator never forgets; at halflife 10 rows, 3,000 rows after the
+        estimator never forgot; at halflife 10 rows, 3,000 rows after the
         noise fell tenfold, `absresid_q0.9` read 1.55 where the recent
-        quantile is 0.166. A quantile estimator that decays at the model's
-        halflife replaces it.
+        quantile is 0.166. Replaced by `EwQuantile`
+        (`crates/online-core/src/stats.rs`): DDSketch (Masson, Rim & Lee
+        2019) with its bucket weights decayed on the clock, each value at
+        its row's weight. A bucket is `64 e + ⌊64 m⌋` of `v = m 2^e`, exact
+        on the float's bits, so no libm result enters the state; the
+        representative is within `tanh(1/128)` (0.78%) of every value in
+        its bucket, so of the exponentially weighted quantile. The decay is
+        one factor folded into the buckets every 64 halvings, when an end
+        bucket under `1e-12` of the total is dropped; each level keeps its
+        bucket and the weight below it, so a row costs a few comparisons.
+        One sketch per slot answers every level, from the first residual.
       - **`sgd` under `schedule="constant"`** (measured): the coefficients
-        never decay, and `halflife` reaches only the scaler and the
-        AdaGrad sum, so halflife 10 and 10,000 gave identical slopes. Its
-        memory is in rows, about `1 / (lr · E[z²])`; the docs say so, and
-        `halflife` is not required where nothing reads it.
+        never decay, and `halflife` reaches only `n_eff`, the scaler and
+        the AdaGrad sum, so halflife 10 and 10,000 gave identical slopes.
+        Its memory is in rows, about `1 / (lr · E[z²])`, and the docs say
+        so. `halflife` stays required: `n_eff`, and with it
+        `min_periods`, always reads it.
       - **`deco`'s linear dynamics**: `alpha` and `beta` step once per row,
         so a capped weekend moves `ρ` as much as a millisecond; the docs
         say "on the model's own clock". They are per row, as a DCC model's
@@ -5912,17 +5913,50 @@ is not, since the model alone has `0.0` and `3.5` there.
         the learned counts decay on the clock but grow per row, so the
         staying probability rises with row density. The docs say a
         transition is per row and what density does to it.
-      - **`resid_autocorr_lag`** pairs scored residuals, not rows, and is
+      - **`resid_autocorr_lag`** paired scored residuals, not rows, and was
         not cleared at a capped gap or a session change, so Friday's last
-        residual meets Monday's first. It is cleared where the model's lag
-        rings are, and the docs say "scored residuals back".
+        residual met Monday's first. Its buffer is now cleared where the
+        model's lag rings are, the docs say "scored residuals back", and
+        the cross moment keeps a weight of its own, the pairs', so a value
+        with no partner -- the first `lag` of a stream or of a run -- adds
+        nothing to it rather than a zero product. Found while fixing it: a
+        row with no residual, or of weight 0, skipped the tracker and its
+        decay with it; it now ages it, and the drift detector's mean and
+        the quantile sketch likewise.
       - **`conformal_rate`** steps the radius once per scored row, beside a
         coverage that decays on the clock; the docs say the step is per row.
+      - **State schema 21.** The bank file keeps the stream's diagnostics,
+        so it refuses one older than 21 (`MIN_BANK_SCHEMA_VERSION`). Of the
+        models' own states only `ew_cov` with `mahal_quantiles` changed; it
+        refuses one older than 21 by name, and the core minimum stays 14
+        (the user, 2026-09-28).
 
-      Tests: each fixed parameter on the same clock at two row densities,
-      equal to tolerance; `coef_halflife` against an `ewridge` fit at
-      several spacings; the decaying quantile against a brute-force EW
-      quantile.
+      Tests: a burst found at the same clock at one and four rows a unit,
+      in Rust and from Python; the detector against its recursion written
+      out on irregular steps; the sketch within `tanh(1/128)` of the
+      exponentially weighted quantile's definition row by row, on
+      irregular steps and weights with zeros and a tenfold fall in scale,
+      through rescaling and pruning, at the extreme floats, and saved and
+      resumed; `absresid_q<p>` and `mahal_q<p>` against the same definition
+      from the emitted residuals and distances; an autocorrelation null
+      throughout when every row follows a break; a step with no value
+      ageing the detector and the tracker as one step of the product's
+      decay; an old `ew_cov` state with P² markers, written in msgpack,
+      refused by name.
+
+- [ ] 150. **`kalman`'s `coef_halflife` on the clock -- the user's call.**
+      Size S. Split from task 146. The process noise `q_i = σ² (ln 2 /
+      h)²` is added per clock unit, but a Kalman gain grows with the square
+      root of the noise, so the coefficients' memory is about `h ·
+      sqrt(d)` for rows `d` apart: adapting to a slope step took 74, 38 and
+      13 clock units at rows 1, 0.25 and 0.04 apart with
+      `coef_halflife=50`, where `ewridge` at halflife 50 took 44 to 59
+      (measured on 0.13.0). The documented promise, EW-RLS's steady-state
+      gain, holds at any spacing when the noise added per row is `σ² (ln 2
+      · d / h)²`. Recommended: that, so `coef_halflife` is a clock
+      halflife; the alternative keeps the random walk and documents the
+      `sqrt(d)`. Tests: `coef_halflife` against an `ewridge` fit at
+      several spacings.
 
 - [ ] 147. **A row weight scales evidence, not counts -- planned, not
       built.** Size M. Multiplying every row's weight by one constant

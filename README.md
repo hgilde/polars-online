@@ -1375,13 +1375,13 @@ diag = po.spec.ewridge(
                                  #                   It hedges where emit_selected commits
     emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on |resid| ...
     drift_delta=0.5,             #                   ... with this tolerance, in units of the slot's sigma ...
-    drift_threshold=20.0,        #                   ... and this threshold;
+    drift_threshold=20.0,        #                   ... and this threshold, in sigma times clock units;
     drift_action="flag",         #                   "reset" also starts the model over at a break
     emit_metrics=True,           # ic_, r2_, hit_rate_<slot>: what po.eval computes, kept beside the model
-    resid_quantiles=[0.5, 0.9],  # absresid_q<p>_<slot>: running quantiles of |resid| (the P² algorithm) --
-                                 #                   an interval that assumes no distribution
+    resid_quantiles=[0.5, 0.9],  # absresid_q<p>_<slot>: EW quantiles of |resid| at the halflife, within
+                                 #                   0.78% -- an interval that assumes no distribution
     emit_autocorr=True,          # autocorr_<slot>:  EW correlation of each residual with the one this many
-    resid_autocorr_lag=1,        #                   rows back; away from zero, the model is missing something
+    resid_autocorr_lag=1,        #                   back, never across a gap or session; nonzero: something missing
     conformal=0.9,               # lo_, hi_, coverage_<slot>: an interval at that coverage, assuming no
                                  #                   distribution, and the coverage it has delivered;
     conformal_rate=0.05,         #                   its radius grows by rate·sigma·coverage on a miss and
@@ -1989,7 +1989,7 @@ mv = po.spec.ew_cov(
                                  # and read them back with bank.gram("mv") -- the form for a wide set of columns
     precision_prior=1e-6,        # needed by partial_corr (the correlation of two columns with all the others held fixed,
                                  # read off (C + s*prior*I)^-1, O(k³), paid only when asked) and by mahal; fades as data arrives
-    mahal_quantiles=[0.99],      # mahal_q0.99: a running quantile of the Mahalanobis scores, so mahal > mahal_q0.99 is
+    mahal_quantiles=[0.99],      # mahal_q0.99: the EW quantile of the Mahalanobis scores, so mahal > mahal_q0.99 is
                                  # "one row in a hundred" without assuming a distribution
     pca=1, pca_every=20,         # pc0_var, pc0_share (of the trace), pc0_<feature> (the loading), pc0_score (this row's);
                                  # the eigendecomposition is O(k³), so refresh it every 20 rows and score the rows between on

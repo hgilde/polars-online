@@ -33,6 +33,10 @@
 //! "linear":  ρ' = (1 − α − β)·ρ̄' + α·u + β·ρ     (ρ̄ the "ew" recursion)
 //! ```
 //!
+//! `"ew"` runs on the clock; `"linear"` steps once per row, as a DCC model's
+//! recursion does, so a gap capped at `max_dclock` moves `ρ` by one row's
+//! `α·u`, as a millisecond does (docs/PLAN.md task 146).
+//!
 //! Two departures from the paper, deliberate (docs/PLAN.md §11a). Their
 //! eq. 21 has a free intercept `ω`, and they apply correlation targeting to
 //! the DECO-DCC `Q` recursion rather than to the linear one; writing the

@@ -69,15 +69,18 @@ impl std::fmt::Display for GroupKey {
 /// error deep in a spec.
 const BANK_FORMAT_VERSION: u32 = 3;
 
-/// The oldest schema a bank file loads from, above the models' own
-/// `online_core::MIN_SCHEMA_VERSION`: a bank file names every spec's
+/// The oldest schema a bank file loads from. It was 19, above the models'
+/// own `online_core::MIN_SCHEMA_VERSION`: a bank file names every spec's
 /// `on_clock_reset`, and every one written before schema 19 names `"max"` --
 /// the old default, written whether or not the spec had a clock -- or
 /// `"zero"`, which no longer exist, and one under `"reset_state"` names no
 /// `min_backwards_jump` (docs/PLAN.md task 120, 2026-09-28). The user, the
-/// same day: "Do not worry about old specs". Refused by its version rather
-/// than by a parse error deep in a spec; pre-1.0, no loader is written.
-const MIN_BANK_SCHEMA_VERSION: u32 = 19;
+/// same day: "Do not worry about old specs". **21 since 2026-10-02**, with
+/// the models' own: a bank file keeps the stream's diagnostics, and before
+/// 21 they counted rows where they now run on the clock (task 146). Refused
+/// by its version rather than by a parse error deep in a spec; pre-1.0, no
+/// loader is written.
+const MIN_BANK_SCHEMA_VERSION: u32 = 21;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -3489,8 +3492,8 @@ impl Bank {
         {
             return Err(format!(
                 "state schema version {} not supported (this build loads {}..={}); a \
-                 bank saved before schema {MIN_BANK_SCHEMA_VERSION} names clock settings \
-                 that no longer exist, so refit it from its input",
+                 bank saved before schema {MIN_BANK_SCHEMA_VERSION} keeps settings and \
+                 diagnostics this build no longer has, so refit it from its input",
                 header.schema_version,
                 MIN_BANK_SCHEMA_VERSION,
                 online_core::SCHEMA_VERSION

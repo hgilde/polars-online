@@ -350,7 +350,9 @@ has the count by file.
 missed: 30 in `P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with
 no timeouts. Oracle tests closed them. `P2Quantile` is held marker by marker
 to the algorithm box of Jain & Chlamtac (1985), written from the paper, on
-a continuous stream and a discrete one, where markers tie. `EwAutoCorr` is
+a continuous stream and a discrete one, where markers tie. (Task 146
+replaced `P2Quantile`, which never forgot, with `EwQuantile`, held to the
+exponentially weighted quantile's definition row by row.) `EwAutoCorr` is
 held to a regime switch, to invariance under a shift and a scale, to a zero
 co-moment before the first pair, and to `same_shape`'s bounds. `SlotMetrics`
 is held to `n_eff`'s definition and the strict 0.5 threshold. After them, 5

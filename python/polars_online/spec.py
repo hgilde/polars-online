@@ -325,23 +325,40 @@ The diagnostics add, per slot:
        coverage`` on a miss and shrinks by ``conformal_rate * sigma * (1 -
        coverage)`` on a hit, so its long-run coverage is the number asked
        for whatever the residuals do; and the coverage it has delivered.
-       Null until the first ``sigma`` exists.
+       Null until the first ``sigma`` exists. The step is taken once per
+       scored row, so ``q`` moves faster in clock time where rows are
+       denser; the delivered coverage decays on the clock.
    * - ``resid_quantiles``
      - ``absresid_q<p>_<slot>``
-     - A running quantile of ``|resid|`` per level ``p`` (the P² algorithm,
-       five numbers per level): an interval that assumes no distribution.
+     - The exponentially weighted quantile of ``|resid|`` at level ``p``,
+       at the model's halflife, each residual at its row's weight as in
+       ``sigma``: an interval that assumes no distribution. One decaying
+       DDSketch per slot answers every level, within ``tanh(1/128)``
+       (0.78%) of the exact weighted quantile, in buckets that span the
+       residuals of the last few dozen halflives. Null until the first
+       residual.
    * - ``emit_autocorr``
      - ``autocorr_<slot>``
      - The EW correlation of each residual with the one
-       ``resid_autocorr_lag`` rows back (default 1). A residual stream
-       should look like noise; a value away from zero says the model is
-       missing something.
+       ``resid_autocorr_lag`` scored residuals back (default 1), within a
+       run of adjacent rows: a gap capped by ``max_dclock`` or a session
+       change starts a new run, as it clears the models' lags, and the
+       weights decay on every row's clock. A residual stream should look
+       like noise; a value away from zero says the model is missing
+       something.
    * - ``emit_drift``
      - ``drift_<slot>``
      - True on the row a Page-Hinkley detector on ``|resid|`` finds a
-       break, at ``drift_delta`` tolerance (default 0.5, in units of the
-       slot's ``sigma``) and ``drift_threshold`` (default 20).
-       ``drift_action = "reset"`` also starts the model over there.
+       break. Each residual over ``sigma`` is compared with its EW mean at
+       the model's halflife, less ``drift_delta`` (default 0.5, in units
+       of ``sigma``), and the excess is integrated over the clock: a break
+       when it climbs ``drift_threshold`` (default 20, in ``sigma`` times
+       clock units) above its lowest point. The detector counts the same
+       burst the same whatever the rows' density, though each residual is
+       scored against the ``sigma`` before its row, which trails a moving
+       scale further where rows are sparser; with rows one unit apart and
+       no decay it is the classic test. ``drift_action = "reset"`` also
+       starts the model over there.
 
 .. rubric:: Errors
 

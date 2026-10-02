@@ -23,7 +23,9 @@
 //! that anneals with `n_eff`, or AdaGrad's per-coordinate `lr / (sqrt(G_i) + eps)`.
 //! AdaGrad's accumulator and `n_eff` are both decayed on the model's clock, so
 //! an annealed or adapted rate re-opens after a long gap instead of staying
-//! frozen at whatever it had converged to.
+//! frozen at whatever it had converged to. The coefficients do not decay:
+//! under a constant rate their memory is in rows, about `1 / (lr · E[z²])`,
+//! whatever the clock between them (docs/PLAN.md task 146).
 
 use serde::{Deserialize, Serialize};
 

@@ -4,12 +4,12 @@
 use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
-    EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
-    FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman,
-    KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState,
-    OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError, WindowShadow,
+    EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans,
+    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
+    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
+    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
+    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1549,7 +1549,7 @@ pub struct StreamState {
     #[serde(default)]
     pub drift: Vec<Vec<PageHinkley>>,
     #[serde(default)]
-    pub resid_q: Vec<Vec<Vec<P2Quantile>>>,
+    pub resid_q: Vec<Vec<EwQuantile>>,
     #[serde(default)]
     pub autocorr: Vec<Vec<EwAutoCorr>>,
     #[serde(default)]
@@ -1698,8 +1698,9 @@ pub struct Stream {
     drift: Vec<Vec<PageHinkley>>,
     /// Warmup threshold per target (ENHANCEMENTS E7).
     min_periods: Vec<f64>,
-    /// P² estimators per instance, slot and requested level (ENHANCEMENTS E23).
-    resid_q: Vec<Vec<Vec<P2Quantile>>>,
+    /// Quantile sketches per instance and slot, every requested level from
+    /// one (ENHANCEMENTS E23, docs/PLAN.md task 146).
+    resid_q: Vec<Vec<EwQuantile>>,
     /// EW residual autocorrelation per instance and slot.
     autocorr: Vec<Vec<EwAutoCorr>>,
     /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
@@ -2255,11 +2256,8 @@ impl Stream {
             drift,
             resid_q: match &spec.resid_quantiles {
                 Some(levels) => {
-                    let protos: Vec<P2Quantile> = levels
-                        .iter()
-                        .map(|q| P2Quantile::new(*q))
-                        .collect::<Result<_, _>>()?;
-                    slots.iter().map(|&n| vec![protos.clone(); n]).collect()
+                    let proto = EwQuantile::new(levels)?;
+                    slots.iter().map(|&n| vec![proto.clone(); n]).collect()
                 }
                 None => Vec::new(),
             },
@@ -2453,7 +2451,7 @@ impl Stream {
             "residual quantiles",
             &saved.resid_q,
             &mut stream.resid_q,
-            |s, l| s.len() == l.len(),
+            |s, l| s.levels() == l.levels(),
         )?;
         take_diag(
             "autocorrelations",
@@ -3211,7 +3209,8 @@ impl Stream {
         // The diagnostics are read, never written, on this path; a copy is
         // how a `&self` stream lends them to the same `run_instance` that
         // updates them when learning. They are per-slot summaries, so the
-        // copy is a few hundred bytes per instance.
+        // copy is a few hundred bytes per slot, and a quantile sketch's
+        // buckets, a few kilobytes.
         let n = self.models.len();
         let (mut resid_var, mut resid_w) = (self.resid_var.clone(), self.resid_w.clone());
         let (mut drift, mut resid_q) = (self.drift.clone(), self.resid_q.clone());
@@ -3330,7 +3329,7 @@ struct Diagnostics<'a> {
     resid_var: &'a mut [Vec<f64>],
     resid_w: &'a mut [Vec<f64>],
     drift: &'a mut [Vec<PageHinkley>],
-    resid_q: &'a mut [Vec<Vec<P2Quantile>>],
+    resid_q: &'a mut [Vec<EwQuantile>],
     autocorr: &'a mut [Vec<EwAutoCorr>],
     metrics: &'a mut [Vec<SlotMetrics>],
     conformal: &'a mut [Vec<Conformal>],
@@ -3546,7 +3545,7 @@ struct Instance<'a> {
     resid_var: &'a mut Vec<f64>,
     resid_w: &'a mut Vec<f64>,
     drift: Option<&'a mut Vec<PageHinkley>>,
-    resid_q: Option<&'a mut Vec<Vec<P2Quantile>>>,
+    resid_q: Option<&'a mut Vec<EwQuantile>>,
     autocorr: Option<&'a mut Vec<EwAutoCorr>>,
     metrics: Option<&'a mut Vec<SlotMetrics>>,
     conformal: Option<&'a mut Vec<Conformal>>,
@@ -3612,12 +3611,8 @@ impl Instance<'_> {
             d.iter_mut().for_each(PageHinkley::reset);
         }
         // Residual diagnostics restart with the model they describe.
-        if let (Some(q), Some(levels)) = (self.resid_q.as_deref_mut(), &spec.resid_quantiles) {
-            for per_level in q.iter_mut() {
-                for (est, lvl) in per_level.iter_mut().zip(levels) {
-                    *est = P2Quantile::new(*lvl).expect("validated");
-                }
-            }
+        if let Some(q) = self.resid_q.as_deref_mut() {
+            q.iter_mut().for_each(EwQuantile::reset);
         }
         if let Some(a) = self.autocorr.as_deref_mut() {
             let lag = spec.resid_autocorr_lag.unwrap_or(1);
@@ -3705,6 +3700,11 @@ fn run_instance(
             // reset, which rebuilds the model whole.
             if plan.session_changed || plan.capped {
                 inst.model.get_mut().clear_lags();
+                // The residual autocorrelation pairs rows back too
+                // (docs/PLAN.md task 146).
+                if let Some(a) = inst.autocorr.as_deref_mut() {
+                    a.iter_mut().for_each(EwAutoCorr::clear_lags);
+                }
             }
         }
         if !plan.accept {
@@ -3959,20 +3959,24 @@ fn run_instance(
 
         // Drift is monitored on |resid| scaled by the slot's own EW residual
         // std, so `drift_delta` means the same thing whatever the target's
-        // units. Rows with no residual are skipped, not treated as zero error.
-        // So is a zero-weight row: the user weighted it out, `sigma` already
+        // units, and integrated over the row's clock (docs/PLAN.md task 146).
+        // Rows with no residual are not scored, not treated as zero error.
+        // Nor is a zero-weight row: the user weighted it out, `sigma` already
         // treats it as unseen, and a row that fired the detector could restart
         // the model under `drift_action = "reset"` (review 2026-09-12, S28).
+        // Either still ages the detector's mean: it is clock.
         let mut row_drift = false;
-        if let (true, Some(dets)) = (learn && w > 0.0, inst.drift.as_deref_mut()) {
+        if let (true, Some(dets)) = (learn, inst.drift.as_deref_mut()) {
             for (slot, &rv) in sc.r.iter().enumerate() {
                 let scale = sc.sig[slot];
-                if rv.is_finite() && scale.is_finite() && scale > 0.0 {
-                    let flag = dets[slot].update(rv.abs() / scale);
+                if w > 0.0 && rv.is_finite() && scale.is_finite() && scale > 0.0 {
+                    let flag = dets[slot].update(rv.abs() / scale, plan.d_clock, lam);
                     if emit {
                         inst.o_drift[slot * n_rows + ri] = flag;
                     }
                     row_drift |= flag;
+                } else {
+                    dets[slot].age(lam);
                 }
             }
             drift_seen |= row_drift;
@@ -3980,17 +3984,22 @@ fn run_instance(
 
         // Residual diagnostics (ENHANCEMENTS E23), all read before the row's
         // own residual is folded in, like sigma.
+        // The quantiles weigh each |resid| by the row's weight, as `sigma`
+        // does, and decay on the clock at the model's rate (task 146).
         if let Some(ests) = inst.resid_q.as_deref_mut() {
-            for (slot, per_level) in ests.iter_mut().enumerate() {
-                for (li, est) in per_level.iter_mut().enumerate() {
-                    if emit {
+            for (slot, est) in ests.iter_mut().enumerate() {
+                if emit {
+                    for li in 0..est.levels().len() {
                         inst.o_resid_q[li * block + slot * n_rows + ri] =
-                            est.get().unwrap_or(f64::NAN);
+                            est.get(li).unwrap_or(f64::NAN);
                     }
+                }
+                if learn {
+                    est.age(lam);
                     // A zero-weight row's residual stays out, as it does of
                     // `sigma` (S28).
-                    if learn && w > 0.0 && sc.r[slot].is_finite() {
-                        est.update(sc.r[slot].abs());
+                    if w > 0.0 && sc.r[slot].is_finite() {
+                        est.add(sc.r[slot].abs(), w);
                     }
                 }
             }
@@ -4000,9 +4009,14 @@ fn run_instance(
                 if emit {
                     inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
                 }
-                // Likewise the autocorrelation (S28).
-                if learn && w > 0.0 && sc.r[slot].is_finite() {
-                    est.update(sc.r[slot], lam);
+                // Likewise the autocorrelation (S28); a row it does not take
+                // still ages it (task 146).
+                if learn {
+                    if w > 0.0 && sc.r[slot].is_finite() {
+                        est.update(sc.r[slot], lam);
+                    } else {
+                        est.age(lam);
+                    }
                 }
             }
         }

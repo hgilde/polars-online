@@ -63,8 +63,9 @@ rather than the point estimate plus `sigma` we emit today. The online form (Gibb
 Candès) is a one-line update on a running quantile of conformity scores:
 `α_{t+1} = α_t + γ(target_coverage − 1{y_t ∈ interval_t})`.
 
-- **Memory:** a quantile sketch of past `|resid|`, which we already have (`P2Quantile`,
-  E23). Effectively free — this is `O(1/ε)`, not `O(window)`.
+- **Memory:** a quantile sketch of past `|resid|`, which we already have (`EwQuantile`,
+  E23 and task 146, where it replaced `P2Quantile`). Effectively free — this is `O(1/ε)`,
+  not `O(window)`.
 - **Why it is not duplicated:** `conformal-prediction` has 461 downloads; the serious
   implementations are Python (MAPIE, `crepes`). In a streaming Rust library: nothing.
 - **Why it fits here better than anywhere:** conformal needs conformity scores from a
@@ -162,7 +163,9 @@ worth restating so nobody re-opens them on the memory argument alone:
   quantiles): they break chunk invariance, which is a stated guarantee rather than a
   preference. Frequent directions is the deterministic alternative — hence B3.
 - **t-digest / DDSketch / HyperLogLog / reservoir sampling.** All well served in Rust.
-  A *clock-decayed* t-digest would be mildly novel, but P² already covers the need here.
+  A *clock-decayed* sketch was needed after all: P² never forgot, so
+  `resid_quantiles` and `mahal_quantiles` are a DDSketch whose buckets decay
+  on the clock since task 146 (`online-core/src/stats.rs`, `EwQuantile`).
 
 ---
 

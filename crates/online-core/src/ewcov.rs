@@ -1170,9 +1170,11 @@ pub struct EwCovCfg {
     /// [`EwCovStat::PartialCorr`] and [`EwCovStat::Mahal`], its consumers.
     #[serde(default)]
     pub precision_prior: Option<f64>,
-    /// P² quantile levels of the past Mahalanobis scores, one slot each
+    /// Quantile levels of the past Mahalanobis scores, one slot each
     /// (`mahal_q<p>`): a threshold for [`EwCovStat::Mahal`] from its own
-    /// history rather than from a χ² table. Needs `Mahal` in `stats`.
+    /// history rather than from a χ² table, exponentially weighted at the
+    /// model's decay ([`crate::EwQuantile`], docs/PLAN.md task 146). Needs
+    /// `Mahal` in `stats`.
     #[serde(default)]
     pub mahal_quantiles: Vec<f64>,
     /// Number of principal components to track, `0` for none
@@ -1256,9 +1258,10 @@ impl EwCovCfg {
             }
             if !self.mahal_quantiles.is_empty() {
                 return Err(
-                    "ew_cov: window and mahal_quantiles do not combine; the P^2 quantiles are \
-                     accumulated over every score the stream has produced, so thresholding a \
-                     windowed distance against them compares two different histories"
+                    "ew_cov: window and mahal_quantiles do not combine; the quantiles decay \
+                     over every score the stream has produced, with no window, so \
+                     thresholding a windowed distance against them compares two different \
+                     histories"
                         .into(),
                 );
             }
@@ -1415,13 +1418,33 @@ impl Pca {
 ///
 /// It has no targets: every column is a "feature", and the statistics are
 /// reported from the state *before* each row, like every prediction here.
+/// `mahal_q` as this build writes it, or, from a state written before
+/// schema 21, a list of P² markers, read as `None` for `restore` to refuse.
+fn sketch_or_p2_markers<'de, D>(d: D) -> Result<Option<crate::EwQuantile>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Sketch(Option<crate::EwQuantile>),
+        Markers(#[allow(dead_code)] Vec<serde::de::IgnoredAny>),
+    }
+    Ok(match <Either as serde::Deserialize>::deserialize(d)? {
+        Either::Sketch(q) => q,
+        Either::Markers(_) => None,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EwCovModel {
     cfg: EwCovCfg,
     cov: EwCov,
-    /// P² estimators of the past Mahalanobis scores, one per level.
-    #[serde(default)]
-    mahal_q: Vec<crate::P2Quantile>,
+    /// The sketch of the past Mahalanobis scores, every level from one;
+    /// `None` without levels, and for a state written before schema 21,
+    /// which kept P² markers here and is refused where it has levels.
+    #[serde(default, deserialize_with = "sketch_or_p2_markers")]
+    mahal_q: Option<crate::EwQuantile>,
     /// The components in force, refreshed every `pca_every` learned rows.
     #[serde(default)]
     pca: Option<Pca>,
@@ -1468,11 +1491,11 @@ impl EwCovModel {
         } else {
             cov.without_runs()
         };
-        let mahal_q = cfg
-            .mahal_quantiles
-            .iter()
-            .map(|&q| crate::P2Quantile::new(q))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mahal_q = if cfg.mahal_quantiles.is_empty() {
+            None
+        } else {
+            Some(crate::EwQuantile::new(&cfg.mahal_quantiles)?)
+        };
         let lag = if cfg.lags.is_empty() {
             None
         } else {
@@ -1806,8 +1829,10 @@ impl EwCovModel {
                 }
             }
         }
-        for q in &self.mahal_q {
-            out.push(q.get().unwrap_or(f64::NAN));
+        if let Some(q) = &self.mahal_q {
+            for l in 0..q.levels().len() {
+                out.push(q.get(l).unwrap_or(f64::NAN));
+            }
         }
         if self.cfg.pca > 0 {
             match &self.pca {
@@ -1862,7 +1887,8 @@ impl crate::OnlineModel for EwCovModel {
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
         let out = self.predict(x, d_clock);
-        if !self.mahal_q.is_empty() {
+        let lam = self.cfg.decay.factor(d_clock);
+        if let Some(q) = self.mahal_q.as_mut() {
             // The row's own out-of-sample score joins the history it will be
             // thresholded against, as `resid_quantiles` does for |resid|.
             let slot = self
@@ -1876,14 +1902,13 @@ impl crate::OnlineModel for EwCovModel {
             // A zero-weight row is scored but not seen: its distance stays out
             // of the history the quantiles threshold against, as the stream
             // keeps a zero-weight residual out of `resid_quantiles` (review
-            // 2026-09-12, S28).
+            // 2026-09-12, S28). The clock reaches the history on every row,
+            // scored or not.
+            q.age(lam);
             if score.is_finite() && weight > 0.0 {
-                for q in &mut self.mahal_q {
-                    q.update(score);
-                }
+                q.add(score, weight);
             }
         }
-        let lam = self.cfg.decay.factor(d_clock);
         // Before the accumulator moves: the lagged update reads the same
         // pre-row weight and mean `EwCov::update` is about to consume, which
         // is what makes `l = 0` its co-moments to the bit.
@@ -1963,6 +1988,16 @@ impl crate::OnlineModel for EwCovModel {
         match &s.model {
             crate::ModelState::EwCovModel(m) => {
                 let mut m = (**m).clone();
+                // P² markers say nothing about a decayed distribution, and
+                // pre-1.0 no loader is written (docs/PLAN.md task 146).
+                if m.mahal_q.is_none() && !m.cfg.mahal_quantiles.is_empty() {
+                    return Err(crate::StateError::Invalid(
+                        "ew_cov: a state written before schema 21 keeps P² markers for \
+                         mahal_quantiles, where this build keeps a decaying sketch; refit it \
+                         from its input"
+                            .into(),
+                    ));
+                }
                 // A state written before task 48, resumed under a spec that
                 // has since gained `lags`: the ring cannot be recovered, so
                 // it starts empty and the matrices from zero.
@@ -1984,7 +2019,8 @@ impl crate::OnlineModel for EwCovModel {
                     p.eig.len() <= m.cfg.pca && p.loadings.len() == p.eig.len() * k
                 });
                 if !m.cov.has_shape(k)
-                    || m.mahal_q.len() != m.cfg.mahal_quantiles.len()
+                    || m.mahal_q.as_ref().map_or(&[][..], |q| q.levels())
+                        != m.cfg.mahal_quantiles.as_slice()
                     || !lag_ok
                     || !pca_ok
                     || m.win.is_some() != m.cfg.window.is_some()
@@ -2669,40 +2705,110 @@ mod tests {
 
     #[test]
     fn mahal_quantiles_track_the_scores_seen_so_far() {
-        // Each row's own out-of-sample score enters the P² estimators after
-        // it is read, so the quantile field lags by one row and never
-        // includes the row it is emitted with.
+        // Each row's own out-of-sample score enters the sketch after it is
+        // read, so the quantile field lags by one row and never includes the
+        // row it is emitted with; the clock ages the sketch on every row
+        // (docs/PLAN.md task 146).
         let mut c = mahal_cfg(2, 1e-6);
         c.mahal_quantiles = vec![0.5];
+        let lam = c.decay.factor(1.0);
         let mut m = EwCovModel::new(c).unwrap();
         let mut s = 11u64;
-        let mut scores = Vec::new();
-        let mut oracle = crate::P2Quantile::new(0.5).unwrap();
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        let mut oracle = crate::EwQuantile::new(&[0.5]).unwrap();
         for i in 0..2000 {
             let x = [lcg(&mut s), lcg(&mut s)];
             let out = step(&mut m, &x, i == 0);
             assert_eq!(out.len(), 2);
             // The field is the estimate *before* this row's score joins.
-            assert_eq!(out[1].to_bits(), oracle.get().unwrap_or(f64::NAN).to_bits());
-            if out[0].is_finite() {
-                scores.push(out[0]);
-                oracle.update(out[0]);
+            assert_eq!(
+                out[1].to_bits(),
+                oracle.get(0).unwrap_or(f64::NAN).to_bits()
+            );
+            if i > 0 {
+                oracle.age(lam);
+                seen.iter_mut().for_each(|e| e.1 *= lam);
             }
-            if scores.len() < 5 {
-                assert!(out[1].is_nan(), "P² needs five observations");
+            if out[0].is_finite() {
+                seen.push((out[0], 1.0));
+                oracle.add(out[0], 1.0);
             }
         }
-        let mut sorted = scores.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let median = sorted[sorted.len() / 2];
+        // Against the definition: the smallest score whose weight, ascending,
+        // reaches half the total.
+        seen.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let total: f64 = seen.iter().map(|e| e.1).sum();
+        let mut cum = 0.0;
+        let median = seen
+            .iter()
+            .find(|e| {
+                cum += e.1;
+                cum >= 0.5 * total
+            })
+            .unwrap()
+            .0;
         let q = crate::OnlineModel::predict(&m, &[0.0, 0.0], 1.0).pred[1];
-        assert_eq!(q.to_bits(), oracle.get().unwrap().to_bits());
-        assert!((q - median).abs() < 0.05, "P² median {q} vs {median}");
-        // NaN scores (before min_periods) never enter the estimator.
+        assert_eq!(q.to_bits(), oracle.get(0).unwrap().to_bits());
+        assert!((q - median).abs() <= crate::EW_QUANTILE_ALPHA * median * (1.0 + 1e-9));
+        // NaN scores (before min_periods) never enter the sketch.
         let mut fresh = EwCovModel::new(m.cfg().clone()).unwrap();
         let out = step(&mut fresh, &[1.0, 2.0], true);
         assert!(out[0].is_nan() && out[1].is_nan());
-        assert_eq!(fresh.mahal_q[0].count(), 0);
+        assert_eq!(fresh.mahal_q.as_ref().unwrap().get(0), None);
+    }
+
+    /// A state from before schema 21 kept P² markers for its Mahalanobis
+    /// quantiles: written into msgpack here as that build wrote them, it is
+    /// refused by name, and a state with no levels still loads.
+    #[test]
+    fn a_state_with_p2_markers_is_refused_by_name() {
+        fn swap(v: &mut rmpv::Value, with: &rmpv::Value) -> bool {
+            match v {
+                rmpv::Value::Map(kv) => kv.iter_mut().any(|(k, val)| {
+                    if k.as_str() == Some("mahal_q") {
+                        *val = with.clone();
+                        true
+                    } else {
+                        swap(val, with)
+                    }
+                }),
+                rmpv::Value::Array(xs) => xs.iter_mut().any(|x| swap(x, with)),
+                _ => false,
+            }
+        }
+        let p2 = |p: f64| {
+            let f = |xs: [f64; 5]| rmpv::Value::Array(xs.map(rmpv::Value::from).to_vec());
+            rmpv::Value::Map(vec![
+                ("p".into(), p.into()),
+                ("q".into(), f([0.1, 0.2, 0.3, 0.4, 0.5])),
+                ("n".into(), f([1.0, 2.0, 3.0, 4.0, 5.0])),
+                ("np".into(), f([1.0, 2.0, 3.0, 4.0, 5.0])),
+                ("dn".into(), f([0.0, 0.25, 0.5, 0.75, 1.0])),
+                ("count".into(), 5.into()),
+            ])
+        };
+        let old = |levels: Vec<f64>| {
+            let mut c = mahal_cfg(2, 1e-6);
+            c.mahal_quantiles = levels.clone();
+            let m = EwCovModel::new(c).unwrap();
+            let mut state = crate::OnlineModel::state(&m);
+            state.schema_version = 20;
+            let bytes = rmp_serde::to_vec_named(&state).unwrap();
+            let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+            let markers = rmpv::Value::Array(levels.iter().map(|&p| p2(p)).collect());
+            assert!(swap(&mut v, &markers), "the state has a mahal_q");
+            let mut out = Vec::new();
+            rmpv::encode::write_value(&mut out, &v).unwrap();
+            rmp_serde::from_slice::<crate::State>(&out).unwrap()
+        };
+        let err = <EwCovModel as crate::OnlineModel>::restore(&old(vec![0.5, 0.9]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("before schema 21") && err.contains("P²"),
+            "{err}"
+        );
+        assert!(<EwCovModel as crate::OnlineModel>::restore(&old(vec![])).is_ok());
     }
 
     #[test]

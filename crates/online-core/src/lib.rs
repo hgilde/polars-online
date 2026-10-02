@@ -145,7 +145,7 @@ pub use runs::Runs;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
-pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
+pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, SlotMetrics};
 pub use window::{
     Bytes, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated, truncated_mean,
     truncated_scalar,
@@ -329,7 +329,19 @@ pub use window::{
 ///   target's weight starts at the shared one its gate read, and a
 ///   `corrchange` has no monitoring period. A 19 build would do none of
 ///   that, so a 20 file is refused there by its version.
-pub const SCHEMA_VERSION: u32 = 20;
+/// - 21: the stream's diagnostics run on the clock (docs/PLAN.md task 146).
+///   `resid_quantiles` and `ew_cov`'s `mahal_quantiles` keep an
+///   exponentially weighted sketch ([`EwQuantile`]) where they kept P²
+///   markers, one per slot for every level; a Page-Hinkley detector keeps
+///   its mean's decaying weight and an excess integrated over the clock;
+///   a residual autocorrelation keeps its pairs' weight. A 20 file's P²
+///   markers say nothing about a decayed distribution and its excess is
+///   in rows, so no loader is written. The stream's diagnostics live in the
+///   bank file, which refuses one older than 21 (`online_polars`'
+///   `MIN_BANK_SCHEMA_VERSION`); of the models' own states only an `ew_cov`
+///   with `mahal_quantiles` changed, and it refuses one older than 21 by
+///   name. Every other model's state from 14 on still loads.
+pub const SCHEMA_VERSION: u32 = 21;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

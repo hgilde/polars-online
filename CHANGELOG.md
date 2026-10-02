@@ -19,6 +19,29 @@ carries breaking changes, and any change to the numbers a model returns.
   scale. Numbers move for any `session_shrink` above 0: below 1 the fit, and
   at 1 `n_eff`, the warm-up gates, the solve schedule and a `ridge_decay`
   fit.
+- **The stream's diagnostics run on the clock** (task 146), so their
+  numbers do not change with the rows' density, and their fields move:
+  - `resid_quantiles` and `ew_cov`'s `mahal_quantiles` are the
+    exponentially weighted quantiles at the model's halflife, each value at
+    its row's weight, from one decaying DDSketch per slot within 0.78%
+    (`tanh(1/128)`) of the exact one. The P² estimator never forgot: at a
+    halflife of 10 rows, 3,000 rows after the noise fell tenfold, its 0.9
+    quantile read 1.55 where the recent one is 0.166. A quantile now
+    reports from the first residual, where P² needed five.
+  - `emit_drift` integrates the excess over the clock against a mean that
+    decays at the model's halflife, so `drift_threshold` is in `sigma`
+    times clock units: the same 30-unit burst was flagged at four rows a
+    unit and not at one. With rows one unit apart only the mean's decay is
+    new.
+  - `emit_autocorr` pairs no residual across a gap capped by `max_dclock` or
+    a session change, and a residual with no partner adds nothing to the
+    cross moment.
+  - A row with no residual, or of weight 0, now ages all three.
+  - State schema 21: a bank file saved before it is refused (refit it from
+    its input), and so is an `ew_cov` state with `mahal_quantiles`.
+  - The docs say what still counts rows: `sgd`'s coefficients under a
+    constant rate, `deco`'s linear dynamics, `hmm`'s transitions and the
+    conformal step.
 - **`po.corr.signal_share` takes a Kish size** (task 148): its second
   argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
   a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `n_eff` is a
