@@ -6015,25 +6015,47 @@ is not, since the model alone has `0.0` and `3.5` there.
       `micro` and quantile oracles in Python with the same rule. The
       quantile test fails at row 2 when the gate reads raw weight.
 
-- [ ] 151. **`ftrl`'s penalties and `micro`'s counts against weight and
-      density -- the user's call.** Size S. Split from task 147.
-      - **`ftrl`**: its penalties are in absolute weight, as Vowpal
-        Wabbit's are against an importance weight, and the fit is VW's with
-        weights; at a hundred times the weights `l1` zeroes less. Penalties
-        times the taught rows' mean weight (`W*/N*`) make it scale-free --
-        built on 2026-10-02, the river comparisons, at unit weights, still
-        passed, and VW's weighted cases failed -- and part from VW's
-        weighted fit. Recommended:
-        keep VW's semantics, which a second opinion holds, and the
-        exception the property test names.
-      - **Density, `ftrl` and `micro`**: their penalties and thresholds
-        are per row, so more rows to a clock unit outweigh `l1` and
-        `beta_mu` sooner. A rate per clock unit (`w̄ / d̄`, or `W / T`)
-        would make them density-free, but any clock rate drops at a gap
-        capped by `max_dclock` -- `d̄` takes the weekend -- and with it the
-        penalties, so a fit would move across a gap, which the library
-        does not do anywhere else (rule 8). Recommended: leave them per
-        row, as the docs now say.
+- [ ] 151. **`ftrl` and `micro` keep their units: a sum-scale prior and a
+      point density -- decided 2026-10-02, docs not yet written.** Size S.
+      Split from task 147. Nothing in the code changes.
+
+      - **`ftrl`'s penalties stay in absolute weight.** FTRL-Proximal
+        (McMahan et al. 2013) minimizes the cumulative loss plus a fixed
+        regularizer, `g_{1:t}·w + λ₁‖w‖₁ + ½λ₂‖w‖²`: the penalty is a prior
+        of fixed mass that the evidence outweighs, which is what its regret
+        bound rests on, and an importance weight adds evidence, as Vowpal
+        Wabbit's does. Under a halflife the evidence is bounded at `W∞`,
+        so the effective regularization `λ₁/W∞` depends on the weights'
+        scale and the rows' density: the sum-scale prior family, beside
+        `rls`'s ridge, `ridge_decay` and `kalman`'s observation precision,
+        which the library documents as the exceptions. The mean-scale
+        sparse fit, invariant to both, is `lasso`. Penalties times the
+        taught rows' mean weight, built on 2026-10-02, were `lasso`'s
+        semantics under `ftrl`'s name and parted from VW's weighted fit;
+        reverted. Docs: `ftrl` says its `l1`, `l2` and `beta` are a prior
+        of fixed mass against evidence that grows with weight and
+        density, and points to `lasso` for a penalty on the mean scale.
+      - **`micro`'s thresholds stay in points.** DenStream (Cao et al.
+        2006) is DBSCAN on a stream: a cluster is a region with at least
+        `MinPts` points, the count is the definition of density, and the
+        paper takes the arrival rate `v` as the stream's given -- the
+        total weight is `W = v/(1 − 2^{−λ})`, and `ξ` is the weight of a
+        cluster fed one point per time unit. A threshold as a share of the
+        running weight would be density-free and a different algorithm: a
+        cluster holding 5% of a stream that splits into twenty falls below
+        a share while still dense. Task 147's `w/w̄` keeps points as the
+        unit. Docs: with halflife `h` and `v` rows per clock unit the
+        stream's steady-state weight is about `1.44·v·h`, so a summary
+        meant to hold a share `s` of it needs `beta_mu ≈ 1.44·s·v·h`.
+      - **A clock-rate normaliser is not built.** `max_dclock` bounds its
+        dip at a capped gap to about `G/(1.44h)` and never removes it;
+        skipping the rate's update on a `capped` or `session_changed` row
+        would, with no new plumbing. Neither is wanted given the two
+        points above.
+
+      Tests: `tests/test_weight_scale.py` keeps `ftrl` among the named
+      exceptions; a docstring test holds `ftrl`'s and `micro`'s docstrings
+      to the two sentences above.
 
 - [x] 148. **The docs say what the code does: the 2026-10-01 findings --
       built 2026-10-02.** Size S. Each was a wrong or missing sentence,
