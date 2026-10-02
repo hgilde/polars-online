@@ -37,7 +37,8 @@
 //! the quantile fit warms up as ordinary least squares: a Newton step needs a
 //! Hessian, and a band around a fit built from a handful of rows is not one.
 //! And the band is never narrower than `(k/n)^(2/5)` of `s` for the target's
-//! effective sample `n` -- the smoothed-quantile bandwidth rate, which a long
+//! effective sample `n`, its present rows counted one each and decayed, so a
+//! weight's scale reaches neither (docs/PLAN.md task 147) -- the smoothed-quantile bandwidth rate, which a long
 //! stream leaves behind and which keeps the Hessian fed under a short
 //! halflife, where the band's share of the sample is a few rows. The warm-up
 //! read the band's weight until the second review of 2026-09-15 (F3), which a
@@ -187,6 +188,13 @@ pub struct Robust {
     /// quantile that is the band's weight, which a halflife caps at the
     /// band's share of the sample (the second review of 2026-09-15, F1).
     wobs: Vec<f64>,
+    /// Per target, the same rows counted one each, decayed alike: `wobs`
+    /// over the rows' mean weight, which the quantile fit's warm-up and band
+    /// floor read so that a weight's scale reaches neither (docs/PLAN.md
+    /// task 147: rows at weight 100 left the warm-up on their first row,
+    /// and the fit reached 1e51). A state written before it starts at `wobs`.
+    #[serde(default)]
+    nobs: Vec<f64>,
     /// Per target, the centred cross-moment `c_j = E[(z − m_j)(y − ȳ_j)]`
     /// over `wj`, with `m_j` its accumulator's mean, and `ȳ_j` beside it
     /// (`ybar`). With an intercept slot 0 is exactly 0: `z_0 − m_0 = 0` once
@@ -236,6 +244,7 @@ impl Robust {
             cov: vec![EwCov::new(k).without_runs(); m],
             wj: vec![0.0; m],
             wobs: vec![0.0; m],
+            nobs: vec![0.0; m],
             cross: vec![vec![0.0; k]; m],
             ybar: vec![0.0; m],
             sig2: vec![0.0; m],
@@ -277,16 +286,18 @@ impl Robust {
     ///
     /// `pred` is the prediction the row was scored with, so both stay
     /// out-of-sample, and `scale` is the EW residual std, taken as 1 until one
-    /// exists. `present` is the weight of the rows this target was present
-    /// on, decayed to the row (`wobs`): under `WARM_ROWS` of it per
+    /// exists. `present` is the count of the rows this target was present
+    /// on, decayed to the row (`nobs`): under `WARM_ROWS` of them per
     /// coefficient the quantile fit takes ordinary least-squares rows, since a
     /// Newton step needs a Hessian to lean on and a band around a fit built
     /// from a handful of rows is not one. That is the warm-up, and it is what
     /// rebuilds the fit after a gap or a reset has aged the weight away. Past
     /// it the band is at least `(k/present)^(2/5)` of `scale` wide, and
-    /// `aged`, the band's own weight decayed to the row, under one row per
-    /// coefficient is a fit the data has left behind, which takes
-    /// least-squares rows until the band holds rows again (the module docs).
+    /// `aged`, the band's own weight decayed to the row in rows of the
+    /// target's mean weight, under one row per coefficient is a fit the data
+    /// has left behind, which takes least-squares rows until the band holds
+    /// rows again (the module docs). Both are counts, so a weight's scale
+    /// reaches neither (docs/PLAN.md task 147).
     fn row_update(
         &self,
         yj: f64,
@@ -511,24 +522,29 @@ impl OnlineModel for Robust {
             // either than across a null (review 2026-09-12, S13; N6).
             self.wsig[j] *= lam;
             let present = lam * self.wobs[j];
+            let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
                 self.wobs[j] = present;
+                self.nobs[j] = rows;
                 continue;
             };
             // A row the target is present on counts at its raw weight, whatever
-            // the loss then does with it (hard rule 8).
-            self.wobs[j] = present
-                + if weight > 0.0 && weight.is_finite() {
-                    weight
-                } else {
-                    0.0
-                };
+            // the loss then does with it (hard rule 8), and as one row.
+            let counts = weight > 0.0 && weight.is_finite();
+            self.wobs[j] = present + if counts { weight } else { 0.0 };
+            self.nobs[j] = rows + if counts { 1.0 } else { 0.0 };
             let sigma = self.sig2[j].max(0.0).sqrt();
             let scale = if sigma > 0.0 { sigma } else { 1.0 };
             let aged = lam * self.wj[j];
-            match self.row_update(yj, pred[j], scale, weight, present, aged) {
+            // The band's weight in rows of the target's mean weight.
+            let aged_rows = if present > 0.0 {
+                aged * (rows / present)
+            } else {
+                0.0
+            };
+            match self.row_update(yj, pred[j], scale, weight, rows, aged_rows) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
                 RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
@@ -689,7 +705,12 @@ impl OnlineModel for Robust {
                 // scalar per target, all at the cfg's width; a short one
                 // loaded and panicked on the first `step` (review
                 // 2026-09-18, B3).
-                let per_target = [&m.wj, &m.wobs, &m.ybar, &m.sig2, &m.wsig];
+                // A state written before the row counts reads its weights as
+                // them, which is what it was gated by.
+                if m.nobs.is_empty() {
+                    m.nobs = m.wobs.clone();
+                }
+                let per_target = [&m.wj, &m.wobs, &m.nobs, &m.ybar, &m.sig2, &m.wsig];
                 if m.cov.len() != n
                     || m.cov.iter().any(|c| !c.has_shape(k))
                     || m.cross.len() != n
@@ -1429,6 +1450,38 @@ mod tests {
             b_after[0] - b_before[0] < 1.0,
             "by a nudge, not by the row itself: {b_before:?} -> {b_after:?}"
         );
+    }
+
+    /// Task 147: the same rows at a hundred times the weight make the same
+    /// quantile fit. The warm-up and the band's floor read the target's
+    /// weight against row counts, so rows at weight 100 left the warm-up on
+    /// their first row, and the fit, leaning on a one-row Gram, reached 1e51.
+    #[test]
+    fn a_quantile_fit_is_the_same_at_a_hundred_times_the_weight() {
+        let fit = |scale: f64| {
+            let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.8 });
+            c.min_periods = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 97u64;
+            let mut preds = Vec::new();
+            for i in 0..600 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = 0.5 + x[0] - 0.25 * x[1] + 0.3 * lcg(&mut s);
+                let w = scale * (0.5 + 0.5 * (lcg(&mut s) + 1.0));
+                preds.push(
+                    m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w)
+                        .pred[0],
+                );
+            }
+            preds
+        };
+        let (one, many) = (fit(1.0), fit(100.0));
+        for (i, (a, b)) in one.iter().zip(&many).enumerate() {
+            assert!(
+                (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + a.abs()),
+                "row {i}: {a} against {b}"
+            );
+        }
     }
 
     /// N9: under the warm-up a quantile fit is ordinary least squares, bit for

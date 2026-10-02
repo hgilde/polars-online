@@ -8,9 +8,9 @@
 //! ```text
 //! metric      mw_i = 1 / v_i  (EW variance of feature i; 1 where v_i = 0)
 //! bound       E = eps² p                 (eps per standardized coordinate)
-//! absorb      j_p = nearest potential;  take it if r2_after(j_p, z, 1) ≤ E
-//!             else j_o = nearest outlier;  take it if r2_after(j_o, z, 1) ≤ E,
-//!             promoting it once n_j_o ≥ beta_mu (it takes the label of the
+//! absorb      j_p = nearest potential;  take it if r2_after(j_p, z, w̄) ≤ E
+//!             else j_o = nearest outlier;  take it if r2_after(j_o, z, w̄) ≤ E,
+//!             promoting it once n_j_o ≥ beta_mu w̄ (it takes the label of the
 //!             nearest potential summary within L, else its own id)
 //!             else open a summary at z with weight w and the next id
 //!             (evicting the lightest outlier summary — else the lightest
@@ -21,7 +21,7 @@
 //!             micro = the id the row goes to,  outlier = not taken by a
 //!             potential summary,  n_clusters, n_micro
 //! checkpoint  every prune_every rows: drop a potential summary with
-//!             n < beta_mu, and an outlier one with n < ξ(age)
+//!             n < beta_mu w̄, and an outlier one with n < ξ(age) w̄
 //!             ξ(a) = (2^(−(a + Tp)/h) − 1) / (2^(−Tp/h) − 1),
 //!             Tp = ⌈h log2(beta_mu / (beta_mu − 1))⌉      (DenStream eq. 4.1–4.2)
 //!             then link potential summaries with ‖c_a − c_b‖_mw ≤ L,
@@ -30,6 +30,12 @@
 //!             max(LINK_FLOOR, LINK_FACTOR · p90 of the nearest-neighbour distance) · eps √p
 //! decay       n_j *= lam, W *= lam, age_j += d_clock       lam = 0.5^(d/halflife)
 //! ```
+//!
+//! `w̄` is the EW mean weight of the rows learned from (docs/PLAN.md task
+//! 147): `beta_mu` and `ξ` count rows of it, and a summary admits a row of
+//! it, so a constant multiple of every weight moves nothing; at any constant
+//! weight `w̄ = 1`. `ξ(a) = Σ_{i ≤ a/Tp} 2^(−i Tp/h)` is the weight of a
+//! summary that took one such row every `Tp` clock units since it opened.
 //!
 //! `eps` is the bound on a summary's RMS radius *per standardized
 //! coordinate*: in `p` dimensions the bound on the radius in the metric is
@@ -56,12 +62,12 @@
 //! a row's `micro` is the id it *would* be absorbed by, read before the
 //! update, so the first row of a new summary already carries the new id;
 //! and the count of live clusters is an output, so churn is visible
-//! without diffing labels. The decision is made for a unit-weight row
-//! whatever the row's weight: a row of weight `w` stands for `w` identical
-//! rows, the first of which is a unit row, and this is what lets
+//! without diffing labels. The decision is made for a row of the mean
+//! weight `w̄` whatever the row's weight: a row of weight `w` stands for
+//! `w/w̄` such rows, the first of which is decided, and this is what lets
 //! [`predict`](OnlineModel::predict) — which is never told a weight — say
 //! exactly what the step will do. The row is then absorbed with its full
-//! weight, and since `w > 1` can carry the radius past the bound, the
+//! weight, and since `w > w̄` can carry the radius past the bound, the
 //! radius is capped at the bound after the absorb. Left above it, the
 //! summary would admit nothing — not even a row at its centre — until
 //! decay brought its weight under `E / (r2 − E)`, halflives later; capped,
@@ -208,6 +214,14 @@ pub struct Micro {
     link2: f64,
     n_evicted: u64,
     n_pruned: u64,
+    /// The EW mean weight of the rows learned from, and their EW count: the
+    /// weight of the "unit" row a summary admits and of the rows `beta_mu`
+    /// and `ξ` count, so a weight's scale moves nothing (docs/PLAN.md task
+    /// 147). A state written before it reads as a mean weight of 1.
+    #[serde(default)]
+    w_mean: f64,
+    #[serde(default)]
+    w_rows: f64,
 }
 
 impl Micro {
@@ -230,8 +244,17 @@ impl Micro {
             link2,
             n_evicted: 0,
             n_pruned: 0,
+            w_mean: 0.0,
+            w_rows: 0.0,
             cfg,
         })
+    }
+
+    /// A row of the stream's mean weight: what `beta_mu` and `ξ` count, and
+    /// what a summary admits. `1` before any row, and for any constant
+    /// weight.
+    fn unit(&self) -> f64 {
+        if self.w_rows > 0.0 { self.w_mean } else { 1.0 }
     }
 
     pub fn cfg(&self) -> &MicroCfg {
@@ -331,11 +354,11 @@ impl Micro {
         })
     }
 
-    /// Whether summary `j`, its weight decayed by `lam`, admits a unit row
-    /// at squared distance `d2`.
+    /// Whether summary `j`, its weight decayed by `lam`, admits a row of the
+    /// stream's mean weight at squared distance `d2`.
     fn admits(&self, j: usize, d2: f64, lam: f64) -> bool {
         let s = &self.mc[j].s;
-        merged_radius2(s.n * lam, s.r2, d2, 1.0) <= self.eps2
+        merged_radius2(s.n * lam, s.r2, d2, self.unit()) <= self.eps2
     }
 
     /// Where a unit-weight row at `z` goes, and what it is scored against,
@@ -391,13 +414,14 @@ impl Micro {
     }
 
     fn learn_row(&mut self, z: &[f64], w: f64, dec: &Decision) {
+        let promote_at = self.cfg.beta_mu * self.unit();
         match dec.target {
             Some(j) => {
                 let m = &mut self.mc[j];
                 m.s.absorb(z, w, &self.mw);
                 // A unit row was admitted; a heavier one may overshoot.
                 m.s.r2 = m.s.r2.min(self.eps2);
-                if !m.potential && m.s.n >= self.cfg.beta_mu {
+                if !m.potential && m.s.n >= promote_at {
                     m.potential = true;
                     self.attach(j);
                 }
@@ -430,7 +454,7 @@ impl Micro {
             self.drop_at(j);
             self.n_evicted += 1;
         }
-        let potential = w >= self.cfg.beta_mu;
+        let potential = w >= self.cfg.beta_mu * self.unit();
         let id = self.next_id;
         self.next_id += 1;
         self.mc.push(MicroCluster {
@@ -510,14 +534,15 @@ impl Micro {
     /// Prune, then link.
     fn checkpoint(&mut self) {
         let horizon = self.prune_horizon();
+        let unit = self.unit();
         for j in (0..self.mc.len()).rev() {
             let m = &self.mc[j];
             let dead = if m.potential {
-                m.s.n < self.cfg.beta_mu
+                m.s.n < self.cfg.beta_mu * unit
             } else if let Some((_, f_tp)) = horizon {
                 let age_decay = self.cfg.decay.factor(m.age);
                 let xi = (age_decay * f_tp - 1.0) / (f_tp - 1.0);
-                m.s.n < xi
+                m.s.n < xi * unit
             } else {
                 false
             };
@@ -609,12 +634,16 @@ impl OnlineModel for Micro {
             m.s.decay(lam);
             m.age += d_clock;
         }
+        self.w_rows *= lam;
 
-        // Decided once, as a unit row, and read before anything moves.
+        // Decided once, as a row of the mean weight, and read before
+        // anything moves.
         let dec = valid.then(|| self.decide(x, 1.0));
         let pred = self.score(dec.as_ref(), n_before);
 
         if let Some(dec) = dec.filter(|_| learn) {
+            self.w_rows += 1.0;
+            self.w_mean += (weight - self.w_mean) / self.w_rows;
             self.moments.absorb(x, weight);
             self.learn_row(x, weight, &dec);
         }
@@ -755,7 +784,12 @@ mod tests {
         })
         .unwrap();
         m.step(&[0.0, 0.0], &[], 0.0, 1e-100);
-        m.step(&[0.0, -2.0709248242631726], &[], 1.0, 1e100);
+        // Three rows at the bound's weight, so the summary holds more than
+        // `beta_mu` rows of the stream's mean weight, which they dominate
+        // (task 147).
+        for _ in 0..3 {
+            m.step(&[0.0, -2.0709248242631726], &[], 1.0, 1e100);
+        }
         let far = m.step(&[0.0, 1e100], &[], 1.0, 1.0);
         assert!(far.pred[1].is_finite(), "{:?}", far.pred);
         assert!(far.pred[1] > 1e150, "{:?}", far.pred);
@@ -870,10 +904,55 @@ mod tests {
 
     #[test]
     fn a_heavy_row_promotes_on_creation() {
+        // Heavy against the stream's mean weight (task 147): after unit rows
+        // elsewhere, a row of five times it opens a potential summary; a
+        // first row at weight 5 is a row of the mean weight, and does not.
         let mut m = Micro::new(cfg()).unwrap();
         m.step(&[0.0, 0.0], &[], 1.0, 5.0);
-        assert!(m.micro_clusters()[0].potential);
-        assert_eq!(m.n_clusters(), 1);
+        assert!(!m.micro_clusters()[0].potential);
+        let mut m = Micro::new(cfg()).unwrap();
+        // The mean weight counts the heavy row too: twenty unit rows and it
+        // make about 1.19, so promotion wants 3.57.
+        for _ in 0..20 {
+            m.step(&[50.0, 50.0], &[], 1.0, 1.0);
+        }
+        m.step(&[0.0, 0.0], &[], 1.0, 5.0);
+        let opened = m.micro_clusters().last().unwrap();
+        assert!(opened.potential, "{opened:?}");
+        assert_eq!(m.n_clusters(), 2);
+    }
+
+    /// Task 147: a hundred times every weight opens, promotes, prunes and
+    /// labels the same summaries.
+    #[test]
+    fn a_weights_scale_moves_nothing() {
+        use crate::OnlineModel;
+        let run = |scale: f64| {
+            let mut m = Micro::new(MicroCfg {
+                decay: Decay::Halflife(30.0),
+                prune_every: 7,
+                ..cfg()
+            })
+            .unwrap();
+            let mut s = 101u64;
+            let mut out = Vec::new();
+            for i in 0..600 {
+                let c = [0.0, 6.0, 12.0][(i / 50) % 3];
+                let x = [c + lcg(&mut s), lcg(&mut s)];
+                let w = scale * (0.5 + 0.5 * (lcg(&mut s) + 1.0));
+                out.push(m.step(&x, &[], 1.0, w).pred);
+            }
+            out
+        };
+        let (one, many) = (run(1.0), run(100.0));
+        for (i, (a, b)) in one.iter().zip(&many).enumerate() {
+            for (x, y) in a.iter().zip(b) {
+                assert!(
+                    (x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-9 * (1.0 + x.abs()),
+                    "row {i}: {a:?} against {b:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1026,8 +1105,13 @@ mod tests {
             ..cfg()
         })
         .unwrap();
-        all_pot.step(&[0.0, 0.0], &[], 1.0, 4.0);
-        all_pot.step(&[10.0, 0.0], &[], 1.0, 5.0);
+        // Potential by rows of the mean weight (task 147): three and four.
+        for _ in 0..3 {
+            all_pot.step(&[0.0, 0.0], &[], 1.0, 1.0);
+        }
+        for _ in 0..4 {
+            all_pot.step(&[10.0, 0.0], &[], 1.0, 1.0);
+        }
         assert_eq!(all_pot.n_clusters(), 2);
         let pred = all_pot.step(&[20.0, 0.0], &[], 1.0, 1.0).pred;
         assert_eq!(pred[4], 2.0, "read before the eviction");

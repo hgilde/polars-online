@@ -1539,7 +1539,8 @@ def quantile(
     curvature the step leans on, so a much narrower band converges more slowly and
     a much wider one smooths the quantile toward the mean. The band is never
     narrower than ``(k / n) ** 0.4`` of ``s``, for ``k`` coefficients and the
-    target's effective sample ``n``, which is the smoothed-quantile bandwidth
+    target's effective sample ``n`` -- its present rows counted one each,
+    decayed, whatever their weights -- which is the smoothed-quantile bandwidth
     rate. Under a halflife the band's share of the sample is a few rows, and the
     floor is what keeps the step fed there; a long stream leaves the floor behind.
     Coverage at ``quantile = 0.9`` on normal noise reads 0.895 at ``halflife =
@@ -1549,14 +1550,18 @@ def quantile(
     target was present on, the fit is ordinary least squares: a Newton step needs
     a Hessian, and a band around a fit built from a handful of rows is not one.
     The same rule rebuilds the fit after a gap or a reset has aged the weight
-    away. A band holding under one row per coefficient takes least-squares rows
-    too, until it holds rows again. That is what rebuilds a fit a row at the input
-    bound leaves behind. Such a row sets the sums at its own scale, and every
-    later row is outside the band. Only nudges arrive, each ``2h * psi * z`` over
-    the band's weight; they cannot move the fit until that weight has decayed to
-    nothing, and each is then a step that outgrows the band. From one row up an
-    outside row's step lands inside the band, and the floor keeps a settled band
-    well clear of one row, so the rule does not fire in steady state.
+    away. A band holding under one row per coefficient, in rows of the target's
+    mean weight, takes least-squares rows too, until it holds rows again. That is
+    what rebuilds a fit a row at the input bound leaves behind. Such a row sets
+    the sums at its own scale, and every later row is outside the band. Only
+    nudges arrive, each ``2h * psi * z`` over the band's weight; they cannot move
+    the fit until that weight has decayed to nothing, and each is then a step that
+    outgrows the band. From one row up an outside row's step lands inside the
+    band, and the floor keeps a settled band well clear of one row, so the rule
+    does not fire in steady state. Both rules count rows, so a weight's scale
+    reaches neither: they compared the rows' weight with a row count, and rows at
+    weight 100 left the warm-up on their first row, where the fit reached 1e51
+    (docs/PLAN.md task 147).
 
     .. rubric:: Parameters
 
@@ -1675,7 +1680,10 @@ def ftrl(
     steady state they act as a mean-scale ridge of ``(1 - lam) * (beta / alpha +
     l2)``: a constant 5 settles at 4.65 at ``halflife = 100`` and 4.96 at 1000.
     Without a halflife ``m`` is 1, and the fit is river's ``FTRLProximal`` to the
-    bit.
+    bit. A row's weight is an importance weight, as Vowpal Wabbit's: the gradient
+    carries it, against penalties in absolute weight, so a heavier stream
+    overcomes ``l1`` and ``l2`` sooner (``tests/test_second_opinion.py`` holds
+    the fit to VW's, weighted).
 
     .. rubric:: Parameters
 
@@ -2582,14 +2590,17 @@ def micro(
               else a new summary at x with the next id
         n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  r2_j <- min(., E)
 
-    A summary is potential (established) once ``n >= beta_mu`` and outlier below;
+    A summary is potential (established) once ``n >= beta_mu * w_bar`` and outlier
+    below, ``w_bar`` the EW mean weight of the rows learned from;
     a new one is opened at the cap ``max_clusters`` by evicting the lightest
     outlier summary, else the lightest potential one. Every ``prune_every``
     learned rows a checkpoint prunes and links. It drops potential summaries
-    lighter than ``beta_mu``, and outlier summaries lighter than DenStream's
-    ``xi(age)``: the weight a summary that had been gathering a row per clock unit
-    since it opened would need to reach ``beta_mu`` within ``Tp`` more, with ``Tp
-    = ceil(h log2(beta_mu / (beta_mu - 1)))`` for halflife ``h``. With no decay
+    lighter than ``beta_mu * w_bar``, and outlier summaries lighter than
+    DenStream's ``xi(age) * w_bar``, with ``xi(age) = sum_{i <= age / Tp} 2 ** (-i
+    Tp / h)``: the weight of a summary that had taken one row of the mean weight
+    every ``Tp`` clock units since it opened, with ``Tp = ceil(h log2(beta_mu /
+    (beta_mu - 1)))`` for halflife ``h``. Both count rows, as DenStream's do: a
+    stream with more rows to a clock unit fills its summaries faster. With no decay
     nothing is pruned, only capped. Then it links the potential summaries by
     single linkage: centres within ``L`` of each other share a label. Ids are
     monotone and never reused; a label is the smallest id in its chain, so it
@@ -2640,8 +2651,9 @@ def micro(
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
     rest.
 
-    A row of weight ``w`` is admitted where a unit row would be and absorbed with
-    its full weight; a zero-weight row advances the clock and learns nothing.
+    A row of weight ``w`` is admitted where a row of the mean weight would be and
+    absorbed with its full weight, so a constant multiple of every weight moves
+    nothing; a zero-weight row advances the clock and learns nothing.
     Nothing residual-based applies, and each such switch is refused by name:
     ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
@@ -3486,6 +3498,14 @@ def bocpd(
     That run takes their mass and keeps its own statistics, so ``max_run`` bounds
     how much history any run holds, not only the length of the vector, and
     ``run_mode`` saturates one below it.
+
+    A row of weight ``w`` teaches at ``w / w_bar``, ``w_bar`` the mean weight of
+    the rows learned from, this one included: in its run's statistics and in
+    the likelihood it passes the recursion, so a heavier row is more evidence
+    of both kinds and a constant multiple of every weight changes nothing. What
+    the row reports is read as a row of the mean weight, which is all
+    ``predict`` can know. ``prior_kappa`` and ``prior_nu`` are in rows of that
+    mean weight.
 
     .. rubric:: Parameters
 

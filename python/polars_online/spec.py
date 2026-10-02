@@ -323,8 +323,10 @@ The diagnostics add, per slot:
      - An interval ``pred ± q`` at the asked coverage, ``q`` a tracked
        quantile of ``|resid|`` that grows by ``conformal_rate * sigma *
        coverage`` on a miss and shrinks by ``conformal_rate * sigma * (1 -
-       coverage)`` on a hit, so its long-run coverage is the number asked
-       for whatever the residuals do; and the coverage it has delivered.
+       coverage)`` on a hit, each step times the row's weight over the
+       scored rows' EW mean weight, so its long-run coverage is the number
+       asked for whatever the residuals do and the weights' scale does not
+       reach it; and the coverage it has delivered.
        Null until the first ``sigma`` exists. The step is taken once per
        scored row, so ``q`` moves faster in clock time where rows are
        denser; the delivered coverage decays on the clock.

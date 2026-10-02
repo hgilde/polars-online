@@ -847,9 +847,9 @@ fn ew_class_golden() {
 
 // --- generated; see the module docs ---
 const GOLDEN_BOCPD: &[f64] = &[
-    0.04569628282014217,
-    0.06001605700856869,
-    0.043037423690500565,
+    0.04617202802926437,
+    0.05977980779859338,
+    0.04295639028471272,
 ];
 // Re-frozen 2026-09-19 for the review's S3: the delta-method gradient of `ρ`
 // carried the wrong powers of `σ_x` and `σ_y`, so `D̂` and every `Q` moved
@@ -924,11 +924,7 @@ const GOLDEN_HUBER: &[f64] = &[
 // row's leverage, which binds on this stream's early rows; the three values
 // moved by 1.4e-3, 1.3e-3 and 4e-4 of themselves, and the QuantReg oracles
 // in `robust.rs` hold.
-const GOLDEN_QUANTILE: &[f64] = &[
-    0.25684864702988286,
-    2.2256269819422743,
-    -0.02113573617058477,
-];
+const GOLDEN_QUANTILE: &[f64] = &[0.2569722435129411, 2.225768960188687, -0.02107823181906003];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a halflife the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.

@@ -107,11 +107,14 @@ def norm_ppf(p: float) -> float:
 def replay(pred, resid, sigma, lam, w, accepted, *, coverage, rate=0.05):
     """`lo`, `hi`, `coverage` for one slot from the bank's own `pred`,
     `resid` and `sigma` (NaN for null), the per-row decay factor and weight,
-    and which rows the stream accepted at all."""
+    and which rows the stream accepted at all. A row's step reads its weight
+    against the EW mean weight of the scored rows, its own included
+    (docs/PLAN.md task 147)."""
     alpha = 1.0 - coverage
     n = len(pred)
     lo, hi, cov_out = (np.full(n, np.nan) for _ in range(3))
     q, cov, cov_w = math.nan, 0.0, 0.0
+    w_mean, w_rows = 0.0, 0.0
     for i in range(n):
         if not accepted[i]:
             continue
@@ -123,7 +126,10 @@ def replay(pred, resid, sigma, lam, w, accepted, *, coverage, rate=0.05):
         r, s, lam_i, w_i = resid[i], sigma[i], lam[i], w[i]
         if not math.isfinite(r) or w_i <= 0.0:
             cov_w *= lam_i
+            w_rows *= lam_i
             continue
+        w_rows = lam_i * w_rows + 1.0
+        w_mean += (w_i - w_mean) / w_rows
         usable = math.isfinite(s) and s > 0.0
         if not math.isfinite(q):
             if usable:
@@ -135,7 +141,8 @@ def replay(pred, resid, sigma, lam, w, accepted, *, coverage, rate=0.05):
         cov = (lam_i * cov_w * cov + w_i * (0.0 if miss else 1.0)) / cw
         cov_w = cw
         eta = rate * s if usable else 0.0
-        q = max(q + eta * w_i * ((1.0 if miss else 0.0) - alpha), 0.0)
+        rel = w_i / w_mean if w_mean > 0.0 else 1.0
+        q = max(q + eta * rel * ((1.0 if miss else 0.0) - alpha), 0.0)
     return lo, hi, cov_out
 
 
@@ -633,7 +640,10 @@ class TestRowSemantics:
         q = (field(out, "hi_y0") - field(out, "lo_y0")) / 2
         cov = field(out, "coverage_y0")
         assert abs(q[201] - q[200]) < 1e-12 and cov[201] == cov[200]
-        # And a weight of 2 takes twice the step a weight of 1 does.
+        # And a weight of 2 among rows of weight 1 takes about twice the step:
+        # the step reads the weight against the scored rows' EW mean, this
+        # row's included, which it lifts just above 1 (task 147). The exact
+        # recursion is `replay`'s, held above.
         one = po.ModelBank([_spec()]).fit_predict(df.drop("w"))
         two = po.ModelBank([_spec(weight="w")]).fit_predict(
             df.with_columns(pl.Series("w", [2.0 if i == 200 else 1.0 for i in range(400)]))
@@ -641,7 +651,8 @@ class TestRowSemantics:
         q1 = (field(one, "hi_y0") - field(one, "lo_y0")) / 2
         q2 = (field(two, "hi_y0") - field(two, "lo_y0")) / 2
         assert q2[200] == q1[200]
-        assert q2[201] - q2[200] == pytest.approx(2 * (q1[201] - q1[200]), abs=1e-12)
+        ratio = (q2[201] - q2[200]) / (q1[201] - q1[200])
+        assert 1.95 < ratio < 2.0, ratio
         assert abs(q1[201] - q1[200]) > 1e-4, "row 200 should have taken a step"
 
     def test_a_null_feature_row_is_skipped_entirely(self):

@@ -2056,7 +2056,8 @@ pub struct Spec {
     pub conformal: Option<f64>,
     /// Step of the conformal radius per unit of the slot's `sigma`. Default
     /// 0.05: a miss widens the interval by `0.05·sigma·(1 − α)`, a hit
-    /// narrows it by `0.05·sigma·α`.
+    /// narrows it by `0.05·sigma·α`, each times the row's weight over the
+    /// scored rows' EW mean weight (docs/PLAN.md task 147).
     #[serde(default)]
     pub conformal_rate: Option<f64>,
     /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: the

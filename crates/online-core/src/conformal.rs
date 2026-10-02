@@ -7,8 +7,14 @@
 //!
 //! ```text
 //! err_t = 1{s_t > q_t}                      the interval missed
-//! q_{t+1} = max(0, q_t + η_t · w_t · (err_t − α))
+//! q_{t+1} = max(0, q_t + η_t · (w_t / w̄_t) · (err_t − α))
 //! ```
+//!
+//! with `w̄_t` the EW mean weight of the scored rows, this one included, so
+//! a step reads a row's weight against the stream's, and multiplying every
+//! weight by one constant moves nothing (docs/PLAN.md task 147: the step
+//! was `η·w`, and the same rows at weight 100 swung the band, width sd 3.10
+//! against 0.21).
 //!
 //! which is online gradient descent on the pinball loss at level `1 − α` —
 //! the "P" term of Angelopoulos, Candès & Tibshirani (2023), *Conformal PID
@@ -27,8 +33,8 @@
 //!
 //! for *every* sequence of scores: the long-run miscoverage is `α` whatever
 //! the residual distribution is, and however it moves. The clamp at zero
-//! only ever raises `q`, so it can only add coverage; with a weight `w_t` the
-//! sum is `w`-weighted. The step here is `η_t = rate · σ_t`, with `σ_t` the
+//! only ever raises `q`, so it can only add coverage; with weights the sum
+//! is `(w/w̄)`-weighted. The step here is `η_t = rate · σ_t`, with `σ_t` the
 //! slot's EW residual standard deviation before the row, so that `rate` is
 //! unit-free and the radius moves at the scale of the errors it brackets;
 //! the bound then holds in `σ`-weighted form, at the same rate.
@@ -52,6 +58,12 @@ pub struct Conformal {
     /// EW mean of `1{|resid| ≤ q}` and its weight.
     cov: f64,
     cov_w: f64,
+    /// EW mean weight of the scored rows, and their EW count: what a row's
+    /// step reads its weight against (docs/PLAN.md task 147).
+    #[serde(default)]
+    w_mean: f64,
+    #[serde(default)]
+    w_rows: f64,
 }
 
 impl Conformal {
@@ -72,6 +84,8 @@ impl Conformal {
             q: f64::NAN,
             cov: 0.0,
             cov_w: 0.0,
+            w_mean: 0.0,
+            w_rows: 0.0,
         })
     }
 
@@ -114,8 +128,13 @@ impl Conformal {
     pub fn update_against(&mut self, resid: f64, sigma: f64, lam: f64, w: f64, shown: Option<f64>) {
         if !resid.is_finite() || w <= 0.0 {
             self.cov_w *= lam;
+            self.w_rows *= lam;
             return;
         }
+        // The stream's mean weight, this row's included, so the first row
+        // reads its own weight as 1.
+        self.w_rows = lam * self.w_rows + 1.0;
+        self.w_mean += (w - self.w_mean) / self.w_rows;
         let usable_sigma = sigma.is_finite() && sigma > 0.0;
         if !self.q.is_finite() {
             if usable_sigma {
@@ -137,7 +156,12 @@ impl Conformal {
         // A slot whose residuals have all been exactly zero has sigma 0 and
         // takes no step: the radius waits until there is an error scale.
         let eta = if usable_sigma { self.rate * sigma } else { 0.0 };
-        self.q = (self.q + eta * w * (f64::from(miss) - self.alpha)).max(0.0);
+        let rel = if self.w_mean > 0.0 {
+            w / self.w_mean
+        } else {
+            1.0
+        };
+        self.q = (self.q + eta * rel * (f64::from(miss) - self.alpha)).max(0.0);
     }
 }
 
@@ -280,15 +304,44 @@ mod tests {
         let q1 = c.radius().unwrap();
         c.update(0.0, 1.0, 1.0, 1.0); // hit: − ηα = 0.1·0.2
         assert!((c.radius().unwrap() - (q1 - 0.1 * 0.2)).abs() < 1e-15);
-        // Weight scales the step; a zero-weight row only ages the coverage.
+        // The step reads the weight against the scored rows' mean, this row's
+        // included: three at 1 and one at 3 make 1.5, so the step doubles. A
+        // zero-weight row only ages the coverage.
         let q2 = c.radius().unwrap();
         c.update(10.0, 1.0, 1.0, 3.0);
-        assert!((c.radius().unwrap() - (q2 + 3.0 * 0.1 * 0.8)).abs() < 1e-14);
+        assert!((c.radius().unwrap() - (q2 + 2.0 * 0.1 * 0.8)).abs() < 1e-14);
         let q3 = c.radius().unwrap();
         let cov = c.coverage().unwrap();
         c.update(10.0, 1.0, 0.5, 0.0);
         assert_eq!(c.radius(), Some(q3));
         assert_eq!(c.coverage(), Some(cov));
+    }
+
+    /// Task 147: the same rows at a hundred times the weight give the same
+    /// interval and the same coverage -- the step was `η·w`, and they swung
+    /// the band.
+    #[test]
+    fn a_weights_scale_moves_nothing() {
+        let (mut one, mut many) = (
+            Conformal::new(0.9, 0.05).unwrap(),
+            Conformal::new(0.9, 0.05).unwrap(),
+        );
+        let mut s = 71u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..2000 {
+            let (r, w) = (4.0 * next() - 2.0, 0.5 + next());
+            one.update(r, 1.0, 0.99, w);
+            many.update(r, 1.0, 0.99, 100.0 * w);
+            let (a, b) = (one.radius().unwrap(), many.radius().unwrap());
+            assert!((a - b).abs() <= 1e-12 * (1.0 + a), "{a} against {b}");
+        }
+        let (a, b) = (one.coverage().unwrap(), many.coverage().unwrap());
+        assert!((a - b).abs() <= 1e-12, "{a} against {b}");
     }
 
     #[test]

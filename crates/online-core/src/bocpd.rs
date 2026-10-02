@@ -90,6 +90,18 @@
 //! restarts the plain run and does not move this one -- is what it is held
 //! to.
 
+//!
+//! **Row weights** (docs/PLAN.md task 147). A row of weight `w` enters at
+//! `w / w̄`, `w̄` the mean weight of the rows learned from, this one
+//! included, in its run's sufficient statistics and in the likelihood it
+//! passes the recursion, `πᵣ^{w/w̄}` -- with `robust`'s β-power weight on
+//! top of both. It entered the statistics at its raw weight and the
+//! recursion not at all, so a heavy row made the predictive confident
+//! without counting as evidence of a change. `κ₀` and `ν₀` are in rows of
+//! the mean weight, and a constant multiple of every weight changes nothing.
+//! What the row reports, `P(r ≤ 1)` among it, is read as a row of the mean
+//! weight, which is what `predict`, never told a weight, can say.
+
 use serde::{Deserialize, Serialize};
 
 use crate::solve::SpdFactor;
@@ -448,6 +460,15 @@ pub struct Bocpd {
     /// [`Bocpd::prune`] for why it is left that way.
     logjoint: Vec<f64>,
     n_eff: f64,
+    /// The mean weight of the rows learned from, and their count: a row
+    /// teaches at its weight over this mean, so a weight's scale moves
+    /// nothing (docs/PLAN.md task 147). Nothing here decays, so neither
+    /// does this. Ahead of `solve_failures`, which a positional encoding
+    /// skips when it is zero.
+    #[serde(default)]
+    w_mean: f64,
+    #[serde(default)]
+    w_rows: f64,
     /// Rows whose predictive could not be evaluated -- a scale matrix that
     /// would not factorize, or a non-finite value reaching the emission.
     /// The row reports nulls and the posterior does not move; without a
@@ -470,8 +491,19 @@ impl Bocpd {
             logjoint: vec![0.0],
             n_eff: 0.0,
             solve_failures: 0,
+            w_mean: 0.0,
+            w_rows: 0.0,
             cfg,
         })
+    }
+
+    /// A row of weight `w > 0` against the mean weight of the rows learned
+    /// from, this one included -- `1` for every row of a constant weight --
+    /// with the mean and the count it leaves.
+    fn relative(&self, w: f64) -> (f64, f64, f64) {
+        let rows = self.w_rows + 1.0;
+        let mean = self.w_mean + (w - self.w_mean) / rows;
+        (w / mean, mean, rows)
     }
 
     pub fn cfg(&self) -> &BocpdCfg {
@@ -594,7 +626,7 @@ impl Bocpd {
 
     /// The row's outputs, and what the update needs: the new log joint and
     /// the per-run weights the row enters with.
-    fn read(&self, x: &[f64], hazard: f64) -> (Vec<f64>, Option<Update>) {
+    fn read(&self, x: &[f64], hazard: f64, rel: f64) -> (Vec<f64>, Option<Update>) {
         let d = self.cfg.n_features;
         let nan = vec![f64::NAN; Self::n_outputs_for(d)];
         let h = 1.0 / hazard;
@@ -653,14 +685,22 @@ impl Bocpd {
         // every joint by about 1, and the posterior does not move. That is
         // the robustness -- one wild row must not be a changepoint -- and
         // it is the same generalised-Bayes weight in both places.
-        let mut new = vec![f64::NEG_INFINITY; r + 1];
-        let mut cp = Vec::with_capacity(r);
-        for i in 0..r {
-            let base = self.logjoint[i] + weights[i] * logpi[i];
-            new[i + 1] = base + (1.0 - h).ln();
-            cp.push(base + h.ln());
-        }
-        new[0] = log_sum_exp(&cp);
+        let joint = |weights: &[f64]| {
+            let mut new = vec![f64::NEG_INFINITY; r + 1];
+            let mut cp = Vec::with_capacity(r);
+            for i in 0..r {
+                let base = self.logjoint[i] + weights[i] * logpi[i];
+                new[i + 1] = base + (1.0 - h).ln();
+                cp.push(base + h.ln());
+            }
+            new[0] = log_sum_exp(&cp);
+            new
+        };
+        // What the row reports is read as a row of the stream's mean weight,
+        // which is what `predict`, never told a weight, can say (the model
+        // contract); what it teaches is at its own weight against that mean,
+        // `rel` (task 147), in the runs and in the recursion alike.
+        let new = joint(&weights);
         let z = log_sum_exp(&new);
         if !z.is_finite() {
             return (nan, None);
@@ -681,10 +721,16 @@ impl Bocpd {
         // `min_periods` gates what is *reported*, never what is learned: a
         // gated row still moves the posterior, as it does in every other
         // model here.
+        let update = if rel == 1.0 {
+            (new, weights)
+        } else {
+            let scaled: Vec<f64> = weights.iter().map(|w| rel * w).collect();
+            (joint(&scaled), scaled)
+        };
         if self.n_eff < self.cfg.min_periods {
-            return (nan, Some((new, weights)));
+            return (nan, Some(update));
         }
-        (out, Some((new, weights)))
+        (out, Some(update))
     }
 
     /// Drop the runs below `truncate` and fold the tail at `max_run`.
@@ -745,7 +791,13 @@ impl Bocpd {
 
 impl crate::OnlineModel for Bocpd {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let (pred, extra) = self.read(x, self.hazard_of(y));
+        // A row of no weight is scored as a row of the mean weight would be.
+        let (rel, w_mean, w_rows) = if weight > 0.0 {
+            self.relative(weight)
+        } else {
+            (1.0, self.w_mean, self.w_rows)
+        };
+        let (pred, extra) = self.read(x, self.hazard_of(y), rel);
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
@@ -759,6 +811,7 @@ impl crate::OnlineModel for Bocpd {
             return out;
         }
         self.n_eff += weight;
+        (self.w_mean, self.w_rows) = (w_mean, w_rows);
         let Some((new, weights)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
             // and the posterior stands. Counted, so a run of them is
@@ -779,7 +832,7 @@ impl crate::OnlineModel for Bocpd {
         runs.push(Run::new(self.cfg.n_features, full));
         for (i, run) in self.runs.iter().enumerate() {
             let mut grown = run.clone();
-            grown.add(x, weight * weights[i], full);
+            grown.add(x, weights[i], full);
             runs.push(grown);
         }
         self.runs = runs;
@@ -790,7 +843,7 @@ impl crate::OnlineModel for Bocpd {
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         crate::Step {
-            pred: self.read(x, self.cfg.hazard).0,
+            pred: self.read(x, self.cfg.hazard, 1.0).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -800,7 +853,7 @@ impl crate::OnlineModel for Bocpd {
     /// depends on it exactly as the step's does (C1).
     fn predict_with(&self, x: &[f64], y: &[Option<f64>], _d_clock: f64) -> crate::Step {
         crate::Step {
-            pred: self.read(x, self.hazard_of(y)).0,
+            pred: self.read(x, self.hazard_of(y), 1.0).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -1313,6 +1366,57 @@ mod tests {
         let (a, b) = (sticky.run_posterior(), jumpy.run_posterior());
         let mean = |p: &[f64]| p.iter().enumerate().map(|(i, v)| i as f64 * v).sum::<f64>();
         assert!(mean(&a) > 5.0 * mean(&b), "{} vs {}", mean(&a), mean(&b));
+    }
+
+    #[test]
+    fn a_weights_scale_moves_nothing_and_a_heavy_row_is_more_evidence() {
+        // Task 147: every output equal at a hundred times the weights, a
+        // level shift included, `n_eff` aside, which is the weight.
+        let run = |scale: f64, heavy: f64| {
+            let mut m = Bocpd::new(cfg(1)).unwrap();
+            let mut n = Normals::new(23);
+            let mut out = Vec::new();
+            for i in 0..300 {
+                let shift = if i >= 150 { 3.0 } else { 0.0 };
+                let w = scale
+                    * if i == 150 {
+                        heavy
+                    } else {
+                        0.5 + 0.1 * (i % 7) as f64
+                    };
+                out.push(m.step(&[shift + n.normal()], &[], 1.0, w).pred);
+            }
+            (out, m.n_eff())
+        };
+        let ((one, w1), (many, w100)) = (run(1.0, 1.0), run(100.0, 1.0));
+        assert!((w100 - 100.0 * w1).abs() <= 1e-9 * w100);
+        for (i, (a, b)) in one.iter().zip(&many).enumerate() {
+            for (x, y) in a.iter().zip(b) {
+                assert!(
+                    (x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-9 * (1.0 + x.abs()),
+                    "row {i}: {a:?} against {b:?}"
+                );
+            }
+        }
+        // The first row of the shift at three times the mean weight reports
+        // as a row of the mean weight -- `predict` could say no more -- and
+        // teaches at its own: the runs it enters move further toward it, so
+        // the predicted mean of the next row is nearer the new level.
+        let (light, _) = run(1.0, 1.0);
+        let (heavy, _) = run(1.0, 3.0);
+        for k in 0..light[150].len() {
+            assert_eq!(
+                heavy[150][k].to_bits(),
+                light[150][k].to_bits(),
+                "output {k}"
+            );
+        }
+        assert!(
+            heavy[151][3] > light[151][3],
+            "{} against {}",
+            heavy[151][3],
+            light[151][3]
+        );
     }
 
     #[test]

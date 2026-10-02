@@ -780,6 +780,11 @@ class MicroRef:
     link2: float = field(init=False)
     n_evicted: int = 0
     n_pruned: int = 0
+    # The EW mean weight of the rows learned from and their EW count: what
+    # `beta_mu` and `xi` count and the weight of the row a summary admits
+    # (docs/PLAN.md task 147).
+    w_mean: float = 0.0
+    w_rows: float = 0.0
 
     def __post_init__(self) -> None:
         self.moments = Moments.new(self.p)
@@ -819,12 +824,16 @@ class MicroRef:
                 best = (j, d)
         return best
 
+    def unit(self) -> float:
+        return self.w_mean if self.w_rows > 0.0 else 1.0
+
     def admits(self, j: int, d2: float, lam: float) -> bool:
         s = self.mc[j].s
-        return merged_radius2(s.n * lam, s.r2, d2, 1.0) <= self.eps2
+        return merged_radius2(s.n * lam, s.r2, d2, self.unit()) <= self.eps2
 
     def decide(self, z: list[float], lam: float) -> Decision:
-        """`(target, nearest_potential, outlier)` for a unit row, as `Micro::decide`."""
+        """`(target, nearest_potential, outlier)` for a row of the mean weight,
+        as `Micro::decide`."""
         near_p = self.nearest(z, True)
         if near_p is not None and self.admits(near_p[0], near_p[1], lam):
             return near_p[0], near_p, False
@@ -855,7 +864,7 @@ class MicroRef:
             m = self.mc[target]
             m.s.absorb(z, w, self.mw)
             m.s.r2 = min(m.s.r2, self.eps2)
-            if not m.potential and m.s.n >= self.beta_mu:
+            if not m.potential and m.s.n >= self.beta_mu * self.unit():
                 m.potential = True
                 self.attach(target)
         self.since += 1
@@ -871,7 +880,7 @@ class MicroRef:
             assert j is not None
             self.drop_at(j)
             self.n_evicted += 1
-        potential = w >= self.beta_mu
+        potential = w >= self.beta_mu * self.unit()
         mid = self.next_id
         self.next_id += 1
         self.mc.append(MicroCluster(mid, Summary(w, list(z), 0.0), 0.0, potential, mid))
@@ -922,11 +931,11 @@ class MicroRef:
         for j in range(len(self.mc) - 1, -1, -1):
             m = self.mc[j]
             if m.potential:
-                dead = m.s.n < self.beta_mu
+                dead = m.s.n < self.beta_mu * self.unit()
             elif horizon is not None:
                 age_decay = self.factor(m.age)
                 xi = (age_decay * horizon[1] - 1.0) / (horizon[1] - 1.0)
-                dead = m.s.n < xi
+                dead = m.s.n < xi * self.unit()
             else:
                 dead = False
             if dead:
@@ -981,9 +990,12 @@ class MicroRef:
         for m in self.mc:
             m.s.decay(lam)
             m.age += d
+        self.w_rows *= lam
         dec = self.decide(x, 1.0) if valid else None
         pred = self.score(dec, n_before)
         if learn and dec is not None:
+            self.w_rows += 1.0
+            self.w_mean += (w - self.w_mean) / self.w_rows
             self.moments.absorb(x, w)
             self.learn_row(x, w, dec)
         self.mw = self.moments.metric(self.standardize, self.scale_floor)

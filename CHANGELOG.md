@@ -42,6 +42,21 @@ carries breaking changes, and any change to the numbers a model returns.
   - The docs say what still counts rows: `sgd`'s coefficients under a
     constant rate, `deco`'s linear dynamics, `hmm`'s transitions and the
     conformal step.
+- **A row weight scales evidence, not counts** (task 147): where a weight
+  entered a count it now enters against the stream's mean weight, so a
+  constant multiple of every weight changes nothing, and a stream of one
+  constant weight is unchanged.
+  - The conformal step reads `w / w̄` over the scored rows: at weight 100
+    the same rows swung the band (width sd 3.10 against 0.21).
+  - `bocpd` teaches at `w / w̄`, in its run's statistics and in the
+    likelihood it passes, and reports a row as one of the mean weight; it
+    entered the statistics at its raw weight and the recursion not at all.
+  - `quantile`'s warm-up and band floor count rows: rows at weight 100 left
+    the warm-up on their first row and the fit reached 1e51.
+  - `micro`'s `beta_mu`, `ξ` and the row a summary admits take the mean
+    weight; the docs' `ξ` is corrected to what the code computes.
+  - `rls`, `kalman`, `sgd`, `ftrl`, `pa` and `hmm` keep a weight on the sum
+    scale, as their docs say, and `tests/test_weight_scale.py` names each.
 - **`po.corr.signal_share` takes a Kish size** (task 148): its second
   argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
   a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `n_eff` is a

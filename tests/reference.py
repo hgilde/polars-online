@@ -726,12 +726,14 @@ def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps
     band a least-squares row with target ``y + 2h(tau - 1/2)``, outside it
     ``2h * psi(r) * z`` into the cross-moment and no weight in the Gram at all.
     Under three rows per coefficient of the rows the target was present on
-    (``present``) the fit is warming up and every row is an ordinary
-    least-squares one (review 2026-09-12, N9), and past it the band is at
-    least ``(kt / present) ** 0.4`` of ``scale`` (the second review's F3). A
-    band holding under one row per coefficient (``aged``, its weight decayed
-    to the row) is a fit the data has left behind, and takes least-squares
-    rows until it holds rows again.
+    (``present``, a decayed count of them) the fit is warming up and every row
+    is an ordinary least-squares one (review 2026-09-12, N9), and past it the
+    band is at least ``(kt / present) ** 0.4`` of ``scale`` (the second review's
+    F3). A band holding under one row per coefficient (``aged``, its weight
+    decayed to the row, in rows of the target's mean weight) is a fit the data
+    has left behind, and takes least-squares rows until it holds rows again.
+    Both are counts, so a weight's scale reaches neither (docs/PLAN.md task
+    147).
 
     Returns ``(kind, value, target)``: ``("fit", weight, target)`` or
     ``("nudge", nudge, None)``.
@@ -813,6 +815,9 @@ def robust_ref(
             # The rows each target was present on, at their raw weights: the
             # per-target gate's number (the second review's F1).
             "wobs": np.zeros(m),
+            # The same rows counted one each: what the warm-up and the band's
+            # floor read (task 147).
+            "nobs": np.zeros(m),
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             # EW count of observations under the RAW row weights: the
@@ -851,23 +856,27 @@ def robust_ref(
 
         for j in range(m):
             present = lam * st["wobs"][j]
+            rows = lam * st["nobs"][j]
             if np.isnan(Y[i, j]):
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
                 st["wobs"][j] = present
+                st["nobs"][j] = rows
                 st["wsig"][j] *= lam
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
+            st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
             sigma = np.sqrt(max(st["sig2"][j], 0.0))
             scale = sigma if sigma > 0.0 else 1.0
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
+            aged_rows = aged_wj * (rows / present) if present > 0.0 else 0.0
             kind, value, target = _row_update(
                 Y[i, j],
                 p_own[j],
                 scale,
                 w[i],
-                present,
-                aged_wj,
+                rows,
+                aged_rows,
                 kt,
                 loss,
                 huber_delta,

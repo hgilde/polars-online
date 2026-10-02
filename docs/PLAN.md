@@ -5958,32 +5958,82 @@ is not, since the model alone has `0.0` and `3.5` there.
       `sqrt(d)`. Tests: `coef_halflife` against an `ewridge` fit at
       several spacings.
 
-- [ ] 147. **A row weight scales evidence, not counts -- planned, not
-      built.** Size M. Multiplying every row's weight by one constant
-      changes no output -- the EW models already hold to it, since their
-      sums are means -- unless the docs say otherwise for that model.
+- [x] 147. **A row weight scales evidence, not counts -- built 2026-10-02,
+      but for `ftrl` and the density half of `micro`, which are task 151.**
+      Size M. Multiplying every row's weight by one constant changes no
+      output -- the EW models already hold to it, since their sums are means
+      -- unless the docs say otherwise for that model. Where a weight entered
+      a count, it now enters as `w / w̄`, `w̄` the EW mean weight of the rows
+      the quantity takes (this row's included, so the first row reads 1, and
+      every row of a constant weight reads 1, which leaves those streams bit
+      for bit as they were).
 
-      - **`conformal_rate`** (measured): the step is `rate · σ · w · (miss
+      - **`conformal_rate`** (measured): the step was `rate · σ · w · (miss
         − α)`, so the same rows at weight 100 swung the band: width sd 3.10
-        against 0.21 at weight 1, mean 6.0 against 3.3. The step reads the
-        weight relative to the stream's mean weight, or not at all.
-      - **`bocpd`** adds the row weight to the posterior's counts (`κ`,
-        `ν`) but not to the likelihood or the hazard, so a heavy row makes
-        the predictive confident without counting as evidence. The weight
-        enters both or neither.
-      - **`ftrl`**: `l1`, `l2` and `beta / alpha` act on decayed sums, so
-        whether a coefficient is zeroed depends on the weight scale and on
-        row density. They act on the mean scale.
-      - **`micro`**: `beta_mu` and the pruning threshold `ξ` are absolute
-        weights, so a denser or heavier stream keeps more outlier summaries.
-        They are relative to the stream's weight; the docs' description of
-        `ξ` (a row per clock unit) is corrected to what the code computes.
-      - **`quantile`**: the warm-up gate and the band floor read the raw
-        decayed weight, so small weights never leave warm-up.
+        against 0.21 at weight 1, mean 6.0 against 3.3. It is `rate · σ ·
+        (w / w̄)`, `w̄` over the scored rows at the model's decay.
+      - **`bocpd`** added the row weight to the posterior's counts (`κ`,
+        `ν`) but not to the likelihood, so a heavy row made the predictive
+        confident without counting as evidence. The weight enters both, as
+        `w / w̄` over the rows learned from (nothing in `bocpd` decays):
+        the run's statistics, and the message `πᵣ^{w/w̄}`, under `robust`
+        times its β-power weight. `κ₀` and `ν₀` are in rows of the mean
+        weight. What the row reports is read as a row of the mean weight,
+        which is what `predict`, never told a weight, can say:
+        `tests/model_contract.rs` held the first version, which reported
+        at `w/w̄`, to `predict == step` and refused it.
+      - **`quantile`**: the warm-up gate and the band floor compared the
+        raw decayed weight with a row count, so small weights never left
+        warm-up, and -- found by the property test -- rows at weight 100
+        left it on their first row, where the fit, leaning on a one-row
+        Gram, reached 1e51. Each target keeps its present rows counted one
+        each (`nobs`), and the gate, the floor and the band's weight are
+        read in rows.
+      - **`micro`**: `beta_mu` and the pruning threshold `ξ` were absolute
+        weights, and a summary admitted a unit row. All three take `w̄`, the
+        EW mean weight of the rows learned from, so a heavier stream keeps
+        no more summaries. The docs' `ξ` is corrected to what the code
+        computes: the weight of a summary that took one row of the mean
+        weight every `Tp` clock units since it opened, `Σ_{i ≤ a/Tp}
+        2^(−i Tp/h)`. Its counts stay in rows, as DenStream's do, and the
+        docs say a denser stream fills its summaries faster.
+      - **`ftrl`**: built and reverted. Its weight is Vowpal Wabbit's
+        importance weight, and `tests/test_second_opinion.py` holds the fit
+        to VW's with weights, so penalties scaled by the mean weight
+        parted from VW by design. The docs say a weight is an importance
+        weight; the choice is task 151.
 
-      Tests: a property test over every model kind -- the same rows at
-      weight 1 and weight 100, every output equal to tolerance -- with each
-      documented exception named in the test.
+      Tests: `tests/test_weight_scale.py` fits every spec of the release
+      probe's workload, every kind, at the stream's weights and at a
+      hundred times them, `min_periods` scaled with them, and holds the
+      specs whose outputs move to exactly the documented exceptions, each
+      with its reason: `rls` (a sum-scale prior), `kalman` (a weight is an
+      observation's precision), `sgd` (a step size), `ftrl` (an importance
+      weight), `pa` (a weight above 1 counts as 1), `hmm` (counts against a
+      Dirichlet pseudo-count) and `seqtest` (it reads `kalman`). In Rust,
+      each fixed model at a hundred times the weights, and the conformal,
+      `micro` and quantile oracles in Python with the same rule. The
+      quantile test fails at row 2 when the gate reads raw weight.
+
+- [ ] 151. **`ftrl`'s penalties and `micro`'s counts against weight and
+      density -- the user's call.** Size S. Split from task 147.
+      - **`ftrl`**: its penalties are in absolute weight, as Vowpal
+        Wabbit's are against an importance weight, and the fit is VW's with
+        weights; at a hundred times the weights `l1` zeroes less. Penalties
+        times the taught rows' mean weight (`W*/N*`) make it scale-free --
+        built on 2026-10-02, the river comparisons, at unit weights, still
+        passed, and VW's weighted cases failed -- and part from VW's
+        weighted fit. Recommended:
+        keep VW's semantics, which a second opinion holds, and the
+        exception the property test names.
+      - **Density, `ftrl` and `micro`**: their penalties and thresholds
+        are per row, so more rows to a clock unit outweigh `l1` and
+        `beta_mu` sooner. A rate per clock unit (`w̄ / d̄`, or `W / T`)
+        would make them density-free, but any clock rate drops at a gap
+        capped by `max_dclock` -- `d̄` takes the weekend -- and with it the
+        penalties, so a fit would move across a gap, which the library
+        does not do anywhere else (rule 8). Recommended: leave them per
+        row, as the docs now say.
 
 - [x] 148. **The docs say what the code does: the 2026-10-01 findings --
       built 2026-10-02.** Size S. Each was a wrong or missing sentence,
