@@ -2133,10 +2133,11 @@ pub struct Spec {
     ///
     /// The clock is the model's own: the raw column capped by `max_dclock`,
     /// with skipped rows' time folded in, which is what makes release
-    /// chunk-invariant. With no `clock` column that is one unit per accepted
-    /// row, so `label_delay = 20` is twenty rows. A reset drops the buffer
-    /// (the state it would teach is gone); a session change releases it in
-    /// order, since one session's clock does not measure time in the next.
+    /// chunk-invariant. With no `clock` column that is one unit per row of
+    /// the group, a skipped row included, so `label_delay = 20` is twenty
+    /// rows. A reset drops the buffer (the state it would teach is gone); a
+    /// session change or a gap capped by `max_dclock` releases it in order,
+    /// since the clock no longer measures time across either.
     #[serde(default)]
     pub label_delay: Option<Span>,
     /// One state per key.

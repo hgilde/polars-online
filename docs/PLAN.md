@@ -5951,23 +5951,25 @@ is not, since the model alone has `0.0` and `3.5` there.
       weight 1 and weight 100, every output equal to tolerance -- with each
       documented exception named in the test.
 
-- [ ] 148. **The docs say what the code does: the 2026-10-01 findings --
-      planned, not built.** Size S. Each is a wrong or missing sentence,
+- [x] 148. **The docs say what the code does: the 2026-10-01 findings --
+      built 2026-10-02.** Size S. Each was a wrong or missing sentence,
       corrected to the code, with the test that pins it.
 
       - **`ridge_decay` penalizes the intercept** (measured: `y = 5` read an
-        intercept of 0.12 at row 20, and 2.59 at row 199, against 5.0
-        without it), where `ridge`'s docs say "never on the intercept"; and
-        `coef_prior`'s intercept slot is read under it. The docs say so.
+        intercept of 3.50 at row 20, and 4.95 at row 199, against 5.0
+        without it, at `ridge=10`, halflife 50), where `ridge`'s docs said
+        "never on the intercept"; and `coef_prior`'s intercept slot is read
+        under it, and only there. The docs say so, in Python and Rust.
       - **`po.gram.solve`** cannot reproduce a `ridge_decay` or `coef_prior`
         fit, though its docs promise "the model's own algebra"; the docs
         name the exception.
       - **`n_eff`**: it settles at `1 / (1 − λ^d)` for rows `d` clock units
-        apart, not the documented `1 / (1 − λ)` (measured: 8,648 at halflife
-        600 with rows 0.1 apart, where the docs say 866), and the Kish size
+        apart, not the documented `1 / (1 − λ)` (8,657 at halflife 600 with
+        rows 0.1 apart, where the docs said 866), and the Kish size
         likewise; it is a weight, not a sample size, so "the effective
         number of observations" becomes "the weight behind the state", and
-        `po.corr.signal_share` takes a Kish size.
+        `po.corr.signal_share` takes a Kish size: its argument is
+        `n_kish_blocks`, was `n_eff_blocks`.
       - **`emit_selected` and `emit_averaged`** compare a halflife grid's
         errors over windows of different lengths; the docs say so, and
         point to `lasso`'s `select_halflife` for a like-for-like choice.
@@ -5975,10 +5977,25 @@ is not, since the model alone has `0.0` and `3.5` there.
         stale: zero-weight rows are skipped, and every residual diagnostic
         parts from the doubled stream.
       - **`label_delay`**'s "one unit per accepted row" is every row of the
-        group; the Rust `hmm` docs' account of where the transition prior
-        sits matches the code.
-      - **A docstring pass under `docs/WRITING.md`** follows, once these
-        facts are right.
+        group, a skipped one included, and a gap capped by `max_dclock`
+        releases the held rows as a session change does; the Rust `hmm`
+        docs' account of where the transition prior sits matches the code.
+
+      Tests: a constant target's intercept under `ridge_decay`, with and
+      without a `coef_prior` intercept; `po.gram.solve` off a `ridge_decay`
+      and a `coef_prior` fit, on beside a plain one; `n_eff` and `n_kish` at
+      `1 / (1 − λ^d)` and `(1 + λ^d) / (1 − λ^d)` at rows 0.1 apart; a
+      halflife grid's `sigma` against the EW recursion at each slot's own
+      halflife, and `selected` its argmin; a skipped row counted by a
+      clockless `label_delay`; the spread of hand-computed EW correlations
+      of noise explained by `1 / (n_kish − 3)` and twice the floor at
+      `n_eff`. The docstring pass under `docs/WRITING.md` is task 149.
+
+- [ ] 149. **A docstring pass under `docs/WRITING.md` -- planned, not
+      built.** Size M. Task 148 put the facts right; the pass rewrites the
+      docstrings to the README's rules: map first, tables over lists, a
+      mechanism named rather than alluded to, sentences near 20 words,
+      every fact checked against the code.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

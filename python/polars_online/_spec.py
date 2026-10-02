@@ -606,8 +606,9 @@ def ewridge(
     .. rubric:: Parameters
 
     ``ridge``
-        The penalty on the slopes, never on the intercept, in the features'
-        squared units unless ``standardize``. Default ``1e-6``. A list fits one
+        The penalty on the slopes, in the features' squared units unless
+        ``standardize``; on the intercept too under ``ridge_decay``, and never
+        otherwise. Default ``1e-6``. A list fits one
         instance per value from the same sums, reported side by side as
         ``pred_<t>__r<ridge>``.
     ``feature_sets``
@@ -628,11 +629,17 @@ def ewridge(
         a fixed per-observation penalty whose pull is permanent -- "always stay
         near this belief". With ``ridge_decay`` the prior sits on the decaying sum
         scale and fades as data arrives -- the usual warm start, "begin at
-        yesterday's fit and let evidence take over". Default ``False``.
+        yesterday's fit and let evidence take over". Default ``False``. The
+        system is then RLS's, ``(W S + prior_scale * ridge * I) b = W r``,
+        penalizing every slot, **the intercept's included**: a constant target
+        of 5 reads an intercept of 3.5 at row 20 under ``ridge=10``,
+        ``halflife=50``, and 4.95 at row 200, until the prior fades. A
+        ``coef_prior`` intercept is what it shrinks toward.
     ``coef_prior``
         Shrink toward these coefficients instead of toward zero: one vector per
         target, in the features' original units, ``len(features) + 1`` long when
-        there is an intercept.
+        there is an intercept. The intercept slot is read only under
+        ``ridge_decay``, the one solve that penalizes the intercept.
     ``session_shrink``, ``long_halflife``
         A middle way between a session's decay and a full reset. A second
         accumulator follows the long-run relationship at ``long_halflife``

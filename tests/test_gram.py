@@ -263,6 +263,31 @@ class TestTheCompleteSufficientStatistic:
         assert weighty["n_eff"] == pytest.approx(7 * light["n_eff"], rel=1e-9)
         assert weighty["n_kish"] == pytest.approx(light["n_kish"], rel=1e-9)
 
+    def test_both_settle_at_the_decay_over_the_row_spacing(self):
+        """Task 148: with unit rows ``d`` clock units apart, ``n_eff`` settles
+        at ``1 / (1 - lam**d)`` and the Kish size at ``(1 + lam**d) / (1 -
+        lam**d)``; ``1 / (1 - lam)`` is the one-unit spacing alone. At a
+        halflife of 6 and rows 0.1 apart that is 87.1 against 9.2."""
+        h, d, n = 6.0, 0.1, 2400
+        df, _ = stream(n=n, k=1, seed=5)
+        df = df.with_columns(t=pl.Series(np.arange(n) * d))
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            max_dclock=1.0,
+            halflife=h,
+            min_periods=3.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("m")[0]
+        lam_d = 0.5 ** (d / h)
+        assert g["n_eff"] == pytest.approx(1 / (1 - lam_d), rel=1e-9)
+        assert g["n_kish"] == pytest.approx((1 + lam_d) / (1 - lam_d), rel=1e-9)
+        assert g["n_eff"] > 9 * (1 / (1 - 0.5 ** (1 / h)))
+
     def test_a_target_that_stops_arriving_keeps_its_sample_size(self):
         """`n_kish` is scale-free: pure decay scales `W` and `Q` together, so
         a stale target's moments still represent the rows they averaged. It is

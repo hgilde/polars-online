@@ -257,6 +257,42 @@ class TestOnlineSelection:
         assert sel <= {"@h20", "@h2000"}
         assert sel, "nothing was ever selected"
 
+    def test_a_halflife_grid_ranks_each_slot_at_its_own_halflife(self):
+        """Task 148: each slot's error is the EW mean of its own squared
+        residuals at its own instance's halflife, so across a halflife grid
+        the slots are ranked over windows of different lengths, as the docs
+        now say. Held against that recursion from the residuals."""
+        rng = np.random.default_rng(5)
+        n = 600
+        x = rng.standard_normal(n)
+        hs = (20.0, 2000.0)
+        spec = self._grid_spec(ridge=1e-6, halflife=list(hs), emit_sigma=True)
+        out = po.ModelBank([spec]).fit_predict(
+            pl.DataFrame({"x0": x, "y0": 2 * x + 0.5 * rng.standard_normal(n)})
+        )
+        st = out["m"].struct
+        sigma = {}
+        for h in hs:
+            tag = f"@h{h:g}"
+            r = st.field(f"resid_y0{tag}").to_numpy()
+            got = st.field(f"sigma_y0{tag}").to_numpy()
+            lam, num, den, want = 0.5 ** (1 / h), 0.0, 0.0, np.full(n, np.nan)
+            for i in range(n):
+                if den > 0.0:
+                    want[i] = np.sqrt(num / den)
+                num, den = lam * num, lam * den
+                if np.isfinite(r[i]):
+                    num, den = num + r[i] ** 2, den + 1.0
+            ok = np.isfinite(want)
+            assert np.isfinite(got).tolist() == ok.tolist(), tag
+            assert got[ok] == pytest.approx(want[ok], rel=1e-9), tag
+            sigma[tag] = got
+        names = st.field("selected_y0").to_list()
+        tags = list(sigma)
+        for i in range(100, n):
+            best = tags[int(np.argmin([sigma[t][i] for t in tags]))]
+            assert names[i] == best, i
+
     def test_requires_more_than_one_slot(self):
         with pytest.raises(ValueError, match="more than one slot"):
             po.spec.ewridge(

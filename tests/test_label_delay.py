@@ -143,6 +143,22 @@ class TestItIsTheDoubledStream:
                 parted.append(field)
         assert parted, "no residual diagnostic parted from the doubled stream"
 
+    def test_without_a_clock_a_skipped_row_counts(self):
+        """Task 148: with no ``clock`` one unit is one row of the group, a
+        skipped row included, as the docs now say: the row two before is
+        released across a row skipped for a null feature, where counting
+        accepted rows would hold it one row longer."""
+        x = np.arange(12, dtype=float)
+        x[3] = np.nan
+        df = pl.DataFrame({"x": x, "y": 2 * np.nan_to_num(x) + 1})
+        s = po.spec.ewridge(
+            "m", targets=["y"], features=["x"], halflife=1e9, min_periods=0.0, label_delay=2
+        )
+        n_eff = po.ModelBank([s]).fit_predict(df)["m"].struct.field("n_eff").to_list()
+        # Row 2 is released at row 4, two rows on, across the skipped row 3.
+        assert n_eff[4] == pytest.approx(3.0, abs=1e-6)
+        assert n_eff[3] is None
+
     def test_the_state_is_the_state_of_the_matured_rows(self):
         """A delayed bank at the end of a stream is bit-for-bit the bank a
         plain one would be, fed only the rows whose labels had matured. Not

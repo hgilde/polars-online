@@ -101,7 +101,7 @@ ols = po.spec.ewridge(
 scored = pl.scan_parquet("today.parquet").online.predict("bank.state").collect()   # score; learn nothing
 flat = scored.online.unnest([ols])   # pred_ret, resid_ret, n_eff, ..., coef_ret_intercept, coef_ret_signal_a, ...
 # Each spec adds one column, named after it, whose value in each row is a record of named fields:
-# the prediction pred_<target>, the residual resid_<target>, the effective number of observations
+# the prediction pred_<target>, the residual resid_<target>, the weight behind the state
 # n_eff, the coefficients coef, why a prediction is null (withheld_reason, under Warm-up), and the
 # diagnostics you switch on. unnest spreads them into columns.
 ```
@@ -515,11 +515,13 @@ Its default depends on the model:
 | 1 | `bocpd` |
 | 0, each having a gate of its own | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange` |
 
-`n_eff` is the *effective number of observations*: the total weight behind
-the state that produced this row's prediction, after forgetting and before
-the row's own update. It is `0` on a stream's first row. It runs one behind
-the row count while nothing is forgotten, and settles at `1 / (1 − λ)` once
-forgetting balances arrival. It means the same thing in every model, so one
+`n_eff` is the *weight behind the state* that produced this row's
+prediction, after forgetting and before the row's own update. It is `0` on a
+stream's first row. It runs one behind the row count while nothing is
+forgotten, and settles at `1 / (1 − λ^d)` for unit rows `d` clock units
+apart, `λ = 2^(−1/halflife)`. It is a weight, not a sample size: at a
+halflife of 600 with rows 0.1 apart it settles near 8,657. Kish's `n_kish`
+in `gram()` is the sample size. It means the same thing in every model, so one
 `min_periods` means the same thing across a bank. A regression model
 checks each target against that target's own weight, the weight of the
 rows it was present on, so an often-null target reports later than the
@@ -547,8 +549,10 @@ spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 # that had really arrived.
 #   - the clock is the model's own (capped by max_dclock, skipped rows' time included),
 #     which is what makes the release depend on the clock alone and survive any chunking
-#   - with no clock column, one unit is one accepted row: label_delay=20 is twenty rows
-#   - a reset drops the rows still waiting; a session change releases them in order
+#   - with no clock column, one unit is one row of the group, a skipped row included:
+#     label_delay=20 is twenty rows
+#   - a reset drops the rows still waiting; a session change or a gap capped by
+#     max_dclock releases them in order
 #   - rows still waiting when the stream ends are never learned from
 #   - the waiting rows live in the state and are saved with it: one row's values per
 #     row inside the delay, per group
@@ -565,11 +569,13 @@ doubled = po.stream.embargo(lf, clock="t", delay=300.0)   # every row twice: a z
                                                             # not only within each group: sort by the clock first
 ```
 
-The built-in delay agrees with the doubled stream field by field, to the
-bit, except for `resid_quantiles`, `emit_autocorr` and `emit_drift`. Those
-three take no row weight, so a zero-weight copy feeds them as much as its
-learning copy does: the doubled stream lands every residual in them twice,
-where `label_delay` lands it once.
+The built-in delay agrees with the doubled stream to the bit on `pred`,
+`resid` and `n_eff`. Every residual diagnostic parts from it: `sigma`,
+`resid_z`, the metrics, the conformal band, the quantiles, the
+autocorrelation and drift. `label_delay` folds the residual of the
+prediction the row was scored with. The doubled stream's learning copy forms
+its residual at `t + delay`, from a model that has since learned every row
+before it.
 
 ### Nulls, and three ways to hold a row back
 

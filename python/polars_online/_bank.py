@@ -902,8 +902,9 @@ class ModelBank:
             Kish's effective sample size, ``n_eff**2 / sum(w**2)``: the number of
             equally weighted rows these moments are worth, and what a standard error
             computed from them divides by. ``n_eff`` counts weight, not rows, so it is
-            not a sample size; ``(1 + lam) / (1 - lam)`` is the Kish size of an
-            exponentially weighted window, whatever the halflife's units. It is
+            not a sample size; ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of
+            an exponentially weighted window of unit rows ``d`` clock units apart,
+            ``lam = 0.5 ** (1 / halflife)``. It is
             scale-free: decay divides ``n_eff`` and ``sum(w**2)`` by the same factor,
             so it does not shrink when a stream goes quiet. It says how many rows
             these moments average, not how old they are; ``n_eff`` and

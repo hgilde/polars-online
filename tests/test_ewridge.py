@@ -6,6 +6,8 @@ nulls, weights, groups and sessions; `test_semantics_all_models` and the other
 sweeps hold this model to the invariants every model shares.
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -525,3 +527,43 @@ class TestWarmPriorsThroughTheOrigin:
         without = self._coef(df, ridge=50.0)
         assert not np.allclose(with_prior, without), "the prior changed nothing"
         assert (np.abs(with_prior - prior) < np.abs(without - prior)).all(), (with_prior, without)
+
+
+class TestRidgeDecayPenalisesTheIntercept:
+    """Task 148: ``ridge_decay``'s system is RLS's, ``(W S + prior_scale *
+    ridge * I) b = W r``, so its penalty reaches the intercept, where a plain
+    ``ridge`` never does; and a ``coef_prior`` intercept is what it shrinks
+    toward. A constant target of 5 shows both."""
+
+    def _intercepts(self, **kw):
+        n = 200
+        rng = np.random.default_rng(0)
+        df = pl.DataFrame({"x": rng.standard_normal(n), "y": np.full(n, 5.0)})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            halflife=50.0,
+            ridge=10.0,
+            min_periods=0.0,
+            coef_every=1,
+            max_rows_between_solves=1,
+            **kw,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", po.ReadinessWarning)
+            out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return np.array([c[0] for c in out["coef"].to_list()])
+
+    def test_a_plain_ridge_leaves_the_intercept_alone(self):
+        assert self._intercepts() == pytest.approx(5.0, abs=1e-9)
+
+    def test_ridge_decay_shrinks_it_until_the_prior_fades(self):
+        got = self._intercepts(ridge_decay=True)
+        assert got[20] == pytest.approx(3.504, abs=1e-3)
+        assert got[199] == pytest.approx(4.954, abs=1e-3)
+        assert np.all(np.diff(got[1:]) > 0.0)
+
+    def test_it_shrinks_toward_the_prior_intercept(self):
+        got = self._intercepts(ridge_decay=True, coef_prior=[[5.0, 0.0]])
+        assert got == pytest.approx(5.0, abs=1e-9)

@@ -531,7 +531,10 @@ def solve(
     """Ridge coefficients from the Gram, in the features' original units.
 
     The model's own algebra (``EwRidge::solve``), so the result is the fit that
-    spec would report on the same accumulator. With an intercept in ``columns`` it
+    spec would report on the same accumulator -- except under ``ridge_decay`` or
+    ``coef_prior``, whose penalties this does not take: a decaying prior on the
+    sum scale that reaches the intercept, and a target other than zero. Their
+    fits are not reproduced here. With an intercept in ``columns`` it
     is eliminated, and the slopes solve the centred system ``(C + ridge*I) b =
     c``: ``C`` the features' centred ``comoments``, and ``c = cross_centred[t]``,
     the target's cross-moments centred at its own column means ``m``

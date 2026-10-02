@@ -73,8 +73,9 @@ pub struct HmmCfg {
     pub learn: bool,
     /// Dirichlet pseudo-count per cell of the transition matrix.
     pub transition_prior: f64,
-    /// A `K*K` row-stochastic matrix to seed the counts at `τ·K·Π₀`, so it
-    /// is the prior mean; `None` is uniform.
+    /// A `K*K` row-stochastic matrix `Π₀`, the Dirichlet prior's mean: each
+    /// cell's pseudo-count is `τ·K·Π₀[r][c]` in place of `τ`, and the learned
+    /// counts start at zero (see `prior`); `None` is uniform.
     pub transition: Option<Vec<f64>>,
     /// State means, `K*d` row-major: given, there is no warm-up. The pair
     /// enters the accumulators at **weight 1** -- one row's worth -- so the

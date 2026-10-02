@@ -16,7 +16,24 @@ carries breaking changes, and any change to the numbers a model returns.
   96% of the way back and multiplied `n_eff` by 20, which also delayed the
   next solve (32 rows against 3). The moments now mix `1 - f` of today's
   data and `f` of the long run's, at today's weight, Kish size and prior
-  scale. Numbers move for any `session_shrink` strictly between 0 and 1.
+  scale. Numbers move for any `session_shrink` above 0: below 1 the fit, and
+  at 1 `n_eff`, the warm-up gates, the solve schedule and a `ridge_decay`
+  fit.
+- **`po.corr.signal_share` takes a Kish size** (task 148): its second
+  argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
+  a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `n_eff` is a
+  weight, about half of it, and doubled the noise floor.
+- **The docs say what the code does** (task 148). `ridge_decay` penalizes
+  the intercept, as RLS does, and reads `coef_prior`'s intercept slot;
+  `po.gram.solve` does not reproduce a `ridge_decay` or `coef_prior` fit.
+  `n_eff` is the weight behind the state and settles at `1 / (1 - λ^d)` for
+  rows `d` clock units apart, not `1 / (1 - λ)`; the Kish size likewise.
+  `emit_selected` and `emit_averaged` rank each slot at its own halflife.
+  `label_delay` without a clock counts every row of the group, a skipped one
+  included, and a capped gap releases the held rows as a session change
+  does. The README's account of the doubled stream is the current one: every
+  residual diagnostic parts from it. `hmm`'s `transition` is the prior's
+  mean, not seeded counts. No numbers move.
 
 ### Added
 

@@ -32,8 +32,8 @@
 //! the target's missingness.
 //!
 //! Read back per pair ([`Pair`]): `n_eff = W_t`; `n_kish = W_t² / Q_t`,
-//! Kish's effective sample size -- `(1+lam)/(1−lam)` in the limit for unit
-//! weights, about twice `n_eff`, and the `n` a standard error wants; the
+//! Kish's effective sample size -- `(1+lam^d)/(1−lam^d)` in the limit for
+//! unit weights `d` clock units apart, about twice `n_eff`, and the `n` a standard error wants; the
 //! moments; and from them `corr = S_xy / √(S_xx·S_yy)`, `beta = S_xy /
 //! S_xx` (the slope of `y` on `x`) and `t = corr·√((n_kish − 2) / (1 −
 //! corr²))`, the t-statistic of the correlation at Kish's `n`. `corr`, `beta`

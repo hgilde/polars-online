@@ -79,7 +79,9 @@ pub struct EwRidgeCfg {
     /// Shrink toward these coefficients instead of toward zero
     /// (ENHANCEMENTS E15): the solve becomes `(S + ridge·D)β = r + ridge·D·β₀`.
     /// One vector per target, each `k_total` long, in the features' original
-    /// units; the intercept slot is unpenalized and therefore ignored.
+    /// units. The intercept slot is read only under `ridge_decay`, the one
+    /// solve that penalizes the intercept; elsewhere it is unpenalized and
+    /// the slot is ignored.
     ///
     /// **Whether the prior fades depends on `ridge_decay`, and the difference
     /// matters.** `S` here is a weighted *mean*, not a sum, so it does not grow

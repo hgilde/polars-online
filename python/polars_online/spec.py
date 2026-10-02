@@ -109,8 +109,9 @@ sees a stream* is the guide to them; this is the reference.
     scored where it sits and held back from learning until the clock has moved
     this much further on; the residual, ``sigma``, the metrics, drift, the
     conformal band, ``n_eff`` and ``min_periods`` all see it then. A reset
-    drops the held rows; a session change releases them in order. Units: clock
-    units, or rows without a ``clock``.
+    drops the held rows; a session change or a gap capped by ``max_dclock``
+    releases them in order. Units: clock units, or without a ``clock`` the
+    group's rows, a skipped row included.
 ``group``, ``group_close``
     One model state per value of the ``group`` column. ``group_close`` says
     when a key is finished, so its state can be dropped: ``"monotone"`` (the
@@ -206,7 +207,10 @@ writes, with ``<t>`` a target:
 ``n_eff``
     The accumulated weight before this row's update and before its own decay:
     ``0`` on a stream's first row, one behind the row count while nothing is
-    forgotten, and ``1 / (1 - lam)`` once forgetting balances arrival.
+    forgotten, and ``1 / (1 - lam**d)`` once forgetting balances arrival, for
+    unit rows ``d`` clock units apart (``lam = 0.5 ** (1 / halflife)``). A
+    weight, not a count of rows: at a halflife of 600 with rows 0.1 apart it
+    settles near 8,657, and Kish's ``n_kish`` is the sample size.
 ``coef``
     The coefficients behind the fit, as one flat list: per (target, grid
     combination) slot in the order the ``pred`` fields declare them, the
@@ -289,12 +293,17 @@ The diagnostics add, per slot:
    * - ``emit_selected``
      - ``selected_<t>``, ``pred_<t>__selected``
      - The grid slot with the lowest EW out-of-sample squared error so
-       far, and its prediction. Needs more than one slot per target.
+       far, and its prediction. Needs more than one slot per target. Each
+       slot's error decays at its own instance's halflife: like for like
+       within a ridge or feature-set grid, but across a halflife grid a
+       short halflife is ranked on fewer, more recent rows than a long
+       one. ``lasso``'s ``select_halflife`` ranks its path on one halflife.
    * - ``emit_averaged``
      - ``pred_<t>__averaged``
      - Every slot's prediction averaged with weights
        ``exp(-eta * (sigma2 / sigma2_best - 1))``, each slot's EW squared
-       error as a ratio to the best slot's, so ``average_eta`` (default
+       error as a ratio to the best slot's -- each at its own halflife,
+       as ``emit_selected``'s are -- so ``average_eta`` (default
        1) means the same thing whatever the target's units; ``inf`` is
        ``emit_selected``'s argmin, a tie shared. Hedges where selection
        commits. The weights come from each slot's EW *mean* error, so

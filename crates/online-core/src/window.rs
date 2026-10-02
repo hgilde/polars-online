@@ -505,7 +505,9 @@ impl<S: Footprint> Snapshots<S> {
 /// every mean divided by it into noise, so anything below this fraction is an
 /// empty window (review 2026-09-12, C2: "clamp the truncated weight at 0
 /// before the test"). A genuine window never gets near it: its newest row
-/// alone carries weight 1 against a history of at most `1/(1 - lam)`.
+/// alone carries weight 1 against a history of at most `1/(1 - lam^d)` for
+/// rows `d` apart, about `1.44 · halflife / d`, which reaches `1e12` only
+/// with a trillion unit rows to a halflife.
 pub const EMPTY_FRACTION: f64 = 1e-12;
 
 /// An [`EwCov`]'s data, decayed to the clock of the row it precedes. Means and

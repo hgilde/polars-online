@@ -59,6 +59,23 @@ class TestSolveIsTheModelsSolve:
         mine = pg.solve(g, ridge=ridge, standardize=standardize)
         assert mine == pytest.approx(model, rel=1e-12), np.max(np.abs(mine - model))
 
+    @pytest.mark.parametrize(
+        "kw", [dict(ridge_decay=True), dict(coef_prior=[[0.0, 1.0, 1.0, 1.0]])]
+    )
+    def test_not_a_ridge_decay_or_coef_prior_fit(self, kw):
+        """Task 148: the two penalties ``solve`` does not take, which its
+        docs name: a decaying prior on the sum scale, intercept included, and
+        a target other than zero. The plain fit beside them is reproduced."""
+        df, _ = stream()
+        common = dict(halflife=50.0, ridge=5.0, max_rows_between_solves=1)
+        plain = fit(df, **common)
+        assert pg.solve(plain.gram("m")[0], ridge=5.0) == pytest.approx(
+            plain.coef("m")["coef"].to_numpy(), rel=1e-10
+        )
+        bank = fit(df, **common, **kw)
+        gap = pg.solve(bank.gram("m")[0], ridge=5.0) - bank.coef("m")["coef"].to_numpy()
+        assert np.max(np.abs(gap)) > 0.1
+
     def test_without_an_intercept_too(self):
         df, _ = stream()
         bank = fit(df, ridge=0.2, standardize=False, add_intercept=False, max_rows_between_solves=1)

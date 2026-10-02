@@ -552,11 +552,13 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
     return out
 
 
-def signal_share(z_blocks: Any, n_eff_blocks: Any) -> Any:
+def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
     """How much of the between-block movement in a correlation is not sampling noise.
 
     Per pair over ``B`` blocks, with ``z_b`` the Fisher-z of that block's
-    correlation and ``n_b`` its effective sample size:
+    correlation and ``n_b`` its sample size -- Kish's ``(Σw)² / Σw²``, as
+    ``gram()``'s ``n_kish`` reads it, or a plain block's row count. Not
+    ``n_eff``, which is a weight, about half the Kish size in steady state:
 
     .. code-block:: text
 
@@ -570,7 +572,7 @@ def signal_share(z_blocks: Any, n_eff_blocks: Any) -> Any:
     """
     np = _np()
     z = np.asarray(z_blocks, dtype=float)
-    n = np.asarray(n_eff_blocks, dtype=float).reshape(-1)
+    n = np.asarray(n_kish_blocks, dtype=float).reshape(-1)
     flat = z.ndim == 1
     zz = z.reshape(-1, 1) if flat else z
     if zz.shape[0] != n.size:

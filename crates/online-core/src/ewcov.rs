@@ -374,8 +374,8 @@ impl EwCov {
 
     /// Kish's effective sample size `W^2 / Q`: the number of *equally*
     /// weighted rows that carry the information these moments hold
-    /// (docs/ENHANCEMENTS.md E45). `(1 + lam) / (1 - lam)` in the limit for
-    /// unit weights on a constant clock.
+    /// (docs/ENHANCEMENTS.md E45). `(1 + lam^d) / (1 - lam^d)` in the limit
+    /// for unit weights `d` clock units apart.
     ///
     /// `None` before the first row, and for a state written before task 38
     /// (see the `q_sum` field). It is what a standard error from these
