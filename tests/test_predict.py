@@ -232,10 +232,14 @@ def test_session_and_clock_policies_hold(policy):
         assert all(pred[i] is None and n_eff[i] == 0.0 for i in fresh)
         assert all(pred[i] is not None for i in range(20) if i not in fresh)
     elif "session_shrink" in policy:
-        # The blend changes the accumulated weight, and only for those rows.
-        assert len({n_eff[i] for i in range(5, 10)}) == 1
-        assert n_eff[5] != n_eff[0]
-        assert all(n_eff[i] == n_eff[0] for i in range(20) if i not in range(5, 10))
+        # The blend keeps the weight (task 145) and moves the fit, and only
+        # for those rows: against the same rows in one session, every
+        # prediction there differs and every other one is the same.
+        assert len(set(n_eff)) == 1
+        one = bank.predict(later.with_columns(s=pl.lit("one")))["m"]
+        same = one.struct.field("pred_y0").to_list()
+        assert all(pred[i] != same[i] for i in range(5, 10))
+        assert all(pred[i] == same[i] for i in range(20) if i not in range(5, 10))
     else:
         assert len(set(n_eff)) == 1 and all(p is not None for p in pred)
 

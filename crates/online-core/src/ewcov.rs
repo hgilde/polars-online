@@ -400,13 +400,6 @@ impl EwCov {
         self.prior_scale
     }
 
-    /// Overwrite the decaying prior's scale, for a caller that mixes two
-    /// accumulators' priors as it mixes their moments (`Grams::blend`,
-    /// review 2026-09-12 C6).
-    pub(crate) fn set_prior_scale(&mut self, s: f64) {
-        self.prior_scale = s;
-    }
-
     #[inline]
     pub fn mean(&self, i: usize) -> f64 {
         debug_assert!(
@@ -1093,8 +1086,8 @@ impl TargetMoments {
         self.q[t] *= lam * lam;
     }
 
-    /// Mix toward another set of moments with the same coefficients the
-    /// caller mixes weights and co-moments by (`a + b == 1`); see
+    /// Mix toward another set of moments with the shares the caller mixes
+    /// co-moments by (`a + b == 1`), leaving `Q` as it is; see
     /// `EwRidge::blend_toward_long_run`. Centred second moments are not
     /// additive across differing means; the mixture is the centred identity
     /// `var = a·var + b·var' + a·b·(m - m')²`, as the co-moments' is, and needs
@@ -1108,13 +1101,12 @@ impl TargetMoments {
         self.mean[t] = a * self.mean[t] + b * other.mean[t];
         let n = self.mean.len();
         *crate::comp::lo_slot(&mut self.mean_lo, n, t) = 0.0;
-        // `Q` is mixed by the same coefficients as the moments, not summed as
-        // a union of two row sets would be: the twins see the *same* rows
-        // under two halflives, so a union would count every row twice and
-        // report a blend of a state with itself as more informative than the
-        // state. With this form that blend is the identity, as it is for the
-        // means, the co-moments and the weights.
-        self.q[t] = a * self.q[t] + b * other.q[t];
+        // `Q` stays this side's, as the weight does: the blend mixes what the
+        // moments say, not how much evidence stands behind them (docs/PLAN.md
+        // task 145). Summed as a union of two row sets it would count every
+        // row twice, since the twins see the *same* rows; kept, a blend of a
+        // state with itself is the identity, as it is for the means and the
+        // co-moments.
     }
 }
 

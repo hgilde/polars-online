@@ -5818,14 +5818,14 @@ is not, since the model alone has `0.0` and `3.5` there.
       against Polars'; a backward window's output waiting for the next
       distinct timestamp, chunked anywhere.
 
-- [ ] 145. **`session_shrink` mixes data, not weight -- planned, not
-      built.** Size S. `ewridge`'s blend toward its slow twin at a session
-      change gives the twin the share `f W_slow / ((1 − f) W_fast + f
+- [x] 145. **`session_shrink` mixes data, not weight -- built
+      2026-10-02.** Size S. `ewridge`'s blend toward its slow twin at a
+      session change gave the twin the share `f W_slow / ((1 − f) W_fast + f
       W_slow)` and the weight `(1 − f) W_fast + f W_slow`. The twin's weight
-      is many times the fast sums', so every `f` above 0 reverts almost
-      fully: measured with a 100-row half-life against a 10,000-row twin,
-      the slope moved from 2.008 to 1.113 at `f = 0.25` (1.083 at `f = 1`),
-      and `n_eff` from 145 to 2,855.
+      is many times the fast sums', so every `f` above 0 reverted almost
+      fully: measured on 0.13.0 with a 100-row half-life against a
+      10,000-row twin, the slope moved from 2.008 to 1.113 at `f = 0.25`
+      (1.083 at `f = 1`), and `n_eff` from 145 to 2,855.
 
       - **The blend mixes the moments as a mixture of the two data sets**,
         in fixed shares `1 − f` of today's and `f` of the long run's: `m' =
@@ -5847,19 +5847,27 @@ is not, since the model alone has `0.0` and `3.5` there.
         prior keeps today's scale -- and `f` between fits on that share of
         the long run. The coefficients move by about that share where the
         feature distributions match; they are not linear in the moments.
-      - **In `Acc::blend`** (`crates/online-core/src/gaps.rs`) and the
-        moment blends it calls: the shares `(1 − f, f)` in place of the
-        weight shares, and the fast weights kept. The state layout is
-        unchanged, so no schema bump. Numbers move for any `f` strictly
-        between 0 and 1: a CHANGELOG line, and the docstring states the
-        formulas.
+      - **In `Grams::blend` and `Acc::blend`**
+        (`crates/online-core/src/gaps.rs`) and the moment blends they call:
+        the shares `(1 − f, f)` in place of the weight shares, and the fast
+        weights kept; `TargetMoments::blend` leaves `Q` as it is. The state
+        layout is unchanged, so no schema bump. Numbers move for any `f`
+        above 0: a CHANGELOG line, and the docstrings state the formulas.
 
-      Tests: the blended coefficients against a ridge solve on the mixed
-      moments computed with `faer`, independent of `solve.rs`; `f = 0`
-      unchanged; `f = 1` equal to the twin's fit without `ridge_decay`;
-      `n_eff` equal before and after the blend, per target under
-      `target_gaps`; a sweep of `f` on matched feature distributions moving
-      the slope in proportion.
+      Tests: the blended coefficients from the raw rows, the two kernels
+      each normalised and mixed, solved by `faer` independent of
+      `solve.rs`, at `f` of 0.25, 0.5 and 1 (`f = 1` is the twin's fit), the
+      weight bit-equal across the blend; under `ridge_decay` the prior scale
+      bit-equal and `f = 1` the twin's moments at today's weight and prior,
+      from the rows; the mixture term by term at the origin and at 1e8, each
+      target's own weight kept; `f = 0` a no-op. In Python: the slope at the
+      open within 0.05 of `(1 − f)` today's plus `f` the long run's, `n_eff`,
+      the Kish size and the first re-solve equal with and without the
+      blend, and `TestSessionShrinkBlend`'s numpy oracle at the normalised
+      kernels. `tests/reference_paths.py` keeps a weight per target beside
+      the Gram's, since each normalises over its own rows; seeded with the
+      old blend its oracle misses by 3.5e-2 to 8.4e-2, with the Gram's
+      normalisation for the targets by 5.0e-4 to 9.1e-4.
 
 - [ ] 146. **A clock parameter acts on the clock -- planned, not built.**
       Size M. Every parameter in clock units acts on the policy clock, so

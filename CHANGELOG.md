@@ -7,6 +7,17 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed
+
+- **`session_shrink` is the long run's share of the data, as documented**
+  (task 145). At a session boundary `ewridge` mixed its fit with the slow
+  twin by accumulated weight, and the twin's weight is many times the fast
+  sums', so every value above 0 reverted almost fully: `0.25` took a slope
+  96% of the way back and multiplied `n_eff` by 20, which also delayed the
+  next solve (32 rows against 3). The moments now mix `1 - f` of today's
+  data and `f` of the long run's, at today's weight, Kish size and prior
+  scale. Numbers move for any `session_shrink` strictly between 0 and 1.
+
 ### Added
 
 - **`po.stream.with_windows`: exponentially weighted means with a hard cutoff,

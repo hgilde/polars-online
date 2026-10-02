@@ -553,9 +553,9 @@ pub enum ModelKind {
         /// per target of length `n_features + intercept`, in original units.
         #[serde(default)]
         coef_prior: Option<Vec<Vec<f64>>>,
-        /// On a session change, mix the accumulators this far toward a
-        /// slow-moving twin: 0 keeps today's fit, 1 reverts to the long run.
-        /// Needs `long_halflife`.
+        /// On a session change, fit on this share of a slow-moving twin's
+        /// moments, the rest today's, at today's weight: 0 keeps today's
+        /// fit, 1 takes the long run's. Needs `long_halflife`.
         #[serde(default)]
         session_shrink: Option<f64>,
         /// Halflife of that twin; `"inf"` makes the long run the whole

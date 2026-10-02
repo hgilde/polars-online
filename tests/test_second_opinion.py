@@ -517,13 +517,15 @@ class TestMahalQuantiles:
 
 
 class TestSessionShrinkBlend:
-    """C16 and C3, the review's T-S10 (ii). A ``session_shrink`` blend at ``f``
-    mixes the fast accumulators (``halflife``) with their slow twin
-    (``long_halflife``), which saw the *same* rows -- so the blend is itself
-    one weighted accumulator, each row at ``(1 - f)·λ_h^age + f·λ_H^age`` (the
-    mean-form definitions cancel the weights). ``numpy.average`` and
-    ``numpy.cov(aweights=..., ddof=0)`` with that weight vector are the
-    blended moments exactly, two-pass and so right at any offset.
+    """C16 and C3, the review's T-S10 (ii), and task 145. A ``session_shrink``
+    blend at ``f`` mixes the fast accumulators (``halflife``) with their slow
+    twin (``long_halflife``), which saw the *same* rows, as two data sets: ``1
+    - f`` of today's and ``f`` of the long run's, at today's weight. So the
+    blend is itself one weighted accumulator, each row at ``W_h · ((1 - f)
+    λ_h^age / W_h + f λ_H^age / W_H)``, each kernel normalised by its weight.
+    ``numpy.average`` and ``numpy.cov(aweights=..., ddof=0)`` with that weight
+    vector are the blended moments exactly, two-pass and so right at any
+    offset.
 
     C16: both blends went back through raw second moments, which at a level of
     ``1e8`` leave nothing of a unit variance; ``offset = 0`` is the control.
@@ -561,7 +563,9 @@ class TestSessionShrinkBlend:
         # the fast rate by the last row's `session_gap`. The last row: weight 1.
         age = (n - 2) - np.arange(n - 1)
         lam_f, lam_s = 0.5 ** (1.0 / self.H_FAST), 0.5 ** (1.0 / self.H_SLOW)
-        w = np.append(lam_f * ((1.0 - f) * lam_f**age + f * lam_s**age), 1.0)
+        kf, ks = lam_f**age, lam_s**age
+        blended = kf.sum() * ((1.0 - f) * kf / kf.sum() + f * ks / ks.sum())
+        w = np.append(lam_f * blended, 1.0)
         cols = [g["columns"].index("x0"), g["columns"].index("x1")]
         cov = np.cov(x.T, aweights=w, ddof=0)
         got = np.asarray(g["comoments"])[np.ix_(cols, cols)]

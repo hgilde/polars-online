@@ -460,15 +460,18 @@ impl Grams {
             .collect()
     }
 
-    /// Mix each Gram toward the twin's that its targets read, `(1 − f)` of
-    /// this one's weight to `f` of the twin's: a weight-respecting mixture of
-    /// two sets of weighted moments, with the centred co-moments by `C =
-    /// a·C_f + b·C_s + a·b·ΔΔᵀ`, `Δ = m_f − m_s`, where nothing is the size
-    /// of `m²` (review 2026-09-12, C16). `Q` mixes by the same coefficients
-    /// (`TargetMoments::blend` says why a union would be wrong). Both sides'
-    /// blocks must be flushed. Returns whether any Gram had weight to mix.
-    /// The twin sees the same rows and targets, so its Grams split where
-    /// these do.
+    /// Mix each Gram toward the twin's that its targets read, as a mixture
+    /// of the two data sets: `a = 1 − f` of this one's and `b = f` of the
+    /// twin's, the means by those shares and the centred co-moments by `C =
+    /// a·C_f + b·C_s + a·b·ΔΔᵀ`, `Δ = m_f − m_s`, where nothing is the size of
+    /// `m²` (review 2026-09-12, C16). The weight, `Q` and the prior scale stay
+    /// this Gram's: the blend moves what the fit is read from, not how much
+    /// stands behind it, so `f` is the long run's share whatever the twin's
+    /// weight (docs/PLAN.md task 145; mixed by weight, the twin's far larger
+    /// weight took nearly all of any `f` above 0). A side with no weight has
+    /// nothing to mix. Both sides' blocks must be flushed. Returns whether
+    /// any Gram was mixed. The twin sees the same rows and targets, so its
+    /// Grams split where these do.
     fn blend(&mut self, other: &Grams, f: f64) -> bool {
         let mut moved = false;
         for g in 0..self.grams.len() {
@@ -481,12 +484,11 @@ impl Grams {
             let fast = &self.grams[g];
             let k = fast.k();
             let (wf, ws) = (fast.n_eff(), slow.n_eff());
-            let w_new = (1.0 - f) * wf + f * ws;
-            if w_new <= 0.0 || w_new.is_nan() {
+            if !(wf > 0.0 && ws > 0.0) {
                 continue;
             }
             moved = true;
-            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+            let (af, as_) = (1.0 - f, f);
             let mean: Vec<f64> = (0..k)
                 .map(|i| af * fast.mean(i) + as_ * slow.mean(i))
                 .collect();
@@ -499,20 +501,13 @@ impl Grams {
                     c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
             }
-            let q = match (fast.q_sum(), slow.q_sum()) {
-                (Some(qf), Some(qs)) => Some(af * qf + as_ * qs),
-                _ => None,
-            };
-            // The decaying prior under `ridge_decay` is a pseudo-observation
-            // on the sum scale, `prior_scale · ridge · I`, so it mixes as the
-            // sum-scale weights do, by `1 − f` and `f`: at `f = 1` the Gram is
-            // the twin's, prior and all. Built from `EwCov::new`, the blend
-            // put the prior back at full strength on every session boundary
-            // (review 2026-09-12, C6).
-            let prior = (1.0 - f) * fast.prior_scale() + f * slow.prior_scale();
+            // The clone keeps this Gram's prior scale under `ridge_decay`, a
+            // pseudo-observation on its own sum scale: the blend no more
+            // strengthens it than it strengthens the data. (Built from
+            // `EwCov::new`, the blend once put the prior back at full strength
+            // on every session boundary; review 2026-09-12, C6.)
             let mut blended = fast.clone();
-            blended.set_moments(&mean, &c, w_new, q);
-            blended.set_prior_scale(prior);
+            blended.set_moments(&mean, &c, wf, fast.q_sum());
             self.grams[g] = blended;
         }
         moved
@@ -803,31 +798,26 @@ impl Acc {
         Some((w, wj))
     }
 
-    /// Mix toward a twin's accumulators, `(1 − f)` of this side's weight to
-    /// `f` of the twin's, each weighted mean by its own weights: the Grams
-    /// by theirs ([`Grams::blend`]), each target's moments by its own, and
-    /// the cross-moments by both ([`Cross::blend`]). Returns whether anything
-    /// had weight to mix.
+    /// Mix toward a twin's accumulators as a mixture of the two data sets,
+    /// `1 − f` of this side's and `f` of the twin's: the Grams
+    /// ([`Grams::blend`]), each target's moments and the cross-moments
+    /// ([`Cross::blend`]), every weight kept, so `n_eff`, each target's
+    /// weight and the Kish sums are this side's across the blend
+    /// (docs/PLAN.md task 145). Returns whether anything was mixed.
     pub(crate) fn blend(&mut self, other: &Acc, f: f64) -> bool {
         let mut moved = self.grams.blend(&other.grams, f);
         let mut per = vec![None; self.wj.len()];
         for (j, p) in per.iter_mut().enumerate() {
-            let (wf, ws) = (self.wj[j], other.wj[j]);
-            let w_new = (1.0 - f) * wf + f * ws;
-            if w_new > 0.0 {
+            if self.wj[j] > 0.0 && other.wj[j] > 0.0 {
                 moved = true;
-                let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-                *p = Some((af, as_));
-                self.wj[j] = w_new;
-                self.tm.blend(&other.tm, j, af, as_);
+                *p = Some((1.0 - f, f));
+                self.tm.blend(&other.tm, j, 1.0 - f, f);
             }
         }
-        let (wf, ws) = (self.cross.w, other.cross.w);
-        let w_new = (1.0 - f) * wf + f * ws;
-        if w_new > 0.0 {
+        let w = self.cross.w;
+        if w > 0.0 && other.cross.w > 0.0 {
             moved = true;
-            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-            self.cross.blend(&other.cross, af, as_, w_new, &per);
+            self.cross.blend(&other.cross, 1.0 - f, f, w, &per);
         }
         moved
     }

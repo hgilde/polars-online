@@ -95,19 +95,22 @@ pub struct EwRidgeCfg {
     /// (ENHANCEMENTS E6, PLAN §12 open question 1).
     ///
     /// A second accumulator runs alongside the main one with `long_halflife`,
-    /// representing the long-run relationship. On a session boundary the two
-    /// are mixed, weight-respectingly, with the slow one taking share
-    /// `session_shrink`:
+    /// representing the long-run relationship. On a session boundary the main
+    /// accumulators' moments become a mixture of the two data sets, `1 − f` of
+    /// today's and `f` of the long run's, with `f = session_shrink`:
     ///
     /// ```text
-    /// W'  = (1−f)·W_fast + f·W_slow
-    /// S'  = ((1−f)·W_fast·S_fast + f·W_slow·S_slow) / W'
+    /// m' = (1−f)·m_fast + f·m_slow
+    /// C' = (1−f)·C_fast + f·C_slow + f·(1−f)·(m_fast − m_slow)(m_fast − m_slow)ᵀ
     /// ```
     ///
-    /// so `0` keeps today's fit, `1` reverts fully to the long run, and
-    /// anything between says "overnight, drift partway back". Unlike
-    /// `session_gap` this changes *what the model believes*, not merely how
-    /// confident it is.
+    /// for the means and the centred moments, the cross-moments with the
+    /// targets alike. The weight, the Kish sums and the `ridge_decay` prior
+    /// scale stay today's, so `n_eff`, the warm-up gates and the solve
+    /// schedule do not move: `0` keeps today's fit, `1` takes the long run's
+    /// moments at today's weight, and `f` between fits on that share of the
+    /// long run (docs/PLAN.md task 145). Unlike `session_gap` this changes
+    /// *what the model believes*, not how confident it is.
     #[serde(default)]
     pub session_shrink: Option<f64>,
     /// Halflife of the slow twin. Required by `session_shrink`.
@@ -2040,6 +2043,74 @@ mod tests {
         );
     }
 
+    /// Task 145: `session_shrink = f` fits on `1 − f` of today's rows and `f`
+    /// of the long run's, at today's weight. Worked from the rows alone: each
+    /// accumulator weighs a row by `λ^age`; the two kernels, each normalised,
+    /// mix `(1 − f, f)`; and the ridge solve on those weighted moments is
+    /// `faer`'s, sharing nothing with the blend or the model's Cholesky. The
+    /// weight is today's across the blend, bit for bit.
+    #[test]
+    fn a_blend_fits_a_share_of_the_long_run() {
+        let (h_fast, h_slow, n, ridge) = (40.0, 400.0, 600usize, 1e-3);
+        for f in [0.25, 0.5, 1.0] {
+            let mut c = cfg(2, 1);
+            c.decay = Decay::Halflife(h_fast);
+            c.ridge = vec![ridge];
+            c.session_shrink = Some(f);
+            c.long_halflife = Some(h_slow);
+            c.min_periods = 0.0;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 11u64;
+            let mut rows = Vec::with_capacity(n);
+            for i in 0..n {
+                let x = [lcg(&mut s), lcg(&mut s) + 3.0];
+                let slope = if i < n / 2 { 1.0 } else { -1.0 };
+                let y = 0.5 + slope * x[0] - x[1] + 0.1 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                rows.push((x, y));
+            }
+            let weight = m.n_eff();
+            m.blend_toward_long_run();
+            assert_eq!(
+                m.n_eff().to_bits(),
+                weight.to_bits(),
+                "f = {f}: the weight moved"
+            );
+
+            let kernel = |h: f64| -> Vec<f64> {
+                (0..n)
+                    .map(|i| 0.5f64.powf((n - 1 - i) as f64 / h))
+                    .collect()
+            };
+            let (kf, ks) = (kernel(h_fast), kernel(h_slow));
+            let (sf, ss): (f64, f64) = (kf.iter().sum(), ks.iter().sum());
+            let a: Vec<f64> = (0..n)
+                .map(|i| (1.0 - f) * kf[i] / sf + f * ks[i] / ss)
+                .collect();
+            let mean = |g: &dyn Fn(usize) -> f64| (0..n).map(|i| a[i] * g(i)).sum::<f64>();
+            let mx = [mean(&|i| rows[i].0[0]), mean(&|i| rows[i].0[1])];
+            let my = mean(&|i| rows[i].1);
+            let cov =
+                |p: usize, q: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].0[q] - mx[q]));
+            let cxy = |p: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].1 - my));
+            let b = oracle_solve(
+                &[
+                    vec![cov(0, 0) + ridge, cov(0, 1)],
+                    vec![cov(1, 0), cov(1, 1) + ridge],
+                ],
+                &[cxy(0), cxy(1)],
+            );
+            let want = [my - mx[0] * b[0] - mx[1] * b[1], b[0], b[1]];
+            let got = &m.coefficients().unwrap()[0];
+            for (g, w) in got.iter().zip(want) {
+                assert!(
+                    (g - w).abs() <= 1e-9 * (1.0 + w.abs()),
+                    "f = {f}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
+
     /// E45: the target moments must survive a blend as a mixture, not go
     /// stale, and `f = 0` (or a twin identical to the model) must leave them
     /// exactly where they were -- the invariant the means, co-moments and
@@ -2637,15 +2708,17 @@ mod tests {
 
     /// Under `ridge_decay` the penalty is a pseudo-observation of the
     /// history, `prior_scale · ridge · I` on the sum scale, and it decays
-    /// with the history; a blend mixes the history, so it mixes the prior
-    /// by the same coefficients as the moments -- `(1 − f)` of the fast
-    /// side's and `f` of the twin's. The blend rebuilt the Gram from
-    /// `EwCov::new`, which put the prior back at full strength on every
-    /// session boundary (review 2026-09-12, C6). At `f = 1` the blend is the
-    /// twin, fit included: the fit RLS gives at the twin's halflife.
+    /// with the history. A blend keeps today's weight `W`, so it keeps
+    /// today's prior with it: the penalty stays the same share of the data
+    /// (task 145). The blend rebuilt the Gram from `EwCov::new`, which put
+    /// the prior back at full strength on every session boundary (review
+    /// 2026-09-12, C6). At `f = 1` the fit is the twin's moments at today's
+    /// weight and prior, worked from the rows: `(W S_H + ps · ridge I) β =
+    /// W r_H`, `S_H` and `r_H` the rows' raw moments under the twin's kernel,
+    /// solved by `faer`.
     #[test]
-    fn a_blend_mixes_the_decaying_prior_as_it_mixes_the_moments() {
-        let (hl, long, ridge) = (20.0, 400.0, 5.0);
+    fn a_blend_keeps_the_decaying_prior_with_the_weight() {
+        let (hl, long, ridge, n) = (20.0, 400.0, 5.0, 250usize);
         let build = |f: f64| {
             let mut c = cfg(2, 1);
             c.ridge = vec![ridge];
@@ -2656,46 +2729,57 @@ mod tests {
             c.min_periods = 0.0;
             EwRidge::new(c).unwrap()
         };
-        let mut rls = crate::Rls::new(crate::RlsCfg {
-            n_features: 2,
-            n_targets: 1,
-            add_intercept: true,
-            decay: Decay::Halflife(long),
-            ridge,
-            coef_prior: None,
-            min_periods: 0.0,
-        })
-        .unwrap();
         let (mut part, mut full) = (build(0.3), build(1.0));
         let mut s = 31u64;
-        for i in 0..250 {
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
             let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
             let y = 1.0 + 2.0 * x[0] - x[1] + 0.1 * lcg(&mut s);
             let d = if i == 0 { 0.0 } else { 1.0 };
             part.step(&x, &[Some(y)], d, 1.0);
             full.step(&x, &[Some(y)], d, 1.0);
-            rls.step(&x, &[Some(y)], d, 1.0);
+            rows.push(([1.0, x[0], x[1]], y));
         }
         let fast = part.gram(0).prior_scale();
         let slow = part.slow.as_ref().unwrap().grams.grams[0].prior_scale();
         assert!(fast < 1e-3 && slow > 0.5, "fast {fast}, slow {slow}");
         part.blend_toward_long_run();
-        let want = (1.0 - 0.3) * fast + 0.3 * slow;
-        assert!(
-            (part.gram(0).prior_scale() - want).abs() <= 1e-15 * want,
-            "prior_scale {} after the blend, the mixture {want}",
+        assert_eq!(
+            part.gram(0).prior_scale().to_bits(),
+            fast.to_bits(),
+            "prior_scale {} after the blend, today's {fast}",
             part.gram(0).prior_scale()
         );
 
+        let (w, ps) = (full.gram(0).n_eff(), full.gram(0).prior_scale());
         full.blend_toward_long_run();
+        assert_eq!(full.gram(0).prior_scale().to_bits(), ps.to_bits());
+        let ks: Vec<f64> = (0..n)
+            .map(|i| 0.5f64.powf((n - 1 - i) as f64 / long))
+            .collect();
+        let total: f64 = ks.iter().sum();
+        let raw = |g: &dyn Fn(usize) -> f64| (0..n).map(|i| ks[i] * g(i)).sum::<f64>() / total;
+        let a: Vec<Vec<f64>> = (0..3)
+            .map(|p| {
+                (0..3)
+                    .map(|q| {
+                        w * raw(&|i| rows[i].0[p] * rows[i].0[q])
+                            + if p == q { ps * ridge } else { 0.0 }
+                    })
+                    .collect()
+            })
+            .collect();
+        let b: Vec<f64> = (0..3)
+            .map(|p| w * raw(&|i| rows[i].0[p] * rows[i].1))
+            .collect();
+        let want = oracle_solve(&a, &b);
         let got = full.coefficients().unwrap()[0].clone();
-        let wanted = rls.coefficients()[0].clone();
         for i in 0..3 {
             assert!(
-                (got[i] - wanted[i]).abs() < 1e-9,
-                "coef {i}: {} after a full blend, {} from RLS at the twin's halflife",
+                (got[i] - want[i]).abs() <= 1e-9 * (1.0 + want[i].abs()),
+                "coef {i}: {} after a full blend, {} from the rows",
                 got[i],
-                wanted[i]
+                want[i]
             );
         }
     }
@@ -2928,20 +3012,21 @@ mod tests {
     }
 
     #[test]
-    fn blend_is_the_weight_respecting_mixture() {
+    fn blend_is_the_data_share_mixture() {
         // Every arithmetic step of `blend_toward_long_run` is checked against
         // the same quantities recomputed by hand from the pre-blend state, so
         // a factor applied to the wrong side, a missing re-centering, or a
         // swapped index all show up. At the origin and at 1e8: the oracle is
         // the centred mixture, which a level costs nothing, where it was the
         // raw one re-centred, which at 1e8 has no digits left to compare
-        // (review 2026-09-12, C16; docs/PLAN.md task 112).
+        // (review 2026-09-12, C16; docs/PLAN.md task 112). The shares are
+        // `(1 − f, f)` of the data and the weight is today's (task 145).
         for level in [0.0, 1e8] {
-            blend_is_the_weight_respecting_mixture_at(level);
+            blend_is_the_data_share_mixture_at(level);
         }
     }
 
-    fn blend_is_the_weight_respecting_mixture_at(level: f64) {
+    fn blend_is_the_data_share_mixture_at(level: f64) {
         // The rounding the means' difference carries at the level: the one
         // input the mixture takes from level-sized numbers.
         let tol = 1e-10 + 64.0 * f64::EPSILON * level;
@@ -2953,12 +3038,15 @@ mod tests {
 
         let (wf, ws) = (before.gram(0).n_eff(), slow.grams.grams[0].n_eff());
         assert!(wf > 0.0 && ws > wf, "the slow twin should hold more weight");
-        let w_new = (1.0 - f) * wf + f * ws;
-        let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+        let (af, as_) = (1.0 - f, f);
 
         m.blend_toward_long_run();
 
-        assert!((m.gram(0).n_eff() - w_new).abs() < 1e-12);
+        assert_eq!(
+            m.gram(0).n_eff().to_bits(),
+            wf.to_bits(),
+            "the weight is today's"
+        );
         let (fast, twin) = (before.gram(0), &slow.grams.grams[0]);
         for i in 0..k {
             let want = af * fast.mean(i) + as_ * twin.mean(i);
@@ -2985,10 +3073,7 @@ mod tests {
         // The raw cross-moments mix linearly, whatever split the centred ones
         // were mixed in; at a level they are level-sized, so held relatively.
         for (j, got) in m.cross_moments().iter().enumerate() {
-            let (wf, ws) = (before.acc.wj[j], slow.wj[j]);
-            let w_new = (1.0 - f) * wf + f * ws;
-            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-            assert!((m.acc.wj[j] - w_new).abs() < 1e-12);
+            assert_eq!(m.acc.wj[j].to_bits(), before.acc.wj[j].to_bits());
             let (fast_r, slow_r) = (before.acc.cross.raw(j), slow.cross.raw(j));
             for i in 0..k {
                 let want = af * fast_r[i] + as_ * slow_r[i];
@@ -3002,25 +3087,36 @@ mod tests {
 
     #[test]
     fn blend_endpoints_are_identity_and_full_replacement() {
-        // f = 0 must not touch the state; f = 1 must land exactly on the twin.
+        // f = 0 must not touch the state; f = 1 must land exactly on the
+        // twin's moments, at today's weight (task 145).
         let mut zero = blended_pair(0.0);
         let before = zero.clone();
         zero.blend_toward_long_run();
         assert_eq!(zero, before, "session_shrink = 0 must be a no-op");
 
         let mut one = blended_pair(1.0);
+        let before = one.clone();
         let slow = one.slow.clone().unwrap();
         one.blend_toward_long_run();
         let k = one.cfg.k_total();
-        assert!((one.gram(0).n_eff() - slow.grams.grams[0].n_eff()).abs() < 1e-12);
+        assert_eq!(
+            one.gram(0).n_eff().to_bits(),
+            before.gram(0).n_eff().to_bits()
+        );
         for i in 0..k {
             assert!(
                 (one.gram(0).mean(i) - slow.grams.grams[0].mean(i)).abs() < 1e-12,
                 "mean {i}"
             );
+            for j in 0..k {
+                assert!(
+                    (one.gram(0).cov(i, j) - slow.grams.grams[0].cov(i, j)).abs() < 1e-12,
+                    "cov {i},{j}"
+                );
+            }
         }
         for (j, got) in one.cross_moments().iter().enumerate() {
-            assert!((one.acc.wj[j] - slow.wj[j]).abs() < 1e-12);
+            assert_eq!(one.acc.wj[j].to_bits(), before.acc.wj[j].to_bits());
             let want = slow.cross.raw(j);
             for i in 0..k {
                 assert!((got[i] - want[i]).abs() < 1e-12, "r[{j}][{i}]");

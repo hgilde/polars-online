@@ -329,6 +329,19 @@ def lasso_paths_ref(
     }
 
 
+def _share(kf: np.ndarray, ks: np.ndarray, rows: np.ndarray, f: float) -> np.ndarray:
+    """A ``session_shrink`` blend of one accumulator over ``rows``: ``1 - f`` of
+    today's kernel ``kf`` and ``f`` of the twin's ``ks``, each normalised by
+    its weight there, at today's weight (docs/PLAN.md task 145). Either side
+    with no weight there leaves it as it is, as the model's blend does."""
+    wf, ws = float(kf[rows].sum()), float(ks[rows].sum())
+    if not (wf > 0.0 and ws > 0.0):
+        return kf
+    out = kf.copy()
+    out[rows] = wf * ((1.0 - f) * kf[rows] / wf + f * ks[rows] / ws)
+    return out
+
+
 def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept):
     """One ridge problem, from the Gram's rows ``xg`` at ``omg`` and the
     target's own rows ``xo``, ``yo`` at ``omo`` (the ``ewridge`` docstring).
@@ -411,13 +424,18 @@ def ewridge_paths_ref(
     Every past row of the current state enters a solve at its **effective
     weight**: ``w * 0.5 ** (age / halflife)``, with the age on the capped
     clock, inside the window under one. A ``session_shrink`` blend at ``f``
-    replaces each row's weight by ``(1 - f)`` of it plus ``f`` of its weight
-    in the slow twin at ``long_halflife``, as the rows stand before the first
-    row of the new session; the mean-form sums are linear in these weights,
-    so the blend is exact on them (``tests/test_second_opinion.py``
-    ``TestSessionShrinkBlend`` pins that reading). The new session's first
-    row is then scored from the blend, re-solved, and every row ages from
-    there at ``halflife``. ``session_gap="reset"`` starts the state over.
+    fits on ``1 - f`` of today's rows and ``f`` of the long run's, at today's
+    weight (docs/PLAN.md task 145): each row's weight becomes ``W_h · ((1 -
+    f) ω_h / W_h + f ω_H / W_H)``, ``ω_h`` its weight here, ``ω_H`` its
+    weight in the slow twin at ``long_halflife``, and ``W`` each side's total,
+    as the rows stand before the first row of the new session. The Gram
+    normalises over every row, and each target over its own rows, so a row
+    keeps one weight per target beside the Gram's; the mean-form sums are
+    linear in these weights, so the blend is exact on them
+    (``tests/test_second_opinion.py`` ``TestSessionShrinkBlend`` pins that
+    reading). The new session's first row is then scored from the blend,
+    re-solved, and every row ages from there at ``halflife``.
+    ``session_gap="reset"`` starts the state over.
 
     **Scoring.** Target ``j`` is scored with the last solve once its own
     weight (the rows it is present on) reaches its ``min_periods``, scalar or
@@ -473,18 +491,20 @@ def ewridge_paths_ref(
 
     def solve() -> np.ndarray:
         wa, xa, ya, ta = np.asarray(fast), np.asarray(Xr), np.asarray(Yr), np.asarray(T)
+        wt = np.asarray(fast_t)
         inside = (t_last - ta) <= horizon
         fit = np.full((m, len(combos), kt), np.nan)
         for j in range(m):
             own = inside & ~np.isnan(ya[:, j])
             gram = own if target_gaps == "own_rows" else inside
+            wg = wt[:, j] if target_gaps == "own_rows" else wa
             for c, (cols, r) in enumerate(combos):
                 got = _ridge_fit(
                     xa[gram][:, cols],
-                    wa[gram],
+                    wg[gram],
                     xa[own][:, cols],
                     ya[own, j],
-                    wa[own],
+                    wt[own, j],
                     r,
                     standardize,
                     add_intercept,
@@ -501,6 +521,9 @@ def ewridge_paths_ref(
         return [], [], [], [], [], None, 0.0, 0
 
     fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
+    # Each row's weight in each target's own accumulator: the Gram's, until a
+    # blend normalises each over its own rows.
+    fast_t: list[np.ndarray] = []
 
     since_w = 0.0
     t_last, pending, prev_session, started = 0.0, 0.0, None, False
@@ -512,6 +535,7 @@ def ewridge_paths_ref(
         prev_session = None if session is None else session[i]
         if changed and session_gap == "reset":
             fast, slow, T, Xr, Yr, fit, since_clock, since_rows = restart()
+            fast_t = []
             since_w = 0.0
             d = 0.0
         elif changed and session_gap is not None:
@@ -521,9 +545,14 @@ def ewridge_paths_ref(
         pending = 0.0
         started = True
         if changed and blend and fast:
-            fast = list(
-                (1.0 - session_shrink) * np.asarray(fast) + session_shrink * np.asarray(slow)
-            )
+            ks = np.asarray(slow)
+            every = np.ones(len(ks), dtype=bool)
+            fast = list(_share(np.asarray(fast), ks, every, session_shrink))
+            wt = np.asarray(fast_t)
+            present = ~np.isnan(np.asarray(Yr))
+            for j in range(m):
+                wt[:, j] = _share(wt[:, j], ks, present[:, j], session_shrink)
+            fast_t = list(wt)
             fit = solve()
             since_clock, since_rows, since_w = 0.0, 0, 0.0
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
@@ -533,7 +562,8 @@ def ewridge_paths_ref(
             inside = (t_last - np.asarray(T)) <= horizon
             om = np.where(inside, np.asarray(fast), 0.0)
             n_eff[i] = om.sum()
-            w_target = om @ ~np.isnan(np.asarray(Yr))
+            wt = np.where(inside[:, None], np.asarray(fast_t), 0.0)
+            w_target = (wt * ~np.isnan(np.asarray(Yr))).sum(axis=0)
         else:
             n_eff[i], w_target = 0.0, np.zeros(m)
         for j in range(m):
@@ -545,6 +575,7 @@ def ewridge_paths_ref(
         # ---- learn: age every row by this row's step, then take it ----
         lam = factor(d, halflife)
         fast = [v * lam for v in fast] + [float(w[i])]
+        fast_t = [v * lam for v in fast_t] + [np.full(m, float(w[i]))]
         if blend:
             lam_s = factor(d, long_halflife)
             slow = [v * lam_s for v in slow] + [float(w[i])]

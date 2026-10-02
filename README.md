@@ -271,8 +271,8 @@ timed = po.spec.ewridge(
 )
 # halflife=inf turns forgetting off. A list of halflives fits one model per value.
 # The cap also bounds the step a run of skipped rows hands the row after them, however long the run.
-# ewridge only: session_shrink= and long_halflife= pull the fit partway back, at a session
-# boundary, toward a twin that forgets more slowly.
+# ewridge only: session_shrink=f and long_halflife= refit, at a session boundary, on a share f
+# of a twin that forgets more slowly, the rest today's, at today's confidence.
 
 counted = po.spec.ewridge(
     "counted", targets=["y"], features=["x0", "x1"],

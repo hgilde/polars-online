@@ -39,9 +39,11 @@ MAX_DCLOCK = 6.0
 # intercept, 3.7-5.0; own_rows and pairwise swapped, 0.22-3.4; each feature
 # set solved on every feature, 1.0-1.3; the window's boundary strict (`<`),
 # 0.28; the blend after the row's own decay, 6.4e-4 to 2.8e-3 (n_eff
-# 6.8e-3 to 2.7e-2), or at 1 - f, 3.3e-2 to 4.3e-2; a solve after every row
-# in place of the schedule, 6.4e-2 to 0.38. So do the in-sample and row-late
-# probes below.
+# 6.8e-3 to 2.7e-2), or at 1 - f, 3.3e-2 to 4.3e-2; the blend mixing the
+# weights, as before task 145, 3.5e-2 to 8.4e-2; each target's rows
+# normalised by the Gram's weight in place of their own, 5.0e-4 to 9.1e-4; a
+# solve after every row in place of the schedule, 6.4e-2 to 0.38. So do the
+# in-sample and row-late probes below.
 PRED_TOL = 1e-11
 COEF_TOL = 1e-11
 
@@ -279,12 +281,14 @@ class TestSessions:
         [
             (0.3, 200.0, {"solve_every": 1e-9}),
             (0.7, float("inf"), {"standardize": True, "max_rows_between_solves": 3}),
+            (0.5, 300.0, {"target_gaps": "own_rows"}),
         ],
     )
     def test_a_blend_with_the_slow_twin(self, shrink, long_halflife, schedule):
-        """``session_shrink``: every row's weight becomes ``(1 - f)`` of its
-        own plus ``f`` of its weight in the twin, the new session's first row
-        is scored from the blend, and the rows age from there."""
+        """``session_shrink``: the fit takes ``1 - f`` of today's rows and
+        ``f`` of the twin's, each normalised by its weight, at today's weight
+        (task 145); the new session's first row is scored from the blend, and
+        the rows age from there."""
         _check(
             _session_stream(44),
             40.0,

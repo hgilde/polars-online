@@ -636,19 +636,22 @@ def ewridge(
     ``session_shrink``, ``long_halflife``
         A middle way between a session's decay and a full reset. A second
         accumulator follows the long-run relationship at ``long_halflife``
-        (``inf``: the whole history), and on a session boundary the two are mixed
-        by weight:
+        (``inf``: the whole history), and on a session boundary the fit's moments
+        become a mixture of the two data sets, ``1 - f`` of today's and ``f`` of
+        the long run's:
 
         .. code-block:: text
 
-            W' = (1 - f) * W_fast + f * W_slow
-            S' = ((1 - f) * W_fast * S_fast + f * W_slow * S_slow) / W'
+            m' = (1 - f) * m_fast + f * m_slow
+            C' = (1 - f) * C_fast + f * C_slow + f * (1 - f) * (m_fast - m_slow)(m_fast - m_slow)'
 
-        so ``0`` keeps today's fit, ``1`` reverts to the long run, and anything
-        between drifts partway back overnight. Unlike ``session_gap`` this changes
-        what the model believes, not just how confident it is. With
-        ``ridge_decay`` the prior's scale mixes the same way, so ``session_shrink
-        = 1`` lands exactly on the twin's fit.
+        for the means and the centred moments. The weight stays today's, so
+        ``n_eff``, the warm-up gates and the solve schedule do not move: ``0``
+        keeps today's fit, ``1`` takes the long run's moments at today's weight,
+        and ``f`` between fits on that share of the long run. Unlike
+        ``session_gap`` this changes what the model believes, not how confident
+        it is. With ``ridge_decay`` the prior keeps today's scale too, so at
+        ``1`` the fit is the twin's moments under today's prior.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule: every ``solve_every`` clock units, and at least every
         ``max_rows_between_solves`` rows. Left out, the schedule is by weight: a

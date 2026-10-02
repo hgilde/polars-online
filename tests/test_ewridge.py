@@ -279,6 +279,50 @@ class TestSessionShrink:
         vals = [after[f] for f in (0.0, 0.3, 0.6, 0.9)]
         assert vals == sorted(vals), f"more shrink should mean more reversion: {after}"
 
+    def test_the_share_is_of_the_data(self):
+        """Task 145: at ``f`` the slope moves about ``f`` of the way to the long
+        run's fit -- exactly, if both had the same feature moments; here the
+        features are drawn alike in both regimes."""
+        i = self.N1 + self.N2
+        today = self._coefs(session_shrink=0.0, long_halflife=1e5)[i][1]
+        long_run = self._coefs(session_shrink=1.0, long_halflife=1e5)[i][1]
+        assert today < -0.5 < 0.5 < long_run
+        for f in (0.25, 0.5):
+            after = self._coefs(session_shrink=f, long_halflife=1e5)[i][1]
+            assert after == pytest.approx((1 - f) * today + f * long_run, abs=0.05), f
+
+    def test_the_blend_keeps_the_weight_and_the_solve_schedule(self):
+        """Task 145: ``n_eff`` and the Kish size are the same with and without
+        the blend, and the next solve after the open comes when it would
+        without it: under a weight-mixed blend the slow twin's weight made
+        both jump and the schedule wait (32 rows against 3, measured)."""
+        df = self._df()
+        out = {}
+        for f in (0.0, 0.25):
+            spec = po.spec.ewridge(
+                "m",
+                targets=["y0"],
+                features=["x0"],
+                halflife=50.0,
+                clock="t",
+                max_dclock=5.0,
+                session="s",
+                session_gap=0.0,
+                min_periods=0.0,
+                coef_every=1,
+                session_shrink=f,
+                long_halflife=1e5,
+            )
+            bank = po.ModelBank([spec])
+            res = bank.fit_predict(df).unnest("m")
+            coef = np.array(res["coef"].to_list(), dtype=float)[:, 1]
+            open_ = self.N1 + self.N2
+            changes = np.flatnonzero(np.diff(coef[open_:]) != 0)
+            out[f] = (res["n_eff"].to_numpy(), int(changes[0]), bank.gram("m")[0]["n_kish"])
+        np.testing.assert_array_equal(out[0.25][0], out[0.0][0])
+        assert out[0.25][1] == out[0.0][1]
+        assert out[0.25][2] == out[0.0][2]
+
     def test_absent_by_default(self):
         jump, typical = self._jump()
         assert jump < 10 * typical, "no shrink configured should mean no jump"
