@@ -173,3 +173,36 @@ def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
     assert kept.height == 3
     with pytest.raises(ValueError, match="nanoseconds cannot hold"):
         bank.fit_predict(kept)
+
+
+def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
+    """The command line has no `skip_learned`, so the refusal names what it
+    can do instead: filter its input to the rows after the state. The
+    message named the Python method alone until task 154."""
+    from conftest import run_online
+
+    df = frame()
+    df.head(250).write_parquet(tmp_path / "first.parquet")
+    df.slice(150).write_parquet(tmp_path / "rerun.parquet")
+    specs = [spec(group="g")]
+    state = tmp_path / "bank.state"
+    run_online(
+        online_cli,
+        tmp_path,
+        specs,
+        input=tmp_path / "first.parquet",
+        output=tmp_path / "first-out.parquet",
+        save_state=state,
+    )
+    res = run_online(
+        online_cli,
+        tmp_path,
+        specs,
+        input=tmp_path / "rerun.parquet",
+        output=tmp_path / "rerun-out.parquet",
+        args=["--resume", str(state)],
+        check=False,
+    )
+    assert res.returncode != 0 and "goes backwards" in res.stderr, res.stderr
+    assert "skip_learned" in res.stderr
+    assert "filtering the command line's input" in res.stderr, res.stderr

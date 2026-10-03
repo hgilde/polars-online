@@ -336,19 +336,20 @@ def test_a_categorical_key_closes_bytewise():
     assert bank.closed_groups()["group"].to_list() == ["a", "b"]
 
 
-def test_a_categorical_key_in_physical_order_is_refused_naming_the_sort():
-    """Bytewise is the order for anything but an integer column, and a
-    ``Categorical`` sorts by its *physical* order by default -- the order the
-    categories were first seen -- so a frame sorted by such a column can be
-    out of order for the bank. The refusal says so
-    (docs/REVIEW-E54-E64.md G2)."""
+def test_a_categorical_key_out_of_order_is_refused_and_a_sort_fixes_it():
+    """Bytewise is the order for anything but an integer column. A
+    ``Categorical`` once sorted by its *physical* order, the order its
+    categories were first seen, so the refusal told the reader to cast it to
+    String before sorting (docs/REVIEW-E54-E64.md G2). Polars sorts it as
+    text from 1.34.0 on, the floor, so the refusal names the sort alone and
+    sorting the Categorical column is enough (task 154)."""
     df = frame(["c", "a", "b"]).with_columns(pl.col("g").cast(pl.Categorical))
-    # Physically sorted (c, a, b is the order they appear) and lexically not.
     bank = po.ModelBank([cov_spec(group_close="monotone")])
-    with pytest.raises(ValueError, match="Categorical column sorts by its physical order"):
+    with pytest.raises(ValueError, match="sort the input by") as e:
         bank.fit_predict(df)
-    # Cast to String and sort by that, and it goes through.
-    fixed = df.with_columns(pl.col("g").cast(pl.String)).sort("g", maintain_order=True)
+    assert "Categorical" not in str(e.value)
+    fixed = df.sort("g", maintain_order=True)
+    assert fixed.schema["g"] == pl.Categorical
     po.ModelBank([cov_spec(group_close="monotone")]).fit_predict(fixed)
 
 

@@ -5,12 +5,13 @@ check that fails when one is skipped -- the compiler for the Rust match arms,
 the API snapshot for the Python surface -- but the per-model sweeps in this
 directory are plain lists, and a model left out of a list is simply never
 swept. The registry is ``ModelKind::KINDS`` on the Rust side (held to the
-enum by a unit test); these tests hold the builders, the sweeps and the README
-to it.
+enum by a unit test); these tests hold the builders, the sweeps, the README,
+the release comparison's workload and ``_spec.UNSUPERVISED`` to it.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import typing
 from pathlib import Path
@@ -272,3 +273,34 @@ def test_the_readme_documents_every_model():
     # `huber` and `quantile` share a heading: "#### `huber` / `quantile` -- ...".
     documented |= set(re.findall(r"^#### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
     assert documented == set(MINIMAL)
+
+
+def test_the_release_workload_builds_every_model():
+    """`scripts/release_probe.py`'s `WORKLOAD` is what `compare_release.py`
+    holds a build to, bit for bit, and what the released-state and
+    weight-scale checks run. A builder missing from it is compared by none
+    of them, and until task 154 nothing said so."""
+    spec = importlib.util.spec_from_file_location(
+        "release_probe", ROOT / "scripts" / "release_probe.py"
+    )
+    assert spec and spec.loader
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    assert {builder for _, builder, _, _ in probe.WORKLOAD} == _builders()
+
+
+def test_unsupervised_is_the_models_the_bank_fills_a_target_for():
+    """`_spec.UNSUPERVISED` names the models with no target column. The
+    Rust side's list is `ModelKind::is_unsupervised`, which Python cannot
+    call; what it does can be seen, though: a spec of such a model given no
+    `targets` is filled from `features[0]` (E53), and any other is refused.
+    The two lists were kept in step by a comment alone until task 154."""
+    filled = set()
+    for name in MINIMAL:
+        spec = dict(_build(name), targets=[])
+        try:
+            po.ModelBank([spec])
+        except ValueError:
+            continue
+        filled.add(name)
+    assert filled == _spec.UNSUPERVISED

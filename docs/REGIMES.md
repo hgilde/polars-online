@@ -26,7 +26,7 @@ sequential detector on 2026-09-28 (task 114).
 | [2. Is the monitor the size its paper says?](#2-is-the-monitor-the-size-its-paper-says) | how often the test rejects when nothing changed | `corrchange`, `kind="monitor"` |
 | [3. And is it the power its paper says?](#3-and-is-it-the-power-its-paper-says) | how often it rejects a real break | `corrchange`, `kind="monitor"` |
 | [4. Where the heavy tails go: `D-hat`](#4-where-the-heavy-tails-go-d-hat) | how well the statistic's denominator is estimated | `corrchange`, `kind="monitor"` |
-| [5. Two changepoint detectors on the same break](#5-two-changepoint-detectors-on-the-same-break) | false alarms on a quiet stream, and the delay to a real break | `corrchange(window)`, `bocpd` |
+| [5. Two changepoint detectors on the same break](#5-two-changepoint-detectors-on-the-same-break) | false alarms on a quiet stream, and the delay to a real break | `corrchange(kind="window")`, `bocpd` |
 | [6. The Epps effect, and the two ways out](#6-the-epps-effect-and-the-two-ways-out) | what asynchrony does to a correlation, and what recovers it | `po.stream.refresh_time`, `ew_cov(lags=...)` |
 | [7. `deco`: an equicorrelation that moves](#7-deco-an-equicorrelation-that-moves) | where `rho` settles, and how fast it follows a switch | `deco` |
 | [8. `rcov`: three estimators against each block's truth](#8-rcov-three-estimators-against-each-blocks-truth) | each estimator's error under noise and asynchrony | `rcov` |
@@ -82,13 +82,13 @@ even so ([§4](#4-where-the-heavy-tails-go-d-hat)).
 and Galeano tabulate the rate at which a monitoring period ends in a flag
 when nothing changes, on GARCH pairs. Over about 1000 cycles a cell, on
 their design, the detector here is within 0.023 of their Table 2 at
-`boundary_gamma` of 0 and 0.25 and within 0.030 at 0.45, under two
-standard errors of the difference in every cell. At 0.45 both read 0.12
+`boundary_gamma` of 0 and 0.25, and within 0.030 at 0.45. That is under
+two standard errors of the difference in every cell. At 0.45 both read 0.12
 to 0.18 against a nominal 0.05, as the paper warns
 ([§9](#9-the-sequential-detector-against-its-paper)).
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
-the same streams, `corrchange(window)` finds a correlation break in a
+the same streams, `corrchange(kind="window")` finds a correlation break in a
 median of 29 rows and flags 51 rows per 1000 quiet ones. `bocpd` takes 98
 rows and raises 0.68 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
@@ -96,8 +96,8 @@ different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
 and both remedies recover most of it.** A true correlation of 0.8 reads as
 0.095 from one-row returns. Refresh-time sampling recovers 0.54 from 19157
-returns, 16 % of the 119991 at the finest interval. The lag inversion on
-`ew_cov(lags=...)` recovers 0.77 while reading every return, and levels
+returns, 16 % of the 119991 at the finest interval. The lag inversion of
+§6, on `ew_cov(lags=...)`, recovers 0.77 while reading every return, and levels
 off there over lags from 192 to 512 rows
 ([§6](#6-the-epps-effect-and-the-two-ways-out)).
 
@@ -365,8 +365,8 @@ standard deviation falls from 0.111 to 0.072.
 The size in §2 and the power in §3 are close to WKD's tables even so.
 
 > **Measured 2026-09-27, before task 114's kernel.** In the table's row
-> order, as mean, median and sd: normal read 0.739, 0.742 and 0.060, then
-> 0.749, 0.751 and 0.033; the shared-scale t5 1.071, 1.020 and 0.257, then
+> order, as mean, median and sd, normal read 0.739, 0.742 and 0.060, then
+> 0.749, 0.751 and 0.033. The shared-scale t5 read 1.071, 1.020 and 0.257, then
 > 1.184, 1.097 and 0.353; the independent t5 0.811, 0.796 and 0.113, then
 > 0.828, 0.815 and 0.073.
 >
@@ -389,7 +389,7 @@ number of rows from row 1000 to the first alarm at or after it.
 
 | detector | settings | what counts as its alarm |
 |---|---|---|
-| `corrchange(window)` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
+| `corrchange(kind="window")` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
 | `bocpd` | `emission="gaussian"`, `hazard=500`, `prior_nu=5`, `prior_scale=[0.1]`, `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
 
 **`bocpd` is measured with `emission="gaussian"`, not its default
@@ -399,11 +399,11 @@ section](../README.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
-| corrchange(window) | 51.33                          | 20/20           | 29           | 53          |
+| corrchange, `kind="window"` | 51.33                          | 20/20           | 29           | 53          |
 | bocpd              | 0.68                           | 20/20           | 98           | 351         |
 
 **The two detectors answer different questions, which is why both are
-here.** `corrchange(window)` is a test of one thing: whether the
+here.** `corrchange(kind="window")` is a test of one thing: whether the
 correlation matrix has moved between two adjacent windows. It is looking
 straight at this break, so it flags it fast, in a median of 29 rows and 53
 at worst. It also flags 51.33 rows per 1000 quiet ones. Two windows that
@@ -614,11 +614,11 @@ from 1000 draws has a standard error of about 0.011 at 0.07 and 0.016 at
 **On their design the detector is within two standard errors of their
 table in every cell.** The largest gaps are 0.023 at `boundary_gamma` of 0
 and 0.25 (at `T = 4`, `m = 500`) and 0.030 at 0.45 (at `T = 0.5`, `m =
-500`), in both directions. The critical values differ a little too: the
+500`), in both directions. The critical values differ a little too. The
 paper simulates them on a grid, which reads the supremum low, and this
-solves the law behind them, so its values are higher in 11 of the 12
-cells of their Table 1, and within 0.03 of it in all
-(`crates/online-core/src/boundary.rs`).
+library solves the law behind them
+(`crates/online-core/src/boundary.rs`). So its values are higher in 11 of
+the 12 cells of their Table 1, and within 0.03 of it in all.
 
 **Neither is the nominal 5 %, and the paper says so.** At 0 and 0.25 the
 size runs from 0.043 to 0.088, a little above 0.05 at `m = 250` and
@@ -654,13 +654,14 @@ uv run python scripts/regime_experiments.py size power dhat  # any of them by na
 | `rcov` | [§8](#8-rcov-three-estimators-against-each-blocks-truth) | 3.6 s |
 | `sequential` | [§9](#9-the-sequential-detector-against-its-paper) | 23.9 s |
 
-`all` runs them in that order, in about 5 min of wall time. That was on
-2026-09-27, and on 2026-09-28 for `size`, `power`, `dhat` and
-`sequential`, on an Apple M4 Pro (14 cores, 48 GB, macOS 15.7.3) with Python
-3.12.13, Polars 1.44.2 and a release build. It took 40.3 s on 2026-09-23,
-before the size study's draws went from 2000 to 20,000 a cell, and about
-36 seconds when this page was first written, on 2026-09-06. Every figure
-the 2026-09-23 run gave that this one re-ran is unchanged.
+`all` runs them in that order in about 5 minutes of wall time, most of it
+the size study's 20,000 draws a cell. That was measured on 2026-09-27, and
+on 2026-09-28 for `size`, `power`, `dhat` and `sequential`, on an Apple M4
+Pro (14 cores, 48 GB, macOS 15.7.3) with Python 3.12.13, Polars 1.44.2 and
+a release build. Earlier runs took 40.3 s on 2026-09-23, with 2000 draws a
+cell, and about 36 seconds on 2026-09-06, when this page was first
+written. Every figure the 2026-09-23 run gave that this one re-ran is
+unchanged.
 
 **Every stream is generated from a seed, so two runs of one build give the
 same numbers.** The seeds are derived with `zlib.crc32`, not `hash()`,

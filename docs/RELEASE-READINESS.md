@@ -1,84 +1,102 @@
 # Release readiness and API stability
 
 This document is for whoever cuts a release of polars-online, or asks which
-Polars versions it promises and which were only measured. It began on
-2026-08-31 as a proposal with two questions: what was left before the
-repository went public, and what makes its API safe to promise. It has since
-gained the release gate, the Polars measurements, and the records of going
-public and of CI cost.
+Polars versions it promises and which were only measured. It says how a
+release is cut and what the release workflow checks. It then says which
+versions of Polars and NumPy are promised, and how the API is kept stable.
+Its last two sections are records: what CI cost while the repository was
+private, and how it went public.
 
-**Each section is dated where it was added, so read it as of its date.**
-Where a dated figure has gone stale, it stays, and the present one follows it
-with its evidence.
+**Each dated section reads as of its date.** Where a dated figure has gone
+stale, it stays, and the present one follows it with its evidence.
 
 | section | what it covers |
 |---|---|
-| [Cutting a release](#cutting-a-release) | [the release gate](#the-release-gate-2026-09-06) · [rehearse before tagging](#rehearse-before-tagging) |
-| [Which Polars versions are promised](#which-polars-versions-are-promised) | [the pin, and the two copies of Polars](#the-polars-pin-and-the-two-copies-of-polars-2026-08-31) · [2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) · [raising the ceiling](#raising-the-ceiling-to-a-new-major) |
-| [Keeping the API stable](#keeping-the-api-stable) | [what the API is](#what-the-api-actually-is) · [the snapshot test](#s--the-mechanism-one-api-snapshot-test--done) · [the policy](#policy-to-write-down) · [what not to do](#what-not-to-do) · [the usability round](#api-usability-round-pre-users-window) · [the 2026-09 batch](#the-2026-09-batch-what-it-added-to-the-surface-tasks-4556) |
-| [CI cost while the repo was private](#ci-cost-while-the-repo-was-private) | [the quota, spent on day one](#actions-quota-exhausted-on-day-one-2026-08-31) · [where the 80 minutes went](#ci-cost-where-the-80-minutes-went) · [what was unexpectedly expensive](#what-was-unexpectedly-expensive-2026-08-31) |
+| [Cutting a release](#cutting-a-release) | [the steps](#the-steps-of-a-release) · [the release gate](#the-release-gate) · [rehearse before tagging](#rehearse-before-tagging) · [compare with the last release](#compare-with-the-last-release-bit-for-bit) · [the README on PyPI](#the-readmes-links-on-pypi) · [the tests that hold the workflow](#the-tests-that-hold-the-workflow) · [how the workflow came to this](#how-the-release-workflow-came-to-this) |
+| [Which Polars versions are promised](#which-polars-versions-are-promised) | [the floor and the ceiling](#the-floor-and-the-ceiling) · [which interfaces carry a promise](#which-interfaces-carry-a-promise) · [NumPy](#numpy-the-one-optional-dependency) · [raising the ceiling](#raising-the-ceiling-to-a-new-major) · [the pin, and the two copies of Polars](#the-polars-pin-and-the-two-copies-of-polars-2026-08-31) · [2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) · [the expression plugin](#the-expression-plugin-as-recorded) |
+| [Keeping the API stable](#keeping-the-api-stable) | [the policy](#the-policy) · [what not to do](#what-not-to-do) · [what the API is](#what-the-api-actually-is) · [the snapshot test](#s--the-mechanism-one-api-snapshot-test--done) · [the usability round](#api-usability-round-pre-users-window) · [the 2026-09 batch](#the-2026-09-batch-what-it-added-to-the-surface-tasks-4556) |
+| [CI cost while the repo was private](#ci-cost-while-the-repo-was-private) | [the policy, as the test holds it](#the-policy-as-the-test-holds-it) · [the quota, spent on day one](#actions-quota-exhausted-on-day-one-2026-08-31) · [where the 80 minutes went](#ci-cost-where-the-80-minutes-went) · [what was unexpectedly expensive](#what-was-unexpectedly-expensive-2026-08-31) |
 | [Going public, as recorded](#going-public-as-recorded) | [the suggested order](#suggested-order) · [R1–R6](#before-going-public-r1r6) · [the open-source sweep](#open-source-preparation-the-full-sweep-2026-08-31) · [going public](#going-public-2026-08-31) · [repository settings](#repository-settings-as-recorded) |
 
 ## Cutting a release
 
-A release is dispatched, and `.github/workflows/release.yml` does the rest:
-dispatched on `main` with `publish` on, it runs CI on all three OSes, builds
-every wheel and the CLI, runs the state hand-off and the suite on the newest
-Polars and the newest NumPy, waits for approval, uploads to PyPI, and only
-then creates the tag
-`v<version>` on the sha it tested, and the GitHub release. With `publish`
-off, the same run is the rehearsal, and tags and uploads nothing. A tag
-pushed by hand starts nothing. Three things make it safe: a gate in front of
-the one step nothing can undo, a tag that exists only once the release does,
-and a rehearsal that finds a broken workflow before a publishing run does.
+**A release is dispatched, never tagged by hand.** Dispatched on `main`
+with `publish` on, `.github/workflows/release.yml` tests everything first.
+It runs CI on all three OSes and builds every wheel and the command-line
+binaries. It runs the state hand-off between OSes, and the suite on the
+newest Polars and the newest NumPy. Then it waits for approval and uploads
+to PyPI. Only after the upload does it create the tag `v<version>` on the
+sha it tested, and the GitHub release. With `publish` off, the same run is
+the rehearsal, and it tags and uploads nothing.
 
-**Why the tag comes last (2026-09-27).** Until then a release started when a
-`v*` tag was pushed. 0.11.0 was tagged on a branch whose 21 commits had never
-run on Linux or Windows; CI failed there on the tag, the publish jobs were
-skipped, and the tag could not be moved (below). So the release now runs
-everything first, CI included, and a version whose tag exists is refused
-before anything is built (`scripts/release_version.py`). Which version number a change needs is in
-[Policy to write down](#policy-to-write-down). Widening the Polars range is
-a minor release, as step 5 of
+**A tag pushed by hand starts nothing, and it uses up its version.**
+Release tags cannot be moved or deleted, and
+`scripts/release_version.py --publish` refuses a version whose tag exists.
+So a version tagged by hand can never be released.
+
+Three things make a release safe. A gate stands in front of the one step
+nothing can undo, the upload. The tag exists only once the release does.
+And a rehearsal finds a broken workflow before a publishing run does.
+
+### The steps of a release
+
+In order:
+
+| step | how |
+|---|---|
+| 1. compare | `uv run python scripts/compare_release.py`; every difference declared in the CHANGELOG, or its cause pinned by a test ([Compare with the last release](#compare-with-the-last-release-bit-for-bit)) |
+| 2. benchmark | `uv run python scripts/benchmark.py` under the last release's wheel from PyPI and under this build, in turn, with the machine's load logged. A slowdown past the runs' scatter is fixed, or declared in the CHANGELOG. `docs/PERFORMANCE.md` §26 found two slowdowns 0.11.0 had shipped, and §31 ran this step before 0.13.0 |
+| 3. released states | every release that added a schema is in `RELEASES` in `tests/test_released_state.py` ([A released build's state files](#a-released-builds-state-files)) |
+| 4. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
+| 5. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section |
+| 6. README | for a minor release, the example pin under the README's *This package's own versioning* names the new minor, as `~=0.13.0` names the 0.13 series |
+| 7. local gate | `bash scripts/gate.sh`, unpiped, until its last line says `gate: PASS` |
+| 8. commit and push | on `main` itself, not on a branch; then wait for CI on the pushed sha |
+| 9. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)) |
+| 10. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate)); the tag and the GitHub release follow the upload |
+| 11. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions the package reports (`po.__version__`, `po.native_version()` and `po.schema_version()`) and a fit |
+
+Which version number a change needs is in [The policy](#the-policy).
+Widening the Polars range is a minor release, as step 5 of
 [Raising the ceiling to a new major](#raising-the-ceiling-to-a-new-major)
 says.
 
-### The release gate (2026-09-06)
+### The release gate
 
-**The one human step in a release is approving the PyPI upload, and it is
-the only step that cannot fail.** The upload is the `publish to PyPI` job,
+**The one human step in a release is approving the PyPI upload, the one
+step that cannot be undone.** The upload is the `publish to PyPI` job,
 which declares the `Pypi` environment; `release.yml` spells it
 `environment: pypi`. That environment has the owner as a required reviewer,
 with self-review allowed, since with a single reviewer, forbidding it would
 deadlock every release. The click is a button on the run page, and GitHub
 emails when one is waiting.
 
-**The job asks for approval only after every job it needs is green.** On
-2026-09-06 that list read `needs: [sdist, build, read-state]`; since
-2026-09-10 (`e6da97c`) it also names `next-polars`, which tests the newest
-Polars at the release, since 2026-09-27 `version` and `ci`, and since
-2026-09-30 `next-numpy`:
+**The job asks for approval only after every job it needs is green.** Two
+pytest markers appear in the table and again below. `soak` marks the
+opt-in long runs over millions of rows. `pins` marks the three tests that
+assert this repository's own Polars pin, which cannot pass once Polars has
+moved (`pyproject.toml`).
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
 | `version` | the version agrees in its six places, the CHANGELOG has its section, and, publishing, the tag is new and the run is on `main` | yes, and it runs before anything is built |
 | `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
 | `sdist` | the source distribution | yes |
-| `build` | all six wheels, and the command-line binaries | yes |
+| `build` | all six wheels, and the command-line binaries on the five targets that build one, all but musl. The Linux binary is built in the wheels' manylinux2014 image, and refused above glibc 2.17 | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
-| `next-polars` | the whole suite, in two legs: on the newest Polars the declared range admits, and on the next major | the first leg only; the second is advisory |
-| `next-numpy` | the whole suite, in two legs: on the newest NumPy, which the optional extra's `numpy>=1.24` admits, and on NumPy's next release candidate, with only NumPy upgraded | the first leg only; the second is advisory |
+| `next-polars` | the Python suite, less its `soak` and `pins` tests, in two legs: on the newest Polars the declared range admits, and on the next major | the first leg, the blocking one; the second is advisory |
+| `next-numpy` | the same suite in two legs, with only NumPy upgraded: on the newest NumPy, which the optional extra's `numpy>=1.24` admits, and on NumPy's next release candidate | the first leg only; the second is advisory |
 | `publish to PyPI` | the upload | it is the gate |
-| `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels and CLI binaries | no: they run after the upload |
+| `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels, the sdist and the command-line binaries | no: they run after the upload |
 
-**Everything before the approval can be retried, and nothing after it
-can.** That is why the gate sits where it does: in front of the one step
-nothing can undo, and in front of nothing else.
+**Everything before the approval can be retried, and nothing after it can
+be undone.** That is why the gate sits where it does: in front of the one
+step nothing can undo, and in front of nothing else.
 
 | side of the gate | what happens there | can it be undone |
 |---|---|---|
-| before | dispatching a rehearsal or a release, re-running a failed job, cancelling a run, declining the approval | yes: all of it is retryable, none of it reaches a user, and none of it creates a tag |
-| after | the upload, then the tag and the GitHub release | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted |
+| before | dispatching a rehearsal or a release, re-running a failed job, cancelling a run, declining the approval | yes: all of it can be retried, none of it reaches a user, and none of it creates a tag |
+| after | the upload, then the tag and the GitHub release | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted. A failed `tag` or `release` job can still be re-run, and tags the same sha |
 
 **A tag that turns out to be wrong is *not* fixed by moving it.** The
 `release tags are immutable` ruleset covers `refs/tags/v*` with `deletion`
@@ -88,81 +106,34 @@ the next version, which agrees with PyPI's rule rather than fighting it:
 version numbers are single-use on both sides. `v0.11.0` is such a tag: it
 names a commit whose CI failed, and nothing was ever published from it.
 
-**One thing is deliberately *not* gated.** The Pages deploy in `ci.yml`
-republishes the API reference on every push to `main`, and is as reversible
-as the next push. `github-pages` briefly carried a required reviewer on
-2026-09-06, and no longer does. The release's call of `ci.yml` grants the
-deploy's scopes, since a called workflow may ask for no more than its caller
-grants, but the deploy runs on a push alone, so under a release it is
-skipped (`tests/test_release_workflow.py`).
+**One thing is deliberately *not* gated: the Pages deploy.** The deploy in
+`ci.yml` republishes the API reference on every push to `main`, and is as
+reversible as the next push. `github-pages` briefly carried a required
+reviewer on 2026-09-06, and no longer does. The release's call of `ci.yml`
+grants the deploy's scopes, since a called workflow may ask for no more
+than its caller grants. The deploy runs on a push alone, so under a release
+it is skipped (`tests/test_release_workflow.py`).
 
 ### Rehearse before tagging
 
-**Rehearse `release.yml` before a publishing run, because a run uses the
-workflow file at the commit it runs on.** A fault in the workflow therefore
-ships inside the released commit. A rehearsal is a dispatch on `main` with
-`publish` off: the same jobs, CI included, and nothing tagged or uploaded.
-Since 2026-09-27 a publishing run also stops before the upload and creates
-no tag when any job fails, so a failed release costs a rerun rather than a
-version, and a release needs no rehearsal first: its own run is one, up to
-the approval. The rehearsal stays the way to test a change to the workflow
-without releasing. Neither can try the two jobs that run after the upload,
-`tag` and `release`, since a rehearsal skips them; if one fails, re-running
+**Rehearse a change to `release.yml` with `publish` off, because a run uses
+the workflow file at the commit it runs on.** A fault in the workflow would
+otherwise ship inside the released commit. A rehearsal runs the same jobs,
+CI included, and tags and uploads nothing. Only publishing is held to
+`main`, by the `version` job, so a rehearsal can also try a branch's
+workflow before it is merged.
+
+**A release needs no rehearsal first.** Since 2026-09-27 a publishing run
+stops before the upload, and creates no tag, when any job fails. A failed
+release then means a rerun, not a lost version: its own run is a rehearsal
+up to the approval. Neither run can try the two jobs after the upload,
+`tag` and `release`, since a rehearsal skips them. If one fails, re-running
 it tags the same sha.
 
-Six faults were found on 2026-09-03, and every fix is in the tagged commit.
-The first was found before the first rehearsal ran, and is one a rehearsal
-would have caught. The rehearsals found the other five. The fourth, with
-the fixes before it in, passed the state hand-off on both OSes and found
-the sixth.
+The rehearsals of 2026-09-03 found six faults in the workflow, listed in
+[The six faults of 2026-09-03](#the-six-faults-of-2026-09-03).
 
-| # | where | what failed | why | the fix |
-|---|---|---|---|---|
-| 1 | the Intel macOS wheel | `release.yml` named the `macos-13` runner | GitHub has retired it: a tag would have built five wheels and published none | the label is `macos-15-intel` now |
-| 2 | the aarch64 Linux wheel | cross-compiled from x64 in `manylinux2014-cross:aarch64`, it failed in `ring` 0.17, reached through polars-io's cloud feature | that image's GCC 4.8.5 does not define `__ARM_ARCH` (briansmith/ring#1728) | built the way polars builds its own: natively on GitHub's `ubuntu-24.04-arm` runner, where maturin-action picks the `manylinux2014_aarch64` image with a current GCC. The tag stays `manylinux_2_17`, and the native runner means the aarch64 CLI binary now ships too |
-| 3 | the x64 Linux job | the host `cargo build` of the CLI could not execute its compiler wrapper | maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but installs sccache inside the manylinux container | the CLI step clears the wrapper |
-| 4 | the Intel macOS job | it hit the 90-minute timeout | 26 minutes of it were `uv sync` building the extension into a venv nothing in the job uses: maturin-action brings its own Python, and the CLI has no pyo3 in its tree | that step is gone, the timeout is 120, and rust-cache saves on failure, as it does in `ci.yml` |
-| 5 | both `read state` jobs | `handoff.state: No such file or directory` | the artifact lands in the workspace root, but cargo runs an integration test with the *package* root as its working directory (`crates/online-polars/`, per the cargo reference) | the read side uses `${{ github.workspace }}`, as the write side already did; reproduced locally both ways before the fix |
-| 6 | the Linux wheel jobs | the host `cargo build` for the CLI failed on `target/release/.cargo-build-lock` (Permission denied), and rust-cache's post step could not tar the tree | the wheel is built inside maturin-action's manylinux container, which runs as root over the bind-mounted workspace, so `target/` comes back root-owned | a `sudo chown -R` of `target` between the two steps fixes both |
-
-**The fifth matters most, because it is rule 5 itself.** The state jobs
-also lost their `uv sync` (17--23 minutes each): `online-polars` has no pyo3
-in its tree, and the test is pure Rust. The sixth is why the Linux jobs had
-never once restored a cache. Rehearsal one never reached it, because the
-sccache wrapper failed first and hid it.
-
-**0.11.1's Linux CLI binaries needed glibc 2.39, the build runner's own.**
-Measured on 0.11.1's release assets on 2026-09-27, from each binary's
-version requirements (`.gnu.version_r`), for x86_64 and aarch64 alike:
-
-| requirement | from | binding |
-|---|---|---|
-| `GLIBC_2.34` | `__libc_start_main` and the pthread functions | hard |
-| `GLIBC_2.35` | `hypot`, in libm | hard |
-| `GLIBC_2.39` | `pidfd_getpid` and `pidfd_spawnp`, which Rust's standard library uses to spawn a process | weak symbols, but the version requirement is not marked weak, so the loader refuses the binary without it |
-
-So that CLI started on Ubuntu 24.04, Debian 13 or newer, and not on Ubuntu
-22.04 (2.35), Debian 12 (2.36) or RHEL 9 (2.34). This was read from the
-files, not run on an older glibc: the machine that measured it has no
-container runtime. The binaries were built on the runner's own image, not
-in the manylinux2014 container the wheels come from (the wheels are
-`manylinux_2_17`), so the floor followed the image and would have risen
-when `ubuntu-latest` moved to 26.04.
-
-**Since 0.12.0 the Linux CLI is built in that manylinux2014 image, at
-glibc 2.17** (the user's decision, 2026-09-28; [PLAN](PLAN.md)
-task 115 (i)). `release.yml`'s build job runs `cargo build` in
-`quay.io/pypa/manylinux2014_<arch>`, the image for the runner's own
-architecture, with Rust installed inside it as maturin-action installs it
-there; a `docker run` step, since the image's glibc is too old for the
-actions' JavaScript to run as a job container. `scripts/glibc_floor.py`
-then reads the binary's version requirements and fails the job above 2.17,
-before anything is uploaded. On 0.11.1's x86_64 binary it reports 2.39 and
-refuses it. The 0.12.0 rehearsal was the first run to build it (run
-36448809775 on `36e468c`): the binaries need glibc 2.16 on x86_64 and 2.17
-on aarch64, and 0.12.0 shipped them.
-
-### Compare with the last release, bit for bit (2026-09-24)
+### Compare with the last release, bit for bit
 
 **Before a release, every output is compared with the last release's, bit
 for bit.** A test with a tolerance lets a small numeric change through,
@@ -185,58 +156,321 @@ regression: find its cause, and add a test that pins it, before the
 release goes out. CI runs the same comparison on every push, report only,
 so a change shows at the commit that made it.
 
-Measured when it was written: this build against 0.10.0 and against
-0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ, all
-from 0.9.0's declared readiness gates, which is the evidence it can fail.
+Measured when it was written, on 2026-09-24: this build against 0.10.0 and
+against 0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ,
+all from 0.9.0's declared readiness gates, which is the evidence it can
+fail.
 
-**A released build's state files load, and the model goes on as this
-build's would.** `tests/test_released_state.py` installs 0.10.0 and 0.11.1
-into the same cache and runs `scripts/release_probe.py --states` under
-each: the workload's 30 specs, fitted on the first half of the stream and
-saved. This build loads each file and fits the second half beside a bank
-of its own that saw both halves, and compares every float, the
-coefficients, the closed groups and `marginal`'s table. Measured
-2026-09-27: 0.11.1's files, at schema 17, go on bit for bit; 0.10.0's, at
-schema 14, within 2.2e-13 relative, since schema 14 carries no low parts
-for the means and they restart at zero. It runs in the suite, and offline
-it is skipped (hard rule 1). When a release adds a schema, add its version
-to `RELEASES` there.
+#### A released build's state files
 
-The steps of a release, in order:
+**A state file written by any release so far is refused, with a message
+naming the way out: refit from the input.** This build's bank reads schema
+25 and newer (`MIN_BANK_SCHEMA_VERSION`, `crates/online-polars/src/bank.rs`).
+The releases wrote schema 14 (0.10.0), 17 (0.11.1), 19 (0.12.0) and 20
+(0.13.0).
 
-| step | how |
-|---|---|
-| 1. compare | `uv run python scripts/compare_release.py`; every difference declared in the CHANGELOG, or its cause pinned by a test |
-| 2. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
-| 3. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section |
-| 4. gate | `bash scripts/gate.sh`, unpiped, until its last line says PASS |
-| 5. commit and push | on `main` itself, not on a branch; then wait for CI on the pushed sha |
-| 6. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)) |
-| 7. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate-2026-09-06)); the tag and the GitHub release follow the upload |
-| 8. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions and a fit |
+`tests/test_released_state.py` holds each release it lists to that. It
+installs the release into the comparison's cache, and runs
+`scripts/release_probe.py --states` under it: the workload's 30 specs,
+fitted on the first half of the stream and saved. This build must then
+refuse each file by its version, naming "refit it from its input". It runs
+in the suite, and is skipped offline, since it downloads the releases (hard
+rule 1 in `CLAUDE.md`).
 
-The workflow itself rewrites the README's links for PyPI. PyPI shows the
-README as the project page, where a relative link to another file resolves
-against pypi.org and is a 404. So both jobs that build a package first run
-`scripts/pypi_readme.py --ref <the tag the run will create>` (the sha, in a
-rehearsal), which points each such link at the file on GitHub as it is at
-the released commit. The README in the repository keeps its
+**Add each release that adds a schema to `RELEASES` there.** It lists
+every release from 0.10.0 to 0.13.0. On 2026-10-03 each release saved all
+30 specs, and this build refused every file by its version.
+
+Until 2026-09-28 the test held a released file to loading, and the model
+to going on as this build's would. This build fitted the second half
+beside a bank of its own that saw both halves, and compared every float,
+the coefficients, the closed groups and `marginal`'s table. Measured
+2026-09-27: 0.11.1's files, at schema 17, went on bit for bit. The files of
+0.10.0, at schema 14, went on within 2.2e-13 relative, since schema 14
+carries no low parts for the means and they restart at zero. Task 120 then
+removed the `on_clock_reset` setting every one of those files names, and
+the user said "Do not worry about old specs".
+
+### The README's links on PyPI
+
+**The workflow rewrites the README's relative links for PyPI.** PyPI shows
+the README as the project page, where a relative link to another file
+resolves against pypi.org and is a 404. So both jobs that build a package
+first run `scripts/pypi_readme.py --ref <the tag the run will create>`, or
+the sha in a rehearsal. It points each such link at the file on GitHub as
+it is at the released commit. The README in the repository keeps its
 relative links.
+
+### The tests that hold the workflow
+
+**Three test files hold the workflows to the shape this section
+describes.** They run in the suite, so a change to a workflow that breaks
+the shape fails before it reaches a release:
+
+| test | what it holds |
+|---|---|
+| `tests/test_release_workflow.py` | a dispatch is the only trigger, with `publish` off unless asked; the version is checked before anything is built; CI runs inside the release on every OS, and its Pages grant is inert; the upload waits for every job, and the tag for the upload, on the tested sha; the NumPy legs; the Linux CLI built in the manylinux2014 image and held to glibc 2.17; only the release jobs write; and `scripts/release_version.py`'s rules |
+| `tests/test_release_packaging.py` | the release job's step that collects the files, run for real: each binary named by its target, the Windows `.exe` suffix kept, and no binary sent to PyPI |
+| `tests/test_ci_cost_policy.py` | every workflow bounded by timeouts and a concurrency group, releases queueing rather than cancelling, and the rest of the CI policy ([The policy, as the test holds it](#the-policy-as-the-test-holds-it)) |
+
+### How the release workflow came to this
+
+These are records, each read as of its date.
+
+#### Why the tag comes last (2026-09-27)
+
+Until then a release started when a `v*` tag was pushed. 0.11.0 was tagged
+on a branch whose 21 commits had never run on Linux or Windows. CI failed
+there on the tag, the publish jobs were skipped, and the tag could not be
+moved ([The release gate](#the-release-gate)). So the release now runs
+everything first, CI included, and a version whose tag exists is refused
+before anything is built (`scripts/release_version.py`).
+
+The gate's list of jobs grew with the workflow. On 2026-09-06 it read
+`needs: [sdist, build, read-state]`. `next-polars`, which tests the newest
+Polars at the release, joined it on 2026-09-10 (`e6da97c`). `version` and
+`ci` joined on 2026-09-27, and `next-numpy` on 2026-09-30.
+
+#### The six faults of 2026-09-03
+
+Six faults were found on 2026-09-03, and every fix is in the commit that was
+tagged. The first was found before the first rehearsal ran, and is one a
+rehearsal would have caught. The rehearsals found the other five. The fourth
+rehearsal, with every earlier fix in, passed the state hand-off on both OSes
+and found the sixth.
+
+| # | where | what failed | why | the fix |
+|---|---|---|---|---|
+| 1 | the Intel macOS wheel | `release.yml` named the `macos-13` runner | GitHub has retired it: a tag would have built five wheels and published none | the label is `macos-15-intel` now |
+| 2 | the aarch64 Linux wheel | cross-compiled from x64 in `manylinux2014-cross:aarch64`, it failed in `ring` 0.17, reached through polars-io's cloud feature | that image's GCC 4.8.5 does not define `__ARM_ARCH` (briansmith/ring#1728) | built the way polars builds its own: natively on GitHub's `ubuntu-24.04-arm` runner, where maturin-action picks the `manylinux2014_aarch64` image with a current GCC. The tag stays `manylinux_2_17`, and the native runner means the aarch64 CLI binary now ships too |
+| 3 | the x64 Linux job | the host `cargo build` of the CLI could not execute its compiler wrapper | maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but installs sccache inside the manylinux container | the CLI step clears the wrapper |
+| 4 | the Intel macOS job | it hit the 90-minute timeout | 26 minutes of it were `uv sync` building the extension into a venv nothing in the job uses: maturin-action brings its own Python, and the CLI has no pyo3 in its tree | that step is gone, the timeout is 120, and rust-cache saves on failure, as it does in `ci.yml` |
+| 5 | both `read state` jobs | `handoff.state: No such file or directory` | the artifact lands in the workspace root, but cargo runs an integration test with the *package* root as its working directory (`crates/online-polars/`, per the cargo reference) | the read side uses `${{ github.workspace }}`, as the write side already did; reproduced locally both ways before the fix |
+| 6 | the Linux wheel jobs | the host `cargo build` for the CLI failed on `target/release/.cargo-build-lock` (Permission denied), and rust-cache's post step could not tar the tree | the wheel is built inside maturin-action's manylinux container, which runs as root over the bind-mounted workspace, so `target/` comes back root-owned | a `sudo chown -R` of `target` between the two steps fixes both |
+
+**The fifth matters most, because it stopped the check of hard rule 5
+itself.** That rule, in `CLAUDE.md`, says a state file loads on both OSes,
+and the `read state` jobs are where a release checks it. The state jobs
+also lost their `uv sync` (17--23 minutes each): `online-polars` has no
+pyo3 in its tree, and the test is pure Rust. The sixth is why the Linux
+jobs had never once restored a cache. Rehearsal one never reached it,
+because the sccache wrapper failed first and hid it.
+
+#### The Linux CLI's glibc floor (2026-09-27)
+
+**0.11.1's Linux CLI binaries needed glibc 2.39, the build runner's own.**
+Measured on 0.11.1's release assets on 2026-09-27, from each binary's
+version requirements (`.gnu.version_r`), for x86_64 and aarch64 alike:
+
+| requirement | from | binding |
+|---|---|---|
+| `GLIBC_2.34` | `__libc_start_main` and the pthread functions | hard |
+| `GLIBC_2.35` | `hypot`, in libm | hard |
+| `GLIBC_2.39` | `pidfd_getpid` and `pidfd_spawnp`, which Rust's standard library uses to spawn a process | weak symbols, but the version requirement is not marked weak, so the loader refuses the binary without it |
+
+So that CLI started on Ubuntu 24.04, Debian 13 or newer, and not on Ubuntu
+22.04 (2.35), Debian 12 (2.36) or RHEL 9 (2.34). This was read from the
+files, not run on an older glibc: the machine that measured it has no
+container runtime. The binaries were built on the runner's own image, not
+in the manylinux2014 container the wheels come from (the wheels are
+`manylinux_2_17`). So the floor followed the image, and would have risen
+when `ubuntu-latest` moved to 26.04.
+
+**Since 0.12.0 the Linux CLI is built in that manylinux2014 image, at
+glibc 2.17** (the user's decision, 2026-09-28; [PLAN](PLAN.md) task 115
+(i)). `release.yml`'s build job runs `cargo build` in
+`quay.io/pypa/manylinux2014_<arch>`, the image for the runner's own
+architecture. Rust is installed inside it as maturin-action installs it
+there. It is a `docker run` step, since the image's glibc is too old for
+the actions' JavaScript to run as a job container. `scripts/glibc_floor.py`
+then reads the binary's version requirements and fails the job above 2.17,
+before anything is uploaded. On 0.11.1's x86_64 binary it reports 2.39 and
+refuses it. The 0.12.0 rehearsal was the first run to build it (run
+36448809775 on `36e468c`). The binaries need glibc 2.16 on x86_64 and 2.17
+on aarch64, and 0.12.0 shipped them.
 
 ## Which Polars versions are promised
 
-**The declared range, `polars>=1.34.0,<3`, is measured, and Polars does not
-promise it.** It is this project's empirical claim, resting on the
-measurements in this section:
+**The declared range, `polars>=1.34.0,<3`, is this project's measured
+claim, and Polars does not promise it.** It rests on the measurements in
+this section:
 
 | part | what it rests on | where |
 |---|---|---|
 | the floor, 1.34.0 | `LazyFrame.collect_batches`, which py-polars added in 1.34.0; `tests/test_scaffold.py` pins the declared floor | [The floor and the ceiling](#the-floor-and-the-ceiling) |
 | `ModelBank` alone, from 1.28.1 | `PySeries._export`, measured on 17 py-polars releases | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
-| the ceiling, `<3` | the whole suite on `2.0.0rc1`, and, at every tag, the blocking leg of `release.yml` on the newest version in range | [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) |
-| what Polars itself promises | nothing for `ModelBank` or the IO plugin; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
+| the ceiling, `<3` | the Python suite on `2.0.0rc1`, and the blocking leg of `release.yml` on the newest version in range, run in every dispatched release before any tag exists | [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) |
+| what Polars itself promises | nothing for `ModelBank`, the IO plugin or the serialized form of an expression; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
 | the Rust `polars` | 0.55.2, pinned by `Cargo.toml` and linked into the wheel, so it never meets the user's | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
 | the `online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
+| NumPy, the optional extra | `numpy>=1.24`: the newest NumPy blocks a release | [NumPy, the one optional dependency](#numpy-the-one-optional-dependency) |
+
+### The floor and the ceiling
+
+**The floor is 1.34.0, the release that added `LazyFrame.collect_batches`.**
+Every surface that reads a query in chunks reads with it: `ModelBank.fit(lf)`
+and `fit_predict_batches(lf)`, `lf.online.fit_predict` and
+`lf.online.predict`, `with_windows` in each of its forms, and
+`po.stream.refresh_time`. `ModelBank` alone works from 1.28.1, as
+[the matrix](#statically-linking-polars-will-break-users-on-other-versions)
+shows. `tests/test_scaffold.py` pins the declared floor, so a change to
+either has to change both.
+
+**The whole suite last ran on 1.34.0 on 2026-09-27, before the window
+operators were built.** Of what they added, the formula reader was
+measured on 1.34.0 on 2026-10-02. Every node kind it reads has the same
+shape there as on 1.44.2 (`docs/PLAN.md` task 143).
+
+**How the floor was found (2026-09-02).** The declaration that day read
+`polars>=1.34.0,<2`. The matrix measured `ModelBank` and the expression
+plugin, and those do work from 1.28.1. But `po.run` over a path or a plan
+read with `LazyFrame.collect_batches`, and so did the streaming query form
+`lf.online.fit_predict` (E32 and E33 in `docs/ENHANCEMENTS.md`). py-polars
+added `collect_batches` in **1.34.0**. On 1.28.1–1.33 both failed with
+`AttributeError: 'LazyFrame' object has no attribute 'collect_batches'`, in
+24 of 27 runner tests. The canary, the weekly job that runs the suite on the
+newest Polars, could not see this, since it tests nothing older. It was
+found while checking E33 against the floor, and the floor now says what the
+package needs. The whole suite (1037 tests) passed on 1.34.0, 1.38.1 and
+1.44.1 with identical numbers.
+
+**The whole suite on 1.34.0 again, 2026-09-27: one bug in the package,
+fixed.** A venv with the locked dev and docs groups, `polars` and
+`polars-runtime-32` at 1.34.0, and this build's wheel ran 3,425 tests:
+3,408 passed and 17 failed.
+
+| failures | cause | now |
+|---|---|---|
+| 4 | `po.eval.seqtest` with `by`, the README's example among them: a window inside a window, which 1.34.0 refuses ("window expression not allowed in aggregation") | fixed: two passes, the same arithmetic; all 208 of those files' tests pass on 1.34.0 |
+| 1 | `scripts/compare_release.py` passed `explode(empty_as_null=True)`, a keyword 1.34.0 has not got | fixed: the keyword where it exists |
+| 8 | `pl.scan_arrow_c_stream`, in py-polars from 1.43.0: the DuckDB, ADBC and pyarrow paths' tests and examples | the docs say 1.43.0 ([ARROW-SOURCES](ARROW-SOURCES.md)); the package itself only names it in a warning |
+| 2 | durations: 1.34.0's parser refuses a leading `+`, which the text oracle compares against, and its `pl.duration` wraps past an i64 before the package can see it | recorded: the promise that a `pl.duration` past 292 years is refused holds on a newer polars |
+| 2 | the development environment's version pin (`tests/test_scaffold.py`) and `docs/VALIDATION.md`, which records 1.44.2 | expected |
+
+`po.run` has gone since, and the floor has not moved. It left Python in
+task 83 (`7d23a80`, 2026-09-17), and the command line kept the runner.
+
+**The ceiling, `<3`, is a bet that the interface holds through 2.x.** On
+2026-09-02 it was `<2`, a bet on 1.x. Since 0.5.1 it is `<3`, made on the
+measurements in
+[Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10). Two runs
+hedge it:
+
+| hedge | when | what it runs | a red run |
+|---|---|---|---|
+| the blocking leg of `release.yml`'s `next-polars` | every dispatched release, rehearsals included, before any tag exists | the Python suite on the newest version the range admits | withholds the release until the range is capped or the code fixed |
+| `polars-canary.yml`, the canary | weekly, on Mondays, and on demand | the Rust tests and the Python suite on the newest py-polars, prereleases included, with the range dropped | is the notification, and withholds nothing |
+
+A third hedge went with task 85. The expression plugin's ABI was
+version-negotiated, and refused to load rather than misbehave. On the paths
+that are left, a break is a loud failure rather than a negotiated one. A
+missing `PySeries._export` is a clean `AttributeError` before any data
+moves.
+
+### Which interfaces carry a promise
+
+**The range is measured, and the interfaces it rides on carry different
+promises, mostly none.** This came from reading what Polars actually
+promises:
+
+| interface | used by | what Polars promises | a break would show as |
+|---|---|---|---|
+| pyo3-polars' extension types, `PyDataFrame`/`PySeries` | `ModelBank` | no stability guarantee beyond the latest definitions working with the latest version | a clean `AttributeError` before any data moves |
+| the IO plugin, `polars.io.plugins.register_io_source` | `lf.online.fit_predict`, `lf.online.predict`, `with_windows` and `po.stream.refresh_time` | documented in the user guide, but decorated `@unstable` in polars (a warning only under `POLARS_WARN_UNSTABLE`); its contract is partly unwritten | a wrong row count, not a crash |
+| an expression's serialized form, `expr.meta.serialize(format="json")` | the window formulas, read into this library's own tree when a spec or a `with_windows` call takes them | nothing: the form is unstable across Polars versions | an unknown node, refused by name when the formula is read |
+| the Arrow PyCapsule interface | `ModelBank.fit_predict_arrow` and `predict_arrow` (task 86) | nothing: its contract is Arrow's rather than polars', and it covers the output side only | |
+
+**`ModelBank` carries no guarantee.** The pyo3-polars README says the
+`PyDataFrame`/`PySeries` types "are however only provided for convenience
+and **do not have stability guarantees beyond that the latest definitions
+should work for the latest version of Polars**". That is exactly the
+`PySeries._export` call whose absence sets the 1.28.1 floor of the matrix.
+
+**The unwritten part of the IO plugin's contract is its pushdowns.** Polars
+pushes a projection, a predicate and a slice into a Python source, and does
+not re-apply any of them afterwards. So the source honours all three itself
+(`python/polars_online/_frame.py`, and `stream.py` for `with_windows` and
+`refresh_time`). `tests/test_frame.py` checks every pushdown against the
+collected frame, in both orders. A change in that contract would show as a
+wrong row count, not a crash, which is why those tests exist and why the
+canary runs them.
+
+**The serialized form is read narrowly, because it is not stable.** Seven
+node kinds are read, when the formula is taken, under the caller's own
+Polars, and an unknown node is refused by name. Python and Rust then
+rebuild the formula through Polars' public builders
+(`python/polars_online/_formula.py`).
+
+**The range stays, because it is measured**: the numbers are identical
+across the releases, and the failure mode is a loud `AttributeError` rather
+than a wrong answer. But it is this project's empirical claim, not Polars'.
+A `ModelBank` break on a new Polars is expected maintenance: check that path
+first, and the IO-plugin tests after it.
+
+### NumPy, the one optional dependency
+
+**The newest NumPy blocks a release, and its next release candidate is
+advisory.** NumPy is needed only by the `numpy` extra,
+`polars-online[numpy]`, for `po.sim`, `po.corr`, `po.gram` and
+`ModelBank.gram`. Every other job runs on the locked NumPy. So
+`release.yml`'s `next-numpy` runs the Python suite with only NumPy
+upgraded, in two legs:
+
+| leg | resolves to | blocks the publish |
+|---|---|---|
+| the newest NumPy | the newest stable that `numpy>=1.24` admits; the extra has no ceiling | yes |
+| NumPy's next release candidate | a release candidate while one is out, and the newest stable again otherwise | no |
+
+The canary's second job, `next-numpy`, runs the advisory leg every week.
+Only NumPy moves in these runs, so a red one names it.
+
+**The floor, `numpy>=1.24`, is declared but not measured**: no run on NumPy
+1.24 is recorded. With no ceiling, a NumPy that breaks this library blocks
+every release until it is fixed or capped. The Polars range makes the same
+trade (`docs/PLAN.md` task 142).
+
+### Raising the ceiling to a new major
+
+The ceiling is `<3`, raised from `<2` in 0.5.1, so a py-polars 3.0 is
+excluded until this is done again. The steps, in order:
+
+1. **The canary and the release job's advisory leg are already testing
+   it.** Both unpin, and both allow prereleases, so a release candidate of
+   the next major is exercised the week it appears. Read the last run
+   before starting. Raising the ceiling is also what moves that major under
+   the *blocking* leg, since that leg tests the range as declared.
+2. **Check the Rust side separately.** py-polars' major and the `polars`
+   crate's version are independent. As of 2026-09-10, py-polars is at
+   2.0.0rc1, while the newest crate is 0.55.2, the one `Cargo.toml` pins. A
+   Python major on its own needs no Rust change. The wheel carries its own
+   statically linked copy, and the two never meet: data crosses on the
+   Arrow C Data Interface.
+3. **Widen the range in `pyproject.toml`**, today `polars>=1.34.0,<3`, and
+   let the lock resolve. That is the only required source change if steps
+   1–2 are clean.
+4. **Re-run `docs/VALIDATION.md`** with
+   `uv run python scripts/validate.py > docs/VALIDATION.md`. Its header
+   records the Polars version it was generated with, which is why its test
+   is marked `pins`.
+5. **Ship it as a minor**, not a patch. Widening the Polars range is a
+   minor release by this package's own rule (the README, *This package's
+   own versioning*).
+
+**`<3` was raised on what the 2.0 candidate measured, not on a guess that
+2.x keeps the interface.** The whole suite passes with the same numbers as
+on 1.44. All three interfaces of the time work: the expression plugin,
+`ModelBank` and the IO plugin. `LazyFrame.collect_batches`, the floor, is
+unchanged. One behaviour moved in our favour: a query that fails *after*
+the bank now stops the source instead of draining it, so `save_state` is
+not written on a long stream. That narrows the gap `docs/STATE-WORKFLOW.md`
+calls R6. The measurements are below, in *Polars 2.0.0rc1, measured*.
+
+**It was raised on `2.0.0rc1`, before 2.0.0 final was on PyPI, and that was
+deliberate.** It changes nothing for a user today, because installers do
+not resolve to a release candidate. So every user still gets the newest 1.x
+until 2.0.0 ships, and then gets it without waiting on a release of ours.
+The blocking leg is what covers the difference between the candidate and
+the final.
 
 ### The Polars pin, and the two copies of Polars (2026-08-31)
 
@@ -275,110 +509,13 @@ uv venv /tmp/v && uv pip install --python /tmp/v/bin/python --no-deps dist/*.whl
 uv pip install --python /tmp/v/bin/python 'polars==1.34.0'
 ```
 
-#### The floor and the ceiling
-
-**The declared floor is 1.34.0, not 1.28.1 (2026-09-02).** The declaration
-that day read `polars>=1.34.0,<2`. The table measured `ModelBank` and the
-plugin, and those do work from 1.28.1. But `po.run` over a path or a plan
-read with `LazyFrame.collect_batches` (E32), and so did the streaming query
-form `lf.online.fit_predict` (E33). py-polars added `collect_batches` in
-**1.34.0**. On 1.28.1–1.33 both failed with
-`AttributeError: 'LazyFrame' object has no attribute 'collect_batches'`, in
-24 of 27 runner tests. The canary tests the latest polars only, so it could
-not see this. It was found while checking E33 against the floor, and the
-floor now says what the package needs. The whole suite (1037 tests) passed
-on 1.34.0, 1.38.1 and 1.44.1 with identical numbers.
-
-**The whole suite on 1.34.0 again, 2026-09-27: one bug in the package,
-fixed.** A venv with the locked dev and docs groups, `polars` and
-`polars-runtime-32` at 1.34.0, and this build's wheel ran 3,425 tests:
-3,408 passed and 17 failed.
-
-| failures | cause | now |
-|---|---|---|
-| 4 | `po.eval.seqtest` with `by`, the README's example among them: a window inside a window, which 1.34.0 refuses ("window expression not allowed in aggregation") | fixed: two passes, the same arithmetic; all 208 of those files' tests pass on 1.34.0 |
-| 1 | `scripts/compare_release.py` passed `explode(empty_as_null=True)`, a keyword 1.34.0 has not got | fixed: the keyword where it exists |
-| 8 | `pl.scan_arrow_c_stream`, in py-polars from 1.43.0: the DuckDB, ADBC and pyarrow paths' tests and examples | the docs say 1.43.0 ([ARROW-SOURCES](ARROW-SOURCES.md)); the package itself only names it in a warning |
-| 2 | durations: 1.34.0's parser refuses a leading `+`, which the text oracle compares against, and its `pl.duration` wraps past an i64 before the package can see it | recorded: the promise that a `pl.duration` past 292 years is refused holds on a newer polars |
-| 2 | the development environment's version pin (`tests/test_scaffold.py`) and `docs/VALIDATION.md`, which records 1.44.2 | expected |
-
-**The floor has not moved since, though `po.run` has gone.** It left Python
-in task 83 (`7d23a80`, 2026-09-17), and the command line kept the runner.
-Today `ModelBank.fit(lf)`, `fit_predict_batches(lf)` and
-`lf.online.fit_predict` read with `collect_batches`, as the note on the
-range in `pyproject.toml` says. `tests/test_scaffold.py` pins the declared
-floor, so a change to either has to change both.
-
-**The ceiling is a bet that the interface holds.** On 2026-09-02 it was
-`<2`, a bet on 1.x, and since 0.5.1 it is `<3`, a bet on the rest of 2.x,
-made on the measurements in
-[Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10).
-Two hedges back it, as the note in `pyproject.toml` records:
-`polars-canary.yml` runs the suite against the latest polars weekly, and in a second job against NumPy's next release candidate. `release.yml` runs it again at every tag, on the
-newest version the range admits, and blocks the release if it fails. A third
-hedge went with task 85: the expression plugin's ABI was version-negotiated,
-and refused to load rather than misbehave. What remains on the paths that
-are left is a loud failure rather than a negotiated one. A missing
-`PySeries._export` is a clean `AttributeError` before any data moves.
-
-#### Which interfaces carry a promise
-
-**The matrix is measured, and the interfaces it rides on do not carry the
-same weight of guarantee.** This correction came from reading what Polars
-actually promises:
-
-| interface | used by | what Polars promises | a break would show as |
-|---|---|---|---|
-| the expression plugin, **removed** in task 85 (2026-09-17) | `pl.col(..).online.<model>(..)` | it was the supported mechanism, with a MAJOR/MINOR handshake the loader checks before its first call | a refusal to load, rather than misbehaviour |
-| pyo3-polars' extension types, `PyDataFrame`/`PySeries` | `ModelBank` | no stability guarantee beyond the latest definitions working with the latest version | a clean `AttributeError` before any data moves |
-| the IO plugin, `polars.io.plugins.register_io_source` | `lf.online.fit_predict` | documented in the user guide, but decorated `@unstable` in polars (a warning only under `POLARS_WARN_UNSTABLE`); its contract is partly unwritten | a wrong row count, not a crash |
-| the Arrow PyCapsule interface | `ModelBank.fit_predict_arrow` (task 86) | nothing: its contract is Arrow's rather than polars', and it covers the output side only | |
-
-**The one path that carried a guarantee was also the one that could not
-stream.** The expression plugin was removed because polars hands a stateful
-user expression its whole column. The measurements above stand as the
-record of what it did, and nothing below depends on it. The **Arrow
-PyCapsule interface** now takes its place in the guarantee story. It covers
-the output side only, so a call still crosses the `PyDataFrame` boundary on
-the way in.
-
-**`ModelBank` carries no guarantee.** The pyo3-polars README says the
-`PyDataFrame`/`PySeries` types "are however only provided for convenience
-and **do not have stability guarantees beyond that the latest definitions
-should work for the latest version of Polars**". That is exactly the
-`PySeries._export` call whose absence sets the 1.28.1 floor of the table.
-
-**The unwritten part of the IO plugin's contract is its pushdowns.** Polars
-pushes a projection, a predicate and a slice into a Python source, and does
-not re-apply any of them afterwards, so the source honours all three itself
-(`python/polars_online/_frame.py`). `tests/test_frame.py` checks every
-pushdown against the collected frame, in both orders. A change in that
-contract would show as a wrong row count, not a crash, which is why those
-tests exist and why the canary runs them.
-
-**The range stays, because it is measured**: the numbers are identical
-across the releases, and the failure mode is a loud `AttributeError` rather
-than a wrong answer. But it is this project's empirical claim, not Polars'.
-A `ModelBank` break on a new Polars is expected maintenance: check that path
-first, and the IO-plugin tests after it.
-
-**2026-09-03: the expression plugin warned on every use** (`docs/PLAN.md`
-§6, task 19). It shipped as before, and everything above still held for it.
-What changed was that `pl.col(..).online.<model>(..)` issued
-`InMemoryExpressionWarning` naming `lf.online.fit_predict`, because it was
-the one O(data) form. Nothing here moved: the floor and ceiling were set by
-`collect_batches`, not by the plugin, and the canary exercised all three
-paths. For a few hours the same task had the plugin out of the wheel,
-behind a cargo feature. That was reverted before release, so no wheel
-published at the time lacked it.
-
 #### "A frame allocated by one binary and freed by the other"
 
+**A `SeriesExport` carries a `release` callback into the binary that
+produced it, so each side frees its own memory with its own allocator.**
 This is the genuinely dangerous version of the question, and the reason the
-C Data Interface is the right mechanism. **A `SeriesExport` carries a
-`release` callback into the binary that produced it, so each side frees its
-own memory with its own allocator.** No Rust `DataFrame`, no `Drop` impl and
-no raw buffer ownership ever crosses. This was confirmed in `polars-ffi`
+C Data Interface is the right mechanism. No Rust `DataFrame`, no `Drop` impl
+and no raw buffer ownership ever crosses. This was confirmed in `polars-ffi`
 0.55.2's source, where `import_series` goes through Arrow's `import_array`.
 It was also stress-tested, and came back clean: 300 round-trips of
 5,000-row frames, plus 50 outputs deliberately outliving the inputs they
@@ -444,20 +581,12 @@ spelling out, because "they dlsym a C function" undersells it. The
 expression plugin that used it was removed in task 85, so this is the
 record of how it worked:
 
-- `polars_ffi` exports `MAJOR: u16 = 0` and `MINOR: u16 = 1`, and
-  `_polars_plugin_get_version()` packs them into a `u32` as
-  `(major << 16) | minor`.
-- The loader in `polars-plan` reads that *before making any other call*,
-  and **branches on MAJOR**:
-  `if major == 0 { use polars_ffi::version_0::*; … }`. The module is
-  literally named `version_0`. When the calling convention changes, polars
-  adds `version_1` and a second branch, and plugins built against the old
-  one keep working. Multi-version support is built into the loader.
-- The call itself is pure C:
-  `extern "C" fn(*const SeriesExport, usize, *const u8, usize, *mut SeriesExport, *const CallerContext)`.
-- The payload is the **Arrow C Data Interface**: a formal cross-language
-  specification, with its own stability guarantees and ownership protocol.
-  It is the same one DuckDB, pyarrow and cuDF interoperate through.
+| part | what it was |
+|---|---|
+| the version | `polars_ffi` exports `MAJOR: u16 = 0` and `MINOR: u16 = 1`, and `_polars_plugin_get_version()` packs them into a `u32` as `(major << 16) \| minor` |
+| the loader | `polars-plan` reads that version *before making any other call*, and **branches on MAJOR**: `if major == 0 { use polars_ffi::version_0::*; … }`. The module is literally named `version_0`. When the calling convention changes, polars adds `version_1` and a second branch, and plugins built against the old one keep working. Multi-version support is built into the loader |
+| the call | pure C: `extern "C" fn(*const SeriesExport, usize, *const u8, usize, *mut SeriesExport, *const CallerContext)` |
+| the payload | the **Arrow C Data Interface**: a formal cross-language specification, with its own stability guarantees and ownership protocol. It is the same one DuckDB, pyarrow and cuDF interoperate through |
 
 That is the textbook way to cross a binary boundary you cannot recompile:
 drop to C, version the contract explicitly, and let each side own its own
@@ -497,8 +626,8 @@ for exactly that reason.
 `polars 2.0.0rc1` is on PyPI, and it is the only 2.x release; stable is
 1.44.2. **The suite was built and run against it, and neither failure it
 found is a break in the library.** The run used a throwaway worktree with
-its own `CARGO_TARGET_DIR`, the way `polars-canary.yml` does it. It pinned
-the Python dependency, then ran `uv sync`, `maturin develop --release`, and
+its own `CARGO_TARGET_DIR`. It pinned the Python dependency, then ran
+`uv sync`, `maturin develop --release`, and
 `pytest -m "not soak and not pins"`.
 
 **Result: 2,438 passed, 2 failed, 3 skipped.**
@@ -518,12 +647,13 @@ and 2.0.0rc1, `chunk_size` and `maintain_order` included.
 
 #### R6 narrows, as `docs/STATE-WORKFLOW.md` said it might
 
-**`docs/STATE-WORKFLOW.md` §4 states R6, the one gap in the plan's state
-workflow.** Polars drains a Python source before surfacing a later node's
-error. So a query that fails *after* the bank still writes `save_state` with
-the whole stream's state, while its own output is missing. The stability
-note in that document's §6 says "R6 narrows if polars ever stops it". That
-R6 is the state workflow's; this document's own R6 is the history scan.
+**`docs/STATE-WORKFLOW.md` §4 states its rule R6, the one gap in the
+plan's state workflow.** Polars drains a Python source before surfacing a
+later node's error. So a query that fails *after* the bank still writes
+`save_state` with the whole stream's state, while its own output is
+missing. The stability note in that document's §6 says "R6 narrows if
+polars ever stops it". That R6 is the state workflow's; this document's
+own R6 is the history scan.
 
 **On 2.0.0rc1 it does narrow, and the narrowing is length-dependent.**
 Measured with `chunk_rows=500` and a failing downstream cast:
@@ -602,10 +732,11 @@ plan it had before.
 **`is_pure` is not new: it is in 1.44.1 too.** On 2026-09-10 this library
 did not set it, although `_frame.py`'s module docstring documents exactly
 that property. It was worth deciding on its own merits. Purity is polars'
-licence to cache or skip a re-execution, and `docs/STATE-WORKFLOW.md` R2
-measured how often the source runs. **Decided the same day in task 77**
-(`4c545af`): `_frame.py` declares the source pure exactly when a run has
-nothing to write, with no `save_state` and no `closed_groups` file.
+licence to cache or skip a re-execution, and the rule R2 of
+`docs/STATE-WORKFLOW.md` measured how often the source runs. **Decided the
+same day in task 77** (`4c545af`): `_frame.py` declares the source pure
+exactly when a run has nothing to write, with no `save_state` and no
+`closed_groups` file.
 
 #### What this does not settle
 
@@ -614,71 +745,88 @@ candidate.
 
 **Superseded on 2026-09-10: `<2` became `<3` in 0.5.1.** What changed the
 judgment was not new evidence about the candidate, but where the risk of
-being wrong now lands. `release.yml`'s blocking leg runs the whole suite,
-at the tag, on the newest version the declared range admits. So from 0.5.1
-on, 2.0.0 final is tested before any wheel is published under a range that
-includes it. The paragraph above was written when nothing checked the top
-of the range at release time. Widening then would have meant declaring
-support and finding out afterwards. See
+being wrong now lands. `release.yml`'s blocking leg runs the suite on the
+newest version the declared range admits, in every dispatched release,
+before any tag exists. So from 0.5.1 on, 2.0.0 final is tested before any
+wheel is published under a range that includes it. The paragraph above was
+written when nothing checked the top of the range at release time.
+Widening then would have meant declaring support and finding out
+afterwards. See
 [Raising the ceiling to a new major](#raising-the-ceiling-to-a-new-major),
-below.
+above.
 
-### Raising the ceiling to a new major
+### The expression plugin, as recorded
 
-The ceiling is `<3`, raised from `<2` in 0.5.1, so a py-polars 3.0 is
-excluded until this is done again. The steps, in order:
+**The expression plugin, `pl.col(..).online.<model>(..)`, was removed in
+task 85 (2026-09-17), because Polars hands a stateful user expression its
+whole column.** It was the supported mechanism, with a MAJOR/MINOR
+handshake the loader checks before its first call. So a break showed as a
+refusal to load, rather than misbehaviour.
 
-1. **The canary and the release job's advisory leg are already testing
-   it.** Both unpin, and both allow prereleases, so a release candidate of
-   the next major is exercised the week it appears. Read the last run
-   before starting. Raising the ceiling is also what moves that major under
-   the *blocking* leg, since that leg tests the range as declared.
-2. **Check the Rust side separately.** py-polars' major and the `polars`
-   crate's version are independent. As of 2026-09-10, py-polars is at
-   2.0.0rc1, while the newest crate is 0.55.2, the one `Cargo.toml` pins. A
-   Python major on its own needs no Rust change. The wheel carries its own
-   statically linked copy, and the two never meet: data crosses on the
-   Arrow C Data Interface.
-3. **Widen the range in `pyproject.toml`**, today `polars>=1.34.0,<3`, and
-   let the lock resolve. That is the only required source change if steps
-   1–2 are clean.
-4. **Re-run `docs/VALIDATION.md`** with
-   `uv run python scripts/validate.py > docs/VALIDATION.md`. Its header
-   records the Polars version it was generated with, which is why its test
-   is marked `pins`.
-5. **Ship it as a minor**, not a patch. Widening the Polars range is a
-   minor release by this package's own rule (the README, *This package's
-   own versioning*).
+**The one path that carried a guarantee was also the one that could not
+stream.** The measurements above stand as the record of what it did, and
+nothing in the current guidance depends on it. The **Arrow PyCapsule
+interface** now takes its place in the guarantee story. It covers the
+output side only, so a call still crosses the `PyDataFrame` boundary on the
+way in.
 
-**`<3` was raised on what the 2.0 candidate measured, not on a guess that
-2.x keeps the interface.** The whole suite passes with the same numbers as
-on 1.44. All three interfaces of the time work: the expression plugin,
-`ModelBank` and the IO plugin. `LazyFrame.collect_batches`, the floor, is
-unchanged. One behaviour moved in our favour: a query that fails *after*
-the bank now stops the source instead of draining it, so `save_state` is
-not written on a long stream. That narrows the gap `docs/STATE-WORKFLOW.md`
-calls R6. The measurements are above, in *Polars 2.0.0rc1, measured*.
-
-**It was raised on `2.0.0rc1`, before 2.0.0 final was on PyPI, and that was
-deliberate.** It changes nothing for a user today, because installers do
-not resolve to a release candidate. So every user still gets the newest 1.x
-until 2.0.0 ships, and then gets it without waiting on a release of ours.
-The blocking leg is what covers the difference between the candidate and
-the final.
+**2026-09-03: the expression plugin warned on every use** (`docs/PLAN.md`
+§6, task 19). It shipped as before, and everything above still held for it.
+What changed was that `pl.col(..).online.<model>(..)` issued
+`InMemoryExpressionWarning` naming `lf.online.fit_predict`, because it was
+the one O(data) form. Nothing here moved: the floor and ceiling were set by
+`collect_batches`, not by the plugin, and the canary exercised all three
+paths. For a few hours the same task had the plugin out of the wheel,
+behind a cargo feature. That was reverted before release, so no wheel
+published at the time lacked it.
 
 ## Keeping the API stable
 
-A change to the public API can break a user without raising anything. This
-section says what the API is, how a change to it is caught, and the policy
-for making one. It is the proposal of 2026-08-31, with dated notes where the
-code has moved since.
+**A change to the public API can break a user without raising anything.**
+So a policy says what counts as API and what a change to it needs, and one
+snapshot test turns every change into a diff someone has to accept. This
+section gives the policy first, then what the API is and how each part is
+caught. Its last two subsections are records of 2026-08-31 and of 2026-09.
+
+### The policy
+
+**What the table calls stable is API, and a breaking change to it needs a
+new minor version before 1.0 and a new major after.** The README carries
+the part a user needs, its versioning rules, under *This package's own
+versioning*. The rest of the policy lives here, and CONTRIBUTING carries
+none of it.
+
+| | what it covers |
+|---|---|
+| **stable** | everything in `__all__`, the `spec.*` constructors and their keyword names, the helper modules' functions, the `.online` namespace, output field names, the column names of the closed-groups frame, and the TOML config keys |
+| **stable within a schema** | the state file format: versioned msgpack, which loads on every OS. Pre-1.0, a change of layout raises the minimum schema rather than adding a loader, so an older file is refused by its version (the user's waiver of hard rule 5, 2026-09-14 and 2026-09-28) |
+| **not stable** | anything underscore-prefixed; the Rust crates, which the going-public item [R3](#r3--rust-crates-not-published) decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
+
+**Changing a default is a breaking change, because it changes results
+silently.** It needs a minor bump pre-1.0, a major bump after, and a
+CHANGELOG entry saying what moved and by how much.
+
+**Pre-1.0, the minor version carries breaking changes, so a user who wants
+stability pins the current minor.** The README's example pin names it, as
+`~=0.13.0` names the 0.13 series, and a minor release updates that example
+([step 6](#the-steps-of-a-release)). The current release is the version
+`pyproject.toml` names.
+
+### What not to do
+
+| do not | why |
+|---|---|
+| `__getattr__`-guard the submodules | `polars_online._spec` is importable, and someone will reach into it; that is what the underscore is for. Enforcing it would take more work than the honesty is worth |
+| freeze the API before 0.1.0 ships | the snapshot test is for detecting change, not preventing it, and before there are any users is exactly when changing names is cheap. 0.1.0 shipped on 2026-09-03 |
+| add `cargo semver-checks` | it is the right tool for a published Rust API, and pure overhead otherwise. Add it only if the decision of the going-public item [R3](#r3--rust-crates-not-published) is reversed and the crates are published |
 
 ### What the API actually is
 
-The API is bigger than `__all__` suggests. The proposal found four surfaces,
-in descending order of how easily a change could break someone.
+The API is bigger than `__all__` suggests. The proposal of 2026-08-31 found
+four surfaces, in descending order of how easily a change could break
+someone. Each is described as it stands, with its dated figures.
 
-**1. Output field names, the largest and least guarded.**
+**1. Output field names, the largest surface.**
 
 ```
 pred_y__r0.000001@h100    resid_y__r0.5@h100    abs_resid_q0.95_y0    weight_sum@h500
@@ -690,48 +838,70 @@ quantile levels and target names, and **every one of them is API**. Adding
 an output, renaming a suffix, or changing how a float renders silently
 breaks downstream code, and the failure surfaces as a `StructFieldNotFound`
 in someone else's pipeline. On 2026-08-31 exactly *one* spec shape was
-pinned (`test_exact_field_names_for_a_grid_spec`, 52 fields, still in
-`tests/test_portability.py`). The snapshot test below pins 28 today.
+pinned (`test_exact_field_names_for_a_grid_spec`, then 52 fields, now 58,
+still in `tests/test_portability.py`). Today the snapshot test below pins
+28 spec shapes. `test_names_match_the_realized_struct_for_every_model`
+checks, in 40 cases, that the fields a spec declares are the fields its
+output has.
 
 **2. Twenty-one spec constructors and ~200 named keyword parameters, plus
 the helper modules**, as counted on 2026-09-06. All are keyword-only, so
 positional order is not API, but every *name* is. On that date 29 of the
 parameters were the `CommonKwargs` every spec shares; today it holds 33
-(`python/polars_online/_kwargs.py`). The four helper modules named then were
-`po.corr`, `po.sim`, `po.gram` and `po.prep` (`po.stream` since task 105),
-whose functions are read the same way. `tests/api_surface.txt` pins the constructors and their keyword
-names. It pins every helper module the package has (`corr`, `eval`, `gram`,
-`sim` and `stream`), read from the package's directory
-(`tests/test_api_surface.py`, since task 109).
+(`python/polars_online/_kwargs.py`), and the constructors are still
+twenty-one. The four helper modules named then were `po.corr`, `po.sim`,
+`po.gram` and `po.prep` (`po.stream` since task 105), whose functions are
+read the same way. `tests/api_surface.txt` pins the constructors and their
+keyword names. It pins every helper module the package has, read from the
+package's directory: today `corr`, `eval`, `gram`, `ops`, `sim` and
+`stream` (`tests/test_api_surface.py`, since task 109).
 
-**3. Defaults, which are API in the worst way.** They are the solve
-cadence (by weight since 0.13.0, `half_life/50` of clock in steady state),
-`standardize` true for lasso and false for ridge, `average_eta = 1.0` and
-`clip_gradient = 1e3`. Changing one of these
-does not raise: it silently changes users' numbers, which is worse than
-breaking them. `docs/VALIDATION.md` justifies them, and
-`test_validation_doc.py` pins that they are still the measured optimum, but
-nothing pins the *values* as a contract.
+**3. Defaults, which are API in the worst way.** Changing one does not
+raise: it silently changes users' numbers, which is worse than breaking
+them. Every default a builder sets in Python is in the snapshot, which
+renders keyword names with their defaults. Some resolve in Rust from
+`None`, so the snapshot shows `None`, and each of those is pinned
+elsewhere, or not at all:
 
-**4. State files and the TOML config, already the best guarded.** A state
-file is versioned msgpack, with `SCHEMA_VERSION` plus a bank
-`format_version`. The proposal held this up as the model the rest should
-follow. It had a frozen fixture per schema (`state_v1.rs`,
-`state_schema2.rs`, `state_schema3.rs`, `state_schema4.rs`,
-`state_schema5.rs`), and a documented rule (hard rule 5) to keep a
-previous-version loader. Each fixture asked only what a converter must
-preserve: it loads, it continues the stream to the bit, and it re-saves
-byte-identically while the writer is unchanged. So the last of those became
-the upgrade test the moment the writer moved, which is exactly what happened
-to schema 3 at task 40.
+| default | set in | pinned by |
+|---|---|---|
+| the solve cadence of `ewridge`, `lasso`, `huber` and `quantile`: by weight since 0.13.0, `half_life/50` of clock in steady state | Rust | `tests/test_solve_cadence.py` |
+| the clock settings, the readiness gates, and `min_weight`'s count floor | Rust | `crates/online-polars/tests/spec_defaults.rs` |
+| `standardize`: true for `kalman`, false for `ewridge`, `huber`, `quantile` and `sgd`; `lasso` has no such keyword | Python | the snapshot |
+| `average_eta = 1.0` | Rust | nothing pins the value |
+| `clip_gradient = 1e3`, for `sgd` | Rust | nothing pins the value; `tests/test_sgd.py` checks that the default clip keeps a Poisson fit stable |
+
+`docs/VALIDATION.md` justifies the defaults it measures, and
+`test_validation_doc.py` pins that they are still the measured optimum.
+
+**4. State files and the TOML config.** A state file is versioned msgpack,
+with `SCHEMA_VERSION` plus a bank `format_version`. `SCHEMA_VERSION` is 25,
+and the bank's `format_version` is 2, or 3 when a spec carries a clock
+parameter as a duration. A bank file older than schema 25 is refused by its
+version (`MIN_BANK_SCHEMA_VERSION`, `crates/online-polars/src/bank.rs`),
+and that is every file a release has written so far. The models' own
+layout still loads from 14 (`MIN_SCHEMA_VERSION`,
+`crates/online-core/src/lib.rs`). A window run's state, from `with_windows`,
+has its own version, 5. A change to it moves the bank's schema too, and a
+test pairs the two numbers (`windows_frame.rs`). The state of
+`po.stream.refresh_time` has its own version, 1. The exception to hard
+rule 5, and the reason for each raise of a minimum, are recorded beside
+`MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION`.
+
+**The proposal held this surface up as the model the rest should follow.**
+It had a frozen fixture per schema (`state_v1.rs`, `state_schema2.rs`,
+`state_schema3.rs`, `state_schema4.rs`, `state_schema5.rs`), and a
+documented rule (hard rule 5) to keep a previous-version loader. Each
+fixture asked only what a converter must preserve: it loads, it continues
+the stream to the bit, and it re-saves byte-identically while the writer is
+unchanged. So the last of those became the upgrade test the moment the
+writer moved, which is exactly what happened to schema 3 at task 40.
 
 **Pre-1.0, the loader rule is suspended, and the fixtures are gone.** They
 went in the naming pass of 2026-09-07 (`6124d0b`), after which no older
-state could be read. Today `SCHEMA_VERSION` is 16 and `MIN_SCHEMA_VERSION`
-14, so a state older than 14 is refused on its version, and 14 and 15 load
-through the named encoding's defaults. The
-exception to hard rule 5, and the reason for each raise of the minimum, are
-recorded beside `MIN_SCHEMA_VERSION` in `crates/online-core/src/lib.rs`.
+state could be read. On 2026-09-25 `SCHEMA_VERSION` was 16 and
+`MIN_SCHEMA_VERSION` 14, so 14 and 15 loaded through the named encoding's
+defaults; the numbers above are today's.
 
 ### S — The mechanism: one API snapshot test — **done**
 
@@ -764,10 +934,11 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 | constructors | every spec constructor's **full signature including default values** | every constructor signature *including defaults*, the shared `**common` parameters listed once, explicitly | |
 | the namespace | the expression-namespace method list | the expression namespace | the `lf.online` and `df.online` namespaces; the expression namespace went with task 85 |
 | `ModelBank` | | | its name and signature |
-| helper modules | | | every one: `corr`, `eval`, `gram`, `sim` and `stream` (`prep` until task 105) |
+| helper modules | | | every one: `corr`, `eval`, `gram`, `ops`, `sim` and `stream` (`prep` until task 105) |
 | output fields | `output_fields()` for a canonical matrix of ~12 spec shapes: each model, plus grids, feature sets, multi-target, and every `emit_*` combination | `output_fields()` across a 14-case matrix covering every model, the full grid/emit combinations, and the float-rendering extremes | 28 cases |
+| the closed-groups columns | | | each kind's columns, in order (since 2026-09-24) |
 | versions | `SCHEMA_VERSION` and the bank `format_version` | `schema_version` | |
-| length of `tests/api_surface.txt` | | 416 lines | 904 lines |
+| length of `tests/api_surface.txt` | | 416 lines | 1,148 lines; 904 on 2026-09-24 |
 
 **Building it found two things, and fixed both:**
 
@@ -776,40 +947,9 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 | a legal `ridge = 1e-300` produced a **311-character field name**, because Rust's float `Display` never uses scientific notation | numbers outside `[1e-6, 1e7)` now render compactly (`1e-300`), chosen so no existing name changed. The rendering is centralized in one `num_label()` function, instead of seven scattered `format!` sites |
 | a grammar ambiguity: a target literally named `y__r0.5` renders identically to a grid field | documented in the README, with a duplicate-name tripwire in `Bank::new`, rather than banned, since it cannot corrupt a struct |
 
-The snapshot subsumes the single-shape field-name test, and would have
-caught the E23 declared-vs-realized divergence from the other direction.
-
-### Policy to write down
-
-**The proposal meant this policy to go, short, into the README and
-CONTRIBUTING, and it is written here instead.** The README carries only its
-versioning rules, under *This package's own versioning*, and CONTRIBUTING
-carries none of it.
-
-| | what it covers |
-|---|---|
-| **stable** | everything in `__all__`, the `spec.*` constructors and their keyword names, the `.online` namespace, output field names, the state file format, and the TOML config keys |
-| **not stable** | anything underscore-prefixed; the Rust crates, which R3 decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
-
-**Changing a default is a breaking change, because it changes results
-silently.** It needs a minor bump pre-1.0, a major bump after, and a
-CHANGELOG entry saying what moved and by how much.
-
-**Pre-1.0, the minor version carries breaking changes**, so a user who
-wants stability pins the current minor. This line recorded `~=0.7.0` as that
-pin; the current release is the version `pyproject.toml` names.
-
-### What not to do
-
-- **Do not `__getattr__`-guard the submodules.** `polars_online._spec` is
-  importable, and someone will reach into it; that is what the underscore
-  is for. Enforcing it would take more work than the honesty is worth.
-- **Do not freeze the API before 0.1.0 ships.** The snapshot test is for
-  detecting change, not preventing it. Before there are any users is
-  exactly when changing names is cheap. (0.1.0 shipped on 2026-09-03.)
-- **Do not add `cargo semver-checks`** unless R3 says the crates are
-  published. It is the right tool for a published Rust API, and pure
-  overhead otherwise.
+The snapshot subsumes the single-shape field-name test. It would have
+caught the E23 declared-vs-realized divergence (`docs/ENHANCEMENTS.md`)
+from the other direction.
 
 ### API usability round (pre-users window)
 
@@ -828,7 +968,7 @@ was done:
 | kept | rather than | why |
 |---|---|---|
 | `fit_predict`'s name | | sklearn readers may expect in-sample fit-then-predict. Ours is predict-then-update, which is strictly better for them. A docstring note suffices, and the fused call *is* the out-of-sample guarantee |
-| the eight `emit_*` booleans | a stringly `outputs=[...]` list | they are discoverable in signatures |
+| the `emit_*` booleans, seven then and nine today (`tests/api_surface.txt`) | a stringly `outputs=[...]` list | they are discoverable in signatures |
 | spec dicts | spec objects | they are JSON-ready and printable, and validation already happens at construction |
 | wide struct output | a native long format | `eval.unpack` already provides long form on demand |
 
@@ -840,50 +980,51 @@ and four helper modules' worth of new functions: `po.corr` with twenty,
 added `group_close` and the closed-group queue on every spec, and lagged
 co-moments on `ew_cov`. In API terms:
 
-- **`SCHEMA_VERSION` became 5, and `state_schema5.rs` froze it**: a bank
-  with an undrained closed row, an `ew_cov` with a partly filled lag ring,
-  and one of each new model mid-stream. `state_schema4.rs` still loaded,
-  continued to the bit and re-saved as 5, which was hard rule 5 discharged.
-  Both fixtures have since gone, and the schema is 16
-  ([What the API actually is](#what-the-api-actually-is)).
-- **Every new output field name is pinned** by `tests/api_surface.txt`,
-  which then gained a `[helper modules]` section, and by
-  `tests/test_golden_pipeline.py`, which fixes the numbers of a
-  twenty-five-spec bank at three rows.
-- **Three of the new defaults are measured, not chosen**: `bocpd`'s
-  `robust_beta = 0.1` (above ~0.2 nothing is ever detected), `bocpd`'s
-  `emission = "diag"`, and `rcov`'s automatic bandwidth. The measurements
-  are in `docs/PLAN.md` task 55 and `docs/ENHANCEMENTS.md` E61 for `bocpd`,
-  and in E57 for `rcov`. Changing one of them is a breaking change, by
-  [the policy](#policy-to-write-down).
-- **Two of the three streaming paths still carry no guarantee** (CLAUDE.md
-  rule 13): `ModelBank` and the IO plugin. Nothing in this batch changes
-  that, and it adds no new polars API dependency beyond
-  `LazyFrame.collect_batches`, which is already the floor.
-- **The closed-group frame's *column* names are pinned since 2026-09-24**
-  (`spec`, `group`, `session`, `rcov`, `bandwidth_used`, …). They are as
-  much API as an output field is, and until then only
-  `test_closed_groups.py` read them by name. `tests/api_surface.txt` now
-  records them in order, as `[closed_groups columns]`: the shared columns,
-  and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag
-  and bin blocks switched on.
+| what the batch added | how the API held it |
+|---|---|
+| **`SCHEMA_VERSION` 5** | `state_schema5.rs` froze it: a bank with an undrained closed row, an `ew_cov` with a partly filled lag ring, and one of each new model mid-stream. `state_schema4.rs` still loaded, continued to the bit and re-saved as 5, which was hard rule 5 discharged. Both fixtures have since gone, and the schema is 25 ([What the API actually is](#what-the-api-actually-is)) |
+| **every new output field name** | pinned by `tests/api_surface.txt`, which then gained a `[helper modules]` section, and by `tests/test_golden_pipeline.py`, which fixes the numbers of a twenty-five-spec bank at three rows |
+| **three new defaults, measured rather than chosen** | `bocpd`'s `robust_beta = 0.1` (above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. The measurements are in `docs/PLAN.md` task 55 and `docs/ENHANCEMENTS.md` E61 for `bocpd`, and in E57 for `rcov`. Changing one of them is a breaking change, by [the policy](#the-policy) |
+| **no new Polars interface** | two of the three streaming paths of the time still carried no guarantee (CLAUDE.md rule 13): `ModelBank` and the IO plugin. The batch added no polars API dependency beyond `LazyFrame.collect_batches`, which is already the floor |
+| **the closed-group frame's *column* names** | pinned since 2026-09-24 (`spec`, `group`, `session`, `rcov`, `bandwidth_used`, …). They are as much API as an output field is, and until then only `test_closed_groups.py` read them by name. `tests/api_surface.txt` now records them in order, as `[closed_groups columns]`: the shared columns, and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag and bin blocks switched on |
 
 ## CI cost while the repo was private
 
-While the repository was private, Actions minutes were metered, and not
-evenly: macOS billed at 10x and Windows at 2x. These records are how the
-month's minutes ran out on day one, where they went, and what the fixes
-changed. Going public removed the constraint, since Actions is unmetered on
-public repositories. The policy that came out of it still holds, enforced by
-`tests/test_ci_cost_policy.py`
-([What a push costs now](#what-a-push-costs-now)).
+**The CI cost policy still holds, and `tests/test_ci_cost_policy.py`
+enforces it by reading the workflows.** While the repository was private,
+Actions minutes were metered, and not evenly: macOS billed at 10x and
+Windows at 2x. Going public removed the constraint, since Actions is
+unmetered on public repositories. The matrix still widens by itself on a
+public repository, and would narrow again on a private one. The records
+below are how the month's minutes ran out on day one, where they went, and
+what the fixes changed.
+
+### The policy, as the test holds it
+
+`tests/test_ci_cost_policy.py` parses every workflow, in 46 cases over
+eight classes:
+
+| class | what it asserts |
+|---|---|
+| `TestEveryJobIsBounded` | every job in every workflow has a timeout, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead |
+| `TestTheMatrixDefaultsToCheap` | lint stays on Linux and never builds the extension; the expensive runners are opt-in; the visibility test fails safe on a missing field; macOS is reachable only by a manual dispatch or the repository being public |
+| `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
+| `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
+| `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
+| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request; the weekly pass runs only while public or by hand, and reports |
+| `TestTheRustTestsLinkNoPython` | every workflow and the local gate leave `online-py` out of `cargo test`, so no test binary links libpython |
+| `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
+
+A comment could not stop the 830-minute mistake recorded below; that test
+would have.
 
 ### Actions quota: exhausted on day one (2026-08-31)
 
-**The push of `1a52267` did not run, and the cause was the Actions
-allowance, not the workflow.** All four jobs failed in ~2s with *"The job
-was not started because recent account payments have failed or your
-spending limit needs to be increased."*
+**A push on 2026-08-31 did not run, and the cause was the Actions
+allowance, not the workflow.** The commit it pushed was `1a52267`, which
+is not a commit in this repository's history. All four jobs failed in ~2s
+with *"The job was not started because recent account payments have failed
+or your spending limit needs to be increased."*
 
 The billed minutes, summed from job durations across every run this repo
 had ever had, all of them that day, with GitHub's per-job round-up and OS
@@ -903,7 +1044,9 @@ Two things went wrong.
 anything that was not a push, every PR, got the full matrix. One dependabot
 PR spent 830 minutes, 37% of the month, on four macOS jobs. Meanwhile the
 comment above the matrix claimed macOS ran "weekly, on demand, and on
-release tags". It is now written as opt-in on `schedule`/`workflow_dispatch`.
+release tags". It was rewritten as opt-in on `schedule`/`workflow_dispatch`.
+Today a schedule adds Windows alone, and macOS runs on a manual dispatch or
+a public repository ([the policy](#the-policy-as-the-test-holds-it)).
 
 **Windows ran cold every time**: 12 jobs, averaging 47 raw minutes each.
 [CI cost: where the 80 minutes went](#ci-cost-where-the-80-minutes-went)
@@ -966,19 +1109,18 @@ per-job round-up and the OS multipliers (macOS 10x, Windows 2x).
 
 Two things were examined and deliberately left alone:
 
-- **Two full compiles per `test` job**, finding 3 above: different
-  profiles, and genuinely different artifacts, so only caching helps.
-- **`release.yml` does not cancel superseded runs; it queues instead.** It
-  is the one workflow where cancelling costs more than it saves: the run
-  being cancelled may be midway through uploading wheels or publishing to
-  PyPI.
+| left alone | why |
+|---|---|
+| two full compiles per `test` job, finding 3 above | different profiles, and genuinely different artifacts, so only caching helps |
+| `release.yml` queues superseded runs rather than cancelling them | it is the one workflow where cancelling costs more than it saves: the run being cancelled may be midway through uploading wheels or publishing to PyPI |
 
 **Watch out for `release.yml` (2026-08-31, while the repo was private).** It
-is tag-triggered, and untouched by the policy above: three macOS jobs plus
-Windows, across a six-target wheel matrix. At 10x, one release tag could
-plausibly cost most of a month's allowance while the repo is private. Hence
-the rule of the day: do not cut a release tag before going public. The
-repository went public on 2026-09-02, and 0.1.0 was released on 2026-09-03.
+was tag-triggered then, and untouched by the policy above: three macOS jobs
+plus Windows, across a six-target wheel matrix. At 10x, one release tag
+could plausibly cost most of a month's allowance while the repo was
+private. Hence the rule of the day: do not cut a release tag before going
+public. The repository went public on 2026-09-02, and 0.1.0 was released
+on 2026-09-03.
 
 #### The ubuntu `test` failure was not infrastructure
 
@@ -1006,7 +1148,7 @@ step now has two independent reasons to be where it is, and
 `tests/test_ci_cost_policy.py` pins both: disk before the restore, and
 rustflags before any compile.
 
-#### What a push costs now
+#### What a push cost after the fixes
 
 Extrapolated from the observed timings, for a private-repo push:
 
@@ -1039,16 +1181,6 @@ own artifacts to keep the cache small, so our four crates recompile each
 run. `cache-workspace-crates` would address it, but was not pursued,
 because 28 billed minutes a push is no longer the constraint.
 
-**The policy is enforced by `tests/test_ci_cost_policy.py`, not by
-comments.** It parses the workflows and asserts four things:
-
-- the matrix fallback is the cheap branch;
-- lint stays on Linux and never builds the extension;
-- every job has a timeout;
-- macOS is reachable only by dispatch, schedule, or the repo being public.
-
-A comment could not stop the 830-minute mistake; that test would have.
-
 ## Going public, as recorded
 
 This section is the record of going public, from the proposal of 2026-08-31
@@ -1057,6 +1189,10 @@ to the settings of 2026-09-06. On 2026-09-06 the document's status read
 0.1.1 on 2026-09-04, and 0.2.0 was being released. The decision to go public
 was taken on 2026-08-31, and the repository went public on 2026-09-02, when
 it was deleted and recreated public.
+
+Its R1–R6 are this document's own items. `docs/STATE-WORKFLOW.md` numbers
+its rules R1–R7, and `docs/PLAN.md` §14 its review rounds R1 to R9; each
+is named with its document where this one cites it.
 
 ### Suggested order
 
@@ -1071,10 +1207,10 @@ The proposal's order, as planned on 2026-08-31:
 **Steps 1 and 2 and the R6 scan happened in this order on 2026-08-31, and
 R5's green CI came before the repository went public.** Three things went
 otherwise. The policy was written in this document, under
-[Policy to write down](#policy-to-write-down), and not in the README or
-CONTRIBUTING. The R4 settings needed the web UI, and on 2026-09-03 the REST
-API set some of them instead. And instead of a flip of visibility, the
-repository was deleted and recreated public on 2026-09-02
+[The policy](#the-policy), and not in the README or CONTRIBUTING. The R4
+settings needed the web UI, and on 2026-09-03 the REST API set some of them
+instead. And instead of a flip of visibility, the repository was deleted
+and recreated public on 2026-09-02
 ([Going public (2026-08-31)](#going-public-2026-08-31)).
 
 ### Before going public: R1–R6
@@ -1152,21 +1288,22 @@ ignored. The licence now lands in the sdist, and in the wheel's
 
 #### R4 — Repository settings
 
+**R4 asked for three settings: branch protection on `main`, the
+description and topics, and private vulnerability reporting.** Branch
+protection was to require CI to pass and forbid a force-push, since without
+it nothing catches a bad push. The topics, `polars`, `online-learning`,
+`streaming`, `regression` and `rust`, are how anyone finds the repository.
+`SECURITY.md` already told people to use private reporting. The working
+rule that followed was to fast-forward `main` only from a branch whose CI
+run was green; a release, by [its steps](#the-steps-of-a-release), is
+committed on `main` itself.
+
 On 2026-08-31 these needed the web UI and were not scriptable from here.
 On 2026-09-03 the REST API set the description and topics, and a ruleset
 that stops `main` being force-pushed or deleted. Private vulnerability
 reporting was left to the owner.
 [Repository settings, as recorded](#repository-settings-as-recorded) has
 each one's full record.
-
-- **Branch protection on `main`: require CI to pass, no force-push.**
-  Without it, a bad push cannot be caught by anything. The working rule
-  since has been to fast-forward `main` only from a branch whose CI run is
-  green.
-- **Description and topics** (`polars`, `online-learning`, `streaming`,
-  `regression`, `rust`): this is how anyone finds it.
-- **Private vulnerability reporting**, which `SECURITY.md` already tells
-  people to use.
 
 #### R5 — Green CI on all three platforms first
 
@@ -1236,17 +1373,12 @@ kindness to corporate users, and the LICENSE carries the attribution.
 Each one's later record is in
 [Repository settings, as recorded](#repository-settings-as-recorded).
 
-1. Settings → Code security: Dependabot alerts and security updates, secret
-   scanning and push protection, and **private vulnerability reporting**,
-   which both SECURITY.md and CODE_OF_CONDUCT.md point at.
-2. Description and topics; branch protection on `main`, last.
-3. README badges (CI, license): they only render once public, so add them
-   then.
-4. **Weekly native leak check**, `docs/PLAN.md` task 18. Done 2026-09-03:
-   `.github/workflows/leakcheck.yml`, Mondays and on demand, on ubuntu and
-   macOS, with a control leak that must be caught. The "clean today"
-   baseline this item rested on turned out to be a blind check, and task 18
-   has the numbers.
+| # | what remained | what it was for, and what became of it |
+|---|---|---|
+| 1 | Settings → Code security: Dependabot alerts and security updates, secret scanning and push protection, and **private vulnerability reporting** | private reporting is what both SECURITY.md and CODE_OF_CONDUCT.md point at |
+| 2 | description and topics; branch protection on `main`, last | |
+| 3 | README badges (CI, license) | they only render once public, so add them then |
+| 4 | **a weekly native leak check**, `docs/PLAN.md` task 18 | done 2026-09-03: `.github/workflows/leakcheck.yml`, Mondays and on demand, on ubuntu and macOS, with a control leak that must be caught. The "clean today" baseline this item rested on turned out to be a blind check, and task 18 has the numbers |
 
 ### Going public (2026-08-31)
 
@@ -1312,7 +1444,7 @@ left to the owner, each of them a decision rather than a setting. They were
 the `pypi` environment, private vulnerability reporting, the PyPI pending
 publisher, and a `workflow_dispatch` rehearsal of `release.yml` on `main`.
 The rehearsal ran the same day, and what it found is in
-[Rehearse before tagging](#rehearse-before-tagging).
+[The six faults of 2026-09-03](#the-six-faults-of-2026-09-03).
 
 **The first push also proved the `paths-ignore` warning above, in the
 cheapest possible way.** It ended in two documentation commits, the filter
@@ -1328,7 +1460,7 @@ and when:
 | setting | the record |
 |---|---|
 | branch protection on `main` | 2026-08-31 (R4): require CI to pass, no force-push. 2026-09-02: did not come back with the recreation. 2026-09-03: a ruleset, so `main` cannot be force-pushed or deleted |
-| `v*` tags | 2026-09-03: a ruleset, so `v*` tags cannot be moved or deleted once they exist, with no bypass list; the owner is bound too, and disabling the ruleset is the only way round it. 2026-09-06: [the release gate](#the-release-gate-2026-09-06) records the `release tags are immutable` ruleset over `refs/tags/v*`, with `deletion` and `update` rules and an empty bypass list |
+| `v*` tags | 2026-09-03: a ruleset, so `v*` tags cannot be moved or deleted once they exist, with no bypass list; the owner is bound too, and disabling the ruleset is the only way round it. 2026-09-06: [the release gate](#the-release-gate) records the `release tags are immutable` ruleset over `refs/tags/v*`, with `deletion` and `update` rules and an empty bypass list |
 | description, homepage and topics | 2026-08-31 (R4): description and topics. 2026-09-02: did not come back. 2026-09-03: the description, the homepage (the Pages site) and the topics set |
 | Dependabot alerts and security updates | 2026-08-31: remaining, under Settings → Code security. 2026-09-02: did not come back. 2026-09-03: re-enabled |
 | secret scanning and push protection | 2026-08-31: remaining, under Settings → Code security |

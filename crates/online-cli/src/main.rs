@@ -188,12 +188,26 @@ fn run() -> Result<(), String> {
         println!("input:  {} ({})", cfg.input.display(), input_format.name());
         match output_format {
             Some(f) => println!("output: {} ({})", cfg.output.display(), f.name()),
-            None => println!(
-                "output: none (--no-output); the run's product is {}",
-                cfg.save_state
-                    .as_ref()
-                    .map_or_else(|| "nothing".into(), |p| p.display().to_string())
-            ),
+            // `validate` refuses a run with neither, so the list is never
+            // empty. The closed groups were left out of it until task 154,
+            // and a run whose product they were said it had none.
+            None => {
+                let products: Vec<String> = [
+                    cfg.save_state
+                        .as_ref()
+                        .map(|p| format!("the state, {}", p.display())),
+                    cfg.closed_groups
+                        .as_ref()
+                        .map(|p| format!("the closed groups, {}", p.display())),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                println!(
+                    "output: none (--no-output); the run's product is {}",
+                    products.join(", and ")
+                );
+            }
         }
         if let Some((p, f)) = cfg.closed_groups_target()? {
             println!("closed groups: {} ({})", p.display(), f.name());

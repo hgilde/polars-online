@@ -110,7 +110,7 @@ class TestTheMatrixDefaultsToCheap:
         expr = " ".join(str(CI["jobs"]["test"]["strategy"]["matrix"]["os"]).split())
         assert "github.event.repository.private == false" in expr
 
-    def test_macos_is_reachable_only_by_dispatch_schedule_or_going_public(self):
+    def test_macos_is_reachable_only_by_dispatch_or_going_public(self):
         expr = " ".join(str(CI["jobs"]["test"]["strategy"]["matrix"]["os"]).split())
         for clause in expr.split("||"):
             if "macos" in clause:

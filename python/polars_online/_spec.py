@@ -2893,7 +2893,7 @@ def micro(
         there is none.
     ``dist``
         The distance to that summary's centre.
-    ``micro``
+    ``micro_id``
         The id of the summary this row goes to (``i64``) -- the one it opens,
         when none can take it.
     ``outlier``
@@ -3185,7 +3185,9 @@ def seqtest(
 
     A trial is a row, so ``weight`` is refused and there is no
     ``half_life``/``lam``: a process that forgot its losses would not be an
-    e-process. ``session`` or ``restart_after_step_back`` restarts it.
+    e-process. A session change restarts it under ``session_gap = "reset"``
+    or ``group_close = "session"``, and so does a step back past
+    ``restart_after_step_back``.
     ``min_weight`` defaults to 0. No ``features`` (the column is the test;
     the keyword is taken so that a frame namespace can pass ``[]``), no
     ``coef``, and nothing residual-based applies -- there is no prediction.

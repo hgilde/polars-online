@@ -335,9 +335,10 @@ def refresh_time(
     The staleness caveat (their section 2.1): the output looks synchronous
     and is not. A refresh vector is treated as observed at ``time_refresh``,
     but each series' value is up to one of its own inter-tick intervals old.
-    ``n_obs_<s>`` is that staleness made visible: the series with the
-    largest count is the one holding the grid up, and the one whose value is
-    freshest.
+    ``n_obs_<s>`` counts the ticks of each series the point folded in, of
+    which it kept one: a large count is ticks the grid dropped, and the
+    series holding the grid up, the one whose tick completes each point,
+    sits near 1.
 
     Rows must be in ``clock`` order within each ``group``, as a stream must
     be. A clock below the previous row's is a ``ValueError`` naming the row,

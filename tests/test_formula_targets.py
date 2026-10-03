@@ -432,6 +432,34 @@ def test_the_toml_form_runs_the_same(online_cli: Any, tmp_path: Any) -> None:
     assert res.returncode != 0 and "fit_predict needs an embargo" in res.stderr
 
 
+def test_the_dry_run_refuses_a_short_embargo_as_the_run_does(
+    online_cli: Any, tmp_path: Any
+) -> None:
+    """Task 154: the dry run built the bank but never asked it, so it passed
+    a config the run then refused at its first chunk. A run that keeps no
+    prediction takes any embargo, in the dry run as in the run."""
+    stream(50, 16).write_parquet(tmp_path / "in.parquet")
+    short = spec(fwd(), embargo=2.0)
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [short],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        args=["--dry-run"],
+        check=False,
+    )
+    assert res.returncode != 0 and "fit_predict needs an embargo" in res.stderr
+    run_online(
+        online_cli,
+        tmp_path,
+        [short],
+        input=tmp_path / "in.parquet",
+        save_state=tmp_path / "bank.state",
+        args=["--dry-run", "--no-output"],
+    )
+
+
 def test_a_formula_target_beside_a_plain_one() -> None:
     """One spec, one `X'X`, a plain column and a formula: the plain target is
     learned at the embargo, the formula once its window has closed too."""

@@ -195,6 +195,46 @@ fn fit_predict_refuses_a_short_embargo_and_fit_takes_it() {
     }
 }
 
+/// `RunConfig::validate`, which the command line's `--dry-run` runs,
+/// refuses a short embargo where the run would: in a run that writes
+/// predictions. A run that keeps none (`--no-output`) takes it, and so does
+/// a scoring run, which learns nothing. Before task 154 the dry run passed
+/// the config and the run refused it at its first chunk.
+#[test]
+fn validate_refuses_a_short_embargo_where_the_run_would() {
+    let cfg = |output: &str, embargo: Option<f64>| online_polars::RunConfig {
+        input: "in.parquet".into(),
+        output: output.into(),
+        input_format: None,
+        output_format: None,
+        chunk_rows: 64,
+        load_state: None,
+        save_state: Some("bank.state".into()),
+        keep_columns: vec![],
+        predict: false,
+        closed_groups: None,
+        specs: vec![native(embargo)],
+    };
+    for short in [None, Some(5.0)] {
+        let err = cfg("out.parquet", short).validate().unwrap_err();
+        assert!(
+            err.contains("fit_predict needs an embargo of at least 10"),
+            "{short:?}: {err}"
+        );
+        cfg("", short)
+            .validate()
+            .expect("a run that keeps no prediction takes any embargo");
+        let mut scoring = cfg("out.parquet", short);
+        scoring.predict = true;
+        scoring.save_state = None;
+        scoring.load_state = Some("bank.state".into());
+        scoring.validate().expect("a scoring run learns nothing");
+    }
+    cfg("out.parquet", Some(10.0))
+        .validate()
+        .expect("an embargo of the window covers it");
+}
+
 /// A state saved while windows are open resumes as if nothing had been
 /// saved: the core's held rows go with the bank.
 #[test]

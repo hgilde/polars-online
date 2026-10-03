@@ -1,32 +1,45 @@
 # Test coverage and testing improvements
 
-Status as of 2026-09-06: **about 650 Rust tests and 1,250 pytest functions**
-(some 2,200 cases, plus 2 opt-in soak tests), all green, run in CI on three
-OSes on every push. Counted again on 2026-09-24: **831 Rust tests and
-1,564 pytest functions** (2,838 cases), plus the same 2 opt-in soak tests;
-and on 2026-09-25: **976 Rust tests and 3,265 pytest cases**.
-`cargo test --workspace -- --list` and `pytest --collect-only` did the
-counting. The coverage figures below are from the 2026-08-30 run.
+This document is for a contributor who has seen the README's summary of the
+suite and wants the evidence: what each part proves, what it has found, and
+where it is thin. Its emphasis is on edge cases, and on comparing behaviour
+against reference implementations, including [river](https://riverml.xyz).
 
-This document assesses what the tests actually prove, then lists concrete
-improvements. Its emphasis is on edge cases, and on comparing behavior against
-reference implementations, including [river](https://riverml.xyz). It is for
-a reader who has seen the README's summary of the suite and wants the
-evidence: what each part proves, what it has found, and where it is thin.
+**The suite has 1,215 Rust tests and 3,840 pytest cases, counted on
+2026-10-03.** `cargo test --workspace --exclude online-py -- --list` and
+`pytest --collect-only` did the counting. Each model is held to a reference
+it cannot share a bug with. The bank is held to the invariants it promises:
+the same numbers whether a stream arrives in one chunk or many, runs on one
+thread or eight, or is saved and resumed part-way. The suite runs on three
+operating systems at every push to `main` and every pull request
+([Where the suite runs](#where-the-suite-runs)). The coverage figures are
+from 2026-09-27 ([Measured coverage](#measured-coverage)).
+
+| counted | Rust tests | pytest |
+|---|---|---|
+| 2026-09-06 | about 650 | 1,250 functions, some 2,200 cases |
+| 2026-09-24 | 831 | 1,564 functions, 2,838 cases |
+| 2026-09-25 | 976 | 3,265 cases |
+| 2026-10-03 | 1,215 | 3,840 cases |
+
+The 2 opt-in soak tests are outside every count, and run with
+`pytest -m soak`. The earlier counts used `cargo test --workspace -- --list`,
+which also lists `online-py`, a crate with no tests.
 
 Each improvement is an entry with an ID, such as T-E9, and the code and the
 tests cite those IDs. They also cite the lettered sections that hold the
 entries, such as section C. Rows that say **blocked** or **never executed**
 were written before the repo had CI and are kept as the record.
-[What is left](#what-is-left) says what cleared them.
+[What the first CI runs cleared](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06)
+says what cleared them.
 
 | section | what it holds |
 |---|---|
-| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [beyond the eight classes](#beyond-the-eight-classes) |
+| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [the window operators and formula targets](#the-window-operators-and-formula-targets) · [resuming a run](#resuming-a-run) · [beyond the eight classes](#beyond-the-eight-classes) · [where the suite runs](#where-the-suite-runs) |
 | [What it has found](#what-it-has-found) | [defects, and where each is told](#defects-and-where-each-is-told) · [differences from river that are not bugs](#differences-from-river-that-are-not-bugs) |
-| [Where it is thin, and what is left](#where-it-is-thin-and-what-is-left) | [measured coverage](#measured-coverage) · [open entries](#open-entries) · [mutation survivors](#mutation-survivors) · [what is left](#what-is-left), which is current |
-| [How the suite looks for defects](#how-the-suite-looks-for-defects) | [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
-| [The entries, by ID](#the-entries-by-id) | [A. our own oracles](#a-close-the-oracle-gaps-our-own-references) · [B. river](#b-cross-checks-against-river) · [C. edge cases](#c-edge-case-matrix) · [D. Windows](#d-windows-and-cross-platform) · [E. infrastructure](#e-infrastructure) |
+| [Where it is thin, and what is left](#where-it-is-thin-and-what-is-left) | [what is left](#what-is-left) · [measured coverage](#measured-coverage) · [mutation survivors](#mutation-survivors) |
+| [How the suite looks for defects](#how-the-suite-looks-for-defects) | [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
+| [The entries, by ID](#the-entries-by-id) | [A. our own oracles](#a-close-the-oracle-gaps-our-own-references) · [B. river](#b-cross-checks-against-river) · [C. edge cases](#c-edge-case-matrix) · [D. Windows](#d-windows-and-cross-platform) · [E. infrastructure](#e-infrastructure) · [what the first CI runs cleared](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06) |
 
 The words this ledger uses:
 
@@ -34,34 +47,49 @@ The words this ledger uses:
 |---|---|
 | oracle | a reference a model cannot share a bug with; its four forms are in [An oracle, not a golden number](#an-oracle-not-a-golden-number) |
 | golden number | an exact expected output from a fixed stream, embedded in a test. It pins the arithmetic against any change, but it is not an oracle |
+| second opinion | another library's computation of the same quantity, held beside the model's in `tests/test_second_opinion.py` or `tests/test_river.py` |
 | mutant | one small change `cargo mutants` makes to the source, such as a flipped operator or a function body replaced with a constant, before it reruns the tests. A mutant is *caught* when some test fails, and *missed*, a survivor, when every test still passes (`scripts/mutants.sh`) |
-| equivalent mutant | a mutant that no test can kill |
+| equivalent mutant | a mutant that no test can kill: on every input the code can receive, the mutated line computes what the original does |
 | IC | the correlation of prediction with target, `po.eval`'s `ic` |
 | P1, P2, P3 | in an entry's P column, its priority: **P1** closes a PLAN promise or covers a found defect, **P2** is meaningful new assurance, **P3** is infrastructure |
 | P1–P11 elsewhere | the performance items of `docs/PERFORMANCE.md` §3 |
 | E numbers; C, T, U and X numbers | entries in `docs/ENHANCEMENTS.md`; entries in `docs/IMPROVEMENTS.md` |
+| T-S numbers | the second opinions `docs/REVIEW-2026-09-12.md` proposes under "Second opinions", T-S1 to T-S17, and T-S18 from its pass 10; the tests in `tests/test_second_opinion.py` cite them |
+| R1 to R9 | the nine review rounds of the window operators and formula targets, all on 2026-10-03, recorded in `docs/PLAN.md` §14. A finding's ID, such as R5-C1, names its round |
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
+| a kind | one of the 21 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
+| the window operators | exponentially weighted means, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum` and `po.ewm_rate` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
+| a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed (`docs/PLAN.md` task 104) |
+| the column form | the same window expression written as a column by `with_windows(like=spec)` and fed back as a plain target under the same `embargo`: what a formula target is held to |
+| the brute force | `brute()` in `crates/online-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |
+| the time-reversal identity | a forward window over a stream is a backward one over the same stream reversed in time, with the row itself left out, so a forward `closed="right"` is a backward `"left"` |
+| the mean form | accumulators that keep weighted means, such as `S = Σ w zz' / W`, rather than weighted sums, so a factor common to every weight cancels |
+| the slow twin | `ewridge`'s second accumulator, at `long_half_life`, which `session_shrink` blends toward on a session change |
+| the pending delta | the clock step of a skipped row, held and folded into the next accepted row's decay |
 
 ## What the suite proves
 
 The scorecard is against the eight test classes of `docs/PLAN.md` §9. The
-parts after it test what those classes do not name.
+references come next, with the rule that makes each one a reference and the
+libraries a test may take one from. Two surfaces newer than the classes
+follow: the window operators, and resuming a run. The last parts test what
+the classes do not name, and say where the suite runs.
 
 ### The eight test classes
 
 | class | status | what holds it |
 |---|---|---|
-| 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations); the last open one, a numpy `lasso_ref` for the lasso's *pred* path (T-A2), landed 2026-09-24 |
-| 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_rows` sweep) levels; save/load mid-stream identical. The `coef` field is correctly excluded: it is chunk-dependent by design |
+| 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations); each window operator against its definition, Polars and the time-reversal identity ([below](#the-window-operators-and-formula-targets)). The last open one, a numpy `lasso_ref` for the lasso's *pred* path (T-A2), landed 2026-09-24 |
+| 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_rows` sweep) levels, in the window core at chunks of 1, 2, 3, 7, 50 and 499 rows, and for formula targets at 1, 7 and 600 chunks; save/load mid-stream identical. Which rows carry `coef`, and `support_coef` beside it, is excluded: a reporting cadence, chunk-dependent by design |
 | 3. Out-of-sample by construction | Done | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
 | 4. Clock semantics | Done | cap, a step back (refused, or a restart past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
 | 5. Null policy & warmup | Done | feature/target/weight nulls and `min_weight`, for all ten regression models (T-A5) |
 | 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, below |
 | 6b. `predict` ≡ `fit_predict` of the next row | Done (E31) | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
 | 6c. Runner ≡ bank, every source and format | Done (E32) | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run for every release since 0.1.0, and `ci.yml` loading states on all three OSes on every push. It was defined but never executed before the repo had a remote |
-| 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README |
+| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run for every release since 0.1.0, and `ci.yml` loading states on all three OSes. It was defined but never executed before the repo had a remote |
+| 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
 **6. Arrow ≡ Polars output: retired, and replaced.** This row held the
 expression form to the bank. Task 85 removed that form (2026-09-17), and
@@ -96,49 +124,269 @@ tests, never in the API.
 
 ### Against reference implementations
 
-**Do we compare edge cases against reference implementations?** Yes, for most
-of the surface. Clock semantics, null policy and warmup are cross-checked
-against the numpy oracles along the `ewridge`, `rls` and `kalman` paths. The
-lasso is checked against its own optimality conditions. `tests/test_river.py`
-compares FTRL, EW moments, quantile and Huber behavior against river, and
-`tests/test_second_opinion.py` holds FTRL to Vowpal Wabbit end to end. Huber,
-quantile and FTRL also have numpy references at the *numeric* level (T-A3,
-T-A4).
+**Each model is held to a reference it cannot share a bug with, edge cases
+included.** The numpy references in `tests/reference.py` replay each model's
+documented recursion, with clock semantics, null policy and warm-up. Those in
+`tests/reference_paths.py` recompute every statistic from the raw rows at
+each solve, so they share neither the core's recursions nor its schedule. The
+lasso is also checked against its own optimality conditions. Wherever another
+library computes the same quantity, that library is a second opinion: river
+in `tests/test_river.py` ([B](#b-cross-checks-against-river)), and the rest
+in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 
 | model | held against | agreement | entry |
 |---|---|---|---|
 | `ewridge`, `rls` | `tests/reference.py`, incl. multi-target, standardize, `lam` decay, row-count clock | 1e-9 | |
+| `ewridge` | every solve against scikit-learn's `Ridge` (`TestEwRidgeIsSklearnsRidge`, 20 cases), and in Rust against its closed form solved by `faer` (`every_solve_is_its_closed_form_across_targets_and_ridges`) | 1e-8, relative; 1e-9 | |
+| `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref` (`tests/test_oracles_ewridge_paths.py`), recomputing every statistic from the raw rows at each solve, as the lasso's below does | pred 1.1e-14 | |
 | `rls` | `rls ≡ ewridge(ridge_scale="sum", solve_every=1)` | <1e-9 | |
+| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 4.9e-15 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
+| `kalman` | filterpy's `KalmanFilter`, across a zero-weight row (`TestKalmanZeroWeightRow`) and with a mean-reverting transition (`TestAMeanRevertingKalmanIsFilterpy`) | 1e-9 | T-S5 |
+| Kalman(q=0, fixed `obs_var`, `standardize=False`) | `river.linear_model.BayesianLinearRegression` | 3.6e-15 | T-R2 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
-| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
-| `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref`, the same way | pred 1.1e-14 | |
-| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` | pred 5.8e-15; 4.9e-15 | |
-| `ftrl`'s targets and decay, `pa`, `sgd`, `holt` | `ftrl_ref`; the docstrings' update equations, written out (`pa_ref`, `sgd_ref`, `holt_ref`) | pred 8.2e-16 | |
-| the plain `sigma` and `zscore` | the weighted EW root mean square of the residuals before the row | 8.1e-16 | |
+| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref` (`tests/test_oracles_lasso_paths.py`): every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
+| `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor` with one row in fifty a gross error | 1e-9; 0.1 (0.045 measured), where least squares is 0.38 to 0.47 off | T-S4 |
+| `quantile` | statsmodels' `QuantReg` after 20,000 rows (`TestQuantileIsQuantReg`) | 0.05 at the median and 0.08 at τ = 0.9 (0.005 and 0.006 measured) | T-S4 |
+| Huber | `river.linear_model.LinearRegression(loss=optim.losses.Huber)` | statistical | T-R6 |
+| quantile | `river.stats.Quantile` | statistical | T-R5 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
+| `ftrl`'s targets and decay, `pa`, `sgd`, `holt` | `ftrl_ref`; the docstrings' update equations, written out (`pa_ref`, `sgd_ref`, `holt_ref`), in `tests/test_oracles_gradient_paths.py` | pred 8.2e-16 | |
 | FTRL | `river.optim.FTRLProximal`, row for row | 1e-12 | T-R1 |
 | FTRL end to end: both losses, the intercept, row weights with zeros, null targets, two targets, `l1` with `l2` | Vowpal Wabbit's `--ftrl`, `pred` and `coef` on every row | 1e-5, its single precision (measured 2.6e-6) | |
-| Kalman(q=0, fixed `obs_var`, `standardize=False`) | `river.linear_model.BayesianLinearRegression` | 3.6e-15 | T-R2 |
+| `pa` | river's `PARegressor`, without an intercept and at unit weight (`TestPassiveAggressiveIsRivers`) | 1e-12 | T-S18 |
+| `sgd` | scikit-learn's `SGDRegressor`, one per group (`tests/test_sgd.py`) | R² within 0.03 | |
+| `holt` | statsmodels' `Holt` once the weight saturates, and its state-space `ExponentialSmoothing` across a missing observation (`TestHoltAcrossAMissingObservation`); without a trend, statsmodels' `DescrStatsW` and pandas' `ewm(times=)` (`TestALevelOnlyHoltIsAnEwMean`) | 1e-12 and 1e-9; 1e-12 and 1e-8 | T-S14, T-S17 |
+| the plain `sigma` and `zscore` | the weighted EW root mean square of the residuals before the row (`tests/test_oracles_sigma.py`) | 8.1e-16 | |
 | `EwCov` | `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr` | 1e-9 | T-R3 |
+| `ew_cov`'s `mean`, `var`, `cov` and `corr` | pandas' `ewm` on a row-count clock, at offsets up to 1e8 (`TestTheEwMomentsArePandas`) | 1e-12 | T-S9 |
 | EW mean/var | `river.stats.EWMean` / `EWVar` | in the limit | T-R4 |
-| quantile | `river.stats.Quantile` | statistical | T-R5 |
-| Huber | `river.linear_model.LinearRegression(loss=optim.losses.Huber)` | statistical | T-R6 |
+| `ew_class`; `ew_cov`'s `mahal` and components, under a window | scipy's `multivariate_normal` and `mahalanobis`, and numpy's `eigh`, on the rows the window keeps (`TestWindowedGaussian`) | 1e-9 | T-S6, T-S8 |
+| `marginal`'s bins and best split | scipy's `binned_statistic`; a scikit-learn `DecisionTreeRegressor` stump, whose gain bounds the split's from above (`TestTheBinsAgainstScipyAndAStump`) | 1e-9 | T-S12 |
+| `marginal`'s serial count | statsmodels' `acf` and `weights_bartlett` (`TestTheBartlettSerialFactor`) | 0.02 | T-S11 |
+| `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly | T-S15 |
+| `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | | |
+| a target with gaps | numpy's `lstsq` on the target's own rows, pandas' pairwise `cov`, and statsmodels' `WLS`, ridge and elastic net (`TestATargetWithGaps`) | 1e-10 to 1e-8; the elastic net 1e-7 | |
+| the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([below](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly | |
+| a formula target | its column form | bit for bit, every prediction | |
+
+### An oracle, not a golden number
+
+**An oracle is written from the paper or the definition, never from the
+code it checks.** An oracle written *from the implementation* agrees with it
+by construction. That is the one that is easy to get wrong, and it is how
+`bocpd`'s line 6 survived twelve unit tests.
+
+The 2026-09 batch (tasks 45–56) added five models and four helper modules,
+and its testing pattern is what found the defects. Every recursion got a
+longhand oracle written from the paper, and the oracle was allowed to
+disagree. It did, six times:
+
+| model | what the oracle found |
+|---|---|
+| `deco` | its `rho` was not `ew_cov`'s `corr` |
+| `hmm` | its Π seeding was not the prior mean |
+| `corrchange` | its scalar CUSUM was identically zero |
+| `bocpd` | it implemented Algorithm 1's line 6 with the new run holding one row of the old regime |
+| `rcov` | its pre-averaging window was off by one |
+| `corrchange` | its size study was comparing Gaussian draws against a `t₅` table |
+
+Each is recorded in `docs/PLAN.md` §11a, with what it measured.
+
+**A test adds an oracle rather than a golden number.** The mutation work
+([below](#what-the-mutation-run-actually-found)) followed the same rule, and
+so do the window operators' tests. An oracle takes one of four forms:
+
+| form | example |
+|---|---|
+| the recursion written out longhand beside the implementation | Holt, Page-Hinkley, `sigma2` |
+| an equivalent model configured a different way | the slow twin against a standalone model at `long_half_life`; the standardized solve against the plain one at zero penalty; a forward window against a backward one over the reversed stream |
+| the optimality conditions of the problem being solved | the lasso's KKT conditions |
+| the definition of the statistic | `read` against a recomputation from the raw rows; each window operator against the brute force |
+
+### Libraries the package does not depend on
+
+**A test may use any library the package does not depend on, when the test
+needs it.** The user settled this on 2026-09-24: "packages that we do not
+want to depend on are fine if needed to test with other libraries", and the
+test plan must allow it from here on. The package depends on polars alone,
+with numpy as an extra, and that does not change. What a test needs is a
+separate question, and three kinds of need have come up:
+
+| need | libraries | example |
+|---|---|---|
+| an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
+| interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
+
+**An oracle comes from a third-party library wherever one computes the
+thing checked.** An oracle written here can share a mistake with the code it
+checks, and a library's cannot. So before writing a longhand, look for a
+library that computes the same quantity. Write by hand only the definition,
+from the paper, such as the normal equations a fit must solve. The user set
+the rule on 2026-09-27, while a Gaussian elimination was being written by
+hand as a ridge oracle: "Is there no third party oracle library?"
+
+| where the test is | library oracles | example |
+|---|---|---|
+| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, and independent of the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `faer`'s LU |
+| Python | scikit-learn, scipy, statsmodels, pandas, numpy | `TestEwRidgeIsSklearnsRidge` holds every `ewridge` solve to `sklearn.linear_model.Ridge`, 20 cases to 1e-8 |
+
+**A mutant can be killed only from Rust**, because `cargo mutants` runs
+`cargo test` and never the pytest suite. Where a library oracle exists only
+in Python, write both: the Rust test with `faer` doing the linear algebra,
+and the library's second opinion in `tests/test_second_opinion.py`. Where no
+library computes the quantity, the oracle is written from the paper, never
+from the code it checks.
+
+Four rules govern such a library:
+
+| rule | why | checked by |
+|---|---|---|
+| **1. Declare it in the dev group, by name, under an open licence.** | A library that arrives through another package's dependencies breaks tests that never name it when that package goes: pandas and scipy came in through statsmodels until 2026-09-24. A library under source-available or commercial terms is parked, not used (the user, 2026-09-25: "enable every unlicensed library in tests and park using licensed libraries") | `tests/test_dependency_policy.py`: every library a test imports is declared in the dev group, and every library of the dev and docs groups, and every Rust crate's dev-dependency, names an open licence in its metadata |
+| **2. Import it plainly.** | The dev group is installed wherever the suite runs, so `pytest.importorskip` could only turn a broken environment into a skip. A missing library fails the test | the same file: no test calls `importorskip`, nor skips behind `except ImportError` |
+| **3. Keep it out of the package's reach when its presence changes other libraries.** | pyarrow is the case: pandas and duckdb take other paths when it is importable, and a use of it inside the package would pass the suite | `tests/conftest.py` makes it unimportable; `test_this_session_runs_without_pyarrow` and `test_child_interpreters_run_without_pyarrow_too` check that it is |
+| **4. Never add it to the package's own dependencies.** | Those stay `polars` | `tests/test_dependency_policy.py`: the package depends on polars alone, and its one extra on numpy alone |
+
+An open licence is one the Open Source Initiative approves, or CC0, named in
+the metadata as an SPDX expression or an "OSI Approved" classifier. A library
+whose metadata names none is listed with the licence read at its source and
+where: `bayesian-changepoint-detection`'s wheel declares none, and its
+repository's `LICENSE` is MIT. A library that must not be in every
+contributor's environment, for its platforms, gets a group of its own and a
+CI job of its own. For rule 3, `tests/child.py` puts
+`tests/_site/sitecustomize.py`, which installs the same finder, on the path
+of every child interpreter a test spawns. Only
+`tests/test_pyarrow_interop.py`'s children see pyarrow. Review 2026-09-25
+found the examples' "nothing needs pyarrow" running with it importable, which
+is why the children are covered. The gate checks the lock with
+`uv lock --check`.
+
+**scikit-learn is taken** (task 121, 2026-09-25). `tests/test_sgd.py`
+compares `sgd` with `SGDRegressor` live, where it quoted sklearn's R² from
+`scripts/sklearn_comparison.py`. `tests/test_second_opinion.py` holds `huber`
+to `LinearRegression` at `huber_delta = 1e9`, the limit at which no row is
+down-weighted, and to `HuberRegressor` under outliers (T-S4). It holds
+`marginal`'s best split to a `DecisionTreeRegressor` stump (T-S12), and every
+`ewridge` solve to `Ridge` (task 113).
+
+**Vowpal Wabbit is taken** (task 115, 2026-09-29; the user: "find an
+alternative oracle for ftrl that supports more options"). Its `--ftrl`
+runs the recursion `ftrl.rs` states, and it reaches options river's
+comparison does not: the squared loss, row weights, the intercept and the
+model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
+to it on every row, to 1e-5, since VW computes in single precision. The
+wheel has no dependencies and ships for Python 3.12 to 3.14 on all three
+operating systems, so it sits in the dev group like the rest. None of the
+libraries checked forgets as a half-life does (river, VW, and Keras's
+`Ftrl`), so a finite half-life stays with `ftrl_ref` (T-A4).
+
+**Pathway is parked.** It would run the Pathway half of
+`examples/pathway_integration.py`, but it is under the Business Source
+License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
+out of `pyproject.toml` until the user decides (`docs/ENHANCEMENTS.md`
+E26).
+
+### The window operators and formula targets
+
+The window operators are tasks 143 and 144 of `docs/PLAN.md`, and formula
+targets task 104. No library computes a windowed or forward form, so the
+oracles here are the definition and an identity, with Polars where it has
+the same operator.
+
+**Each window operator is held three ways: to the definition, to Polars'
+own functions where Polars has the operator, and to the time-reversal
+identity.**
+
+| oracle | what it checks | held by |
+|---|---|---|
+| the brute force | every operator, a mean, a sum and a rate, on nine kernels: each direction, every `closed`, finite and infinite half-lives. Five streams of 400 rows carry gaps, repeated stamps, sessions, missing values and groups. To 1e-9 | `windows.rs::every_operator_matches_its_definition` |
+| a loop from the definition, in Python | each of the six operators under each `closed`, to 1e-9 | `test_windows.py::test_each_operator_matches_the_definition` |
+| Polars' own functions | the backward mean and sum, with no window, against `ewm_mean_by` and `ewm_sum_by` (1.44.1 on) on a `Datetime` clock, to 1e-9; which rows a window holds under each `closed`, against `rolling_sum_by`, exactly | `test_polars_computes_the_same_mean_and_sum`; `test_which_rows_a_window_holds_is_polars_rolling` |
+| the time-reversal identity | a forward window against a backward one over the reversed stream, to 1e-9 | `windows.rs::a_forward_window_is_a_backward_one_over_the_reversed_stream`, and `test_windows.py`'s test of the same name |
+| chunking | chunks of 1, 2, 3, 7, 50 and 499 rows give one chunk's bits | `windows.rs::chunking_changes_no_bit` |
+| a public day of data | one symbol-day of Binance futures quotes and trades through four formulas, chunked; two recipes for one VWAP agree to 1e-6 | `test_the_real_day_runs_and_the_recipes_agree_where_they_should` |
+
+The brute force and the identity both found a defect while the operators
+were built: a forward mean counted rows that held a value from outside its
+window ([Defects](#defects-and-where-each-is-told), task 143). The day of
+data is ETCUSDT on 2024-01-02, from data.binance.vision.
+`tests/data.py::public_quotes_and_trades` downloads it once and caches it
+under `.cache/microstructure`, and offline that one test skips.
+
+**A formula target is held to its column form, bit for bit on every
+prediction.** The same window expression, written as a column and fed back
+as a plain target under the same `embargo`, gives the same prediction on
+every row:
+
+| case | held by |
+|---|---|
+| chunked and whole: 1, 7 and 600 chunks in Rust, and `chunk_rows` of 1 and 97 in Python | `formula_targets.rs::a_formula_target_is_the_column_form_fed_back_under_the_embargo`; `test_formula_targets.py::test_a_formula_target_is_the_column_form_fed_back` |
+| through every clock event: a gap past the cap, a session change, a step back the policy restarts on, groups restarting together, rows at one stamp, a row exactly one window later, a run of skipped rows longer than the cap, and the input ending inside a window | `test_parity_through_every_clock_event` |
+
+### Resuming a run
+
+**A run resumed from its state gives the output of the run that never
+stopped, and a state refuses an input or a version it does not belong to.**
+A bank's state and a window run's can each be saved to a file and loaded
+back. A window run saved under a slice, such as `head(n)`, also records how
+much of its input it consumed:
+
+| what is resumed | the claim | held by |
+|---|---|---|
+| a bank of any kind | saved mid-stream and loaded, it goes on exactly as the one that was not | `tests/test_every_kind.py` (task 111); `model_contract.rs`'s generated streams, at any row |
+| a bank on input that overlaps its state | `ModelBank.skip_learned` keeps each row after its group's last clock, so the rerun learns each row once | `tests/test_skip_learned.py` (task 120) |
+| a formula target with a window open | a state saved mid-window resumes as one run | `a_state_saved_mid_window_resumes_as_one_run`, in `formula_targets.rs` and in `test_formula_targets.py` |
+| a window run, saved at a row | a save and load at row 1, 2, 17, 33 or 59 is one run | `test_a_save_and_load_at_every_row_is_one_run` |
+| a chain of window runs under a slice | six sliced runs, each resumed from the last state and saved again, then the rest, give one run's output, at `chunk_rows` of 1, 7 and 100,000 | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, and its Rust twin in `windows_frame.rs` |
+| a window state and another input | the state knows its input. Another input is refused by name, and the next file goes on: with a clock column and without one, and from a state that holds no rows | the identity tests in `test_windows.py` and `windows_frame.rs`, such as `test_a_state_saved_under_a_slice_refuses_another_input` and `test_without_a_clock_the_next_file_begins_with_a_new_session` |
+| a state of another version | refused by its version, never misread | `windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`; `test_a_windows_state_of_another_version_is_refused_by_its_version`; `tests/test_released_state.py`, on the files each release in its `RELEASES` wrote |
+
+The first test of the last row is a tripwire. It asserts the windows state's
+version and the bank's schema version together, because a bank file embeds a
+window core for each formula target. So neither can move without the other.
+
+The window run's resume rules came out of nine review rounds on 2026-10-03,
+R1 to R9, which `docs/PLAN.md` §14 records. Each finding there names the test
+that pins it, and the tests' docstrings name the findings they pin.
 
 ### Beyond the eight classes
+
+These parts test what the eight classes do not name: first how the library
+behaves, then the files the repository promises.
 
 | part | test | what it checks |
 |---|---|---|
 | [production hardening round 3](#production-hardening-round-3-vs-rivers-own-battery) | `tests/test_production_hardening.py` | river's battery of checks, sklearn's estimator invariances and statsmodels' oracle convention |
 | [post-refactor hardening](#post-refactor-hardening-p1p8-review) | `tests/test_hardening.py` | parameter ranges at their edges, and row counts large enough to expose stride bugs |
 | [the validated defaults](#the-validated-defaults-are-still-the-measured-ones) | `tests/test_validation_doc.py` | `docs/VALIDATION.md`, regenerated and compared |
-| [the declared schema](#the-declared-schema-is-checked-for-every-model) | `test_names_match_the_realized_struct_for_every_model` | the declared field names against the struct the bank produces |
+| [the declared schema](#the-declared-schema-is-checked-for-every-model) | `test_names_match_the_realized_struct_for_every_model`; `tests/test_every_kind.py` | the declared field names against the struct the bank produces |
+| every model in every list | `tests/test_model_registry.py` | each per-model list against the Rust registry: the builders, the sweeps, the API snapshot, the golden files, each model's own test file, the README's model headings, the release comparison's workload and `_spec.UNSUPERVISED` |
 | [hard rule 1](#hard-rule-1-is-enforced-not-remembered) | `tests/test_repo_hygiene.py` | no data file, large file or generated output is tracked |
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
-| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. Twelve of its fourteen tests fail with the means plain (docs/PLAN.md task 101); the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
+| the shared contract | `crates/online-core/tests/model_contract.rs` | every model's shape accessors, its `n_eff` against one recursion (hard rule 8), its prediction slots and its state round trip |
+| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. It has 21 tests. Of the fourteen it had when written, twelve fail with the means plain (docs/PLAN.md task 101); the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
 | Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers; the export validates in full, zero rows and an all-null field cross, two specs are two exports, and a requested schema other than the struct's own raises inside pyarrow 25.0.1's cast path (its bug, `array.pxi:321`) rather than coming back silently cast. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, and `tests/child.py` in the child interpreters the tests spawn, which so run as a user without it does |
+| a weight's scale (task 147) | `tests/test_weight_scale.py` | every spec of the release probe's workload, at its weights and at a hundred times them with `min_weight` scaled alike: only the specs whose docs say a weight counts on the sum scale move |
+| row order (2026-09-17; task 139) | `tests/test_order_hazards.py` | a query whose row order is unspecified is warned about before a bank reads it, with an `OrderNotGuaranteedWarning` naming the step and the fix; `test_what_is_not_order_free` holds the specs `ModelBank.fit` exempts from the warning to those whose state cannot depend on the order |
+| a delayed label at a break (task 153) | `TestBreaksCountElapsedTime` and `TestBreaksOnSkippedRows` in `tests/test_label_delay.py` | a row is learned once its delay has passed in elapsed time, counted from the frame, and a break releases nothing early |
+| the clocks a row reports (task 152) | `tests/test_clocks.py` | `emit_clocks`' `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the newest row learned by then: counted from the frame, and exact to the nanosecond on a `Datetime` clock |
+| `kalman` at any row spacing (task 150) | `crates/online-core/tests/kalman_clock.rs` | `coef_half_life` is a half-life on the clock: a slope step takes about the same clock time to learn at rows 1, 0.25 and 0.04 apart, where the old form parted by a factor of five, and a gap row adds exactly `q d²` to `P` |
+| the solve cadence (task 115 (b)) | `tests/test_solve_cadence.py` | by default, `ewridge`, `lasso`, `huber` and `quantile` solve again once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, so a long half-life still re-solves |
+
+The files the repository promises are held the same way:
+
+| contract | held by | what it holds |
+|---|---|---|
+| the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff |
+| the names of task 144 | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
+| a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI, are refused by their schema version; offline, the test skips |
+| a released output | `scripts/compare_release.py` | every output against the newest release's, bit for bit: a report in CI, and a step of each release |
+| the documentation | `tests/test_production_hardening.py`, `tests/test_api_links.py`, `tests/test_doc_structure.py`, `tests/test_llms_txt.py`, and Sphinx with `-W` | every README python block and docstring example runs; every link into the API reference resolves; every Markdown file git tracks passes `docs/WRITING.md`'s structure checks; `llms.txt`'s model names and links are current; every docstring is valid reStructuredText |
+| docstring text | `test_weight_scale.py::test_the_docs_say_what_each_unit_is`; `test_temporal_clock.py::TestEveryClockParameterTakesADuration` | whole phrases of `ftrl`'s and `micro`'s docstrings, a line wrap included; "clock units" in the entry of each parameter measured in them. A docstring pass keeps both (`docs/WRITING.md` §6) |
+| the workflows | `tests/test_release_workflow.py`, `tests/test_release_packaging.py` (T-W5), `tests/test_ci_cost_policy.py` | the release tags what it published, after everything ran; the release artifacts' names; the CI matrix and its timeouts |
 
 #### Production hardening round 3 (vs river's own battery)
 
@@ -181,18 +429,17 @@ River checks *not* adopted, with reasons:
 
 **Done, with zero new defects: every path held, including the never-executed
 one.** This was a second full review after the performance rewrite. It aimed
-at the two blind spots the request named. One was parameter ranges tested
-only in their comfortable middles. The other was row counts too small to
-expose stride bugs in the new flat slot-major buffers. It lives in
-`tests/test_hardening.py`: 18 tests (~4.5 s) when written, and 20 collected
-cases on 2026-09-24.
+at two blind spots. One was parameter ranges tested only in their
+comfortable middles. The other was row counts too small to expose stride
+bugs in the new flat slot-major buffers. It lives in `tests/test_hardening.py`:
+18 tests (~4.5 s) when written, and 20 collected cases on 2026-09-24.
 
 | attack | what must hold |
 |---|---|
 | a kitchen-sink stream at **30k rows with every output enabled at once**: 156+ fields from two instances × ridge grid × feature sets × two targets, sigma/z/drift/metrics/autocorr/quantiles/selected/averaged, groups, sessions, weights, nulls, clock gaps | the same digest across chunkings incl. row-at-a-time, across a mid-stream save/load, and across `POLARS_ONLINE_MAX_THREADS` 1 vs 8 |
 | the **coupled drift path** (grid + `drift_action="reset"`), which P2 added and nothing executed | a break in either instance resets both; the row-major path is chunk-invariant; it equals the parallel path when nothing fires |
 | parameter edges: half-life 1e-3 and inf, k=64, quantile levels 0.001/0.999 | half-life 1e-3 and inf give their exact limits |
-| **weight-scale invariance at 1e±6** | all weights ×c changes nothing but `weight_sum`: the test that the mean form is real |
+| **weight-scale invariance at 1e±6** | all weights ×c changes nothing but `weight_sum`: the test that the accumulators are in the mean form. Task 147's `tests/test_weight_scale.py` runs it over every kind, less the exceptions each model's docs name |
 | twelve targets with per-target warmup | each lands on the exact ceil(threshold) row |
 | `coef_every` 0/1/997 | across chunk boundaries |
 | P6's reader thread, on a corrupt file and on a mid-stream bank error | a clean exception, with no deadlock on either side of the channel |
@@ -215,10 +462,13 @@ comparison cannot pass on a document that no longer justifies anything.
 
 **Done.** `test_names_match_the_realized_struct_for_every_model` extends the
 E23 guard from `ewridge` alone to all ten regression models, times four output
-combinations (three when written), plus `ew_cov` separately. The optional outputs are
-assembled in the stream layer and so generalize. But each model contributes
-its own prediction and coefficient slots, and `sgd`, `pa`, `holt` and
-`ew_cov` all postdate the original test.
+combinations (three when written), plus `ew_cov` separately. The optional
+outputs are assembled in the stream layer and so generalize. But each model
+contributes its own prediction and coefficient slots, and `sgd`, `pa`, `holt`
+and `ew_cov` all postdate the original test. `tests/test_every_kind.py` (task
+111) holds every kind's output struct to `po.spec.output_fields`,
+parametrised over the registry's `MINIMAL`, so a new kind is checked the day
+it is registered.
 
 #### Hard rule 1 is enforced, not remembered
 
@@ -228,14 +478,16 @@ generated tool output is tracked. It also fails if `.cache/`, `target/` or
 from what `git archive` (a fresh clone, an sdist) would produce. It was
 written after 136 files of `cargo mutants` output sat tracked for several
 commits, swept in by a `git add -A`, with nothing complaining. It was
-verified to fire, not just to pass.
+verified to fire as well as to pass.
 
 #### Examples are executed
 
 **Done.** `tests/test_examples.py` runs everything under `examples/`
 unmodified. The Pathway operator example runs end to end, on its plain-batch
 path, since Pathway is BSL and not a dependency. That is asserted by checking
-it appears in no dependency group. `examples/bank.toml` goes through the real
+it appears in no dependency group. The cursor examples,
+`examples/duckdb_cursors.py` and `examples/adbc_cursors.py`, run against
+real DuckDB and SQLite databases. `examples/bank.toml` goes through the real
 CLI for `--dry-run`, a full run, and `--resume` from the state the run wrote.
 A documented example that no longer works is worse than none, and until this
 test nothing ran either file.
@@ -246,9 +498,33 @@ each chunk's last row as well as every `coef_every` rows, so smaller chunks
 report it more often. The guarantee now names that exception, and every
 computed field is still bit-identical.
 
+### Where the suite runs
+
+**Every push to `main` and every pull request runs the suite on Linux,
+macOS and Windows.** The gate runs before every commit, and each workflow
+under `.github/workflows/` on its own schedule:
+
+| when | where | what runs |
+|---|---|---|
+| before every commit | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`, and Sphinx with `-W` |
+| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint and type checks, Sphinx, and every output against the newest release's, as a report; the Python coverage, as a report |
+| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
+| every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
+| every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits and on the newest NumPy, both blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check on Linux and macOS, its control included; throughput; mutation testing of all of `online-core`, as a report |
+
+The canary and the release's Polars and NumPy legs leave out the tests
+marked `pins`. Those assert this repo's own Polars pins, so they cannot pass
+on another Polars. Tests generate or download their own data (hard rule 1).
+Downloads are cached under `.cache/`, and a test that needs one skips
+offline: the public intraday data (`tests/data.py::public_intraday`), the
+released wheels, and the day of quotes and trades.
+
 ## What it has found
 
 ### Defects, and where each is told
+
+Each row names what found the defect and where it is told in full.
 
 | finding | found by | told in |
 |---|---|---|
@@ -266,7 +542,7 @@ computed field is still bit-identical.
 | the README's chunk-invariance guarantee named no exception for `coef` | running the examples | [Examples are executed](#examples-are-executed) |
 | three `online-cli` tests wrote Windows paths into a TOML basic string; the parse error said nothing about paths | the first Windows CI run | T-W3b in [D](#d-windows-and-cross-platform) |
 | nine pytest failures on Windows, all test bugs and no library bug | the first Windows CI runs | T-W1 in [D](#d-windows-and-cross-platform) |
-| a `UnicodeEncodeError` in `examples/pathway_integration.py` | CI on Windows | [What is left](#what-is-left) |
+| a `UnicodeEncodeError` in `examples/pathway_integration.py` | CI on Windows | [What the first CI runs cleared](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06) |
 | two Windows gaps in `.vscode/settings.json` | writing `scripts/env.ps1` | T-W9 in [D](#d-windows-and-cross-platform) |
 | a String feature column was silently parsed back to f64 | the FFI audit | [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) |
 | a feature constant inside a `window_size` read as the subtraction's remainder, which a windowed lasso at a zero penalty divided by itself (predictions of 1e55) | the oracles of 2026-09-24 | docs/PLAN.md task 94 |
@@ -280,6 +556,14 @@ computed field is still bit-identical.
 | the lasso's windowed selection fell back on whole-history errors through an empty window | the same review | docs/PLAN.md task 95 |
 | `corrchange`'s accurate `D̂` reached its true 0 on a collinear pair, and the numerator's rounding divided by it flagged every span of a derived column | review 2026-09-25 of task 103; `a_collinear_pair_has_no_verdict` | docs/PLAN.md task 103 |
 | `corrchange`'s long-run standard deviation took a span's variance as `E[x²] − E[x]²`: 1.2e-5 of itself off at a level of 1e5, NaN at 1e8, so the monitor flagged nothing there | the same sweep; a level-invariance test on deviations that are exact multiples of 2⁻²⁰ | docs/PLAN.md task 103 |
+| `ModelBank.fit` exempted `huber` and `lasso` from the row-order warning, though their state depends on the order: with one row in ten lifted by 5, a shuffle moves `huber`'s coefficients by 1.05e-02, and shuffles moved the penalty `lasso` selects from 0.01 to 0.1 and to 0.001 | task 138's analysis; `test_what_is_not_order_free`, which failed for both on the old list | docs/PLAN.md task 139 |
+| the bound that stands in for the noise gate's exact ratio, where a solve goes unread, would have passed a row whose share was NaN: an inverse that overflowed, with no ridge, at features near `1e-155` fitted through the origin | the test written for it, which failed before the guard | docs/PLAN.md task 140 |
+| a forward window's mean counted rows holding the row's own value or one its stamp excludes; it now starts at the first in-window row with a value of its own | the brute force and the time-reversal identity, both, while the operators were built | docs/PLAN.md task 143 |
+| a held value cut at a window's edge subtracted the boundary row's whole mass, which at a row exactly a window old cancelled to rounding dust: a `"left"` mean read 6.27 where the definition gave 6.34 | the definition, while the operators were built | docs/PLAN.md task 143 |
+| parameters in clock units acted per row: `emit_drift` flagged a 30-unit burst at four rows a unit and not at one, the residual quantiles never forgot (1.55 where the recent quantile was 0.166), and `resid_autocorr_lag` paired residuals across a break | measuring 0.13.0, and reading the code | docs/PLAN.md task 146 |
+| `kalman`'s `coef_half_life` acted as about `h · sqrt(d)` for rows `d` apart: a slope step took 74, 38 and 13 clock units to learn at rows 1, 0.25 and 0.04 apart | measuring 0.13.0 | docs/PLAN.md task 150 |
+| `label_delay`, now `embargo`, learned labels early at a break: with a 10-unit delay and a 5-unit cap, an 8-unit gap learned two labels early, and a session change with no gap learned nine | the design of task 104, which first capped the delay at the gap cap for it; four count tests that failed on the old build | docs/PLAN.md task 153 |
+| the findings of nine review rounds over the window operators and formula targets, each pinned by a test that failed before its fix | the review rounds R1 to R9, on 2026-10-03 | docs/PLAN.md §14 |
 
 ### Differences from river that are not bugs
 
@@ -294,266 +578,146 @@ wrong.
 
 ## Where it is thin, and what is left
 
-### Measured coverage
-
-Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
-package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
-of the Rust workspace, up from 75% and 73% on 2026-08-30; `robust.rs`, the
-thin spot then at 75%, is at 98%. It is reported, never gating (T-D4), and
-Rust's figure is not in CI (docs/PLAN.md task 113 says why).
-
-**The Rust figure understates reality.** `cargo llvm-cov` only sees what
-`cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
-by the pytest suite through the compiled extension, which is invisible to the
-Rust instrumentation. The genuinely thin spots it does reveal are two.
-`online-cli/src/main.rs` is argument plumbing, covered instead by the CLI
-integration tests through `run_config`. `online-core/src/robust.rs` is at
-75%.
-
-### Open entries
-
-One, since 2026-09-25: T-W8's case-insensitivity, the one part of it no
-test covers (file locking and long paths are). The last three closed on
-2026-09-24: T-A2's numpy
-`lasso_ref` for the pred path, T-W3's paths on a Windows runner (its
-Windows-only test passed on both Windows legs of its first run), and T-D4's mutation testing
-in CI. What is still thin is below: the mutation survivors, and `robust.rs`'s
-coverage.
-
-### Mutation survivors
-
-**`lasso.rs` and `ewridge.rs`, closed 2026-09-27 (docs/PLAN.md task
-113).** A fresh baseline over the two files left 104 of 906 missed and 152
-timed out. Two `--iterate` rounds re-ran everything not caught; what
-remains is caught or recorded, with its reason, in
-`scripts/mutants_equivalent.toml` (14 entries). The tests that closed
-them lean on third-party oracles where there is one: every `ewridge` solve
-against its closed form, solved by `faer` (already a dependency, and not
-the model's own Cholesky), and against scikit-learn's `Ridge` in
-`tests/test_second_opinion.py`, 20 cases to 1e-8; `lasso` without an
-intercept and no penalty against least squares through the origin, again
-by `faer`. The rest hold a definition written out: the row leverage and
-each coefficient's support share, per target and ridge; the window's Kish
-count and residual spread against the rows inside it; the solve schedule
-counted row by row; a zero-weight copy of every row changing nothing to
-the bit; a state through its bytes, since an in-memory `State` clones the
-kept factors and hid their rebuild. The same pass over the lines task 112
-changed in `gaps.rs` and `ewlagcov.rs` caught 42 of 43, the other
-equivalent.
-
-Run 3 of the mutation pass left **217 missed** in `online-core`: 8.3%
-surviving, down from 31% at the first-ever pass. Most are in `lasso.rs` (50),
-`stats.rs` (45) and `ewridge.rs` (42). [Where the 217 stand now](#where-the-217-stand-now)
-has the count by file.
-
-**`stats.rs`, closed 2026-09-24.** Rerun on its own, it left 48 of 285
-missed: 30 in `P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with
-no timeouts. Oracle tests closed them. `P2Quantile` is held marker by marker
-to the algorithm box of Jain & Chlamtac (1985), written from the paper, on
-a continuous stream and a discrete one, where markers tie. (Task 146
-replaced `P2Quantile`, which never forgot, with `EwQuantile`, held to the
-exponentially weighted quantile's definition row by row.) `EwAutoCorr` is
-held to a regime switch, to invariance under a shift and a scale, to a zero
-co-moment before the first pair, and to `same_shape`'s bounds. `SlotMetrics`
-is held to `weight_sum`'s definition and the strict 0.5 threshold. After them, 5
-of 285 were missed, and the discrete stream catches one of those, the tie
-at the minimum. The other four are equivalent mutants, which no test can
-catch: `d_sign > 0` against `>=` where `d_sign` is only ever ±1; `denom > 0`
-against `>=` where a scored row's `w > 0` keeps `denom` positive; and the
-two `<` of the parabolic order check against `<=`, which differ only when
-the prediction lands exactly on a neighbour, where the fallback usually
-gives the same height. `lasso.rs` (50) and `ewridge.rs` (42) are next.
+What is left comes first. The two measures behind it follow: the code the
+Rust tests reach, and the mutants no test catches.
 
 ### What is left
 
-**The original blocker is gone.** It was that *nothing has ever been pushed,
-no CI job has ever run on any platform*. As of 2026-08-31 the repo is pushed, and
-CI has run on all three platforms.
+**One entry is open, and the newest code sits outside the mutation scope.**
 
-Cleared:
+| what | why it is thin | where it stands |
+|---|---|---|
+| T-W8's case-insensitivity | no test covers it; T-W8's file locking and long paths are tested | open since 2026-09-25 |
+| a network share path, `\\server\share\...` | out of a CI runner's reach | untested (T-W3) |
+| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests [above](#the-window-operators-and-formula-targets), and by review rounds R1 to R9 |
+| the weekly mutation pass over all of `online-core` | it reports without failing, and no figure from it is recorded here | [Mutation survivors](#mutation-survivors) |
 
-| entry | what cleared it |
-|---|---|
-| **T-D1** | The workflows have run. What they claimed is now measured, and three of the claims were wrong: see below the table. |
-| **T-W1** | `cargo test`, `maturin develop` and pytest have all executed on Windows: **712 passed, 1 failed** on `d6158aa`, down from 9 failures. Every one of the nine was a test bug, not a library bug: cp1252 encoding, `str(WindowsPath)` backslashes, a hardcoded POSIX `PATH`, a bash-only test. |
-| **T-W7** | The 126 committed golden pipeline outputs compared at 1e-12 on Windows, so the golden comparison is genuinely cross-platform now. |
-| **T-W5**, **T-W3b**, **T-W8**, **T-W2** | All executed as part of that run. |
-
-The three claims that proved wrong were the Linux `ld` SIGBUS (disk, not
-memory), the cache that never saved, and the disk exhaustion *inside* the
-cache restore. The SIGBUS is told in the comment above the `test` job in
-`.github/workflows/ci.yml`; the other two are in `docs/RELEASE-READINESS.md`.
-`d6158aa` is not a commit in this repository's history, perhaps a CI merge
-commit.
-
-Since cleared (2026-09-06):
-
-**The tenth Windows failure** was a `UnicodeEncodeError` in
-`examples/pathway_integration.py`. It was fixed and pinned by a test. The cost
-policy had taken Windows off push while the repo was private (see the COST
-POLICY comment in `ci.yml`). The repo is public, every push runs all three
-OSes, and Windows has been green on every release since 0.1.0.
-
-**PyPI.** `polars-online` is published there, 0.1.0 on 2026-09-03 and 0.1.1
-on 2026-09-04, through the trusted-publisher `release.yml`. The Polars pin
-question is settled as `polars>=1.34.0,<3`: see "The Polars pin" in
-`docs/RELEASE-READINESS.md`.
+The last three entries closed on 2026-09-24: T-A2's numpy `lasso_ref` for the
+pred path, T-D4's mutation testing in CI, and T-W3's paths on a Windows
+runner. T-W3's Windows-only test passed on both Windows legs of its first
+run.
 
 Two things are worth doing periodically rather than once:
 
 | run | when | what to watch for |
 |---|---|---|
-| **`./scripts/mutants.sh`** | after a batch of feature work | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. The runs so far are described in [What the mutation run actually found](#what-the-mutation-run-actually-found) |
+| **`./scripts/mutants.sh`** | after a batch of feature work, or with `--in-diff` on a branch | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. The runs so far are described in [What the mutation run actually found](#what-the-mutation-run-actually-found) |
 | **`./scripts/coverage.sh`** | periodically | reported and never gating |
+
+### Measured coverage
+
+Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
+package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
+of the Rust workspace. The Rust figures were 75% and 73% on 2026-08-30. It
+is reported, never gating (T-D4), and Rust's figure is not in CI
+(docs/PLAN.md task 113 says why).
+
+**The Rust figure understates reality.** `cargo llvm-cov` only sees what
+`cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
+by the pytest suite through the compiled extension, which is invisible to the
+Rust instrumentation. The thin spot it does reveal is
+`online-cli/src/main.rs`, argument plumbing covered instead by the CLI
+integration tests through `run_config`. `online-core/src/robust.rs`, the
+other thin spot on 2026-08-30 at 75%, is at 98%.
+
+### Mutation survivors
+
+**The lines each change touches have been held to no unlisted survivor since
+2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
+`online-core` and `online-polars/src/span.rs`, on every push to `main` and
+every pull request. It fails on a survivor that
+`scripts/mutants_equivalent.toml` does not list. That file names 23
+equivalent mutants, each with the reason no input can tell it from the
+original. The weekly pass over all of `online-core`, 11,138 mutants on
+2026-10-03, reports without failing.
+
+**Equivalent mutants are left alone deliberately: no test can kill them.**
+Two from the first passes show the kind. Flipping `Ftrl::weight`'s
+`zz < 0.0` sign test to `<=` changes it only at `zz == 0`, which the
+`|zz| <= l1` guard above it has already returned on. In Holt's
+`beta > 0.0 && d_clock > 0.0`, the second test can never decide, because
+beta is `1 - 0.5^(d/half_life)`, zero exactly when d is. Holt's note in the
+source stood until its rewrite in task 80 (`ddc9d91`) removed `beta`, and the
+branch with it. FTRL's branch, now in `Ftrl::weight_of` in
+`crates/online-core/src/ftrl.rs`, is recorded in
+`scripts/mutants_equivalent.toml` with that reason.
+
+**The last whole-crate count recorded here is run 3's, on 2026-08-30: 217
+missed**, 8.3% surviving, down from 31% at the first-ever pass. Most were in
+`lasso.rs` (50), `stats.rs` (45) and `ewridge.rs` (42), and each of those
+files has since been triaged until every mutant in it is caught or recorded
+with its reason. [Where the 217 stood after run 3](#where-the-217-stood-after-run-3)
+has the count by file. The triage, newest first:
+
+| scope | date | missed at the start | at the end |
+|---|---|---|---|
+| `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 (docs/PLAN.md task 113) | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
+| the lines task 112 changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
+| `stats.rs`, on its own | 2026-09-24 | 48 of 285, no timeouts | 5: one caught since, and four equivalent |
+
+**`lasso.rs` and `ewridge.rs`.** The tests that closed them lean on
+third-party oracles where there is one. Every `ewridge` solve is held to its
+closed form, solved by `faer` (already a dependency, and not the model's own
+Cholesky). It is held to scikit-learn's `Ridge` too, in
+`tests/test_second_opinion.py`, 20 cases to 1e-8. `lasso` without an
+intercept and no penalty is held to least squares through the origin, again
+by `faer`. The rest hold a definition written out:
+
+| quantity | held to |
+|---|---|
+| the row leverage, and each coefficient's support share | their definitions, per target and ridge |
+| the window's Kish count and residual spread | the rows inside the window |
+| the solve schedule | a count, row by row |
+| a zero-weight copy of every row | no change, to the bit |
+| a saved state | its bytes, since an in-memory `State` clones the kept factors and hid their rebuild |
+
+**`stats.rs`.** Rerun on its own, it left 48 of 285 missed: 30 in
+`P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with no timeouts.
+Oracle tests closed them:
+
+| survivors in | held to |
+|---|---|
+| `P2Quantile` | the algorithm box of Jain & Chlamtac (1985), marker by marker, written from the paper, on a continuous stream and a discrete one, where markers tie |
+| `EwAutoCorr` | a regime switch, invariance under a shift and a scale, a zero co-moment before the first pair, and `same_shape`'s bounds |
+| `SlotMetrics` | `weight_sum`'s definition and the strict 0.5 threshold |
+
+After them, 5 of 285 were missed. The discrete stream catches one, the tie
+at the minimum, and the other four were equivalent mutants. Three were in
+`P2Quantile`. One was `d_sign > 0` against `>=`, where `d_sign` is only ever
+±1. The other two were the two `<` of the parabolic order check against
+`<=`, which differ only when the prediction lands exactly on a neighbour.
+Task 146 replaced `P2Quantile`, which never forgot, with `EwQuantile`, held
+to the exponentially weighted quantile's definition row by row, and those
+three went with it. The fourth is still listed: `SlotMetrics::update`'s
+`denom > 0` against `>=`, where a scored row's `w > 0` keeps `denom`
+positive.
 
 ## How the suite looks for defects
 
-### An oracle, not a golden number
-
-**The 2026-09 batch (tasks 45–56) added five models and four helper
-modules**, and its testing pattern is worth naming, because it is what found
-the defects. **Every recursion got a longhand oracle written from the paper,
-not from the code**, and the oracle was allowed to disagree. It did, six
-times:
-
-| model | what the oracle found |
-|---|---|
-| `deco` | its `rho` was not `ew_cov`'s `corr` |
-| `hmm` | its Π seeding was not the prior mean |
-| `corrchange` | its scalar CUSUM was identically zero |
-| `bocpd` | it implemented Algorithm 1's line 6 with the new run holding one row of the old regime |
-| `rcov` | its pre-averaging window was off by one |
-| `corrchange` | its size study was comparing Gaussian draws against a `t₅` table |
-
-Each is recorded in `docs/PLAN.md` §11a, with what it measured. **An oracle
-written *from the implementation* agrees with it by construction.** That is
-the one that is easy to get wrong, and it is how `bocpd`'s line 6 survived
-twelve unit tests.
-
-The mutation work below followed the same rule: add an *oracle*, not a golden
-number. An oracle took one of four forms:
-
-| form | example |
-|---|---|
-| the recursion written out longhand beside the implementation | Holt, Page-Hinkley, `sigma2` |
-| an equivalent model configured a different way | the slow twin against a standalone model at `long_half_life`; the standardized solve against the plain one at zero penalty |
-| the optimality conditions of the problem being solved | the lasso's KKT conditions |
-| the definition of the statistic | `read` against a recomputation from the raw rows |
-
-
-### Libraries the package does not depend on
-
-**A test may use any library the package does not depend on, when the test
-needs it.** The user settled this on 2026-09-24: "packages that we do not
-want to depend on are fine if needed to test with other libraries", and the
-test plan must allow it from here on. The package depends on polars alone,
-with numpy as an extra, and that does not change. What a test needs is a
-separate question, and three kinds of need have come up:
-
-| need | libraries | example |
-|---|---|---|
-| an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
-| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
-| interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
-
-**An oracle comes from a third-party library wherever one computes the
-thing checked.** The user asked, on 2026-09-27, while a Gaussian
-elimination was being written by hand as a ridge oracle: "Is there no third
-party oracle library?" An oracle written here can share a mistake with the
-code it checks, and a library's cannot. So before writing a longhand, look
-for a library that computes the same quantity, and write by hand only the
-definition, from the paper, such as the normal equations a fit must solve.
-
-| where the test is | library oracles | example |
-|---|---|---|
-| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, and independent of the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `faer`'s LU |
-| Python | scikit-learn, scipy, statsmodels, pandas, numpy | `TestEwRidgeIsSklearnsRidge` holds every `ewridge` solve to `sklearn.linear_model.Ridge`, 20 cases to 1e-8 |
-
-**A mutant can be killed only from Rust**, because `cargo mutants` runs
-`cargo test` and never the pytest suite. Where a library oracle exists only
-in Python, write both: the Rust test with `faer` doing the linear algebra,
-and the library's second opinion in `tests/test_second_opinion.py`. Where no
-library computes the quantity, the oracle is written from the paper, never
-from the code it checks.
-
-Four rules keep such a library from costing the package anything:
-
-1. **Declare it in the dev group, by name.** It must not arrive through
-   another package's dependencies. pandas and scipy came in through
-   statsmodels until 2026-09-24, so dropping statsmodels would have broken
-   tests that never mention it. Its licence must be open source: one the
-   Open Source Initiative approves, or CC0. A library under source-available
-   or commercial terms is parked, not used (the user, 2026-09-25: "enable
-   every unlicensed library in tests and park using licensed libraries").
-   A library that must not be in every contributor's environment, for its
-   platforms, gets a group of its own and a CI job of its own.
-2. **Import it plainly.** The dev group is installed wherever the suite
-   runs, so `pytest.importorskip` could only turn a broken environment into
-   a skip. A missing library fails the test.
-3. **Keep it out of the package's reach when its presence changes other
-   libraries.** pyarrow is the case: pandas and duckdb take other paths when
-   it is importable, and a use of it inside the package would pass the
-   suite. `tests/conftest.py` makes it unimportable, and
-   `tests/test_pyarrow_interop.py` runs it in child interpreters.
-4. **Never add it to the package's own dependencies.** Those stay `polars`.
-
-`tests/test_dependency_policy.py` checks rules 1, 2 and 4. Every library a
-test imports must be declared in the dev group, no test may call
-`importorskip` (nor skip behind `except ImportError`), and the package must
-depend on polars alone, extras included. Every library of the dev and docs
-groups, and every Rust crate's dev-dependency, must name an open licence in
-its metadata, as an SPDX expression or an "OSI Approved" classifier. A
-library whose metadata names none is listed with the licence read at its
-source and where: `bayesian-changepoint-detection`'s wheel declares none,
-and its repository's `LICENSE` is MIT. Rule 3 is checked in this process by
-`test_this_session_runs_without_pyarrow` and in the child interpreters the
-tests spawn by `test_child_interpreters_run_without_pyarrow_too`:
-`tests/child.py` puts `tests/_site/sitecustomize.py`, which installs the same
-finder, on their path; only `tests/test_pyarrow_interop.py`'s children see
-pyarrow (review 2026-09-25, which found the examples' "nothing needs pyarrow"
-running with it importable). The gate checks the lock with `uv lock --check`.
-
-**scikit-learn is taken** (task 121, 2026-09-25). `tests/test_sgd.py`
-compares `sgd` with `SGDRegressor` live, where it quoted sklearn's R² from
-`scripts/sklearn_comparison.py`. `tests/test_second_opinion.py` holds
-`huber` to `LinearRegression` in the review's exact limit and to
-`HuberRegressor` under outliers (T-S4), and `marginal`'s best split to a
-`DecisionTreeRegressor` stump (T-S12).
-
-**Vowpal Wabbit is taken** (task 115, 2026-09-29; the user: "find an
-alternative oracle for ftrl that supports more options"). Its `--ftrl`
-runs the recursion `ftrl.rs` states, and it reaches options river's
-comparison does not: the squared loss, row weights, the intercept and the
-model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
-to it on every row, to 1e-5, since VW computes in single precision. The
-wheel has no dependencies and ships for Python 3.12 to 3.14 on all three
-operating systems, so it sits in the dev group like the rest. None of the
-libraries checked forgets as a half-life does (river, VW, and Keras's
-`Ftrl`), so a finite half-life stays with `ftrl_ref` (T-A4).
-
-**Pathway is parked.** It would run the Pathway half of
-`examples/pathway_integration.py`, but it is under the Business Source
-License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
-out of `pyproject.toml` until the user decides (`docs/ENHANCEMENTS.md`
-E26).
+The references and invariants above check what the code computes. Two
+methods look for what they miss. Mutation testing finds code that no test
+would notice breaking, and the FFI audit finds memory faults that no
+assertion sees.
 
 ### What the mutation run actually found
 
 `scripts/mutants.sh` runs `cargo mutants` over `online-core`. It makes one
 small change to the source, rebuilds, and reruns the tests. A missed mutant
 means every test still passed with the code deliberately broken: a gap in the
-tests, not a bug in the code. The passes so far:
+tests rather than a bug in the code. [Mutation survivors](#mutation-survivors)
+says where they stand today. The passes so far:
 
-| pass | mutants | missed | timeouts |
-|---|---|---|---|
-| the first-ever pass (T-D4) | 1645 | 517, with 1104 caught and 24 unviable | |
-| run 1, before the follow-up work (T-D5) | 2616 | 501 | 175 |
-| run 2, after it, under load | | 104 as reported, which was wrong | 425 |
-| run 3 (`--iterate`), 14 min on an idle machine | 690 | **217**, the honest current figure | 18 |
-| `lasso.rs` and `ewridge.rs` afresh, 2026-09-27, 3 h | 906 | 104, then 0 not caught or recorded after two `--iterate` rounds | 152, then 0 |
+| pass | date | mutants | missed | timeouts |
+|---|---|---|---|---|
+| the first-ever pass (T-D4) | 2026-08-30 | 1645 | 517, with 1104 caught and 24 unviable | |
+| run 1, before the follow-up work (T-D5) | 2026-08-30 | 2616 | 501 | 175 |
+| run 2, after it, under load | 2026-08-30 | | 104 as reported, which was wrong | 425 |
+| run 3 (`--iterate`), 14 min on an idle machine | 2026-08-30 | 690 | **217**, the last whole-crate figure recorded here | 18 |
+| `stats.rs` on its own | 2026-09-24 | 285 | 48, then 5 | 0 |
+| `lasso.rs` and `ewridge.rs` afresh, 3 h | 2026-09-27 | 906 | 104, then 0 not caught or recorded after two `--iterate` rounds | 152, then 0 |
 
 The headline number (501 of 2616 mutants surviving) is less interesting than
-its shape. Grouped by function, the survivors were:
+its shape. Grouped by function, run 1's survivors were:
 
 | function | missed | why |
 |---|---|---|
@@ -577,40 +741,33 @@ reason for scoping the run to `online-core`. But the same blind spot applies
 *inside* `online-core`, wherever a feature's only oracle is a Python test.
 
 Eight commits closed it, taking `online-core`'s Rust tests from 151 to 218.
-The rule they followed was to add an oracle in one of the four forms
-[above](#an-oracle-not-a-golden-number), not a golden number.
+Each added an oracle in one of the four forms
+[above](#an-oracle-not-a-golden-number), rather than a golden number.
 
 #### Five defects the behavioural tests were happy with
 
 Five real defects surfaced in the process, all in code the behavioural tests
-were happy with. **The most serious was a zero-weight row at the head of a
-stream, which permanently disabled `ewridge` and `lasso`.** Their per-target
-mean-form update computes `a = lam·wj / (lam·wj + w)`, which is 0/0 when
-nothing has ever carried weight. The NaN never washed out: `wj` stayed NaN,
-`NaN > 0.0` is false, and the model silently stopped predicting for the rest
-of the stream. Every other model already guarded it, and so did
-`EwCov::update` two lines away. It was found indirectly. A Rust unit test for
-the analogous guard in `blend_toward_long_run` failed, which pointed at the
-same shape in `step`. `tests/test_edge_cases.py::TestWeights` now checks it
-for all ten regression models.
+were happy with.
+
+**The most serious was a zero-weight row at the head of a stream, which
+permanently disabled `ewridge` and `lasso`.** Their per-target mean-form
+update computes `a = lam·wj / (lam·wj + w)`, which is 0/0 when nothing has
+ever carried weight. The NaN never washed out: `wj` stayed NaN, `NaN > 0.0`
+is false, and the model silently stopped predicting for the rest of the
+stream. Every other model already guarded it, and so did `EwCov::update` two
+lines away. It was found indirectly. A Rust unit test for the analogous guard
+in `blend_toward_long_run` failed, which pointed at the same shape in `step`.
+`tests/test_edge_cases.py::TestWeights` now checks it for all ten regression
+models.
 
 The other four:
 
 | defect | what it did |
 |---|---|
-| `sgd` and `pa` reported `weight_sum` with the current row's decay already applied | `min_weight` meant a different number of rows for them than for every other model |
+| `sgd` and `pa` reported `weight_sum` with the current row's decay already applied | `min_weight` meant a different number of rows for them than for every other model (T-A5 has the detail) |
 | `EwCovModel::n_targets` returned 1 | for a model that regresses nothing |
 | `blend_toward_long_run` had lost its doc comment | to a `#[cfg(test)]` helper inserted between the comment and the function |
 | `coef_prior` misconfiguration | reported "coef_prior must be 1 vectors of length 3" |
-
-**Equivalent mutants were left alone deliberately: they cannot be killed by
-any test.** `Ftrl::weight`'s `zz < 0.0` sign branch is only reachable when
-`zz == 0`, which the `|zz| <= l1` guard above it has already returned on. In
-Holt's `beta > 0.0 && d_clock > 0.0`, the second test can never decide,
-because beta is `1 - 0.5^(d/half_life)`, zero exactly when d is. Neither says
-so in the source today. Holt's note stood until its rewrite in task 80
-(`ddc9d91`) removed `beta`, and the branch with it. FTRL's branch, now in
-`weight_of` in `crates/online-core/src/ftrl.rs`, never carried such a note.
 
 #### Do not run anything else while a mutation pass is going
 
@@ -625,15 +782,15 @@ test, maturin, pytest, repeatedly, on the same four cores. Because
 cargo-mutants counts a timeout separately from a miss, the contention did not
 look like an error. It looked like good news.
 
-**Treat a large timeout count as a failed run, not a result.** Run 1 had 175
-timeouts of 2616. Run 2, under load, had 425. Run 3, idle, had 18 of 690.
-Above a few percent, the numbers underneath are not trustworthy.
+**Treat a large timeout count as a failed run.** Run 1 had 175 timeouts of
+2616. Run 2, under load, had 425. Run 3, idle, had 18 of 690. Above a few
+percent, the numbers underneath are not trustworthy.
 
 `--minimum-test-timeout 10` in `scripts/mutants.sh` makes a pass faster, but
-*more* sensitive to this, not less. It is right for an idle machine and wrong
-for a busy one.
+*more* sensitive to this. It is right for an idle machine and wrong for a
+busy one.
 
-#### Where the 217 stand now
+#### Where the 217 stood after run 3
 
 | file | run 1 | run 3 |
 |---|---|---|
@@ -648,9 +805,10 @@ for a busy one.
 
 Three files went *up*, which is the same measurement artifact in reverse:
 their run-1 figures were themselves depressed by timeouts. `stats.rs` is the
-clearest case. Its 45 survivors are in `P2Quantile` and `SlotMetrics`, both
-of which are loops whose mutations spin. They are the obvious next batch of
-work, and the same rule applies: add an oracle, not a golden number.
+clearest case. Its 45 survivors were in `P2Quantile` and `SlotMetrics`, both
+of which are loops whose mutations spin. They were the obvious next batch,
+closed on 2026-09-24 by the same rule, an oracle rather than a golden number
+([Mutation survivors](#mutation-survivors)).
 
 ### FFI memory and crash safety (2026-08-31)
 
@@ -662,18 +820,18 @@ takes pytest with it. `tests/test_ffi_memory.py` covers it: 16 tests (~7 s)
 when written, and 13 since task 85 (`6d9b983`) removed the expression
 plugin's four and `test_many_tiny_groups` took the place of one (`b9e4977`).
 
-**The assertion is "plateaus", not "does not grow."** Allocators do not
-return pages eagerly, rayon spawns workers lazily, and Polars cached the
-loaded plugin while there was one. This was measured on the plugin, before
-task 85 removed it.
-Our `.over()` cost a one-time **+6 MB** and was then flat across 1,800
-iterations (per-block deltas +0.7, −0.9, +1.1, −0.3, −0.3). Native Polars
-`.over()`, by contrast, slowly *returns* memory. A naive "RSS must not grow"
-test would have failed on that step forever. So `assert_plateaus` compares
-the later blocks against each other: a step passes, a slope fails. When
-written, it discarded the first block. Since 2026-09-08 it finds the end of
-the ramp instead. Blocks of 120 iterations run until two in a row each grow
-by less than 4 KB per iteration. Only then are five more measured.
+**The assertion is that memory plateaus, rather than that it never grows.**
+Allocators do not return pages eagerly, rayon spawns workers lazily, and
+Polars cached the loaded plugin while there was one. This was measured on the
+plugin, before task 85 removed it. Our `.over()` took a one-time **+6 MB**
+and was then flat across 1,800 iterations (per-block deltas +0.7, −0.9, +1.1,
+−0.3, −0.3). Native Polars `.over()`, by contrast, slowly *returns* memory. A
+naive "RSS must not grow" test would have failed on that step forever. So
+`assert_plateaus` compares the later blocks against each other: a step
+passes, a slope fails. When written, it discarded the first block. Since
+2026-09-08 it finds the end of the ramp instead. Blocks of 120 iterations run
+until two in a row each grow by less than 4 KB per iteration. Only then are
+five more measured.
 
 **The statistic is the median block-to-block gap**: five measured blocks of
 120, so four gaps, and three when written. Comparing the tail's first mark
@@ -741,7 +899,8 @@ Priorities: **P1** = closes a PLAN promise or covers a found defect; **P2** =
 meaningful new assurance; **P3** = infrastructure. A struck-through
 priority, such as ~~P1~~ **done**, marks an entry that is finished. Each
 section has one table, with one row per ID, and a paragraph under it for an
-entry whose detail does not fit a cell.
+entry whose detail does not fit a cell. The record of what the first CI runs
+cleared closes the section.
 
 ### A. Close the oracle gaps (our own references)
 
@@ -759,9 +918,8 @@ the standardization-from-prior-stats scheme. It agrees to 1e-9 (observed max
 explicit `q` and fixed `obs_var`/`p0`. It also covers multi-target with and
 without `share_p`, the null policy and the null-target path, and
 `fit_intercept=False`. Writing it confirmed several subtleties are
-load-bearing: scales come from the stats
-*before* the row, `Q·Δclock²` is applied once per shared `P`, and the
-innovation variance carries `σ²/w`.
+load-bearing: scales come from the stats *before* the row, `Q·Δclock²` is
+applied once per shared `P`, and the innovation variance carries `σ²/w`.
 
 **T-A2.** `tests/test_oracles.py::TestLassoOptimality` checks stationarity
 and the subgradient conditions at the emitted coefficient snapshot, on the
@@ -769,26 +927,28 @@ model's own standardized statistics rather than a ported solver.
 `g_i = c_i − (Cb)_i − l2·b_i` must equal `l1·sign(b_i)` where `b_i ≠ 0`, and
 satisfy `|g_i| ≤ l1` where it is zero. It runs across λ ∈ {0, 0.01, 0.1} ×
 `l1_ratio` ∈ {1.0, 0.5}, plus sparsity monotonicity along the path and the
-intercept identity. It sees one snapshot, the last solve's, so since
+intercept identity. It sees one snapshot, the last solve's. So since
 2026-09-24 `tests/test_oracles.py::TestLassoPredPath` also holds every row
-to `reference.lasso_ref`. That is a cyclic coordinate descent written from
-the objective (Friedman, Hastie & Tibshirani 2010), run from zero to 1e-14 so
-no warm start can change its answer, on the documented schedule:
-`solve_every` and its default by weight (task 115 (b)), `max_rows_between_solves`,
-the forced first solve at `min_weight`, the decay, a capped gap, skipped
-and zero-weight rows. It compares every path point's `pred` and `resid`,
-`weight_sum`, every `coef` row, where `coef` is null, and which coefficients the
-L1 zeroed. Measured: pred 1.7e-14, coef 1.2e-12, `weight_sum` exact; at the
-library's own `tol` and `max_iter`, pred 1.7e-10. Each tolerance is
-100 times that. Seeded bugs in the reference each fail it: a solve a row late
-(pred moves 0.17-0.57), an in-sample pred, no cap, `>` for `>=` at the
-cadence, zero-weight rows not counted as rows, skipped rows counted, no
-forced first solve. It also found the docstring calling `c` the
-feature-target correlations; it is `cov(x_i, y) / s_i`, so the L1 threshold
-is in the target's units, and the docstring now says so. Not covered: null
-targets, several targets, `target_gaps`, `window_size`, `fit_intercept=False`,
-`penalty_selected`.
-It would catch schedule and warm-start bugs the KKT check cannot see.
+to `reference.lasso_ref`, a cyclic coordinate descent written from the
+objective (Friedman, Hastie & Tibshirani 2010). It runs from zero to 1e-14,
+so no warm start can change its answer. It follows the documented schedule:
+`solve_every` and its default by weight (task 115 (b)),
+`max_rows_between_solves`, the forced first solve at `min_weight`, the decay,
+a capped gap, skipped and zero-weight rows. It compares every path point's
+`pred` and `resid`, `weight_sum`, every `coef` row, where `coef` is null, and
+which coefficients the L1 zeroed. Measured: pred 1.7e-14, coef 1.2e-12,
+`weight_sum` exact; at the library's own `tol` and `max_iter`, pred 1.7e-10.
+Each tolerance is 100 times that. Each of seven bugs seeded into the
+reference fails it: a solve a row late (pred moves 0.17-0.57), an in-sample
+pred, no cap, and `>` for `>=` at the cadence. The other three are
+zero-weight rows not counted as rows, skipped rows counted, and no forced
+first solve. It would catch schedule and warm-start bugs the KKT check cannot
+see. It also found the docstring calling `c` the feature-target correlations;
+it is `cov(x_i, y) / s_i`, so the L1 threshold is in the target's units, and
+the docstring now says so. The paths it leaves out are held by
+`tests/test_oracles_lasso_paths.py` against `reference_paths.lasso_paths_ref`,
+since 2026-09-24: null targets, several targets, `target_gaps`,
+`window_size`, `fit_intercept=False` and `penalty_selected`.
 
 **T-A3.** `robust_ref` is in `tests/reference.py`. It agrees to ~1e-13
 across `huber_delta` ∈ {0.5, 1.5, 10}, τ ∈ {0.1, 0.5, 0.9}, nulls,
@@ -808,19 +968,12 @@ group independence, no non-finite outputs) against all ten regression
 models. That was seven when written; `sgd`, `pa` and `holt` joined when they
 landed. The genuinely model-specific deviations are named in the module
 docstring rather than skipped silently (`rls` predict-only on any null
-target; `lasso` slot naming; `ftrl` probabilities). It found two defects.
+target; `lasso` slot naming; `ftrl` probabilities). It found two defects:
 
-- **The robust models reported `weight_sum` as the sum of *IRLS weights* rather
-  than observations.** A quantile spec showed `weight_sum ≈ 1001` after three
-  rows, since quantile weights reach `2/quantile_eps` ≈ 2000×, so
-  `min_weight` was effectively inert. `Robust` now tracks a raw-weight
-  observation count for `weight_sum`/`min_weight`, while the accumulators keep
-  using the robust weights.
-- **`sgd` and `pa` reported `weight_sum` with the current row's decay already
-  applied**, found as soon as the sweep reached them. Every other model
-  reports the weight before the row's update and before its decay, so
-  `min_weight` meant a slightly different number of rows depending on the
-  model. Both now follow the documented convention.
+| defect | what it did | what holds now |
+|---|---|---|
+| **the robust models reported `weight_sum` as the sum of *IRLS weights* rather than observations** | a quantile spec showed `weight_sum ≈ 1001` after three rows, since quantile weights reach `2/quantile_eps` ≈ 2000×, so `min_weight` was effectively inert | `Robust` tracks a raw-weight observation count for `weight_sum`/`min_weight`, while the accumulators keep using the robust weights |
+| **`sgd` and `pa` reported `weight_sum` with the current row's decay already applied**, found as soon as the sweep reached them | every other model reports the weight before the row's update and before its decay, so `min_weight` meant a slightly different number of rows depending on the model | both follow the documented convention |
 
 ### B. Cross-checks against river
 
@@ -895,7 +1048,7 @@ build of the time when this document was written, and both are fixed.
 | T-E9 | ~~P2~~ **done; found a defect, then removed the limit** | **Large-offset cancellation** | slope-recovery error at a 1e6 offset **2.0e-03 → 6.8e-10** |
 | T-E10 | ~~P2~~ **done, decision taken** | Datetime-typed clock columns | read in their own nanoseconds, with clock parameters as durations; every duration unit, in each form, against every column unit |
 | T-E11 | ~~P3~~ **done** | Long-stream soak: 10⁷ rows through one state | `weight_sum` bounded, the fit accurate, the state under 4KB; opt-in |
-| T-E12 | ~~P3~~ **done** | Pending-delta across a save/load boundary; session change on a group's first row | both targeted |
+| T-E12 | ~~P3~~ **done** | The pending delta across a save/load boundary; session change on a group's first row | both targeted |
 | T-E13 | ~~P2~~ **done** (2026-09-04) | The chunk plan's group layout, per-field assembly and parallel extract (P9–P11) | the layout is invisible; no defect found |
 
 **T-E1.** `EwCov::update` silently no-opped when `λW + w ≤ 0`, while the
@@ -910,11 +1063,14 @@ models (all seven when written) and the `w = 0` pure-decay case.
 **T-E2.** Both mapped to the string `"<null>"` and shared one stream:
 `weight_sum` was verified to accumulate across them. `GroupKey(Option<String>)`
 replaces the `"<null>"` string sentinel, so a null group is structurally
-distinct from a group named `"<null>"`. Bank files gained a `format_version`,
-2 then. It is still 2 for most files, and since task 88 a bank whose specs
-carry a duration writes 3. Version 1 files still load, because the key
-serializes transparently as its inner `Option`. `TestGroupKeys` covers it,
-including save/load and integer group columns.
+distinct from a group named `"<null>"`. `TestGroupKeys` covers it, including
+save/load and integer group columns. Bank files gained a `format_version`, 2
+then. It is still 2 for most files, and since task 88 a bank whose specs
+carry a duration writes 3. Version 1 files loaded then, because the key
+serializes transparently as its inner `Option`. Since review R6 (2026-10-03)
+a bank file below schema 25 is refused by its schema version
+(`MIN_BANK_SCHEMA_VERSION` in `crates/online-polars/src/bank.rs`), and every
+version 1 file is older than that.
 
 **T-E3.** `TestNonFinite` pins ±inf/NaN in features, targets, weights and the
 clock. A non-finite feature or weight skips the row, and the clock still
@@ -940,9 +1096,9 @@ required implementing ENHANCEMENTS E5 first: `Bank::solve_failures()` /
 **T-E6.** Duplicate clock values are zero deltas, so no decay.
 `gap_cap = 0` disabled decay entirely until task 120 (2026-09-28), which
 refuses it: no decay is `half_life = "inf"`. A half-life far below the delta
-makes every row effectively the first (`weight_sum → 1`), and no NaN leaks under
-extreme decay. A zero-weight row whose decay underflows forgets the history
-as the decay does (task 115 (c)), in every model
+makes every row effectively the first (`weight_sum → 1`), and no NaN leaks
+under extreme decay. A zero-weight row whose decay underflows forgets the
+history as the decay does (task 115 (c)), in every model
 (`crates/online-core/tests/model_contract.rs`).
 
 **T-E7.** An empty chunk is accepted, and returns an empty frame with the
@@ -969,35 +1125,40 @@ a regression is obvious.
 internal representation: the same 60 seconds is 60e3 / 60e6 / 60e9 units for
 `Datetime(ms/us/ns)`, and 1 unit per day for `Date`. So `half_life=600` on a
 microsecond column silently meant 600 µs, decaying every row to nothing and
-producing plausible-looking garbage with no error. **Decision: reject
-(2026-08-30), then durations (task 88, 2026-09-23).** A temporal clock is
-read in its own integer nanoseconds and takes its clock parameters as
-durations; the gap between two rows is taken in integers before it becomes
-seconds, so a nanosecond timestamp keeps its nanoseconds whatever the
-stream's age (2026-09-24). A plain number on it is refused, naming the column,
-the parameter and both fixes (a duration, or `dt.epoch`).
-`tests/test_temporal_clock.py` is the trap turned into a pass: the same
-instants as `Datetime(ms/us/ns)` give a float clock's numbers to the bit, and
-`TestEveryUnitAgainstEveryColumn` holds every duration unit, in each form
-that can write it (text, `pl.duration`, `timedelta`), against every temporal
-column kind and unit, a zone-aware one among them: 192 cases, none skipped --
-the exact recursion where the column can express the unit, a refusal by name
-where a cap or a threshold is finer than the column's step. Numeric clocks (int and float) are unchanged, and are
-asserted to agree with each other.
+producing plausible-looking garbage with no error.
 
-**T-E11.** 10M rows go through one state in ~6.5s. `weight_sum` stays bounded and
-does not drift between the start and end of the stream, the coefficients are
-still accurate, and resume is still exact. A 2M-row state serializes to under
-4KB: memory is O(state), not O(data). It is opt-in, via `pytest -m soak`.
+**Decision: reject (2026-08-30), then durations (task 88, 2026-09-23).** A
+temporal clock is read in its own integer nanoseconds and takes its clock
+parameters as durations. The gap between two rows is taken in integers
+before it becomes seconds, so a nanosecond timestamp keeps its nanoseconds
+whatever the stream's age (2026-09-24). A plain number on it is refused,
+naming the column, the parameter and both fixes (a duration, or `dt.epoch`).
+`tests/test_temporal_clock.py` is the trap turned into a pass. The same
+instants as `Datetime(ms/us/ns)` give a float clock's numbers to the bit.
+`TestEveryUnitAgainstEveryColumn` holds every duration unit against every
+temporal column kind and unit, a zone-aware one among them: 192 cases, none
+skipped. Each unit is written in each form that can write it (text,
+`pl.duration`, `timedelta`). Where the column can express the unit, the test
+wants the exact recursion; where a cap or a threshold is finer than the
+column's step, a refusal by name. Numeric clocks (int and float) are
+unchanged, and are asserted to agree with each other.
+
+**T-E11.** 10M rows go through one state in ~6.5s. `weight_sum` stays
+bounded and does not drift between the start and end of the stream, the
+coefficients are still accurate, and resume is still exact. A 2M-row state
+serializes to under 4KB: memory is O(state) rather than O(data). It is
+opt-in, via `pytest -m soak`.
 
 **T-E12.** Splitting a stream exactly after a skipped row and resuming from
-state reproduces the unbroken run. A group's first row is treated as first,
-even when it also changes session.
+state reproduces the unbroken run, so the pending delta survives the state
+file. A group's first row is treated as first, even when it also changes
+session.
 
 **T-E13.** `crates/online-polars/tests/chunk_plan.rs` runs one interleaved
-fixture on both sides of `PAR_MIN_ROWS`, at 64, 4095, 4096, 4097 and 12305
-rows. The fixture has 40 groups, a null key, two one-row groups, nulls in
-every input, sessions, and an ungrouped spec beside the grouped ones.
+fixture on both sides of `PAR_MIN_ROWS`, the 4,096-row threshold from which a
+chunk's columns are read in parallel. It runs at 64, 4095, 4096, 4097 and
+12305 rows. The fixture has 40 groups, a null key, two one-row groups, nulls
+in every input, sessions, and an ungrouped spec beside the grouped ones.
 
 | claim | how it is held |
 |---|---|
@@ -1018,10 +1179,12 @@ mutation was caught: `source_row` ignoring the layout, and the fast path and
 Windows is a **stated deployment target** (CLAUDE.md: "Dev on macOS (arm64);
 deploy on macOS and Windows"). When this section was written it was the
 least-verified part of the project: no CI job had executed there. CI runs
-there on every push now, but "run CI" is not itself a test plan. These are the specific
-things Windows can break that macOS never will, and what each found. The P
-column is as first written. The last column says what has cleared since CI
-first ran on Windows, as [What is left](#what-is-left) records it.
+there at every push to `main` and pull request now, but "run CI" is not
+itself a test plan. These are the specific things Windows can break that
+macOS never will, and what each found. The P column is as first written. The
+last column says what has cleared since CI first ran on Windows, as
+[the record of the first CI runs](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06)
+has it.
 
 | # | P | case | since CI ran on Windows |
 |---|---|---|---|
@@ -1038,13 +1201,13 @@ first ran on Windows, as [What is left](#what-is-left) records it.
 | T-W9 | ~~P3~~ **done** | **`scripts/env.sh` has no Windows equivalent** | |
 
 **T-W1.** Written when `cargo test --workspace`, `maturin develop` and the
-pytest suite had never executed on Windows. They have since 2026-08-31, on
-every push. The first run found nine test bugs and no library bug.
+pytest suite had never executed on Windows. They have run there since
+2026-08-31, at every push to `main` and pull request.
 
-**Windows portability of the *tests*: the first Windows run found 9, all in
-tests, none in the library.** After the TOML fix cleared the Rust side, the
-pytest suite failed nine ways on Windows. The failures fell in four classes,
-every one a test making a Unix assumption:
+**The first Windows run found nine failures, all in the tests and none in
+the library.** After T-W3b's TOML fix cleared the Rust side, the pytest
+suite failed nine ways on Windows. The failures fell in four classes, every
+one a test making a Unix assumption:
 
 | class | what failed | the fix |
 |---|---|---|
@@ -1053,23 +1216,26 @@ every one a test making a Unix assumption:
 | **(3) environment** | the thread-determinism subprocess passed a hardcoded `PATH=/usr/bin:/bin`, leaving the child with no resolvable interpreter | it inherits `os.environ` |
 | **(4) shell** | `test_release_packaging` executes a `run:` block that only ever runs on the workflow's ubuntu job, and Git Bash's `find` differs enough to fail for reasons that say nothing about the workflow | skipped on Windows, where Linux and macOS still cover it |
 
-That the library itself passed all 718 tests on Windows first time is the
-result worth recording.
+The library passed 709 of the 718 tests on that first run, and none of the
+nine failures was its own (the message of `fbc6f8f`, which fixed them). That
+is the result worth recording. A later run the same day, on `d6158aa`, passed
+712 and failed one
+([the record](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06)).
 
 **T-W2.** PLAN §9 class 7 and hard rule 5. As first written: the msgpack
 payload has no host-dependent parts *by construction*, and `save_bytes` is
-asserted deterministic locally, but that is an argument, not a test.
+asserted deterministic locally, but that is an argument rather than a test.
 
 **T-W3.** Escaped Windows-style paths and paths with spaces are tested
 through the CLI on any OS, and round-trip. Resolution on Windows runs on the
-Windows CI leg, which every push has had since 2026-08-31. There, the three
-path forms of `test_each_documented_windows_path_form_parses` and
+Windows CI leg, which every push to `main` has had since 2026-08-31. There,
+the three path forms of `test_each_documented_windows_path_form_parses` and
 `test_absolute_paths_in_every_field_and_flag` write the runner's real
 `C:\...` temporary paths, so drive letters resolve on a real Windows host.
 `test_an_extended_length_path_resolves_on_windows` (Windows only) repeats
-the same run with the UNC-style `\\?\C:\...` spelling, in the config's
-`input`, `output` and `save_state` and in the `--input`, `--output`,
-`--save-state` and `--resume` flags; polars strips the prefix
+the same run with the UNC-style `\\?\C:\...` spelling. It does so in the
+config's `input`, `output` and `save_state`, and in the `--input`,
+`--output`, `--save-state` and `--resume` flags. Polars strips the prefix
 (`normalize_windows_path` in polars-utils). A network share,
 `\\server\share\...`, is out of a runner's reach and stays untested. The
 Windows-only test first ran on the push of `7d9a1c0` (2026-09-24), and passed
@@ -1106,13 +1272,14 @@ parse as checked out.
 **T-W5.** `tests/test_release_packaging.py` stages what `download-artifact`
 leaves behind: one directory per matrix job, two of them holding a file
 called plain `online`. It then runs the workflow's own bash against it. The
-shell is *extracted from `release.yml`*, not copied, so editing the workflow
-changes what the test runs. That was verified by breaking the workflow and
-watching three tests fail. Pinned: exactly the Windows artifact keeps `.exe`,
-the two unix binaries do not collapse onto one name, contents are copied not
-just renamed, and the PyPI job's `dist/` collects wheels only. What still
-needed a runner, as first written, is whether the Windows job produces
-`online.exe` in the first place.
+shell is *extracted from `release.yml`* rather than copied, so editing the
+workflow changes what the test runs. That was verified by breaking the
+workflow and watching three tests fail. Pinned: exactly the Windows artifact
+keeps `.exe`, the two unix binaries do not collapse onto one name, and
+contents are copied as well as renamed. The PyPI job's `dist/` takes the
+packages, the wheels and the sdist, and no CLI binary. What still needed a
+runner, as first written, is whether the Windows job produces `online.exe`
+in the first place.
 
 **T-W6.** The exact field-name list for a grid spec is asserted, so a
 platform divergence fails loudly: 58 fields, and 52 when written. Task 87
@@ -1124,21 +1291,21 @@ everywhere. But the field names are part of the public schema: users index
 the output struct by them. So a divergence would silently break every caller
 reading a field by name. Hence: assert the exact field-name list on every OS.
 
-**T-W7.** `tests/test_golden_pipeline.py` commits 502 outputs from a fixed
-stream through a 25-spec bank. Of those, 156 are read at each of three rows:
+**T-W7.** `tests/test_golden_pipeline.py` commits 505 outputs from a fixed
+stream through a 25-spec bank. Of those, 157 are read at each of three rows:
 25, 60 and 119. The other 34 are not per row. They are `marginal`'s 20 pair
 statistics, read at the end, `corrchange`'s 4 statistics, and `rcov`'s 10
 closed-group values. When written it committed 135 outputs from an
-eleven-spec bank at three rows each, and 126 until IMPROVEMENTS X2 added
-`ftrl`, the one model it had never pinned. It compares with a 1e-12 relative tolerance. `golden.rs` already
-pinned the Rust core; this pins the *Polars* layer, which nothing did:
-extraction, per-group fan-out, diagnostics, struct assembly. Locally the
-agreement is exact. The tolerance is what "the same answer on another
-platform" is allowed to mean. Different LLVM vectorization and BLAS paths can
-reorder floating-point operations, while a genuinely divergent algorithm
-shows up far above it. It was verified to bite at 1e-11 and to tolerate
-1e-14. The comparison became a cross-platform one the first time CI ran, with
-no further work.
+eleven-spec bank at three rows each. It held 126 until IMPROVEMENTS X2 added
+`ftrl`, the one model it had never pinned, and 502 on 2026-09-26. It compares
+with a 1e-12 relative tolerance. `golden.rs` already pinned the Rust core;
+this pins the *Polars* layer, which nothing did: extraction, per-group
+fan-out, diagnostics, struct assembly. Locally the agreement is exact. The
+tolerance is what "the same answer on another platform" is allowed to mean.
+Different LLVM vectorization and BLAS paths can reorder floating-point
+operations, while a genuinely divergent algorithm shows up far above it. It
+was verified to bite at 1e-11 and to tolerate 1e-14. The comparison became a
+cross-platform one the first time CI ran, with no further work.
 
 **T-W8**, as first written. The bank writes state with `std::fs::write` and
 the runner opens the output parquet with `File::create`. A still-open reader
@@ -1161,7 +1328,7 @@ platforms.
 
 | # | P | improvement | where it stands |
 |---|---|---|---|
-| T-D1 | ~~P1~~ **done** (2026-08-31) | **Actually run the workflows once.** | the workflows have run; [What is left](#what-is-left) has the results |
+| T-D1 | ~~P1~~ **done** (2026-08-31) | **Actually run the workflows once.** | the workflows have run; [the record](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06) has the results |
 | T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis; proptest in Rust since 2026-09-25) | `tests/test_properties.py`; `crates/online-core/tests/model_contract.rs`, module `generated` |
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism | `tests/test_portability.py` |
 | T-D4 | ~~P3~~ **done** | Coverage, and **mutation testing** | coverage reported, not gating; mutation testing in CI since 2026-09-24 (`mutants.yml`) |
@@ -1173,66 +1340,69 @@ keychain entry for github.com, no SSH key, no `GH_TOKEN`, and `gh` was not
 installed, so `git push` could not authenticate. The unblock was any of
 `gh auth login` / an SSH key / a PAT, and the token needed the **`workflow`
 scope**, since this push added `.github/workflows/`. The repo has been pushed
-since 2026-08-31, and CI runs on Windows on every push; the Windows results
-are in [What is left](#what-is-left).
-
-**T-D2 in Rust, 2026-09-25** (task 121). `model_contract.rs`'s module
-`generated` holds all 21 models to three clauses of the contract over
-streams proptest generates and shrinks: `predict_with` is the step without
-the update; a state saved and restored at any row continues exactly as the
-model that was not; and nothing is infinite, with values up to `1e50`,
-repeats, absent targets, zero and uneven weights, and clock gaps. 128
-streams a model in the suite; a run of 2,000 a model found nothing.
-
-**T-D2, extended 2026-09-24.** `tests/test_properties_temporal.py` adds 11
-properties on duration text (round trip over the whole i64 range, polars'
-own parser as the oracle, overflow, padding and inner spaces, the three
-forms) and on temporal clocks (chunk invariance, save and load at any row,
-nanosecond exactness years into a stream, a delayed label). They found four
-bugs, all fixed: a space after the sign accepted, a `pl.duration` past 292
-years wrapping, a `timedelta` that long refused without a name, and
-`embargo` breaking chunk invariance in `settled_frac`'s last bit.
+since 2026-08-31, and CI runs on Windows at every push to `main` and pull
+request. The first runs' results are in
+[the record](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06), and
+the Windows failures in T-W1.
 
 **T-D2.** `tests/test_properties.py` uses hypothesis to generate adversarial
 streams: mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights,
 tiny groups. It asserts the universal invariants for all ten regression
 models. They are chunk invariance under any chunk size, save/load
-transparency at any split, outputs finite-or-null, no `weight_sum` reported by a
-skipped row, and group independence. The strongest is that **changing a
+transparency at any split, outputs finite-or-null, no `weight_sum` reported
+by a skipped row, and group independence. The strongest is that **changing a
 row's own target never changes that row's own prediction**: out-of-sample by
-construction, hard rule 2. A Rust-side `proptest` pass on `online-core`
-remains possible, but is largely redundant now.
+construction, hard rule 2.
+
+**T-D2, extended 2026-09-24.** `tests/test_properties_temporal.py` adds 13
+property tests, 41 cases on 2026-10-03. They cover duration text: round trip over the whole
+i64 range, polars' own parser as the oracle, overflow, padding and inner
+spaces, the three forms. They cover temporal clocks too: chunk invariance,
+save and load at any row, nanosecond exactness years into a stream, a
+delayed label. They found four bugs, all fixed. Duration text accepted a
+space after the sign, a `pl.duration` past 292 years wrapped, and a
+`timedelta` that long was refused without a name. And `embargo` broke chunk
+invariance in `settled_frac`'s last bit.
+
+**T-D2 in Rust, 2026-09-25** (task 121). `model_contract.rs`'s module
+`generated` holds all 21 kinds to three clauses of the contract, over streams
+`proptest` generates and shrinks. First, `predict_with` is the step without the
+update. Second, a state saved and restored at any row continues exactly as
+the model that was not. Third, nothing is infinite, with values up to `1e50`,
+repeats, absent targets, zero and uneven weights, and clock gaps. The suite
+runs 128 streams a model; a run of 2,000 a model found nothing.
 
 **T-D3.** `tests/test_portability.py` runs the bank in subprocesses at
 `POLARS_ONLINE_MAX_THREADS=1` and `=8`, and requires identical output, every
 field compared exactly. Since 2026-09-04 it runs on both sides of
-`PAR_MIN_ROWS`: 400 rows over 6 groups, and 5000 over 37, which exercises
-the parallel extract and assembly. Both use a half-life grid with every
-optional output on.
+`PAR_MIN_ROWS` ([T-E13](#c-edge-case-matrix)): 400 rows over 6 groups, and
+5000 over 37, which exercises the parallel extract and assembly. Both use a
+half-life grid with every optional output on.
 
-**T-D4.** Coverage: `scripts/coverage.sh` reports 96% Python and 75%/73%
-Rust ([the caveat](#measured-coverage)), and CI reports the Python figure,
-non-gating. **Mutation testing** (`scripts/mutants.sh`) was run in full over
-`online-core`: **1645 mutants, 517 missed / 1104 caught / 24 unviable**. The
-misses concentrated exactly where the Rust unit tests lean on the *Python*
-oracle suite, which `cargo test` cannot see: `robust.rs` 68% missed,
-`kalman.rs` 38%, `ewridge.rs` 36%. The fix was
-`crates/online-core/tests/golden.rs`: one fixed 60-row stream per model with
-the exact expected predictions embedded, which pins the arithmetic against
-any mutation. Measured on the worst file, **`robust.rs` went from 162 missed
-/ 77 caught to 42 / 197**, a 74% reduction from one test. The residue is
-mostly accessors (`n_features -> 0`) and validation-branch comparisons, which
-are low value. Re-running the full pass for a new headline number is done
-(T-D5).
+**T-D4.** Coverage: `scripts/coverage.sh` reported 96% Python and
+93.9%/92.6% Rust on 2026-09-27, and 75%/73% Rust when this entry was written
+([the caveat](#measured-coverage)). CI reports the Python figure, never
+gating. **Mutation testing** (`scripts/mutants.sh`) was first run in full
+over `online-core` on 2026-08-30: the first row of the
+[table of passes](#what-the-mutation-run-actually-found). The misses
+concentrated exactly where the Rust unit tests lean on the *Python* oracle
+suite, which `cargo test` cannot see: `robust.rs` 68% missed, `kalman.rs`
+38%, `ewridge.rs` 36%. The fix was `crates/online-core/tests/golden.rs`: one
+fixed 60-row stream per model with the exact expected predictions embedded,
+which pins the arithmetic against any mutation. Measured on the worst file,
+**`robust.rs` went from 162 missed / 77 caught to 42 / 197**, a 74%
+reduction from one test. The residue is mostly accessors (`n_features -> 0`)
+and validation-branch comparisons, which are low value. T-D5 re-ran the full
+pass.
 
-**In CI since 2026-09-24** (`.github/workflows/mutants.yml`). Every push and
-pull request runs cargo-mutants over the lines it changed, and fails on a
-survivor that `scripts/mutants_equivalent.toml` does not list: new code
-should come with a test that would notice it breaking. The whole of
-`online-core`, 9,079 mutants, runs weekly in sixteen shards that each fit
-the two-hour job limit, reported through `scripts/mutants_report.py` and
-never gating. The weekly pass runs on its schedule only while the repository
-is public, and by hand.
+**In CI since 2026-09-24** (`.github/workflows/mutants.yml`). Every push to
+`main` and pull request runs cargo-mutants over the lines it changed. It
+fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
+new code should come with a test that would notice it breaking. The whole of
+`online-core`, 11,138 mutants on 2026-10-03, runs weekly in sixteen shards
+that each fit the two-hour job limit. It is reported through
+`scripts/mutants_report.py` and never gates. The weekly pass runs on its
+schedule only while the repository is public, and by hand.
 
 The changed-lines scope is `online-core` and `online-polars/src/span.rs`,
 chosen by measurement. cargo-mutants runs `cargo test` only, and the pytest
@@ -1253,21 +1423,59 @@ when code above it moves, and lapses when the line changes;
 `sgd`, `pa`, `holt` and `ew_cov`, the four with longhand-recursion oracles in
 their own modules rather than numpy references, now have one each, and `sgd`
 two. `test_model_registry::test_the_core_golden_file_pins_every_model` holds
-the file to `KINDS`. Each new pin was mutated once (the Huber clamp, the
-PA-II damping, the trend smoothing, the variance floor), and each caught its
-own. The same day, `test_every_builder_has_a_per_model_test_file` gave the
-per-model test file its check, EXTENDING step 11 (step 13 when written). It
-also gave `ewridge`/`rls` their own `test_<model>.py`, out of `test_bank.py`.
+the file to every kind the extension reports, `_native.model_kinds()`. Each
+new pin was mutated once
+(the Huber clamp, the PA-II damping, the trend smoothing, the variance
+floor), and each caught its own. The same day,
+`test_every_builder_has_a_per_model_test_file` gave the per-model test file
+its check, EXTENDING step 11 (step 13 when written). It also gave
+`ewridge`/`rls` their own `test_<model>.py`, out of `test_bank.py`.
 
-**T-D5.** Three passes, all in the
-[table of passes](#what-the-mutation-run-actually-found). Run 1, before the
-follow-up work, found **2616 mutants, 501 missed**. Run 2, after it, reported
-104 missed, a number that was wrong
-([why](#do-not-run-anything-else-while-a-mutation-pass-is-going)). Run 3
-(`--iterate`, 690 mutants in 14 min on an idle machine) found **217 missed**,
-the honest current figure. That is 8.3% surviving, down from 31% (517/1645) at
-the first-ever pass, despite the crate having grown by 60%. The misses were not
-scattered. They clustered almost perfectly on the code whose *only* tests live
-in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the
-Python suite. Eight commits of Rust-side oracles followed; see
+**T-D5.** Three passes on 2026-08-30, all in the
+[table of passes](#what-the-mutation-run-actually-found). Run 2's 104 missed
+was wrong ([why](#do-not-run-anything-else-while-a-mutation-pass-is-going)).
+Run 3's 217 is the last whole-crate figure recorded here
+([Mutation survivors](#mutation-survivors)). It came despite the crate
+having grown by 60% since the first-ever pass. The misses were not
+scattered. They clustered almost perfectly on the code
+whose *only* tests live in `tests/*.py`, because `cargo mutants` runs
+`cargo test` and cannot see the Python suite. Eight commits of Rust-side
+oracles followed; see
 [What the mutation run actually found](#what-the-mutation-run-actually-found).
+
+### What the first CI runs cleared (2026-08-31 to 2026-09-06)
+
+This is the record of the first CI runs. Its last paragraph adds the newest
+release.
+
+**The original blocker is gone.** It was that *nothing has ever been pushed,
+no CI job has ever run on any platform*. As of 2026-08-31 the repo is pushed,
+and CI has run on all three platforms. Cleared:
+
+| entry | what cleared it |
+|---|---|
+| **T-D1** | The workflows have run. What they claimed is now measured, and three of the claims were wrong: see below the table. |
+| **T-W1** | `cargo test`, `maturin develop` and pytest have all executed on Windows: **712 passed, 1 failed** on `d6158aa`, down from 9 failures. Every one of the nine was a test bug, not a library bug: T-W1 in [D](#d-windows-and-cross-platform) has the four classes. |
+| **T-W7** | The 126 committed golden pipeline outputs compared at 1e-12 on Windows, so the golden comparison is genuinely cross-platform now. |
+| **T-W5**, **T-W3b**, **T-W8**, **T-W2** | All executed as part of that run. |
+
+The three claims that proved wrong were the Linux `ld` SIGBUS (a full disk
+rather than memory), the cache that never saved, and the disk exhaustion *inside* the
+cache restore. The SIGBUS is told in the comment above the `test` job in
+`.github/workflows/ci.yml`; the other two are in `docs/RELEASE-READINESS.md`.
+`d6158aa` is not a commit in this repository's history, perhaps a CI merge
+commit.
+
+**Since cleared, as recorded on 2026-09-06.** The tenth Windows failure was a
+`UnicodeEncodeError` in `examples/pathway_integration.py`. It was fixed and
+pinned by a test. Windows had been off the push matrix while the repo was
+private (the COST POLICY comment in `ci.yml`). The repo is public, every push
+runs all three OSes, and Windows has been green on every release since 0.1.0.
+
+**PyPI.** `polars-online` is published there, 0.1.0 on 2026-09-03 and 0.1.1
+on 2026-09-04, through the trusted-publisher `release.yml`. The Polars pin
+question is settled as `polars>=1.34.0,<3`: see "The Polars pin" in
+`docs/RELEASE-READINESS.md`. On 2026-10-03 the newest release is 0.13.0,
+published on 2026-09-30. A release is dispatched on `main`, and the workflow
+tags only what it published, after everything ran
+(`tests/test_release_workflow.py`).

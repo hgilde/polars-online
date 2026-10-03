@@ -292,13 +292,13 @@ def test_the_block_survives_a_refresh_time_grid():
         ({"jitter": 0}, "jitter must be >= 1"),
         ({"block_rows": None}, "needs `block_rows`"),
         ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
-        ({"kind": "kernel", "preavg_rows": 3}, "window applies to"),
+        ({"kind": "kernel", "preavg_rows": 3}, "preavg_rows applies to"),
         ({"emit_sigma": True}, "does not apply to rcov"),
         # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
         # then quietly gave a block that never accumulates, or a kernel with
         # no lags in its ring.
-        ({"kind": "preavg", "preavg_rows": 0}, "window must be >= 2"),
-        ({"kind": "preavg", "preavg_rows": 1}, "window must be >= 2"),
+        ({"kind": "preavg", "preavg_rows": 0}, "preavg_rows must be >= 2"),
+        ({"kind": "preavg", "preavg_rows": 1}, "preavg_rows must be >= 2"),
         ({"block_rows": 0}, "block_rows is the block's expected length"),
         ({"max_bandwidth": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
     ],

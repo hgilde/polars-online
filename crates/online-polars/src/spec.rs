@@ -2137,7 +2137,7 @@ pub struct Spec {
     /// zero as a plain target is.
     #[serde(default)]
     pub emit_metrics: bool,
-    /// Emit `pred_lo_<slot>`, `pred_hi_<slot>` and `coverage_<slot>`: an
+    /// Emit `lo_<slot>`, `hi_<slot>` and `coverage_<slot>`: an
     /// adaptive conformal interval `pred ± q` at this coverage level, with
     /// the realized coverage beside it (ENHANCEMENTS E36). `q` is a tracked
     /// quantile of `|resid|` — `q ← max(0, q + rate·sigma·w·(1{|resid| > q}

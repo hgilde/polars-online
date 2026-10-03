@@ -271,7 +271,15 @@ impl RunConfig {
         // chunk. `Bank::new` fills each spec before it checks it
         // (`Spec::check`); a validation of its own here refused a spec the
         // bank would have filled (review 2026-09-12, S25).
-        Bank::new(self.specs.clone())?;
+        let bank = Bank::new(self.specs.clone())?;
+        // And what the bank refuses at the first chunk of a run that keeps
+        // its predictions, a formula target's embargo short of its window:
+        // the dry run passed it and the run then refused it (task 154).
+        if !self.no_output() && !self.predict {
+            if let Some(why) = bank.fit_predict_refusal() {
+                return Err(why.to_string());
+            }
+        }
         Ok(())
     }
 

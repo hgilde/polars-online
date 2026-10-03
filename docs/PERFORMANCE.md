@@ -1,16 +1,16 @@
 # Performance: where the time and memory go
 
-This document records where a bank's time and memory go, every measurement
-behind that, and the settings that move each number. Each numbered section
-records one measurement, most of them dated. The first four, §1–§4, are the
-original 2026-08-30 baseline, plan and outcome, kept as the record. The
-later sections measure each model and feature as it arrived. Section
-numbers are cited from the code and the README, so they stay where they
-are.
+This document says where a bank's time and memory go, which setting moves
+each number, and the measurement behind each. [The headline](#the-headline)
+is the short answer. The numbered sections hold the measurements, grouped
+by topic. Each keeps the number it was given when it was written, which is
+the order the measurements were made, because the code and the README cite
+it by that number. Most are dated, and each reads as of its date.
 
 | section | read it when | subsections |
 |---|---|---|
-| [Reading this document](#reading-this-document) | you are new here: the words this document uses, how every number was measured, and the results | [words](#words-this-document-uses) · [how the numbers are made](#how-the-numbers-are-made) · [the headline](#the-headline) |
+| [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [how the numbers are made](#how-the-numbers-are-made) |
+| **[The first pass, and the bank's plumbing](#the-first-pass-and-the-banks-plumbing)** | | |
 | [1. The measured baseline](#1-the-measured-baseline) | you want the numbers from before any change, 2026-08-30 | |
 | [2. What the numbers say](#2-what-the-numbers-say) | you want why the plumbing around the models, not the models, was the cost | |
 | [3. The plan](#3-the-plan) | the code cites one of P1–P11, or you want what each change did to the numbers | [P1](#p1--columnar-hot-path) · [P2](#p2--one-flat-task-pool) · [P3](#p3--extraction-and-grouping-without-materialization) · [P4](#p4--assembly-into-typed-builders) · [P5](#p5--expression-path-parity) · [P6](#p6--runner-pipelining) · [P7](#p7--build-flags-measured-and-both-rejected) · [P8](#p8--re-baseline-and-lock) · [P9](#p9--group-contiguous-layout-2026-09-04) · [P10](#p10--assembly-per-field-2026-09-04) · [P11](#p11--extraction-per-column-per-arrow-chunk-and-integer-keys-as-themselves-2026-09-04) |
@@ -19,34 +19,67 @@ are.
 | [6. The allocator](#6-the-allocator-2026-08-31) | you want why the extension installs `PolarsAllocator`, and what it measured | |
 | [7. Bugs found by this review](#7-bugs-found-by-this-review) | you want the two session-hashing findings | |
 | [8. Refresh, and what `rls` costs now](#8-refresh-2026-09-02-and-what-rls-costs-now) | you want what a row cost per model on 2026-09-02, and why `rls`'s square-root form is slower | [the refresh](#the-refresh) · [`rls`'s square-root form](#rls-and-its-square-root-form-c5) · [where its time went](#where-the-qr-forms-time-actually-went-2026-09-02) |
+| [12. The chunk plan, revisited](#12-the-chunk-plan-revisited-2026-09-04) | you are choosing a chunk size and a thread count | [the plan](#the-plan-as-it-stood) · [the sections](#what-the-sections-said) · [the artifact](#the-benchmark-artifact) · [where it ended up](#where-it-ended-up) · [`chunk_rows`, swept](#chunk_rows-swept) · [the README's numbers](#the-readmes-numbers-regenerated) · [the row floor](#the-row-floor) · [what is left](#what-is-left-and-why-it-stays) |
+| **[Each way of running a bank](#each-way-of-running-a-bank)** | | |
 | [9. `predict`](#9-predict-e31-2026-09-02) | you score without learning, and want the speed against `fit_predict` | |
 | [10. The runner](#10-the-runner-every-format-every-source-e32-2026-09-02) | you run the `online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-c7--e32) · [writers](#writers) |
 | [11. Memory](#11-memory-which-surface-is-odata-2026-09-02) | memory is the question: which surface is O(data) and which O(state), with the numbers, and what Polars holds before the bank | [the plugin](#the-plugin-was-odata-nothing-else-is) · [the constant](#what-the-constant-is) · [the fix, E33](#the-query-shaped-trap-and-the-fix-e33) · [before the bank](#what-comes-before-the-bank) · [the window](#where-the-window-comes-from) · [what shrinks it](#what-shrinks-the-window) · [filter after the bank](#filter-after-the-bank) · [levers not taken](#two-levers-not-taken) · [Polars' own windows](#polars-own-windowed-operations-do-the-same-thing) · [how it was measured](#how-it-was-measured-and-why-not-rss) |
-| [12. The chunk plan, revisited](#12-the-chunk-plan-revisited-2026-09-04) | you are choosing a chunk size and a thread count | [the plan](#the-plan-as-it-stood) · [the sections](#what-the-sections-said) · [the artifact](#the-benchmark-artifact) · [where it ended up](#where-it-ended-up) · [`chunk_rows`, swept](#chunk_rows-swept) · [the README's numbers](#the-readmes-numbers-regenerated) · [the row floor](#the-row-floor) · [what is left](#what-is-left-and-why-it-stays) |
+| [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
+| **[Model by model](#model-by-model)** | | |
 | [13. The new families](#13-the-new-families-and-where-a-wide-row-goes-2026-09-05) | you run a family of tasks 23–30 (`kmeans`, `micro`, `ew_class`, `sgd`, `pa`, `seqtest`, `kalman`'s transition, conformal intervals), or a wide row | [the contract](#the-contract-bit-for-bit) · [the survey](#the-survey) · [`ew_cov`'s row](#where-ew_covs-row-went) · [the wall clock](#reading-the-wall-clock-not-the-profile) · [`ew_class`](#ew_class-one-factorization-per-learned-row) · [`kalman`, `sgd`, `pa`](#kalman-sgd-pa-allocations-and-a-closure) · [thread scaling](#thread-scaling) · [what is left](#what-is-left-and-why) |
 | [14. The Gram update](#14-the-gram-update-measured-e48-2026-09-05) | you want why the Gram update is not computed as one triangle | [the variants](#the-variants) · [not bit-identical](#e48s-mirror-is-not-bit-identical) · [slower](#and-it-is-slower-by-a-lot) · [what shipped](#what-is-worth-having) |
-| [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
-| [16. What a `window` costs](#16-what-a-window-costs-2026-09-07) | you use `window`: what it costs, and what it does not | [the windowless path](#the-windowless-path-is-unchanged) · [the window itself](#what-the-window-itself-costs) |
-| [17. `marginal`'s two views](#17-what-marginals-two-views-cost-and-two-costs-that-were-not-theirs-2026-09-07) | you use `marginal`'s lags or bins | [the plain path](#the-plain-path-and-two-regressions-no-test-could-see) · [the views](#what-the-views-themselves-cost) |
 | [18. The blocked Gram update](#18-the-blocked-gram-update-e51-2026-09-08) | you have a wide `ewridge`: what `gram_block_rows` gains, and what a solve takes back | [the measurement](#the-measurement) · [three readings](#three-things-to-read-off-it) · [what it does not change](#what-blocking-does-not-change) |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-task-72-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [task 74](#where-sgd-lost-and-task-74) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-task-75-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
-| [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
+| [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
+| [16. What a `window` costs](#16-what-a-window-costs-2026-09-07) | you use `window`: what it costs, and what it does not | [the windowless path](#the-windowless-path-is-unchanged) · [the window itself](#what-the-window-itself-costs) |
+| [17. `marginal`'s two views](#17-what-marginals-two-views-cost-and-two-costs-that-were-not-theirs-2026-09-07) | you use `marginal`'s lags or bins | [the plain path](#the-plain-path-and-two-regressions-no-test-could-see) · [the views](#what-the-views-themselves-cost) |
 | [22. `marginal`'s bins at several targets](#22-marginals-bins-at-several-targets-e71-task-122-2026-09-25) | you bin `marginal`'s features against several targets | |
 | [23. `marginal`'s cross terms on request](#23-marginals-cross-terms-on-request-e70-task-123-2026-09-25) | you use `marginal`'s lags at width, or set `cross_lags` | |
 | [24. A wide `marginal` through the bank](#24-a-wide-marginal-through-the-bank-the-cost-that-was-not-the-models-task-124-2026-09-25) | a wide spec's call costs far more than its model | |
 | [25. A wide `marginal` split across the pool](#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25) | a wide `marginal` spec, and whether `shards` splits its flush | |
-| [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
 | [27. `marginal`'s shared feature moments](#27-marginals-shared-feature-moments-e72-task-125-2026-09-29) | you keep many targets' pairs in one `marginal`, and want what `feature_moments="shared"` saves | |
+| **[Releases compared, and slowdowns bisected](#releases-compared-and-slowdowns-bisected)** | | |
+| [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
 | [29. The drop since 0.2.0, bisected](#29-the-drop-since-020-bisected-2026-09-29) | you want which change cost how much speed since 0.2.0, why task 87's cost is the inverse's diagonal, and what taking it only when read recovered | [the method](#method) · [the causes](#the-causes) · [task 87's cost](#task-87s-cost-the-inverses-diagonal-on-every-solve) · [the fix](#the-fix-the-shares-when-they-are-read-task-140) |
 | [30. Where every row solves](#30-where-every-row-solves-2026-09-29) | your stream solves on every row, and you want what that path lost since 0.5.1 and what task 141 won back | [bisecting the solve](#bisecting-the-solve) · [where the time went](#where-the-time-went) · [the change](#the-change-task-141) |
 | [31. 0.13.0 against 0.12.0](#31-0130-against-0120-2026-09-29) | you want this release's speed against the last, the one slowdown it found and halved, or the Parallelism figures on it | [Parallelism, re-measured](#the-parallelism-figures-re-measured) |
+| **[The window operators](#the-window-operators)** | | |
+| [32. Windowed means against the `rolling` recipe](#32-windowed-means-against-the-rolling-recipe-task-78-2026-09-30) | you compare a windowed mean with Polars' `rolling` window, in time and in memory | |
+| [33. Window operators](#33-window-operators-task-143-2026-10-03) | you run `with_windows`: what an operator costs, what sharing a kernel saves, and the engine against task 78's | |
+| [34. A window expression as a target](#34-a-window-expression-as-a-target-task-104-2026-10-03) | a spec's target is a window expression: the native form against the column form | |
+| [35. Two costs the review of 2026-10-03 named](#35-two-costs-the-review-of-2026-10-03-named-and-did-not-change) | a windowed mean on a sparse input, or a formula target over many groups | |
+| [36. The window core's edges from raw clocks](#36-the-window-cores-edges-from-raw-clocks-review-r3-2026-10-03) | you want what deciding a window's edge from the raw clocks cost | |
 
 ## Reading this document
 
-Every later section assumes three things: the words below, how the numbers
-were made, and the results they add up to.
+Every later section assumes three things: the short answer below, the
+words this document uses, and how the numbers were made.
+
+### The headline
+
+**A bank's row is the model's own arithmetic, and its memory is the state,
+the chunks in flight and what Polars has read ahead.** Everything around
+the models was brought down in the first pass, §1–§8, and every golden
+number stayed as it was. What a row costs per model is in the README's
+[Throughput](../README.md#throughput) table, from §28 and §31. Where a
+number is not what you expected, find what you see here:
+
+| what you see | where the time or memory goes | what moves it | § |
+|---|---|---|---|
+| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` for a wide `ewridge` | §18, §28, §30 |
+| a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_rows`, 100,000 by default | §12, §20 |
+| memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
+| memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
+| one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, and `shards` for a wide `marginal` | §12, §25, §31 |
+| a window's memory | its ring of snapshots, capped per ring | `window_every`, `window_budget` | §16 |
+| a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` | §22–§25, §27 |
+| `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
+| a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel | §33, §35 |
+| a model whose target is a window expression | the bank's own window core, at 1.5 to 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` | §34 |
+| scoring against learning | `predict` skips the update: `ewridge` scores 1.8 times as fast as it learns at k=5, 2.9 at k=20 | | §9 |
 
 ### Words this document uses
 
@@ -57,19 +90,37 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | golden number | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A task in §3 that moved one was wrong by definition. Later sections accept a reordering of the arithmetic that moves a value within that tolerance (§8, §20) |
 | bit-identical, bit-exact | the same floating-point bits: §13 compares every float column as its `u64` bits, with its validity |
 | stream | as the README's *Parallelism* uses it: one spec over one group's rows, in order, which is the bank's unit of parallel work (§15). A single stream is one spec over one group, or with no `group` at all |
-| instance | one model inside a spec's grid, such as one halflife of a five-halflife grid. A stream steps its instances over the same rows (§2, P2) |
+| instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
 | section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `group` (row indices per key), `extract` (the columns), `process` (the models) and `assemble` (the output columns) (§12) |
 | run | the rows a stream feeds through one set of output buffers, `ChunkOut::run_rows` of them (§13) |
 | stride, gather | a stride reads one group's values from every n-th row of an interleaved column. A gather copies them into one contiguous run first (§12, P9) |
 | the Gram | the `k × k` co-moment matrix a regression keeps (§14, §18) |
-| solve cadence | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, `halflife / 50` of clock in steady state (§12) |
+| solve cadence | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, `half_life / 50` of clock in steady state (§12) |
 | O(state), O(data) | memory that grows with what the models keep, or with the rows that have passed. O(data) means the whole input is resident at once (§11) |
 | peak footprint | the most physical memory a process held, as `/usr/bin/time -l` prints it. Not RSS, which also counts the pages of a memory-mapped file (§11) |
 | row group, prefetch | a block of a parquet file. Polars' reader decodes row groups ahead of whatever consumes them, and that read-ahead is the prefetch (§11) |
 | morsel | the batch of rows Polars' streaming engine passes between its nodes. §11 says what sets its size |
 | pipeline, lane | the streaming engine runs a parallel stage as one pipeline, or lane, per thread (§11) |
 | distributor, linearizer | the stages that hand morsels out to the lanes, and gather them back in order (§11) |
+
+**The dated sections use the names of their day.** Task 144 (2026-10-02)
+renamed the public parameters to Polars' words, and tasks 83 and 85 removed
+two surfaces. A section written before then says:
+
+| it says | the name now |
+|---|---|
+| `halflife` | `half_life` |
+| `max_dclock` | `gap_cap` |
+| `label_delay` | `embargo` |
+| a model's `window` | `window_size` |
+| `min_periods` | `min_weight` |
+| `n_eff` | `weight_sum` |
+| `emit_resid_z` | `emit_zscore` |
+| `sgd`'s `scale_features` | `standardize` |
+| `lookahead_rewm` (§32) | the operators of §33, such as `po.rewm_sum` |
+| `po.run`, the Python runner | removed in task 83: the `online` command line, or `ModelBank.fit(lf)` |
+| the expression plugin | removed in task 85: a stateful expression is handed its whole column |
 
 ### How the numbers are made
 
@@ -109,14 +160,20 @@ A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)
 says how to measure a change against these numbers.
 
-### The headline
+## The first pass, and the bank's plumbing
+
+Where a row's time went outside the models, and how it came down: the
+baseline of 2026-08-30, the plan it led to and what each item of the plan
+did. Then the allocator, the refresh of 2026-09-02, and the chunk plan
+revisited.
+
+### The first pass, in one table
 
 **Every golden number was unchanged throughout: that was the contract.**
 Status as of 2026-09-06: P1–P11 all done, the numbers refreshed in §8, the
 chunk plan revisited in §12, the new families surveyed in §13, and the
-correlation families of tasks 45–56 in §15. The later sections, §16–§26,
-are each dated in their headings; §26 re-runs the benchmark against 0.10.0
-and 0.11.1 (2026-09-27).
+correlation families of tasks 45–56 in §15. Every later section is dated
+in its heading.
 
 Against the baseline in §1:
 
@@ -142,7 +199,7 @@ and the plugin reached parity with the bank. Each is written up where it
 sits, and §5 collects everything rejected, including what later sections
 rejected.
 
-## 1. The measured baseline
+### 1. The measured baseline
 
 The numbers before any of §3's changes, measured on 2026-08-30.
 
@@ -189,7 +246,7 @@ of why, and are kept as the record of it.
 | `.online.ewridge(...).over("g")`, 1000 groups | 511,237 |
 | expression, single stream | 1,022,170 |
 
-## 2. What the numbers say
+### 2. What the numbers say
 
 1. **The integration layer costs 3–5× the model itself.** At k=20 on a
    single stream, the core needs ~35 ms for 200k rows, and the bank's
@@ -231,7 +288,7 @@ of why, and are kept as the record of it.
    construction.** State at row *i* depends on row *i−1*. There is no
    parallelism to extract there, and nothing below attempts it.
 
-## 3. The plan
+### 3. The plan
 
 The plan was ordered by measured impact per unit of risk. **Every task
 keeps the two guarantees, out-of-sample and chunk invariance,
@@ -254,7 +311,7 @@ done. Code cites these items by ID.
 | [P10](#p10--assembly-per-field-2026-09-04) | assembly per field | done, 2026-09-04 | `assemble` 39.6 → 3.5 ms on a five-halflife grid |
 | [P11](#p11--extraction-per-column-per-arrow-chunk-and-integer-keys-as-themselves-2026-09-04) | extraction per column, per arrow chunk, and integer keys as themselves | done, 2026-09-04 | `group` 8.6 → 1.6 ms on the 64-group chunk |
 
-### P1 — Columnar hot path
+#### P1 — Columnar hot path
 
 *Done.* `RowOut`, a struct of ~11 `Vec`s per row, is replaced by
 `ChunkOut`: flat slot-major `Vec<f64>` buffers, one allocation per output
@@ -298,7 +355,7 @@ threads (from 3.2×).
 
 </details>
 
-### P2 — One flat task pool
+#### P2 — One flat task pool
 
 *Done, both halves.*
 
@@ -328,7 +385,7 @@ scale with specs.
 
 </details>
 
-### P3 — Extraction and grouping without materialization
+#### P3 — Extraction and grouping without materialization
 
 *Done.* Columns extract to plain `Vec<f64>` with **NaN for null** instead
 of `Vec<Option<f64>>`. That is half the bytes, no per-value branch, and a
@@ -358,7 +415,7 @@ at k=20/64 groups (from 27 ms).
 
 </details>
 
-### P4 — Assembly into typed builders
+#### P4 — Assembly into typed builders
 
 *Done, partly, and the rest dropped as unnecessary.* Specs now assemble in
 parallel. The typed-builder half was not worth doing. P1's flat buffers had
@@ -375,7 +432,7 @@ P1's flat buffers.
 
 </details>
 
-### P5 — Expression path parity
+#### P5 — Expression path parity
 
 *Done; the target turned out to be unreachable, for a reason worth
 recording.* A thread-local cache keyed on the kwargs JSON means `.over()`
@@ -408,7 +465,7 @@ P1 — the remaining gap should be per-group extraction only. Target: within
 
 </details>
 
-### P6 — Runner pipelining
+#### P6 — Runner pipelining
 
 *Done.* The runner alternated read-chunk and compute-and-write-chunk. A
 reader thread now fills a `sync_channel(1)`, so chunk *n+1* is decoded
@@ -427,7 +484,7 @@ Target: CLI wall time ≤ max(io, compute) + ε on a large file.
 
 </details>
 
-### P7 — Build flags: measured, and both rejected
+#### P7 — Build flags: measured, and both rejected
 
 | flag | measured on the six `core_bench` cases | verdict |
 |---|---|---|
@@ -453,7 +510,7 @@ this.
 
 </details>
 
-### P8 — Re-baseline and lock
+#### P8 — Re-baseline and lock
 
 *Done.* All of §1's measurements were re-run on an idle machine and written
 up in §4. The README's throughput table was regenerated from
@@ -470,7 +527,7 @@ untouched throughout.
 
 </details>
 
-### P9 — Group-contiguous layout (2026-09-04)
+#### P9 — Group-contiguous layout (2026-09-04)
 
 *Done.* Every column of a spec is gathered once, group after group in
 first-seen order (`layout_of`). A stream then reads its rows as one
@@ -482,7 +539,7 @@ arriving as blocks. Measured with a *matched* clock (§12), the stride cost
 interleaved groups. Output rows keep their absolute index for `out.rows`
 and error messages.
 
-### P10 — Assembly per field (2026-09-04)
+#### P10 — Assembly per field (2026-09-04)
 
 *Done, and it reverses §5's "typed builders are not worth it".* There is
 one job per output field, each a scatter over every stream's run into a
@@ -499,7 +556,7 @@ built by `PrimitiveArray::new` over its values and packed validity bits
 not through `Float64Chunked::from_vec_validity`. §13 records the packed
 bits.
 
-### P11 — Extraction: per column, per arrow chunk, and integer keys as themselves (2026-09-04)
+#### P11 — Extraction: per column, per arrow chunk, and integer keys as themselves (2026-09-04)
 
 *Done.* Three changes:
 
@@ -519,7 +576,7 @@ parallel from 65,536 feature values, `PAR_MIN_CELLS`, whatever its height
 **Rejected, with reasons:** see §5, which records what was rejected up
 front and what was rejected after measuring.
 
-## 4. Where it ended up
+### 4. Where it ended up
 
 Same machine, same build, same scripts as §1.
 
@@ -560,7 +617,7 @@ this point, not bookkeeping. The recursion inside one instance stays
 sequential by construction (§2 item 7), and everything around it is now
 parallel.
 
-## 5. Rejected, and why
+### 5. Rejected, and why
 
 Recorded so each omission is a decision. The first three below were
 rejected up front, and the next three *after* measuring, which is the more
@@ -622,7 +679,7 @@ the signature of serial per-group evaluation, and one packed struct input
 put the plugin on polars' parallel path, until task 85 removed the plugin.
 See P5 in §3.
 
-### Rejected later, where each was measured
+#### Rejected later, where each was measured
 
 | rejected | verdict | § |
 |---|---|---|
@@ -642,7 +699,7 @@ See P5 in §3.
 | comparing before storing `min` and `max` in the data summary | measured no change, and dropped | §20 |
 | a column-wise layout for the data summary | a state layout change for perhaps 4 µs of 20; not done | §20 |
 
-## 6. The allocator (2026-08-31)
+### 6. The allocator (2026-08-31)
 
 **The extension installs pyo3-polars' `PolarsAllocator`, one line of
 `#[global_allocator]`, and it measured up to 43% faster.** It was found
@@ -671,16 +728,16 @@ where the O(k³) solve dominates and the allocator barely matters.
 Performance was not the reason for the change; it is the reason it is
 recorded here.
 
-## 7. Bugs found by this review
+### 7. Bugs found by this review
 
 | finding | what it did | now | pinned by |
 |---|---|---|---|
 | **null-session sentinel collision**, fixed alongside this document | null session values were hashed as the string `"\0<null>"`, so a session literally named that was *the same session* as null: the T-E2 bug one layer down | null hashes to a value no string can produce (colliding strings are nudged), and state files resume unchanged | `test_a_session_named_like_the_null_sentinel_is_not_null` |
 | two 64-bit hash-collision residues, which remain by design | two distinct session names, or one name against null, collide with probability ~2⁻⁶⁴ per pair (FNV-1a) | accepted: a collision merges two sessions, it does not corrupt state | |
 
-## 8. Refresh (2026-09-02), and what `rls` costs now
+### 8. Refresh (2026-09-02), and what `rls` costs now
 
-### The refresh
+#### The refresh
 
 §4's table was the state after P1–P8. §6's allocator fix landed *after* it,
 and the README's table predated both. Everything was re-measured with the
@@ -720,7 +777,7 @@ that matters:
 | 8 | 4.75M |
 | 14 | 6.03M: **6.6×** |
 
-### `rls` and its square-root form (C5)
+#### `rls` and its square-root form (C5)
 
 **`rls` is the exception, and the square-root form C5 introduced is the
 cause.** An A/B on the model arithmetic alone attributes it.
@@ -739,7 +796,7 @@ rotations, each with a square root. What that time gets is what C5 was
 after: the covariance form died deterministically on one extreme row. It is
 worth the time, and now stated rather than implied.
 
-### Where the QR form's time actually went (2026-09-02)
+#### Where the QR form's time actually went (2026-09-02)
 
 **The back-substitution was half the row, though a quarter of the flops,
 because it was latency-bound.** Skipping the per-row back-substitution took
@@ -780,7 +837,249 @@ it, and is the obvious place to look if `rls` throughput ever becomes the
 constraint. It would add a rescaling step, whose stability would have to be
 argued as carefully as C5 was.
 
-## 9. `predict` (E31, 2026-09-02)
+### 12. The chunk plan, revisited (2026-09-04)
+
+The question was whether the plan for one chunk could be faster without
+giving anything up: what runs in parallel, in which order, over which
+memory. The answer is the three items P9–P11 in §3. This section is the
+measurement behind them, including the one that overturned the hypothesis
+the work started from.
+
+#### The plan as it stood
+
+Under the bank's pool, each chunk ran these phases in turn:
+
+| phase | in the plan as it stood |
+|---|---|
+| `group` | indices per key, specs in parallel |
+| `extract` | columns, one thread per spec |
+| `check_clock` | |
+| `process` | one task per spec × group, instances nested |
+| `assemble` | specs in parallel, fields serial within one |
+
+Every phase is a barrier, and chunks are strictly sequential. That is what
+chunk invariance means, and it is not on the table.
+
+#### What the sections said
+
+The per-group tasks had been made to scale (P1–P3), and nothing around them
+had. On 400k rows × k=20 × 64 interleaved groups at 14 threads, `process`
+was 15 ms, and `group` + `extract` + `assemble` were 21. The plumbing had
+become the majority of the wall, and all three of those phases had a
+single-threaded stretch inside them.
+
+#### The benchmark artifact
+
+**Most of the gap between interleaved and blocked groups was the
+benchmark's clock, not the layout.** The obvious suspect was memory layout. The same 64 groups
+arriving as blocks ran the chunk in 27 ms, against 63 interleaved, which
+read as "a cache line per gathered value, twice per row". Building the
+group-contiguous layout (P9) took the interleaved `process` on one thread
+from 400–420 ms (the run-to-run spread on `main`) to 399: nothing.
+
+The gap was somewhere else. The matrix used `clock="t"` with `t` the row
+index and `max_dclock=10`. `solve_every` defaults to `halflife / 50` clock
+units (`spec.rs`, `solve_every_default`), which is 20 units at
+`halflife=1000`. Blocked, a group's consecutive rows are 1 unit apart: a
+solve every 20 rows. Interleaved, they are 64 apart, capped to 10: a solve
+every 2 rows. Ten times the solves is the whole 300 ms. That is the
+documented semantics of a clock-unit solve schedule, not a layout cost, and
+any benchmark with an index clock over interleaved groups pays it.
+
+Re-measured with a *matched* clock, each group's rows 1 unit apart in both
+orders, the layout penalty on `main` was 14% at one thread and 38% at
+fourteen. It is real, and worth P9, but a third of the story rather than
+all of it.
+
+#### Where it ended up
+
+Milliseconds per 400k-row chunk, k=20, 64 groups on an `Int64` key,
+matched clock, best of three. `total` is the bank's whole call, of which
+the four sections are consecutive parts, and `wall` is the Python-side
+call.
+
+| layout, threads | build | extract | group | process | assemble | total | wall |
+|---|---|---|---|---|---|---|---|
+| interleaved, 1 | main | 1.6 | 8.6 | 119.1 | 8.9 | 138.1 | 139.9 |
+| | now | 7.3 | 1.6 | 102.3 | 3.7 | 114.9 | 116.4 |
+| interleaved, 14 | main | 2.2 | 9.3 | 15.3 | 9.0 | 35.9 | 37.3 |
+| | now | 1.6 | 1.6 | 11.1 | 1.8 | 16.0 | **17.3** |
+| blocked, 1 | main | 1.4 | 6.2 | 105.0 | 8.0 | 120.6 | 122.3 |
+| | now | 2.0 | 1.3 | 103.0 | 4.0 | 110.3 | 112.0 |
+| blocked, 14 | main | 1.8 | 6.2 | 11.1 | 7.8 | 26.9 | 28.6 |
+| | now | 0.8 | 1.3 | 11.5 | 2.1 | 15.8 | **17.1** |
+
+At 14 threads that is 2.2× on the interleaved chunk and 1.7× on the blocked
+one; at one thread, 17% and 8%. The gather moved the stride from `process`
+into `extract` (1.6 → 7.3 ms at one thread). There it is paid once per
+column instead of twice per row, and, from 4096 rows up, in parallel.
+Interleaved and blocked now finish within noise of each other, which is
+what P9 was for.
+
+The rest of the matrix, at 14 threads, on 400k rows at k=20 with the index
+clock of the artifact above, in ms:
+
+| workload | measure | `main` | now | bounded by |
+|---|---|---:|---:|---|
+| one group | `total` | 119.8 | 109.9 | |
+| 64 groups, interleaved | `total` | 62.7 | 44.8 | |
+| 64 groups, blocked | `total` | 26.8 | 15.5 | |
+| one group × five halflives | `assemble` | 39.6 | 3.5 | `process`, unchanged at ~415: a `halflife=100` instance solves every 2 clock units |
+| 64 Zipf-sized groups | `process` | 117 | 110.5 | the biggest group |
+
+The README's workloads, in seconds:
+
+| workload | measure | `main` | now |
+|---|---|---:|---:|
+| 12M rows over 64 groups with a k=4 grid, 14 threads | `total` | 3.03 | 2.27 |
+| | wall | 3.25 | **2.48** |
+| | `assemble` | 0.84 | 0.10 |
+| | `group` | 0.20 | 0.09 |
+| | `extract` | 0.26 | 0.19 |
+| the same, one thread | | 14.06 | 13.48 |
+| the group-sorted file | `total` | 7.47 | 6.86 |
+| the ticks file, one spec | | 0.74 | 0.64 |
+| the ticks file, six specs | | 2.32 | 2.23 |
+
+The group-sorted file has few groups per chunk, so §10's `chunk_rows`
+advice stands. Every golden number, the chunk-invariance suite and the
+oracle tests are unchanged, and the whole pytest suite passes on the
+branch.
+
+#### `chunk_rows`, swept
+
+The README's *Chunk size* subsection comes from this sweep (2026-09-04):
+12M rows over 64 groups, one k=4 spec with two halflives, 14 + 14 threads,
+one run per process. Each cell is wall time and peak footprint
+(`/usr/bin/time -l`). RSS reads ~0.7 GB higher, because the memory-mapped
+input counts there, which is why the README's two-knobs paragraph once said
+1.8 GB where these say 1.1.
+
+| `chunk_rows` | interleaved, this branch | sorted by group, this branch | interleaved, `main` | sorted by group, `main` |
+|---|---|---|---|---|
+| 20k | 2.73 s / 1.00 GB | 9.19 / 0.92 | | |
+| 50k | 2.51 / 0.95 | 8.77 / 0.93 | 3.14 / 0.97 | 9.30 / 0.85 |
+| 100k | 2.41 / 1.04 | 8.09 / 0.98 | 3.06 / 0.97 | 8.71 / 0.96 |
+| 200k | 2.59 / 1.13 | 7.13 / 1.06 | 3.36 / 1.09 | 7.77 / 1.02 |
+| 500k | 2.78 / 1.45 | 4.60 / 1.44 | 3.87 / 1.32 | 5.27 / 1.37 |
+| 1M | 3.16 / 1.83 | 4.18 / 1.85 | 4.47 / 1.81 | 5.04 / 1.92 |
+| 2M | 4.53 / 2.38 | 6.00 / 2.64 | 6.58 / 2.53 | 5.42 / 2.70 |
+
+Interleaved, the bank's `total` is 2.2–2.7 s at every size, so what the
+large chunks lose is the read/fit/write overlap. Sorted by group, `process`
+falls 8.5 → 2.2 s from 20k to 1M, because a chunk runs only the groups it
+holds, and this file has ~187k rows per group. On `main` the shape is the
+same, with a slower assembly. Below the default the footprint barely moves:
+polars' reader prefetch is most of the first gigabyte (0.46 GB at
+`POLARS_MAX_THREADS=1`, 1.14 at 14, same 200k chunks).
+
+The two-knobs matrix, re-measured the same way on this branch. The column
+heads are Polars' threads / the bank's, as in the README's table:
+
+| specs | 14/14 | 4/14 | 4/4 | 1/14 |
+|---|---|---|---|---|
+| one spec | 2.64 s / 1.14 GB | 2.65 / 0.76 | 3.87 / 0.61 | 7.35 / 0.46 |
+| six specs | 10.30 / 1.52 | 11.83 / 1.18 | 16.63 / 1.04 | |
+
+With `assemble` parallel, 4/14 no longer beats 14/14 on time; it still
+takes a third off the memory. 28 + 28 on the ticks grid: 2.18 s, against
+2.21 at 14 + 14.
+
+#### The README's numbers, regenerated
+
+On this branch (2026-09-04), `scripts/benchmark.py`, 200k rows, best of 3:
+
+| configuration | §8, rows/s | now, rows/s |
+|---|---:|---:|
+| k=5 | 8.96M | **11.05M** |
+| k=20 | 3.62M | 3.92M |
+| k=50 | 961k | 1.01M |
+| 10 targets | 1.91M | 2.32M |
+| 5 halflives | 2.16M | 2.50M |
+| `rls` | 1.93M | 1.96M |
+| `kalman` | 1.66M | 1.69M |
+| `lasso` | 1.88M | 2.09M |
+| `huber` | 3.68M | 4.09M |
+| `ftrl` | 6.29M | 7.12M |
+
+A 200k single-group run spends a visible share of its time in `assemble`,
+which P10 made ~5× cheaper.
+
+`scripts/scaling_bench.py`, k=20 over 64 groups:
+
+| threads | rows/s |
+|---|---:|
+| 1 | 1.02M |
+| 2 | 1.91M |
+| 4 | 3.52M |
+| 8 | 6.44M |
+| 14 | **8.20M**: **8.0×** (was 6.6×) |
+
+The ticks grid, and one spec of it:
+
+| workload | 1 thread | 14 threads | before, 1 / 14 |
+|---|---:|---:|---|
+| the ticks grid, six specs over 2.56M rows | 12.3 s | 2.22 s | 13.1 / 2.35 |
+| the three-factor spec alone | 2.47 s | 0.62 s | 2.65 / 0.72 |
+
+Eight single-group specs, k=20 over 300k rows, one halflife each: 130 ms in
+one bank, against 515 ms one at a time. The old 118 / 685 came from a
+configuration nobody wrote down; this one is `halflife=1000·j`,
+`max_dclock=10`. The `.over()` figure is untouched: the plugin's groups sit
+below the row floor, and time the same on both builds.
+
+#### The row floor
+
+**The gate caught what the wall clock did not.**
+`tests/test_ffi_memory.py::test_plugin_over_groups` failed once, at
+6.6 KB/iter against its 4.0 line. It was not a leak: 3000 iterations of the
+same body drift by −0.07 and −0.37 KB/iter overall. But the per-block
+wobble around that flat mean had doubled, ±4.6 KB/iter against ±2 on
+`main`, and the test's 240-iteration window can now catch the wobble.
+
+The cause is fanning a 30-row group (what the expression plugin hands the
+bank under `.over()`) out across the pool. More threads' allocator caches
+take part in every tiny call, for no speed at all. A call took 0.85 ms in
+both builds at 1500 rows over 50 groups, and 15.0 vs 15.2 ms at 200k rows
+over 1000. So the column reads and the field builds fan out only from
+`PAR_MIN_ROWS` = 4096 rows up, where one task is a 32 KB copy, about a
+rayon dispatch. With the floor the wobble is back at ±2.4, the tiny-group
+timings are unchanged, and the 400k-row rows above are the same to the
+tenth of a millisecond.
+
+A threshold on fan-out is the usual answer to this (polars' own splits have
+one). What is worth writing down is that the *memory* test found it, and
+what it found was noise amplitude, not growth. Read the marks, not the
+verdict, before touching that test's line.
+
+*Since task 85 (2026-09-17)* the plugin is gone, and
+`test_plugin_over_groups` with it. `test_many_tiny_groups` feeds the same
+shape, fifty groups of thirty rows, through the bank's own group column,
+with each mark averaged over 240 iterations
+(`tests/test_ffi_memory.py:126`, `:149`). *Since task 75 (2026-09-08)*, a
+wide chunk's column reads also fan out from 65,536 feature values
+(`PAR_MIN_CELLS`, `crates/online-polars/src/bank.rs:302`, `:347`–`348`).
+
+#### What is left, and why it stays
+
+| limit | why it stays |
+|---|---|
+| the recursion in a stream | it is the per-row cost, and cannot be split (§5, "parallelizing the recursion itself") |
+| the biggest group | it bounds every Zipf-shaped chunk |
+| a short halflife | it bounds a grid through its solve cadence |
+| a group-sorted file | it gives a chunk few groups to spread, which is a `chunk_rows` decision, not a plan one |
+
+The phases are now all parallel above the floor, the stride is gone, and
+the barriers between phases are the ones chunk invariance requires. The
+next factor would have to come from inside `process`, and §5 says why it
+will not.
+
+## Each way of running a bank
+
+Scoring without learning, the command line, which surface holds the data
+and which only the state, and what inspecting a query costs `fit(lf)`.
+
+### 9. `predict` (E31, 2026-09-02)
 
 Scoring is the learning loop with `learn = false`: the same
 `run_instance`, the same per-row arithmetic up to the model call, and then
@@ -800,7 +1099,7 @@ against §8's 8.96M / 3.62M / 961k. The only change on it is that
 `ewridge`'s `step` now gets its prediction from `predict` instead of an
 inlined copy of the same loop.
 
-## 10. The runner: every format, every source (E32, 2026-09-02)
+### 10. The runner: every format, every source (E32, 2026-09-02)
 
 *Read since task 83 (2026-09-17):* `po.run`, the Python entry to this
 runner, was removed; the numbers below stand as the record of what they
@@ -810,7 +1109,7 @@ Rust reader, `Input::Lazy`) and, in Python, as `ModelBank.fit(lf)` /
 the same bank, without the writer thread. `Input::Batches` remains for a
 Rust caller with frames of its own.
 
-### The pipeline
+#### The pipeline
 
 The runner is a three-stage pipeline, with one chunk in flight per stage: a
 reader thread, the bank on the calling thread, and a writer thread. E32
@@ -821,7 +1120,7 @@ made the reader pluggable:
 | `Input::Lazy` | a polars plan, read by the streaming engine in `chunk_rows` batches | the CLI, and Rust callers |
 | `Input::Batches` | an iterator of frames the caller already has | `po.run`: py-polars read (`collect_batches`), and Rust fitted and wrote |
 
-### Every format
+#### Every format
 
 Measured on the P6 file: 3M rows × 20 features × 32 groups, `ewridge` k=20
 with a clock, weights and `min_periods`, `chunk_rows=100k`, best of 3,
@@ -860,7 +1159,7 @@ chunk that spans many groups: `chunk_rows=500_000` takes the sorted parquet
 from 2.15 s to **1.01 s**. The trade is memory (three chunks in flight),
 which is what `chunk_rows` was always for.
 
-### Why py-polars reads for the Python path
+#### Why py-polars reads for the Python path
 
 **py-polars' CSV reader is ~6× faster than the one a stable Rust toolchain
 can build.** The first cut scanned in Rust for every caller. On the CSV
@@ -890,7 +1189,7 @@ which measured it at +16% for exactly this `k`), and the binary through the
 system malloc. Giving the CLI its own would statically link one, which
 rule 12 of [CLAUDE.md](../CLAUDE.md) keeps a decision rather than a tweak.
 
-### What the custom parts are worth
+#### What the custom parts are worth
 
 Asked whether the runner's hand-written pieces could go, each was measured
 against the plain polars call it replaces, in the CLI on the interleaved
@@ -902,7 +1201,7 @@ file:
 | `ParquetSink`'s parallel page encoding | `BatchedWriter::write_batch` | 0.86 s against 1.55 s: the serial encode becomes the pace |
 | ~~`ndjson_write`'s slice-per-thread~~ | polars' NDJSON `BatchedWriter` | a 4× win under jemalloc (`po.run`: 1.04 s against ~4 s), and a defect under the system allocator (the CLI: 4.8–54 s against a steady 4.1 s). **Removed 2026-09-28:** at HEAD the one-thread writer was the faster, 4.65–4.78 s against 4.98–5.50 s on 3M rows, with half the system time (docs/IMPROVEMENTS.md C8) |
 
-### Why the bank is not a polars node
+#### Why the bank is not a polars node
 
 **The pipeline is what polars-stream builds for its own ordered, stateful
 operators, and it does not offer that to a user function.** Checked in
@@ -925,7 +1224,7 @@ not expose: the reader → bank → writer pipeline here. It also gets what
 `RollingGroupBy` gets, a serial stage and a parallel one, with the parallel
 one across groups.
 
-### Before and after (C7 → E32)
+#### Before and after (C7 → E32)
 
 The C7 runner ran `lf.slice(offset, chunk_rows).collect()` per chunk on the
 calling thread, re-planning the scan thirty times and overlapping nothing.
@@ -954,7 +1253,7 @@ writers:
 No new crate came in outside polars, and no new `-sys` crate: `Cargo.lock`'s
 are the four C7 had.
 
-### Writers
+#### Writers
 
 | format | how it is written |
 |---|---|
@@ -965,7 +1264,7 @@ are the four C7 had.
 
 Output goes through a temporary sibling and a rename, as `save` does.
 
-## 11. Memory: which surface is O(data) (2026-09-02)
+### 11. Memory: which surface is O(data) (2026-09-02)
 
 *Read since 2026-09-17:* the `po.run` rows are the Python runner, removed
 in task 83. Its in-process successor is `ModelBank.fit(lf)`, which reads
@@ -997,7 +1296,7 @@ only the data grows. The spec is `ewridge` k=20 with clock, weights and
 | **`lf.online.fit_predict`, `sink_parquet(engine="streaming")`** (E33) | 0.90 GB | 1.13 GB | 1.35 GB |
 | the same, pages released / plus prefetch 1 | — | — | 0.78 GB / 0.37 GB |
 
-### The plugin was O(data); nothing else is
+#### The plugin was O(data); nothing else is
 
 O(data) here means what it says: the whole input is resident at once.
 Polars calls a plugin function once with the entire column, and has to have
@@ -1035,7 +1334,7 @@ system malloc returns pages at once, which is why its trace drains and
 Python's does not. This is not a knob to set in production. It explains
 the reported number, and why the CLI and `po.run` differ here.
 
-### What the constant is
+#### What the constant is
 
 **Almost none of the constant is ours.** A 100k-row chunk of this file is
 ~20 MB, and the pipeline holds three. The bank's state for 32 groups at
@@ -1060,7 +1359,7 @@ on 3M rows, against 0.95 GB at 100k: three chunks in flight, each five
 times larger. The advice in §10 to raise it for group-sorted input is a
 memory trade, which is what the knob was for.
 
-### The query-shaped trap, and the fix (E33)
+#### The query-shaped trap, and the fix (E33)
 
 The plugin row above is what a user got for writing the natural thing, a
 `LazyFrame`, the expression and `sink_parquet`, and expecting online
@@ -1085,7 +1384,7 @@ that:
 | pushdown | the plan's filter, projection and `head` are pushed into the source, and a selection reaches the input scan |
 | read-ahead | the engine reads a few morsels ahead of the bank (7 of 100 input batches were requested before a `head(10)` stopped the plan), and tears the input query down with the plan |
 
-### What comes before the bank
+#### What comes before the bank
 
 *(2026-09-02, and corrected three times the same day from the
 polars-stream source: the stage, then what fills its slots, then who
@@ -1143,7 +1442,7 @@ That is **0.2 GB per thread**. The profile has flat plateaus at ≤ 4
 threads, and drains above that, where the window exceeds the file (96 row
 groups of 26 MB; at 14 threads the window is 98).
 
-### Where the window comes from
+#### Where the window comes from
 
 **Backpressure in polars-stream 0.55.2 counts *morsels per pipe*, and the
 count is multiplied by the number of pipelines (= threads) at every serial
@@ -1215,7 +1514,7 @@ something to build on. Upstream, as checked 2026-09-02:
 That a pushed-down predicate on any but the leading column trips the same
 stage on a single file, with these numbers, is not reported there.
 
-### What shrinks the window
+#### What shrinks the window
 
 | lever | what it does here |
 |---|---|
@@ -1241,7 +1540,7 @@ itself, in py-polars. That is the 1.x line: polars 2.0 (rc.1, 2026-09-02)
 resolves `auto` to the streaming engine for every lazy plan
 (pola-rs/polars#27822), so there `sink_batches` streams by default.
 
-### Filter after the bank
+#### Filter after the bank
 
 **Filter after the bank when the semantics allow.** The predicate is then
 pushed into the source and applied per chunk (E33): 0.78 GB flat, against
@@ -1285,7 +1584,7 @@ node (3.18 GB). `po.run(input=<a filtered plan>)` read the same way and had
 the same window. `keep_columns=` did not, because a projection is not a
 filter.
 
-### Two levers not taken
+#### Two levers not taken
 
 **One way gives a filter the plain scan's footprint: running it *inside*
 the source.** Read the plain scan, `chunk.filter(cond)`, and feed the bank.
@@ -1311,7 +1610,7 @@ gives 0.65 GB at 2 pipelines and 0.29 at 1, but 2.7 → 3.9 → 7.1 s, because
 the reader's row-group parallelism follows the same number. Not taken
 either.
 
-### Polars' own windowed operations do the same thing
+#### Polars' own windowed operations do the same thing
 
 **Polars' own windowed operations behave the same way (2026-09-02), so this
 is polars' rule, not a quirk of ours.** The rule is *whether the streaming
@@ -1378,7 +1677,7 @@ same EW mean written as our plugin did not, for that reason alone. And
 `group_by=`), while a bank's `group=` is O(state): one accumulator per
 group, and no partitioning of the data at all.
 
-### How it was measured, and why not RSS
+#### How it was measured, and why not RSS
 
 **Memory here is the peak *physical footprint*:**
 `proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint`, sampled every 20 ms
@@ -1390,244 +1689,90 @@ in RSS, though the kernel drops them under pressure at no cost. The CLI's
 0.75 GB. The first cut of this measurement used `ru_maxrss`, and said every
 surface was O(data). It is not.
 
-## 12. The chunk plan, revisited (2026-09-04)
+### 21. What inspecting the plan costs `fit(lf)` (2026-09-18)
 
-The question was whether the plan for one chunk could be faster without
-giving anything up: what runs in parallel, in which order, over which
-memory. The answer is the three items P9–P11 in §3. This section is the
-measurement behind them, including the one that overturned the hypothesis
-the work started from.
+Asked whether `fit` had become slower on small inputs: it had not. What is
+true is structural, and it has been true since `fit` existed.
 
-### The plan as it stood
+#### The bisect
 
-Under the bank's pool, each chunk ran these phases in turn:
+Each tag's `python/polars_online/` was run against **one** compiled
+extension, so only the Python changed: 100 rows, `min` of 50 runs of 20
+calls, a fresh `ModelBank` per call.
 
-| phase | in the plan as it stood |
-|---|---|
-| `group` | indices per key, specs in parallel |
-| `extract` | columns, one thread per spec |
-| `check_clock` | |
-| `process` | one task per spec × group, instances nested |
-| `assemble` | specs in parallel, fields serial within one |
+| version | `fit(DataFrame)` | `fit(LazyFrame)` | plan overhead |
+|---|---:|---:|---:|
+| v0.6.0 | — | — | `ModelBank.fit` did not exist |
+| v0.7.0 | 0.102 ms | 0.371 ms | +0.269 ms |
+| v0.7.1 | 0.103 ms | 0.381 ms | +0.278 ms |
+| v0.7.2 | 0.102 ms | 0.376 ms | +0.274 ms |
+| v0.7.3 | 0.102 ms | 0.382 ms | +0.280 ms |
+| **after** | 0.104 ms | **0.164 ms** | **+0.060 ms** |
 
-Every phase is a barrier, and chunks are strictly sequential. That is what
-chunk invariance means, and it is not on the table.
+0.371 → 0.382 across four releases is ~3% drift, inside the run-to-run
+spread, and `fit(DataFrame)` never moved. `ConsumedSourceWarning`'s
+`explain` call, added in 0.7.1 and predicted to cost ~0.1 ms, cost about
+0.01: measuring `explain` alone had caught first-call warmup, not the
+steady state. **`fit` is new in 0.7.0**, so there is no earlier number. A
+caller who moved to `fit(lf)` from `fit(df)` or `fit_predict_batches` meets
+this cost for the first time, and reads it as a slowdown.
 
-### What the sections said
+#### What it actually is
 
-The per-group tasks had been made to scale (P1–P3), and nothing around them
-had. On 400k rows × k=20 × 64 interleaved groups at 14 threads, `process`
-was 15 ms, and `group` + `extract` + `assemble` were 21. The plumbing had
-become the majority of the wall, and all three of those phases had a
-single-threaded stretch inside them.
+`fit(lf)` inspected the plan twice: `explain` for the Python-scan test,
+and `serialize(format="json")` plus a walk for the order hazards. That is a
+fixed ~0.27 ms, against ~0.10 ms of fitting. On a small input the
+inspection *is* the call: 3.7× `fit(df)`, unchanged since 0.7.0.
 
-### The benchmark artifact
+#### The fix
 
-**Most of the gap between interleaved and blocked groups was the
-benchmark's clock, not the layout.** The obvious suspect was memory layout. The same 64 groups
-arriving as blocks ran the chunk in 27 ms, against 63 interleaved, which
-read as "a cache line per gathered value, twice per row". Building the
-group-contiguous layout (P9) took the interleaved `process` on one thread
-from 400–420 ms (the run-to-run spread on `main`) to 399: nothing.
+**The fix is not to make the scan faster.** Read `explain` once and share
+it, then use its text as a filter: no `JOIN`, `AGGREGATE` or `UNIQUE`
+means no node the walk can report. That skips the JSON entirely on the
+plans that have no hazard, which is most of them. Sharing is what makes it
+a saving: reading `explain` twice costs more than the JSON scan it avoids
+on a small plan (0.105 ms against 0.074 ms). Both are in
+`python/polars_online/_frame.py`: `_plan_text` reads the plan once, and
+`_order_hazards` walks the JSON only when that text names one of the three.
 
-The gap was somewhere else. The matrix used `clock="t"` with `t` the row
-index and `max_dclock=10`. `solve_every` defaults to `halflife / 50` clock
-units (`spec.rs`, `solve_every_default`), which is 20 units at
-`halflife=1000`. Blocked, a group's consecutive rows are 1 unit apart: a
-solve every 20 rows. Interleaved, they are 64 apart, capped to 10: a solve
-every 2 rows. Ten times the solves is the whole 300 ms. That is the
-documented semantics of a clock-unit solve schedule, not a layout cost, and
-any benchmark with an index clock over interleaved groups pays it.
+The JSON path's own shape says the same thing. By plan, `serialize` /
+`json.loads` / walk:
 
-Re-measured with a *matched* clock, each group's rows 1 unit apart in both
-orders, the layout penalty on `main` was 14% at one thread and 38% at
-fourteen. It is real, and worth P9, but a third of the story rather than
-all of it.
+| plan | JSON bytes | serialize | loads | walk | total |
+|---|---:|---:|---:|---:|---:|
+| trivial scan | 2,176 | 0.190 ms | 0.024 | 0.037 | 0.074 ms |
+| with a join | 3,876 | 0.017 ms | 0.033 | 0.060 | 0.115 ms |
+| 50 `with_columns` | 13,106 | 0.027 ms | 0.061 | 0.123 | 0.210 ms |
+| 200-column schema | 74,337 | 0.137 ms | 0.667 | 1.280 | **2.13 ms** |
 
-### Where it ended up
+*The trivial-scan row's parts (0.190 + 0.024 + 0.037 ms) exceed its
+0.074 ms total, so one of its numbers is misrecorded. Both are kept as
+recorded; §26 re-measures the path with a committed script, whose parts
+sum to its totals.*
 
-Milliseconds per 400k-row chunk, k=20, 64 groups on an `Int64` key,
-matched clock, best of three. `total` is the bank's whole call, of which
-the four sections are consecutive parts, and `wall` is the Python-side
-call.
+It scales with schema width, and the **walk** dominates there (1.28 ms of
+2.13), not the serialization, so trimming the serializer would have been
+optimising the wrong half. The filter removes all of it: `explain` on that
+200-column plan is 0.001 ms, because a plain frame's explain is one line
+whatever the width, while `serialize` dumps the whole schema.
 
-| layout, threads | build | extract | group | process | assemble | total | wall |
-|---|---|---|---|---|---|---|---|
-| interleaved, 1 | main | 1.6 | 8.6 | 119.1 | 8.9 | 138.1 | 139.9 |
-| | now | 7.3 | 1.6 | 102.3 | 3.7 | 114.9 | 116.4 |
-| interleaved, 14 | main | 2.2 | 9.3 | 15.3 | 9.0 | 35.9 | 37.3 |
-| | now | 1.6 | 1.6 | 11.1 | 1.8 | 16.0 | **17.3** |
-| blocked, 1 | main | 1.4 | 6.2 | 105.0 | 8.0 | 120.6 | 122.3 |
-| | now | 2.0 | 1.3 | 103.0 | 4.0 | 110.3 | 112.0 |
-| blocked, 14 | main | 1.8 | 6.2 | 11.1 | 7.8 | 26.9 | 28.6 |
-| | now | 0.8 | 1.3 | 11.5 | 2.1 | 15.8 | **17.1** |
+#### Measure the case the user has
 
-At 14 threads that is 2.2× on the interleaved chunk and 1.7× on the blocked
-one; at one thread, 17% and 8%. The gather moved the stride from `process`
-into `extract` (1.6 → 7.3 ms at one thread). There it is paid once per
-column instead of twice per row, and, from 4096 rows up, in parallel.
-Interleaved and blocked now finish within noise of each other, which is
-what P9 was for.
+**Measure the case the user has, not the one that flatters.** The first
+pass of this used a `lam=1.0` spec and reported no gain. That spec is
+order-free, so since 0.7.2 it already skipped the order check, and the
+benchmark was measuring a fast path built two releases earlier rather than
+the common one. A `halflife` spec never qualifies, and that is where the
+2.3× is.
 
-The rest of the matrix, at 14 threads, on 400k rows at k=20 with the index
-clock of the artifact above, in ms:
+## Model by model
 
-| workload | measure | `main` | now | bounded by |
-|---|---|---:|---:|---|
-| one group | `total` | 119.8 | 109.9 | |
-| 64 groups, interleaved | `total` | 62.7 | 44.8 | |
-| 64 groups, blocked | `total` | 26.8 | 15.5 | |
-| one group × five halflives | `assemble` | 39.6 | 3.5 | `process`, unchanged at ~415: a `halflife=100` instance solves every 2 clock units |
-| 64 Zipf-sized groups | `process` | 117 | 110.5 | the biggest group |
+What each family's row costs, and why. The new families of tasks 23 to 30
+come first, then the Gram update and its blocked form, `sgd` against
+scikit-learn, the correlation families, a `window`, and `marginal` at
+width.
 
-The README's workloads, in seconds:
-
-| workload | measure | `main` | now |
-|---|---|---:|---:|
-| 12M rows over 64 groups with a k=4 grid, 14 threads | `total` | 3.03 | 2.27 |
-| | wall | 3.25 | **2.48** |
-| | `assemble` | 0.84 | 0.10 |
-| | `group` | 0.20 | 0.09 |
-| | `extract` | 0.26 | 0.19 |
-| the same, one thread | | 14.06 | 13.48 |
-| the group-sorted file | `total` | 7.47 | 6.86 |
-| the ticks file, one spec | | 0.74 | 0.64 |
-| the ticks file, six specs | | 2.32 | 2.23 |
-
-The group-sorted file has few groups per chunk, so §10's `chunk_rows`
-advice stands. Every golden number, the chunk-invariance suite and the
-oracle tests are unchanged, and the whole pytest suite passes on the
-branch.
-
-### `chunk_rows`, swept
-
-The README's *Chunk size* subsection comes from this sweep (2026-09-04):
-12M rows over 64 groups, one k=4 spec with two halflives, 14 + 14 threads,
-one run per process. Each cell is wall time and peak footprint
-(`/usr/bin/time -l`). RSS reads ~0.7 GB higher, because the memory-mapped
-input counts there, which is why the README's two-knobs paragraph once said
-1.8 GB where these say 1.1.
-
-| `chunk_rows` | interleaved, this branch | sorted by group, this branch | interleaved, `main` | sorted by group, `main` |
-|---|---|---|---|---|
-| 20k | 2.73 s / 1.00 GB | 9.19 / 0.92 | | |
-| 50k | 2.51 / 0.95 | 8.77 / 0.93 | 3.14 / 0.97 | 9.30 / 0.85 |
-| 100k | 2.41 / 1.04 | 8.09 / 0.98 | 3.06 / 0.97 | 8.71 / 0.96 |
-| 200k | 2.59 / 1.13 | 7.13 / 1.06 | 3.36 / 1.09 | 7.77 / 1.02 |
-| 500k | 2.78 / 1.45 | 4.60 / 1.44 | 3.87 / 1.32 | 5.27 / 1.37 |
-| 1M | 3.16 / 1.83 | 4.18 / 1.85 | 4.47 / 1.81 | 5.04 / 1.92 |
-| 2M | 4.53 / 2.38 | 6.00 / 2.64 | 6.58 / 2.53 | 5.42 / 2.70 |
-
-Interleaved, the bank's `total` is 2.2–2.7 s at every size, so what the
-large chunks lose is the read/fit/write overlap. Sorted by group, `process`
-falls 8.5 → 2.2 s from 20k to 1M, because a chunk runs only the groups it
-holds, and this file has ~187k rows per group. On `main` the shape is the
-same, with a slower assembly. Below the default the footprint barely moves:
-polars' reader prefetch is most of the first gigabyte (0.46 GB at
-`POLARS_MAX_THREADS=1`, 1.14 at 14, same 200k chunks).
-
-The two-knobs matrix, re-measured the same way on this branch. The column
-heads are Polars' threads / the bank's, as in the README's table:
-
-| specs | 14/14 | 4/14 | 4/4 | 1/14 |
-|---|---|---|---|---|
-| one spec | 2.64 s / 1.14 GB | 2.65 / 0.76 | 3.87 / 0.61 | 7.35 / 0.46 |
-| six specs | 10.30 / 1.52 | 11.83 / 1.18 | 16.63 / 1.04 | |
-
-With `assemble` parallel, 4/14 no longer beats 14/14 on time; it still
-takes a third off the memory. 28 + 28 on the ticks grid: 2.18 s, against
-2.21 at 14 + 14.
-
-### The README's numbers, regenerated
-
-On this branch (2026-09-04), `scripts/benchmark.py`, 200k rows, best of 3:
-
-| configuration | §8, rows/s | now, rows/s |
-|---|---:|---:|
-| k=5 | 8.96M | **11.05M** |
-| k=20 | 3.62M | 3.92M |
-| k=50 | 961k | 1.01M |
-| 10 targets | 1.91M | 2.32M |
-| 5 halflives | 2.16M | 2.50M |
-| `rls` | 1.93M | 1.96M |
-| `kalman` | 1.66M | 1.69M |
-| `lasso` | 1.88M | 2.09M |
-| `huber` | 3.68M | 4.09M |
-| `ftrl` | 6.29M | 7.12M |
-
-A 200k single-group run spends a visible share of its time in `assemble`,
-which P10 made ~5× cheaper.
-
-`scripts/scaling_bench.py`, k=20 over 64 groups:
-
-| threads | rows/s |
-|---|---:|
-| 1 | 1.02M |
-| 2 | 1.91M |
-| 4 | 3.52M |
-| 8 | 6.44M |
-| 14 | **8.20M**: **8.0×** (was 6.6×) |
-
-The ticks grid, and one spec of it:
-
-| workload | 1 thread | 14 threads | before, 1 / 14 |
-|---|---:|---:|---|
-| the ticks grid, six specs over 2.56M rows | 12.3 s | 2.22 s | 13.1 / 2.35 |
-| the three-factor spec alone | 2.47 s | 0.62 s | 2.65 / 0.72 |
-
-Eight single-group specs, k=20 over 300k rows, one halflife each: 130 ms in
-one bank, against 515 ms one at a time. The old 118 / 685 came from a
-configuration nobody wrote down; this one is `halflife=1000·j`,
-`max_dclock=10`. The `.over()` figure is untouched: the plugin's groups sit
-below the row floor, and time the same on both builds.
-
-### The row floor
-
-**The gate caught what the wall clock did not.**
-`tests/test_ffi_memory.py::test_plugin_over_groups` failed once, at
-6.6 KB/iter against its 4.0 line. It was not a leak: 3000 iterations of the
-same body drift by −0.07 and −0.37 KB/iter overall. But the per-block
-wobble around that flat mean had doubled, ±4.6 KB/iter against ±2 on
-`main`, and the test's 240-iteration window can now catch the wobble.
-
-The cause is fanning a 30-row group (what the expression plugin hands the
-bank under `.over()`) out across the pool. More threads' allocator caches
-take part in every tiny call, for no speed at all. A call took 0.85 ms in
-both builds at 1500 rows over 50 groups, and 15.0 vs 15.2 ms at 200k rows
-over 1000. So the column reads and the field builds fan out only from
-`PAR_MIN_ROWS` = 4096 rows up, where one task is a 32 KB copy, about a
-rayon dispatch. With the floor the wobble is back at ±2.4, the tiny-group
-timings are unchanged, and the 400k-row rows above are the same to the
-tenth of a millisecond.
-
-A threshold on fan-out is the usual answer to this (polars' own splits have
-one). What is worth writing down is that the *memory* test found it, and
-what it found was noise amplitude, not growth. Read the marks, not the
-verdict, before touching that test's line.
-
-*Since task 85 (2026-09-17)* the plugin is gone, and
-`test_plugin_over_groups` with it. `test_many_tiny_groups` feeds the same
-shape, fifty groups of thirty rows, through the bank's own group column,
-with each mark averaged over 240 iterations
-(`tests/test_ffi_memory.py:126`, `:149`). *Since task 75 (2026-09-08)*, a
-wide chunk's column reads also fan out from 65,536 feature values
-(`PAR_MIN_CELLS`, `crates/online-polars/src/bank.rs:302`, `:347`–`348`).
-
-### What is left, and why it stays
-
-| limit | why it stays |
-|---|---|
-| the recursion in a stream | it is the per-row cost, and cannot be split (§5, "parallelizing the recursion itself") |
-| the biggest group | it bounds every Zipf-shaped chunk |
-| a short halflife | it bounds a grid through its solve cadence |
-| a group-sorted file | it gives a chunk few groups to spread, which is a `chunk_rows` decision, not a plan one |
-
-The phases are now all parallel above the floor, the stride is gone, and
-the barriers between phases are the ones chunk invariance requires. The
-next factor would have to come from inside `process`, and §5 says why it
-will not.
-
-## 13. The new families, and where a wide row goes (2026-09-05)
+### 13. The new families, and where a wide row goes (2026-09-05)
 
 Tasks 23–30 added two clustering models (`kmeans`, `micro`), and the
 moments family's Mahalanobis distance and PCA. They also added
@@ -1637,7 +1782,7 @@ and a sequential test (`seqtest`). Task 31 is the survey §8 gave the regression
 on one thread, how each scales across the pool, and what could be had
 without moving a number.
 
-### The contract: bit for bit
+#### The contract: bit for bit
 
 **The contract is §12's: every golden bit is unchanged.** Each change below
 either recomputes the same arithmetic on the same inputs, or touches no
@@ -1652,7 +1797,7 @@ in a worktree:
 They are compared bit for bit: float columns as `u64` bits plus the
 validity, and lists and structs recursed. Both print `BIT-EXACT`.
 
-### The survey
+#### The survey
 
 400k rows, k = 20, one group, one chunk, one process, best of 3, the Task
 30 build against this one:
@@ -1694,7 +1839,7 @@ this machine at 400k rows). `pca_every=1` is the O(k³)-per-row cadence a
 user asks for by name. The row is there to show what it costs against
 every hundredth row.
 
-### Where `ew_cov`'s row went
+#### Where `ew_cov`'s row went
 
 **The model was not the cost.** 758 ms for 400k rows is 1.9 µs a row, for
 230 numbers that are each a load, a multiply and a store. Four things were,
@@ -1768,7 +1913,7 @@ in the order they were found.
    for that copy, and never was: it is `F64Column::run`, called at
    `crates/online-polars/src/bank.rs:4334`–`4335`.)*
 
-### Reading the wall clock, not the profile
+#### Reading the wall clock, not the profile
 
 **The wall clock says how much, and a profile says only where inside
 `process`.** The first `sample` of the default `ew_cov` put half the time
@@ -1795,7 +1940,7 @@ nm python/polars_online/_polars_online.abi3.so
 objdump -d python/polars_online/_polars_online.abi3.so
 ```
 
-### `ew_class`: one factorization per learned row
+#### `ew_class`: one factorization per learned row
 
 **The full-covariance classifier factorized every class on every row,
 though a row updates only one.** It scored every row against every class
@@ -1814,7 +1959,7 @@ shared-covariance form learns *the* one matrix every row and gains nothing
 (697 → 707, noise), which confirms the mechanism: it was already at one
 factorization per row.
 
-### `kalman`, `sgd`, `pa`: allocations and a closure
+#### `kalman`, `sgd`, `pa`: allocations and a closure
 
 `kalman` built its per-slot standardizer scales and its process-noise
 vector as fresh `Vec`s every row. They are `#[serde(skip)]` scratch now
@@ -1837,7 +1982,7 @@ per row (≈ 300 ns at k = 20), and stays. An O(k) selection would replace
 it, but 157 ms for 400k constrained rows was not the problem this section
 was solving.
 
-### Thread scaling
+#### Thread scaling
 
 `POLARS_ONLINE_MAX_THREADS` at 1, 2, 4, 8, 14 over 800k rows in 64
 interleaved groups (`t = row // 64`, so a group's rows are one clock unit
@@ -1878,7 +2023,7 @@ with the most arithmetic per row scale best (`ew_class`, `ew_cov` mahal,
 cannot be split within a group, and 64 groups over 14 threads leaves the
 biggest group's tail.
 
-### What is left, and why
+#### What is left, and why
 
 **`kalman`'s standardizer: done in task 33 (2026-09-05).** It was a full
 `EwCov` over the features, of which the filter reads the diagonal: O(k²)
@@ -1947,7 +2092,7 @@ per chunk, merged with Chan's formula, gives different bits under different
 chunkings. So the per-row form stays; an opt-out is the answer if a wide,
 cheap model ever needs one.
 
-## 14. The Gram update, measured (E48, 2026-09-05)
+### 14. The Gram update, measured (E48, 2026-09-05)
 
 `EwCov::update` is the hottest loop in the library: every Gram model runs
 it once a row, `O(k²)`. E48 proposed halving its flops by computing the
@@ -1956,7 +2101,7 @@ IEEE)" with "the goldens, unchanged". **Both halves of that turned out to
 be wrong**, and a different change to the same loop turned out to be worth
 14% to 65%.
 
-### The variants
+#### The variants
 
 Five variants, each run over the same rows at six widths, twice, on this
 machine. The table gives ratios only, and every variant was checked
@@ -1979,7 +2124,7 @@ bit-for-bit against the current code before being timed.
 | 400 | −22% | −20% | +3% | **−27%** | **+53%** |
 | 800 | −21% | −21% | +1% | **−22%** | **+107%** |
 
-### E48's mirror is not bit-identical
+#### E48's mirror is not bit-identical
 
 **The products do commute, but the association does not.** The loop
 computes `a*b*dᵢ*dⱼ`, which is `((a·b)·dᵢ)·dⱼ`, and the transposed entry
@@ -1993,7 +2138,7 @@ it as `(a·b)·(dᵢ·dⱼ)` would make the matrix exactly symmetric. But that i
 itself a different rounding from today's (`both_sym` above, "NO" on
 bit-equality), so the goldens move either way.
 
-### And it is slower, by a lot
+#### And it is slower, by a lot
 
 The mirror store `c[j*k + i]` walks a new cache line for every `j`, so the
 loop touches the whole matrix twice instead of once, defeats the
@@ -2002,7 +2147,7 @@ not: +49% to +107% at every width where a triangle would be worth having.
 E48's "0.20 ns per element per row, both triangles" was measured; the
 conclusion drawn from it was not.
 
-### What is worth having
+#### What is worth having
 
 **`h+zip` is bit-identical, and shipped (task 41):**
 
@@ -2025,286 +2170,7 @@ change that halves the arithmetic and doubles the traffic is a
 pessimisation, and the only way to know which one a change is, is to run
 it.
 
-## 15. The correlation families: `bocpd`'s `prune_below` keeps it finite, and `rcov`'s estimator sets its cost (2026-09-06)
-
-Tasks 45–56 added five models. `scripts/benchmark.py` gained a row for
-each, so the README's throughput table now covers them, and a regression
-in one of them shows up where every other model's would. What follows is
-what the measurements say beyond the table: Apple M-series, single process,
-best of 2 or 3. Ratios are the part to read.
-
-### `bocpd`: `prune_below` is what makes it finite
-
-**The run vector grows by one entry every row, so without a bound on it the
-cost of a stream is quadratic.** The cost of a row is `O(runs · d²)`. That
-is not a subtlety; it is the whole performance profile:
-
-| `prune_below` | `max_run` | rows | rows/s |
-|---|---|---|---|
-| 0 | ∞ | 5,000 | 1,897 |
-| 0 | ∞ | 10,000 | 947 |
-| 0 | ∞ | 20,000 | 472 |
-| 1e-8 | ∞ | 20,000 | 203,699 |
-| **1e-6** (default) | ∞ | 20,000 | 323,533 |
-| 1e-4 | ∞ | 20,000 | 687,188 |
-| 1e-6 | 200 | 20,000 | 338,783 |
-| 1e-6 | 20 | 20,000 | 396,467 |
-
-The first three rows halve as the stream doubles, which is the `O(rows²)`
-written out. Turning truncation on is a 400–1,400× change at 20k rows, and
-unbounded beyond it. The knob is then a direct dial on throughput: each
-factor of 100 in `prune_below` is roughly a factor of 2 in rows/s, because
-it is choosing how many runs stay alive. `max_run` barely moves anything at
-the default `prune_below`: by the time the vector is 200 long, truncation
-has already dropped everything below `1e-6`. So it is a backstop to
-truncation, there for the case where the data keeps a long tail of runs
-genuinely alive.
-
-`tests/test_bocpd.py` measures what the knob *costs* in answers rather than
-speed: `prune_below = 1e-4` moves `p_change` by less than `1e-3` against
-`prune_below = 0` over 400 rows, and leaves `run_mode` identical.
-
-**And `bocpd` is faster on data that breaks.** A changepoint collapses the
-posterior onto a short run, so the vector shortens: 1.0M rows/s on the
-benchmark's blob features, against 324k on i.i.d. Gaussian rows, with the
-same parameters. A model that costs more when nothing is happening is an
-odd shape, and it is the right way round: the interesting streams are
-cheap.
-
-### `rcov`: the cost is at the close, and the kernel chooses it
-
-**Per row, `rcov` only accumulates.** Everything expensive happens when the
-group closes, and which estimator is asked for decides how expensive.
-100k rows, four features, blocks of the stated size, throughput over the
-whole stream:
-
-| rows per block | `plain` | `kernel` | `preavg` |
-|---|---|---|---|
-| 200 | 24.8M | 8.8M | 20.0M |
-| 1,000 | 36.2M | 4.8M | 23.6M |
-| 5,000 | 43.0M | 1.8M | 16.8M |
-| 20,000 | 30.1M | 0.45M | 5.8M |
-
-`plain` is free and flat: the close is an `O(k²)` read of an accumulator.
-The other two are paid per block, and grow with it. Per close, `kernel`
-costs 0.21 ms, 2.7 ms and 44 ms at 1,000, 5,000 and 20,000 rows: about
-`n^1.6`, which is exactly `O(n·H)` with the BNHLS automatic bandwidth
-`H ∝ n^{3/5}`. `preavg` is `O(n·k_n)` with `k_n = ⌊θ√n⌋` and a much
-smaller constant, so it stays within a factor of 5 of `plain` until the
-blocks are very large.
-
-The practical reading: a session-length block of a few thousand rows
-costs single-digit milliseconds a close under the kernel, which is nothing
-beside the session. A block of tens of thousands is where the kernel
-starts to be a choice rather than a default, and `preavg` is the estimator
-to reach for.
-
-### The other three
-
-**`deco`** is `O(m)` a row by construction: it estimates one number, not a
-matrix, and runs at `ew_cov`'s speed with 20 columns. Blocking it costs
-about 40%, since it computes one `u` per block and per pair of blocks.
-
-**`hmm`** factorizes a `k × k` covariance per state per row, so it is
-`ew_class`'s cost with the classes hidden: 1.34M rows/s at four features
-and two states, 353k at twenty features. `covariance="diagonal"` is the way
-out at width, as it is for `ew_class`. (Both take `"full"`, `"shared"` or
-`"diagonal"`: `crates/online-core/src/ewclass.rs:74`–`83`.)
-
-**`corrchange`'s window kind is the slowest model in the library, and by
-design.** The permutation null re-draws `n_perm` statistics every
-`permute_every` rows, an `O(n_perm · window · k²)` job amortized over that
-many rows. It runs at 187k rows/s at the default cadence, and a `crit`
-given as a number skips the whole thing. The monitor kind pays only at a
-span's close, where it walks the span once: 389k rows/s at
-`span_rows = 500`.
-
-### And they go wide
-
-**The unit of parallel work is a stream, and the new models are streams
-like any other.** 200k rows, four features, one group against 64, on a
-14-core machine (10 performance + 4 efficiency):
-
-| model | 1 group | 64 groups | speedup |
-|---|---|---|---|
-| `deco` | 3.22M | 20.1M | 6.3× |
-| `hmm` | 1.32M | 10.8M | 8.2× |
-| `bocpd` | 0.42M | 2.93M | 7.0× |
-| `corrchange`, window | 0.19M | 1.97M | 10.5× |
-
-Nothing here serializes. The slowest model in the library gains the most,
-because its per-stream work is the largest thing the pool has to schedule.
-`corrchange`'s permutation draws from a per-stream `SplitMix64` seeded from
-the spec's `seed` alone, which is the library's convention (`kmeans` seeds
-the same way). So every group runs the same permutation *pattern* over its
-own rows. That is what makes a stream's output depend on its own rows and
-nothing else, the property the chunk-invariance and group-independence
-sweeps pin. What it gives up is only that two groups' critical values are
-drawn with the same shuffles, rather than independent ones.
-
-`ew_cov` with `lags = 1..5` runs at 1.15M rows/s, against 2.12M for the
-same spec without them: five more `k × k` outer products a row, and the
-ring of rows they need. The lag block is the whole cost of the Epps
-inversion in [docs/REGIMES.md](REGIMES.md) §6, and it is a fifth of a
-`mahal`.
-
-## 16. What a `window` costs (2026-09-07)
-
-Task 63 gave five models a hard cutoff ([docs/PLAN.md](PLAN.md) §13). Two
-questions follow, and both are measured here rather than argued.
-
-### The windowless path is unchanged
-
-**The concern with a feature like this is that everyone pays for it. They
-do not.** When `window` is unset, the added work is a single `Option` check
-per call site per row (`self.win.as_ref()?`). The `None` branch *borrows*
-the live accumulators rather than cloning them, and no accumulator
-arithmetic moves. Best of three runs of
-`cargo run --release -p online-core --example core_bench`, on the same
-machine, against a build from before the feature (`7cbdaf7`, in a separate
-worktree and target directory):
-
-| case | before | after | ratio |
-|---|---:|---:|---:|
-| `ewridge` k=5 m=1 | 21,515,055 rows/s | 21,161,072 | 0.984 |
-| `ewridge` k=20 m=1 | 9,768,511 | 9,427,411 | 0.965 |
-| `ewridge` k=50 m=1 | 2,932,569 | 2,875,719 | 0.981 |
-| `ewridge` k=20 m=10 | 5,488,848 | 5,428,447 | 0.989 |
-| `ewridge` solve every row | 484,921 | 504,666 | **1.041** |
-| `ewridge` solve every 25 | 5,478,246 | 5,506,259 | 1.005 |
-
-The signs go both ways, from −3.5% to +4.1%, which is this benchmark's
-noise on an unquiesced machine rather than a cost. Nothing here changes
-complexity.
-
-### What the window itself costs
-
-200,000 rows, 8 features, one spec, `window = 500` against no window, best
-of three through `ModelBank.fit_predict`:
-
-| model | no window | `window=500` | ratio |
-|---|---:|---:|---:|
-| `ew_cov` (mean + corr) | 27.6 ms | 59.8 ms | 2.2x |
-| `ewridge` | 49.9 ms | 123.3 ms | 2.5x |
-| `lasso` (1 path point) | 55.4 ms | 137.5 ms | 2.5x |
-| `marginal` | 9.5 ms | 26.2 ms | 2.8x |
-| `ew_class` (`covariance="full"`) | 177.9 ms | 308.3 ms | 1.7x |
-
-The 2.2–2.8x is the shape of the mechanism: one snapshot pushed per
-learned row, and an `O(k²)` subtraction and re-centring at every read. What
-that time gets is a hard cutoff, a guarantee an exponential weight cannot
-give at any halflife.
-
-**`ew_class` is the one with a structural penalty, and its 1.7x
-understates it.** Pure decay leaves a covariance unchanged: means and
-centred co-moments do not move under `lam`. That is exactly why the `full`
-shape caches its Cholesky factor between rows, and only invalidates the
-class a row updated. A *truncated* covariance moves every row, because the
-decay carried to the boundary does, so every class's factor is stale every
-row: the shape pays one `O(k³)` factorization per class per row. It reads
-as only 1.7x because factorization already dominated its baseline (§13
-measured the full-covariance `ew_class` at 1510 ms per 400k rows before
-that work). `covariance="diagonal"` and `"shared"` do not factorize per
-class, and are unaffected.
-
-**Memory is the other axis, and it is the one the feature genuinely
-changes:** `O(rows in the window x state)`, where every other model here
-is `O(state)`. The settings that bound it:
-
-| setting | effect on the window's memory |
-|---|---|
-| `window_every = m` | divides it by `m`, and shortens the effective window by at most one snapshot's spacing; it never lengthens it |
-| `window_budget`, as `{"refuse": mib}` | a bound per ring, in MiB: the chunk that crosses it is refused |
-| `window_budget`, as `{"thin": mib}` | a bound per ring, in MiB: every other snapshot is dropped and the spacing doubled, as often as it takes, which shortens the window the same way |
-| no `window_budget` | a window refuses past 256 MiB |
-
-The refusal dates from finding P4 of the 2026-09-12 review (not §3's P4):
-at `k = 1000` over a 3,600-row window, the ring was about 29 GB per
-instance, and nothing checked.
-
-## 17. What `marginal`'s two views cost, and two costs that were not theirs (2026-09-07)
-
-Tasks 65 and 66 gave `marginal` lagged pair moments and binned target
-moments ([docs/MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md)). The
-rule from §16 applies again: a stream that asks for neither must not pay
-for the fact that they exist.
-
-### The plain path, and two regressions no test could see
-
-**It did pay, twice, and both were found by measuring rather than
-reading.** `cargo run --release -p online-core --example marg_bench` runs
-one million rows, eight features, one target, and no lags, bins or window.
-It ran against a build from before either feature (`7c5327f`, separate
-worktree and target directory), interleaved, best of the runs each prints:
-
-| plain `marginal` | rows/s | vs before |
-|---|---:|---:|
-| before tasks 65 and 66 (`7c5327f`) | 69.2M | — |
-| with both regressions | 58.0M | 0.84 |
-| with the call hoisted out of `learn` | 64.1M | 0.93 |
-| with the scan moved inside its guard | 72.2M | **1.04** |
-
-Every row of that table is the same binary, the same harness and the same
-sitting, with only the two lines under test moved. The fixes were measured
-by putting each regression back, not by comparing against an older note.
-
-**A call inside the hot loop, even one never taken.** The lag update was a
-branch inside `learn`'s per-target loop. A call there makes the compiler
-assume the callee could reallocate `mx`, `sxx` and `sxy`. So it reloads
-their base pointers on every iteration and stops vectorizing, for a stream
-with no lags at all. Moving the whole thing to its own pass over the
-targets (`Marginal::learn_lags`, run before `learn`, recomputing `a` and
-`b` from the same values) gets the loop back. The moments stay
-bit-identical to `ew_cov(lags=)`, which is asserted by a test rather than
-assumed.
-
-**An `O(p)` scan outside its guard.** The lag ring only accepts rows whose
-features are all finite, and the check `x.iter().all(|v| v.is_finite())`
-sat *outside* `if let Some(lag)`. So every row of every `marginal` walked
-all `p` features to decide whether to push into a ring that did not exist.
-
-Neither is visible to a test, since both compute exactly the right answer.
-Neither would have been found by reading the diff, since both look like
-ordinary guard clauses. Only a measurement against a build from before the
-feature finds this class of thing, which is the argument for keeping one
-cheap enough to run.
-
-The finished path lands slightly *above* where it started. That is this
-benchmark's noise on an unquiesced machine rather than an improvement (§16
-measured −3.5% to +4.1% run to run), so the claim is parity, not a
-speed-up. The bank-level number below agrees with the one §16 recorded for
-the same shape, which is the independent check.
-
-### What the views themselves cost
-
-200,000 rows, eight features, one target, through `ModelBank.fit_predict`,
-best of three:
-
-| spec | wall | vs plain |
-|---|---:|---:|
-| `marginal` | 9.9 ms | — |
-| `bins=16`, edges given | 15.5 ms | 1.6x |
-| `bins=16`, edges learned | 16.0 ms | 1.6x |
-| `bins=64`, edges given | 19.5 ms | 2.0x |
-| `lags=[1,2,3,5,8]` | 27.2 ms | 2.7x |
-| `lags` + `serial_rule="geometric"` | 27.2 ms | 2.7x |
-
-The 9.9 ms plain agrees with the 9.5 ms §16 recorded for `marginal` without
-a window, which is the independent check that the path is where it was.
-
-**Four times the bins costs 26% more, not four times more.** The per-row
-work is a binary search over the edges and three adds, and the decay is
-`O(1)` for the whole histogram however many bins it has (`margbins.rs`).
-Had decay been the obvious loop over bins, 16 to 64 would have quadrupled
-the added cost: 5.6 ms to 22 ms, rather than to 9.6 ms.
-
-**Lags cost more than bins,** because five lags are five more pair updates
-per row, each the same width as the contemporaneous one. At 5 lags, the
-2.7x is the `1 + L` shape, slightly better than linear because the means
-and weights are computed once. `serial_rule` is free: it is read-time
-arithmetic over the lags already kept.
-
-## 18. The blocked Gram update (E51, 2026-09-08)
+### 18. The blocked Gram update (E51, 2026-09-08)
 
 Task 71 gave `ewridge` a `gram_block_rows`: hold `B` rows back, and bring
 the `k×k` co-moment matrix up to date once per block with one matrix
@@ -2314,7 +2180,7 @@ once per block, and is bound by arithmetic. [docs/PLAN.md](PLAN.md) task
 71 has the merge, the two findings its review made, and why the product is
 single-threaded. This section is the measurement.
 
-### The measurement
+#### The measurement
 
 `crates/online-core/examples/gram_block_bench.rs` times the whole
 `EwRidge::step` (prediction, cross-moments and the Gram) on one core. It
@@ -2331,7 +2197,7 @@ parallelises across groups, never inside a step.
 | 2,000 | never | 1,415 | 6,544 (4.6×) | 8,380 (5.9×) |
 | 2,000 | every 512 rows | 1,309 | 4,435 (3.4×) | 5,644 (4.3×) |
 
-### Three things to read off it
+#### Three things to read off it
 
 **The update itself is 5–6.6× faster with a 256-row block.** The ledger
 row's 5–10× was right, once the probe's multithreaded 9.5×/11.2× had been
@@ -2374,7 +2240,7 @@ The guess that the rank-1 loop is in cache at those widths, and has nothing
 to gain, was wrong by that much. That is why the example takes widths on
 the command line, rather than leaving the guess in the docs.
 
-### What blocking does not change
+#### What blocking does not change
 
 **Blocking does not change `n_eff`, the timing of every prediction, chunk
 invariance, or `gram()`.** The flush is a function of the learned-row count
@@ -2386,14 +2252,14 @@ bit. And the product's kernel follows the CPU's vector width, so a blocked
 Gram's last bits can differ between machines, where the rank-1 path's do
 not. Frozen fixtures stay unblocked.
 
-## 19. Against `sklearn.linear_model.SGDRegressor` (task 72, 2026-09-08)
+### 19. Against `sklearn.linear_model.SGDRegressor` (task 72, 2026-09-08)
 
 "How does this compare to scikit-learn" is the first question a reader has,
 and the answer was nowhere. [docs/PLAN.md](PLAN.md) task 72 has the design
 comparison: what each side is, and where the two disagree about
 forgetting, leakage and grids. This section is the measurement behind it.
 
-### The protocol
+#### The protocol
 
 Reproduce it from the repository root. It used scikit-learn 1.9.0,
 installed into the environment; it is not a dependency of this project.
@@ -2411,7 +2277,7 @@ what people write. Each contender is swept over a small grid of its own
 settings and reported at its best, so this compares designs and not
 defaults.
 
-### Accuracy
+#### Accuracy
 
 **Accuracy is not the difference, and the first version of this table said
 otherwise by accident.** 100,000 rows, `k = 20`, noise `0.1`, scored from
@@ -2460,7 +2326,7 @@ Two corrections to what this section said on the morning of 2026-09-08:
 halflife-weighted average of the iterates would be the version that fits
 this library, and is not built.
 
-### The first hundred rows of every group
+#### The first hundred rows of every group
 
 **Where the Gram wins: the first hundred rows of every group.** The exact
 solve is right as soon as the Gram is full rank, about `k` rows in. A
@@ -2486,7 +2352,7 @@ first-order contender is 0.26 below it, and at the default schedule 0.72
 below. The throughput column is the group feature: one bank call at 5.1
 million rows/second, against a Python loop over 500 estimators at 3,350.
 
-### Where `sgd` lost, and task 74
+#### Where `sgd` lost, and task 74
 
 **This library's `sgd` also lost to sklearn's in the same table, and was
 fixed the same day (task 74).** `po.spec.sgd` diverged at the start of
@@ -2532,7 +2398,7 @@ The moments that include a row shrink its standardised value by about
 higher when its predictions are inflated by that much. And it closes with
 the fit: 0.0044 by rows 100–200 at 0.01, and 0.0001 at 0.03.
 
-### Throughput
+#### Throughput
 
 **Throughput is the difference, and it is a difference in semantics.** Rows
 per second on the same stream:
@@ -2554,7 +2420,7 @@ semantics, `partial_fit` per row, and it runs at 3,400 rows/second, three
 orders of magnitude down. That time is Python's per-row overhead rather
 than anything about the algorithm.
 
-### A grid
+#### A grid
 
 **A grid is nearly free on one side only.** Six penalties over the same
 stream, `k = 20`:
@@ -2569,7 +2435,7 @@ batch. Here they are six solves off one accumulator, and the accumulator is
 what the row cost is. (The first run of this table read 3.66× and 1.40×.
 The ratios move by a few tenths between runs, and the shape does not.)
 
-### A wide row
+#### A wide row
 
 **Where sklearn wins: a wide row, against `ewridge`, and by batching.**
 `ewridge` keeps a `(k+1)²` co-moment matrix and updates it every row, so
@@ -2721,7 +2587,7 @@ pipelines, `GridSearchCV`, calibration, and far more use than this has.
 What this has is the stream: a clock, a halflife, one state per group,
 chunk invariance, and a state file that is not a pickle.
 
-### What the comparison gave back
+#### What the comparison gave back
 
 **What the comparison gave back, in one paragraph.** For `ewridge`, nothing
 to borrow. sklearn's recipe is a scaler and a schedule, and `ewridge` has
@@ -2736,7 +2602,7 @@ ever matters to anyone. For the measurement, two lessons already recorded
 in [docs/PLAN.md](PLAN.md) task 72: print the ceiling, and never report a
 sweep whose best point is at its edge.
 
-## 20. `sgd`'s per-feature cost (task 75, 2026-09-08)
+### 20. `sgd`'s per-feature cost (task 75, 2026-09-08)
 
 The number §19 left standing as a target was `sgd` at 13–14 ns per feature
 per row, against about 5 for `SGDRegressor`'s batched Cython loop. That is
@@ -2745,7 +2611,7 @@ taken apart. **None of it was the arithmetic.** The step itself cost
 2.25 ns per feature; the other 11 were how the row reached it, and how the
 row was summed.
 
-### Where the 14 ns went
+#### Where the 14 ns went
 
 Four places, measured one at a time on an M4 Pro, with `ONLINE_TIMING=1`
 (per-phase milliseconds on stderr) and
@@ -2795,7 +2661,7 @@ Four places, measured one at a time on an M4 Pro, with `ONLINE_TIMING=1`
    keeps it scalar. A row is nearly always usable, and a fold over the
    compare vectorises: 1–2 µs per row at `k = 10,000`.
 
-### The result
+#### The result
 
 One bank, one spec, `learning_rate = 0.2 / k`, `scale_features=False`.
 Learn is `fit_predict` on a fresh bank, and predict is `predict` on a
@@ -2824,7 +2690,7 @@ in µs per row:
 | `inv_scaling`, unscaled | 65.7 | 9.4 | 4.8 |
 | `adagrad`, unscaled | 32.1 | 13.8 | 9.0 |
 
-### What is left, at `k = 10,000`
+#### What is left, at `k = 10,000`
 
 **At `k = 10,000` and 20,000 rows, 20 µs per row is left:**
 
@@ -2850,7 +2716,7 @@ column in pyo3-polars' `PyDataFrame` extraction (`get_columns`, then one
 separates the "8 chunks" column at 2,000 rows from the rest: 250 rows per
 call carry 32 µs each of it. **Feed wide frames in tall chunks.**
 
-### The scaler
+#### The scaler
 
 **And the scaler.** `scale_features=True` is 20 µs per row in the core,
 against 5 unscaled. The standardised row is `(x - mean) / sqrt(var)` per
@@ -2862,83 +2728,286 @@ step per feature, without writing it back. `sgd_bench` measured 20.7 µs a
 row before it and 21.3 after, at `k = 10,000`, within the run-to-run spread
 (the table above is the earlier run).
 
-## 21. What inspecting the plan costs `fit(lf)` (2026-09-18)
+### 15. The correlation families: `bocpd`'s `prune_below` keeps it finite, and `rcov`'s estimator sets its cost (2026-09-06)
 
-Asked whether `fit` had become slower on small inputs: it had not. What is
-true is structural, and it has been true since `fit` existed.
+Tasks 45–56 added five models. `scripts/benchmark.py` gained a row for
+each, so the README's throughput table now covers them, and a regression
+in one of them shows up where every other model's would. What follows is
+what the measurements say beyond the table: Apple M-series, single process,
+best of 2 or 3. Ratios are the part to read.
 
-### The bisect
+#### `bocpd`: `prune_below` is what makes it finite
 
-Each tag's `python/polars_online/` was run against **one** compiled
-extension, so only the Python changed: 100 rows, `min` of 50 runs of 20
-calls, a fresh `ModelBank` per call.
+**The run vector grows by one entry every row, so without a bound on it the
+cost of a stream is quadratic.** The cost of a row is `O(runs · d²)`. That
+is not a subtlety; it is the whole performance profile:
 
-| version | `fit(DataFrame)` | `fit(LazyFrame)` | plan overhead |
+| `prune_below` | `max_run` | rows | rows/s |
+|---|---|---|---|
+| 0 | ∞ | 5,000 | 1,897 |
+| 0 | ∞ | 10,000 | 947 |
+| 0 | ∞ | 20,000 | 472 |
+| 1e-8 | ∞ | 20,000 | 203,699 |
+| **1e-6** (default) | ∞ | 20,000 | 323,533 |
+| 1e-4 | ∞ | 20,000 | 687,188 |
+| 1e-6 | 200 | 20,000 | 338,783 |
+| 1e-6 | 20 | 20,000 | 396,467 |
+
+The first three rows halve as the stream doubles, which is the `O(rows²)`
+written out. Turning truncation on is a 400–1,400× change at 20k rows, and
+unbounded beyond it. The knob is then a direct dial on throughput: each
+factor of 100 in `prune_below` is roughly a factor of 2 in rows/s, because
+it is choosing how many runs stay alive. `max_run` barely moves anything at
+the default `prune_below`: by the time the vector is 200 long, truncation
+has already dropped everything below `1e-6`. So it is a backstop to
+truncation, there for the case where the data keeps a long tail of runs
+genuinely alive.
+
+`tests/test_bocpd.py` measures what the knob *costs* in answers rather than
+speed: `prune_below = 1e-4` moves `p_change` by less than `1e-3` against
+`prune_below = 0` over 400 rows, and leaves `run_mode` identical.
+
+**And `bocpd` is faster on data that breaks.** A changepoint collapses the
+posterior onto a short run, so the vector shortens: 1.0M rows/s on the
+benchmark's blob features, against 324k on i.i.d. Gaussian rows, with the
+same parameters. A model that costs more when nothing is happening is an
+odd shape, and it is the right way round: the interesting streams are
+cheap.
+
+#### `rcov`: the cost is at the close, and the kernel chooses it
+
+**Per row, `rcov` only accumulates.** Everything expensive happens when the
+group closes, and which estimator is asked for decides how expensive.
+100k rows, four features, blocks of the stated size, throughput over the
+whole stream:
+
+| rows per block | `plain` | `kernel` | `preavg` |
+|---|---|---|---|
+| 200 | 24.8M | 8.8M | 20.0M |
+| 1,000 | 36.2M | 4.8M | 23.6M |
+| 5,000 | 43.0M | 1.8M | 16.8M |
+| 20,000 | 30.1M | 0.45M | 5.8M |
+
+`plain` is free and flat: the close is an `O(k²)` read of an accumulator.
+The other two are paid per block, and grow with it. Per close, `kernel`
+costs 0.21 ms, 2.7 ms and 44 ms at 1,000, 5,000 and 20,000 rows: about
+`n^1.6`, which is exactly `O(n·H)` with the BNHLS automatic bandwidth
+`H ∝ n^{3/5}`. `preavg` is `O(n·k_n)` with `k_n = ⌊θ√n⌋` and a much
+smaller constant, so it stays within a factor of 5 of `plain` until the
+blocks are very large.
+
+The practical reading: a session-length block of a few thousand rows
+costs single-digit milliseconds a close under the kernel, which is nothing
+beside the session. A block of tens of thousands is where the kernel
+starts to be a choice rather than a default, and `preavg` is the estimator
+to reach for.
+
+#### The other three
+
+**`deco`** is `O(m)` a row by construction: it estimates one number, not a
+matrix, and runs at `ew_cov`'s speed with 20 columns. Blocking it costs
+about 40%, since it computes one `u` per block and per pair of blocks.
+
+**`hmm`** factorizes a `k × k` covariance per state per row, so it is
+`ew_class`'s cost with the classes hidden: 1.34M rows/s at four features
+and two states, 353k at twenty features. `covariance="diagonal"` is the way
+out at width, as it is for `ew_class`. (Both take `"full"`, `"shared"` or
+`"diagonal"`: `crates/online-core/src/ewclass.rs:74`–`83`.)
+
+**`corrchange`'s window kind is the slowest model in the library, and by
+design.** The permutation null re-draws `n_perm` statistics every
+`permute_every` rows, an `O(n_perm · window · k²)` job amortized over that
+many rows. It runs at 187k rows/s at the default cadence, and a `crit`
+given as a number skips the whole thing. The monitor kind pays only at a
+span's close, where it walks the span once: 389k rows/s at
+`span_rows = 500`.
+
+#### And they go wide
+
+**The unit of parallel work is a stream, and the new models are streams
+like any other.** 200k rows, four features, one group against 64, on a
+14-core machine (10 performance + 4 efficiency):
+
+| model | 1 group | 64 groups | speedup |
+|---|---|---|---|
+| `deco` | 3.22M | 20.1M | 6.3× |
+| `hmm` | 1.32M | 10.8M | 8.2× |
+| `bocpd` | 0.42M | 2.93M | 7.0× |
+| `corrchange`, window | 0.19M | 1.97M | 10.5× |
+
+Nothing here serializes. The slowest model in the library gains the most,
+because its per-stream work is the largest thing the pool has to schedule.
+`corrchange`'s permutation draws from a per-stream `SplitMix64` seeded from
+the spec's `seed` alone, which is the library's convention (`kmeans` seeds
+the same way). So every group runs the same permutation *pattern* over its
+own rows. That is what makes a stream's output depend on its own rows and
+nothing else, the property the chunk-invariance and group-independence
+sweeps pin. What it gives up is only that two groups' critical values are
+drawn with the same shuffles, rather than independent ones.
+
+`ew_cov` with `lags = 1..5` runs at 1.15M rows/s, against 2.12M for the
+same spec without them: five more `k × k` outer products a row, and the
+ring of rows they need. The lag block is the whole cost of the Epps
+inversion in [docs/REGIMES.md](REGIMES.md) §6, and it is a fifth of a
+`mahal`.
+
+### 16. What a `window` costs (2026-09-07)
+
+Task 63 gave five models a hard cutoff ([docs/PLAN.md](PLAN.md) §13). Two
+questions follow, and both are measured here rather than argued.
+
+#### The windowless path is unchanged
+
+**The concern with a feature like this is that everyone pays for it. They
+do not.** When `window` is unset, the added work is a single `Option` check
+per call site per row (`self.win.as_ref()?`). The `None` branch *borrows*
+the live accumulators rather than cloning them, and no accumulator
+arithmetic moves. Best of three runs of
+`cargo run --release -p online-core --example core_bench`, on the same
+machine, against a build from before the feature (`7cbdaf7`, in a separate
+worktree and target directory):
+
+| case | before | after | ratio |
 |---|---:|---:|---:|
-| v0.6.0 | — | — | `ModelBank.fit` did not exist |
-| v0.7.0 | 0.102 ms | 0.371 ms | +0.269 ms |
-| v0.7.1 | 0.103 ms | 0.381 ms | +0.278 ms |
-| v0.7.2 | 0.102 ms | 0.376 ms | +0.274 ms |
-| v0.7.3 | 0.102 ms | 0.382 ms | +0.280 ms |
-| **after** | 0.104 ms | **0.164 ms** | **+0.060 ms** |
+| `ewridge` k=5 m=1 | 21,515,055 rows/s | 21,161,072 | 0.984 |
+| `ewridge` k=20 m=1 | 9,768,511 | 9,427,411 | 0.965 |
+| `ewridge` k=50 m=1 | 2,932,569 | 2,875,719 | 0.981 |
+| `ewridge` k=20 m=10 | 5,488,848 | 5,428,447 | 0.989 |
+| `ewridge` solve every row | 484,921 | 504,666 | **1.041** |
+| `ewridge` solve every 25 | 5,478,246 | 5,506,259 | 1.005 |
 
-0.371 → 0.382 across four releases is ~3% drift, inside the run-to-run
-spread, and `fit(DataFrame)` never moved. `ConsumedSourceWarning`'s
-`explain` call, added in 0.7.1 and predicted to cost ~0.1 ms, cost about
-0.01: measuring `explain` alone had caught first-call warmup, not the
-steady state. **`fit` is new in 0.7.0**, so there is no earlier number. A
-caller who moved to `fit(lf)` from `fit(df)` or `fit_predict_batches` meets
-this cost for the first time, and reads it as a slowdown.
+The signs go both ways, from −3.5% to +4.1%, which is this benchmark's
+noise on an unquiesced machine rather than a cost. Nothing here changes
+complexity.
 
-### What it actually is
+#### What the window itself costs
 
-`fit(lf)` inspected the plan twice: `explain` for the Python-scan test,
-and `serialize(format="json")` plus a walk for the order hazards. That is a
-fixed ~0.27 ms, against ~0.10 ms of fitting. On a small input the
-inspection *is* the call: 3.7× `fit(df)`, unchanged since 0.7.0.
+200,000 rows, 8 features, one spec, `window = 500` against no window, best
+of three through `ModelBank.fit_predict`:
 
-### The fix
+| model | no window | `window=500` | ratio |
+|---|---:|---:|---:|
+| `ew_cov` (mean + corr) | 27.6 ms | 59.8 ms | 2.2x |
+| `ewridge` | 49.9 ms | 123.3 ms | 2.5x |
+| `lasso` (1 path point) | 55.4 ms | 137.5 ms | 2.5x |
+| `marginal` | 9.5 ms | 26.2 ms | 2.8x |
+| `ew_class` (`covariance="full"`) | 177.9 ms | 308.3 ms | 1.7x |
 
-**The fix is not to make the scan faster.** Read `explain` once and share
-it, then use its text as a filter: no `JOIN`, `AGGREGATE` or `UNIQUE`
-means no node the walk can report. That skips the JSON entirely on the
-plans that have no hazard, which is most of them. Sharing is what makes it
-a saving: reading `explain` twice costs more than the JSON scan it avoids
-on a small plan (0.105 ms against 0.074 ms). Both are in
-`python/polars_online/_frame.py`: `_plan_text` reads the plan once, and
-`_order_hazards` walks the JSON only when that text names one of the three.
+The 2.2–2.8x is the shape of the mechanism: one snapshot pushed per
+learned row, and an `O(k²)` subtraction and re-centring at every read. What
+that time gets is a hard cutoff, a guarantee an exponential weight cannot
+give at any halflife.
 
-The JSON path's own shape says the same thing. By plan, `serialize` /
-`json.loads` / walk:
+**`ew_class` is the one with a structural penalty, and its 1.7x
+understates it.** Pure decay leaves a covariance unchanged: means and
+centred co-moments do not move under `lam`. That is exactly why the `full`
+shape caches its Cholesky factor between rows, and only invalidates the
+class a row updated. A *truncated* covariance moves every row, because the
+decay carried to the boundary does, so every class's factor is stale every
+row: the shape pays one `O(k³)` factorization per class per row. It reads
+as only 1.7x because factorization already dominated its baseline (§13
+measured the full-covariance `ew_class` at 1510 ms per 400k rows before
+that work). `covariance="diagonal"` and `"shared"` do not factorize per
+class, and are unaffected.
 
-| plan | JSON bytes | serialize | loads | walk | total |
-|---|---:|---:|---:|---:|---:|
-| trivial scan | 2,176 | 0.190 ms | 0.024 | 0.037 | 0.074 ms |
-| with a join | 3,876 | 0.017 ms | 0.033 | 0.060 | 0.115 ms |
-| 50 `with_columns` | 13,106 | 0.027 ms | 0.061 | 0.123 | 0.210 ms |
-| 200-column schema | 74,337 | 0.137 ms | 0.667 | 1.280 | **2.13 ms** |
+**Memory is the other axis, and it is the one the feature genuinely
+changes:** `O(rows in the window x state)`, where every other model here
+is `O(state)`. The settings that bound it:
 
-*The trivial-scan row's parts (0.190 + 0.024 + 0.037 ms) exceed its
-0.074 ms total, so one of its numbers is misrecorded. Both are kept as
-recorded; §26 re-measures the path with a committed script, whose parts
-sum to its totals.*
+| setting | effect on the window's memory |
+|---|---|
+| `window_every = m` | divides it by `m`, and shortens the effective window by at most one snapshot's spacing; it never lengthens it |
+| `window_budget`, as `{"refuse": mib}` | a bound per ring, in MiB: the chunk that crosses it is refused |
+| `window_budget`, as `{"thin": mib}` | a bound per ring, in MiB: every other snapshot is dropped and the spacing doubled, as often as it takes, which shortens the window the same way |
+| no `window_budget` | a window refuses past 256 MiB |
 
-It scales with schema width, and the **walk** dominates there (1.28 ms of
-2.13), not the serialization, so trimming the serializer would have been
-optimising the wrong half. The filter removes all of it: `explain` on that
-200-column plan is 0.001 ms, because a plain frame's explain is one line
-whatever the width, while `serialize` dumps the whole schema.
+The refusal dates from finding P4 of the 2026-09-12 review (not §3's P4):
+at `k = 1000` over a 3,600-row window, the ring was about 29 GB per
+instance, and nothing checked.
 
-### Measure the case the user has
+### 17. What `marginal`'s two views cost, and two costs that were not theirs (2026-09-07)
 
-**Measure the case the user has, not the one that flatters.** The first
-pass of this used a `lam=1.0` spec and reported no gain. That spec is
-order-free, so since 0.7.2 it already skipped the order check, and the
-benchmark was measuring a fast path built two releases earlier rather than
-the common one. A `halflife` spec never qualifies, and that is where the
-2.3× is.
+Tasks 65 and 66 gave `marginal` lagged pair moments and binned target
+moments ([docs/MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md)). The
+rule from §16 applies again: a stream that asks for neither must not pay
+for the fact that they exist.
 
-## 22. `marginal`'s bins at several targets (E71, task 122, 2026-09-25)
+#### The plain path, and two regressions no test could see
+
+**It did pay, twice, and both were found by measuring rather than
+reading.** `cargo run --release -p online-core --example marg_bench` runs
+one million rows, eight features, one target, and no lags, bins or window.
+It ran against a build from before either feature (`7c5327f`, separate
+worktree and target directory), interleaved, best of the runs each prints:
+
+| plain `marginal` | rows/s | vs before |
+|---|---:|---:|
+| before tasks 65 and 66 (`7c5327f`) | 69.2M | — |
+| with both regressions | 58.0M | 0.84 |
+| with the call hoisted out of `learn` | 64.1M | 0.93 |
+| with the scan moved inside its guard | 72.2M | **1.04** |
+
+Every row of that table is the same binary, the same harness and the same
+sitting, with only the two lines under test moved. The fixes were measured
+by putting each regression back, not by comparing against an older note.
+
+**A call inside the hot loop, even one never taken.** The lag update was a
+branch inside `learn`'s per-target loop. A call there makes the compiler
+assume the callee could reallocate `mx`, `sxx` and `sxy`. So it reloads
+their base pointers on every iteration and stops vectorizing, for a stream
+with no lags at all. Moving the whole thing to its own pass over the
+targets (`Marginal::learn_lags`, run before `learn`, recomputing `a` and
+`b` from the same values) gets the loop back. The moments stay
+bit-identical to `ew_cov(lags=)`, which is asserted by a test rather than
+assumed.
+
+**An `O(p)` scan outside its guard.** The lag ring only accepts rows whose
+features are all finite, and the check `x.iter().all(|v| v.is_finite())`
+sat *outside* `if let Some(lag)`. So every row of every `marginal` walked
+all `p` features to decide whether to push into a ring that did not exist.
+
+Neither is visible to a test, since both compute exactly the right answer.
+Neither would have been found by reading the diff, since both look like
+ordinary guard clauses. Only a measurement against a build from before the
+feature finds this class of thing, which is the argument for keeping one
+cheap enough to run.
+
+The finished path lands slightly *above* where it started. That is this
+benchmark's noise on an unquiesced machine rather than an improvement (§16
+measured −3.5% to +4.1% run to run), so the claim is parity, not a
+speed-up. The bank-level number below agrees with the one §16 recorded for
+the same shape, which is the independent check.
+
+#### What the views themselves cost
+
+200,000 rows, eight features, one target, through `ModelBank.fit_predict`,
+best of three:
+
+| spec | wall | vs plain |
+|---|---:|---:|
+| `marginal` | 9.9 ms | — |
+| `bins=16`, edges given | 15.5 ms | 1.6x |
+| `bins=16`, edges learned | 16.0 ms | 1.6x |
+| `bins=64`, edges given | 19.5 ms | 2.0x |
+| `lags=[1,2,3,5,8]` | 27.2 ms | 2.7x |
+| `lags` + `serial_rule="geometric"` | 27.2 ms | 2.7x |
+
+The 9.9 ms plain agrees with the 9.5 ms §16 recorded for `marginal` without
+a window, which is the independent check that the path is where it was.
+
+**Four times the bins costs 26% more, not four times more.** The per-row
+work is a binary search over the edges and three adds, and the decay is
+`O(1)` for the whole histogram however many bins it has (`margbins.rs`).
+Had decay been the obvious loop over bins, 16 to 64 would have quadrupled
+the added cost: 5.6 ms to 22 ms, rather than to 9.6 ms.
+
+**Lags cost more than bins,** because five lags are five more pair updates
+per row, each the same width as the contemporaneous one. At 5 lags, the
+2.7x is the `1 + L` shape, slightly better than linear because the means
+and weights are computed once. `serial_rule` is free: it is read-time
+arithmetic over the lags already kept.
+
+### 22. `marginal`'s bins at several targets (E71, task 122, 2026-09-25)
 
 The histogram searched every feature's edges once per present target. The
 edges belong to the feature, so every target's search found the same bin.
@@ -2978,7 +3047,7 @@ now run back to back before any cell is written, and none depends on
 another. That is the likely reason, inferred from the code rather than
 profiled.
 
-## 23. `marginal`'s cross terms on request (E70, task 123, 2026-09-25)
+### 23. `marginal`'s cross terms on request (E70, task 123, 2026-09-25)
 
 `lags` kept three lagged moments per pair and lag: the feature's
 autocovariance and both cross-covariances. `n_serial` reads the two
@@ -3020,7 +3089,7 @@ lag in `cross_lags` runs the other loop and gives the same checksum, which
 `cross_lags_keep_the_default_cross_terms_at_their_lags` also checks
 accumulator by accumulator.
 
-## 24. A wide `marginal` through the bank: the cost that was not the model's (task 124, 2026-09-25)
+### 24. A wide `marginal` through the bank: the cost that was not the model's (task 124, 2026-09-25)
 
 The E70–E74 caller measured a cost of 14–17 ns per feature per row that
 did not grow with the number of targets. The model alone has almost none
@@ -3037,11 +3106,11 @@ through `ModelBank.fit_predict`, with `ONLINE_TIMING=1` for the sections:
 
 A profile (the recipe in §13) put 62% of the samples on the CPU in
 lookups by column name, 36% in the string comparisons alone. **Seven
-lookups scanned every column,** each quadratic in the width: `wanted`'s
-deduplication, the spec and role each column's cast names in its errors,
-the check for a column already cast, `ArrowChunk::new`'s check that every
-column is listed, `ArrowChunk`'s own lookup, once per feature, and its
-`has`, on the scoring path. At 10,000 columns each is about 10⁸
+lookups scanned every column,** each quadratic in the width. They were
+`wanted`'s deduplication, the spec and role each column's cast names in
+its errors, the check for a column already cast, `ArrowChunk::new`'s check
+that every column is listed, `ArrowChunk`'s own lookup, once per feature,
+and its `has`, on the scoring path. At 10,000 columns each is about 10⁸
 comparisons per chunk. Each is now a hash: `ArrowChunk` keeps an
 index from a name to its columns, and the adapter keeps sets and one map
 from a column to its first reader. `the_first_reader_is_the_one_the_scans_found`
@@ -3095,7 +3164,7 @@ three interleaved rounds:
 | 20 features, 10 targets | 2.85M rows/s | 3.05M rows/s |
 | 20 features, a solve every 25 rows | 3.21M rows/s | 3.53M rows/s |
 
-## 25. A wide `marginal` split across the pool (E73, task 126, 2026-09-25)
+### 25. A wide `marginal` split across the pool (E73, task 126, 2026-09-25)
 
 The pool's unit of work is a stream, one spec on one group. A
 10,000-feature `marginal` on one group was one thread's work while the
@@ -3107,7 +3176,7 @@ holds the state's bytes to that across lags, cross lags, learned and given
 bins, windows, absent targets, zero weights, total gaps and cleared rings,
 at 2, 3, 7 and 50 shards run in order, in reverse and on threads.
 
-### A fork-join per row does not pay
+#### A fork-join per row does not pay
 
 The plan split each row: advance every target's own numbers, then run the
 pair loop's feature ranges on the pool. It assumed a row of about 2 ms at
@@ -3139,7 +3208,7 @@ processes. The lags' ring is held as it was when the batch began, and each
 held row names the rows its lags read, so a row the ring would have
 dropped is still there to read.
 
-### The unsplit row got faster first
+#### The unsplit row got faster first
 
 To share one copy of the arithmetic, the pair update, the three lag
 updates and the bins' cell update each became a function over slices,
@@ -3161,7 +3230,7 @@ three rounds, best of each, one million rows unless stated:
 | 2,000 features, 3 targets, 20,000 rows | 141.9 ms | 71.6 ms | equal |
 | 10,000 features, 2 lags, 16 bins, 3,000 rows | 533.5 ms | 465.5 ms | equal |
 
-### What the split buys
+#### What the split buys
 
 `marg_shard_bench` steps the model alone on a 14-thread pool, best of
 three, microseconds per row. The checksum of every pair was the same at
@@ -3210,7 +3279,7 @@ The bank's own work per row does not split: the transpose of each chunk
 into rows and the data summary's per-column statistics (§24). At one
 target that is most of the call.
 
-### `"auto"`
+#### `"auto"`
 
 `MarginalCfg::auto_shards` estimates a flush's pair work: the batch's
 rows, times the row's pairs, times each pair's cost. The cost is 0.6 ns
@@ -3226,22 +3295,64 @@ fills the pool, and holding rows only adds their copy.
 8 MB of features, 104 rows at 10,000 features, while the bank runs its
 rows, and lets go of them when the run ends. Only the models being run at
 that moment hold any. That is usually about one per thread, 112 MB on 14
-threads, but it is not a bound: a flush forks inside the bank's own
+threads, but it is not a bound. A flush forks inside the bank's own
 fork-join over the groups, and a worker waiting on its shards takes up
-another group's run meanwhile (rayon's blocked join steals any job of the
-pool), whose model then holds a batch on top of the first. Nested that
-way, the models holding a batch at once are bounded by the sharded groups
-in the chunk, not by the threads (review 2026-09-26, E2); nothing runs on
-rayon's global pool, and the nesting cannot deadlock, every job being
-finite work over its own slices.
+another group's run meanwhile, since rayon's blocked join steals any job
+of the pool. That group's model then holds a batch on top of the first.
+Nested that way, the models holding a batch at once are bounded by the
+sharded groups in the chunk, not by the threads (review 2026-09-26, E2).
+Nothing runs on rayon's global pool, and the nesting cannot deadlock,
+since every job is finite work over its own slices.
 
-## 26. 0.11.1 against 0.10.0, two slowdowns fixed, and what the readers hold (2026-09-27)
+### 27. `marginal`'s shared feature moments (E72, task 125, 2026-09-29)
+
+`feature_moments="shared"` keeps one mean and one variance per feature over
+every learned row, and each pair only its covariance. On the model alone
+(`crates/online-core/examples/marg_bench.rs`, `moments=`), 4,000 rows at
+20,000 pairs, best of five runs, M4 Pro:
+
+| targets | features | `"per_target"` | `"shared"` | ratio |
+|---|---|---|---|---|
+| 1 | 10,000 | 23.2 ms | 23.5 ms | 1.0 |
+| 2 | 10,000 | 45.2 ms | 40.3 ms | 1.1 |
+| 10 | 2,000 | 44.9 ms | 16.5 ms | 2.7 |
+| 30 | 666 | 44.8 ms | 14.1 ms | 3.2 |
+
+The runs' checksums over every pair's numbers are equal at two and ten
+targets, every target present on every row. A saved bank at 2,000 features
+and ten targets is 0.39 MB against 0.87 MB.
+
+With `lags=1,2,5`, where the feature's autocovariance at each lag is kept
+per feature too, the same bench and checksums equal in every row:
+
+| targets | features | cross lags | `"per_target"` | `"shared"` | ratio |
+|---|---|---|---|---|---|
+| 1 | 10,000 | none | 82.7 ms | 84.4 ms | 1.0 |
+| 10 | 2,000 | none | 131.3 ms | 28.8 ms | 4.6 |
+| 10 | 2,000 | 1 | 157.5 ms | 62.0 ms | 2.5 |
+
+Two kernels came first, and both were slower. The first stepped every
+target inside the feature loop, which strides across the targets'
+covariances: 1.16 times the default's time through the bank at ten targets
+(0.037 s against 0.032 s at 2,000 features and rows).
+The one used now takes each feature's deviation into a buffer once, then
+runs one contiguous pass per target and one for the feature. The second
+kept the one-target pass inside that larger function, where it ran at 1.7
+times `pair_kernel`'s time on the same work. In a function of its own that
+takes the mixes by value, as `pair_kernel` does, it runs level with it.
+
+## Releases compared, and slowdowns bisected
+
+Each release's numbers against the last, the README's numbers
+re-measured, and the slowdowns found and bisected on the way.
+
+### 26. 0.11.1 against 0.10.0, two slowdowns fixed, and what the readers hold (2026-09-27)
 
 Task 112 owed a re-run of this document's timings, and three measurements
 left open: CSV's and NDJSON's read-ahead (§11), two states (§19) and a row
 of §21. The re-run found two slowdowns 0.11.0 shipped, and they are fixed.
 
-### The benchmark, three builds
+#### The benchmark, three builds
 
 `scripts/benchmark.py --markdown` at 200,000 rows, best of three within a
 run and the better of two runs, under the 0.10.0 and 0.11.1 wheels from
@@ -3288,7 +3399,7 @@ by default, at 0.1 (task 102). That is kept.
 **`corrchange`'s monitor gained 23 %** with task 103, which took its
 long-run deviation on the span centred.
 
-### Thread scaling
+#### Thread scaling
 
 `scripts/scaling_bench.py --markdown`, the grouped `ewridge` of P8:
 
@@ -3303,7 +3414,7 @@ long-run deviation on the span centred.
 §4 recorded 6.2× on the ten performance cores. Here 8 threads give 6.8×,
 and 14, which reach the efficiency cores, 8.4×.
 
-### Peak memory, re-measured
+#### Peak memory, re-measured
 
 **The command line still holds O(state).** Its peak footprint, measured as
 §11 measures it, is flat across three lengths of the same stream, with the
@@ -3322,7 +3433,7 @@ groups, a sorted clock and weights, `ewridge` with `min_periods`,
 this file reads about 0.1 GB more. The files differ, and the gap was not
 bisected.
 
-### The CSV and NDJSON read-ahead
+#### The CSV and NDJSON read-ahead
 
 **The CSV and NDJSON read-ahead settings change nothing, on either
 surface.** Polars sizes each read-ahead at twice its pipeline count, 28
@@ -3350,7 +3461,7 @@ and NDJSON in 0.17 to 0.23 GB whatever the setting. The lazy path holds
 the reader's read-ahead. The parquet row-group prefetch is still the one
 reader setting that moves the command line, from 0.73 to 0.23 GB.
 
-### The plan inspection, re-measured
+#### The plan inspection, re-measured
 
 **§21's trivial-scan row could not be reconciled, and the re-measurement
 agrees with itself.** `scripts/plan_inspection_bench.py` times the JSON
@@ -3372,44 +3483,7 @@ What §21 concluded holds: at width the walk is most of the path, 1.3 ms of
 2.3, and `explain` reads the wide plan in 0.003 ms, which is why the
 filter that skips the JSON saves nearly all of it.
 
-## 27. `marginal`'s shared feature moments (E72, task 125, 2026-09-29)
-
-`feature_moments="shared"` keeps one mean and one variance per feature over
-every learned row, and each pair only its covariance. On the model alone
-(`crates/online-core/examples/marg_bench.rs`, `moments=`), 4,000 rows at
-20,000 pairs, best of five runs, M4 Pro:
-
-| targets | features | `"per_target"` | `"shared"` | ratio |
-|---|---|---|---|---|
-| 1 | 10,000 | 23.2 ms | 23.5 ms | 1.0 |
-| 2 | 10,000 | 45.2 ms | 40.3 ms | 1.1 |
-| 10 | 2,000 | 44.9 ms | 16.5 ms | 2.7 |
-| 30 | 666 | 44.8 ms | 14.1 ms | 3.2 |
-
-The runs' checksums over every pair's numbers are equal at two and ten
-targets, every target present on every row. A saved bank at 2,000 features
-and ten targets is 0.39 MB against 0.87 MB.
-
-With `lags=1,2,5`, where the feature's autocovariance at each lag is kept
-per feature too, the same bench and checksums equal in every row:
-
-| targets | features | cross lags | `"per_target"` | `"shared"` | ratio |
-|---|---|---|---|---|---|
-| 1 | 10,000 | none | 82.7 ms | 84.4 ms | 1.0 |
-| 10 | 2,000 | none | 131.3 ms | 28.8 ms | 4.6 |
-| 10 | 2,000 | 1 | 157.5 ms | 62.0 ms | 2.5 |
-
-Two kernels came first, and both were slower. The first stepped every
-target inside the feature loop, which strides across the targets'
-covariances: 1.16 times the default's time through the bank at ten targets
-(0.037 s against 0.032 s at 2,000 features and rows).
-The one used now takes each feature's deviation into a buffer once, then
-runs one contiguous pass per target and one for the feature. The second
-kept the one-target pass inside that larger function, where it ran at 1.7
-times `pair_kernel`'s time on the same work. In a function of its own that
-takes the mixes by value, as `pair_kernel` does, it runs level with it.
-
-## 28. The README's numbers, re-measured (2026-09-29)
+### 28. The README's numbers, re-measured (2026-09-29)
 
 The README's throughput tables dated from 2026-09-06 and its Parallelism
 figures from 2026-09-04, and §26 had already measured `ewridge` 35–37%
@@ -3418,7 +3492,7 @@ measured again, on an Apple M4 Pro at `5e96018`. The machine was shared:
 another project's jobs held from one to eleven of its fourteen cores, and
 each run below says what ran beside it.
 
-### The benchmark
+#### The benchmark
 
 `scripts/benchmark.py --markdown`, 200k rows per run, best of 3. Run 1 went
 beside a load average of 21, most of it one process on eleven cores. Run 2
@@ -3481,7 +3555,7 @@ solve reaches `ln 2 / 50` of the fit's, which at unit weights is every
 `halflife / 50` rows: twice as often at 500. So that row reads 1,832,817
 against 2,530,123.
 
-### The Parallelism workloads
+#### The Parallelism workloads
 
 `scripts/parallel_bench.py`, new in this pass, re-runs §12's three
 workloads. §12's inputs were not kept, so these are generated in the same
@@ -3507,7 +3581,7 @@ The same session's `scripts/scaling_bench.py` read 638,305, 1,220,675,
 threads, 7.7×, beside about one busy core. The README keeps §26's quieter
 8.4×.
 
-### The wheel's size
+#### The wheel's size
 
 0.12.0's wheels, from its GitHub release, and their contents unpacked:
 
@@ -3523,18 +3597,18 @@ threads, 7.7×, beside about one busy core. The README keeps §26's quieter
 The README's "about 19 MB to download and 59 MB installed" was measured on
 2026-09-02.
 
-## 29. The drop since 0.2.0, bisected (2026-09-29)
+### 29. The drop since 0.2.0, bisected (2026-09-29)
 
 §28 found `ewridge` at k=20 running 2.53M rows a second, where the README
 had said 4.12M since 2026-09-06. The user asked which change caused it.
 
-### Method
+#### Method
 
 Every published release from 0.2.0 to 0.12.0 was installed from PyPI into
-a venv of its own, each with py-polars 1.44.2, and timed on five of
+a venv of its own, each with py-polars 1.44.2. Each was timed on five of
 `scripts/benchmark.py`'s configurations: 200k rows, best of 3, in a fresh
-process, over three rounds that visit every version in turn, so load that
-drifts during a run spreads evenly. Inside an interval where a drop fell,
+process. Three rounds visited every version in turn, so load that drifts
+during a run spreads evenly. Inside an interval where a drop fell,
 commits were built in a worktree with a target directory of its own, and
 timed the same way beside the release wheels at either end, which each
 build reproduced to about 1%. The machine was shared, at load averages of
@@ -3553,7 +3627,7 @@ three rounds:
 | 0.11.1 | 2.38M | 5.41M | 8.67M | 16.30M | 9.32M |
 | 0.12.0 | 2.52M | 5.74M | 8.43M | 16.62M | 9.12M |
 
-### The causes
+#### The causes
 
 | commit | change | what it costs | builds either side |
 |---|---|---|---|
@@ -3567,12 +3641,12 @@ Everything but task 87's first cost is the price of a correction the
 review rounds asked for: a clock rule, a precision, a metric that cannot
 blow up. Task 87's is not.
 
-### Task 87's cost: the inverse's diagonal on every solve
+#### Task 87's cost: the inverse's diagonal on every solve
 
 Profiled with symbols (`CARGO_PROFILE_RELEASE_STRIP=none`, `sample`), the
-added time sits under `EwRidge::solve` → `SpdFactor::inverse_diagonal`,
-which forms `A⁻¹` by solving the Cholesky factor against the `k × k`
-identity to keep its diagonal: 577 of `process_chunk`'s 3,600 samples at
+added time sits under `EwRidge::solve` → `SpdFactor::inverse_diagonal`.
+It forms `A⁻¹` by solving the Cholesky factor against the `k × k`
+identity, to keep its diagonal: 577 of `process_chunk`'s 3,600 samples at
 k=20, against 60 for the rest of the solve. Each solve reads it for every
 coefficient's data share, `1 − λ (A⁻¹)_jj`, and for the effective degrees
 of freedom the noise gate's `sqrt(1 + edf / n_kish)` reads. The solve runs
@@ -3592,13 +3666,14 @@ inverse. Two versions of that, row-wise and column-wise on a contiguous
 copy of `L`, agreed with the inverse to 4e-15, 78–94% of values to the bit,
 and ran no faster: at these sizes faer's inverse is already at the cost of
 any direct method. What can go is how often it runs. The shares are read
-on `coef` rows, which by default are one per group per chunk, by
-`summary()`, and by the noise gate only while it can still bind: `edf` is
-at most one per kept column plus one, so once `sqrt(1 + (1 + k) / n_kish)`
-is below `max_error_inflation` the gate is open whatever `edf` is. PLAN
+on `coef` rows, which by default are one per group per chunk, and by
+`summary()`. The noise gate reads them only while it can still bind.
+`edf` is at most one per kept column plus one, so once
+`sqrt(1 + (1 + k) / n_kish)` is below `max_error_inflation` the gate is
+open whatever `edf` is. PLAN
 task 140 has the options.
 
-### The fix: the shares when they are read (task 140)
+#### The fix: the shares when they are read (task 140)
 
 The user chose option (a). A solve keeps its factor, and the shares are
 computed on the first read: a `coef` row, `summary()`, a save, or the noise
@@ -3669,13 +3744,13 @@ The README's Parallelism figures at k=20, §26's thread sweep over 64 groups
 and §28's eight specs, predate the fix and were not re-run: at load 4, a
 14-thread run would time the other jobs as much as this one.
 
-## 30. Where every row solves (2026-09-29)
+### 30. Where every row solves (2026-09-29)
 
 §29 left one gap open: with a solve on every row, even its stub ran 23%
 below the rate §19 recorded on 2026-09-08. The user asked for it next
 ("Solve-every-row speed").
 
-### Bisecting the solve
+#### Bisecting the solve
 
 Every release, then the builds §29 left between them, on
 `scripts/sklearn_comparison.py`'s stream: 100k rows, `ridge=1e-6`,
@@ -3700,7 +3775,7 @@ one change to take back. Against `11e3ccb`, the last build before task 87,
 the stub is 9.5% down: task 87's per-row readiness work, and a little
 since. Task 140's bookkeeping takes 8% more.
 
-### Where the time went
+#### Where the time went
 
 A build of `3c9fbf6` with symbols, sampled while it looped the stream: at
 k=20, `EwRidge::solve` is 90% of a row. Of the solve:
@@ -3717,7 +3792,7 @@ k=20, `EwRidge::solve` is 90% of a row. Of the solve:
 The scales are all 1 when the solve does not standardize, and dividing by
 1 returns its operand. At k=50 the factorization is 55%.
 
-### The change (task 141)
+#### The change (task 141)
 
 Four changes, none of which moves a bit:
 
@@ -3766,7 +3841,7 @@ the same scripts as §29:
 | 6M rows, `halflife=inf`, each row solved | 14.9 s | 12.8 s |
 | `predict` against learning, k=5 and k=20 | 1.85×, 2.82× | 1.81×, 2.79× |
 
-## 31. 0.13.0 against 0.12.0 (2026-09-29)
+### 31. 0.13.0 against 0.12.0 (2026-09-29)
 
 Before the release, `scripts/benchmark.py` ran under the 0.12.0 wheel and
 this build, two rounds each in turn, at load 3.1 to 3.6. Every `ewridge`
@@ -3807,12 +3882,12 @@ the teaching clock and the target's own weight: the corrections' cost, as
 the CHANGELOG says.
 
 `scripts/compare_release.py` against 0.12.0 found 11 fields different,
-all declared: `ridge_window`, `lasso` and `enet` from the default cadence
-by weight (with `solve_every = halflife / 50`, the old rule, this build is
-0.12.0 to the bit on all three), `ftrl` from its penalties' scale, and
-`corrchange`'s `stat` from its kernel, with `since_change` new.
+all declared. `ridge_window`, `lasso` and `enet` differ by the default
+cadence by weight: with `solve_every = halflife / 50`, the old rule, this
+build is 0.12.0 to the bit on all three. `ftrl` differs by its penalties'
+scale, and `corrchange`'s `stat` by its kernel, with `since_change` new.
 
-### The Parallelism figures, re-measured
+#### The Parallelism figures, re-measured
 
 The README's Parallelism figures were §26's and §28's, from before tasks
 140 and 141. Re-run on 0.13.0 at load 1.9 to 2.1, with Spotlight holding one
@@ -3843,13 +3918,19 @@ because one thread is 87% faster, not because more threads are slower.
 | 12M rows, 14 Polars and 14 bank threads | 1.9 s, 0.85 GB | 1.63 s, 0.86 GB |
 | 12M rows, 4 Polars and 14 bank threads | 2.1 s, 0.61 GB | 1.87 s, 0.58 GB |
 
-## 32. Windowed means against the `rolling` recipe (task 78, 2026-09-30)
+## The window operators
 
-A forward reverse-EWMA over a time window -- `lookahead_rewm("price",
-weight="quantity", halflife="10s", horizon=H)`, the next `H` of trades
-weighted most on the next one -- on the stream task 78 measured `rolling`
-on: about two rows a second (exponential gaps), three in ten of them
-trades, parquet in and `sink_parquet` out, one group. Each run is its own
+The windowed means of task 78 against Polars' `rolling` recipe, the
+operators of task 143, a window expression as a model's target, and what
+the review rounds of 2026-10-03 measured.
+
+### 32. Windowed means against the `rolling` recipe (task 78, 2026-09-30)
+
+A forward reverse-EWMA over a time window, `lookahead_rewm("price",
+weight="quantity", halflife="10s", horizon=H)`, weighs the next `H` of
+trades most on the next one. It runs on the stream task 78 measured
+`rolling` on: about two rows a second (exponential gaps), three in ten of
+them trades, parquet in and `sink_parquet` out, one group. Each run is its own
 process, peak RSS from `getrusage`, 14 cores at load 2.9 before the sweep.
 Four cases:
 
@@ -3881,13 +3962,13 @@ Four cases:
   row, and four minutes hold four times the rows.
 
 `scripts/windows_bench.py` makes the data and runs every case; the recipe
-and the window read the same file. A second run of the script, at load 4.6
-rising to 9.5 with the recipe's own threads, moved every memory figure less
-than 7%, and every time of the window and the model less than 6% but one:
-0.17 s for the first 1M-row window, the run's first process. The recipe's
+and the window read the same file. A second run of the script ran at load
+4.6, rising to 9.5 with the recipe's own threads. It moved every memory
+figure less than 7%, and every time of the window and the model less than
+6% but one: 0.17 s for the first 1M-row window, the run's first process. The recipe's
 times moved up to 13%, and the sub-second scan-and-sink's up to a third.
 
-## 33. Window operators (task 143, 2026-10-03)
+### 33. Window operators (task 143, 2026-10-03)
 
 The window core rewritten around operators (`po.ewm_mean`, `po.rewm_sum`
 and the rest, docs/PLAN.md task 143) on the stream §32 measured: about two
@@ -3895,14 +3976,14 @@ rows a second (exponential gaps), three in ten of them trades, parquet in
 and `sink_parquet` out, one group. Each run is its own process, peak RSS
 from `getrusage`. The forward VWAP is now two decayed sums and a formula --
 `po.rewm_sum(price * quantity) / po.rewm_sum(quantity)` -- where §32's was
-one weighted window. The four cases are §32's -- the window alone, the
+one weighted window. The four cases are §32's: the window alone, the
 `rolling` recipe, the window as an `ewridge` target under an `embargo` of
-`H`, and the model alone on the written column -- and two new ones: `k`
+`H`, and the model alone on the written column. Two cases are new: `k`
 operators (`po.ewm_mean` of `mid` times `k` constants) on one kernel, one
 `half_life` and one queue, against the same `k` operators on `k` kernels,
-each its own `half_life`. `scripts/windows_bench.py` runs every case; the
-shared machine carried a load of 5.0 rising to 5.7 through the sweep (§32's
-ran at 2.9).
+each its own `half_life`. `scripts/windows_bench.py` runs every case. The
+shared machine carried a load of 5.0 rising to 5.7 through the sweep, where
+§32's ran at 2.9.
 
 | rows | `H` | `with_windows` | `rolling` | embargoed | model alone | scan and sink |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -3926,47 +4007,47 @@ Operators sharing one kernel against as many kernels, 16M rows, `H` 1m:
   1-minute one does; sixteen operators on one kernel cost 0.13 GB more
   than one, sixteen kernels 0.29 GB more.
 - **Sharing a kernel is what the design promised**: sixteen operators on
-  one queue run in 57% of the time of sixteen queues (four in 71%), and
-  each operator added to a kernel costs 0.6 s per 16M rows where its own
-  kernel costs 1.2 s.
+  one queue run in 57% of the time of sixteen queues, and four in 71%. Each
+  operator added to a kernel takes 0.6 s per 16M rows, where its own
+  kernel takes 1.2 s.
 - **Embargoed still costs what the model costs**: 1.53 against 1.47 s,
   5.78 against 5.69 s at 16M rows.
 - **Speed against task 78's core, at one load.** §32's 1.63 s at 16M rows
-  was measured at load 2.9; today's load made every figure incomparable
-  with it, so the pre-143 core (commit `c061b7a`) was rebuilt in a
-  worktree with its own `target/` and run beside this one, alternating:
-  task 78's core 1.65 and 1.60 s against this one's 2.49 and 2.44 s (16M
-  rows, `H` 1m, load 5.7 to 6.0), both at 1.0 GB. **1.5 times the time,
+  was measured at load 2.9, and today's load made every figure
+  incomparable with it. So the pre-143 core (commit `c061b7a`) was rebuilt
+  in a worktree with its own `target/`, and run beside this one,
+  alternating. Task 78's core took 1.65 and 1.60 s against this one's 2.49
+  and 2.44 s (16M rows, `H` 1m, load 5.7 to 6.0), both at 1.0 GB. **1.5 times the time,
   the memory equal.** The gap is the general engine's: a row's intervals
   per operator, the equal-stamp bookkeeping, one value and one accumulator
   per operator on the queue, and the formula Polars evaluates on each
   chunk that goes out. Three per-row costs were found with the sampler on
   an unstripped build (`CARGO_PROFILE_RELEASE_STRIP=false`) and removed on
-  the way. The first queue allocated seven `Vec`s a row (items, segment
-  sums, the open row's held values); a struct-of-arrays queue with flat
+  the way. The first queue allocated seven `Vec`s a row: items, segment
+  sums, the open row's held values. A struct-of-arrays queue with flat
   value and sum arenas and scratch buffers removed them (4M rows: 1.11 to
   0.75 s, the old core at 0.41 and 0.42 s beside each). The nanosecond
   clock's `seconds_of_ns` divided an `i128` and converted it to a float on
-  every clock step (`__divti3` and `__floattidf`, 11% of the samples); an
+  every clock step (`__divti3` and `__floattidf`, 11% of the samples). An
   `i64` fast path with the same two Euclidean operations gives the same
-  bits (0.74 to 0.63 s against the old core's 0.42) and reaches every
+  bits (0.74 to 0.63 s against the old core's 0.42), and reaches every
   clock in the library, the bank's included. A bare-column input and a
   bare-operator formula now skip the Polars plan, which measured nothing
   on this case and stays as the simpler path. Chunk size moves nothing
   from 50k to 500k rows: the cost is per row.
 
-## 34. A window expression as a target (task 104, 2026-10-03)
+### 34. A window expression as a target (task 104, 2026-10-03)
 
-The forward VWAP of §33 learned natively -- the expression in the spec's
-`targets`, the bank's own window core resolving it -- against the column
-form §32 and §33 measured as `embargoed`: `with_windows(fwd_vwap=...,
-like=spec)` and the plain column as the target under the same embargo, in
-one query. Same stream, same spec (`ewridge`, `half_life` 30m, `embargo`
+The forward VWAP of §33, learned natively, against the column form §32
+and §33 measured as `embargoed`. Natively, the expression is in the spec's
+`targets` and the bank's own window core resolves it. The column form is
+`with_windows(fwd_vwap=..., like=spec)` and the plain column as the target
+under the same embargo, in one query. Same stream, same spec (`ewridge`, `half_life` 30m, `embargo`
 = `H` = 1m), each run its own process, parquet in and `sink_parquet` out;
 `scripts/windows_bench.py`'s `target` case. The native path holds every
 row the spec accepts until its window closes, as the column form's bank
-holds it until the embargo passes, so what is measured is the resolver:
-a frame of the formula's columns built from the chunk's Arrow arrays, the
+holds it until the embargo passes. So what is measured is the resolver: a
+frame of the formula's columns built from the chunk's Arrow arrays, the
 core fed group by group, the formula evaluated by Polars over the rows it
 resolved, and the resolutions handed to the streams.
 
@@ -3981,73 +4062,74 @@ and 16M runs at load 6.0, the 1M runs at 2.5. The native path takes 1.5
 times the column form's wall time at 4M rows and 1.6 at 16M, and less
 memory.
 
-- **The first build cost 1.7 times the column form** (4M rows: 2.69 s
-  against 1.69; 16M: 10.94 against 6.43): the resolutions reached the
-  streams as a map of one `Vec` per resolved row, cloned once more onto
-  the pending row -- two allocations and a hash per row. Flat per-group
+- **The first build took 1.7 times the column form's time** (4M rows:
+  2.69 s against 1.69; 16M: 10.94 against 6.43). The resolutions reached
+  the streams as a map of one `Vec` per resolved row, cloned once more onto
+  the pending row: two allocations and a hash per row. Flat per-group
   arrays (row numbers, resolving rows, values row-major), found by binary
   search over the resolved prefix of the buffer, replaced them: 2.69 to
   2.37 s at 4M, 10.94 to 9.37 s at 16M.
-- **The rest is the overlap the query form gets for free.** The column
-  form's window and bank are two sources of one streaming query, and the
-  engine runs them as two stages: its 1.57 s at 4M is *below* the 2.08 s
-  of `with_windows` alone (0.63 s) and the model alone (1.45 s) run one
-  after the other. The native path runs the same two pieces in one source,
-  one after the other, and its 2.37 s is 0.29 s -- 14% -- above that sum:
-  the resolver's own cost, the frame from the chunk's arrays, the formulas
-  over the resolved rows and the resolutions handed over. One polars
+- **The rest is the overlap the query form gets from the engine.** The
+  column form's window and bank are two sources of one streaming query,
+  and the engine runs them as two stages. Its 1.57 s at 4M is *below* the
+  2.08 s of `with_windows` alone (0.63 s) and the model alone (1.45 s) run
+  one after the other. The native path runs the same two pieces in one
+  source, one after the other, and its 2.37 s is 0.29 s, 14%, above that
+  sum. That is the resolver's own work: the frame from the chunk's arrays,
+  the formulas over the resolved rows and the resolutions handed over. One polars
   thread (`POLARS_MAX_THREADS=1`) moves none of the four (1.59, 2.34, 0.63
   and 1.48 s), so the overlap is the engine's source tasks, not its
-  expression threads. To close it the native path would have to run a
+  expression threads. To close it, the native path would have to run a
   chunk's cores while the models run the one before, which needs the next
-  chunk before the current one returns -- not what a pull-based source
-  has; or run the groups' cores on the pool, which gains nothing on one
-  group. Neither is built.
+  chunk before the current one returns, and a pull-based source does not
+  have it. Or it would run the groups' cores on the pool, which gains
+  nothing on one group. Neither is built.
 - **Memory is below the column form's**: the native path never
   materialises the target column, and holds a row's formula columns only
   until its window closes (1.09 against 1.23 GB at 16M rows).
 
-## 35. Two costs the review of 2026-10-03 named and did not change
+### 35. Two costs the review of 2026-10-03 named and did not change
 
 Both are recorded here so a later measurement starts from a number; neither
 moves the §33 or §34 figures, which have dense inputs and one group.
 
 - **A windowed mean on a sparse input walks the queue per read** (review R1,
   C5). Every row joins a kernel's queue, and a mean's read looks for the
-  operator's oldest valued row from the queue's head, so an operator whose
+  operator's oldest valued row from the queue's head. So an operator whose
   input is null on most rows scans the rows between its values on every
-  read: O(n · window) in the limit, not O(n). The reviewer measured 300k
+  read: O(n · window) in the limit, where a dense input is O(n). The reviewer measured 300k
   rows with a window of about 2 000 rows: 0.04 s with every row valued,
   0.06 s at one value in 50, 0.24 s at one in 5 000. The remedy the design
   named -- a row enters an operator's queue only when it carries a value --
   would make the read O(1) and is not built.
 - **A spec with a formula target runs one Polars plan per group per chunk**
-  (review R1, D6): the element-wise inputs are evaluated per group's
-  sub-frame (they are group-independent) and the formulas over each group's
-  resolved rows, on the calling thread while the streams run on the pool.
+  (review R1, D6). The element-wise inputs are evaluated per group's
+  sub-frame, though they are group-independent, and the formulas over each
+  group's resolved rows. Both run on the calling thread while the streams
+  run on the pool.
   With many groups that is a fixed cost per group per chunk before any row's
   work. Evaluating the inputs once over the chunk and feeding the cores per
   group, or running the groups' cores on the pool, would remove it; neither
   is built. §34 measured one group.
 
-## 36. The window core's edges from raw clocks (review R3, 2026-10-03)
+### 36. The window core's edges from raw clocks (review R3, 2026-10-03)
 
 Review R2's W1: a window's edge between two rows was decided from the
 difference of two policy times, each rounded once from the stretch's
-origin, so a row exactly one window from another landed on either side of
-the edge (`[0, 100, 400]` ms, a `300ms` window under `"left"`: null against
-Polars' 1, since 0.4 − 0.1 is not 0.3 in a double). Round three decides it
+origin. So a row exactly one window from another landed on either side of
+the edge: `[0, 100, 400]` ms with a `300ms` window under `"left"` gave null
+against Polars' 1, since 0.4 − 0.1 is not 0.3 in a double. Round three decides it
 from the two rows' raw clocks, which the queues and the waiting rows now
 carry, one `i64` a row. The first build converted every gap to seconds
 (`seconds_of_ns`, two Euclidean divisions, at every eviction test, forward
 trigger and open-row check); the second compares the integer gap with the
 window's own nanoseconds (`KernelDef::window_ns`, read off the duration)
-and converts nothing. Measured with `scripts/windows_bench.py --one` on
-§33's stream (16M rows, `H` 1m, one group), the R2 and the R3 extension
-modules swapped into the package between runs, three rounds each,
-alternating, so each pair of columns is at its own load: 4.2 to 5.0 for the
-first sweep (6.2 during the converting build's `target` run), 3.1 to 3.5 for
-the second. Seconds of wall time, each run its own process.
+and converts nothing. It was measured with
+`scripts/windows_bench.py --one` on §33's stream (16M rows, `H` 1m, one
+group). The R2 and the R3 extension modules were swapped into the package
+between runs, three rounds each, alternating. So each pair of columns is at
+its own load: 4.2 to 5.0 for the first sweep (6.2 during the converting
+build's `target` run), 3.1 to 3.5 for the second. Seconds of wall time, each run its own process.
 
 | case | R2 | R3, converting | R2 | R3, integers |
 |---|---:|---:|---:|---:|

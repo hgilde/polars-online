@@ -26,9 +26,9 @@ override most of what it says
 
 ### A first run
 
-The runner is the same pipeline, packaged as one binary and one TOML
-file ([examples/bank.toml](../examples/bank.toml)), for a deployment with
-no Python. The binaries are attached to each GitHub release. The
+The runner is a bank packaged as one binary and one TOML file
+([examples/bank.toml](../examples/bank.toml)), for a deployment with no
+Python. The binaries are attached to each GitHub release. The
 configuration names the input, the output and the specs. The examples
 below run against this configuration, saved as `bank.toml`:
 
@@ -40,15 +40,18 @@ output = "fitted.parquet"    # the input's columns, plus one column per spec
 name = "ridge"               # the name of the spec's output column
 targets = ["y"]              # or a table: { column = "p", relative_to = "mid" }, as po.target
 features = ["x0"]
-half_life = 500.0             # in rows, since the spec names no clock column
-min_weight = 5.0            # the floor, in weight_sum units, below which no prediction is made
+half_life = 500.0            # in rows, since the spec names no clock column
+min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
 [specs.model]
 type = "ew_ridge"
 ```
 
-A dry run validates the configuration and prints the output schema without
-reading a row. A plain run then fits the specs over the input and writes
-the output:
+A dry run checks the configuration and prints the output schema without
+reading a row. It builds the bank, so it refuses what the bank refuses
+before a row, a window target's embargo short of its window included. A
+plain run then fits the specs over the input and writes the output. What
+depends on the rows themselves, such as a missing column or a clock that
+steps back, only the run can find:
 
 ```sh
 online --config bank.toml --dry-run
@@ -72,15 +75,22 @@ file is the one a query's `load_state` and `save_state` read and write on
 the same whichever wrote them
 ([Saving, loading and serving](../README.md#saving-loading-and-serving)).
 
+**Input that overlaps the state is refused, with a clock column.** A
+rerun steps every group's clock back, and the run stops at the first row
+it would learn twice. The command line has no `skip_learned`, so filter
+its input to the rows after the state before `--resume`. With no clock
+column there is nothing to compare, and an overlap is learned twice.
+
 **`--predict` scores against the resumed state and learns nothing:**
 
 ```sh
 online --config bank.toml --resume run.state --predict --input today.parquet
 ```
 
-It drops the configuration's `save_state`, so one TOML file serves both
-the learning run and the scoring run. A `--save-state` given with it is
-refused, since the run has nothing new to save.
+It drops the configuration's `save_state` and `closed_groups`, so one TOML
+file serves both the learning run and the scoring run. A `--save-state` or
+a `--closed-groups` given with it is refused, since the run has nothing
+new to save.
 
 ### A run whose product is its state
 
@@ -93,7 +103,9 @@ online --config bank.toml --no-output --save-state gram.state
 
 A run needs somewhere to put its work: an output file, a `save_state`, or
 a `closed_groups` file. Asked for none of the three, it is refused before
-it reads a row.
+it reads a row. A run with no output keeps no prediction, so it is the
+command line's `ModelBank.fit`, and a window target there takes any
+embargo, as `fit` does.
 
 ### Closed groups to a sidecar file
 
@@ -111,16 +123,18 @@ The configuration needs a spec with `group_close`. Without one, the run is
 refused, and the message says to add `group_close = "monotone"` or
 `"session"` to the spec whose groups should be emitted.
 
-`ModelBank.fit_predict_batches(closed_groups=path)` and
-`lf.online.fit_predict(closed_groups=path)` write the same file from
-Python. What has closed and not been read is saved with the state, so a
-driver that saves between chunks does not lose rows silently.
+`closed_groups=` on `lf.online.fit_predict`, `ModelBank.fit_predict_batches`
+and `ModelBank.fit` writes the same file from Python. What has closed and
+not been read is saved with the state, so a loop that saves between chunks
+does not lose rows silently. The sidecar is published by a run that
+drained any row into it, even one that then failed, since a drained row
+has left the bank. The output is published only by a run that finishes.
 
 ## The configuration file
 
 The TOML file names the input, the output, the run's settings and the
 specs. Every key but the specs and `keep_columns` has a flag that
-overrides it.
+overrides it, though `--predict` can only switch scoring on.
 
 ### Flags and the TOML keys they override
 
@@ -153,10 +167,13 @@ online --config bank.toml --input today.csv --output scored.ndjson
 online --config bank.toml --input feed.dat --input-format ipc --output out.parquet
 ```
 
-The command line reads with polars' own scanners, which on a stable
-toolchain lack the SIMD CSV parser py-polars' wheels have. A large CSV
-therefore reads faster through py-polars and
-`ModelBank.fit_predict_batches`.
+The command line reads with Polars' own Rust readers, built without the
+faster CSV parser py-polars' wheels carry, so a large CSV reads faster
+through py-polars and `ModelBank.fit_predict_batches`. CSV holds no
+records, so each spec's output column is written as `<spec>.<field>`
+columns. A numeric list such as `coef` becomes JSON text, which
+`str.json_decode(pl.List(pl.Float64))` reads back, and any other nested
+field is refused, naming the column and the formats that carry it.
 
 In TOML, a Windows path needs single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted
@@ -164,12 +181,36 @@ string starts an escape sequence.
 
 ### Specs in TOML
 
-A TOML spec for a model that learns from no target, such as `ew_cov`,
+A TOML spec takes the names a Python builder takes, and a key under an
+old name is refused, naming the new one: `halflife` is `half_life`, for
+one. A spec for a model that learns from no target, such as `ew_cov`,
 `kmeans` or `micro`, may leave `targets` out. It is filled the way the
 Python builders fill it: with `features[0]`, or, for a `bocpd` spec with a
 `hazard_col` and an `hmm` spec with an `exog_tvtp`, with that column. The
 two surfaces then write byte-identical specs, so a state saved from one
 resumes under the other.
+
+A target that is a window expression looking ahead is a table with its
+name and its formula. The formula takes the form a spec and a saved state
+carry ([Windows as a model's inputs and
+target](../README.md#windows-as-a-models-inputs-and-target)):
+
+```toml
+[[specs]]
+name = "edge"
+targets = [{ name = "fwd", formula = ["-", ["rewm_mean", ["col", "mid"], { half_life = 10.0, window_size = 60.0 }], ["col", "mid"]] }]
+features = ["x0"]
+clock = "t"
+gap_cap = 300.0
+half_life = 600.0
+embargo = 60.0           # at least the target's window_size, for a run that writes output
+[specs.model]
+type = "ew_ridge"
+```
+
+The formula is Polars' expression written as a tree: an operator, its
+input and its keywords. TOML has no null, so a null literal is written
+`["lit"]`. `group_close` is refused beside a window target.
 
 ### Clocks that are times
 
@@ -182,7 +223,7 @@ name = "ridge"
 targets = ["y"]
 features = ["x0", "x1"]
 clock = "ts"           # a Datetime column
-half_life = "10m"       # a row's weight halves every ten minutes
+half_life = "10m"      # a row's weight halves every ten minutes
 gap_cap = "5m"
 embargo = "30s"
 [specs.model]
@@ -204,7 +245,7 @@ what Polars has read ahead of it.
 
 The figures are the peak footprint on one file, `ewridge` with 20
 features, parquet in and out: the same measurement as the README's
-[Memory](../README.md#memory-which-calls-stream) table.
+[Memory](../README.md#memory) table.
 
 | what you run | 3M rows | 12M rows |
 |---|---:|---:|
@@ -214,22 +255,23 @@ features, parquet in and out: the same measurement as the README's
 It is flat, like the two streaming surfaces in the README. Nearly all of
 it is Polars reading ahead in the parquet file, and
 `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes a run to 0.15 GB at the same
-speed. [docs/PERFORMANCE.md](PERFORMANCE.md) §11 has every measurement.
+speed. [docs/PERFORMANCE.md](PERFORMANCE.md) §11 has these measurements,
+and §26 re-measures the command line, CSV and NDJSON included.
 
 ### The pipeline and its threads
 
 The command line is a three-stage pipeline: a reader thread, the bank on
 the calling thread, and a writer thread, with one chunk in flight per
-stage. `ONLINE_TIMING=1` prints how long the bank waited on each side.
-Reading and writing are polars' work, on polars' pool: parquet pages are
-encoded there a column per task, in parallel, and NDJSON a slice per
-thread.
+stage. A `closed_groups` sidecar has a writer thread of its own.
+`ONLINE_TIMING=1` prints how long the bank waited on each side. Parquet
+pages are encoded on Polars' pool, a column per task, in parallel, and
+NDJSON on the writer's own thread.
 
 The bank's own work runs on the bank's one thread pool, sized by
-`POLARS_ONLINE_MAX_THREADS`. In Python, the GIL is released while a chunk
-is in the bank, so independent `ModelBank` calls in threads of one process
-share that pool. The README's [Parallelism](../README.md#parallelism) has
-the full account, including polars' own pool and how the two interact.
+`POLARS_ONLINE_MAX_THREADS`. The README's
+[Parallelism](../README.md#parallelism) has the full account, including
+Polars' own pool and how the two interact. Notices about a model's warm-up
+go to standard error.
 
 ### Chunk size
 
@@ -247,14 +289,17 @@ last row of every chunk.
 
 From Rust, the same pipeline is `online_polars::run_config` for a
 `RunConfig`. `run_config_on` runs it for a `LazyFrame` or batches the
-caller already has, and `run` with a callback instead of an output file.
+caller already has. `run` takes a `Bank` the caller holds, an `Output`, a
+file, a callback or `Discard`, and `RunOptions`, whose `learn_only` is the
+`fit` mode a run with no output uses.
 
 ### Versioning
 
-The command line needs no Python, so the Polars floor applies only to the
-Python calls this guide names. The floor is `LazyFrame.collect_batches`,
-which `lf.online.fit_predict` and `ModelBank.fit_predict_batches` read
-with, and which py-polars added in 1.34.0. The suite passed on 1.34.0,
+The command line needs no Python: it carries its own Rust Polars, 0.55.2.
+So the py-polars floor applies only to the Python calls this guide names.
+That floor is `LazyFrame.collect_batches`, which `lf.online.fit_predict`
+and `ModelBank.fit_predict_batches` read with, and which py-polars added in
+1.34.0. The suite passed on 1.34.0,
 1.38.1 and 1.44.1 on 2026-09-02 and on 2.0.0-rc.1 on 2026-09-18, with
 identical numbers, and passes on 1.44.2, the pin, at every change. The README's
 [Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)

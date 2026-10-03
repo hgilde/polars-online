@@ -128,7 +128,7 @@ that `#[global_allocator]` line must stay whatever else changes. Nothing on
 crates.io publishes a `dylib` to link against anyway (0 of our 453
 dependencies; `crate-type` is the publisher's choice).
 
-13. **Know which of the interfaces a change rides on.** Three, and the two
+13. **Know which of the interfaces a change rides on.** Four, and the three
     that are py-polars' to change carry no guarantee. (The expression plugin —
     which had a version handshake — was removed in task 85: it read every row
     by construction, which is the opposite of what this library is for.)
@@ -144,6 +144,13 @@ dependencies; `crate-type` is the publisher's choice).
       projection, predicate or slice it pushes into a Python source, so the
       source honours all three (`python/polars_online/_frame.py`).
 
+    - **An expression's serialized form** (`expr.meta.serialize(format="json")`,
+      the window formulas, task 143) — unstable across Polars versions, by
+      Polars' own account. `python/polars_online/_formula.py` reads seven node
+      kinds from it, under the caller's Polars, into this library's own tree,
+      and refuses any other node by name. Its shapes were measured the same on
+      1.34.0 and 1.44.2 (task 154).
+
     - **The Arrow PyCapsule interface** (`ModelBank.fit_predict_arrow`, task
       86) — the *output* side only, and the one path whose contract is not
       py-polars' to change: `__arrow_c_array__` is an Arrow specification,
@@ -156,9 +163,9 @@ dependencies; `crate-type` is the publisher's choice).
       floor below is not known to hold for it.
 
     `polars>=1.34.0,<3` in `pyproject.toml` is therefore *measured* for all
-    three but *guaranteed* for none below the latest — and the two that stream
+    four but *guaranteed* for none below the latest — and the two that stream
     are among those — see `docs/RELEASE-READINESS.md`.
-    Treat a `ModelBank` or IO-plugin break on a new Polars as expected
+    Treat a `ModelBank`, IO-plugin or formula break on a new Polars as expected
     maintenance, not a surprise, and check those paths first. The floor is
     `LazyFrame.collect_batches` (py-polars 1.34.0), which the IO plugin reads
     with; `ModelBank` alone works from 1.28.1.

@@ -355,6 +355,18 @@ A flattering count is easy to produce, so measure honestly:
 | counting a pattern's hits unread | `the point` matched "the point-biserial correlation" | read each hit before counting it |
 | rendering with `mode=gfm` | used GitHub's comment rendering, which turns every line break into `<br>` | `mode=markdown`, which is how GitHub renders a README file |
 
+**A docstring pass runs the same steps, with four differences** (task 149,
+2026-10-03). A docstring is a deep doc, reached from the API reference or
+`help()` by a reader who already has the README's words, so it carries the
+mechanism, the equations, the units, the defaults and the refusals:
+
+| step | in a docstring pass |
+|---|---|
+| 1 and 6, measure | the docstring's own text, with headings, code blocks and list-tables dropped and each paragraph split on its own. A definition-list header merges with its body in the count, so read every long sentence it reports |
+| 4, account | page by page: the old docstring saved beside the draft, and a diff of its backticked names, numbers and link targets |
+| 7, render | Sphinx with `-W`, which the gate runs: a docstring that is not valid reStructuredText fails there |
+| 8, gate | the doc tests, and the tests that pin a docstring's text. `tests/test_temporal_clock.py` wants each clock parameter's entry to say "clock units" on one line, and `tests/test_weight_scale.py` pins whole phrases, line wraps included. Grep the tests for `__doc__` before a batch, and run them |
+
 **Keep the report verbatim.** When a reader names a problem, or confirms
 an approach, PHRASING.md keeps their words unedited and the
 interpretation separate. The rule drawn from it can then be checked

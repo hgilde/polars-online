@@ -403,7 +403,7 @@ impl RcovCfg {
         }
         if self.preavg_rows.is_some() && self.kind != RcovKind::Preavg {
             return Err(format!(
-                "rcov: window applies to kind = \"preavg\", not {:?}",
+                "rcov: preavg_rows applies to kind = \"preavg\", not {:?}",
                 self.kind.as_str()
             ));
         }
@@ -416,7 +416,7 @@ impl RcovCfg {
         }
         if self.kind == RcovKind::Preavg && self.window_for().is_none() {
             return Err(
-                "rcov: pre-averaging needs `block_rows` or an explicit `window`: the window has to be \
+                "rcov: pre-averaging needs `block_rows` or an explicit `preavg_rows`: the window has to be \
                  fixed before the first row"
                     .into(),
             );
@@ -424,8 +424,8 @@ impl RcovCfg {
         if let Some(w) = self.preavg_rows {
             if w < 2 {
                 return Err(format!(
-                    "rcov: window must be >= 2 (got {w}); the pre-averaged return is a weighted \
-                     sum over `window − 1` returns, so below 2 there is nothing to average and \
+                    "rcov: preavg_rows must be >= 2 (got {w}); the pre-averaged return is a weighted \
+                     sum over `preavg_rows − 1` returns, so below 2 there is nothing to average and \
                      no block ever accumulates"
                 ));
             }
@@ -1550,7 +1550,7 @@ mod tests {
                     preavg_rows: Some(w),
                     ..cfg(2, RcovKind::Preavg)
                 },
-                "window must be >= 2",
+                "preavg_rows must be >= 2",
             );
         }
         bad(
@@ -1584,7 +1584,7 @@ mod tests {
                 preavg_rows: None,
                 ..cfg(2, RcovKind::Preavg)
             },
-            "needs `block_rows` or an explicit `window`",
+            "needs `block_rows` or an explicit `preavg_rows`",
         );
         bad(
             RcovCfg {
@@ -1598,7 +1598,7 @@ mod tests {
                 preavg_rows: Some(2),
                 ..cfg(2, RcovKind::Kernel)
             },
-            "window applies to",
+            "preavg_rows applies to",
         );
         bad(
             RcovCfg {

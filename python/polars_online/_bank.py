@@ -1370,11 +1370,11 @@ class ModelBank:
         msgpack. Use it to look at a state, diff two of them, or hand one to something
         that is not Python.
 
-        It refuses rather than lying. ``serde_json`` writes ``NaN`` and ``±inf`` as
-        ``null`` and says nothing about it, where msgpack round-trips all three, so
-        every export is read back and re-encoded and the msgpack must match the real
-        state byte for byte. A state holding a value JSON cannot carry raises
-        ``ValueError`` naming the problem instead of returning a file that is quietly
+        It carries every value, the ones JSON has no literal for included. A NaN or an
+        infinity is written as the string ``"nan"``, ``"inf"`` or ``"-inf"``, the
+        spelling a spec's ``half_life`` takes. Every export is read back, and its
+        msgpack must match the state's byte for byte. One that does not raises
+        ``ValueError`` naming the problem, instead of returning a file that is quietly
         wrong. ``RuntimeError`` while a ``fit_predict`` is in flight on another
         thread, as :meth:`save` does.
         """

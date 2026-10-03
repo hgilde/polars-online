@@ -187,6 +187,24 @@ type = "ew_cov"
         assert "output: none (--no-output)" in r.stdout
         assert "b.state" in r.stdout
 
+    def test_the_cli_dry_run_names_the_closed_groups_as_the_product(self, tmp_path, online_cli):
+        """Task 154: a run with no output and no state, whose product is the
+        closed groups alone, printed that its product was nothing."""
+        pl.DataFrame(
+            {"g": ["a", "a", "b", "b"], "x0": [0.1, 0.2, 0.3, 0.4], "x1": [1.0, 0.0, 1.0, 2.0]}
+        ).write_parquet(tmp_path / "in.parquet")
+        res = run_online(
+            online_cli,
+            tmp_path,
+            [cov_spec(group="g", group_close="monotone")],
+            input=tmp_path / "in.parquet",
+            closed_groups=tmp_path / "closed.parquet",
+            args=["--dry-run", "--no-output"],
+        )
+        product = next(line for line in res.stdout.splitlines() if line.startswith("output:"))
+        assert "nothing" not in product, res.stdout
+        assert "closed.parquet" in product, res.stdout
+
     def test_output_and_no_output_together_are_refused(self, tmp_path, online_cli):
         cfg = tmp_path / "c.toml"
         cfg.write_text('input = "x.parquet"\n[[specs]]\nname = "c"\nfeatures = ["x0"]\n')

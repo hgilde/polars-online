@@ -751,9 +751,8 @@ fn check_monotone(
             polars_bail!(ComputeError:
                 "spec {:?}: row {}: group {} after group {} -- group_close = \"monotone\" needs \
                  the keys in non-decreasing order, read as numbers for an integer column and as \
-                 text otherwise (sort the input by {:?} under that same order -- a Categorical \
-                 column sorts by its physical order unless you cast it to String -- or use \
-                 group_close = \"session\")",
+                 text otherwise (sort the input by {:?}, which Polars sorts under that same \
+                 order, or use group_close = \"session\")",
                 spec.name, row_base + r, groups[gi].0, groups[prev].0,
                 spec.group.as_deref().unwrap_or("")
             );
@@ -1067,9 +1066,10 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
             "spec {:?}: clock column {:?} goes backwards by {} at row {} \
              (restart_after_step_back is unset, so every step back is refused); the bank \
              was not updated. Sort each group by the clock; to resume a saved state on \
-             input that overlaps it, feed ModelBank.skip_learned(frame); or, if a step back \
-             this large starts the stream over, set restart_after_step_back to the smallest \
-             one that does.",
+             input that overlaps it, drop the rows it has learned, with \
+             ModelBank.skip_learned(frame) in Python or by filtering the command line's input \
+             to the rows after them; or, if a step back this large starts the stream over, set \
+             restart_after_step_back to the smallest one that does.",
             spec.name, column, step, row
         ),
         Some(Disorder {
@@ -2353,7 +2353,8 @@ impl Bank {
         // A formula target's window must close before any row it covers is
         // scored from a state that learned it (docs/PLAN.md task 104): the
         // embargo covers the longest forward window, or `fit_predict`
-        // refuses the spec. Checked here, said at the first `fit_predict`.
+        // refuses the spec. Checked here, said at the first `fit_predict`
+        // and by `RunConfig::validate` (`fit_predict_refusal`).
         let short_embargo = specs
             .iter()
             .map(|s| {
@@ -2974,6 +2975,21 @@ impl Bank {
         self.fit_predict_arrow_with(chunk, false)
     }
 
+    /// Why a run that keeps its predictions would be refused before its
+    /// first row: a spec whose formula target looks further ahead than its
+    /// embargo covers (docs/PLAN.md task 104). `None` when every embargo
+    /// covers its longest forward window. A run that keeps no prediction,
+    /// and a scoring run, are never refused for it.
+    /// [`crate::RunConfig::validate`] asks, so a dry run says what the
+    /// first chunk would.
+    pub fn fit_predict_refusal(&self) -> Option<&str> {
+        self.short_embargo
+            .iter()
+            .flatten()
+            .next()
+            .map(String::as_str)
+    }
+
     /// [`Self::fit_predict_arrow`] with `learn_only` as
     /// [`Self::fit_predict_from_with`] takes it.
     pub fn fit_predict_arrow_with(
@@ -2982,7 +2998,7 @@ impl Bank {
         learn_only: bool,
     ) -> PolarsResult<Vec<StructArray>> {
         if !learn_only {
-            if let Some(why) = self.short_embargo.iter().flatten().next() {
+            if let Some(why) = self.fit_predict_refusal() {
                 polars_bail!(ComputeError: "{}", why);
             }
         }
