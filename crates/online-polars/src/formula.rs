@@ -246,7 +246,13 @@ impl Node {
                 Ok(Node::Lit(Literal::from_json(&args[0])?))
             }
             "cast" | "alias" => {
-                arity(2)?;
+                // A cast is strict unless a third element says `"non_strict"`
+                // (review R1, B2: Python's default is strict, Rust's `cast`
+                // is not, and a failed cast became a silent null).
+                let non_strict = head == "cast" && args.len() == 3;
+                if !non_strict {
+                    arity(2)?;
+                }
                 let x = Node::from_json(&args[0])?;
                 let Value::String(text) = &args[1] else {
                     return Err(format!(
@@ -257,10 +263,21 @@ impl Node {
                 if head == "cast" {
                     dtype_of(text)?;
                 }
-                Ok(Node::Call(
-                    head.clone(),
-                    vec![x, Node::Lit(Literal::Str(text.clone()))],
-                ))
+                let mut call = vec![x, Node::Lit(Literal::Str(text.clone()))];
+                if non_strict {
+                    match &args[2] {
+                        Value::String(s) if s == "non_strict" => {
+                            call.push(Node::Lit(Literal::Str(s.clone())));
+                        }
+                        other => {
+                            return Err(format!(
+                                "\"cast\" takes \"non_strict\" as its third argument, got {}",
+                                short(other)
+                            ));
+                        }
+                    }
+                }
+                Ok(Node::Call(head.clone(), call))
             }
             name if CALLS.iter().any(|(n, _)| *n == name) => {
                 let n = CALLS
@@ -571,7 +588,12 @@ impl Node {
                     "when" => when(e(0)).then(e(1)).otherwise(e(2)),
                     "cast" => match &args[1] {
                         Node::Lit(Literal::Str(t)) => {
-                            e(0).cast(dtype_of(t).expect("checked when read"))
+                            let dtype = dtype_of(t).expect("checked when read");
+                            if args.len() == 3 {
+                                e(0).cast(dtype)
+                            } else {
+                                e(0).strict_cast(dtype)
+                            }
                         }
                         _ => unreachable!("cast carries its dtype as text"),
                     },
@@ -631,15 +653,25 @@ fn span_of(name: &str, key: &str, v: &Value) -> Result<Span, String> {
 
 fn short(v: &Value) -> String {
     let s = v.to_string();
-    if s.len() > 60 {
-        format!("{}...", &s[..60])
-    } else {
-        s
+    // On a character boundary: a slice at byte 60 panicked inside a
+    // multibyte name (review R1, B3).
+    match s.char_indices().nth(60) {
+        Some((cut, _)) => format!("{}...", &s[..cut]),
+        None => s,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// Review R1, B3: the message's cut of a long value fell inside a
+    /// multibyte character and panicked.
+    #[test]
+    fn a_long_name_is_cut_on_a_character_boundary() {
+        let name = "€".repeat(70);
+        let err = super::Node::from_json(&serde_json::json!({ "co": name })).unwrap_err();
+        assert!(err.contains("..."), "{err}");
+    }
+
     use super::*;
 
     fn tree(text: &str) -> Node {

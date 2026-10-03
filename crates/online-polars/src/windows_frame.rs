@@ -77,6 +77,7 @@ struct FileOut<'a> {
     core: &'a Windows,
     held: &'a [u8],
     increments: &'a [IncrState],
+    stream_clock: Option<ClockValue>,
 }
 
 #[derive(Deserialize)]
@@ -87,6 +88,8 @@ struct FileIn {
     core: Windows,
     held: Vec<u8>,
     increments: Vec<IncrState>,
+    #[serde(default)]
+    stream_clock: Option<ClockValue>,
 }
 
 /// A group's increment state: the previous row's inputs, session and clock.
@@ -170,15 +173,30 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
         }
         if input.contains(&f.name) {
             return Err(format!(
-                "{WHO}: output {:?} is already a column of the frame; give the expression another \
-                 name",
+                "{WHO}: output {:?} is already a column of the frame; a positional expression is \
+                 named after its leftmost column unless .alias() names it, so give it another name",
                 f.name
             ));
         }
         if !names.insert(&f.name) {
             return Err(format!("{WHO}: two expressions are named {:?}", f.name));
         }
+        // Each formula holds an operator (one rule with the Python side,
+        // review R1, N7), and reads no column under a reserved prefix (N8).
+        if f.tree.operators().is_empty() {
+            return Err(format!(
+                "{WHO}: {:?} holds no operator; a formula of the row alone is Polars' with_columns",
+                f.name
+            ));
+        }
         for c in f.tree.columns() {
+            if c.starts_with("@po:") || c.starts_with("@in:") {
+                return Err(format!(
+                    "{WHO}: {:?} reads column {c:?}; names starting with \"@po:\" and \"@in:\" are \
+                     reserved for the operators' own columns",
+                    f.name
+                ));
+            }
             has("input", &c)?;
         }
     }
@@ -312,12 +330,10 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
             p.columns.push((key, p.ops.len() - 1));
         }
     }
-    if p.ops.is_empty() && p.increments.is_empty() {
-        return Err(format!(
-            "{WHO}: no formula holds an operator; a formula of the row alone is Polars' \
-             with_columns"
-        ));
-    }
+    debug_assert!(
+        !(p.ops.is_empty() && p.increments.is_empty()),
+        "checked per formula"
+    );
     Ok(p)
 }
 
@@ -425,11 +441,11 @@ fn check_scale(
 
 /// A session value as the core sees it: a hash of its text, so any dtype
 /// can mark sessions and only a change is read.
+/// The bank's session hash (`fnv1a`), which std's `DefaultHasher` is not: a
+/// hash persisted in the state must be the same on every toolchain (review
+/// R1, S6).
 fn session_hash(v: Option<&str>) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    v.hash(&mut h);
-    h.finish()
+    crate::bank::session_hash(v)
 }
 
 /// One `with_windows` run: the core, its plan, and the input rows it holds.
@@ -453,6 +469,11 @@ pub struct WindowsRun {
     incr_state: Vec<IncrState>,
     incr_index: HashMap<String, usize>,
     incr_null: Option<usize>,
+    /// The previous row's clock on the stream, across groups: a step back
+    /// past `restart_after_step_back` there restarts every group's windows
+    /// in the core, so it restarts every group's increments too (review
+    /// R1, S4).
+    stream_clock: Option<ClockValue>,
     /// The core's row count at this run's first row: an error names the
     /// row of this run's input.
     run_base: u64,
@@ -570,6 +591,7 @@ impl WindowsRun {
             incr_state: Vec::new(),
             incr_index: HashMap::new(),
             incr_null: None,
+            stream_clock: None,
             run_base: 0,
         })
     }
@@ -676,7 +698,15 @@ impl WindowsRun {
             .collect();
 
         // Pass one: the increments, one row back within the group's
-        // session, as hidden columns of the chunk.
+        // session, as hidden columns of the chunk. On a snapshot: the state
+        // must end at the last row the core took, and a slice (`limit`) or
+        // a refusal stops short of the chunk's end (review R1, B1).
+        let snapshot = (
+            self.incr_state.clone(),
+            self.incr_index.clone(),
+            self.incr_null,
+            self.stream_clock,
+        );
         let chunk = self.with_increments(df, &keys, &clock, session.as_deref())?;
 
         // Pass two: Polars evaluates every operator's input.
@@ -748,10 +778,12 @@ impl WindowsRun {
                 accept: accepts.iter().all(|col| usable(col[i])),
             };
             if let Err(r) = self.core.push(&row) {
-                // The rows before it are in the core: hold them.
+                // The rows before it are in the core: hold them, and put the
+                // increments' state where they end.
                 if i > 0 {
                     self.held.push_back(chunk.slice(0, i));
                 }
+                self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), i)?;
                 return Err(self.refusal(r, chunk_base));
             }
             if let Some(rows) = resolving {
@@ -760,6 +792,9 @@ impl WindowsRun {
         }
         if consumed > 0 {
             self.held.push_back(chunk.slice(0, consumed));
+        }
+        if consumed < n {
+            self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), consumed)?;
         }
         let e = match limit {
             None => self.core.drain(),
@@ -780,21 +815,19 @@ impl WindowsRun {
         e: crate::windows::Emitted,
         at: &[u64],
     ) -> PolarsResult<DataFrame> {
-        let drop: BooleanChunked = e.drop.iter().map(|&d| Some(d)).collect();
         let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
         let mut frame = self.assemble_rows(e)?;
-        frame.hstack_mut(&[
-            drop.with_name("@po:drop".into()).into_column(),
-            resolved_at.with_name("@po:at".into()).into_column(),
-        ])?;
+        frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
+        // An operator partial under `"drop"` gives no value, so a formula
+        // over it is null of itself; the row's other formulas keep theirs
+        // (review R1, D4: every formula of the row was nulled).
         let exprs: Vec<Expr> = self
             .config
             .formulas
             .iter()
             .map(|f| {
-                when(col("@po:drop"))
-                    .then(lit(NULL))
-                    .otherwise(f.tree.to_expr(&|op| col(hidden(op).as_str())))
+                f.tree
+                    .to_expr(&|op| col(hidden(op).as_str()))
                     .alias(f.name.as_str())
             })
             .collect();
@@ -813,6 +846,43 @@ impl WindowsRun {
     pub fn finish(&mut self) -> PolarsResult<DataFrame> {
         let e = self.core.finish();
         self.assemble(e)
+    }
+
+    /// Put the increments' state back to `snapshot` and run the first
+    /// `rows` rows of `df` through it again, so it ends where the core
+    /// stopped: the values the held rows carry are the same, since an
+    /// increment reads only the rows before it.
+    #[allow(clippy::type_complexity)]
+    fn rewind_increments(
+        &mut self,
+        snapshot: (
+            Vec<IncrState>,
+            HashMap<String, usize>,
+            Option<usize>,
+            Option<ClockValue>,
+        ),
+        df: &DataFrame,
+        keys: &[Option<&str>],
+        clock: &Option<Vec<ClockValue>>,
+        session: Option<&[u64]>,
+        rows: usize,
+    ) -> PolarsResult<()> {
+        (
+            self.incr_state,
+            self.incr_index,
+            self.incr_null,
+            self.stream_clock,
+        ) = snapshot;
+        if rows > 0 {
+            let clock = clock.as_ref().map(|c| c[..rows].to_vec());
+            self.with_increments(
+                &df.slice(0, rows),
+                &keys[..rows],
+                &clock,
+                session.map(|s| &s[..rows]),
+            )?;
+        }
+        Ok(())
     }
 
     /// The chunk with one hidden column per increment: `x_i - x_{i-1}`
@@ -899,9 +969,27 @@ impl WindowsRun {
                     gi
                 }
             };
+            // A step back on the stream's clock past the threshold restarts
+            // every group in the core, so every group's increments start
+            // over too (review R1, S4).
+            let now_clock = clock.as_ref().map(|c| c[r]);
+            if let (Some(now), Some(prev)) = (now_clock, self.stream_clock) {
+                let back = match (prev, now) {
+                    (ClockValue::Ns(p), ClockValue::Ns(c)) => {
+                        online_core::seconds_of_ns(i128::from(p) - i128::from(c))
+                    }
+                    (p, c) => p.seconds() - c.seconds(),
+                };
+                if restarts && back > 0.0 && back > restart {
+                    for st in &mut self.incr_state {
+                        st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+                        st.prev_ns.iter_mut().for_each(|p| *p = None);
+                    }
+                }
+            }
+            self.stream_clock = now_clock;
             let st = &mut self.incr_state[gi];
             let now_session = session.map(|s| s[r]);
-            let now_clock = clock.as_ref().map(|c| c[r]);
             let mut new_start = st.session != now_session && st.session.is_some();
             if let (Some(now), Some(prev)) = (now_clock, st.clock) {
                 let back = match (prev, now) {
@@ -1155,6 +1243,7 @@ impl WindowsRun {
             core: &self.core,
             held: &held,
             increments: &self.incr_state,
+            stream_clock: self.stream_clock,
         })
         .map_err(|e| e.to_string())
     }
@@ -1240,6 +1329,7 @@ impl WindowsRun {
         if held.height() > 0 {
             run.held.push_back(held);
         }
+        run.stream_clock = file.stream_clock;
         for (i, st) in file.increments.into_iter().enumerate() {
             match &st.key {
                 Some(k) => {
@@ -1285,6 +1375,38 @@ mod tests {
 
     /// The rows a look-ahead holds are the input's own chunks, not copies:
     /// the output's values sit at the input's addresses.
+    /// Review R1, N7 and N8: a formula with no operator beside one with an
+    /// operator was accepted (Python refused it), and an input under the
+    /// operators' prefix would have collided with a hidden column at run
+    /// time.
+    #[test]
+    fn each_formula_holds_an_operator_and_reads_no_reserved_column() {
+        let input = frame(&[0.0, 1.0]).schema().clone();
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "y", "tree": ["ewm_sum", ["col", "x"], {"half_life": 1.0}]},
+                                 {"name": "z", "tree": ["-", ["col", "x"], ["lit", 1.0]]}],
+                   "clock": "t", "gap_cap": 100.0}"#,
+            ),
+            &input,
+        )
+        .err()
+        .expect("refused");
+        assert!(err.contains("\"z\" holds no operator"), "{err}");
+        let mut with_hidden: Schema = (*input).clone();
+        with_hidden.insert("@po:x".into(), DataType::Float64);
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "y", "tree": ["ewm_sum", ["col", "@po:x"], {"half_life": 1.0}]}],
+                   "clock": "t", "gap_cap": 100.0}"#,
+            ),
+            &with_hidden,
+        )
+        .err()
+        .expect("refused");
+        assert!(err.contains("reserved"), "{err}");
+    }
+
     #[test]
     fn held_rows_are_the_inputs_own_chunks() {
         let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
@@ -1356,7 +1478,7 @@ mod tests {
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["-", ["col", "x"], ["lit", 1]]}], "clock": "t", "gap_cap": 1}"#,
-                "no formula holds an operator",
+                "\"a\" holds no operator",
             ),
             (
                 r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "x"], {"half_life": "1s"}]}], "clock": "t", "gap_cap": 1}"#,

@@ -1821,6 +1821,17 @@ impl Spec {
             put(&mut out, "session_gap", Some(g));
         }
         put(&mut out, "embargo", self.embargo.as_ref());
+        // A formula target's operators measure in the same clock (review
+        // R1, D7): with them here a number beside durations is refused at
+        // the spec, and the embargo check compares like units.
+        for t in self.targets.defs() {
+            if let Some(tree) = &t.formula {
+                for op in tree.operators() {
+                    put(&mut out, "half_life", op.half_life.as_ref());
+                    put(&mut out, "window_size", op.window_size.as_ref());
+                }
+            }
+        }
         match &self.model {
             ModelKind::EwRidge {
                 long_half_life,

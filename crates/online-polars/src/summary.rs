@@ -258,6 +258,14 @@ impl DataSummary {
         self.resets += u64::from(reset);
     }
 
+    /// A row accepted earlier, counted without a target, is learned from
+    /// now: a formula target resolved with a value (docs/PLAN.md task 104,
+    /// review R1 D3).
+    #[inline]
+    pub fn learned_late(&mut self) {
+        self.rows_learned += 1;
+    }
+
     /// The row just fed was accepted: its weight, and whether the models
     /// were handed a target to learn from (a model without targets always
     /// is).

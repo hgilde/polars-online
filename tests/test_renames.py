@@ -213,3 +213,22 @@ def test_restart_after_step_back_is_one_rule():
         po.spec.ewridge(
             "m", targets=["y"], features=["x"], half_life=10.0, restart_after_step_back=1.0
         )
+
+
+def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
+    """Review R1, F1: a hand-written ``like=`` dict with a clock key under its
+    old name was read as not setting it, and a keyword under an old name was
+    refused as a stray expression; both now name the new name."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
+    like = {
+        "name": "m",
+        "features": ["x"],
+        "clock": "t",
+        "gap_cap": 50.0,
+        "on_clock_reset": "reset_state",
+        "min_backwards_jump": 1.0,
+    }
+    with pytest.raises(TypeError, match="on_clock_reset was renamed restart_after_step_back"):
+        po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), like=like)
+    with pytest.raises(TypeError, match="max_dclock was renamed gap_cap"):
+        po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), clock="t", max_dclock=5.0)

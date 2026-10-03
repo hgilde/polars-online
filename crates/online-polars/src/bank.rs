@@ -1127,7 +1127,7 @@ fn resolver_config(spec: &Spec) -> WindowsConfig {
 fn resolver_columns(spec: &Spec) -> Vec<(String, &'static [Form])> {
     const CLOCK: &[Form] = &[Form::Clock, Form::Number];
     const SESSION: &[Form] = &[Form::Text, Form::Key, Form::Number];
-    const VALUE: &[Form] = &[Form::Number, Form::Text, Form::Key];
+    const VALUE: &[Form] = &[Form::Number, Form::Bool, Form::Text, Form::Key];
     let mut out: Vec<(String, &'static [Form])> = Vec::new();
     let mut put = |c: &str, forms: &'static [Form]| {
         if !out.iter().any(|(n, _)| n == c) {
@@ -1401,9 +1401,10 @@ fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey,
                     }
                     Ok(order)
                 }
-                // `ArrowChunk::key` never returns the numeric form or a clock.
-                ArrowCol::F64(_) | ArrowCol::Nanos(_) => {
-                    unreachable!("a group key is never read as a number or a clock")
+                // `ArrowChunk::key` never returns the numeric form, a clock
+                // or a boolean.
+                ArrowCol::F64(_) | ArrowCol::Nanos(_) | ArrowCol::Bool(_) => {
+                    unreachable!("a group key is never read as a number, a clock or a boolean")
                 }
             }
         }
@@ -2725,6 +2726,11 @@ impl Bank {
             }
             for key in keys {
                 dropped += usize::from(hm.remove(key).is_some());
+                // The group's window core goes with its stream, so a group
+                // that appears again starts cold there too (review R1, D1:
+                // a stale core refused the new rows, or held the old ones).
+                self.resolvers[si].runs.remove(key);
+                self.resolvers[si].saved.remove(key);
             }
         }
         Ok(dropped)
@@ -3388,7 +3394,20 @@ impl Bank {
         // below -- the core's own, or the window pre-pass -- puts it back,
         // so a refused chunk leaves the bank as it was.
         let mut formulas: Vec<Option<FormulaBundle>> = specs.iter().map(|_| None).collect();
-        let snapshot: Vec<TargetWindows> = self.resolvers.clone();
+        // The clock check has run, so only the window pre-pass can refuse
+        // the chunk after the cores have taken it: the snapshot -- a clone
+        // of every held row -- is taken only when a stream of a spec with a
+        // formula target has a ring that could refuse (review R1, D5).
+        let needs_snapshot = self.window_prepass
+            && specs.iter().any(|s| s.targets.any_formula())
+            && work
+                .iter()
+                .any(|(_, _, idx, _, stream)| stream.could_refuse_window(idx.len()));
+        let snapshot: Vec<TargetWindows> = if needs_snapshot {
+            self.resolvers.clone()
+        } else {
+            Vec::new()
+        };
         let mut resolved: Result<(), PolarsError> = Ok(());
         for (si, spec) in specs.iter().enumerate() {
             if !spec.targets.any_formula() {
@@ -3410,8 +3429,13 @@ impl Bank {
             }
         }
         if let Err(e) = resolved {
+            // The core's own refusal: nothing of this chunk is in it (its
+            // feed holds rows only on success), and the increments and the
+            // frame it holds were rewound by the runner.
             drop(work);
-            self.resolvers = snapshot;
+            if needs_snapshot {
+                self.resolvers = snapshot;
+            }
             forget(&mut self.states, &fresh);
             return Err(e);
         }
@@ -3461,7 +3485,9 @@ impl Bank {
                 });
             if let Some(e) = over {
                 drop(work);
-                self.resolvers = snapshot;
+                if needs_snapshot {
+                    self.resolvers = snapshot;
+                }
                 forget(&mut self.states, &fresh);
                 return Err(e);
             }

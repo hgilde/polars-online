@@ -6207,7 +6207,7 @@ is not, since the model alone has `0.0` and `3.5` there.
     | `resid_z_<t>`, `emit_resid_z` | `zscore_<t>`, `emit_zscore` | `resid_` is a prefix of `resid_z_`, so a target named `z_y` made `resid_z_y` two fields (measured 2026-10-02: the builder accepted the spec and listed it twice, and `fit_predict` refused it). The one prefix collision in the output grammar. |
     | `pcorr_<a>_<b>` (`ew_cov`) | `partial_corr_<a>_<b>` | The stat is asked for as `"partial_corr"`. |
     | `scale_features` (`sgd`) | `standardize` | Every other model's name for it. |
-    | `on_clock_reset` + `min_backwards_jump` | `restart_after_step_back` | One rule in two vocabularies, the second required by one value of the first and refused by the other. Unset, a step back is an error; given a clock amount, a step back at least that large restarts the state and a smaller one is still refused. In the specs and in `with_windows`. A clock rule, so it gets the extra review task 120 calls for. |
+    | `on_clock_reset` + `min_backwards_jump` | `restart_after_step_back` | One rule in two vocabularies, the second required by one value of the first and refused by the other. Unset, a step back is an error; given a clock amount, a step back larger than it restarts the state and one no larger is still refused (inclusive, as built; this row once said "at least that large", corrected in review R1). In the specs and in `with_windows`. A clock rule, so it gets the extra review task 120 calls for. |
     | `ridge_decay` (bool) | `ridge_scale="mean"` or `"sum"` | Names the difference: a penalty on the mean moments, permanent, against a prior on the sums, fading (task 151's two families). Default `"mean"`. |
     | `lam_selected_<t>` (`lasso`) | `penalty_selected_<t>` | `lam` is the decay factor. It keeps that name: Polars' alternative to `half_life` is `alpha`, which `ftrl`, `deco` and `corrchange` already use. |
     | `add_intercept` | `fit_intercept` | scikit-learn's name for the same switch. |
@@ -9899,27 +9899,6 @@ on the new head — CI 35111714290 and rehearsal 35111713356 both green on
 the one step nothing here can take, and `v*` tags are immutable, so a tag that
 turns out wrong is left unapproved rather than moved.
 
-## Follow-on documents
-
-Each of §11b–§11h below summarises one document under `docs/` and says what
-became of it. Four more carry no section of their own:
-
-- `docs/ENHANCEMENTS.md` — every model and feature after the first seven
-  (E1–E74): proposed, measured, built or declined.
-- `docs/TESTING.md` — coverage scorecard against §9, the defects the suite
-  found, and the oracle/river cross-checks.
-- `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
-  streamed plan: what polars does with a Python source, measured; the
-  candidate forms; the rules `save_state=` on the plan follows and the
-  decisions behind them (task 20).
-- `docs/ARROW-SOURCES.md` — research and a proposal (2026-09-17, nothing
-  built) on feeding a bank from any Arrow producer: which libraries implement
-  the PyCapsule interface, the tier that already works through polars with no
-  new dependency, and a native import, which needs no second Arrow
-  implementation (§4, corrected 2026-09-22; parked by the user on 2026-09-25),
-  and a comparison with DuckDB's own statistics and learning extensions,
-  which are broad but batch-first and keep no state between queries.
-
 ## 11b. Performance plan
 
 **Done — P1 through P11.** See [`docs/PERFORMANCE.md`](PERFORMANCE.md): the
@@ -10236,3 +10215,74 @@ the polars sense — polars' `rolling_*` recomputes each window and costs
 faster as the window grows from 74 to 4,680 rows. Users who only need moments
 on data that fits in memory should be told polars already does this; the
 reason to reach for the spec is a stream, a saved state, or a regression.
+
+## 14. Review round R1 (2026-10-03), after tasks 143, 144, 104 and 150
+
+Five read-only reviewers, one per area, each finding re-derived here and
+pinned by a test that failed before its fix (the review protocol of
+2026-09-14). Committed in three batches; the finding IDs are in the commit
+messages.
+
+### Batch A+B: the names (144) and the formula layer (143)
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| 144-F1 | `with_windows(like=dict)` read an old clock key as unset, and a keyword under an old name was refused as a stray expression | both refused naming the new name (`stream.py`) | `test_renames.py::test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword` |
+| 144-F2 | the restart boundary stated as "at least that large" in five live places (code: a step back equal to it is a late row) | wording (README ×2, `stream.py` ×2, CHANGELOG, the plan's decision row) | the existing `test_restart_after_step_back_is_one_rule` |
+| 144-F3/F4/F7/F8 | hmm `p_<j>`, PCA `pc<j>_<feature>`, `lam_selected`, `n_eff²` in docstrings and the README | the new names | `test_outputs_doc`, `test_api_surface` (unchanged: the fields were right) |
+| 144-F5/F6 | the Unreleased changelog and two README passages in the old vocabulary | rewritten | -- |
+| 144-F9 | `EwRidgeCfg.ridge_scale` is a bool under the enum's name | not changed: internal | -- |
+| 143-B1 | the increments' state advanced over the whole chunk where a slice or a refusal stopped the core short, so a state saved under `head` depended on `chunk_rows` | snapshot and rewind to the rows consumed | `test_windows.py::test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size` |
+| 143-B2 | a formula's `cast` was rebuilt non-strict (Polars' default is strict), so an overflow became a silent null | the tree carries `"non_strict"`; `strict_cast` otherwise; a wrapping cast refused | `test_a_cast_is_strict_as_in_polars_unless_told_otherwise` |
+| 143-B3 | a long multibyte name panicked the message's cut | cut on a character boundary | `formula.rs::a_long_name_is_cut_on_a_character_boundary` |
+| 143-S4 | a step back on the stream's clock restarted every group's windows but not their increments | the runner keeps the stream's clock and restarts every group's increments | `test_a_restart_on_the_streams_clock_restarts_every_groups_increments` |
+| 143-S5 | an increment skips a null input, undocumented | decided: kept, as the operators hold a value from the last valued row; documented | `test_an_increment_skips_a_null_input` |
+| 143-S6 | std's `DefaultHasher` persisted in the windows state | the bank's `fnv1a` (windows state v2 is unreleased) | -- |
+| 143-N7/N8/N9/N10 | one operator rule on both sides; the reserved prefixes refused on inputs; the "already a column" message names `.alias()`; `from_tree`'s log base | as listed | `windows_frame.rs::each_formula_holds_an_operator_and_reads_no_reserved_column`, `test_the_operators_prefix_is_reserved_on_inputs`, `test_a_positional_expression_named_after_a_column_is_told_about_alias`, `test_from_tree_takes_a_log_base_that_is_not_a_literal` |
+
+### Batch C: the window core (143)
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| C1 | without a clock every backward `"right"`/`"both"` operator was null on every row (the row never waited for a next stamp, so nothing read it) | the row's own windows are read at the end of its push | `test_a_row_count_clock_reads_every_backward_window` |
+| C2 | the policy time was a sum of rounded steps, so a row exactly one window later fell on either side of the edge by the sum's noise (999 against Polars' 1000 at 1 ms steps; a row wrongly in at 60 000 ms) | measured from the stretch's first row, one subtraction exact in nanoseconds; the brute forces likewise | `test_a_row_exactly_one_window_later_lands_on_the_edge_at_any_age` |
+| C3 | forward `"left"`/`"both"` gave rows at one stamp different windows (a sequence rule) | decided: a window is a set of timestamps -- every row at the stamp, the row itself included, the mirror of backward `"right"`; both oracles follow | `test_forward_left_and_both_hold_every_row_at_the_stamp` (with the mirror identity over repeated stamps) |
+| C4 | `partial="keep"` held the last value `gap_cap` past the last row, so a kept rate's span grew with the cap | decided: a cut window ends at the last row seen | `test_a_cut_window_ends_at_the_last_row_it_saw` |
+| C5 | a windowed mean on a sparse input walks the queue per read, O(n · window): 0.04 s dense, 0.24 s at one value in 5 000 (300k rows) | not changed; PERFORMANCE §35 | -- |
+| C6 | a row exactly one window old under `"left"`/`"both"` counts for `min_samples` and weighs nothing | decided: by the definition, its held interval ends at its row, before the window; a mean with no other value is null (Polars' row-weighted `rolling_mean_by` says the value); documented in `ops.py` | `test_a_row_on_the_far_edge_counts_but_weighs_nothing` |
+| C7 | the core took a mean on `half_life = inf` with no window (NaN forever) | refused in `Windows::new` | `windows.rs::a_mean_with_no_decay_needs_a_window` |
+
+### Batch D: the formula targets (104)
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| D1 | `drop_groups` left the group's window core, so the group fed again met a stale clock | the cores go with the stream | `test_a_dropped_group_starts_cold_in_the_window_core_too` |
+| D2 | a boolean column was cast to a number and then refused by the resolver's dtype check | a boolean form in the chunk, for a formula target's columns | `test_a_boolean_column_reaches_a_formula_target` |
+| D3 | `rows_learned` counted a formula row at arrival whatever its window gave | counted at release, when a target resolved with a value; chunk-invariant | `test_rows_learned_counts_a_formula_row_once_its_target_resolved` |
+| D4 | `partial="drop"` on one operator nulled every formula of the row | a formula is null of its own operator's null; nothing else nulled | `test_drop_on_one_target_leaves_the_rows_other_targets` |
+| D5 | the resolver snapshot cloned every core each chunk | taken only when a ring of the spec's streams could refuse the chunk | -- (the clone is gone from the default path; a budget that refuses is the exception) |
+| D6 | per-group serial Polars plans per chunk | not changed; PERFORMANCE §35 | -- |
+| D7 | a formula's spans outside `clock_spans`, so the embargo check compared unlike units | the operators' spans are the spec's clock spans | `test_a_formulas_spans_are_the_specs_clock_spans` |
+| D8 | a `pl.Expr` in a raw spec dict died in `json.dumps` | normalised in `ModelBank.__init__` | `test_a_raw_spec_dict_takes_a_window_expression` |
+| 150-* | the Kalman reviewer: no code defect; four stale equations fixed inside task 150 | -- | -- |
+
+## Follow-on documents
+
+Each of §11b–§11h below summarises one document under `docs/` and says what
+became of it. Four more carry no section of their own:
+
+- `docs/ENHANCEMENTS.md` — every model and feature after the first seven
+  (E1–E74): proposed, measured, built or declined.
+- `docs/TESTING.md` — coverage scorecard against §9, the defects the suite
+  found, and the oracle/river cross-checks.
+- `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
+  streamed plan: what polars does with a Python source, measured; the
+  candidate forms; the rules `save_state=` on the plan follows and the
+  decisions behind them (task 20).
+- `docs/ARROW-SOURCES.md` — research and a proposal (2026-09-17, nothing
+  built) on feeding a bank from any Arrow producer: which libraries implement
+  the PyCapsule interface, the tier that already works through polars with no
+  new dependency, and a native import, which needs no second Arrow
+  implementation (§4, corrected 2026-09-22; parked by the user on 2026-09-25),
+  and a comparison with DuckDB's own statistics and learning extensions,
+  which are broad but batch-first and keep no state between queries.

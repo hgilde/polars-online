@@ -37,9 +37,18 @@ and ``"none"`` move the ends. Every row at one stamp gets the same backward
 window, later rows at that stamp included, so under ``"right"`` and
 ``"both"`` a backward output waits for the next distinct stamp; under
 ``"left"`` and ``"none"`` the stamp's own rows are outside, and the output
-is known as the stamp arrives. A forward window counts a row exactly ``w``
-later under ``"right"`` and ``"both"``. ``min_samples`` (Polars' name) nulls
-a window holding fewer rows with a value.
+is known as the stamp arrives. Looking ahead the mirror holds: under
+``"left"`` and ``"both"`` the window holds every row at the row's own
+stamp, the row itself included, as a backward ``"right"`` window holds every
+row at its stamp; under ``"right"`` and ``"none"`` none at the stamp is in.
+A forward window counts a row exactly ``w`` later under ``"right"`` and
+``"both"``, at any age of the stream: the clock inside a stretch is
+measured from the stretch's first row, exact in nanoseconds. ``min_samples``
+(Polars' name) nulls a window holding fewer rows with a value. A row is in
+a window by its stamp, but a mean weighs it by its held interval inside the
+window: a row exactly one window old under ``"left"`` or ``"both"`` counts
+for ``min_samples`` and weighs nothing, since its interval ends at its row,
+and a mean with no other value in the window is null.
 
 **A weighted mean is a ratio of two sums.** A VWAP is decayed notional over
 decayed volume, the time mass cancelling; a side's VWAP puts ``when/then``
@@ -64,10 +73,10 @@ inside both sums. There is no ``weight=``:
 the call's, shared by every operator in it, in a spec's own words
 (:mod:`polars_online.spec`). A gap past ``gap_cap`` or a session change ends
 every window open across it: ``partial`` says what such a window gives,
-``"keep"`` (the value over what it saw; the default looking back),
-``"null"`` (the default looking ahead) or ``"drop"`` (the row leaves the
-output). A reset discards it: null, never dropped. A forward window still
-open when the input ends is null.
+``"keep"`` (the value over what it saw, the window ending at the last row
+seen; the default looking back), ``"null"`` (the default looking ahead) or
+``"drop"`` (the row leaves the output). A reset discards it: null, never
+dropped. A forward window still open when the input ends is null.
 
 An operator's input is a column name or an element-wise expression of the
 row, :func:`increment` included -- not another window operator: a formula
@@ -234,9 +243,14 @@ def rewm_rate(
 
 
 def increment(input: str | pl.Expr) -> pl.Expr:
-    """``x_i - x_{i-1}`` of ``input`` within the group and session: null on a
-    session's first row, and after a step back ``restart_after_step_back``
-    reads as a new start; seconds on a temporal column. The input of a sum
-    or a rate over a running total, so a day's notional of 1e10 is read as
-    its trades (docs/PLAN.md task 143, *Numerics*)."""
+    """``x_i - x_{i-1}`` of ``input`` within the group and session, ``x_{i-1}``
+    the input's last value with a value: a null input makes the row's
+    increment null and is skipped, as the operators hold a value from the
+    last valued row (``[1, null, 3]`` gives ``[null, null, 2]``, where
+    ``diff()`` gives three nulls). Null on a session's first row, and after a
+    step back ``restart_after_step_back`` reads as a new start -- in the
+    row's group, or on the stream across groups; seconds on a temporal
+    column. The input of a sum or a rate over a running total, so a day's
+    notional of 1e10 is read as its trades (docs/PLAN.md task 143,
+    *Numerics*)."""
     return operator("increment", input)

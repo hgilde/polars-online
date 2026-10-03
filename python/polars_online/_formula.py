@@ -115,7 +115,13 @@ def _walk(node: Any) -> Any:
     ((kind, body),) = node.items()
     if kind == "Column":
         if isinstance(body, str) and body.startswith(PREFIX):
-            return json.loads(body[len(PREFIX) :])
+            try:
+                return json.loads(body[len(PREFIX) :])
+            except json.JSONDecodeError:
+                raise _refuse(
+                    f"the column {body!r}: names starting with {PREFIX!r} are reserved for "
+                    "the operators' own columns"
+                ) from None
         return ["col", body]
     if kind == "Literal":
         return ["lit", _literal(body)]
@@ -131,7 +137,14 @@ def _walk(node: Any) -> Any:
         name = dtype.get("Literal") if isinstance(dtype, dict) else dtype
         if name not in _DTYPES:
             raise _refuse(f"a cast to {json.dumps(dtype)}")
-        return ["cast", _walk(body["expr"]), name]
+        # Strict, Polars' default, unless the cast says otherwise; a wrapping
+        # cast (`wrap_numerical=True`) has no form here.
+        options = body.get("options", "Strict")
+        if options == "Strict":
+            return ["cast", _walk(body["expr"]), name]
+        if options == "NonStrict":
+            return ["cast", _walk(body["expr"]), name, "non_strict"]
+        raise _refuse(f"a cast with options {json.dumps(options)}")
     if kind == "Alias":
         expr, name = body
         return ["alias", _walk(expr), name]
@@ -292,13 +305,13 @@ def from_tree(tree: Any) -> pl.Expr:
         case "is_not_null":
             return e[0].is_not_null()
         case "log":
-            return e[0].log(args[1][1]) if args[1][0] == "lit" else e[0].log(math.e)
+            return e[0].log(args[1][1]) if args[1][0] == "lit" else e[0].log() / e[1].log()
         case "fill_null":
             return e[0].fill_null(e[1])
         case "when":
             return pl.when(e[0]).then(e[1]).otherwise(e[2])
         case "cast":
-            return from_tree(args[0]).cast(_DTYPES[args[1]])
+            return from_tree(args[0]).cast(_DTYPES[args[1]], strict=len(args) < 3)
         case "alias":
             return from_tree(args[0]).alias(args[1])
     raise FormulaError(f"formula node {head!r} is not read")
@@ -306,6 +319,11 @@ def from_tree(tree: Any) -> pl.Expr:
 
 def _input_tree(who: str, value: Any) -> list[Any]:
     if isinstance(value, str):
+        if value.startswith(PREFIX):
+            raise _refuse(
+                f"the column {value!r}: names starting with {PREFIX!r} are reserved for the "
+                "operators' own columns"
+            )
         return ["col", value]
     if isinstance(value, pl.Expr):
         tree = to_tree(value)

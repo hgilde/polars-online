@@ -55,7 +55,7 @@ parts after it test what those classes do not name.
 | 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations); the last open one, a numpy `lasso_ref` for the lasso's *pred* path (T-A2), landed 2026-09-24 |
 | 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_rows` sweep) levels; save/load mid-stream identical. The `coef` field is correctly excluded: it is chunk-dependent by design |
 | 3. Out-of-sample by construction | Done | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
-| 4. Clock semantics | Done | cap, negative-delta (`max`/`zero`/`reset_state`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
+| 4. Clock semantics | Done | cap, a step back (refused, or a restart past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
 | 5. Null policy & warmup | Done | feature/target/weight nulls and `min_weight`, for all ten regression models (T-A5) |
 | 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, below |
 | 6b. `predict` ≡ `fit_predict` of the next row | Done (E31) | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
@@ -111,7 +111,7 @@ T-A4).
 | `rls` | `rls ≡ ewridge(ridge_scale="sum", solve_every=1)` | <1e-9 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
-| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `lam_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
+| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
 | `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref`, the same way | pred 1.1e-14 | |
 | `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` | pred 5.8e-15; 4.9e-15 | |
 | `ftrl`'s targets and decay, `pa`, `sgd`, `holt` | `ftrl_ref`; the docstrings' update equations, written out (`pa_ref`, `sgd_ref`, `holt_ref`) | pred 8.2e-16 | |
@@ -270,7 +270,7 @@ computed field is still bit-identical.
 | two Windows gaps in `.vscode/settings.json` | writing `scripts/env.ps1` | T-W9 in [D](#d-windows-and-cross-platform) |
 | a String feature column was silently parsed back to f64 | the FFI audit | [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) |
 | a feature constant inside a `window_size` read as the subtraction's remainder, which a windowed lasso at a zero penalty divided by itself (predictions of 1e55) | the oracles of 2026-09-24 | docs/PLAN.md task 94 |
-| the lasso's `lam_selected` under a `window_size` read errors outside it, four ways | the same oracles, then a Rust one | docs/PLAN.md task 95 |
+| the lasso's `penalty_selected` under a `window_size` read errors outside it, four ways | the same oracles, then a Rust one | docs/PLAN.md task 95 |
 | `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | docs/PLAN.md task 97 |
 | a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
 | a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring task 94's case outside a window | docs/PLAN.md task 101 |
@@ -787,7 +787,7 @@ forced first solve. It also found the docstring calling `c` the
 feature-target correlations; it is `cov(x_i, y) / s_i`, so the L1 threshold
 is in the target's units, and the docstring now says so. Not covered: null
 targets, several targets, `target_gaps`, `window_size`, `fit_intercept=False`,
-`lam_selected`.
+`penalty_selected`.
 It would catch schedule and warm-start bugs the KKT check cannot see.
 
 **T-A3.** `robust_ref` is in `tests/reference.py`. It agrees to ~1e-13

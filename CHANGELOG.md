@@ -65,8 +65,47 @@ carries breaking changes, and any change to the numbers a model returns.
   inside both, and a windows state file saved before this (version 1) is
   refused by its version.
 
+### Fixed
+
+- **Review round R1 (2026-10-03)**, five read-only reviewers over tasks 143,
+  144, 104 and 150, every finding pinned by a test (docs/PLAN.md §14):
+  - Without a clock, every backward `"right"`/`"both"` operator was null on
+    every row.
+  - A window's clock inside a stretch is measured from the stretch's first
+    row, exact in nanoseconds, where a sum of rounded steps put a row
+    exactly one window later on either side of the edge (999 against
+    Polars' 1000 at 1 ms steps).
+  - A formula's `cast` is strict, as in Polars, unless the cast was written
+    `strict=False` (the tree carries `"non_strict"`); an overflow was a
+    silent null. A wrapping cast has no form and is refused.
+  - A state saved under a slice (`head`) carried the increments' state of the
+    whole chunk, so a resume depended on `chunk_rows`; a step back on the
+    stream's clock restarted every group's windows but not their increments.
+  - A column name of sixty characters or more with a multibyte character
+    panicked a refusal's message.
+  - `drop_groups` left a group's window core behind, so a group fed again
+    met a stale clock; a boolean column in a formula target was refused; a
+    `partial="drop"` on one target nulled the row's other targets; the
+    formulas' spans are the spec's clock spans, so a number beside durations
+    is refused at the spec; a `pl.Expr` in a hand-written spec dict is taken.
+  - `rows_learned` counts a row with a formula target when it is released
+    with a value, not at its arrival.
+  - `with_windows(like=...)` refuses an old clock name in the dict, and a
+    keyword under an old name names the new one; the Sphinx pages, the
+    README and this changelog's Unreleased entries use the new names (`hmm`'s
+    `filtered_`/`predicted_`, `pc<j>_loading_`, `penalty_selected`).
+- The windows state hashes a session with the bank's hash (`fnv1a`), not
+  std's, which is not promised across toolchains.
+
 ### Changed
 
+- **Looking ahead, `"left"` and `"both"` windows hold every row at the
+  row's own stamp, the row itself included** (review R1): a window is a set
+  of timestamps, the mirror of a backward `"right"` window, where the row
+  itself was never in its window and rows at one stamp got different
+  windows. `partial="keep"` ends a cut window at the last row the group saw,
+  where the last value was held `gap_cap` past it and a kept rate's span
+  grew with the cap.
 - **`kalman`'s `coef_half_life` is a clock half-life at any row spacing**
   (task 150): the process noise a row adds is `sigma^2 (ln 2 * d / h)^2`
   for a row `d` clock units after the last -- `q_i * d^2`, where it was
@@ -102,9 +141,9 @@ carries breaking changes, and any change to the numbers a model returns.
   - **One clock rule in place of two**: `on_clock_reset` and
     `min_backwards_jump` are `restart_after_step_back`. Unset, every step
     back is refused (what `"error"` did); given a clock amount, a step back
-    at least that large starts the model over and a smaller one is still
-    refused as a late row (what `"reset_state"` with `min_backwards_jump`
-    did). In the specs and in `with_windows`.
+    larger than it starts the model over and one no larger is still refused
+    as a late row (what `"reset_state"` with `min_backwards_jump` did; the
+    comparison is inclusive). In the specs and in `with_windows`.
   - Outputs: `n_eff` is `weight_sum` in every field (`weight_sum@h10`),
     `closed_groups` (`pair_weight_sum`), `coef()`, `last_row()`,
     `marginal()`, `gram()` and `po.eval`'s sums -- `summary()` already
@@ -123,11 +162,11 @@ carries breaking changes, and any change to the numbers a model returns.
   (task 145). At a session boundary `ewridge` mixed its fit with the slow
   twin by accumulated weight, and the twin's weight is many times the fast
   sums', so every value above 0 reverted almost fully: `0.25` took a slope
-  96% of the way back and multiplied `n_eff` by 20, which also delayed the
+  96% of the way back and multiplied `weight_sum` by 20, which also delayed the
   next solve (32 rows against 3). The moments now mix `1 - f` of today's
   data and `f` of the long run's, at today's weight, Kish size and prior
   scale. Numbers move for any `session_shrink` above 0: below 1 the fit, and
-  at 1 `n_eff`, the warm-up gates, the solve schedule and a `ridge_decay`
+  at 1 `weight_sum`, the warm-up gates, the solve schedule and a `ridge_scale`
   fit.
 - **The stream's diagnostics run on the clock** (task 146), so their
   numbers do not change with the rows' density, and their fields move:
@@ -143,7 +182,7 @@ carries breaking changes, and any change to the numbers a model returns.
     times clock units: the same 30-unit burst was flagged at four rows a
     unit and not at one. With rows one unit apart only the mean's decay is
     new.
-  - `emit_autocorr` pairs no residual across a gap capped by `max_dclock` or
+  - `emit_autocorr` pairs no residual across a gap capped by `gap_cap` or
     a session change, and a residual with no partner adds nothing to the
     cross moment.
   - A row with no residual, or of weight 0, now ages all three.
@@ -168,24 +207,24 @@ carries breaking changes, and any change to the numbers a model returns.
   - `rls`, `kalman`, `sgd`, `ftrl`, `pa` and `hmm` keep a weight on the sum
     scale, as their docs say, and `tests/test_weight_scale.py` names each.
 - **`po.corr.signal_share` takes a Kish size** (task 148): its second
-  argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
-  a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `n_eff` is a
+  argument is `n_kish_blocks`, was `n_kish_blocks`'s old name. The sampling variance of
+  a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `weight_sum` is a
   weight, about half of it, and doubled the noise floor.
-- **The docs say what the code does** (task 148). `ridge_decay` penalizes
+- **The docs say what the code does** (task 148). `ridge_scale` penalizes
   the intercept, as RLS does, and reads `coef_prior`'s intercept slot;
-  `po.gram.solve` does not reproduce a `ridge_decay` or `coef_prior` fit.
-  `n_eff` is the weight behind the state and settles at `1 / (1 - λ^d)` for
+  `po.gram.solve` does not reproduce a `ridge_scale` or `coef_prior` fit.
+  `weight_sum` is the weight behind the state and settles at `1 / (1 - λ^d)` for
   rows `d` clock units apart, not `1 / (1 - λ)`; the Kish size likewise.
   `emit_selected` and `emit_averaged` rank each slot at its own halflife.
-  `label_delay` without a clock counts every row of the group, a skipped one
+  `embargo` without a clock counts every row of the group, a skipped one
   included. The README's account of the doubled stream is the current one: every
   residual diagnostic parts from it. `hmm`'s `transition` is the prior's
   mean, not seeded counts. No numbers move.
 
 ### Fixed
 
-- **`label_delay` no longer learns a label before its delay has passed**
-  (task 153). A break -- a gap past `max_dclock`, or a session change --
+- **`embargo` no longer learns a label before its delay has passed**
+  (task 153). A break -- a gap past `gap_cap`, or a session change --
   released every held row at once, so a forward label was learned before it
   was known wherever the break was shorter than the delay: with a 10-unit
   delay and a 5-unit cap, an 8-unit gap learned two labels early, and a
@@ -203,7 +242,7 @@ carries breaking changes, and any change to the numbers a model returns.
   row learned** (task 152). Two fields on every scored row, `scored_clock`
   and `learned_clock`, in the clock column's own type (a `Datetime` in its
   unit and zone, exact to the nanosecond; the row's index in its group with
-  no clock), so a `label_delay` can be seen row by row: the difference is at
+  no clock), so a `embargo` can be seen row by row: the difference is at
   least the delay everywhere. `learned_clock` is null before the first row
   learned and after a reset; a zero-weight row is never the learned row.
   Kept in the state and in `last_row()`.
@@ -217,7 +256,7 @@ carries breaking changes, and any change to the numbers a model returns.
   in it. A per-window `weight`, and `split=(column, [values])` for one output
   per listed value beside the total, so a buy-side, a sell-side and an
   all-trades VWAP come from one window. The clock policy is a spec's, or a
-  spec's own with `like=spec`: a gap past `max_dclock` or a session change
+  spec's own with `like=spec`: a gap past `gap_cap` or a session change
   ends the windows open across it, and a reset discards them. The rows a
   look-ahead holds are the input's own chunks, not copies, and a saved state
   keeps them for the next run.

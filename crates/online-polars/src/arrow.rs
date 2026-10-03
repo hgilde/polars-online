@@ -16,7 +16,9 @@ use polars::prelude::*;
 // The trait is brought in unnamed: `ArrowArray` below is the C Data Interface
 // struct, not `array::Array`, and the two must not collide.
 use polars_arrow::array::Array as _;
-use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray};
+use polars_arrow::array::{
+    BooleanArray, Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray,
+};
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
@@ -46,6 +48,10 @@ pub enum ArrowCol {
     /// task 88). Read only as a clock: a temporal column in any other role
     /// is refused before the chunk is built.
     Nanos(Int64Array),
+    /// A boolean, read only by a formula target's expression (docs/PLAN.md
+    /// task 104; review R1, D2): every other role takes a boolean as a
+    /// number.
+    Bool(BooleanArray),
 }
 
 impl ArrowCol {
@@ -56,6 +62,7 @@ impl ArrowCol {
             Self::I64(a) => a.len(),
             Self::U64(a) => a.len(),
             Self::Nanos(a) => a.len(),
+            Self::Bool(a) => a.len(),
         }
     }
 
@@ -77,6 +84,7 @@ impl ArrowCol {
                 | (Self::Str(_), Form::Text)
                 | (Self::I64(_) | Self::U64(_), Form::Key)
                 | (Self::Nanos(_), Form::Clock)
+                | (Self::Bool(_), Form::Bool)
         )
     }
 
@@ -87,6 +95,7 @@ impl ArrowCol {
             Self::Str(_) => "text",
             Self::I64(_) | Self::U64(_) => "an integer key",
             Self::Nanos(_) => "a temporal clock",
+            Self::Bool(_) => "a boolean",
         }
     }
 }
@@ -98,6 +107,7 @@ pub enum Form {
     Text,
     Key,
     Clock,
+    Bool,
 }
 
 /// A chunk's clock column in the form the source had it: a numeric clock's
@@ -270,6 +280,7 @@ impl ArrowChunk {
             ArrowCol::Str(a) => Series::from_arrow(name, Box::new(a.clone())),
             ArrowCol::I64(a) => Series::from_arrow(name, Box::new(a.clone())),
             ArrowCol::U64(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::Bool(a) => Series::from_arrow(name, Box::new(a.clone())),
             ArrowCol::Nanos(a) => Series::from_arrow(name, Box::new(a.clone())).and_then(|s| {
                 s.cast(&DataType::Datetime(
                     polars::prelude::TimeUnit::Nanoseconds,
@@ -477,13 +488,15 @@ fn form_of(want: Want, dtype: &DataType) -> &'static str {
         Want::Key if dtype.is_integer() => "an integer key",
         Want::Key => "text",
         Want::Value if value_is_number(dtype) => "a number",
+        Want::Value if *dtype == DataType::Boolean => "a boolean",
         Want::Value => "text",
     }
 }
 
-/// Whether a formula target reads a column as a number (else as text).
+/// Whether a formula target reads a column as a number (a boolean stays a
+/// boolean, anything else is text).
 fn value_is_number(dtype: &DataType) -> bool {
-    dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)
+    dtype.is_numeric() || matches!(dtype, DataType::Null)
 }
 
 /// One `Series` as the Arrow array of a given form.
@@ -526,6 +539,16 @@ fn cast_to(
             }
             if value_is_number(dtype) {
                 return cast_to(s, Want::Number, spec_name, role, name);
+            }
+            if *dtype == DataType::Boolean {
+                let r = s.rechunk();
+                let ca = r.bool()?;
+                return Ok(ArrowCol::Bool(
+                    ca.downcast_iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| BooleanArray::new_empty(ArrowDataType::Boolean)),
+                ));
             }
             Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?))
         }

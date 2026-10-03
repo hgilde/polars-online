@@ -122,9 +122,12 @@ def loop(
             if forward:
                 assert window_size is not None
                 w = window_size
+                # A set of timestamps: under "left" and "both" every row at
+                # the row's stamp, itself included; under "right" and "none"
+                # none at it (review R1, C3).
                 members = [
                     b
-                    for b in range(a + 1, n)
+                    for b in range(n)
                     if (tau[b] - ta >= 0 if near else tau[b] - ta > 0)
                     and (tau[b] - ta <= w if far else tau[b] - ta < w)
                 ]
@@ -860,3 +863,255 @@ def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
     assert (both["vwap_pq"] - both["vwap_sums"]).abs().max() < 1e-6, (
         "the day's rounding, about 2e-6 at 1e10"
     )
+
+
+# --------------------------------------------------------------------------
+# Review round R1 (2026-10-03): the formula layer and the runner
+
+
+def test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size(tmp_path: Any) -> None:
+    """R1-B1: the increments' state advanced over the whole chunk where a
+    slice stopped the core short, so a state saved under ``head`` depended on
+    ``chunk_rows``."""
+    df = pl.DataFrame(
+        {"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": [10.0, 11.0, 13.0, 16.0, 20.0, 25.0]}
+    )
+    outs = []
+    for rows in (1, 10):
+        state = tmp_path / f"s{rows}.state"
+        df.lazy().online.with_windows(
+            dc=po.increment("c"), clock="t", gap_cap=100.0, chunk_rows=rows, save_state=state
+        ).head(2).collect()
+        rest = (
+            df.slice(2)
+            .lazy()
+            .online.with_windows(dc=po.increment("c"), clock="t", gap_cap=100.0, load_state=state)
+            .collect()
+        )
+        outs.append(rest["dc"].to_list())
+    assert outs[0] == outs[1] == [2.0, 3.0, 4.0, 5.0]
+
+
+def test_a_cast_is_strict_as_in_polars_unless_told_otherwise() -> None:
+    """R1-B2: a formula's ``cast`` was rebuilt non-strict, so an overflow that
+    Polars refuses became a silent null."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "x": [1000.0, 1.0]})
+    with pytest.raises(pl.exceptions.PolarsError, match="conversion from"):
+        po.stream.with_windows(df, y=po.ewm_sum("x", half_life=1.0).cast(pl.Int8), **CLOCK)
+    lax = po.ewm_sum("x", half_life=1.0).cast(pl.Int8, strict=False)
+    assert po.stream.with_windows(df, y=lax, **CLOCK)["y"].to_list() == [None, None]
+    assert to_tree(pl.col("x").cast(pl.Int8, strict=False))[-1] == "non_strict"
+    for e in [pl.col("x").cast(pl.Int8), pl.col("x").cast(pl.Int8, strict=False)]:
+        assert from_tree(to_tree(e)).meta.eq(e)
+    with pytest.raises(FormulaError, match="options"):
+        to_tree(pl.col("x").cast(pl.Int8, wrap_numerical=True))
+
+
+def test_a_restart_on_the_streams_clock_restarts_every_groups_increments() -> None:
+    """R1-S4: the core discards every group's windows at a step back on the
+    stream's clock past ``restart_after_step_back``; the increments now start
+    over with them."""
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 100.0, 5.0, 50.0],
+            "g": ["A", "B", "A", "A", "B"],
+            "c": [1.0, 10.0, 2.0, 3.0, 20.0],
+        }
+    )
+    out = po.stream.with_windows(
+        df,
+        dc=po.increment("c"),
+        b=po.ewm_sum("c", half_life=math.inf),
+        clock="t",
+        gap_cap=1e9,
+        restart_after_step_back=50.0,
+        group="g",
+    )
+    assert out["b"].to_list()[-1] == 20.0, "B's windows started over at the stream's restart"
+    assert out["dc"].to_list()[-1] is None, "and so did its increment"
+
+
+def test_an_increment_skips_a_null_input() -> None:
+    """R1-S5, decided: ``x_{i-1}`` is the last value with a value, as the
+    operators hold one from the last valued row; ``diff()`` would give three
+    nulls."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "c": [1.0, None, 3.0]})
+    out = po.stream.with_windows(df, dc=po.increment("c"), **CLOCK)
+    assert out["dc"].to_list() == [None, None, 2.0]
+
+
+def test_the_operators_prefix_is_reserved_on_inputs() -> None:
+    """R1-N8: a column named like an operator's hidden column raised a JSON
+    error; it is refused by name on both sides."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "@po:x": [1.0, 2.0]})
+    with pytest.raises(FormulaError, match="reserved"):
+        po.stream.with_windows(df, y=po.ewm_sum("@po:x", half_life=1.0), **CLOCK)
+
+
+def test_a_positional_expression_named_after_a_column_is_told_about_alias() -> None:
+    """R1-N9: ``pl.col("x") - op`` is named ``x`` by its leftmost column, and
+    the refusal says so."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
+    with pytest.raises(ValueError, match=r"\.alias\(\)"):
+        po.stream.with_windows(df, pl.col("x") - po.ewm_mean("x", half_life=2.0), **CLOCK)
+
+
+def test_from_tree_takes_a_log_base_that_is_not_a_literal() -> None:
+    """R1-N10: a hand-written tree may put an expression under ``log``; the
+    Rust side reads it, and so does ``from_tree`` now."""
+    got = from_tree(["log", ["col", "x"], ["col", "b"]])
+    assert got.meta.eq(pl.col("x").log() / pl.col("b").log())
+
+
+# --------------------------------------------------------------------------
+# Review round R1 (2026-10-03): the window core
+
+
+def test_a_row_count_clock_reads_every_backward_window() -> None:
+    """R1-C1: without a clock, every backward operator under ``"right"`` or
+    ``"both"`` was null on every row -- the row never waited for a next
+    stamp, and nothing read it."""
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0]})
+    out = po.stream.with_windows(
+        df,
+        s=po.ewm_sum("x", half_life=2.0),
+        m=po.ewm_mean("x", half_life=2.0),
+        w=po.ewm_mean("x", half_life=2.0, window_size=2.0),
+        b=po.ewm_sum("x", half_life=2.0, closed="both"),
+    )
+    t = [0.0, 1.0, 2.0, 3.0]
+    assert_close(out["s"].to_list(), recursion_sum(t, df["x"].to_list(), 2.0))
+    assert_close(out["m"].to_list(), recursion_mean(t, df["x"].to_list(), 2.0))
+    assert out["w"].to_list()[0] is not None
+    assert out["b"].to_list() == out["s"].to_list()
+
+
+def test_a_row_exactly_one_window_later_lands_on_the_edge_at_any_age() -> None:
+    """R1-C2: the policy time was a sum of rounded steps, so a row exactly
+    one window later fell on either side of the edge by the sum's noise; it
+    is measured from the stretch's first row, exact in nanoseconds."""
+    n = 1003
+    ts = pl.datetime_range(
+        pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 0, 1, 2000), "1ms", eager=True
+    )[:n]
+    df = pl.DataFrame({"t": ts, "x": [1.0] * n})
+    out = po.stream.with_windows(
+        df,
+        left=po.ewm_sum("x", half_life=math.inf, window_size="1s", closed="left"),
+        fwd=po.rewm_sum("x", half_life=math.inf, window_size="1s"),
+        clock="t",
+        gap_cap="1h",
+    )
+    want = df.select(pl.col("x").rolling_sum_by("t", "1s", closed="left"))["x"].to_list()
+    assert out["left"].to_list()[1000] == want[1000] == 1000.0
+    assert out["fwd"].to_list()[0] == 1000.0, "a forward window counts the row exactly w later"
+    # And after 60 s of 1 ms steps, where the sum of steps fell short of 60.
+    n = 60_003
+    ts = pl.datetime_range(
+        pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 1, 0, 3000), "1ms", eager=True
+    )[:n]
+    df = pl.DataFrame({"t": ts, "x": [1.0] * n})
+    out = po.stream.with_windows(
+        df,
+        right=po.ewm_sum("x", half_life=math.inf, window_size="1m"),
+        clock="t",
+        gap_cap="1h",
+    )
+    want = df.select(pl.col("x").rolling_sum_by("t", "1m", closed="right"))["x"].to_list()
+    assert out["right"].to_list()[60_001] == want[60_001] == 60_000.0
+
+
+def test_forward_left_and_both_hold_every_row_at_the_stamp() -> None:
+    """R1-C3, decided: a window is a set of timestamps, so under ``"left"``
+    and ``"both"`` a forward window holds every row at the row's own stamp,
+    the row itself included -- the mirror of a backward ``"right"`` window,
+    which holds every row at its stamp."""
+    df = pl.DataFrame({"t": [0.0, 0.0, 1.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
+    out = po.stream.with_windows(
+        df,
+        left=po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed="left"),
+        right=po.rewm_sum("x", half_life=math.inf, window_size=2.0),
+        **CLOCK,
+    )
+    # [0, 2): rows at 0 (both) and 1, for both rows at the stamp.
+    assert out["left"].to_list()[:2] == [6.0, 6.0]
+    # (0, 2]: row 1 only, for both.
+    assert out["right"].to_list()[:2] == [3.0, 3.0]
+    # The mirror with repeated stamps: forward "left" is backward "right"
+    # over the reversed stream.
+    df = ticks(400, 21, repeats=True)
+    fwd = po.stream.with_windows(
+        df,
+        m=po.rewm_mean("x", half_life=3.0, window_size=5.0, closed="left"),
+        s=po.rewm_sum("x", half_life=3.0, window_size=5.0, closed="left"),
+        **CLOCK,
+    )
+    last = df["t"][-1]
+    mirror = df.reverse().with_columns(t=last - pl.col("t"))
+    back = po.stream.with_windows(
+        mirror,
+        m=po.ewm_mean("x", half_life=3.0, window_size=5.0),
+        s=po.ewm_sum("x", half_life=3.0, window_size=5.0),
+        **CLOCK,
+    ).reverse()
+    for c in ("m", "s"):
+        pairs = [
+            (a, b)
+            for a, b in zip(fwd[c].to_list(), back[c].to_list(), strict=True)
+            if a is not None
+        ]
+        assert len(pairs) > 300
+        for a, b in pairs:
+            assert b is not None and abs(a - b) <= 1e-9 * (1 + abs(a)), c
+
+
+def test_a_cut_window_ends_at_the_last_row_it_saw() -> None:
+    """R1-C4, decided: ``partial="keep"`` is the value over what the window
+    saw; it was held ``gap_cap`` past the last row, so a kept rate's span
+    grew with the cap."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 100.0, 101.0], "x": [1.0] * 5})
+    rates = []
+    for cap in (5.0, 300.0):
+        out = po.stream.with_windows(
+            df,
+            r=po.rewm_rate("x", half_life=math.inf, window_size=60.0, partial="keep"),
+            m=po.rewm_mean("x", half_life=math.inf, window_size=60.0, partial="keep"),
+            clock="t",
+            gap_cap=cap,
+        )
+        rates.append(out["r"].to_list()[0])
+        assert out["m"].to_list()[0] == 1.0
+    # Cut at t = 2 under the cap of 5: two rows over the two seconds seen,
+    # where the old form spread them over seven. Under the cap of 300 the
+    # window is not cut: it closes at t = 100 with its full span of 60.
+    assert rates[0] == 2.0 / 2.0
+    assert rates[1] == 2.0 / 60.0
+
+
+def test_a_row_on_the_far_edge_counts_but_weighs_nothing() -> None:
+    """R1-C6, decided: under ``"left"`` or ``"both"`` a row exactly one window
+    old is in the window by its stamp, so it counts for ``min_samples``, but
+    its held interval -- from the valued row before it to itself -- lies
+    before the window, so it weighs nothing in a mean; a mean with no other
+    value in the window is null, where Polars' row-weighted
+    ``rolling_mean_by`` says 5. The brute force from the definition agrees
+    with the core, not with Polars."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "x": [5.0, None]})
+    out = po.stream.with_windows(
+        df, m=po.ewm_mean("x", half_life=math.inf, window_size=1.0, closed="left"), **CLOCK
+    )
+    assert out["m"].to_list()[1] is None
+    assert loop(df, "ewm_mean", "x", half_life=math.inf, window_size=1.0, closed="left")[1] is None
+    polars = (
+        df.with_columns(pl.col("t").cast(pl.Int64))
+        .select(pl.col("x").rolling_mean_by("t", "1i", closed="left"))["x"]
+        .to_list()
+    )
+    assert polars[1] == 5.0
+    # With a value at the row itself, the far-edge row still holds nothing
+    # inside the window and the mean is the row's own value under "both".
+    df = pl.DataFrame({"t": [0.0, 1.0], "x": [5.0, 7.0]})
+    out = po.stream.with_windows(
+        df, m=po.ewm_mean("x", half_life=math.inf, window_size=1.0, closed="both"), **CLOCK
+    )
+    assert out["m"].to_list()[1] == 7.0

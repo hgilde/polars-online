@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -62,7 +63,21 @@ class ModelBank:
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
-        self._native = _native.ModelBank(_json(list(specs)))
+        # A hand-written dict may put a window expression in `targets` as
+        # the builders take one (review R1, D8).
+        from polars_online._spec import formula_target
+
+        written = []
+        for spec in specs:
+            targets = spec.get("targets")
+            if isinstance(targets, list) and any(isinstance(t, pl.Expr) for t in targets):
+                who = f"spec {json.dumps(spec.get('name'))}"
+                spec = dict(spec)
+                spec["targets"] = [
+                    formula_target(who, t) if isinstance(t, pl.Expr) else t for t in targets
+                ]
+            written.append(spec)
+        self._native = _native.ModelBank(_json(written))
         # The specs as the bank runs them -- filled, as a state file carries
         # them -- so they read the same before a round trip as after it. The
         # caller's own dicts were kept, and a dict the builders did not write
@@ -316,7 +331,7 @@ class ModelBank:
         distance exactly as the next ``fit_predict`` row would. The other coefficient
         models predict from their current coefficients regardless of the clock.
 
-        Per field: ``weight_sum``, ``lam_selected``, ``sigma``, the residual quantiles,
+        Per field: ``weight_sum``, ``penalty_selected``, ``sigma``, the residual quantiles,
         autocorrelation and the metrics are the values the bank holds, frozen.
         ``coef`` is filled on the last accepted row, since the same coefficients score
         every row. ``drift`` never fires. Rows of a group the bank has never seen, or

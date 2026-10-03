@@ -2972,6 +2972,13 @@ impl Stream {
 
     /// A shadow of every window ring: each model's, then each instance's
     /// residual ring.
+    /// Whether a ring of this stream could refuse a chunk of `rows` rows
+    /// past its budget: what the window pre-pass replays for.
+    pub(crate) fn could_refuse_window(&self, rows: usize) -> bool {
+        let most = rows + self.pending.len();
+        self.window_shadows().iter().any(|s| s.could_refuse(most))
+    }
+
     fn window_shadows(&self) -> Vec<WindowShadow> {
         let n_slots = self.n_slots();
         self.models
@@ -3063,12 +3070,10 @@ impl Stream {
                 );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
                 if plan.accept {
-                    // A formula target is handed to the buffer with its
-                    // value to come (docs/PLAN.md task 104), as a plain
-                    // target held under an embargo is counted at its row.
-                    let has_target = targets.is_empty()
-                        || formulas.is_some_and(|f| !f.slots.is_empty())
-                        || targets.iter().any(|t| usable(t[i]));
+                    // A plain target counts at its row; a formula target
+                    // counts when the row is released with a value (review
+                    // R1, D3: a window cut null taught nothing).
+                    let has_target = targets.is_empty() || targets.iter().any(|t| usable(t[i]));
                     summary.accepted(plan.w, has_target);
                 }
             }
@@ -3087,6 +3092,23 @@ impl Stream {
             targets,
             formulas,
         );
+
+        // A released row whose formula target resolved with a value, and
+        // whose plain targets gave none at its row, is learned from now
+        // (review R1, D3); counted here, after the release, in row order.
+        if let (Some(summary), Some(f)) = (self.summary.as_mut(), formulas) {
+            for plan in plans.iter().filter(|p| !p.direct() && p.w > 0.0) {
+                let ys = &released[plan.pending].ys;
+                let plain = ys
+                    .iter()
+                    .enumerate()
+                    .any(|(k, y)| !f.slots.contains(&k) && y.is_some());
+                let formula = f.slots.iter().any(|&k| ys[k].is_some());
+                if !plain && formula {
+                    summary.learned_late();
+                }
+            }
+        }
 
         // ---- the clocks a row shows (docs/PLAN.md task 152) ----
         // Its own, and the newest row the models had learned from, at a

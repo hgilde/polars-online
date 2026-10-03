@@ -456,3 +456,117 @@ def test_a_formula_target_beside_a_plain_one() -> None:
         assert field(got, f"pred_{name}") == field(want, f"pred_{name}"), name
     assert {"pred_y", "pred_fwd", "resid_y", "resid_fwd"} <= set(po.spec.output_fields(s))
     assert math.isfinite(field(got, "pred_y")[-1])
+
+
+# --------------------------------------------------------------------------
+# Review round R1 (2026-10-03)
+
+
+def test_a_dropped_group_starts_cold_in_the_window_core_too() -> None:
+    """R1-D1: ``drop_groups`` left the group's window core behind, so the
+    same rows fed again met a stale clock (refused) or stale held rows."""
+    df = stream(200, 31).with_columns(g=pl.lit("a"))
+    s = spec(fwd(), group="g")
+    fresh = native(df, s)
+    bank = po.ModelBank([s])
+    bank.fit_predict(df)
+    assert bank.drop_groups(["a"]) == 1
+    again = bank.fit_predict(df)
+    assert field(again, "pred_fwd") == field(fresh, "pred_fwd")
+
+
+def test_a_boolean_column_reaches_a_formula_target() -> None:
+    """R1-D2: a boolean was cast to a number on its way into the bank and
+    the resolver's dtype check refused it, where ``with_windows`` took it."""
+    df = stream(300, 32).with_columns(
+        is_buy=pl.Series(np.random.default_rng(1).random(300) < 0.5), qty=pl.lit(2.0)
+    )
+    expr = (
+        po.rewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W)
+        - pl.col("qty")
+    ).alias("fwd")
+    s = spec(expr)
+    got = native(df, s)
+    want = column_form(df, s, expr)
+    assert field(got, "pred_fwd") == field(want, "pred_fwd")
+    assert sum(p is not None for p in field(got, "pred_fwd")) > 100
+
+
+def test_rows_learned_counts_a_formula_row_once_its_target_resolved() -> None:
+    """R1-D3: a row whose window a gap cut null was counted as learned from
+    at its arrival; it counts when it is released with a value, and the
+    count is the same whatever the chunking."""
+    df = stream(240, 33, gap_at=120)
+    s = spec(fwd(partial="null"))
+    counts = []
+    for chunk_rows in (None, 7):
+        bank = po.ModelBank([s])
+        if chunk_rows is None:
+            bank.fit_predict(df)
+        else:
+            list(bank.fit_predict_batches(df, chunk_rows=chunk_rows))
+        counts.append(bank.summary()["rows_learned"][0])
+    assert counts[0] == counts[1]
+    # The column form says which rows had a target: those the spec accepts
+    # whose window closed with a value. The rows still held under the embargo
+    # when the input ends are not learned from yet.
+    col = po.stream.with_windows(df, fwd(partial="null"), like=s)["fwd"]
+    known = col.is_not_null().sum()
+    tail = int((df["t"] > df["t"].max() - (W + 2.5)).sum())
+    assert known - tail <= counts[0] <= known < df.height
+
+
+def test_drop_on_one_target_leaves_the_rows_other_targets() -> None:
+    """R1-D4: ``partial="drop"`` on one operator nulled every formula of the
+    row; it nulls the formulas over that operator."""
+    df = stream(240, 34, gap_at=120)
+    outs = []
+    for pa in ("null", "drop"):
+        s = po.spec.ewridge(
+            "m",
+            targets=[
+                (
+                    po.rewm_mean("mid", half_life=H, window_size=20.0, partial=pa) - pl.col("mid")
+                ).alias("a"),
+                (po.rewm_mean("mid", half_life=H, window_size=5.0) - pl.col("mid")).alias("b"),
+            ],
+            features=["x"],
+            clock="t",
+            gap_cap=100.0,
+            half_life=50.0,
+            min_weight=3.0,
+            max_rows_between_solves=1,
+            embargo=22.5,
+            emit_clocks=True,
+        )
+        outs.append(native(df, s))
+    assert field(outs[0], "pred_b") == field(outs[1], "pred_b")
+    assert field(outs[0], "pred_a") == field(outs[1], "pred_a")
+
+
+def test_a_formulas_spans_are_the_specs_clock_spans() -> None:
+    """R1-D7: a formula's ``window_size`` beside the spec's durations is
+    refused at the spec, as any other mixture is, rather than compared as
+    unlike numbers by the embargo check."""
+    with pytest.raises(ValueError, match="window_size"):
+        po.spec.ewridge(
+            "m",
+            targets=[
+                (po.rewm_mean("mid", half_life="5s", window_size=600.0) - pl.col("mid")).alias("f")
+            ],
+            features=["x"],
+            clock="t",
+            gap_cap="5m",
+            half_life="1h",
+            embargo="2m",
+        )
+
+
+def test_a_raw_spec_dict_takes_a_window_expression() -> None:
+    """R1-D8: a hand-written dict with a ``pl.Expr`` in ``targets`` died in
+    ``json.dumps``; the bank normalises it as the builders do."""
+    s = dict(spec(fwd()))
+    s["targets"] = [fwd()]
+    bank = po.ModelBank([s])
+    assert bank.specs[0]["targets"][0]["name"] == "fwd"
+    assert field(bank.fit_predict(stream(120, 35)), "pred_fwd")[-1] is not None

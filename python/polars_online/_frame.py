@@ -476,7 +476,7 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 #: rows no residual reached ``delta * sigma``, where every weight is 1; once
 #: it reweights, the fit before each row sets that row's weight, and with one
 #: row in ten lifted by 5 a shuffle moved its coefficients by 1.05e-02.
-#: ``lasso``'s path points commute to rounding, but ``lam_selected`` ranks
+#: ``lasso``'s path points commute to rounding, but ``penalty_selected`` ranks
 #: them by out-of-sample error, and on the same rows shuffles moved the
 #: penalty it selects from 0.01 to 0.1 and to 0.001
 #: (``tests/test_order_hazards.py``).

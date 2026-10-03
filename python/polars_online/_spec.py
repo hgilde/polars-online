@@ -933,7 +933,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         The name, as it appears in the struct.
     ``kind``
         What it is: ``pred``, ``resid``, ``sigma``, ``weight_sum``, ``coef``,
-        ``lam_selected``, ``selected``, a statistic's stem, and so on.
+        ``penalty_selected``, ``selected``, a statistic's stem, and so on.
     ``target``
         The target the field is about, or null.
     ``half_life``, ``lam``
@@ -1916,7 +1916,7 @@ def ew_cov(
     ``pca``, ``pca_every``
         Track the top ``pca`` principal components of the covariance: per
         component ``j`` the fields ``pc<j>_var`` (its eigenvalue), ``pc<j>_share``
-        (of the total variance), ``pc<j>_<feature>`` (its unit loading on each
+        (of the total variance), ``pc<j>_loading_<feature>`` (its unit loading on each
         column, largest entry positive) and ``pc<j>_score`` (the row's coordinate
         ``v_j . (x - m)``). The eigendecomposition is refreshed every
         ``pca_every`` learned rows (default 1, O(k³) each) after the row is folded
@@ -2010,7 +2010,7 @@ def ew_cov(
             stats=["mean", "std", "corr", "partial_corr", "mahal"],
             precision_prior=1e-6,        # needed by partial_corr and mahal
             mahal_quantiles=[0.99],      # mahal_q0.99: one row in a hundred, from the history
-            pca=1, pca_every=20,         # pc0_var, pc0_share, pc0_<feature>, pc0_score
+            pca=1, pca_every=20,         # pc0_var, pc0_share, pc0_loading_<feature>, pc0_score
         )
         scores = po.ModelBank([mv]).fit_predict(df).unnest("mv")
         odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers
@@ -4112,7 +4112,7 @@ def hmm(
     (`docs/OUTPUTS.md#hmm
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#hmm>`_):
 
-    ``p_<j>``, ``p1_<j>``
+    ``filtered_<j>``, ``predicted_<j>``
         The filtered and the predicted probability of each state.
     ``state``
         The most likely state.

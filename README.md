@@ -261,8 +261,8 @@ timed = po.spec.ewridge(
     half_life=pl.duration(minutes=10),     # a row's weight halves every ten minutes of ts
     gap_cap=pl.duration(minutes=5),    # the most the clock may step between two rows a model learns from;
                                           # required with a clock, finite and above 0
-    restart_after_step_back=pl.duration(minutes=1),  # a step back at least this large starts the model
-                                          # over; a smaller one is a late row, refused. Unset, the
+    restart_after_step_back=pl.duration(minutes=1),  # a step back larger than this starts the model
+                                          # over; one no larger is a late row, refused. Unset, the
                                           # default, every step back is refused
     session="session",                    # a column whose value changes at a session boundary ...
     session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there, at most gap_cap:
@@ -686,12 +686,13 @@ after each group's last clock, so each row is learned once:
 
 **Scoring does not refuse a late row.** `predict` learns nothing. A row
 before the last clock the bank learned is scored against the state as it
-stands, as a step of 0, under either policy.
+stands, as a step of 0, whatever `restart_after_step_back` says.
 
 **The summary counts what a policy took.** `bank.summary()` reports
 `clock_backwards`, the rows whose clock fell below the previous row's
-within a session, and `resets`, the rows where a stream restarted. Under
-`"reset_state"` each step back past the minimum counts once in each.
+within a session, and `resets`, the rows where a stream restarted. With
+`restart_after_step_back` given, each step back larger than it counts once
+in each.
 
 **The query check is best-effort.** It reads the text of the query's
 `explain()`, and walks the query's steps only when that names a join, an
@@ -1282,7 +1283,7 @@ Four things to know before reading the numbers:
 
 | | why |
 |---|---|
-| `weight_sum` counts weight, not rows | `n_kish = n_eff² / Σw²` is the number of equally weighted rows the moments are worth, which is what a standard error divides by. It does not fall when a stream goes quiet; `weight_sum` does |
+| `weight_sum` counts weight, not rows | `n_kish = weight_sum² / Σw²` is the number of equally weighted rows the moments are worth, which is what a standard error divides by. It does not fall when a stream goes quiet; `weight_sum` does |
 | a spec can have several Grams | under the default `target_gaps="own_rows"`, a target that goes missing on different rows from the others is fitted from a Gram of its own. `gram()` returns one dict per Gram, each naming its `targets` |
 | `coef()` and `gram()` can disagree | `bank.coef()` is as of the model's last *solve*, which its `solve_every` schedule decides, while `gram()` is as of the last row |
 | under a `window_size`, a Gram is the window's | every array, the target moments included, covers the rows inside the window, so `po.gram.solve` on it fits the window |
@@ -1735,7 +1736,7 @@ las = po.spec.lasso(
 It reads the running sums `ewridge` keeps, centred the same way, so a
 feature or a target far from zero loses the path no precision, and
 `target_gaps` means what it means there. With decay off, every point of
-the path converges to its batch fit in any row order, but `lam_selected`
+the path converges to its batch fit in any row order, but `penalty_selected`
 does not: it ranks the points by out-of-sample error, which depends on the
 order. Under a `window_size` the error that picks the penalty is the window's
 too, so a feature with no evidence inside the window goes to exactly zero
@@ -2021,7 +2022,7 @@ mv = po.spec.ew_cov(
                                  # read off (C + s*prior*I)^-1, O(k³), paid only when asked) and by mahal; fades as data arrives
     mahal_quantiles=[0.99],      # mahal_q0.99: the EW quantile of the Mahalanobis scores, so mahal > mahal_q0.99 is
                                  # "one row in a hundred" without assuming a distribution
-    pca=1, pca_every=20,         # pc0_var, pc0_share (of the trace), pc0_<feature> (the loading), pc0_score (this row's);
+    pca=1, pca_every=20,         # pc0_var, pc0_share (of the trace), pc0_loading_<feature>, pc0_score (this row's);
                                  # the eigendecomposition is O(k³), so refresh it every 20 rows and score the rows between on
                                  # the last loadings; each refresh keeps the previous sign, so a loading never flips
 )
@@ -2570,7 +2571,7 @@ The two sides' average is an e-value for the two-sided question.
 
 A trial is a row, so there is no `weight` and no `half_life`, and a spec that
 gives them is refused. A session change restarts the test, and so does a
-step back of at least `restart_after_step_back`.
+step back larger than `restart_after_step_back`.
 `a_suffix` and `b_suffix` pick a grid instance, such as
 `"@h500"` or `"__r0.5@h500"`. A comparison inside a bank is
 chunk-invariant, saved with the state, and works a chunk at a time like

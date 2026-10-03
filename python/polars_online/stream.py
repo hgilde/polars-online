@@ -64,6 +64,7 @@ from polars_online._frame import (
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
+from polars_online._spec import _RENAMED
 
 __all__ = ["embargo", "refresh_time", "with_windows"]
 
@@ -473,6 +474,8 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
             )
         out.append({"name": name, "tree": tree})
     for name, e in named.items():
+        if name in _RENAMED:
+            raise TypeError(f"{who}: {name} was renamed {_RENAMED[name]} (docs/PLAN.md task 144)")
         if not isinstance(e, pl.Expr):
             raise TypeError(
                 f"{who}: {name} is a pl.Expr over the operators, got {type(e).__name__} {e!r}"
@@ -570,7 +573,8 @@ def with_windows(
     **The clock is a spec's**, in the same words: ``clock`` (with none, one
     unit is one row), ``gap_cap`` (required with a clock; a longer gap is a
     break), ``restart_after_step_back`` (unset, a step back is refused;
-    given, one at least that large starts over), ``session`` and
+    given, one larger than it starts over and one no larger is a late row,
+    refused), ``session`` and
     ``session_gap`` (a number, a duration or ``"reset"``), and ``group``,
     whose groups each have their own clock and windows. A window is measured
     on that policy clock, after the cap and the session gap. A gap longer
@@ -578,7 +582,7 @@ def with_windows(
     under each operator's ``partial``; a reset discards them: null, never
     dropped. The rows must be in clock order across groups, as one stream:
     the clock is also read in input order, under the same policy, so a step
-    back there is refused or, at least ``restart_after_step_back``, resets
+    back there is refused or, past ``restart_after_step_back``, resets
     every group; a session change or a gap there ends every group's windows.
     ``like=spec`` takes all of this from a spec instead, and with it the rule
     for the rows the spec learns from: a forward window over a row the spec
@@ -651,6 +655,13 @@ def with_windows(
             raise TypeError(
                 f"{who}: like= takes the clock policy from spec {like.get('name')!r}; leave out "
                 f"{', '.join(clash)}"
+            )
+        # A hand-written dict with a clock key under its old name would be
+        # read as not setting it (review R1, F1): refused naming the new one.
+        if old := [k for k in like if k in _RENAMED]:
+            raise TypeError(
+                f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed "
+                f"{_RENAMED[old[0]]} (docs/PLAN.md task 144)"
             )
         policy = {k: like.get(k) for k in _CLOCK_KEYS}
         weight = like.get("weight")

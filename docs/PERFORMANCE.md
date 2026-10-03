@@ -4007,3 +4007,25 @@ memory.
   materialises the target column, and holds a row's formula columns only
   until its window closes (1.09 against 1.23 GB at 16M rows).
 
+## 35. Two costs the review of 2026-10-03 named and did not change
+
+Both are recorded here so a later measurement starts from a number; neither
+moves the §33 or §34 figures, which have dense inputs and one group.
+
+- **A windowed mean on a sparse input walks the queue per read** (review R1,
+  C5). Every row joins a kernel's queue, and a mean's read looks for the
+  operator's oldest valued row from the queue's head, so an operator whose
+  input is null on most rows scans the rows between its values on every
+  read: O(n · window) in the limit, not O(n). The reviewer measured 300k
+  rows with a window of about 2 000 rows: 0.04 s with every row valued,
+  0.06 s at one value in 50, 0.24 s at one in 5 000. The remedy the design
+  named -- a row enters an operator's queue only when it carries a value --
+  would make the read O(1) and is not built.
+- **A spec with a formula target runs one Polars plan per group per chunk**
+  (review R1, D6): the element-wise inputs are evaluated per group's
+  sub-frame (they are group-independent) and the formulas over each group's
+  resolved rows, on the calling thread while the streams run on the pool.
+  With many groups that is a fixed cost per group per chunk before any row's
+  work. Evaluating the inputs once over the chunk and feeding the cores per
+  group, or running the groups' cores on the pool, would remove it; neither
+  is built. §34 measured one group.
