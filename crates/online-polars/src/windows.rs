@@ -43,6 +43,7 @@
 //! row. Rows leave in input order, each once every window over it has
 //! resolved.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
 use online_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, seconds_of_ns};
@@ -220,6 +221,10 @@ pub struct KernelDef {
     /// Policy-clock units, finite and above 0; `None` is no cutoff, which
     /// only a backward kernel may have.
     pub window_size: Option<f64>,
+    /// The window in integer nanoseconds where it was given as a duration:
+    /// on a temporal clock an edge is then decided between integers
+    /// (review R2, W1), with no conversion to seconds on the way.
+    pub window_ns: Option<i64>,
     pub closed: Closed,
 }
 
@@ -371,6 +376,9 @@ struct Stack {
     n: usize,
     seq: Vec<u64>,
     tau: Vec<f64>,
+    /// The row's raw clock in integer nanoseconds, 0 without a temporal
+    /// clock: what a window's edge is decided from (review R2, W1).
+    off: Vec<i64>,
     end: Vec<f64>,
     /// Stride `ROW * n`.
     vals: Vec<f64>,
@@ -400,15 +408,18 @@ impl Stack {
     fn clear(&mut self) {
         self.seq.clear();
         self.tau.clear();
+        self.off.clear();
         self.end.clear();
         self.vals.clear();
         self.sums.clear();
         self.at.clear();
     }
 
-    fn push(&mut self, seq: u64, tau: f64, end: f64, row: &[f64], sums: &[f64], at: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, seq: u64, tau: f64, off: i64, end: f64, row: &[f64], sums: &[f64], at: f64) {
         self.seq.push(seq);
         self.tau.push(tau);
+        self.off.push(off);
         self.end.push(end);
         self.vals.extend_from_slice(row);
         self.sums.extend_from_slice(sums);
@@ -419,6 +430,7 @@ impl Stack {
         let i = self.len() - 1;
         self.seq.truncate(i);
         self.tau.truncate(i);
+        self.off.truncate(i);
         self.end.truncate(i);
         self.vals.truncate(i * ROW * self.n);
         self.sums.truncate(i * SUM * self.n);
@@ -499,11 +511,13 @@ impl Queue {
 
     /// Push a row: `row` is its `ROW * n` values, `scratch` a buffer of
     /// `SUM * n` for the sums.
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         k: &KernelDef,
         seq: u64,
         tau: f64,
+        off: i64,
         end: f64,
         row: &[f64],
         scratch: &mut [f64],
@@ -533,7 +547,7 @@ impl Queue {
                     }
                 }
             }
-            self.back.push(seq, tau, end, row, scratch, at);
+            self.back.push(seq, tau, off, end, row, scratch, at);
         } else if self.total.is_empty() {
             self.total.resize(SUM * n, 0.0);
             for j in 0..n {
@@ -566,7 +580,12 @@ impl Queue {
         let n = self.n;
         let scratch = &mut scratch[..SUM * n];
         while let Some(i) = self.back.len().checked_sub(1) {
-            let (seq, tau, end) = (self.back.seq[i], self.back.tau[i], self.back.end[i]);
+            let (seq, tau, off, end) = (
+                self.back.seq[i],
+                self.back.tau[i],
+                self.back.off[i],
+                self.back.end[i],
+            );
             let row_base = i * ROW * n;
             let mut at = tau;
             match self.front.len().checked_sub(1) {
@@ -594,6 +613,7 @@ impl Queue {
             front.push(
                 seq,
                 tau,
+                off,
                 end,
                 &back.vals[row_base..row_base + ROW * n],
                 scratch,
@@ -604,13 +624,17 @@ impl Queue {
     }
 
     /// Pop the rows `stale` says have left the window, oldest first.
-    fn evict(&mut self, k: &KernelDef, scratch: &mut [f64], stale: impl Fn(u64, f64) -> bool) {
+    fn evict(&mut self, k: &KernelDef, scratch: &mut [f64], stale: impl Fn(u64, f64, i64) -> bool) {
         loop {
             self.settle(k, scratch);
             let Some(top) = self.front.len().checked_sub(1) else {
                 return;
             };
-            if !stale(self.front.seq[top], self.front.tau[top]) {
+            if !stale(
+                self.front.seq[top],
+                self.front.tau[top],
+                self.front.off[top],
+            ) {
                 return;
             }
             self.front.pop();
@@ -710,6 +734,9 @@ impl Queue {
 struct Wait {
     seq: u64,
     tau: f64,
+    /// The row's raw clock in integer nanoseconds, 0 without a temporal
+    /// clock.
+    off: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -719,8 +746,13 @@ struct Group {
     tau: f64,
     /// The raw clock the policy time is measured from: the first row of
     /// the stretch (review R1, C2).
-    #[serde(default)]
     origin: Option<ClockValue>,
+    /// The last row's raw clock in integer nanoseconds, and whether that
+    /// is exact (a temporal clock): a window's edge between two rows is
+    /// decided from the difference of their raw clocks, never from two
+    /// rounded policy times (review R2, W1).
+    off: i64,
+    exact: bool,
     /// The next row starts the windows over: the group has no row yet, or
     /// an event since its last row ended them.
     restart: bool,
@@ -729,7 +761,7 @@ struct Group {
     /// Per forward kernel: the last row, whose interval ends at the next
     /// row, as its place and time; its values are in `open_x` and the
     /// values held over its interval in `open_held`, `n` each.
-    open: Vec<Option<(u64, f64)>>,
+    open: Vec<Option<(u64, f64, i64)>>,
     open_x: Vec<Vec<f64>>,
     open_held: Vec<Vec<f64>>,
     /// Rows whose forward windows are not all closed, oldest first.
@@ -811,6 +843,10 @@ pub struct Windows {
     null_group: Option<usize>,
     /// The stream's own clock, in input order across groups.
     shared: ClockState,
+    /// Whether the rows carry a group column: then a session is each
+    /// group's and the stream's clock takes none (review R2, W3); without
+    /// one the stream is the one group, and its session is the stream's.
+    grouped: bool,
     /// Groups with rows waiting, in the order of their last row: the oldest
     /// at the head.
     head: Option<usize>,
@@ -910,6 +946,54 @@ mod clock_form {
 
 /// `now` minus `last` in clock units: between two temporal values, taken in
 /// integer nanoseconds and rounded once, as the clock takes its steps.
+/// The clock between two rows of one stretch, for a window's edge: the
+/// exact difference of their raw clocks in integer nanoseconds on a
+/// temporal clock (`exact`), else the difference of their policy times.
+/// Two rounded policy times differ by rounding, and a row exactly one
+/// window after another landed on either side of the edge (review R2, W1:
+/// 0.4 − 0.1 is not 0.3 in a double). Against a window given as a duration
+/// the comparison is between integers ([`KernelDef::window_ns`]); against
+/// one given as a number the gap is converted to seconds with the same two
+/// operations a duration's text is (`seconds_of_ns`), so a gap of exactly
+/// one window still compares equal to it.
+#[derive(Clone, Copy, Debug)]
+enum Gap {
+    Ns(i64),
+    Secs(f64),
+}
+
+#[inline]
+fn gap(exact: bool, from_off: i64, from_tau: f64, to_off: i64, to_tau: f64) -> Gap {
+    if exact {
+        Gap::Ns(to_off.saturating_sub(from_off))
+    } else {
+        Gap::Secs(to_tau - from_tau)
+    }
+}
+
+impl Gap {
+    /// The gap against the kernel's window.
+    #[inline]
+    fn cmp_window(self, k: &KernelDef) -> Ordering {
+        let w = k.window_size.expect("a windowed kernel");
+        let secs = match (self, k.window_ns) {
+            (Gap::Ns(n), Some(w_ns)) => return n.cmp(&w_ns),
+            (Gap::Ns(n), None) => seconds_of_ns(i128::from(n)),
+            (Gap::Secs(s), _) => s,
+        };
+        secs.partial_cmp(&w).unwrap_or(Ordering::Equal)
+    }
+
+    /// The gap against zero.
+    #[inline]
+    fn cmp_zero(self) -> Ordering {
+        match self {
+            Gap::Ns(n) => n.cmp(&0),
+            Gap::Secs(s) => s.partial_cmp(&0.0).unwrap_or(Ordering::Equal),
+        }
+    }
+}
+
 fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
     match (now, last) {
         (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
@@ -1012,6 +1096,7 @@ impl Windows {
             index: HashMap::new(),
             null_group: None,
             shared: ClockState::new(),
+            grouped: false,
             head: None,
             tail: None,
             held_first: 0,
@@ -1023,6 +1108,14 @@ impl Windows {
             scratch_row: vec![0.0; ROW * widest],
             scratch_sum: vec![0.0; SUM * widest],
         })
+    }
+
+    /// Say whether the rows carry a group column (review R2, W3): with
+    /// one, a session is each group's and the stream's clock takes none;
+    /// without, the stream is the one group, and its session change ends
+    /// the windows as the one group's clock sees it.
+    pub fn set_grouped(&mut self, grouped: bool) {
+        self.grouped = grouped;
     }
 
     /// The scratch buffers, which a loaded state lacks.
@@ -1090,6 +1183,8 @@ impl Windows {
             clock: ClockState::new(),
             tau: 0.0,
             origin: None,
+            off: 0,
+            exact: false,
             restart: true,
             queues: self.members.iter().map(|m| Queue::new(m.len())).collect(),
             open: vec![None; self.kernels.len()],
@@ -1140,8 +1235,13 @@ impl Windows {
         let seq = self.next_seq;
         let gi = row.group;
         // Both clocks step on copies, kept only once neither refuses the row.
+        // With groups a session is each group's: the stream's clock keeps
+        // the stream's order and its gaps and takes no session (review R2,
+        // W3: groups with sessions of their own restarted every group at
+        // every row); without, the stream is the one group.
+        let stream_session = if self.grouped { None } else { row.session };
         let mut shared = self.shared.clone();
-        let adv = shared.advance(&self.clock_cfg, row.clock, row.session, true);
+        let adv = shared.advance(&self.clock_cfg, row.clock, stream_session, true);
         refuse_backwards(&adv, seq, self.shared.last_clock(), row.clock)?;
         let mut clock = self.groups[gi].clock.clone();
         let own = clock.advance(&self.clock_cfg, row.clock, row.session, true);
@@ -1217,7 +1317,12 @@ impl Windows {
                 g.origin = row.clock;
             }
         }
-        let tau = g.tau;
+        // The raw clock a window's edge is decided from (review R2, W1).
+        (g.off, g.exact) = match row.clock {
+            Some(ClockValue::Ns(c)) => (c, true),
+            _ => (0, false),
+        };
+        let (tau, off, exact) = (g.tau, g.off, g.exact);
         let new_stamp = g.stamp != row.clock || !has_clock;
 
         // Forward kernels: the windows this row reaches past close first --
@@ -1232,11 +1337,12 @@ impl Windows {
             // A row exactly a window later is in it under "right" and
             // "both", so the window closes only past it.
             while g.closed[ki] < g.waiting.len() && {
-                let d = tau - g.waiting[g.closed[ki]].tau;
+                let t = g.waiting[g.closed[ki]];
+                let d = gap(exact, t.off, t.tau, off, tau).cmp_window(k);
                 if k.closed.far(Direction::Forward) {
-                    d > w
+                    d == Ordering::Greater
                 } else {
-                    d >= w
+                    d != Ordering::Less
                 }
             } {
                 let t = g.waiting[g.closed[ki]];
@@ -1260,10 +1366,11 @@ impl Windows {
                     t,
                     End::Complete,
                     t.tau + w,
+                    exact,
                     held,
                 );
             }
-            if let Some((oseq, otau)) = g.open[ki].take() {
+            if let Some((oseq, otau, ooff)) = g.open[ki].take() {
                 let m = &self.members[ki];
                 fill_forward(
                     k,
@@ -1279,6 +1386,7 @@ impl Windows {
                     k,
                     oseq,
                     otau,
+                    ooff,
                     tau,
                     &self.scratch_row[..ROW * m.len()],
                     &mut self.scratch_sum,
@@ -1294,7 +1402,7 @@ impl Windows {
                 }
                 g.open_held[ki][j] = g.held[o];
             }
-            g.open[ki] = Some((seq, tau));
+            g.open[ki] = Some((seq, tau, off));
         }
         retire(&self.kernels, g);
 
@@ -1314,6 +1422,8 @@ impl Windows {
                     &mut g.queues[ki],
                     &mut self.scratch_sum,
                     tau,
+                    off,
+                    exact,
                     &mut g.stamp_values[ki],
                 );
             }
@@ -1361,6 +1471,7 @@ impl Windows {
                 k,
                 seq,
                 tau,
+                off,
                 tau,
                 &self.scratch_row[..ROW * m.len()],
                 &mut self.scratch_sum,
@@ -1382,7 +1493,7 @@ impl Windows {
         g.stamp = row.clock;
 
         if self.n_forward > 0 {
-            g.waiting.push_back(Wait { seq, tau });
+            g.waiting.push_back(Wait { seq, tau, off });
         }
         if let Some(now) = row.clock {
             g.last_raw = Some(now);
@@ -1418,7 +1529,7 @@ impl Windows {
         if g.pending.is_empty() {
             return;
         }
-        let tau = g.tau;
+        let (tau, off, exact) = (g.tau, g.off, g.exact);
         let pending = std::mem::take(&mut g.pending);
         for (ki, k) in self.kernels.iter().enumerate() {
             if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
@@ -1432,6 +1543,8 @@ impl Windows {
                 &mut g.queues[ki],
                 &mut self.scratch_sum,
                 tau,
+                off,
+                exact,
                 &mut g.stamp_values[ki],
             );
             let complete = k.window_size.is_none_or(|w| tau >= w);
@@ -1515,6 +1628,7 @@ impl Windows {
                     t,
                     how,
                     end_tau,
+                    g.exact,
                     held,
                 );
             }
@@ -1685,6 +1799,7 @@ fn fill_forward(
 
 /// Each operator's value of a backward window at stamp time `tau`, the
 /// queue evicted to the window first, into `out`; NaN where null.
+#[allow(clippy::too_many_arguments)]
 fn read_backward(
     k: &KernelDef,
     ops: &[OpDef],
@@ -1692,18 +1807,24 @@ fn read_backward(
     q: &mut Queue,
     scratch: &mut [f64],
     tau: f64,
+    off: i64,
+    exact: bool,
     out: &mut [f64],
 ) {
-    if let Some(w) = k.window_size {
+    if k.window_size.is_some() {
         // The row at the far edge is in under "left" and "both". Ages are
-        // compared with the window as differences, one form everywhere, so
-        // a row exactly a window old lands on the same side every time.
+        // the exact gap from the row to this one (`gap`), one form
+        // everywhere, so a row exactly a window old lands on the same side
+        // every time.
         let far = k.closed.far(Direction::Backward);
-        q.evict(
-            k,
-            scratch,
-            |_, t| if far { tau - t > w } else { tau - t >= w },
-        );
+        q.evict(k, scratch, |_, t_tau, t_off| {
+            let age = gap(exact, t_off, t_tau, off, tau).cmp_window(k);
+            if far {
+                age == Ordering::Greater
+            } else {
+                age != Ordering::Less
+            }
+        });
     }
     let span = k.window_size.map_or(tau, |w| w.min(tau));
     let edge = k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w);
@@ -1799,44 +1920,52 @@ fn close(
     members: &[usize],
     q: &mut Queue,
     scratch: &mut [f64],
-    open: Option<(u64, f64)>,
+    open: Option<(u64, f64, i64)>,
     open_x: &[f64],
     open_held: &[f64],
     open_end: f64,
     t: Wait,
     how: End,
     end_tau: f64,
+    exact: bool,
     held: Held<'_>,
 ) {
     let w = k.window_size.expect("a forward kernel has a window");
     // A window is a set of timestamps: under "left" and "both" every row
     // at the row's own stamp is in it, the row itself included, as every
     // row at a stamp is in a backward "right" window (review R1, C3);
-    // under "right" and "none" none at the stamp is.
+    // under "right" and "none" none at the stamp is. Each edge is the exact
+    // span from the row (review R2, W1).
     let near_in = k.closed.near(Direction::Forward);
-    q.evict(
-        k,
-        scratch,
-        |_, tau| {
-            if near_in { tau < t.tau } else { tau <= t.tau }
-        },
-    );
+    q.evict(k, scratch, |_, j_tau, j_off| {
+        let ahead = gap(exact, t.off, t.tau, j_off, j_tau).cmp_zero();
+        if near_in {
+            ahead == Ordering::Less
+        } else {
+            ahead != Ordering::Greater
+        }
+    });
     let r = usize::try_from(t.seq - held.first).expect("a waiting row is held");
     let meta = &mut held.meta[r];
     meta.open -= 1;
     let far = (t.tau + w).min(end_tau);
-    let span = far - t.tau;
+    let len = far - t.tau;
     // The open row is in the window when it is past the row (or at its
     // stamp, under "left" and "both") and not past the far edge.
     // The open row may be the row itself, when the next row closed the
     // window before the row joined the queue: in under "left" and "both".
-    let open = open.filter(|&(_, tau)| {
-        (if near_in { tau >= t.tau } else { tau > t.tau })
-            && (if k.closed.far(Direction::Forward) {
-                tau - t.tau <= w
-            } else {
-                tau - t.tau < w
-            })
+    let open = open.filter(|&(_, o_tau, o_off)| {
+        let ahead = gap(exact, t.off, t.tau, o_off, o_tau);
+        let (near, far) = (ahead.cmp_zero(), ahead.cmp_window(k));
+        (if near_in {
+            near != Ordering::Less
+        } else {
+            near == Ordering::Greater
+        }) && (if k.closed.far(Direction::Forward) {
+            far != Ordering::Greater
+        } else {
+            far == Ordering::Less
+        })
     });
     for (j, &o) in members.iter().enumerate() {
         let op = &ops[o];
@@ -1881,7 +2010,7 @@ fn close(
                 }
             }
         }
-        if let Some((_, otau)) = open {
+        if let Some((_, otau, _)) = open {
             let (x, h) = (open_x[j], open_held[j]);
             let own = !x.is_nan();
             let n = f64::from(u8::from(own));
@@ -1905,7 +2034,7 @@ fn close(
         if !any {
             continue;
         }
-        held.values[r * held.n_outputs + o] = value_of(k, op, a, span);
+        held.values[r * held.n_outputs + o] = value_of(k, op, a, len);
     }
 }
 
@@ -2028,6 +2157,7 @@ mod tests {
         every: usize,
     ) -> Result<Table, Refusal> {
         let mut core = Windows::new(kernels.to_vec(), ops.to_vec(), cfg).unwrap();
+        core.set_grouped(rows.iter().any(|r| r.group.is_some()));
         let (mut t, mut next) = (Table::default(), 0);
         for (i, r) in rows.iter().enumerate() {
             push(&mut core, r)?;
@@ -2085,6 +2215,16 @@ mod tests {
         end: Option<(End, f64)>,
     }
 
+    /// The clock from stretch row `from` to stretch row `to`, as the core
+    /// decides an edge: the raw clocks' exact difference on a temporal
+    /// clock, else the policy times' (review R2, W1).
+    fn gap_bf(rows: &[Row], s: &Stretch, from: usize, to: usize) -> Gap {
+        match (rows[s.rows[from]].clock, rows[s.rows[to]].clock) {
+            (Some(ClockValue::Ns(x)), Some(ClockValue::Ns(y))) => Gap::Ns(y - x),
+            _ => Gap::Secs(s.tau[to] - s.tau[from]),
+        }
+    }
+
     fn brute(
         kernels: &[KernelDef],
         ops: &[OpDef],
@@ -2099,6 +2239,8 @@ mod tests {
             restart: bool,
             last_raw: Option<ClockValue>,
         }
+        // With groups a session is each group's (review R2, W3).
+        let grouped = rows.iter().any(|r| r.group.is_some());
         let mut shared = ClockState::new();
         let mut groups: HashMap<Option<String>, G> = HashMap::new();
         let mut stretches: Vec<Stretch> = Vec::new();
@@ -2107,7 +2249,7 @@ mod tests {
         for (i, r) in rows.iter().enumerate() {
             let seq = i as u64;
             let mut sc = shared.clone();
-            let adv = sc.advance(&cfg, r.clock, r.session, true);
+            let adv = sc.advance(&cfg, r.clock, if grouped { None } else { r.session }, true);
             refuse_backwards(&adv, seq, shared.last_clock(), r.clock)?;
             let mut gc = groups
                 .get(&r.group)
@@ -2201,7 +2343,6 @@ mod tests {
                             // edge per `closed`.
                             let members: Vec<usize> = (0..n)
                                 .filter(|&b| {
-                                    let tb = s.tau[b];
                                     let at_stamp =
                                         rows[s.rows[b]].clock == stamp && stamp.is_some();
                                     let before = b < a && !at_stamp
@@ -2214,11 +2355,12 @@ mod tests {
                                     };
                                     let far_ok = match w {
                                         None => true,
-                                        Some(w) => {
+                                        Some(_) => {
+                                            let age = gap_bf(rows, s, b, a).cmp_window(k);
                                             if k.closed.far(Direction::Backward) {
-                                                ta - tb <= w
+                                                age != Ordering::Greater
                                             } else {
-                                                ta - tb < w
+                                                age == Ordering::Less
                                             }
                                         }
                                     };
@@ -2239,26 +2381,27 @@ mod tests {
                             // (R1, C3); under "right" and "none" none at it.
                             let later: Vec<usize> = (0..n)
                                 .filter(|&b| {
-                                    let d = s.tau[b] - ta;
+                                    let d = gap_bf(rows, s, a, b);
+                                    let (near, far) = (d.cmp_zero(), d.cmp_window(k));
                                     let near_ok = if k.closed.near(Direction::Forward) {
-                                        d >= 0.0
+                                        near != Ordering::Less
                                     } else {
-                                        d > 0.0
+                                        near == Ordering::Greater
                                     };
                                     let far_ok = if k.closed.far(Direction::Forward) {
-                                        d <= w
+                                        far != Ordering::Greater
                                     } else {
-                                        d < w
+                                        far == Ordering::Less
                                     };
                                     near_ok && far_ok
                                 })
                                 .collect();
                             let closed_by_row = (a + 1..n).any(|b| {
-                                let d = s.tau[b] - ta;
+                                let d = gap_bf(rows, s, a, b).cmp_window(k);
                                 if k.closed.far(Direction::Forward) {
-                                    d > w
+                                    d == Ordering::Greater
                                 } else {
-                                    d >= w
+                                    d != Ordering::Less
                                 }
                             });
                             match (closed_by_row, s.end) {
@@ -2373,6 +2516,11 @@ mod tests {
         Ok(t)
     }
 
+    /// A test window's nanoseconds, as the frame reads them off a duration.
+    fn ns_of(w: f64) -> i64 {
+        (w * 1e9).round() as i64
+    }
+
     fn cfg(cap: f64, session_gap: Option<SessionGap>, restart: Option<f64>) -> ClockCfg {
         ClockCfg {
             gap_cap: cap,
@@ -2468,6 +2616,7 @@ mod tests {
                 direction,
                 half_life,
                 window_size: window,
+                window_ns: window.map(ns_of),
                 closed,
             });
             for (stat, partial, min) in [
@@ -2540,6 +2689,7 @@ mod tests {
                 direction: Direction::Backward,
                 half_life: f64::INFINITY,
                 window_size: None,
+                window_ns: None,
                 closed: Closed::Right,
             }],
             vec![OpDef {
@@ -2575,6 +2725,7 @@ mod tests {
             direction: Direction::Forward,
             half_life: 3.0,
             window_size: Some(5.0),
+            window_ns: Some(ns_of(5.0)),
             closed: Closed::Right,
         };
         let ops = vec![
@@ -2672,6 +2823,7 @@ mod tests {
                 direction: Direction::Backward,
                 half_life: f64::INFINITY,
                 window_size: Some(2.0),
+                window_ns: Some(ns_of(2.0)),
                 closed,
             };
             let op = OpDef {
@@ -2721,6 +2873,7 @@ mod tests {
             direction: Direction::Backward,
             half_life: h,
             window_size: None,
+            window_ns: None,
             closed: Closed::Right,
         };
         let op = OpDef {
@@ -2765,6 +2918,7 @@ mod tests {
             direction: Direction::Forward,
             half_life: 2.0,
             window_size: Some(5.0),
+            window_ns: Some(ns_of(5.0)),
             closed: Closed::Right,
         };
         let ops = vec![
@@ -2842,6 +2996,7 @@ mod tests {
             direction: Direction::Backward,
             half_life: f64::INFINITY,
             window_size: Some(3.0),
+            window_ns: Some(ns_of(3.0)),
             closed: Closed::Right,
         };
         let op = OpDef {
@@ -2889,6 +3044,7 @@ mod tests {
             direction: Direction::Backward,
             half_life: 2.0,
             window_size: None,
+            window_ns: None,
             closed: Closed::Right,
         };
         let op = OpDef {
@@ -2912,5 +3068,230 @@ mod tests {
         let err = push(&mut core, &row(1.0)).unwrap_err();
         assert!(matches!(err, Refusal::Backwards { seq: 2, back, .. } if back == 1.0));
         assert_eq!(rmp_serde::to_vec_named(&core).unwrap(), before);
+    }
+
+    /// Review R2, W1: an edge was decided from two rounded policy times, so
+    /// a row exactly one window from another landed on either side of it
+    /// (0.4 - 0.1 is not 0.3 in a double); it is decided from the two rows'
+    /// clocks, exact in nanoseconds, where Polars puts it, at any age.
+    #[test]
+    fn an_edge_is_decided_from_the_two_rows_clocks() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+        };
+        let same = |got: &[f64], want: &[f64]| {
+            got.len() == want.len()
+                && got
+                    .iter()
+                    .zip(want)
+                    .all(|(x, y)| x.is_nan() && y.is_nan() || x == y)
+        };
+        const EPOCH_2024_MS: i64 = 1_704_067_200_000;
+        for base in [0, EPOCH_2024_MS] {
+            for (direction, closed, ms, want) in [
+                // Backward "left": the row 300 ms older is at the far edge, in.
+                (
+                    Direction::Backward,
+                    Closed::Left,
+                    [0, 100, 400, 800],
+                    [f64::NAN, 1.0, 1.0, f64::NAN],
+                ),
+                // Backward "right": the row 300 ms older is at the far edge, out.
+                (
+                    Direction::Backward,
+                    Closed::Right,
+                    [0, 400, 700, 1100],
+                    [1.0, 1.0, 1.0, 1.0],
+                ),
+                // Forward "right": the row 300 ms later is at the far edge, in. A
+                // forward window closes only at a stamp past its far edge, so the
+                // fourth row is there to close row 1's; row 2's closes empty, and
+                // row 3's is unresolved at the end.
+                (
+                    Direction::Forward,
+                    Closed::Right,
+                    [0, 100, 400, 800],
+                    [1.0, 1.0, f64::NAN, f64::NAN],
+                ),
+            ] {
+                let k = KernelDef {
+                    direction,
+                    half_life: f64::INFINITY,
+                    window_size: Some(0.3),
+                    window_ns: Some(ns_of(0.3)),
+                    closed,
+                };
+                let rows: Vec<Row> = ms
+                    .iter()
+                    .map(|&m| Row {
+                        group: None,
+                        clock: Some(ClockValue::Ns((base + m) * 1_000_000)),
+                        session: None,
+                        values: vec![1.0],
+                        accept: true,
+                    })
+                    .collect();
+                let c = || cfg(100.0, None, None);
+                let got = run(
+                    std::slice::from_ref(&k),
+                    std::slice::from_ref(&op),
+                    c(),
+                    &rows,
+                    1,
+                )
+                .unwrap();
+                assert!(
+                    same(&got.values[0], &want),
+                    "{direction:?} {closed:?} from {base}: {:?}",
+                    got.values[0]
+                );
+                let bf = brute(
+                    std::slice::from_ref(&k),
+                    std::slice::from_ref(&op),
+                    c(),
+                    &rows,
+                )
+                .unwrap();
+                assert!(got.same_bits(&bf), "the brute force decides the same edges");
+            }
+        }
+    }
+
+    /// Review R2, W3: the stream's clock took every row's session, so groups
+    /// with sessions of their own saw a change at every row, and every
+    /// group's windows started over at every row. With groups a session is
+    /// each group's; without, the stream is the one group and its session
+    /// change still ends the windows.
+    #[test]
+    fn with_groups_a_session_is_each_groups() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: f64::INFINITY,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+        };
+        let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
+            group: g.map(str::to_string),
+            clock: Some(ClockValue::F64(t)),
+            session: Some(s),
+            values: vec![x],
+            accept: true,
+        };
+        let sums = |rows: &[Row]| {
+            run(
+                std::slice::from_ref(&k),
+                std::slice::from_ref(&op),
+                cfg(10.0, Some(SessionGap::Gap(1.0)), None),
+                rows,
+                1,
+            )
+            .unwrap()
+            .values[0]
+                .clone()
+        };
+        let (a, b) = (Some("a"), Some("b"));
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 2, 10.0),
+            row(2.0, a, 1, 3.0),
+            row(3.0, b, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 4.0, 40.0]);
+        // A group's own session change ends its windows, and no other's.
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 2, 10.0),
+            row(2.0, a, 3, 3.0),
+            row(3.0, b, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 3.0, 40.0]);
+        // One group: the stream's session, a change at rows 1, 2 and 3.
+        let rows = [
+            row(0.0, None, 1, 1.0),
+            row(1.0, None, 2, 10.0),
+            row(2.0, None, 3, 3.0),
+            row(3.0, None, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 3.0, 30.0]);
+    }
+
+    /// The seconds path, for a window given as a number on a temporal
+    /// clock (no `window_ns`): the gap converts with the same operations a
+    /// duration's text does, so every edge falls where the integer path
+    /// puts it.
+    #[test]
+    fn a_numeric_window_on_a_temporal_clock_decides_the_same_edges() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+        };
+        let rows: Vec<Row> = [0, 100, 400, 800]
+            .iter()
+            .map(|&m| Row {
+                group: None,
+                clock: Some(ClockValue::Ns(m * 1_000_000)),
+                session: None,
+                values: vec![1.0],
+                accept: true,
+            })
+            .collect();
+        for (direction, closed) in [
+            (Direction::Backward, Closed::Left),
+            (Direction::Backward, Closed::Right),
+            (Direction::Forward, Closed::Right),
+            (Direction::Forward, Closed::Left),
+        ] {
+            let integer = KernelDef {
+                direction,
+                half_life: f64::INFINITY,
+                window_size: Some(0.3),
+                window_ns: Some(300_000_000),
+                closed,
+            };
+            let seconds = KernelDef {
+                window_ns: None,
+                ..integer.clone()
+            };
+            let ops = std::slice::from_ref(&op);
+            let a = run(
+                std::slice::from_ref(&integer),
+                ops,
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            let b = run(
+                std::slice::from_ref(&seconds),
+                ops,
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            assert!(
+                a.same_bits(&b),
+                "{direction:?} {closed:?}: {a:?} against {b:?}"
+            );
+            assert!(
+                a.values[0].iter().filter(|v| !v.is_nan()).count() >= 2,
+                "edges exercised"
+            );
+        }
     }
 }

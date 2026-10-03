@@ -42,8 +42,9 @@ is known as the stamp arrives. Looking ahead the mirror holds: under
 stamp, the row itself included, as a backward ``"right"`` window holds every
 row at its stamp; under ``"right"`` and ``"none"`` none at the stamp is in.
 A forward window counts a row exactly ``w`` later under ``"right"`` and
-``"both"``, at any age of the stream: the clock inside a stretch is
-measured from the stretch's first row, exact in nanoseconds. ``min_samples``
+``"both"``, at any age of the stream: an edge between two rows is decided
+from the difference of their clocks, exact in nanoseconds on a temporal
+clock, as Polars decides it. ``min_samples``
 (Polars' name) nulls a window holding fewer rows with a value. A row is in
 a window by its stamp, but a mean weighs it by its held interval inside the
 window: a row exactly one window old under ``"left"`` or ``"both"`` counts

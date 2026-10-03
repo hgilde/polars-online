@@ -1115,3 +1115,120 @@ def test_a_row_on_the_far_edge_counts_but_weighs_nothing() -> None:
         df, m=po.ewm_mean("x", half_life=math.inf, window_size=1.0, closed="both"), **CLOCK
     )
     assert out["m"].to_list()[1] == 7.0
+
+
+# --------------------------------------------------------------------------
+# Review round R3 (2026-10-03): the window core's edges, sessions, resuming
+
+# 2024-01-01T00:00:00Z in milliseconds: an age at which a double resolves
+# an epoch to 0.24 us, so a clock read as seconds would miss every edge.
+EPOCH_2024_MS = 1_704_067_200_000
+
+
+def _ms(ms: list[int]) -> pl.DataFrame:
+    """Rows at ``ms`` milliseconds on a Datetime clock, each worth 1."""
+    t = pl.Series("t", ms, dtype=pl.Int64).cast(pl.Datetime("ms"))
+    return pl.DataFrame({"t": t, "x": [1.0] * len(ms)})
+
+
+@pytest.mark.parametrize("base", [0, EPOCH_2024_MS])
+def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> None:
+    """R2-W1: an edge was decided from two rounded policy times, so a row
+    exactly one window from another landed on either side of it (0.4 - 0.1
+    is not 0.3 in a double); it is decided from the two rows' clocks, exact
+    in nanoseconds, where Polars puts it."""
+    clock = {"clock": "t", "gap_cap": "1h"}
+
+    def back(closed: str) -> pl.Expr:
+        return po.ewm_sum("x", half_life=math.inf, window_size="300ms", closed=closed)
+
+    # Backward "left": the row 300 ms older is at the far edge, in. Row 0's
+    # window is empty: null here under ``min_samples``, where Polars sums
+    # nothing to 0.
+    df = _ms([base, base + 100, base + 400])
+    got = po.stream.with_windows(df, y=back("left"), **clock)["y"].to_list()
+    want = df.select(pl.col("x").rolling_sum_by("t", "300ms", closed="left"))["x"].to_list()
+    assert got[1:] == want[1:] == [1.0, 1.0] and got[0] is None
+    # Backward "right": the row 300 ms older is at the far edge, out.
+    df = _ms([base, base + 400, base + 700])
+    got = po.stream.with_windows(df, y=back("right"), **clock)["y"].to_list()
+    want = df.select(pl.col("x").rolling_sum_by("t", "300ms", closed="right"))["x"].to_list()
+    assert got == want == [1.0, 1.0, 1.0]
+    # Forward "right": the row 300 ms later is at the far edge, in. A
+    # forward window closes only at a stamp past its far edge, so a fourth
+    # row is there to close row 1's; rows 2 and 3 are null, one closed
+    # empty, one unresolved at the end. Polars has no look-ahead; the
+    # mirror is a backward "left" window on the negated clock.
+    df = _ms([base, base + 100, base + 400, base + 800])
+    fwd = po.rewm_sum("x", half_life=math.inf, window_size="300ms", closed="right")
+    got = po.stream.with_windows(df, y=fwd, **clock)["y"].to_list()
+    mirror = (
+        df.with_columns(u=-pl.col("t").dt.epoch("ms"))
+        .sort("u")
+        .select(pl.col("x").rolling_sum_by("u", "300i", closed="left"))["x"]
+        .to_list()[::-1]
+    )
+    assert got[:2] == mirror[:2] == [1.0, 1.0] and got[2:] == [None, None]
+
+
+def test_with_groups_a_session_is_each_groups() -> None:
+    """R2-W3: the stream's clock took every row's session, so groups with
+    sessions of their own saw a change at every row, and every group's
+    windows started over at every row. With a group column a session is
+    each group's; without one the stream is the one group, and its session
+    change still ends the windows."""
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0],
+            "g": ["a", "b", "a", "b"],
+            "s": ["a1", "b1", "a1", "b1"],
+            "x": [1.0, 10.0, 3.0, 30.0],
+        }
+    )
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 1.0}
+    total = po.ewm_sum("x", half_life=math.inf)
+    assert po.stream.with_windows(df, y=total, group="g", **kw)["y"].to_list() == [1, 10, 4, 40]
+    # A group's own session change ends its windows, and no other group's.
+    own = df.with_columns(s=pl.Series(["a1", "b1", "a2", "b1"]))
+    assert po.stream.with_windows(own, y=total, group="g", **kw)["y"].to_list() == [1, 10, 3, 40]
+    # One group: the stream's session, a change at rows 1, 2 and 3.
+    one = df.with_columns(s=pl.Series(["a1", "b1", "a2", "b2"]))
+    assert po.stream.with_windows(one, y=total, **kw)["y"].to_list() == [1, 10, 3, 30]
+
+
+def test_a_state_saved_under_a_slice_skips_the_rows_read_past_it(tmp_path: Any) -> None:
+    """R2-W4: under ``head(n)`` the run reads past the n-th row (a backward
+    ``"right"`` window waits for the next stamp, a look-ahead for its window
+    to pass), and the state held those rows; a run resumed on the input
+    after the *n* rows returned fed them again. A ``partial="drop"`` row is
+    read and not returned, so it is skipped too."""
+    df = ticks(60, 19, groups=2)
+    dropping = {"e": po.rewm_mean("x", half_life=2.0, window_size=4.0, partial="drop")}
+    for exprs, cap in [(mixed(), 20.0), (mixed() | dropping, 4.0)]:
+        kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g"}
+        one = po.stream.with_windows(df, **exprs, **kw)
+        assert one.height > 17, "the dropping leg keeps enough rows to slice"
+        for at in (1, 2, 17, 33):
+            if at >= one.height:
+                continue
+            state = tmp_path / f"h{at}-{cap}.state"
+            head = df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(at).collect()
+            assert head.height == at
+            rest = (
+                df.slice(at).lazy().online.with_windows(**exprs, load_state=state, **kw).collect()
+            )
+            assert pl.concat([head, rest]).equals(one), (at, cap)
+
+
+def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: Any) -> None:
+    """R2-W5: a state written before round one (version 2) loaded with
+    defaults for the fields round one added, and misbehaved; the version
+    is read before the rest and refused by number."""
+    # msgpack by hand: a map of two, "magic" and "version" 2.
+    header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
+    path = tmp_path / "v2.state"
+    path.write_bytes(header)
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 3\)"):
+        po.stream.with_windows(
+            ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
+        )

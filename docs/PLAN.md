@@ -2196,10 +2196,11 @@ note, not a task.
         `max_dclock` or a session change ends the windows open across it as
         partial; a reset discards them. A group's policy time restarts at
         each such event. The rows also step one shared clock in input order
-        across groups, under the same policy, sessions included: a step back
-        the policy refuses is refused naming the row, a reset there discards
-        every group's windows, and a session change or a gap there ends
-        them. A group silent for more than `max_dclock` of the stream's time
+        across groups, under the same policy: a step back the policy
+        refuses is refused naming the row, a reset there discards every
+        group's windows, and a gap there ends them; with a group column a
+        session is each group's (review R2, W3), without one the stream is
+        the one group. A group silent for more than `max_dclock` of the stream's time
         has its windows cut then, which bounds how long it holds the output;
         a row-count clock has no such bound.
       - **Options**: `weight`; `split=(column, [values])` with `total` and
@@ -10283,11 +10284,25 @@ messages.
 | F2 | (B2) `to_json` dropped `"non_strict"`, so a saved spec ran a strict cast | the third argument is written | `test_a_non_strict_cast_survives_the_specs_round_trip`, the round-trip list |
 | F3 | (D2) a boolean a feature also read reached the formula as a number (the first form found) | the boolean form is looked up first, and a formula's columns before the clock's and the session's | `test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean` |
 | F4 | a plain target under an embargo counts at arrival and a reset discards the pending rows, so `rows_learned` counts rows no model saw (pre-existing) | not changed; recorded here | -- |
-| W1 | edge decisions subtract two rounded clocks, so a row exactly one window after any row but the stretch's first can land on the wrong side (`[0, 100, 400]` ms, `300ms`, `"left"`: null against Polars' 1) | round three | -- |
+| W1 | edge decisions subtract two rounded clocks, so a row exactly one window after any row but the stretch's first can land on the wrong side (`[0, 100, 400]` ms, `300ms`, `"left"`: null against Polars' 1) | (round three) an edge between two rows is decided from the difference of their raw clocks, exact in nanoseconds, compared as integers with the window's own nanoseconds (`gap`, `KernelDef::window_ns`; a window given as a number keeps the seconds path); the queues and the waiting rows carry each row's raw clock, one `i64` a row; windows state version 3 | `test_a_row_exactly_one_window_from_another_lands_as_in_polars` (against `rolling_sum_by`, at epoch 0 and at 2024), `windows.rs::an_edge_is_decided_from_the_two_rows_clocks` (the brute force decides its edges the same way) |
 | W2 | under `session_gap="reset"` a session change is a reset, so it discards (ignores `partial`) | decided: that is what `"reset"` asks for; documented | -- |
-| W3 | the stream's clock cut every group at a session change, so groups with sessions of their own restarted at every row | round three: sessions are each group's, the stream's clock keeps only its order and its gaps | -- |
-| W4 | a state saved under a slice holds rows read past the last emitted, which a resume from the emitted count feeds again | round three | -- |
-| W5 | a v2 windows state written before round one loads with defaults and misbehaves | round three: `WINDOWS_VERSION` 3 refuses it | -- |
+| W3 | the stream's clock cut every group at a session change, so groups with sessions of their own restarted at every row | (round three) with a group column the stream's clock takes no session (`Windows::set_grouped`); without one the stream is the one group and its session is the stream's, which is what the bank's per-group resolvers (one core per group, no group column) need to see a session change as the bank's own clock does | `test_with_groups_a_session_is_each_groups`, `windows.rs::with_groups_a_session_is_each_groups` |
+| W4 | a state saved under a slice holds rows read past the last emitted, which a resume from the emitted count feeds again | (round three) the state records the rows read past the last returned, dropped ones included (`WindowsRun::rows_ahead`, `save_bytes_with`; `with_windows` passes it under a slice), the next run skips them, and an error's row number counts them | `test_a_state_saved_under_a_slice_skips_the_rows_read_past_it` (with and without a `"drop"`), `windows_frame.rs::a_state_saved_under_a_slice_skips_the_rows_read_past_it` |
+| W5 | a v2 windows state written before round one loads with defaults and misbehaves | (round three) `WINDOWS_VERSION` 3; the magic and the version are read before the rest, so an old state is refused by number and not by a field it lacks | `test_a_windows_state_of_another_version_is_refused_by_its_version`, `windows_frame.rs::a_state_of_another_version_is_refused_by_its_version` |
+
+**Round three (the same day)**: W1, W3, W4 and W5 built as the table says,
+each with its failing test first. W3 was refined while building: a session
+is each group's only where there is a group column, since without one the
+stream is the one group, and the bank's per-group formula resolvers (one
+core per group, no group column) must see a session change exactly as the
+bank's own clock does. A clock that starts over with a session is then a
+step back on the stream's clock under `group`, which the docstring says.
+The cost of W1, measured (PERFORMANCE §36): the first build converted every
+gap to seconds and cost 12% of the window core's time at 16M rows (7% on
+four kernels); comparing integers with the window's own nanoseconds
+(`KernelDef::window_ns`) leaves 3%, the raw clock written and moved with
+each queued row, and memory unchanged. The converting build was never
+committed.
 
 ## Follow-on documents
 

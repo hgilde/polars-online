@@ -576,14 +576,17 @@ def with_windows(
     given, one larger than it starts over and one no larger is a late row,
     refused), ``session`` and
     ``session_gap`` (a number, a duration or ``"reset"``), and ``group``,
-    whose groups each have their own clock and windows. A window is measured
-    on that policy clock, after the cap and the session gap. A gap longer
-    than ``gap_cap`` or a session change ends every window open across it,
-    under each operator's ``partial``; a reset discards them: null, never
-    dropped. The rows must be in clock order across groups, as one stream:
-    the clock is also read in input order, under the same policy, so a step
-    back there is refused or, past ``restart_after_step_back``, resets
-    every group; a session change or a gap there ends every group's windows.
+    whose groups each have their own clock, sessions and windows. A window
+    is measured on that policy clock, after the cap and the session gap. A
+    gap longer than ``gap_cap`` or a session change ends every window open
+    across it, under each operator's ``partial``; a reset discards them:
+    null, never dropped. The rows must be in clock order across groups, as
+    one stream: the clock is also read in input order, under the same
+    policy, so a step back there is refused or, past
+    ``restart_after_step_back``, resets every group, and a gap there ends
+    every group's windows. With ``group`` a session is each group's, read
+    on its own clock, so a clock that starts over with a session is a step
+    back on the stream's; without ``group`` the stream is the one group.
     ``like=spec`` takes all of this from a spec instead, and with it the rule
     for the rows the spec learns from: a forward window over a row the spec
     would skip (a null feature or weight) is null, as the model never learns
@@ -617,9 +620,11 @@ def with_windows(
     feeding a stream in two runs gives what one run gives. Without it, a
     row whose window has not passed when the input ends is emitted
     unresolved, null. Under a slice of the output (``.head(n)``) the input
-    is read only up to the row that resolved the *n*-th row, so a saved
-    state goes on from there. A state resumes only the call that saved it,
-    on the same kind of clock.
+    is read only up to the row that resolved the *n*-th row, and the rows
+    read past the *n*-th are in the state: a run resumed on the input after
+    the *n* rows returned (``df.slice(n)``) skips them, so the two runs
+    give what one gives. A state resumes only the call that saved it, on
+    the same kind of clock.
 
     ``ValueError`` for a formula, a clock policy or a column that cannot
     run, an output name that collides, a ``load_state`` another call saved,
@@ -753,9 +758,12 @@ def with_windows(
                 out = out.head(n_rows - seen)
             yield done(out)
         # Reached once the input is fed, or the slice is: not on a run the
-        # caller abandons, nor one the windows ended with an error.
+        # caller abandons, nor one the windows ended with an error. Under a
+        # slice the run read past the last row returned and the state holds
+        # those rows: a run resumed on the input after the rows returned
+        # skips them (review R2, W4).
         if save_path is not None:
-            w.save(save_path)
+            w.save(save_path, w.rows_ahead() if sliced else 0)
         # As the bank warns (`ConsumedSourceWarning`): no rows at all from a
         # Python scan is the shape of a spent single-use stream.
         if python_scan and read == 0 and n_rows != 0:

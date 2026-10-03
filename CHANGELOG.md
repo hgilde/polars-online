@@ -121,6 +121,25 @@ carries breaking changes, and any change to the numbers a model returns.
     `rolling_metrics` names a missing clock before reading the window; the
     `ewridge` builder refuses a wrong `ridge_scale` by name; `rows_learned`'s
     docstring and the last `n_eff`/`window` leftovers.
+- **Review round R3** (the same day, the window core's re-review;
+  docs/PLAN.md §14):
+  - A window's edge between two rows is decided from the difference of the
+    two rows' clocks, exact in nanoseconds on a temporal clock and compared
+    as integers with the window's own nanoseconds, where it was the
+    difference of two rounded policy times, so a row exactly one window
+    from another landed on either side of the edge (`[0, 100, 400]` ms with
+    a `300ms` window under `"left"` gave null where Polars gives 1: 0.4 −
+    0.1 is not 0.3 in a double). Windows state version 3.
+  - With `group`, a session is each group's: the stream's clock took every
+    row's session, so groups with sessions of their own saw a change at
+    every row, and every group's windows started over at every row. Without
+    `group` the stream is the one group, as before.
+  - A state saved under a slice (`head(n)`) holds the rows read past the
+    *n*-th row returned, and a run resumed on `df.slice(n)` fed them again;
+    the state now says how many to skip (`Windows.rows_ahead`).
+  - A windows state of version 2 (before round one) loaded with defaults
+    for the fields round one added; the version is read before the rest,
+    and refused by number.
 
 ### Changed
 

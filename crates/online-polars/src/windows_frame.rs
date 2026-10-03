@@ -63,8 +63,11 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 2 since task 143: formulas over operators, where 1 held descriptions.
-const WINDOWS_VERSION: u32 = 2;
+/// 3 since review R2 (W1, W4, W5): a row's raw clock beside its policy time
+/// in the queues, and the rows a resume skips; 2 since task 143: formulas
+/// over operators, where 1 held descriptions. A 2 state written before
+/// round one would load with defaults and misbehave.
+const WINDOWS_VERSION: u32 = 3;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -78,18 +81,31 @@ struct FileOut<'a> {
     held: &'a [u8],
     increments: &'a [IncrState],
     stream_clock: Option<ClockValue>,
+    resume_skip: usize,
 }
 
+/// The rest of the file, after [`Header`]'s two fields.
 #[derive(Deserialize)]
 struct FileIn {
-    magic: String,
-    version: u32,
     config: WindowsConfig,
     core: Windows,
     held: Vec<u8>,
     increments: Vec<IncrState>,
     #[serde(default)]
     stream_clock: Option<ClockValue>,
+    /// Rows of the next run's input already read: see
+    /// [`WindowsRun::rows_ahead`] (review R2, W4).
+    #[serde(default)]
+    resume_skip: usize,
+}
+
+/// The file's first two fields, read before the rest: a state another
+/// version wrote is refused by its version, not by a field it lacks
+/// (review R2, W5).
+#[derive(Deserialize)]
+struct Header {
+    magic: String,
+    version: u32,
 }
 
 /// A group's increment state: the previous row's inputs, session and clock.
@@ -279,6 +295,10 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                 direction,
                 half_life: half_life.value(),
                 window_size: op.window_size.as_ref().map(Span::value),
+                window_ns: match &op.window_size {
+                    Some(Span::Duration(d)) => Some(d.nanos),
+                    _ => None,
+                },
                 closed: op.closed,
             };
             kernel
@@ -477,6 +497,14 @@ pub struct WindowsRun {
     /// The core's row count at this run's first row: an error names the
     /// row of this run's input.
     run_base: u64,
+    /// Rows at the start of the next input to skip, from a state saved
+    /// under a slice (review R2, W4), and how many this run has skipped,
+    /// which an error's row number counts.
+    resume_skip: usize,
+    skipped: u64,
+    /// Rows of this run's input that went out: the rows fed less these are
+    /// what the run read past the last row it returned.
+    returned: usize,
 }
 
 impl WindowsRun {
@@ -549,7 +577,7 @@ impl WindowsRun {
             let dtype = evaluated.get(&f.name).expect("aliased").clone();
             output.insert(f.name.as_str().into(), dtype);
         }
-        let core = if p.ops.is_empty() {
+        let mut core = if p.ops.is_empty() {
             // Increments alone: the core carries a kernel that reads nothing,
             // so rows pass straight through it. A sum over no window, read
             // at every row.
@@ -558,6 +586,7 @@ impl WindowsRun {
                     direction: Direction::Backward,
                     half_life: f64::INFINITY,
                     window_size: Some(1.0),
+                    window_ns: None,
                     closed: Closed::Left,
                 }],
                 vec![OpDef {
@@ -573,6 +602,7 @@ impl WindowsRun {
         } else {
             Windows::new(p.kernels, p.ops, cfg).map_err(|e| format!("{WHO}: {e}"))?
         };
+        core.set_grouped(config.group.is_some());
         let inputs = if p.inputs.is_empty() {
             vec![Node::Lit(crate::formula::Literal::Float(0.0))]
         } else {
@@ -593,6 +623,9 @@ impl WindowsRun {
             incr_null: None,
             stream_clock: None,
             run_base: 0,
+            resume_skip: 0,
+            skipped: 0,
+            returned: 0,
         })
     }
 
@@ -676,6 +709,21 @@ impl WindowsRun {
         limit: Option<usize>,
         resolving: Option<&[u64]>,
     ) -> PolarsResult<DataFrame> {
+        // A state saved under a slice holds the rows read past the last row
+        // returned, and a run resumed from the returned count feeds them
+        // again (review R2, W4): the first `resume_skip` rows of the new
+        // input are those, and are skipped.
+        let skipped: DataFrame;
+        let mut df = df;
+        let mut resolving = resolving;
+        let skip = self.resume_skip.min(df.height());
+        if skip > 0 {
+            self.resume_skip -= skip;
+            self.skipped += skip as u64;
+            skipped = df.slice(skip as i64, df.height() - skip);
+            df = &skipped;
+            resolving = resolving.map(|r| &r[skip..]);
+        }
         let n = df.height();
         let clock = self.clock_values(df)?;
         let session: Option<Vec<u64>> = match &self.config.session {
@@ -815,6 +863,7 @@ impl WindowsRun {
         e: crate::windows::Emitted,
         at: &[u64],
     ) -> PolarsResult<DataFrame> {
+        self.note_returned(&e, true);
         let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
         let mut frame = self.assemble_rows(e)?;
         frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
@@ -839,6 +888,25 @@ impl WindowsRun {
             .chain([col("@po:row").alias("@po:seq"), col("@po:at")])
             .collect();
         frame.lazy().with_columns(exprs).select(keep).collect()
+    }
+
+    /// Count the rows of `e` this run's input fed that go out: what a run
+    /// resumed on the input after the rows returned must not feed again
+    /// (review R2, W4). A dropped row goes out only when `resolving`.
+    fn note_returned(&mut self, e: &crate::windows::Emitted, resolving: bool) {
+        for (i, &dropped) in e.drop.iter().enumerate() {
+            if (resolving || !dropped) && e.first_seq + i as u64 >= self.run_base {
+                self.returned += 1;
+            }
+        }
+    }
+
+    /// Rows this run read past the last row it returned: under a slice,
+    /// what a run resumed on the input after the rows returned must skip
+    /// ([`Self::save_bytes_with`]).
+    pub fn rows_ahead(&self) -> usize {
+        let fed = usize::try_from(self.core.next_seq() - self.run_base).expect("rows fit");
+        fed - self.returned
     }
 
     /// The end of the input: every row still held goes out, each forward
@@ -1053,7 +1121,7 @@ impl WindowsRun {
             return Ok(None);
         };
         let col = df.column(c.as_str())?;
-        let base = self.core.next_seq() - self.run_base;
+        let base = self.core.next_seq() - self.run_base + self.skipped;
         let bad = |i: usize| {
             polars_err!(ComputeError:
                 "{WHO}: row {} has a null or non-finite clock {c:?}", base + i as u64)
@@ -1090,7 +1158,7 @@ impl WindowsRun {
 
     /// A row the core refused, as the error naming it.
     fn refusal(&self, r: Refusal, _chunk_base: u64) -> PolarsError {
-        let row = |seq: u64| seq - self.run_base;
+        let row = |seq: u64| seq - self.run_base + self.skipped;
         match r {
             Refusal::Backwards {
                 seq,
@@ -1133,6 +1201,7 @@ impl WindowsRun {
     /// The first `e.rows` held rows with the formulas evaluated beside
     /// them, less the dropped ones and the hidden columns.
     fn assemble(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
+        self.note_returned(&e, false);
         let drop = e.drop.clone();
         let mut frame = self.assemble_rows(e)?;
         if drop.iter().any(|&d| d) {
@@ -1221,6 +1290,15 @@ impl WindowsRun {
     /// next run emits first, and the increments' state. Versioned msgpack,
     /// one state one file.
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        self.save_bytes_with(0)
+    }
+
+    /// [`Self::save_bytes`] for a state saved under a slice: the next run
+    /// skips the first `skip_on_resume` rows of its input, the rows this
+    /// run read past the last it returned ([`Self::rows_ahead`]), which a
+    /// run resumed on the input after the rows returned would feed again
+    /// (review R2, W4).
+    pub fn save_bytes_with(&self, skip_on_resume: usize) -> Result<Vec<u8>, String> {
         let held_schema = {
             let mut s = self.input.clone();
             for k in self.hidden_names() {
@@ -1244,36 +1322,48 @@ impl WindowsRun {
             held: &held,
             increments: &self.incr_state,
             stream_clock: self.stream_clock,
+            resume_skip: skip_on_resume,
         })
         .map_err(|e| e.to_string())
     }
 
     /// [`Self::save_bytes`] to `path`, replacing it whole or not at all.
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let bytes = self.save_bytes().map_err(std::io::Error::other)?;
+        self.save_with(path, 0)
+    }
+
+    /// [`Self::save_bytes_with`] to `path`, replacing it whole or not at
+    /// all.
+    pub fn save_with(&self, path: &std::path::Path, skip_on_resume: usize) -> std::io::Result<()> {
+        let bytes = self
+            .save_bytes_with(skip_on_resume)
+            .map_err(std::io::Error::other)?;
         crate::atomic::write(path, &bytes)
     }
 
     /// A run that goes on from a saved state: the call must be the one that
     /// saved it, and the input must have the columns it held. Rows are
-    /// counted from the start of the new input.
+    /// counted from the start of the new input, the rows the state says to
+    /// skip included ([`Self::save_bytes_with`]).
     ///
     /// # Errors
     ///
     /// Bytes that are not a windows state, a version this build does not
     /// read, another call, or held rows whose columns the input has not got.
     pub fn load_bytes(bytes: &[u8], config: WindowsConfig, input: &Schema) -> Result<Self, String> {
-        let file: FileIn = rmp_serde::from_slice(bytes)
+        let header: Header = rmp_serde::from_slice(bytes)
             .map_err(|e| format!("{WHO}: not a state it saved ({e})"))?;
-        if file.magic != WINDOWS_MAGIC {
+        if header.magic != WINDOWS_MAGIC {
             return Err(format!("{WHO}: not a state it saved"));
         }
-        if file.version != WINDOWS_VERSION {
+        if header.version != WINDOWS_VERSION {
             return Err(format!(
                 "{WHO} state version {} not supported (this build reads {WINDOWS_VERSION})",
-                file.version
+                header.version
             ));
         }
+        let file: FileIn = rmp_serde::from_slice(bytes)
+            .map_err(|e| format!("{WHO}: not a state it saved ({e})"))?;
         if file.config != config {
             return Err(format!(
                 "{WHO}: the state was saved by another call -- other formulas or another clock \
@@ -1330,6 +1420,7 @@ impl WindowsRun {
             run.held.push_back(held);
         }
         run.stream_clock = file.stream_clock;
+        run.resume_skip = file.resume_skip;
         for (i, st) in file.increments.into_iter().enumerate() {
             match &st.key {
                 Some(k) => {
@@ -1546,5 +1637,68 @@ mod tests {
             .unwrap();
         got.vstack_mut(&second.finish().unwrap()).unwrap();
         assert!(got.equals_missing(&want));
+    }
+
+    /// Review R2, W4: a state saved under a slice holds the rows read past
+    /// the last row returned; a run resumed on the input after the rows
+    /// returned skips them, and reads the rest as one run would.
+    #[test]
+    fn a_state_saved_under_a_slice_skips_the_rows_read_past_it() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        for at in [1, 2, 3, 4] {
+            let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+            let head = run.feed(&df, Some(at)).unwrap();
+            assert_eq!(head.height(), at);
+            assert!(run.rows_ahead() > 0, "a look-ahead reads past the slice");
+            let bytes = run.save_bytes_with(run.rows_ahead()).unwrap();
+            let mut rest = WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).unwrap();
+            let tail = df.slice(at as i64, df.height() - at);
+            let mut second = rest.feed(&tail, None).unwrap();
+            second.vstack_mut(&rest.finish().unwrap()).unwrap();
+            let mut both = head.clone();
+            both.vstack_mut(&second).unwrap();
+            assert!(
+                both.equals_missing(&whole),
+                "head {at}: {both} against {whole}"
+            );
+        }
+    }
+
+    /// Review R2, W5: a state written by version 2 (before round one)
+    /// loaded with defaults for the fields round one added, and
+    /// misbehaved; the version is read before the rest, and refused by
+    /// number.
+    #[test]
+    fn a_state_of_another_version_is_refused_by_its_version() {
+        #[derive(Serialize)]
+        struct Old<'a> {
+            magic: &'a str,
+            version: u32,
+        }
+        let input = frame(&[0.0]).schema().clone();
+        let old = rmp_serde::to_vec_named(&Old {
+            magic: WINDOWS_MAGIC,
+            version: 2,
+        })
+        .unwrap();
+        let err = WindowsRun::load_bytes(&old, config(FORWARD), &input)
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains("state version 2 not supported (this build reads 3)"),
+            "{err}"
+        );
+        let other = rmp_serde::to_vec_named(&Old {
+            magic: "something else",
+            version: WINDOWS_VERSION,
+        })
+        .unwrap();
+        let err = WindowsRun::load_bytes(&other, config(FORWARD), &input)
+            .err()
+            .expect("refused");
+        assert!(err.contains("not a state it saved"), "{err}");
     }
 }

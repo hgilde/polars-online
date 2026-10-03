@@ -4029,3 +4029,40 @@ moves the §33 or §34 figures, which have dense inputs and one group.
   work. Evaluating the inputs once over the chunk and feeding the cores per
   group, or running the groups' cores on the pool, would remove it; neither
   is built. §34 measured one group.
+
+## 36. The window core's edges from raw clocks (review R3, 2026-10-03)
+
+Review R2's W1: a window's edge between two rows was decided from the
+difference of two policy times, each rounded once from the stretch's
+origin, so a row exactly one window from another landed on either side of
+the edge (`[0, 100, 400]` ms, a `300ms` window under `"left"`: null against
+Polars' 1, since 0.4 − 0.1 is not 0.3 in a double). Round three decides it
+from the two rows' raw clocks, which the queues and the waiting rows now
+carry, one `i64` a row. The first build converted every gap to seconds
+(`seconds_of_ns`, two Euclidean divisions, at every eviction test, forward
+trigger and open-row check); the second compares the integer gap with the
+window's own nanoseconds (`KernelDef::window_ns`, read off the duration)
+and converts nothing. Measured with `scripts/windows_bench.py --one` on
+§33's stream (16M rows, `H` 1m, one group), the R2 and the R3 extension
+modules swapped into the package between runs, three rounds each,
+alternating, so each pair of columns is at its own load: 4.2 to 5.0 for the
+first sweep (6.2 during the converting build's `target` run), 3.1 to 3.5 for
+the second. Seconds of wall time, each run its own process.
+
+| case | R2 | R3, converting | R2 | R3, integers |
+|---|---:|---:|---:|---:|
+| `with_windows` (two forward sums, one formula) | 2.47, 2.50, 2.54 | 2.78, 2.80, 2.82 (+12%) | 2.49, 2.50, 2.52 | 2.58, 2.58, 2.59 (+3%) |
+| `separate 4` (four backward means, four kernels) | 5.99, 5.99, 6.02 | 6.41, 6.43, 6.43 (+7%) | 5.99, 6.00, 5.99 | 6.11, 6.13, 6.17 (+2.5%) |
+| `target` (the native formula target, §34) | 9.61 | 9.92 | 9.73 | 9.72 |
+
+- **Peak RSS is 0.98 to 1.10 GB in every run**: the `i64` a queued row
+  costs nothing the file does not.
+- **The conversion was the cost, not the exactness.** Comparing integers
+  leaves 3% on the window alone and 2.5% on four kernels: the raw clock
+  written with each row and moved with it when the queue turns over. The
+  native target, whose time is the bank's, moves nothing.
+- The R2 column repeats within 2% between the sweeps, the noise floor of
+  this comparison; a 3% difference held in all three rounds.
+- The first build was measured before its gate and never committed. A
+  change to the window core's row path is benchmarked this way, the two
+  modules alternating, before it goes to the gate.
