@@ -675,14 +675,18 @@ def with_windows(
       input sliced inside it;
     - one that steps back where the policy refuses it: the same input
       sliced by hand, or an overlapping file (a hand slice that starts
-      after the last clock read, as one can after a restart, is taken as
-      the next file);
+      after the last clock read is taken as the next file);
+    - without a clock column, one that does not begin with a new session;
     - one that starts as the saved input did but differs where the state
       was cut, and one shorter than the rows consumed.
 
     A clock that starts over at the same stamp each day needs a session
     column for the next day's file to differ from the saved input at its
-    first row. Without a clock or session column there is no next file:
+    first row. Without a clock column a row-count clock steps forward at
+    every row, so the next file is one that begins with a new session --
+    under ``group``, a new session of a group the state has read -- and
+    not with the saved input's first session, which marks the saved input
+    itself; without a session column either, there is no next file:
     resume on the same input. An input whose rows match the state's where
     it was cut is taken as the same input, so resume a stream whose rows
     can repeat (a daily grid with the same values) on the same input only.

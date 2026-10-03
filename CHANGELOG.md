@@ -192,6 +192,19 @@ carries breaking changes, and any change to the numbers a model returns.
   the rows differ, the one limit. The last row read is written and read
   under a slice only, so an unsliced state holding no rows resumes on the
   next file with a column more, as before.
+- **Review round R8** (the same day, one reviewer over round seven's
+  additions; docs/PLAN.md §14): without a clock column, a session column
+  let a hand slice that starts in any session but the saved input's
+  first pass as the next file,
+  since a row-count clock steps forward at every row; there the next file
+  is one that begins with a new session, and a step forward is refused by
+  name. A first row the policy refuses is reported with the policy's own
+  words; a sliced state that carries no row to know its input by is
+  refused at load as damaged. Round nine, over round eight in the same
+  commit, found no wrong verdict or number and corrected two messages and
+  the docstring: without a clock column the next file begins with a new
+  session (under `group`, of a group the state has read), and not with
+  the saved input's first session.
 
 ### Changed
 

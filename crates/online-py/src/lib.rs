@@ -730,10 +730,11 @@ impl PyWindows {
     /// The state, written to `path` whole or not at all. A run resumed on
     /// the same input skips its first `skip_on_resume` rows: under a slice,
     /// the rows of the input consumed so far (`consumed`). The state knows
-    /// the input by its first clock and the last rows it read. A run on an
+    /// the input by its first row's clock and session, and by the last rows
+    /// it read. A run on an
     /// input that starts elsewhere skips nothing when the clock policy
-    /// takes its first row as a step forward or a new start, and is refused
-    /// otherwise. `input_ended` says the input ran out rather than a slice
+    /// takes its first row as a new start, or as a step forward on a clock
+    /// column, and is refused otherwise. `input_ended` says the input ran out rather than a slice
     /// being satisfied: a skip still pending is then another input, refused
     /// (`ValueError`).
     #[pyo3(signature = (path, skip_on_resume=0, input_ended=false))]

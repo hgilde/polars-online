@@ -10472,9 +10472,33 @@ Folded into round six's commit: round seven adds a field to the windows state, a
 | E1 | `push` lost its doc comment to the new `step_clocks`, inserted between the comment and the function | the comment moved back | -- |
 | E2 | a clock that starts over at the *same* stamp each day gives the next file the saved input's first clock, so the rule never reached the policy and the identity refused the file; round six's test dodged it with a start of 0.5 | the state knows its input by the first row's session beside its clock, so with a session column the file differs at its first row and is put to the policy; without one it is the saved input until the rows differ, refused by name -- the limit the docstring states | the D4 tests with day 2 at the same first stamp, both legs |
 | E3 | the last row's columns check ran on every load, so an unsliced state holding no rows refused the next file with a column more, which it took before; the bank wrote the row for every core on every save and never read it | the row is written and read under a skip only; the columns message pinned | `windows_frame.rs::the_last_row_binds_a_sliced_state_only` |
-| E4 | the last row went out of step with `consumed` on two paths no caller reaches: a skip still pending recorded the last skipped row while the count included the rest, and a refusal mid-chunk held rows without recording the last | by construction: the row is set when the skip completes (the loaded row until then) and in the refusal branch | not observable; the invariant is structural |
+| E4 | the last row went out of step with `consumed` on two paths: a skip still pending recorded the last skipped row while the count included the rest, and a refusal mid-chunk held rows without recording the last | by construction: the row is set when the skip completes (the loaded row until then) and in the refusal branch | round eight's F3: the first path is reachable at the Rust API (a limit of 0 on a chunk shorter than the skip), pinned there |
 | E5 | the bare leg of the no-rows test was refused by the count (three rows against a skip of four), never the compare; the no-row re-save test pinned the count, not the identity | another input of the same length; a `closed="left"` leg resuming the re-saved state on another input | the same tests |
 | E6 | the docstring lost R4-B3's "without a clock column, resume on the same input", and did not say a hand slice starting after the last clock read (possible after a restart) is taken as the next file | both stated | -- |
+
+### Round eight (the same day): one reviewer over round seven's additions
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| F1 | without a clock column, a session column made any hand slice (or overlapping file) that starts in a later session the next file, silently: the rule fired on the differing first session, and on a row-count clock every row is a step forward, so the policy's "forward" was evidence of nothing | without a clock column only a new start (a new session by the policy's word) is the next file; a step forward there is refused by name, and the docstring says a next file on a row-count clock begins with a new session | `test_without_a_clock_the_next_file_begins_with_a_new_session`, `windows_frame.rs::without_a_clock_the_next_file_begins_with_a_new_session` |
+| F2 | where the policy refused the first row (under `group` a next-day file's step back is refused on the stream's clock whatever its session), the message dropped the policy's own words, which name `restart_after_step_back` as the unsliced path does | the refusal appends the policy's message | `windows_frame.rs::a_refused_first_row_carries_the_policys_words` |
+| F3 | round seven's E4 row said the pending-skip path was unobservable; it is reachable at the Rust API (a limit of 0 on a chunk shorter than the skip) and from the generator (`.head(0)` with `chunk_rows` below the pending skip), and the fix had no test | pinned; the E4 row corrected | `windows_frame.rs::a_save_inside_a_pending_skip_keeps_the_loaded_identity` |
+| F4 | the `save_bytes_with` and binding docs named neither the session nor the last row; the docstring's "as one can after a restart" read as the only way a hand slice starts after the last clock read | amended | -- |
+| F5 | a file with a skip, no held rows and no last row (which this build cannot write) would carry an identity of zero rows and pass the check vacuously | refused at load as damaged | `windows_frame.rs::a_sliced_state_without_its_identity_is_damaged` |
+| F6 | the E3 test asserted the next file's height only, not that its extra column was carried | asserted | the same test |
+
+### Round nine (the same day): one reviewer over round eight's additions
+
+Folded into round eight's commit. The reviewer found no wrong verdict or number in the new paths; the iteration ends here.
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| G1 | under `group` without a clock column the no-clock refusal said "starts in the session the state last read" of a group the state never read (a fresh group's clock sees no session change, so the verdict is a step forward, refused by F1's reasoning) | the message says what is true in both cases: the first row continues the session last read, or is of a group the state has not read; the docstring says the next file begins with a new session of a group the state has read | the same tests, which now pin the words |
+| G2 | the docstring's no-clock sentence lacked the qualifier the clock sentence has: a next file whose first row's session is the saved input's first session is taken for the saved input until the rows differ (cyclic session labels) | stated: the next file begins with a new session and not with the saved input's first | -- |
+| G3 | the binding's `Windows.save` doc still said a step forward skips nothing; the docstring's refusal list omitted the no-clock step forward; the changelog said "a later session" where any session but the saved input's first was the bug | amended | -- |
+| G4 | the F1 tests asserted "another input" alone, which an arm that let the skip apply would also give | the F1 words asserted | `test_without_a_clock_the_next_file_begins_with_a_new_session`, `windows_frame.rs::without_a_clock_the_next_file_begins_with_a_new_session` |
+| G5 | the F3 row understated the reach of the pending-skip path: the generator reaches it too (`.head(0)` with `chunk_rows` below the pending skip) | the row amended | -- |
+| G6 | the policy's message appended by F2 carried its own `with_windows:` prefix inside the rule's | stripped | `windows_frame.rs::a_refused_first_row_carries_the_policys_words` |
 
 ## Follow-on documents
 

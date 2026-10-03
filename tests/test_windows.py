@@ -1509,3 +1509,25 @@ def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
             one = po.stream.with_windows(pl.concat([day1, day2]), **y, **kw)
             c = po.stream.with_windows(day2, **y, load_state=state, **kw)
             assert pl.concat([a, c]).equals(one), (start, kw)
+
+
+def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) -> None:
+    """R8-F1: on a row-count clock every row is a step forward, so a step
+    forward says nothing about the input; without a clock column the next
+    file is one that begins with a new session, and a hand slice that starts
+    in the session the state last read is refused, not fed twice."""
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "s": ["a", "a", "a", "b", "b", "b"]})
+    kw: dict[str, Any] = {"session": "s", "session_gap": 1.0}
+    y = {"y": po.ewm_mean("x", half_life=1.0)}
+    state = tmp_path / "rows.state"
+    head = df.lazy().online.with_windows(**y, save_state=state, **kw).head(4).collect()
+    assert head.height == 4
+    for cut in (3, 5):
+        with pytest.raises(pl.exceptions.ComputeError, match="does not begin with a new session"):
+            po.stream.with_windows(df.slice(cut), **y, load_state=state, **kw)
+    nxt = pl.DataFrame({"x": [7.0, 8.0], "s": ["c", "c"]})
+    rest = po.stream.with_windows(nxt, **y, load_state=state, **kw)
+    one = po.stream.with_windows(pl.concat([df.head(4), nxt]), **y, **kw)
+    assert pl.concat([head, rest]).equals(one)
+    same = po.stream.with_windows(df, **y, load_state=state, **kw)
+    assert pl.concat([head, same]).equals(po.stream.with_windows(df, **y, **kw))
