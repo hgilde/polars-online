@@ -662,23 +662,39 @@ def with_windows(
     records how many rows of the input were consumed so far. A run resumed
     with ``load_state`` on the *same input*, unsliced, skips those rows and
     goes on, so any chain of sliced runs gives what one run gives, whatever
-    the chunk size. The state knows its input by the input's first clock
-    and by the rows it holds, the unresolved tail of what was consumed, the
-    input's own rows. A run on an input that starts after the last row the
-    state read, the next file, skips nothing and first returns the rows the
-    state held. An input that starts at or before that row (the same input
-    sliced by hand, an overlapping file), one that starts at the same clock
-    but differs where the state was cut, or one shorter than the rows
-    consumed is refused by name. An input whose rows match the state's
-    where it was cut is taken as the same input, so resume a stream whose
-    rows can repeat (a daily grid with the same values) on the same input
-    only. A state resumes only the call that saved it, on the same kind of
-    clock.
+    the chunk size. The state knows its input by its first row's clock and
+    session, and by the last rows it read: the rows it holds that are the
+    input's, or the last row alone where it holds none. An input whose
+    first row differs is the next file when the clock policy takes that
+    row as a step forward or a new start, which is a step back past
+    ``restart_after_step_back`` or a new session. The run then skips
+    nothing and first returns the rows the state held. Refused by name:
+
+    - an input whose first row is at the last stamp the state read, since
+      a file boundary inside a tied stamp cannot be told from the same
+      input sliced inside it;
+    - one that steps back where the policy refuses it: the same input
+      sliced by hand, or an overlapping file (a hand slice that starts
+      after the last clock read, as one can after a restart, is taken as
+      the next file);
+    - one that starts as the saved input did but differs where the state
+      was cut, and one shorter than the rows consumed.
+
+    A clock that starts over at the same stamp each day needs a session
+    column for the next day's file to differ from the saved input at its
+    first row. Without a clock or session column there is no next file:
+    resume on the same input. An input whose rows match the state's where
+    it was cut is taken as the same input, so resume a stream whose rows
+    can repeat (a daily grid with the same values) on the same input only.
+    A state resumes only the call that saved it, on the same kind of clock.
 
     ``ValueError`` for a formula, a clock policy or a column that cannot
-    run, an output name that collides, a ``load_state`` another call saved,
-    and, naming the row, a refused step back. ``TypeError`` for something
-    that is not an expression, or a clock keyword beside ``like=``.
+    run, an output name that collides, and a ``load_state`` another call
+    saved. What the run refuses once the plan is running -- a step back,
+    naming the row, or a sliced state resumed on another input -- surfaces
+    as ``polars.exceptions.ComputeError`` with the message inside, since
+    the rows come from a Python source. ``TypeError`` for something that
+    is not an expression, or a clock keyword beside ``like=``.
     ``FileNotFoundError`` for a ``load_state`` that is not there, or a
     ``save_state`` whose directory is not.
     """

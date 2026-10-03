@@ -313,6 +313,19 @@ pub struct RowIn<'a> {
     pub accept: bool,
 }
 
+/// What the clocks make of a row before it is taken ([`Windows::peek`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peek {
+    /// A new start by the policy's word: a step back past
+    /// `restart_after_step_back`, or a new session, on the stream's clock
+    /// or the group's.
+    NewStart,
+    /// A step forward on the stream's clock, or its first row.
+    Forward,
+    /// The same stamp as the last row the stream read.
+    SameStamp,
+}
+
 /// Why a row was refused. The caller names the row in the input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Refusal {
@@ -1232,6 +1245,58 @@ impl Windows {
         gi
     }
 
+    /// Both clocks stepped on copies by a row's clock and session, for the
+    /// caller to keep once neither refuses it. With groups a session is
+    /// each group's: the stream's clock keeps the stream's order and its
+    /// gaps and takes no session (review R2, W3: groups with sessions of
+    /// their own restarted every group at every row); without, the stream
+    /// is the one group. `gi` is `None` for a group with no row yet.
+    fn step_clocks(
+        &self,
+        gi: Option<usize>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> Result<(ClockState, ClockAdvance, ClockState, ClockAdvance), Refusal> {
+        let seq = self.next_seq;
+        let stream_session = if self.grouped { None } else { session };
+        let mut shared = self.shared.clone();
+        let adv = shared.advance(&self.clock_cfg, clock, stream_session, true);
+        refuse_backwards(&adv, seq, self.shared.last_clock(), clock)?;
+        let mut own_clock = gi.map_or_else(ClockState::new, |g| self.groups[g].clock.clone());
+        let prev = own_clock.last_clock();
+        let own = own_clock.advance(&self.clock_cfg, clock, session, true);
+        refuse_backwards(&own, seq, prev, clock)?;
+        Ok((shared, adv, own_clock, own))
+    }
+
+    /// What the clocks would make of a row with this group key, clock and
+    /// session, without taking it: refused as a step back the policy
+    /// refuses, or taken as a new start, a step forward or the same stamp.
+    /// What a run resumed on an input that starts elsewhere asks of the
+    /// input's first row (review R6, D3 and D4): a new start or a step
+    /// forward is the next file.
+    pub fn peek(
+        &self,
+        key: Option<&str>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> Result<Peek, Refusal> {
+        let gi = match key {
+            Some(k) => self.index.get(k).copied(),
+            None => self.null_group,
+        };
+        let (_, adv, _, own) = self.step_clocks(gi, clock, session)?;
+        if adv.reset || adv.session_changed || own.reset || own.session_changed {
+            return Ok(Peek::NewStart);
+        }
+        match (clock, self.shared.last_clock()) {
+            (Some(now), Some(last)) if !now.is_before(last) && !last.is_before(now) => {
+                Ok(Peek::SameStamp)
+            }
+            _ => Ok(Peek::Forward),
+        }
+    }
+
     /// Feed one row. Earlier rows may be resolved by it; take them with
     /// [`Self::drain`].
     ///
@@ -1244,17 +1309,7 @@ impl Windows {
         let seq = self.next_seq;
         let gi = row.group;
         // Both clocks step on copies, kept only once neither refuses the row.
-        // With groups a session is each group's: the stream's clock keeps
-        // the stream's order and its gaps and takes no session (review R2,
-        // W3: groups with sessions of their own restarted every group at
-        // every row); without, the stream is the one group.
-        let stream_session = if self.grouped { None } else { row.session };
-        let mut shared = self.shared.clone();
-        let adv = shared.advance(&self.clock_cfg, row.clock, stream_session, true);
-        refuse_backwards(&adv, seq, self.shared.last_clock(), row.clock)?;
-        let mut clock = self.groups[gi].clock.clone();
-        let own = clock.advance(&self.clock_cfg, row.clock, row.session, true);
-        refuse_backwards(&own, seq, self.groups[gi].clock.last_clock(), row.clock)?;
+        let (shared, adv, clock, own) = self.step_clocks(Some(gi), row.clock, row.session)?;
         self.shared = shared;
         self.next_seq += 1;
         // An event on the stream's clock reaches every group now; each

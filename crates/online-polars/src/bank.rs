@@ -86,8 +86,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// file stores carry the renamed parameters. **24 since review R4**
 /// (2026-10-03): the window core a bank file carries per formula target is
 /// in the windows state's version 3 form, refused here by number rather
-/// than at a group's first chunk.
-const MIN_BANK_SCHEMA_VERSION: u32 = 24;
+/// than at a group's first chunk. **25 since review R6** (the same day):
+/// the windows state went to 5; round five moved it to 4 alone, so a 24
+/// bank holding a version-4 core failed late. A windows state version
+/// moves this number with it
+/// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
+const MIN_BANK_SCHEMA_VERSION: u32 = 25;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

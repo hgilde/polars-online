@@ -26,7 +26,7 @@ use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
 use crate::stream::usable;
 use crate::windows::{
-    Closed, Direction, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
+    Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, Refusal, RowIn, Stat, Windows,
 };
 
 /// The spec behind `like=`: its name, for messages, and the columns whose
@@ -63,14 +63,16 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 4 since review R5 (C5): the skip a sliced state carries counts the rows
-/// of its input consumed so far, and the state knows that input by its
-/// first clock (round four changed both under 3); 3 since review R2 (W1,
-/// W4, W5): a row's raw clock beside its policy time in the queues, and the
-/// rows a resume skips; 2 since task 143: formulas over operators, where 1
-/// held descriptions. An older state would load with defaults and
-/// misbehave.
-const WINDOWS_VERSION: u32 = 4;
+/// 5 since review R6 (D1): the last row read, beside the rows held, as a
+/// sliced state's identity of its input; 4 since review R5 (C5): the skip
+/// a sliced state carries counts the rows of its input consumed so far,
+/// and the state knows that input by its first clock (round four changed
+/// both under 3); 3 since review R2 (W1, W4, W5): a row's raw clock beside
+/// its policy time in the queues, and the rows a resume skips; 2 since
+/// task 143: formulas over operators, where 1 held descriptions. An older
+/// state would load with defaults and misbehave. The bank's schema moves
+/// with this number (review R4, A2; R6, D5).
+const WINDOWS_VERSION: u32 = 5;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -86,6 +88,13 @@ struct FileOut<'a> {
     stream_clock: Option<ClockValue>,
     resume_skip: usize,
     resume_first: Option<ClockValue>,
+    /// That row's session hash: with its clock, what tells the saved input
+    /// from a next file that starts at the same stamp (review R7, E2).
+    resume_first_session: Option<u64>,
+    /// The last row the run read, the input's columns as Arrow IPC: with
+    /// the rows held, the identity of a sliced state's input (review R6,
+    /// D1); empty unless saved under a slice (R7, E3).
+    last_row: &'a [u8],
 }
 
 /// The rest of the file, after [`Header`]'s two fields.
@@ -106,6 +115,8 @@ struct FileIn {
     /// elsewhere skips nothing (review R4, B3).
     #[serde(default)]
     resume_first: Option<ClockValue>,
+    resume_first_session: Option<u64>,
+    last_row: Vec<u8>,
 }
 
 /// The file's first two fields, read before the rest: a state another
@@ -512,18 +523,25 @@ pub struct WindowsRun {
     /// this run has skipped, which an error's row number counts.
     resume_skip: usize,
     resume_first: Option<ClockValue>,
+    resume_first_session: Option<u64>,
     skipped: u64,
-    /// The identity of the input a sliced state resumes on (review R5, C3):
-    /// the skip as loaded, the rows the state held (the unresolved tail of
-    /// the rows consumed, the input's own rows), the skipped rows at those
-    /// positions as they go by, and the last skipped row's clock.
+    /// The identity of the input a sliced state resumes on (review R5, C3;
+    /// R6, D1 and D2): the skip as loaded; the last rows the state read --
+    /// the rows it holds that are this input's, or the last row read where
+    /// it holds none -- and the skipped rows at those positions as they go
+    /// by.
     resume_total: usize,
     resume_held: Option<DataFrame>,
     resume_rows: Vec<DataFrame>,
-    resume_last: Option<ClockValue>,
-    /// The first row's clock of this run's input, and whether a row has
-    /// been seen: what a state saved by this run remembers its input by.
+    /// The last row read, skipped or fed, as the chunk had it (the hidden
+    /// columns beside the input's when fed): what a sliced state saves as
+    /// its identity beside the rows it holds (review R6, D1).
+    last_row: Option<DataFrame>,
+    /// The first row's clock and session of this run's input, and whether
+    /// a row has been seen: what a state saved by this run remembers its
+    /// input by (review R4, B3; R7, E2).
     first_clock: Option<ClockValue>,
+    first_session: Option<u64>,
     started: bool,
 }
 
@@ -647,12 +665,14 @@ impl WindowsRun {
             run_base: 0,
             resume_skip: 0,
             resume_first: None,
+            resume_first_session: None,
             skipped: 0,
             resume_total: 0,
             resume_held: None,
             resume_rows: Vec::new(),
-            resume_last: None,
+            last_row: None,
             first_clock: None,
+            first_session: None,
             started: false,
         })
     }
@@ -748,29 +768,38 @@ impl WindowsRun {
         if !self.started && df.height() > 0 {
             self.started = true;
             self.first_clock = clock.as_ref().map(|c| c[0]);
-            if let (true, Some(saved), Some(now)) =
-                (self.resume_skip > 0, self.resume_first, self.first_clock)
+            let (key, session) = self.first_key_session(df)?;
+            self.first_session = session;
+            if self.resume_skip > 0
+                && (self.first_clock != self.resume_first || session != self.resume_first_session)
             {
-                if saved != now {
-                    // The next file starts after the last row the state read;
-                    // an input that starts at or before it is the saved input
-                    // sliced by hand, or an overlapping file (review R5, C4).
-                    if let Some(last) = self.core.shared_clock().last_clock() {
-                        let back = match (last, now) {
-                            (ClockValue::Ns(p), ClockValue::Ns(c)) => {
-                                online_core::seconds_of_ns(i128::from(p) - i128::from(c))
-                            }
-                            (p, c) => p.seconds() - c.seconds(),
-                        };
-                        if back >= 0.0 {
-                            polars_bail!(ComputeError:
-                                "{WHO}: the state was saved under a slice of another input: this \
-                                 input starts at or before the last row the state read. A sliced \
-                                 state resumes on the input it was saved from, unsliced"
-                            );
-                        }
-                    }
-                    self.resume_skip = 0;
+                // Not the same input from its start: its first row's clock or
+                // session is not the saved input's (review R7, E2: a clock
+                // that starts over at the same stamp each day gives the next
+                // file the same first clock, and the session tells them
+                // apart). The row is put to the clock policy against the
+                // last row the state read: a step forward or a new start (a
+                // step back past restart_after_step_back, a new session) is
+                // the next file, which skips nothing; the same stamp is a
+                // file boundary inside a tied stamp or the same input sliced
+                // inside it, which cannot be told apart; a step back the
+                // policy refuses is the same input sliced by hand or an
+                // overlapping file (review R5, C4; R6, D3 and D4).
+                match self.core.peek(key.as_deref(), self.first_clock, session) {
+                    Ok(Peek::Forward | Peek::NewStart) => self.resume_skip = 0,
+                    Ok(Peek::SameStamp) => polars_bail!(ComputeError:
+                        "{WHO}: the state was saved under a slice of another input: this input \
+                         starts at the last stamp the state read, a file boundary inside a tied \
+                         stamp or the same input sliced inside it. A sliced state resumes on the \
+                         input it was saved from, unsliced, or on the next file, which starts \
+                         after the last stamp it read"
+                    ),
+                    Err(_) => polars_bail!(ComputeError:
+                        "{WHO}: the state was saved under a slice of another input: this input \
+                         starts before the last row the state read, a step back the clock \
+                         policy refuses. A sliced state resumes on the input it was saved from, \
+                         unsliced, or on the next file, which starts after the last row it read"
+                    ),
                 }
             }
         }
@@ -790,11 +819,14 @@ impl WindowsRun {
                 self.resume_rows
                     .push(df.slice((lo - before) as i64, hi - lo));
             }
-            if let Some(c) = &clock {
-                self.resume_last = Some(c[skip - 1]);
-            }
             self.resume_skip -= skip;
             self.skipped += skip as u64;
+            // Once the skip completes, the last row skipped is the last row
+            // read; until then the loaded one still is, as `consumed` counts
+            // the rows pending (review R6, D1; R7, E4).
+            if self.resume_skip == 0 {
+                self.last_row = Some(df.slice(skip as i64 - 1, 1));
+            }
             skipped = df.slice(skip as i64, df.height() - skip);
             df = &skipped;
             resolving = resolving.map(|r| &r[skip..]);
@@ -910,6 +942,7 @@ impl WindowsRun {
                 // increments' state where they end.
                 if i > 0 {
                     self.held.push_back(chunk.slice(0, i));
+                    self.last_row = Some(chunk.slice(i as i64 - 1, 1));
                 }
                 self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), i)?;
                 return Err(self.refusal(r, chunk_base));
@@ -920,6 +953,7 @@ impl WindowsRun {
         }
         if consumed > 0 {
             self.held.push_back(chunk.slice(0, consumed));
+            self.last_row = Some(chunk.slice(consumed as i64 - 1, 1));
         }
         if consumed < n {
             self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), consumed)?;
@@ -979,13 +1013,34 @@ impl WindowsRun {
         usize::try_from(self.skipped).expect("rows fit") + self.resume_skip + fed
     }
 
+    /// The first row's group key and session hash, as the core reads them.
+    fn first_key_session(&self, df: &DataFrame) -> PolarsResult<(Option<String>, Option<u64>)> {
+        let head = df.slice(0, 1);
+        let key = match &self.config.group {
+            None => Some(String::new()),
+            Some(c) => head
+                .column(c.as_str())?
+                .cast(&DataType::String)?
+                .str()?
+                .get(0)
+                .map(str::to_string),
+        };
+        let session = match &self.config.session {
+            None => None,
+            Some(c) => {
+                let s = head.column(c.as_str())?.cast(&DataType::String)?;
+                Some(session_hash(s.str()?.get(0)))
+            }
+        };
+        Ok((key, session))
+    }
+
     /// The identity of the input a sliced state resumes on (review R5, C3
-    /// and C4): the rows skipped where the state was cut must be the rows
-    /// the state held, the input's own rows; where it held none, the last
-    /// skipped row's clock must be the last clock the state saw. Another
-    /// input that starts at the same clock, or the same input sliced by
-    /// hand, is refused by name rather than fed with rows skipped or
-    /// doubled.
+    /// and C4; R6, D1): the rows skipped where the state was cut must be
+    /// the last rows the state read -- the rows it held that are the
+    /// input's own, or the last row alone where it held none. Another input
+    /// that starts at the same clock, or the same input sliced by hand, is
+    /// refused by name rather than fed with rows skipped or doubled.
     fn check_resumed_input(&mut self) -> PolarsResult<()> {
         let rows = std::mem::take(&mut self.resume_rows);
         let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
@@ -997,25 +1052,15 @@ impl WindowsRun {
             Ok(out)
         };
         if let Some(want) = self.resume_held.take() {
-            // The rows the state held, as loaded: a run may have drained
-            // some of them before the skip completes.
+            // The last rows the state read, as loaded: a run may have
+            // drained some of the held ones before the skip completes.
             let got = stack(&rows)?;
             if got.height() != want.height() || !got.equals_missing(&want) {
                 polars_bail!(ComputeError:
-                    "{WHO}: the state was saved under a slice of another input: the {} rows it \
-                     holds are not the rows this input has where it was cut. A sliced state \
-                     resumes on the input it was saved from, unsliced",
+                    "{WHO}: the state was saved under a slice of another input: the last {} rows \
+                     it read are not this input's rows there. A sliced state resumes on the input \
+                     it was saved from, unsliced",
                     want.height()
-                );
-            }
-        } else if let (Some(last), Some(saved)) =
-            (self.resume_last, self.core.shared_clock().last_clock())
-        {
-            if last != saved {
-                polars_bail!(ComputeError:
-                    "{WHO}: the state was saved under a slice of another input: the clock of the \
-                     last row it read is not this input's at that row. A sliced state resumes on \
-                     the input it was saved from, unsliced"
                 );
             }
         }
@@ -1456,6 +1501,16 @@ impl WindowsRun {
         IpcWriter::new(&mut held)
             .finish(&mut rows)
             .map_err(|e| e.to_string())?;
+        // The last row read is a sliced state's identity and nothing else's
+        // (review R7, E3): the bank saves every core unsliced.
+        let mut last_row = Vec::new();
+        if let (true, Some(r)) = (skip_on_resume > 0, &self.last_row) {
+            let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
+            let mut r = r.select(names.iter().copied()).map_err(|e| e.to_string())?;
+            IpcWriter::new(&mut last_row)
+                .finish(&mut r)
+                .map_err(|e| e.to_string())?;
+        }
         rmp_serde::to_vec_named(&FileOut {
             magic: WINDOWS_MAGIC,
             version: WINDOWS_VERSION,
@@ -1471,6 +1526,12 @@ impl WindowsRun {
             } else {
                 self.resume_first
             },
+            resume_first_session: if self.started {
+                self.first_session
+            } else {
+                self.resume_first_session
+            },
+            last_row: &last_row,
         })
         .map_err(|e| e.to_string())
     }
@@ -1577,11 +1638,42 @@ impl WindowsRun {
         if held.height() > 0 {
             run.held.push_back(held);
         }
+        if file.resume_skip > 0 && !file.last_row.is_empty() {
+            let last = IpcReader::new(Cursor::new(file.last_row))
+                .finish()
+                .map_err(|e| format!("{WHO}: the state's last row cannot be read ({e})"))?;
+            let have: Vec<(String, DataType)> = last
+                .schema()
+                .iter()
+                .map(|(n, t)| (n.to_string(), t.clone()))
+                .collect();
+            if have != want {
+                return Err(format!(
+                    "{WHO}: the state's last row has columns {:?}, and the frame has {:?}; a \
+                     state resumes on the input it was saved from",
+                    have.iter()
+                        .map(|(n, t)| format!("{n}: {t}"))
+                        .collect::<Vec<_>>(),
+                    want.iter()
+                        .map(|(n, t)| format!("{n}: {t}"))
+                        .collect::<Vec<_>>()
+                ));
+            }
+            run.last_row = Some(last);
+        }
         run.stream_clock = file.stream_clock;
         run.resume_skip = file.resume_skip;
         run.resume_first = file.resume_first;
+        run.resume_first_session = file.resume_first_session;
         run.resume_total = file.resume_skip;
         if file.resume_skip > 0 {
+            // The identity of this input: the rows the state holds that are
+            // this input's -- the last `resume_skip` of them at most, since
+            // a state saved on the next file under a slice still holds the
+            // previous file's unresolved rows ahead of its own, rows going
+            // out in order (review R6, D2) -- or, where it holds none (an
+            // operator that resolves a row at its push), the last row it
+            // read (R6, D1).
             let names: Vec<&str> = run.input.iter_names().map(|n| n.as_str()).collect();
             let mut want = DataFrame::empty_with_schema(&run.input);
             for part in &run.held {
@@ -1591,6 +1683,15 @@ impl WindowsRun {
                         .map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?;
+            }
+            let extra = want.height().saturating_sub(file.resume_skip);
+            if extra > 0 {
+                want = want.slice(extra as i64, want.height() - extra);
+            }
+            if want.height() == 0 {
+                if let Some(last) = &run.last_row {
+                    want = last.clone();
+                }
             }
             run.resume_held = Some(want);
         }
@@ -1886,7 +1987,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 4)"),
+            err.contains("state version 2 not supported (this build reads 5)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -1961,5 +2062,243 @@ mod tests {
             .err()
             .expect("refused");
         assert!(err.contains("damaged"), "{err}");
+    }
+
+    /// Review R4, A2 and R6, D5: a windows state version moves the bank's
+    /// schema with it, since a bank file embeds one per formula target and
+    /// refuses an older form by number, not at a group's first chunk.
+    #[test]
+    fn a_windows_state_version_moves_the_banks_schema_with_it() {
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (5, 25));
+    }
+
+    /// Review R6, D2: a run on the next file under a slice keeps the first
+    /// file's unresolved rows held ahead of its own -- rows go out in order,
+    /// so none of its own went out while one of theirs waited -- and the
+    /// state then holds more rows than it consumed of this input. The
+    /// identity is the last `consumed` of the held rows, this input's own;
+    /// a resume on the second file goes on.
+    #[test]
+    fn a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held() {
+        let first = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let second = frame(&[10.0, 11.0, 12.0]);
+        let whole = first.vstack(&second).unwrap();
+        let mut one = WindowsRun::new(config(FORWARD), whole.schema()).unwrap();
+        let mut want = one.feed(&whole, None).unwrap();
+        want.vstack_mut(&one.finish().unwrap()).unwrap();
+        // The first file, unsliced: rows 3..6 stay held, their windows open.
+        let mut run = WindowsRun::new(config(FORWARD), first.schema()).unwrap();
+        let mut out = run.feed(&first, None).unwrap();
+        assert_eq!(run.held(), 3);
+        let state = run.save_bytes().unwrap();
+        // The second file under head(1): its first row closes the three, one
+        // goes out, two stay held ahead of it; one row of it consumed.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), second.schema()).unwrap();
+        out.vstack_mut(&run.feed(&second, Some(1)).unwrap())
+            .unwrap();
+        assert_eq!((run.consumed(), run.held()), (1, 3));
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // The second file resumed, unsliced: the rest, as one run would give it.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), second.schema()).unwrap();
+        out.vstack_mut(&run.feed(&second, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&want), "{out} against {want}");
+    }
+
+    /// Review R6, D1: a backward operator under "left" resolves a row at its
+    /// own push, so a sliced run holds no row, and the held rows identify
+    /// nothing; the state keeps the last row it read and refuses another
+    /// input by it, with a clock column and without (a row-count clock
+    /// repeats no stamp, so every operator resolves at the push).
+    #[test]
+    fn a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        const BARE: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1}]}]}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5]);
+        for (cfg, other) in [(LEFT, other), (BARE, df.slice(3, 4))] {
+            let mut one = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            let mut want = one.feed(&df, None).unwrap();
+            want.vstack_mut(&one.finish().unwrap()).unwrap();
+            let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            let mut out = run.feed(&df, Some(3)).unwrap();
+            assert_eq!(
+                (out.height(), run.consumed(), run.held()),
+                (3, 3, 0),
+                "{cfg}"
+            );
+            let state = run.save_bytes_with(run.consumed(), false).unwrap();
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), df.schema()).unwrap();
+            let err = run.feed(&other, None).expect_err("refused");
+            assert!(err.to_string().contains("another input"), "{cfg}: {err}");
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), df.schema()).unwrap();
+            out.vstack_mut(&run.feed(&df, None).unwrap()).unwrap();
+            out.vstack_mut(&run.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cfg}: {out} against {want}");
+        }
+    }
+
+    /// Review R6, D3 and D4: an input that starts elsewhere is the next file
+    /// when the clock policy takes its first row as a step forward or a new
+    /// start (a step back past `restart_after_step_back`, a new session),
+    /// and is refused when it starts at the last stamp the state read (a
+    /// file boundary inside a tied stamp cannot be told from the same input
+    /// sliced inside it) or steps back where the policy refuses it.
+    #[test]
+    fn a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file() {
+        let day = |t: &[f64], s: &str| {
+            df!(
+                "t" => t,
+                "x" => t.iter().map(|v| v * 10.0).collect::<Vec<_>>(),
+                "s" => vec![s; t.len()],
+            )
+            .unwrap()
+        };
+        let day1 = day(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "a");
+        let day2 = day(&[0.5, 1.5, 2.5, 3.5], "b");
+        let restart = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+            "restart_after_step_back": 2}"#;
+        let session = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+            "session": "s", "session_gap": 1}"#;
+        for cfg in [restart, session] {
+            let whole = day1.vstack(&day2).unwrap();
+            let mut one = WindowsRun::new(config(cfg), whole.schema()).unwrap();
+            let mut want = one.feed(&whole, None).unwrap();
+            want.vstack_mut(&one.finish().unwrap()).unwrap();
+            // Day 1 under a slice its input exhausts: a state with a skip.
+            let mut run = WindowsRun::new(config(cfg), day1.schema()).unwrap();
+            let mut out = run.feed(&day1, Some(100)).unwrap();
+            assert!(run.held() > 0 && run.consumed() == 7);
+            let state = run.save_bytes_with(run.consumed(), true).unwrap();
+            // Day 2 steps back: a new start by the policy's word, the next file.
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), day2.schema()).unwrap();
+            out.vstack_mut(&run.feed(&day2, None).unwrap()).unwrap();
+            out.vstack_mut(&run.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cfg}: {out} against {want}");
+        }
+        // Review R7, E2: day 2 at the same first stamp as day 1. With a
+        // session column the first row's session tells the file from the
+        // saved input, and the policy takes it; without one it is the saved
+        // input until the rows differ, refused by name.
+        let same = day(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], "b");
+        let whole = day1.vstack(&same).unwrap();
+        let mut one = WindowsRun::new(config(session), whole.schema()).unwrap();
+        let mut want = one.feed(&whole, None).unwrap();
+        want.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::new(config(session), day1.schema()).unwrap();
+        let mut out = run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(session), same.schema()).unwrap();
+        out.vstack_mut(&run.feed(&same, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&want), "{out} against {want}");
+        let mut run = WindowsRun::new(config(restart), day1.schema()).unwrap();
+        run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(restart), same.schema()).unwrap();
+        let err = run.feed(&same, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // Under the default policy a step back is refused, and so is a tie.
+        let plain = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#;
+        let mut run = WindowsRun::new(config(plain), day1.schema()).unwrap();
+        run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(plain), day2.schema()).unwrap();
+        let err = run.feed(&day2, None).expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("before the last row the state read"),
+            "{err}"
+        );
+        let tied = day(&[6.0, 7.0, 8.0], "a");
+        let mut run = WindowsRun::load_bytes(&state, config(plain), tied.schema()).unwrap();
+        let err = run.feed(&tied, None).expect_err("refused");
+        assert!(
+            err.to_string().contains("at the last stamp the state read"),
+            "{err}"
+        );
+    }
+
+    /// Review R5, C1 (the plan's row, unpinned) and C3: a resumed run that
+    /// saw no row saves the identity it loaded, so the chain goes on from
+    /// that state as from the one before it; a save that says the input
+    /// ended refuses a skip still pending, one that does not takes it.
+    #[test]
+    fn a_resumed_run_that_saw_no_row_saves_the_identity_it_loaded() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(2)).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let first = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Loaded and saved again without a row: the same identity and count.
+        let run = WindowsRun::load_bytes(&first, config(FORWARD), df.schema()).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let again = run.save_bytes_with(run.consumed(), false).unwrap();
+        let mut run = WindowsRun::load_bytes(&again, config(FORWARD), df.schema()).unwrap();
+        out.vstack_mut(&run.feed(&df, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&whole), "{out} against {whole}");
+        // Mid-skip: the input is not over unless the caller says so.
+        let mut run = WindowsRun::load_bytes(&first, config(FORWARD), df.schema()).unwrap();
+        run.feed(&df.slice(0, 2), None).unwrap();
+        assert_eq!(run.consumed(), 5);
+        run.save_bytes_with(run.consumed(), false)
+            .expect("a slice satisfied mid-skip");
+        let err = run
+            .save_bytes_with(run.consumed(), true)
+            .expect_err("refused");
+        assert!(err.contains("ended after 2"), "{err}");
+        // Review R7, E5: the identity itself survives a re-save without a
+        // row -- the last row read, where nothing is held, refuses another
+        // input with the same first clock.
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, Some(3)).unwrap();
+        let first = run.save_bytes_with(run.consumed(), false).unwrap();
+        let run = WindowsRun::load_bytes(&first, config(LEFT), df.schema()).unwrap();
+        let again = run.save_bytes_with(run.consumed(), false).unwrap();
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5]);
+        let mut run = WindowsRun::load_bytes(&again, config(LEFT), other.schema()).unwrap();
+        let err = run.feed(&other, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+    }
+
+    /// Review R7, E3: the last row read is a sliced state's identity and
+    /// nothing else's, so an unsliced state that holds no rows resumes on an
+    /// input with a column more, as it did before the row was kept; a
+    /// sliced one names the columns it has against the frame's.
+    #[test]
+    fn the_last_row_binds_a_sliced_state_only() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        assert_eq!(run.held(), 0);
+        let state = run.save_bytes().unwrap();
+        // The next file, with a column more.
+        let wider = frame(&[4.0, 5.0, 6.0, 7.0])
+            .lazy()
+            .with_columns([lit(1.0).alias("extra")])
+            .collect()
+            .unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), wider.schema()).unwrap();
+        assert_eq!(run.feed(&wider, None).unwrap().height(), 4);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, Some(2)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        let err = WindowsRun::load_bytes(&state, config(LEFT), wider.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("the state's last row has columns"), "{err}");
     }
 }

@@ -356,7 +356,15 @@ pub use window::{
 ///   one would fail at a group's first chunk; the bank refuses one older
 ///   than 24 by number (pre-1.0, no loader). The models' own states are
 ///   unchanged, and still load from 14.
-pub const SCHEMA_VERSION: u32 = 24;
+/// - 25 (2026-10-03, review R6): the window core a bank file carries per
+///   formula target is in the windows state's version 5 form (the last row
+///   read, beside the rows held, as a sliced state's identity of its
+///   input). Round five moved the windows version alone, to 4, so a 24
+///   file holding a version-4 core failed at a group's first chunk; the
+///   bank refuses one older than 25 by number, and a test pairs the two
+///   numbers. The models' own states are unchanged, and still load from
+///   14.
+pub const SCHEMA_VERSION: u32 = 25;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

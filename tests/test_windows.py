@@ -1293,7 +1293,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 4\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 5\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
@@ -1343,9 +1343,15 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
         po.stream.with_windows(other, **mixed(), load_state=state, **kw)
     with pytest.raises(pl.exceptions.ComputeError, match="another input"):
         po.stream.with_windows(df.slice(5), **mixed(), load_state=state, **kw)
-    # An input shorter than the rows consumed.
+    # An input shorter than the rows consumed: refused at the input's end,
+    # and at a save that says the input ended (R6: no test passed
+    # ``input_ended`` before).
     with pytest.raises(pl.exceptions.ComputeError, match="another input"):
         po.stream.with_windows(df.head(3), **mixed(), load_state=state, **kw)
+    with pytest.raises(pl.exceptions.ComputeError, match="ended after 3"):
+        po.stream.with_windows(
+            df.head(3), **mixed(), load_state=state, save_state=tmp_path / "short.state", **kw
+        )
     # No clock column: the held rows alone identify the input.
     bare = df.drop("t")
     state = tmp_path / "bare.state"
@@ -1381,3 +1387,125 @@ def test_a_damaged_windows_state_says_so(tmp_path: Any) -> None:
     cut.write_bytes(whole[: len(whole) // 2])
     with pytest.raises(ValueError, match="damaged"):
         po.stream.with_windows(df, y=po.ewm_mean("x", half_life=2.0), load_state=cut, **CLOCK)
+
+
+def test_a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held(
+    tmp_path: Any,
+) -> None:
+    """R6-D2: a run on the next file under a slice keeps the first file's
+    unresolved rows held ahead of its own (rows go out in order, so none of
+    its own went out while one of theirs waited), and the state then holds
+    more rows than it consumed of this input. The identity is the last
+    ``consumed`` of the held rows, this input's own; a resume on the second
+    file goes on where round five refused it as another input."""
+    df = ticks(60, 19, groups=2)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    one = po.stream.with_windows(df, **mixed(), **kw)
+    for cut, n in [(20, 1), (30, 2), (45, 3)]:
+        first, second = df.head(cut), df.slice(cut)
+        state = tmp_path / f"{cut}-{n}.state"
+        a = po.stream.with_windows(first, **mixed(), save_state=state, **kw)
+        assert cut - a.height > n, "the first file's held rows outlast the slice"
+        b = (
+            second.lazy()
+            .online.with_windows(**mixed(), load_state=state, save_state=state, **kw)
+            .head(n)
+            .collect()
+        )
+        c = po.stream.with_windows(second, **mixed(), load_state=state, **kw)
+        assert pl.concat([a, b, c]).equals(one), (cut, n)
+
+
+def test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row(
+    tmp_path: Any,
+) -> None:
+    """R6-D1: a backward operator under ``closed="left"`` (or any operator on
+    a row-count clock) resolves a row at its own push, so a sliced run holds
+    no row and the held rows identify nothing; round five's fallback to the
+    last clock was never reached. The state keeps the last row it read, and
+    another input is refused by it, with and without a clock column."""
+    df = pl.DataFrame(
+        {"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0]}
+    )
+    y = {"y": po.ewm_mean("x", half_life=1.0, closed="left")}
+    one = po.stream.with_windows(df, **y, **CLOCK)
+    state = tmp_path / "left.state"
+    head = df.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(3).collect()
+    assert head.height == 3
+    other = pl.DataFrame({"t": [0.0, 1.5, 2.5, 3.5, 4.5], "x": [1.0, 2.0, 4.0, 8.0, 16.0]})
+    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+        po.stream.with_windows(other, **y, load_state=state, **CLOCK)
+    rest = po.stream.with_windows(df, **y, load_state=state, **CLOCK)
+    assert pl.concat([head, rest]).equals(one)
+    # No clock column: the row-count clock repeats no stamp, so every row
+    # resolves at its push and the state holds none.
+    bare = df.drop("t")
+    y = {"y": po.ewm_mean("x", half_life=2.0)}
+    one = po.stream.with_windows(bare, **y)
+    state = tmp_path / "bare-left.state"
+    head = bare.lazy().online.with_windows(**y, save_state=state).head(4).collect()
+    assert head.height == 4
+    # Another input of the same length, differing where the state was cut
+    # (R7-E5: a slice shorter than the skip was refused by the count alone).
+    with pytest.raises(pl.exceptions.ComputeError, match="rows it read are not this input"):
+        po.stream.with_windows(bare.with_columns(x=pl.col("x") * 3), **y, load_state=state)
+    rest = po.stream.with_windows(bare, **y, load_state=state)
+    assert pl.concat([head, rest]).equals(one)
+
+
+def test_a_next_file_starts_after_the_last_stamp_the_state_read(tmp_path: Any) -> None:
+    """R6-D3: a sliced state takes an input that starts at the stamp of the
+    last row it read for the same input sliced inside a tied stamp, since a
+    file boundary inside one cannot be told from it, and refuses it by name;
+    one that starts after that stamp is the next file."""
+    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
+    state = tmp_path / "tie.state"
+    a = first.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
+    assert a.height == 1, "rows 1..4 wait for their windows"
+    tied = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [5.0, 6.0, 7.0]})
+    with pytest.raises(pl.exceptions.ComputeError, match="at the last stamp the state read"):
+        po.stream.with_windows(tied, **y, load_state=state, **CLOCK)
+    second = pl.DataFrame({"t": [4.0, 5.0, 6.0], "x": [5.0, 6.0, 7.0]})
+    c = po.stream.with_windows(second, **y, load_state=state, **CLOCK)
+    one = po.stream.with_windows(pl.concat([first, second]), **y, **CLOCK)
+    assert pl.concat([a, c]).equals(one)
+
+
+def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
+    tmp_path: Any,
+) -> None:
+    """R6-D4: a next-day file on a clock that starts over steps back from the
+    last row the state read. Where the clock policy takes that step as a new
+    start -- a step back past ``restart_after_step_back``, or a new session
+    -- the resumed run takes the file as the next one and skips nothing, as
+    an unsliced state does; round five refused it as at or before the last
+    row read. R7-E2: a clock that starts over at the *same* stamp each day
+    gives the next file the saved input's first clock; the state knows its
+    input by the first row's session too, so with a session column the file
+    is put to the policy all the same, and without one it is the saved
+    input until the rows differ, refused by name (the documented limit)."""
+    day1 = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "d": ["a"] * 7,
+        }
+    )
+    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    for start in (0.5, 0.0):
+        day2 = pl.DataFrame(
+            {"t": [start + i for i in range(8)], "x": [8.0 + i for i in range(8)], "d": ["b"] * 8}
+        )
+        for extra in ({"restart_after_step_back": 2.0}, {"session": "d", "session_gap": 1.0}):
+            kw = {**CLOCK, **extra}
+            state = tmp_path / f"{next(iter(extra))}-{start}.state"
+            a = day1.lazy().online.with_windows(**y, save_state=state, **kw).head(100).collect()
+            assert a.height < 7, "the last rows wait for their windows"
+            if start == 0.0 and "session" not in extra:
+                with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+                    po.stream.with_windows(day2, **y, load_state=state, **kw)
+                continue
+            one = po.stream.with_windows(pl.concat([day1, day2]), **y, **kw)
+            c = po.stream.with_windows(day2, **y, load_state=state, **kw)
+            assert pl.concat([a, c]).equals(one), (start, kw)

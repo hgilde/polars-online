@@ -28,8 +28,8 @@ carries breaking changes, and any change to the numbers a model returns.
   column form -- the same expression through `with_windows(..., like=spec)`
   fed back as a plain target under the same embargo -- prediction for
   prediction through every clock event. `po.FormulaTarget` is the table's
-  type. Schema 24 (a bank file carries each formula target's window
-  core in the windows state's version 3 form; a file before 24 is refused
+  type. Schema 25 (a bank file carries each formula target's window
+  core in the windows state's version 5 form; a file before 25 is refused
   by number).
 - **Window operators as Polars expressions** (task 143, with task 144's
   window semantics): `po.ewm_mean`, `po.rewm_mean`, `po.ewm_sum`,
@@ -150,8 +150,8 @@ carries breaking changes, and any change to the numbers a model returns.
     and refused by number.
 - **Review round R4** (the same day, two reviewers over rounds two and
   three; docs/PLAN.md §14): the resume-under-slice contract above, redone;
-  the bank's schema is 24, since the window core a bank file carries per
-  formula target changed form with the windows state, and a 23 file is
+  the bank's schema moved to 24, since the window core a bank file carries
+  per formula target changed form with the windows state, and a 23 file is
   refused by number; under `group`, a group silent past `gap_cap` has its
   windows cut as the stream's clock passes the cap, before its next row can
   say its session changed, so a `session_gap="reset"` there discards only
@@ -167,6 +167,31 @@ carries breaking changes, and any change to the numbers a model returns.
   sliced by hand, or one that ends early is refused by name (`another
   input`), with and without a clock column. Windows state version 4; a
   state file that cannot be read is reported as damaged.
+- **Review round R6** (the same day, one reviewer over round five's
+  additions; docs/PLAN.md §14): a sliced state that holds no rows (a
+  backward operator under `closed="left"` or `"none"`, any operator on a
+  row-count clock) had no identity, and another input was skipped
+  silently; the state now keeps the last row it read, and the identity is
+  the last rows read, with and without a clock column. A run on the next
+  file under a slice holds the previous file's unresolved rows ahead of
+  its own, which the identity took for this input's, refusing the resume;
+  it is the last `consumed` held rows at most. An input that starts
+  elsewhere is put to the clock policy: a step forward or a new start (a
+  step back past `restart_after_step_back`, a new session) is the next
+  file, and a step back the policy refuses, or the same stamp as the last
+  row read, is refused by name. What the run refuses while the plan runs
+  surfaces as `polars.exceptions.ComputeError`. Windows state version 5
+  and schema 25, the bank's minimum 25: round five moved the windows
+  version alone, so a 24 bank holding a version-4 core failed late.
+- **Review round R7** (the same day, one reviewer over round six's
+  additions, in the same commit; docs/PLAN.md §14): a clock that starts
+  over at the same stamp each day gave the next file the saved input's
+  first clock, so a sliced state refused it; the state knows its input by
+  the first row's session beside its clock, and with a session column the
+  file is put to the policy, while without one it is refused by name where
+  the rows differ, the one limit. The last row read is written and read
+  under a slice only, so an unsliced state holding no rows resumes on the
+  next file with a column more, as before.
 
 ### Changed
 

@@ -3811,7 +3811,7 @@ note, not a task.
       - **The state carries the cores**: `BankFile.resolvers`, per spec
         and group, each `WindowsRun::save_bytes`; a loaded bank resumes
         each at its group's first chunk, which says what the columns are.
-        Schema 23 (24 since review R4, which changed the window core's state).
+        Schema 23 (24 since review R4 and 25 since review R6, which changed the window core's state).
       - **Tests**: `crates/online-polars/tests/formula_targets.rs` (the
         column form fed back, bit for bit, in 1, 7 and 600 chunks; the
         short-embargo refusal and `fit`'s equal predictions; a state saved
@@ -10450,6 +10450,31 @@ committed.
 | C6 | a state cut short failed in the header read and was reported as "not a state it saved" | a header that cannot be read says "cannot be read: not a state it saved, or damaged"; B4's message stays for a header that read and a body that did not | `test_a_damaged_windows_state_says_so`, the Rust test above |
 | C7 | the plan's task 104 still said schema 23 | amended | -- |
 | C8 | the `with_windows` docstring and the changelog promised the chain under every chunk size and slice | true now; the identity and its one limit stated | -- |
+
+### Round six (the same day): one reviewer over round five's additions
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| D1 | the last-clock identity was dead code: the held snapshot was set even when empty, so a sliced state holding no rows (a backward operator under `closed="left"` or `"none"`, any operator on a row-count clock) had no identity, and another input or `df.slice(n)` was skipped silently; the changelog's "with and without a clock column" was false there | the state keeps the last row it read (windows state version 5), and the identity is the last rows read: the rows it holds that are the input's, or the last row where it holds none -- one path, no fallback | `test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row`, `windows_frame.rs::a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row` |
+| D2 | a run on the next file under a slice still holds the previous file's unresolved rows ahead of its own (rows go out in order, so none of its own went out while one of theirs waited), and the identity took them all for this input's: the held rows outnumbered the rows consumed, and a resume on the second file was refused as another input (traced by the author before the report, confirmed by a failing test) | the identity is the last `consumed` held rows at most | `test_a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held`, `windows_frame.rs::a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held` |
+| D3 | an input starting at the last stamp the state read -- a file boundary inside a tied stamp, ordinary with coarse stamps -- was refused as "at or before the last row", words that did not say a split inside one stamp is "at" | kept, by decision: a tie cannot be told from the same input sliced inside its last stamp, and a loud refusal beats a silent double feed; the message and the docstring say so, and that the next file starts after the last stamp read | `test_a_next_file_starts_after_the_last_stamp_the_state_read`, the Rust test under D4 |
+| D4 | a clock that starts over each day, under `restart_after_step_back` or with a `session` column, could never present an accepted next-day file after a sliced run: the rule refused every step back before the policy spoke, where an unsliced state took the file | the first row is put to the core's clocks without taking it (`Windows::peek`, the two advances `push` makes, shared): a step forward or a new start by the policy's word (a restart, a new session) is the next file; a step back the policy refuses, or the same stamp, is refused | `test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file`, `windows_frame.rs::a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file` |
+| D5 | `WINDOWS_VERSION` 3 to 4 moved alone, round four's A2 again: a 24 bank holding a version-4 core failed at a group's first chunk | `SCHEMA_VERSION` 25, the bank's minimum 25, and a tripwire pairing the two numbers so the next move of either fails until both move | `windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`, `test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number` (23 and 24) |
+| D6 | the binding's `Windows.save` doc, the changelog, and the docstring's error paragraph: what the run refuses while the plan runs surfaces as `polars.exceptions.ComputeError`, not `ValueError` | amended; the docstring states the rule for an input that starts elsewhere as a list | -- |
+| D7 | two of round five's claims had no test: a save under `input_ended` with a skip pending, and a run that saw no row saving the identity it loaded | pinned | `windows_frame.rs::a_resumed_run_that_saw_no_row_saves_the_identity_it_loaded`; the `input_ended` leg of `test_a_state_saved_under_a_slice_refuses_another_input` |
+
+### Round seven (the same day): one reviewer over round six's additions
+
+Folded into round six's commit: round seven adds a field to the windows state, and no commit should carry version 5 without it.
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| E1 | `push` lost its doc comment to the new `step_clocks`, inserted between the comment and the function | the comment moved back | -- |
+| E2 | a clock that starts over at the *same* stamp each day gives the next file the saved input's first clock, so the rule never reached the policy and the identity refused the file; round six's test dodged it with a start of 0.5 | the state knows its input by the first row's session beside its clock, so with a session column the file differs at its first row and is put to the policy; without one it is the saved input until the rows differ, refused by name -- the limit the docstring states | the D4 tests with day 2 at the same first stamp, both legs |
+| E3 | the last row's columns check ran on every load, so an unsliced state holding no rows refused the next file with a column more, which it took before; the bank wrote the row for every core on every save and never read it | the row is written and read under a skip only; the columns message pinned | `windows_frame.rs::the_last_row_binds_a_sliced_state_only` |
+| E4 | the last row went out of step with `consumed` on two paths no caller reaches: a skip still pending recorded the last skipped row while the count included the rest, and a refusal mid-chunk held rows without recording the last | by construction: the row is set when the skip completes (the loaded row until then) and in the refusal branch | not observable; the invariant is structural |
+| E5 | the bare leg of the no-rows test was refused by the count (three rows against a skip of four), never the compare; the no-row re-save test pinned the count, not the identity | another input of the same length; a `closed="left"` leg resuming the re-saved state on another input | the same tests |
+| E6 | the docstring lost R4-B3's "without a clock column, resume on the same input", and did not say a hand slice starting after the last clock read (possible after a restart) is taken as the next file | both stated | -- |
 
 ## Follow-on documents
 

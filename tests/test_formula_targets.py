@@ -716,16 +716,22 @@ def test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean() -> N
 
 
 def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number() -> None:
-    """R4-A2: a bank file carries each formula target's window core in the
-    windows state's own form, which went to version 3 in round three; the
-    bank's schema is 24 since, so a 23 file is refused at load by its number,
-    not at a group's first chunk by the windows message."""
+    """R4-A2, then R6-D5: a bank file carries each formula target's window
+    core in the windows state's own form, which went to version 3 in round
+    three, 4 in round five and 5 in round six; the bank's schema moved with
+    the first and the last (25 since round six), so a file before it is
+    refused at load by its number, not at a group's first chunk by the
+    windows message. Round five moved the windows version alone, and a 24
+    file holding a version-4 core failed late."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 24, state[i]
-    old = state[:i] + bytes([23]) + state[i + 1 :]
-    with pytest.raises(ValueError, match=r"schema version 23 not supported \(this build loads 24"):
-        po.ModelBank.load_bytes(old)
+    assert state[i] == 25, state[i]
+    for before in (23, 24):
+        old = state[:i] + bytes([before]) + state[i + 1 :]
+        with pytest.raises(
+            ValueError, match=rf"schema version {before} not supported \(this build loads 25"
+        ):
+            po.ModelBank.load_bytes(old)
