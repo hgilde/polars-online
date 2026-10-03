@@ -83,8 +83,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// 21 they counted rows where they now run on the clock (task 146). Refused
 /// by its version rather than by a parse error deep in a spec; pre-1.0, no
 /// loader is written. **22 since task 144** (2026-10-02): the specs a bank
-/// file stores carry the renamed parameters.
-const MIN_BANK_SCHEMA_VERSION: u32 = 22;
+/// file stores carry the renamed parameters. **24 since review R4**
+/// (2026-10-03): the window core a bank file carries per formula target is
+/// in the windows state's version 3 form, refused here by number rather
+/// than at a group's first chunk.
+const MIN_BANK_SCHEMA_VERSION: u32 = 24;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

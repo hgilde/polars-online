@@ -727,10 +727,11 @@ impl PyWindows {
         })
     }
 
-    /// The state, written to `path` whole or not at all. The next run
-    /// skips `skip_on_resume` rows of its input: under a slice, the rows
-    /// read past the last returned (`rows_ahead`), which a run resumed on
-    /// the input after the rows returned would feed again.
+    /// The state, written to `path` whole or not at all. A run resumed on
+    /// the same input skips its first `skip_on_resume` rows: under a slice,
+    /// the rows this run consumed (`consumed`); the state remembers the
+    /// input by its first row's clock, and a run on an input that starts
+    /// elsewhere skips nothing.
     #[pyo3(signature = (path, skip_on_resume=0))]
     fn save(slf: &Bound<'_, Self>, path: &str, skip_on_resume: usize) -> PyResult<()> {
         let this = slf.try_borrow().map_err(|_| windows_busy("save"))?;
@@ -769,11 +770,11 @@ impl PyWindows {
         Ok(this.inner.held())
     }
 
-    /// Rows this run read past the last row it returned: what a run
-    /// resumed on the input after the rows returned must skip.
-    fn rows_ahead(slf: &Bound<'_, Self>) -> PyResult<usize> {
-        let this = slf.try_borrow().map_err(|_| windows_busy("rows_ahead"))?;
-        Ok(this.inner.rows_ahead())
+    /// Rows of this run's input the run consumed, skipped or fed: what a
+    /// run resumed on the same input must skip.
+    fn consumed(slf: &Bound<'_, Self>) -> PyResult<usize> {
+        let this = slf.try_borrow().map_err(|_| windows_busy("consumed"))?;
+        Ok(this.inner.consumed())
     }
 
     /// Contributing rows the windows' queues hold.

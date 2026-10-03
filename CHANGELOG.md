@@ -28,7 +28,9 @@ carries breaking changes, and any change to the numbers a model returns.
   column form -- the same expression through `with_windows(..., like=spec)`
   fed back as a plain target under the same embargo -- prediction for
   prediction through every clock event. `po.FormulaTarget` is the table's
-  type. Schema 23 (additive; a 22 file still loads).
+  type. Schema 24 (a bank file carries each formula target's window
+  core in the windows state's version 3 form; a file before 24 is refused
+  by number).
 - **Window operators as Polars expressions** (task 143, with task 144's
   window semantics): `po.ewm_mean`, `po.rewm_mean`, `po.ewm_sum`,
   `po.rewm_sum`, `po.ewm_rate`, `po.rewm_rate` and `po.increment` each
@@ -134,12 +136,27 @@ carries breaking changes, and any change to the numbers a model returns.
     row's session, so groups with sessions of their own saw a change at
     every row, and every group's windows started over at every row. Without
     `group` the stream is the one group, as before.
-  - A state saved under a slice (`head(n)`) holds the rows read past the
-    *n*-th row returned, and a run resumed on `df.slice(n)` fed them again;
-    the state now says how many to skip (`Windows.rows_ahead`).
+  - A state saved under a slice (`head(n)`) holds rows read past the
+    *n*-th row returned, which a run resumed on the rest of the input fed
+    again. The state now records how many rows of the input the run
+    consumed and the input's first clock; a run resumed with `load_state`
+    on the same input, unsliced, skips them, so any chain of sliced runs
+    gives one run's output, and a run on an input that starts at another
+    clock skips nothing (round four: a count of rows returned, tried
+    first, broke a chain on its third run and dropped rows of the next
+    file).
   - A windows state of version 2 (before round one) loaded with defaults
     for the fields round one added; the version is read before the rest,
     and refused by number.
+- **Review round R4** (the same day, two reviewers over rounds two and
+  three; docs/PLAN.md §14): the resume-under-slice contract above, redone;
+  the bank's schema is 24, since the window core a bank file carries per
+  formula target changed form with the windows state, and a 23 file is
+  refused by number; under `group`, a group silent past `gap_cap` has its
+  windows cut as the stream's clock passes the cap, before its next row can
+  say its session changed, so a `session_gap="reset"` there discards only
+  what is still open (recorded with a test; without `group` the reset comes
+  first); a kernel's window in nanoseconds must be its window in seconds.
 
 ### Changed
 

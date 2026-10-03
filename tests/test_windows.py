@@ -1196,28 +1196,76 @@ def test_with_groups_a_session_is_each_groups() -> None:
     assert po.stream.with_windows(one, y=total, **kw)["y"].to_list() == [1, 10, 3, 30]
 
 
-def test_a_state_saved_under_a_slice_skips_the_rows_read_past_it(tmp_path: Any) -> None:
-    """R2-W4: under ``head(n)`` the run reads past the n-th row (a backward
-    ``"right"`` window waits for the next stamp, a look-ahead for its window
-    to pass), and the state held those rows; a run resumed on the input
-    after the *n* rows returned fed them again. A ``partial="drop"`` row is
-    read and not returned, so it is skipped too."""
+def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any) -> None:
+    """R2-W4, then R4-B1/B2: under ``head(n)`` the run reads past the n-th
+    row (a backward ``"right"`` window waits for the next stamp, a look-ahead
+    for its window to pass). The state records the rows of the input the run
+    consumed, skipped or fed, and the input's first clock; a run resumed with
+    the same input, unsliced, skips them and goes on, so any chain of sliced
+    runs gives one run's output, a ``partial="drop"`` row (consumed, never
+    returned) and rows held from an earlier run (returned, not this input's)
+    included."""
     df = ticks(60, 19, groups=2)
     dropping = {"e": po.rewm_mean("x", half_life=2.0, window_size=4.0, partial="drop")}
     for exprs, cap in [(mixed(), 20.0), (mixed() | dropping, 4.0)]:
         kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g"}
         one = po.stream.with_windows(df, **exprs, **kw)
-        assert one.height > 17, "the dropping leg keeps enough rows to slice"
-        for at in (1, 2, 17, 33):
-            if at >= one.height:
-                continue
+        assert one.height > 20, "the dropping leg keeps enough rows to slice"
+        for at in (1, 2, 17):
             state = tmp_path / f"h{at}-{cap}.state"
             head = df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(at).collect()
             assert head.height == at
-            rest = (
-                df.slice(at).lazy().online.with_windows(**exprs, load_state=state, **kw).collect()
-            )
+            rest = df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect()
             assert pl.concat([head, rest]).equals(one), (at, cap)
+        # A chain: six sliced runs, each resumed from the last and saved again,
+        # then the rest.
+        state = tmp_path / f"chain-{cap}.state"
+        parts = [df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(3).collect()]
+        for _ in range(5):
+            parts.append(
+                df.lazy()
+                .online.with_windows(**exprs, load_state=state, save_state=state, **kw)
+                .head(3)
+                .collect()
+            )
+        parts.append(df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect())
+        assert all(p.height == 3 for p in parts[:6]), [p.height for p in parts]
+        assert pl.concat(parts).equals(one), cap
+
+
+def test_rows_held_from_an_earlier_input_are_not_this_inputs(tmp_path: Any) -> None:
+    """R4-B2: a run on the next file first returns the rows the state held
+    from the file before, which are not rows of this input; a slice that
+    returns them must not count them as consumed."""
+    df = ticks(60, 19, groups=2)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    one = po.stream.with_windows(df, **mixed(), **kw)
+    file1, file2 = df.slice(0, 30), df.slice(30)
+    state = tmp_path / "two.state"
+    a = po.stream.with_windows(file1, **mixed(), save_state=state, **kw)
+    assert a.height < 30, "file1 ends with rows held for their windows"
+    b = (
+        file2.lazy()
+        .online.with_windows(**mixed(), load_state=state, save_state=state, **kw)
+        .head(5)
+        .collect()
+    )
+    c = file2.lazy().online.with_windows(**mixed(), load_state=state, **kw).collect()
+    assert pl.concat([a, b, c]).equals(one)
+
+
+def test_a_state_saved_under_a_slice_skips_nothing_of_another_input(tmp_path: Any) -> None:
+    """R4-B3: the next file starts at another clock, so a state saved under a
+    slice of the file before skips none of its rows; the rows the state held
+    come out first."""
+    df = ticks(60, 19, groups=2)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    file1, file2 = df.slice(0, 30), df.slice(30)
+    state = tmp_path / "next.state"
+    file1.lazy().online.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
+    out = po.stream.with_windows(file2, **mixed(), load_state=state, **kw)
+    assert out["t"].to_list()[-file2.height :] == file2["t"].to_list()
+    assert out["t"][0] < file2["t"][0], "the rows the state held come out first"
 
 
 def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: Any) -> None:
@@ -1232,3 +1280,26 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
+
+
+def test_a_silent_groups_session_reset_after_a_capped_gap_is_a_cut() -> None:
+    """R4-A1, a decision recorded: under ``group`` the stream's clock cuts a
+    group silent past ``gap_cap`` as soon as another group's row shows the
+    silence, before the group's next row can say its session changed, so a
+    ``session_gap="reset"`` there discards only what is still open. The same
+    rows without a group column discard, since one clock sees the gap and
+    the session change at one row, and the reset comes first."""
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 4.0, 8.0, 9.0],
+            "g": ["a", "b", "b", "a", "a", "b"],
+            "s": [1, 1, 1, 1, 1, 2],
+            "x": [1.0, 10.0, 20.0, 1.0, 1.0, 30.0],
+        }
+    )
+    fwd = po.rewm_sum("x", half_life=math.inf, window_size=10.0, partial="keep")
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 5.0, "session": "s", "session_gap": "reset"}
+    grouped = po.stream.with_windows(df, y=fwd, group="g", **kw)
+    assert grouped["y"][1] == 20.0, grouped["y"].to_list()
+    alone = po.stream.with_windows(df.filter(pl.col("g") == "b"), y=fwd, **kw)
+    assert alone["y"][0] is None, alone["y"].to_list()

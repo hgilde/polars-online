@@ -709,3 +709,23 @@ def test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean() -> N
     got = native(df, s)
     want = column_form(df, s, expr)
     assert field(got, "pred_fwd") == field(want, "pred_fwd")
+
+
+# --------------------------------------------------------------------------
+# Review round R4 (2026-10-03)
+
+
+def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number() -> None:
+    """R4-A2: a bank file carries each formula target's window core in the
+    windows state's own form, which went to version 3 in round three; the
+    bank's schema is 24 since, so a 23 file is refused at load by its number,
+    not at a group's first chunk by the windows message."""
+    bank = po.ModelBank([spec(fwd())])
+    bank.fit_predict(stream(60, 50))
+    state = bank.save_bytes()
+    key = b"\xaeschema_version"
+    i = state.index(key) + len(key)
+    assert state[i] == 24, state[i]
+    old = state[:i] + bytes([23]) + state[i + 1 :]
+    with pytest.raises(ValueError, match=r"schema version 23 not supported \(this build loads 24"):
+        po.ModelBank.load_bytes(old)

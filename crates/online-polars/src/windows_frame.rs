@@ -82,6 +82,7 @@ struct FileOut<'a> {
     increments: &'a [IncrState],
     stream_clock: Option<ClockValue>,
     resume_skip: usize,
+    resume_first: Option<ClockValue>,
 }
 
 /// The rest of the file, after [`Header`]'s two fields.
@@ -93,10 +94,15 @@ struct FileIn {
     increments: Vec<IncrState>,
     #[serde(default)]
     stream_clock: Option<ClockValue>,
-    /// Rows of the next run's input already read: see
-    /// [`WindowsRun::rows_ahead`] (review R2, W4).
+    /// Rows of the input this state was saved under that the run consumed,
+    /// for a run resumed on that input: see [`WindowsRun::consumed`]
+    /// (review R2, W4; R4, B1).
     #[serde(default)]
     resume_skip: usize,
+    /// That input's first row's clock: a resume on an input that starts
+    /// elsewhere skips nothing (review R4, B3).
+    #[serde(default)]
+    resume_first: Option<ClockValue>,
 }
 
 /// The file's first two fields, read before the rest: a state another
@@ -497,14 +503,17 @@ pub struct WindowsRun {
     /// The core's row count at this run's first row: an error names the
     /// row of this run's input.
     run_base: u64,
-    /// Rows at the start of the next input to skip, from a state saved
-    /// under a slice (review R2, W4), and how many this run has skipped,
-    /// which an error's row number counts.
+    /// Rows at the start of the input to skip, from a state saved under a
+    /// slice of the same input (review R2, W4; R4, B1), the first clock of
+    /// the input that state was saved under (R4, B3), and how many rows
+    /// this run has skipped, which an error's row number counts.
     resume_skip: usize,
+    resume_first: Option<ClockValue>,
     skipped: u64,
-    /// Rows of this run's input that went out: the rows fed less these are
-    /// what the run read past the last row it returned.
-    returned: usize,
+    /// The first row's clock of this run's input, and whether a row has
+    /// been seen: what a state saved by this run remembers its input by.
+    first_clock: Option<ClockValue>,
+    started: bool,
 }
 
 impl WindowsRun {
@@ -586,7 +595,9 @@ impl WindowsRun {
                     direction: Direction::Backward,
                     half_life: f64::INFINITY,
                     window_size: Some(1.0),
-                    window_ns: None,
+                    // Its edge is never read, but on a temporal clock an
+                    // integer window converts nothing (review R4).
+                    window_ns: Some(1_000_000_000),
                     closed: Closed::Left,
                 }],
                 vec![OpDef {
@@ -624,8 +635,10 @@ impl WindowsRun {
             stream_clock: None,
             run_base: 0,
             resume_skip: 0,
+            resume_first: None,
             skipped: 0,
-            returned: 0,
+            first_clock: None,
+            started: false,
         })
     }
 
@@ -709,10 +722,23 @@ impl WindowsRun {
         limit: Option<usize>,
         resolving: Option<&[u64]>,
     ) -> PolarsResult<DataFrame> {
-        // A state saved under a slice holds the rows read past the last row
-        // returned, and a run resumed from the returned count feeds them
-        // again (review R2, W4): the first `resume_skip` rows of the new
-        // input are those, and are skipped.
+        // The clock of the whole chunk first: the row numbers an error
+        // names count the rows skipped below.
+        let mut clock = self.clock_values(df)?;
+        // A state saved under a slice recorded the rows of its input the
+        // run consumed; a run resumed on that input skips them (review R2,
+        // W4; R4, B1). The input's first clock says whether this is that
+        // input: one that starts elsewhere, the next file, skips nothing
+        // (R4, B3). Without a clock column the rows are skipped either way.
+        if !self.started && df.height() > 0 {
+            self.started = true;
+            self.first_clock = clock.as_ref().map(|c| c[0]);
+            if let (Some(saved), Some(now)) = (self.resume_first, self.first_clock) {
+                if saved != now {
+                    self.resume_skip = 0;
+                }
+            }
+        }
         let skipped: DataFrame;
         let mut df = df;
         let mut resolving = resolving;
@@ -723,9 +749,11 @@ impl WindowsRun {
             skipped = df.slice(skip as i64, df.height() - skip);
             df = &skipped;
             resolving = resolving.map(|r| &r[skip..]);
+            if let Some(c) = &mut clock {
+                c.drain(..skip);
+            }
         }
         let n = df.height();
-        let clock = self.clock_values(df)?;
         let session: Option<Vec<u64>> = match &self.config.session {
             None => None,
             Some(c) => {
@@ -863,7 +891,6 @@ impl WindowsRun {
         e: crate::windows::Emitted,
         at: &[u64],
     ) -> PolarsResult<DataFrame> {
-        self.note_returned(&e, true);
         let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
         let mut frame = self.assemble_rows(e)?;
         frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
@@ -890,23 +917,13 @@ impl WindowsRun {
         frame.lazy().with_columns(exprs).select(keep).collect()
     }
 
-    /// Count the rows of `e` this run's input fed that go out: what a run
-    /// resumed on the input after the rows returned must not feed again
-    /// (review R2, W4). A dropped row goes out only when `resolving`.
-    fn note_returned(&mut self, e: &crate::windows::Emitted, resolving: bool) {
-        for (i, &dropped) in e.drop.iter().enumerate() {
-            if (resolving || !dropped) && e.first_seq + i as u64 >= self.run_base {
-                self.returned += 1;
-            }
-        }
-    }
-
-    /// Rows this run read past the last row it returned: under a slice,
-    /// what a run resumed on the input after the rows returned must skip
-    /// ([`Self::save_bytes_with`]).
-    pub fn rows_ahead(&self) -> usize {
-        let fed = usize::try_from(self.core.next_seq() - self.run_base).expect("rows fit");
-        fed - self.returned
+    /// Rows of this run's input the run consumed, skipped as already read
+    /// or fed to the core: under a slice, what a run resumed on the same
+    /// input must skip ([`Self::save_bytes_with`]). Rows the state held
+    /// from an earlier run and returned are none of this input's (review
+    /// R4, B1 and B2).
+    pub fn consumed(&self) -> usize {
+        usize::try_from(self.skipped + (self.core.next_seq() - self.run_base)).expect("rows fit")
     }
 
     /// The end of the input: every row still held goes out, each forward
@@ -1201,7 +1218,6 @@ impl WindowsRun {
     /// The first `e.rows` held rows with the formulas evaluated beside
     /// them, less the dropped ones and the hidden columns.
     fn assemble(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
-        self.note_returned(&e, false);
         let drop = e.drop.clone();
         let mut frame = self.assemble_rows(e)?;
         if drop.iter().any(|&d| d) {
@@ -1293,11 +1309,11 @@ impl WindowsRun {
         self.save_bytes_with(0)
     }
 
-    /// [`Self::save_bytes`] for a state saved under a slice: the next run
-    /// skips the first `skip_on_resume` rows of its input, the rows this
-    /// run read past the last it returned ([`Self::rows_ahead`]), which a
-    /// run resumed on the input after the rows returned would feed again
-    /// (review R2, W4).
+    /// [`Self::save_bytes`] for a state saved under a slice: a run resumed
+    /// on the same input skips its first `skip_on_resume` rows, the rows
+    /// this run consumed ([`Self::consumed`]); the state remembers the
+    /// input by its first row's clock, and a run on an input that starts
+    /// elsewhere skips nothing (review R2, W4; R4, B1 to B3).
     pub fn save_bytes_with(&self, skip_on_resume: usize) -> Result<Vec<u8>, String> {
         let held_schema = {
             let mut s = self.input.clone();
@@ -1323,6 +1339,7 @@ impl WindowsRun {
             increments: &self.incr_state,
             stream_clock: self.stream_clock,
             resume_skip: skip_on_resume,
+            resume_first: self.first_clock,
         })
         .map_err(|e| e.to_string())
     }
@@ -1362,8 +1379,12 @@ impl WindowsRun {
                 header.version
             ));
         }
-        let file: FileIn = rmp_serde::from_slice(bytes)
-            .map_err(|e| format!("{WHO}: not a state it saved ({e})"))?;
+        let file: FileIn = rmp_serde::from_slice(bytes).map_err(|e| {
+            format!(
+                "{WHO}: the state is damaged, or was written by a build that changed a field \
+                 without bumping the version ({e})"
+            )
+        })?;
         if file.config != config {
             return Err(format!(
                 "{WHO}: the state was saved by another call -- other formulas or another clock \
@@ -1421,6 +1442,7 @@ impl WindowsRun {
         }
         run.stream_clock = file.stream_clock;
         run.resume_skip = file.resume_skip;
+        run.resume_first = file.resume_first;
         for (i, st) in file.increments.into_iter().enumerate() {
             match &st.key {
                 Some(k) => {
@@ -1639,32 +1661,57 @@ mod tests {
         assert!(got.equals_missing(&want));
     }
 
-    /// Review R2, W4: a state saved under a slice holds the rows read past
-    /// the last row returned; a run resumed on the input after the rows
-    /// returned skips them, and reads the rest as one run would.
+    /// Review R2, W4, then R4, B1 to B3: a state saved under a slice records
+    /// the rows of its input the run consumed, skipped or fed, and the
+    /// input's first clock. A run resumed on the same input skips them, so a
+    /// chain of sliced runs reads the rest as one run would, rows held from
+    /// an earlier run and returned counted as none of this input's; a run
+    /// on an input that starts at another clock skips nothing.
     #[test]
-    fn a_state_saved_under_a_slice_skips_the_rows_read_past_it() {
+    fn a_state_saved_under_a_slice_resumes_on_the_same_input() {
         let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
         let mut whole = one.feed(&df, None).unwrap();
         whole.vstack_mut(&one.finish().unwrap()).unwrap();
-        for at in [1, 2, 3, 4] {
-            let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
-            let head = run.feed(&df, Some(at)).unwrap();
-            assert_eq!(head.height(), at);
-            assert!(run.rows_ahead() > 0, "a look-ahead reads past the slice");
-            let bytes = run.save_bytes_with(run.rows_ahead()).unwrap();
-            let mut rest = WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).unwrap();
-            let tail = df.slice(at as i64, df.height() - at);
-            let mut second = rest.feed(&tail, None).unwrap();
-            second.vstack_mut(&rest.finish().unwrap()).unwrap();
-            let mut both = head.clone();
-            both.vstack_mut(&second).unwrap();
-            assert!(
-                both.equals_missing(&whole),
-                "head {at}: {both} against {whole}"
-            );
+        let mut out: Option<DataFrame> = None;
+        let mut state: Option<Vec<u8>> = None;
+        for _ in 0..4 {
+            let mut run = match &state {
+                None => WindowsRun::new(config(FORWARD), df.schema()).unwrap(),
+                Some(b) => WindowsRun::load_bytes(b, config(FORWARD), df.schema()).unwrap(),
+            };
+            let part = run.feed(&df, Some(1)).unwrap();
+            assert_eq!(part.height(), 1);
+            state = Some(run.save_bytes_with(run.consumed()).unwrap());
+            match &mut out {
+                None => out = Some(part),
+                Some(o) => {
+                    o.vstack_mut(&part).unwrap();
+                }
+            }
         }
+        let state = state.unwrap();
+        let mut rest = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut tail = rest.feed(&df, None).unwrap();
+        tail.vstack_mut(&rest.finish().unwrap()).unwrap();
+        let mut both = out.unwrap();
+        both.vstack_mut(&tail).unwrap();
+        assert!(both.equals_missing(&whole), "{both} against {whole}");
+        // The next file starts at another clock: none of its rows skipped.
+        let later = frame(&[10.0, 11.0, 12.0]);
+        let mut next = WindowsRun::load_bytes(&state, config(FORWARD), later.schema()).unwrap();
+        let mut got = next.feed(&later, None).unwrap();
+        got.vstack_mut(&next.finish().unwrap()).unwrap();
+        let fed_later = got
+            .column("t")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|t| *t >= 10.0)
+            .count();
+        assert_eq!(fed_later, 3, "{got}");
     }
 
     /// Review R2, W5: a state written by version 2 (before round one)

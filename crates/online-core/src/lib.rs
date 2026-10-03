@@ -350,7 +350,13 @@ pub use window::{
 ///   rows it holds. Both are additive with defaults, so a 22 file -- which
 ///   has no formula target -- loads as it was, and the bank's minimum stays
 ///   22.
-pub const SCHEMA_VERSION: u32 = 23;
+/// - 24 (2026-10-03, review R4): the window core a bank file carries per
+///   formula target is in the windows state's version 3 form (a row's raw
+///   clock in its queues, the rows a resume skips), so a 23 file holding
+///   one would fail at a group's first chunk; the bank refuses one older
+///   than 24 by number (pre-1.0, no loader). The models' own states are
+///   unchanged, and still load from 14.
+pub const SCHEMA_VERSION: u32 = 24;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

@@ -246,6 +246,15 @@ impl KernelDef {
             }
             _ => {}
         }
+        // The two forms of one window agree (review R4, A4): membership is
+        // decided on the integer, the far edge and `complete` on the number.
+        if let (Some(w), Some(ns)) = (self.window_size, self.window_ns) {
+            if seconds_of_ns(i128::from(ns)) != w {
+                return Err(format!(
+                    "window_ns {ns} is not window_size {w} in nanoseconds"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -3022,6 +3031,7 @@ mod tests {
         let one = run(&kernels, &ops, c, &rows, 1).unwrap();
         for at in [1, 2, 17, 60, 119] {
             let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+            core.set_grouped(true);
             let (mut t, mut next) = (Table::default(), 0);
             for r in &rows[..at] {
                 push(&mut core, r).unwrap();
@@ -3293,5 +3303,105 @@ mod tests {
                 "edges exercised"
             );
         }
+    }
+
+    /// Review R4, A1, recorded and not changed: under groups the stream's
+    /// clock cuts a group silent past `gap_cap` when another group's row
+    /// shows the silence, before the group's next row can say its session
+    /// changed; a `session_gap = "reset"` then discards only what is still
+    /// open. The same rows without a group column discard, since the one
+    /// clock sees the gap and the session change at one row, and the reset
+    /// comes first.
+    #[test]
+    fn a_silent_groups_reset_after_a_capped_gap_is_a_cut() {
+        let k = KernelDef {
+            direction: Direction::Forward,
+            half_life: f64::INFINITY,
+            window_size: Some(10.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+        };
+        let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
+            group: g.map(str::to_string),
+            clock: Some(ClockValue::F64(t)),
+            session: Some(s),
+            values: vec![x],
+            accept: true,
+        };
+        let (a, b) = (Some("a"), Some("b"));
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 1, 10.0),
+            row(2.0, b, 1, 20.0),
+            row(4.0, a, 1, 1.0),
+            row(8.0, a, 1, 1.0),
+            row(9.0, b, 2, 30.0),
+        ];
+        let c = || cfg(5.0, Some(SessionGap::Reset), None);
+        let grouped = run(
+            std::slice::from_ref(&k),
+            std::slice::from_ref(&op),
+            c(),
+            &rows,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            grouped.values[0][1], 20.0,
+            "cut at t = 8: the window over what b saw"
+        );
+        let alone: Vec<Row> = rows
+            .iter()
+            .filter(|r| r.group.as_deref() == b)
+            .map(|r| Row {
+                group: None,
+                ..r.clone()
+            })
+            .collect();
+        let one = run(
+            std::slice::from_ref(&k),
+            std::slice::from_ref(&op),
+            c(),
+            &alone,
+            1,
+        )
+        .unwrap();
+        assert!(
+            one.values[0][0].is_nan(),
+            "discarded at t = 9: {:?}",
+            one.values[0]
+        );
+    }
+
+    /// Review R4, A4: a kernel's two forms of its window agree, or the
+    /// kernel is refused.
+    #[test]
+    fn a_kernels_window_ns_must_be_its_window_size() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+        };
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 1.0,
+            window_size: Some(0.3),
+            window_ns: Some(300_000_001),
+            closed: Closed::Right,
+        };
+        let err = Windows::new(vec![k], vec![op], cfg(10.0, None, None)).expect_err("refused");
+        assert!(
+            err.contains("window_ns 300000001 is not window_size 0.3"),
+            "{err}"
+        );
     }
 }
