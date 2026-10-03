@@ -4543,8 +4543,10 @@ decision it needs, with a recommendation where there is one.
       sample, k chosen by EW SSQ, clusterwise regression, the prototyped
       clusterers; BEYOND-O-STATE's B3 (frequent directions), B4 (a
       fixed-lag smoother) and B5 (multi-lag residual checks); state as data
-      and `save_state=callable`; E63's `weight_from`. (`label_delay`'s
-      buffer bound moved to task 104; the docstring pass to task 148.)
+      and `save_state=callable`; E63's `weight_from`; a clock per window
+      operator, Polars' `by=`, analysed and costed in task 143 (2026-10-02).
+      (`label_delay`'s buffer bound moved to task 104; the docstring pass to
+      task 148.)
 
 - [x] 119. **Housekeeping.** S; *the user's call*. The 13 remote branches
       merged into `origin/main` (three point at release tags) and about 40
@@ -5768,9 +5770,10 @@ is not, since the model alone has `0.0` and `3.5` there.
         through `like=`.
       - **The clock and its policy** -- `max_dclock`, `on_clock_reset`,
         `min_backwards_jump`, sessions, groups -- are task 78's, shared by
-        every operator in the call. **Open, the user's call: a clock per
-        operator**, Polars' `by=`, so that volume-clock and time-clock
-        windows share a call. Analysed 2026-10-02: possible, since every
+        every operator in the call. **A clock per operator, Polars' `by=`,
+        waits on a need** (decided 2026-10-02, the user: "Follow the reco";
+        task 118 lists it), so that volume-clock and time-clock windows
+        could share a call. Analysed: possible, since every
         queue item already carries its own policy time and nothing in the
         core assumes one clock but the clock fields themselves. The core
         keys each kernel by its clock; the clock state, the policy time, the
@@ -5793,9 +5796,9 @@ is not, since the model alone has `0.0` and `3.5` there.
         next trade, since the quotes between two trades share one volume.
         Two calls compose for the column form, a formula over the first
         call's outputs in the second, at the cost of a second pass and a
-        second state file. Recommended: not until a need appears (task
-        118's rule); if built, inside 143, where the kernel keying is being
-        rewritten anyway.
+        second state file. Not built until a need appears; then inside 143,
+        where the kernel keying is being rewritten anyway, if 143 is still
+        open.
       - **As a target** (task 104), the same expression in `targets=[...]`,
         evaluated by Polars on the rows the window core resolves in each
         chunk: one evaluator for the column and the target, nothing
