@@ -191,6 +191,39 @@ def operators(tree: Any) -> list[list[Any]]:
     return out
 
 
+#: The operators that look ahead: a formula with one is a target of the
+#: row's future (docs/PLAN.md task 104).
+FORWARD = ("rewm_mean", "rewm_sum", "rewm_rate")
+
+
+def columns(tree: Any) -> list[str]:
+    """Every column ``tree`` reads, in first-seen order."""
+    out: list[str] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, list) or not node:
+            return
+        head = node[0]
+        if head == "col":
+            if node[1] not in out:
+                out.append(node[1])
+        elif head == "lit":
+            return
+        elif head in OPERATORS:
+            walk(node[1])
+        else:
+            for arg in node[1:]:
+                walk(arg)
+
+    walk(tree)
+    return out
+
+
+def looks_ahead(tree: Any) -> bool:
+    """Whether ``tree`` holds an operator over the rows after each row."""
+    return any(op[0] in FORWARD for op in operators(tree))
+
+
 def compact(node: Any) -> str:
     """One operator node as the text its column carries: compact JSON with
     sorted keys, so one operator asked for twice is one column."""

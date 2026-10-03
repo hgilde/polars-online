@@ -30,11 +30,21 @@
 //! table's `name`, which the output fields carry, is its `column` unless
 //! given. A spec whose targets are all plain columns writes them as the
 //! strings it always did, so its bytes do not move.
+//!
+//! A target may also be a **formula of the row's future** (docs/PLAN.md task
+//! 104): a table with a `name` and a `formula`, task 143's compact tree of
+//! window operators -- `po.rewm_mean("mid", half_life="10s",
+//! window_size="1m") - pl.col("mid")` in Python, the same tree in TOML --
+//! holding at least one forward operator. Its value is not known at its row:
+//! the bank's window core resolves it when the window closes, and the row is
+//! learned from then, under the spec's `embargo`.
 
 use std::fmt;
 use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
+
+use crate::formula::Node;
 
 /// How a relative target is taken against its reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -66,13 +76,17 @@ impl Relative {
 
 /// One target: the name its output fields carry, the column its values are
 /// read from, and for a relative target the column of the same row they are
-/// taken against, and how.
+/// taken against, and how; or, for a formula target, the formula of the
+/// row's future (`column` is then empty and never read).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetDef {
     pub name: String,
     pub column: String,
     pub relative_to: Option<String>,
     pub relative: Relative,
+    /// A formula over window operators, at least one looking ahead
+    /// (docs/PLAN.md task 104); `None` for a column target.
+    pub formula: Option<Node>,
 }
 
 impl TargetDef {
@@ -84,12 +98,51 @@ impl TargetDef {
             column,
             relative_to: None,
             relative: Relative::Difference,
+            formula: None,
+        }
+    }
+
+    /// A formula target under `name`.
+    pub fn formula(name: impl Into<String>, tree: Node) -> Self {
+        Self {
+            name: name.into(),
+            column: String::new(),
+            relative_to: None,
+            relative: Relative::Difference,
+            formula: Some(tree),
         }
     }
 
     /// A column read as it is, under its own name: what a string target is.
     pub fn is_plain(&self) -> bool {
-        self.relative_to.is_none() && self.name == self.column
+        self.formula.is_none() && self.relative_to.is_none() && self.name == self.column
+    }
+
+    /// Whether the target is a formula of the row's future, resolved by the
+    /// bank's window core rather than read from a column.
+    pub fn is_formula(&self) -> bool {
+        self.formula.is_some()
+    }
+
+    /// The column the target's value is read from, at its own row: `None`
+    /// for a formula target.
+    pub fn value_column(&self) -> Option<&str> {
+        if self.formula.is_some() {
+            None
+        } else {
+            Some(self.column.as_str())
+        }
+    }
+
+    /// Every column the target reads: its own and its reference, or the
+    /// columns of its formula.
+    pub fn columns(&self) -> Vec<String> {
+        match &self.formula {
+            Some(tree) => tree.columns(),
+            None => std::iter::once(self.column.clone())
+                .chain(self.relative_to.clone())
+                .collect(),
+        }
     }
 }
 
@@ -110,6 +163,20 @@ impl Targets {
     /// Whether any target is taken against a reference.
     pub fn any_relative(&self) -> bool {
         self.defs.iter().any(|d| d.relative_to.is_some())
+    }
+
+    /// Whether any target is a formula of the row's future.
+    pub fn any_formula(&self) -> bool {
+        self.defs.iter().any(TargetDef::is_formula)
+    }
+
+    /// The positions of the formula targets, in `targets` order.
+    pub fn formula_slots(&self) -> Vec<usize> {
+        self.defs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| d.is_formula().then_some(i))
+            .collect()
     }
 }
 
@@ -182,7 +249,7 @@ impl<'de> Deserialize<'de> for Written {
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a column name, or a table with `column` and optionally `relative_to`, \
-                     `relative` and `name`",
+                     `relative` and `name`, or a table with `name` and `formula`",
                 )
             }
 
@@ -206,13 +273,16 @@ impl<'de> Deserialize<'de> for Written {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Table {
-    column: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    column: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relative_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relative: Option<Relative>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    formula: Option<Node>,
 }
 
 impl Serialize for Targets {
@@ -223,12 +293,21 @@ impl Serialize for Targets {
             .map(|d| {
                 if d.is_plain() {
                     Written::Name(d.column.clone())
+                } else if let Some(tree) = &d.formula {
+                    Written::Table(Table {
+                        column: None,
+                        relative: None,
+                        relative_to: None,
+                        name: Some(d.name.clone()),
+                        formula: Some(tree.clone()),
+                    })
                 } else {
                     Written::Table(Table {
-                        column: d.column.clone(),
+                        column: Some(d.column.clone()),
                         relative: d.relative_to.as_ref().map(|_| d.relative),
                         relative_to: d.relative_to.clone(),
                         name: (d.name != d.column).then(|| d.name.clone()),
+                        formula: None,
                     })
                 }
             })
@@ -245,33 +324,70 @@ impl<'de> Deserialize<'de> for Targets {
             defs.push(match w {
                 Written::Name(column) => TargetDef::plain(column),
                 Written::Table(t) => {
+                    // A formula target (docs/PLAN.md task 104): a name and
+                    // the tree, nothing of a column target's.
+                    if let Some(tree) = t.formula {
+                        let Some(name) = t.name else {
+                            return Err(serde::de::Error::custom(
+                                "a formula target needs a name, which its output fields \
+                                 carry (pred_<name> and the rest)",
+                            ));
+                        };
+                        if name.is_empty() {
+                            return Err(serde::de::Error::custom(
+                                "formula target: name must not be empty",
+                            ));
+                        }
+                        if t.column.is_some() || t.relative_to.is_some() || t.relative.is_some() {
+                            return Err(serde::de::Error::custom(format!(
+                                "target {name:?}: a formula target has a name and a formula and \
+                                 no column; a relative target is a column taken against \
+                                 another, so put the subtraction in the formula instead"
+                            )));
+                        }
+                        if !tree.has_forward_operator() {
+                            return Err(serde::de::Error::custom(format!(
+                                "target {name:?}: a formula target holds at least one operator \
+                                 looking ahead (rewm_mean, rewm_sum or rewm_rate); a formula \
+                                 known at its own row is a column, po.stream.with_windows"
+                            )));
+                        }
+                        defs.push(TargetDef::formula(name, tree));
+                        continue;
+                    }
+                    let Some(column) = t.column else {
+                        return Err(serde::de::Error::custom(
+                            "a target table names a `column`, or a `name` and a `formula`",
+                        ));
+                    };
                     if t.relative.is_some() && t.relative_to.is_none() {
                         return Err(serde::de::Error::custom(format!(
                             "target {:?}: relative needs relative_to, the column of the \
                              same row the target is taken against",
-                            t.column
+                            column
                         )));
                     }
                     // An empty name would give fields called `pred_`; an
                     // empty column or reference names no column (review
                     // 2026-09-26, D missing 5).
                     for (what, value) in [
-                        ("column", Some(&t.column)),
+                        ("column", Some(&column)),
                         ("name", t.name.as_ref()),
                         ("relative_to", t.relative_to.as_ref()),
                     ] {
                         if value.is_some_and(String::is_empty) {
                             return Err(serde::de::Error::custom(format!(
                                 "target {:?}: {what} must not be empty",
-                                t.column
+                                column
                             )));
                         }
                     }
                     TargetDef {
-                        name: t.name.unwrap_or_else(|| t.column.clone()),
-                        column: t.column,
+                        name: t.name.unwrap_or_else(|| column.clone()),
+                        column,
                         relative_to: t.relative_to,
                         relative: t.relative.unwrap_or_default(),
+                        formula: None,
                     }
                 }
             });
@@ -303,6 +419,7 @@ mod tests {
                 column: "p".into(),
                 relative_to: Some("mid".into()),
                 relative: Relative::Difference,
+                formula: None,
             }
         );
         assert!(t.any_relative());
@@ -339,6 +456,61 @@ mod tests {
         .unwrap();
         assert_eq!(h.targets, want);
         assert_eq!(h.targets.defs()[1].relative, Relative::LogRatio);
+    }
+
+    /// A formula target: a name and task 143's tree, written back as it
+    /// was read, in JSON and in TOML (docs/PLAN.md task 104). Its columns
+    /// are the tree's; it reads from no column of its own.
+    #[test]
+    fn a_formula_target_is_a_name_and_a_tree() {
+        let tree = r#"["-", ["rewm_mean", ["col", "mid"], {"half_life": "10s", "window_size": "1m"}], ["col", "mid"]]"#;
+        let t = json(&format!(r#"["y", {{"name": "fwd", "formula": {tree}}}]"#)).unwrap();
+        assert_eq!(t.as_slice(), ["y", "fwd"]);
+        assert!(t.any_formula());
+        assert_eq!(t.formula_slots(), [1]);
+        let f = &t.defs()[1];
+        assert!(f.is_formula() && !f.is_plain());
+        assert_eq!(f.value_column(), None);
+        assert_eq!(f.columns(), ["mid"]);
+        assert_eq!(t.defs()[0].columns(), ["y"]);
+        let written = serde_json::to_string(&t).unwrap();
+        assert!(
+            written
+                .starts_with(r#"["y",{"name":"fwd","formula":["-",["rewm_mean",["col","mid"],{"#),
+            "{written}"
+        );
+        assert_eq!(json(&written).unwrap(), t);
+        #[derive(Deserialize)]
+        struct Holder {
+            targets: Targets,
+        }
+        let h: Holder = toml::from_str(
+            r#"targets = ["y", { name = "fwd", formula = ["-", ["rewm_mean", ["col", "mid"], { half_life = "10s", window_size = "1m" }], ["col", "mid"]] }]"#,
+        )
+        .unwrap();
+        assert_eq!(h.targets, t);
+    }
+
+    /// What a formula target may not be: nameless, a column too, or a
+    /// formula known at its own row.
+    #[test]
+    fn a_formula_target_that_is_not_one_is_refused() {
+        let fwd = r#"["rewm_mean", ["col", "mid"], {"half_life": "10s", "window_size": "1m"}]"#;
+        let err = json(&format!(r#"[{{"formula": {fwd}}}]"#)).unwrap_err();
+        assert!(err.contains("needs a name"), "{err}");
+        let err = json(&format!(
+            r#"[{{"name": "f", "column": "mid", "formula": {fwd}}}]"#
+        ))
+        .unwrap_err();
+        assert!(err.contains("no column"), "{err}");
+        let back = r#"["ewm_mean", ["col", "mid"], {"half_life": "10s"}]"#;
+        let err = json(&format!(r#"[{{"name": "f", "formula": {back}}}]"#)).unwrap_err();
+        assert!(err.contains("looking ahead"), "{err}");
+        let err = json(r#"[{"name": "f"}]"#).unwrap_err();
+        assert!(
+            err.contains("names a `column`, or a `name` and a `formula`"),
+            "{err}"
+        );
     }
 
     #[test]

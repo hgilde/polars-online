@@ -78,7 +78,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -90,7 +90,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -101,9 +101,9 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y__l0.1` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y__l0.1` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y__l0.1` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `pred_y__l0` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y__l0` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y__l0` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -115,7 +115,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -126,7 +126,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -137,7 +137,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -148,7 +148,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -159,7 +159,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -170,7 +170,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
@@ -181,7 +181,7 @@ hand: change the generator, then run
 | field | meaning |
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
-| `resid_y` | `y - pred` for `<t>`; null where the target is null |
+| `resid_y` | `y - pred` for `<t>`; null where the target is null, and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |

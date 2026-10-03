@@ -3955,3 +3955,55 @@ Operators sharing one kernel against as many kernels, 16M rows, `H` 1m:
   on this case and stays as the simpler path. Chunk size moves nothing
   from 50k to 500k rows: the cost is per row.
 
+## 34. A window expression as a target (task 104, 2026-10-03)
+
+The forward VWAP of §33 learned natively -- the expression in the spec's
+`targets`, the bank's own window core resolving it -- against the column
+form §32 and §33 measured as `embargoed`: `with_windows(fwd_vwap=...,
+like=spec)` and the plain column as the target under the same embargo, in
+one query. Same stream, same spec (`ewridge`, `half_life` 30m, `embargo`
+= `H` = 1m), each run its own process, parquet in and `sink_parquet` out;
+`scripts/windows_bench.py`'s `target` case. The native path holds every
+row the spec accepts until its window closes, as the column form's bank
+holds it until the embargo passes, so what is measured is the resolver:
+a frame of the formula's columns built from the chunk's Arrow arrays, the
+core fed group by group, the formula evaluated by Polars over the rows it
+resolved, and the resolutions handed to the streams.
+
+| rows | `embargoed` (column form) | `target` (native) | model alone |
+|---:|---:|---:|---:|
+| 1M | 0.46 s, 0.40 GB | 0.60 s, 0.31 GB | 0.39 s, 0.29 GB |
+| 4M | 1.57 s, 0.65 GB | 2.37 s, 0.59 GB | 1.45 s, 0.61 GB |
+| 16M | 5.87 s, 1.23 GB | 9.37 s, 1.09 GB | 6.28 s, 1.20 GB |
+
+Each figure is the second of two runs that agreed within 0.03 s; the 4M
+and 16M runs at load 6.0, the 1M runs at 2.5. The native path takes 1.5
+times the column form's wall time at 4M rows and 1.6 at 16M, and less
+memory.
+
+- **The first build cost 1.7 times the column form** (4M rows: 2.69 s
+  against 1.69; 16M: 10.94 against 6.43): the resolutions reached the
+  streams as a map of one `Vec` per resolved row, cloned once more onto
+  the pending row -- two allocations and a hash per row. Flat per-group
+  arrays (row numbers, resolving rows, values row-major), found by binary
+  search over the resolved prefix of the buffer, replaced them: 2.69 to
+  2.37 s at 4M, 10.94 to 9.37 s at 16M.
+- **The rest is the overlap the query form gets for free.** The column
+  form's window and bank are two sources of one streaming query, and the
+  engine runs them as two stages: its 1.57 s at 4M is *below* the 2.08 s
+  of `with_windows` alone (0.63 s) and the model alone (1.45 s) run one
+  after the other. The native path runs the same two pieces in one source,
+  one after the other, and its 2.37 s is 0.29 s -- 14% -- above that sum:
+  the resolver's own cost, the frame from the chunk's arrays, the formulas
+  over the resolved rows and the resolutions handed over. One polars
+  thread (`POLARS_MAX_THREADS=1`) moves none of the four (1.59, 2.34, 0.63
+  and 1.48 s), so the overlap is the engine's source tasks, not its
+  expression threads. To close it the native path would have to run a
+  chunk's cores while the models run the one before, which needs the next
+  chunk before the current one returns -- not what a pull-based source
+  has; or run the groups' cores on the pool, which gains nothing on one
+  group. Neither is built.
+- **Memory is below the column form's**: the native path never
+  materialises the target column, and holds a row's formula columns only
+  until its window closes (1.09 against 1.23 GB at 16M rows).
+

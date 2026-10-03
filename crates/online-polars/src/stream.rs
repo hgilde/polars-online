@@ -1674,6 +1674,58 @@ pub struct PendingRow {
     /// The row's clock as the fields show it (task 152).
     #[serde(default)]
     pub clock: Option<ClockValue>,
+    /// The row's number in the stream the spec's window core was fed
+    /// (docs/PLAN.md task 104): what a resolution names. 0 for a spec
+    /// without a formula target, where nothing reads it.
+    #[serde(default)]
+    pub seq: u64,
+    /// Whether every formula target of the row is known: true from the
+    /// start for a spec without one, and once the window core has resolved
+    /// the row otherwise. A row is released only when it is.
+    #[serde(default = "yes")]
+    pub resolved: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// What a spec's window core resolved in one chunk for one group
+/// (docs/PLAN.md task 104): per resolved row, in row order, its number,
+/// the number of the row that resolved it -- the row that closed, cut or
+/// discarded its windows -- and each formula target's value, NaN where the
+/// window gave none, row-major. Flat, so a chunk of rows costs no
+/// allocation per row. Applied in row order, so a resolution reaches the
+/// buffer at the row that made it and never earlier; see the review under
+/// task 104.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Resolutions {
+    pub seqs: Vec<u64>,
+    pub ats: Vec<u64>,
+    pub values: Vec<f64>,
+    pub width: usize,
+}
+
+impl Resolutions {
+    /// The resolution of row `seq`, if the chunk made one: the number of
+    /// the row that made it, and the values.
+    pub fn find(&self, seq: u64) -> Option<(u64, &[f64])> {
+        let i = self.seqs.binary_search(&seq).ok()?;
+        Some((
+            self.ats[i],
+            &self.values[i * self.width..(i + 1) * self.width],
+        ))
+    }
+}
+
+/// How a stream's formula targets reach it: which targets are formulas,
+/// each row's number in the bank's stream, in the laid-out row order the
+/// other columns have, and what the chunk resolved for this stream's group.
+#[derive(Clone, Copy)]
+pub struct FormulaTargets<'a> {
+    pub slots: &'a [usize],
+    pub seqs: &'a [u64],
+    pub resolved: Option<&'a Resolutions>,
 }
 
 /// Serialized per-stream state: the clock plus each half-life's model.
@@ -2862,6 +2914,7 @@ impl Stream {
         weight: Option<&[f64]>,
         rows: &[usize],
         base: usize,
+        formulas: Option<FormulaTargets<'_>>,
     ) -> Option<(usize, usize)> {
         let mut live = self.window_shadows();
         // A learned row adds at most one snapshot to a ring, and the rows a
@@ -2887,6 +2940,7 @@ impl Stream {
             &mut plans,
             features,
             targets,
+            formulas,
         );
         // A reset rebuilds each instance's model and its residual ring, as
         // `Instance::reset` does, so their shadows start empty.
@@ -2973,6 +3027,7 @@ impl Stream {
         base: usize,
         out: &mut ChunkOut,
         last: bool,
+        formulas: Option<FormulaTargets<'_>>,
     ) -> Result<(), ClockRefusal> {
         let n_rows = rows.len();
         out.rows.extend_from_slice(rows);
@@ -3008,7 +3063,12 @@ impl Stream {
                 );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
                 if plan.accept {
-                    let has_target = targets.is_empty() || targets.iter().any(|t| usable(t[i]));
+                    // A formula target is handed to the buffer with its
+                    // value to come (docs/PLAN.md task 104), as a plain
+                    // target held under an embargo is counted at its row.
+                    let has_target = targets.is_empty()
+                        || formulas.is_some_and(|f| !f.slots.is_empty())
+                        || targets.iter().any(|t| usable(t[i]));
                     summary.accepted(plan.w, has_target);
                 }
             }
@@ -3025,6 +3085,7 @@ impl Stream {
             &mut plans,
             features,
             targets,
+            formulas,
         );
 
         // ---- the clocks a row shows (docs/PLAN.md task 152) ----
@@ -3154,7 +3215,18 @@ impl Stream {
     /// behind, events included. Only a **reset** acts on arrival: it drops
     /// the buffer, since the state those rows would teach is gone.
     ///
+    /// A formula target (docs/PLAN.md task 104) is not known at its row:
+    /// the row waits, with no embargo as well, until the spec's window core
+    /// has resolved it -- at the row that closed, cut or discarded its
+    /// windows, which `formulas` carries by sequence number -- and its wait
+    /// has run out, whichever is later. Resolutions are applied in row
+    /// order, at the row that made them, so a coarse chunking releases
+    /// nothing a fine one holds (the review under task 104: with an embargo
+    /// equal to the window, a row exactly one window later has the wait run
+    /// out while the window is still open).
+    ///
     /// Returns the released rows' values, indexed by `RowPlan::pending`.
+    #[allow(clippy::too_many_arguments)]
     fn apply_label_delay(
         embargo: Option<f64>,
         pending: &mut Vec<PendingRow>,
@@ -3162,9 +3234,11 @@ impl Stream {
         plans: &mut Vec<RowPlan>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
+        formulas: Option<FormulaTargets<'_>>,
     ) -> Vec<PendingRow> {
-        let Some(delay) = embargo else {
-            return Vec::new();
+        let delay = match (embargo, formulas) {
+            (None, None) => return Vec::new(),
+            (d, _) => d.unwrap_or(0.0),
         };
         let mut released: Vec<PendingRow> = Vec::new();
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
@@ -3209,6 +3283,31 @@ impl Stream {
                 capped: false,
                 ..plan
             };
+            // The resolutions made at or before this row, in order, at
+            // every row of the group -- a skipped row resolves windows as
+            // any row does, and the next accepted row may be chunks away.
+            // The resolved rows are a prefix of the buffer (windows close in
+            // clock order, a cut or a discard takes every open one), so the
+            // first unresolved row still waiting ends the pass. A resolution
+            // is made by a row of this group in this chunk, so it is never
+            // left for a later one.
+            if !plan.reset {
+                if let Some(res) = formulas.and_then(|f| f.resolved) {
+                    let f = formulas.expect("checked");
+                    let now = f.seqs[plan.i];
+                    for row in pending.iter_mut().skip_while(|r| r.resolved) {
+                        match res.find(row.seq) {
+                            Some((at, ys)) if at <= now => {
+                                for (&slot, &y) in f.slots.iter().zip(ys) {
+                                    row.ys[slot] = Some(y).filter(|v| usable(*v));
+                                }
+                                row.resolved = true;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+            }
             if !plan.accept {
                 // A skipped row teaches nothing and waits for nothing; its
                 // time is folded into the next accepted row's, which is what
@@ -3223,7 +3322,10 @@ impl Stream {
                 for row in pending.iter_mut() {
                     row.remaining -= plan.elapsed;
                 }
-                let ready = pending.iter().take_while(|r| r.remaining <= 0.0).count();
+                let ready = pending
+                    .iter()
+                    .take_while(|r| r.remaining <= 0.0 && r.resolved)
+                    .count();
                 for row in pending.drain(..ready) {
                     released.push(row);
                     out.push(replay(released.len() - 1, released.last().unwrap()));
@@ -3246,6 +3348,8 @@ impl Stream {
                 blend: held_break.blend || plan.blend,
                 capped: held_break.capped || plan.capped,
                 clock: plan.clock,
+                seq: formulas.map_or(0, |f| f.seqs[i]),
+                resolved: formulas.is_none(),
             });
             *held_break = HeldBreak::default();
             out.push(RowPlan {

@@ -485,6 +485,26 @@ impl Node {
         }
     }
 
+    /// [`Self::columns`], borrowed from the tree.
+    pub fn columns_ref(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        self.collect_columns_ref(&mut out);
+        out
+    }
+
+    fn collect_columns_ref<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            Node::Col(c) => {
+                if !out.contains(&c.as_str()) {
+                    out.push(c.as_str());
+                }
+            }
+            Node::Lit(_) => {}
+            Node::Call(_, args) => args.iter().for_each(|a| a.collect_columns_ref(out)),
+            Node::Op(op) => op.input.collect_columns_ref(out),
+        }
+    }
+
     /// Whether the tree holds a window operator (an `increment` is not one).
     pub fn has_window_operator(&self) -> bool {
         self.operators()

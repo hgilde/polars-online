@@ -1545,6 +1545,12 @@ impl Windows {
         self.ready_kept
     }
 
+    /// The held rows every kernel has resolved, dropped ones included: what
+    /// [`Self::drain`] emits.
+    pub fn ready(&self) -> usize {
+        self.ready
+    }
+
     /// The rows every kernel has resolved, in input order.
     pub fn drain(&mut self) -> Emitted {
         self.emit(self.ready)

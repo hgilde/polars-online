@@ -344,7 +344,13 @@ pub use window::{
 /// - 22 (2026-10-02, task 144): the public names changed, and a bank file
 ///   stores its specs under them, so the bank refuses one older than 22;
 ///   the models' own states are unchanged, and still load from 14.
-pub const SCHEMA_VERSION: u32 = 22;
+/// - 23 (2026-10-03, task 104): a row held under `embargo` carries its
+///   number in the spec's window core and whether that core has resolved
+///   its formula targets, and a bank file carries each such core with the
+///   rows it holds. Both are additive with defaults, so a 22 file -- which
+///   has no formula target -- loads as it was, and the bank's minimum stays
+///   22.
+pub const SCHEMA_VERSION: u32 = 23;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

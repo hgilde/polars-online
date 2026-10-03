@@ -3542,11 +3542,11 @@ note, not a task.
       l/γ`; O(1/γ), inside the size and power bands; to check against the
       paper once.
 
-- [ ] 104. **Window expressions as model targets, under an embargo --
-      planned, not built.** Depends on 78 (done) and 143; its tests read
-      task 152's clocks. Touches clock
-      events, so it gets the extra review task 120 calls for before it is
-      built.
+- [x] 104. **Window expressions as model targets, under an embargo --
+      built 2026-10-03** (the review below first, then the build; the
+      "Built" record is at the end of the task). Depends on 78 (done) and
+      143; its tests read task 152's clocks. Touches clock events, so it
+      got the extra review task 120 calls for before it was built.
 
       #### A target
 
@@ -3690,6 +3690,160 @@ note, not a task.
         row's clock less the learned row's is at least the embargo in elapsed
         time, and the next row the bank holds is less than one embargo back,
         across gaps and session changes alike.
+
+      #### Reviewed before building (2026-10-03)
+
+      The review task 120 asks for, done against the code of task 143's core
+      and the bank's `apply_label_delay` (task 153), event by event. The
+      names are task 144's (`gap_cap`, `restart_after_step_back`, `embargo`).
+
+      - **One clock, two walkers.** The bank steps each group's
+        `ClockState::advance` with the spec's `ClockCfg`; the core steps
+        the same `advance` with the same cfg per group *and* once more on
+        the stream's own clock across groups. Every event the bank sees --
+        a gap past `gap_cap` (`capped`), a session change with a finite
+        `session_gap` (`capped` or not by the gap's size) or `"reset"`
+        (`reset`), a step back past `restart_after_step_back` (`reset`), a
+        late row (refused) -- the core sees on the same row with the same
+        verdict, because it is the same function on the same arguments;
+        only `accept` differs (the bank folds a skipped row's time into the
+        next accepted row, the core counts every row), and `accept` never
+        changes a verdict. So a window cut or discarded by the core is cut
+        or discarded exactly where the bank's `held_break` or `reset` lands.
+      - **One core per group, as one stream per group.** `with_windows`
+        runs one core over every group with a clock of the stream's beside
+        each group's, which refuses a row of group B earlier than group A's
+        last and cuts every group's open windows at a gap on the stream --
+        neither of which the bank's per-group clocks see. The bank keeps a
+        core per group instead, fed that group's rows: each group's clock
+        is the spec's clock as its stream runs it, a stream interleaved on
+        clocks of its own runs (as it does for a plain target), and a
+        group's rows resolve in their own order, so a resolution is known
+        at the row that made it. (Found in the build: one core over every
+        group emits a row only once every row before it, of any group, has
+        resolved, and that wait moved with the chunking.) A gap on the
+        stream reaches each group at its next row, where its own clock
+        shows the capped gap, and the cut value is the same -- the window
+        saw no row of its group after the gap either way.
+      - **Release is the later of the two, and chunk order decides it.** A
+        resolution is applied in row order -- at the row that closed, cut
+        or discarded the window, never earlier -- because with `embargo`
+        equal to the window under `closed="right"` a row exactly one window
+        later has the embargo run out while the window is still open (that
+        row is a member); applying the chunk's resolutions up front would
+        release it a row early in a coarse chunking and not in a fine one.
+        Each resolution therefore carries the sequence number of the row
+        that made it, and a pending row is released when its wait has run
+        out *and* a resolution at or before the current row has reached it.
+        Within a group, pending rows resolve in arrival order (windows close
+        in clock order, a cut or a discard takes every open window, rows at
+        one stamp share one), so the resolved rows are a prefix of the
+        buffer and the release stays the `take_while` it is.
+      - **A refusal leaves the bank as it was.** The core is fed after the
+        clock check and before the streams, on a snapshot that is restored
+        when the chunk is refused later (its own refusal, or the window
+        pre-pass); the pre-pass replays with the chunk's resolutions.
+      - **`fit` and `fit_predict` are one Rust method**, so the refusal of
+        an embargo below the longest forward `window_size` is a bank flag
+        the Python `fit` sets for its run (`set_learn_only`), computed per
+        spec when the bank is built; the command line never sets it.
+      - **Decided here, where the design above was silent:** a formula
+        target's columns reach the bank as numbers or text (a temporal
+        column other than the clock is refused, as for every role); its
+        columns may be features, since the leak check guards a *plain*
+        target's column read at the same row, and a forward window over
+        `mid` is not the row's `mid` (`closed="left"` or `"both"` puts the
+        row's own value in the window, which is the user's choice);
+        `resid_<name>` is null on the scored row (the target is not known
+        then; the diagnostics fold at release as under any embargo); for a
+        target `"drop"` means what `"null"` means (not learned from), since
+        a row of a model is scored and cannot leave; a row unresolved when a
+        run ends stays in the state with the core's rows, so a resumed run
+        learns it when its window closes; a row the spec skips is fed to the
+        core with its value and is never pending; `SCHEMA_VERSION` 23 with
+        the bank's minimum left at 22 (a 22 file has no formula target and
+        loads as it was).
+
+      #### Built (2026-10-03)
+
+      - **A target is a `TargetDef` with a `formula`** (`targets.rs`): a
+        table `{name, formula}` on every surface -- the spec's JSON, the
+        state file, the CLI's TOML (`{ name = "fwd", formula = [...] }`) --
+        refused without a name, with a column too, or with no operator
+        looking ahead. `TargetDef::columns()` is what every reader of a
+        target's columns now asks (the chunk's casts, the first-reader
+        roles, the clock clash); `value_column()` is `None` for a formula,
+        so the leak check passes its columns as features by design. In
+        Python a `pl.Expr` in `targets` becomes the table (`_spec.py`,
+        `formula_target`), `po.FormulaTarget` is its type, and
+        `target_columns` walks the tree for the plan's projection.
+      - **The bank resolves it** (`bank.rs`, `TargetWindows`): per spec,
+        one `WindowsRun` per group over the formulas under the spec's
+        clock policy (no `like=`: the core sees every row), fed each
+        chunk's rows group by group in row order after the clock check and
+        before the window pre-pass and the streams, on a snapshot restored
+        when a later check refuses the chunk. `WindowsRun::feed_resolving`
+        returns every resolved row with the formulas' values (null where
+        a `"drop"` operator was partial), its number in the bank's stream
+        (`@po:row`, from `rows_fed`) and the number of the row that
+        resolved it, read off the core's ready count after each push. The
+        chunk's resolutions reach each stream as `FormulaTargets` -- the
+        formula slots, each row's number in the laid-out order, and its
+        group's `Resolutions`, flat (row numbers, resolving rows, values
+        row-major: no allocation per row; a map of a `Vec` per row cost
+        the first build 1.7 times the column form) -- and
+        `apply_label_delay` releases a row when its wait has run out *and*
+        a resolution made at or before the current row has reached it,
+        found by binary search over the resolved prefix of the buffer at
+        every row of the group, skipped rows included (a skipped row
+        closes windows as any row does, and the next accepted row may be
+        chunks away: with one row a chunk, resolutions made at skipped
+        rows were lost and the buffer stalled behind them); with no
+        embargo the buffer runs with a wait of 0. `PendingRow` gains
+        `seq` and `resolved`, both defaulted.
+      - **`fit_predict` refuses, `fit` takes**: the longest forward
+        `window_size` against the embargo is computed when the bank is
+        built and refused at the first `fit_predict` unless
+        `Bank::set_learn_only(true)`, which `ModelBank.fit` sets for its
+        run; the CLI never sets it.
+      - **The state carries the cores**: `BankFile.resolvers`, per spec
+        and group, each `WindowsRun::save_bytes`; a loaded bank resumes
+        each at its group's first chunk, which says what the columns are.
+        Schema 23.
+      - **Tests**: `crates/online-polars/tests/formula_targets.rs` (the
+        column form fed back, bit for bit, in 1, 7 and 600 chunks; the
+        short-embargo refusal and `fit`'s equal predictions; a state saved
+        mid-window; groups on clocks of their own equal to each group run
+        alone; what the spec refuses) and `tests/test_formula_targets.py`
+        (the same parity on the three VWAPs over interleaved trades and
+        quotes and through every clock event of the review -- a gap past
+        the cap, a session change with a finite gap and with `"reset"`, a
+        step back the policy restarts on, groups restarting together,
+        rows at one stamp, a row exactly one window later, a run of
+        skipped rows longer than the cap, the end of the input inside a
+        window -- each on a skipped row and an accepted one, in one chunk
+        and seven; the row exactly one window later under an embargo equal
+        to the window, the one place the two forms part; `fit_predict`'s
+        refusal and `fit`'s acceptance on every surface; `predict`; the
+        embargo and the window seen through task 152's clocks; a state
+        saved mid-window; the plan's projection; the TOML form; a formula
+        beside a plain target).
+      - **Measured** (2026-10-03, PERFORMANCE §34): the forward VWAP of
+        §33 learned natively takes 1.5 times the column form's wall time
+        at 4M rows (2.37 against 1.57 s) and 1.6 at 16M (9.37 against
+        5.87), with less memory (1.09 against 1.23 GB). The first build
+        was 1.7 times (a map of a `Vec` per resolved row; flattened).
+        What remains is the overlap the query form gets for free: its
+        window and bank are two sources the streaming engine runs as two
+        stages, and its 1.57 s is below the 2.08 s of `with_windows`
+        alone and the model alone run one after the other, where the
+        native path runs both in one source, 0.29 s (14%) above that
+        sum. One polars thread moves none of the four, so the overlap is
+        the engine's source tasks. Closing it needs the next chunk before
+        the current one returns, which a pull-based source has not got;
+        the groups' cores on the pool would gain nothing on one group.
+        Neither is built; the user's call whether the native form's
+        convenience is worth the 1.5.
 
 - [x] 105. **`po.prep` renamed `po.stream`, and the rules every function in
       it follows — split from task 78 on 2026-09-25; built 2026-09-28** (the

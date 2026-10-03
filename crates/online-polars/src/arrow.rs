@@ -69,6 +69,17 @@ impl ArrowCol {
         matches!(self, Self::I64(_) | Self::U64(_))
     }
 
+    /// Whether the column is held in `form`.
+    pub fn is(&self, form: Form) -> bool {
+        matches!(
+            (self, form),
+            (Self::F64(_), Form::Number)
+                | (Self::Str(_), Form::Text)
+                | (Self::I64(_) | Self::U64(_), Form::Key)
+                | (Self::Nanos(_), Form::Clock)
+        )
+    }
+
     /// The form, for a message: what a caller gave, against what a role reads.
     pub fn form(&self) -> &'static str {
         match self {
@@ -78,6 +89,15 @@ impl ArrowCol {
             Self::Nanos(_) => "a temporal clock",
         }
     }
+}
+
+/// The forms a chunk holds a column in ([`ArrowChunk::series`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    Number,
+    Text,
+    Key,
+    Clock,
 }
 
 /// A chunk's clock column in the form the source had it: a numeric clock's
@@ -238,6 +258,28 @@ impl ArrowChunk {
         self.name_set.contains(name)
     }
 
+    /// A column as a polars `Series`, in the first of the given forms the
+    /// chunk holds it in: for the frame a spec's window core reads
+    /// (docs/PLAN.md task 104). A temporal clock comes back as
+    /// `Datetime(ns)`, which keeps its nanoseconds exact.
+    pub fn series(&self, name: &str, forms: &[Form]) -> Option<Series> {
+        let col = forms.iter().find_map(|f| self.find(name, |c| c.is(*f)))?;
+        let name: PlSmallStr = name.into();
+        let series = match col {
+            ArrowCol::F64(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::Str(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::I64(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::U64(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::Nanos(a) => Series::from_arrow(name, Box::new(a.clone())).and_then(|s| {
+                s.cast(&DataType::Datetime(
+                    polars::prelude::TimeUnit::Nanoseconds,
+                    None,
+                ))
+            }),
+        };
+        series.ok()
+    }
+
     /// The numeric form of a column, or the error naming the spec and role.
     pub fn f64(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&Float64Array> {
         match self.find(name, |c| matches!(c, ArrowCol::F64(_))) {
@@ -366,6 +408,10 @@ enum Want {
     Text,
     /// A group key: an integer stays an integer, anything else becomes text.
     Key,
+    /// A column of a formula target (docs/PLAN.md task 104): a number as a
+    /// number, text as text, so the formula reads what the frame has. A
+    /// temporal column is refused, as in every role but the clock.
+    Value,
 }
 
 /// Every column the specs read, in the form each reads it.
@@ -393,6 +439,12 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
         // the same row as a number (docs/PLAN.md task 107a).
         if s.model.compares().is_none() {
             for t in s.targets.defs() {
+                if t.is_formula() {
+                    for c in t.columns() {
+                        push(&c, Want::Value);
+                    }
+                    continue;
+                }
                 push(&t.column, target_want);
                 if let Some(r) = &t.relative_to {
                     push(r, Want::Number);
@@ -424,7 +476,14 @@ fn form_of(want: Want, dtype: &DataType) -> &'static str {
         Want::Text => "text",
         Want::Key if dtype.is_integer() => "an integer key",
         Want::Key => "text",
+        Want::Value if value_is_number(dtype) => "a number",
+        Want::Value => "text",
     }
+}
+
+/// Whether a formula target reads a column as a number (else as text).
+fn value_is_number(dtype: &DataType) -> bool {
+    dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)
 }
 
 /// One `Series` as the Arrow array of a given form.
@@ -455,6 +514,21 @@ fn cast_to(
             Ok(ArrowCol::F64(arr))
         }
         Want::Text => Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?)),
+        Want::Value => {
+            let dtype = s.dtype();
+            if dtype.is_temporal() {
+                polars_bail!(ComputeError:
+                    "spec {:?}: {} column {:?} has dtype {}; a formula target reads numbers \
+                     and text, and a temporal column can only be a clock (cast it, e.g. \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64))",
+                    spec_name, role, name, dtype, name
+                );
+            }
+            if value_is_number(dtype) {
+                return cast_to(s, Want::Number, spec_name, role, name);
+            }
+            Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?))
+        }
         Want::Key => {
             if s.dtype().is_integer() {
                 return Ok(if *s.dtype() == DataType::UInt64 {
@@ -613,8 +687,19 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
             .iter()
             .map(|c| (c.as_str(), "feature"))
             .chain(s.targets.defs().iter().flat_map(|t| {
-                std::iter::once((t.column.as_str(), target_role))
+                let formula: Vec<(&str, &'static str)> = match &t.formula {
+                    Some(tree) => tree
+                        .columns_ref()
+                        .into_iter()
+                        .map(|c| (c, "target formula"))
+                        .collect(),
+                    None => Vec::new(),
+                };
+                t.value_column()
+                    .map(|c| (c, target_role))
+                    .into_iter()
                     .chain(t.relative_to.as_deref().map(|r| (r, "relative_to")))
+                    .chain(formula)
             }))
             .chain(s.clock.as_deref().map(|c| (c, "clock")))
             .chain(s.weight.as_deref().map(|c| (c, "weight")))
@@ -742,6 +827,11 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                     "a target"
                 } else if defs.iter().any(|t| t.relative_to.as_deref() == Some(clock)) {
                     "a relative_to reference"
+                } else if defs
+                    .iter()
+                    .any(|t| t.is_formula() && t.columns().iter().any(|c| c == clock))
+                {
+                    "a column of a target's formula"
                 } else {
                     continue;
                 };
@@ -828,7 +918,7 @@ fn reads(s: &Spec, name: &str) -> bool {
         || s.targets
             .defs()
             .iter()
-            .any(|t| t.column == name || t.relative_to.as_deref() == Some(name))
+            .any(|t| t.columns().iter().any(|c| c == name))
         || s.clock.as_deref() == Some(name)
         || s.weight.as_deref() == Some(name)
         || s.session.as_deref() == Some(name)
@@ -843,7 +933,7 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
             return "feature";
         }
         for t in s.targets.defs() {
-            if t.column == name {
+            if t.value_column() == Some(name) {
                 return match &s.model {
                     ModelKind::EwClass { .. } => "label",
                     _ => "target",
@@ -851,6 +941,9 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
             }
             if t.relative_to.as_deref() == Some(name) {
                 return "relative_to";
+            }
+            if t.is_formula() && t.columns().iter().any(|c| c == name) {
+                return "target formula";
             }
         }
         if s.clock.as_deref() == Some(name) {

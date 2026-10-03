@@ -9,6 +9,26 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Added
 
+- **Window expressions as model targets** (task 104): a spec's `targets`
+  may hold a window expression looking ahead -- `po.rewm_mean("mid",
+  half_life="10s", window_size="1m") - pl.col("mid")`, or a VWAP as a
+  ratio of two `po.rewm_sum`s -- named by its `.alias()`. The bank keeps a
+  window core per group under the spec's own clock policy, resolves the
+  target when the row's window closes (or a gap past `gap_cap`, a session
+  change or a reset cuts it, under the operator's `partial`), and learns
+  the row from it once its `embargo` has passed too; every row is scored
+  where it sits, as under any embargo. `fit_predict` refuses an embargo
+  shorter than the longest forward `window_size` (none included), since a
+  state that learned a row before its window closed would score the rows
+  that window covers in sample; `fit` takes any embargo and learns each
+  row once its window closes. The spec, the saved state and the CLI's TOML
+  carry the formula as the compact tree (`{ name = "fwd", formula = [...]
+  }`), a loaded bank resumes with the windows still open, and `resid_<name>`
+  is null on the scored row, where the target is not yet known. Held to the
+  column form -- the same expression through `with_windows(..., like=spec)`
+  fed back as a plain target under the same embargo -- prediction for
+  prediction through every clock event. `po.FormulaTarget` is the table's
+  type. Schema 23 (additive; a 22 file still loads).
 - **Window operators as Polars expressions** (task 143, with task 144's
   window semantics): `po.ewm_mean`, `po.rewm_mean`, `po.ewm_sum`,
   `po.rewm_sum`, `po.ewm_rate`, `po.rewm_rate` and `po.increment` each

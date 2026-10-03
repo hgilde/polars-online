@@ -2735,7 +2735,15 @@ impl Spec {
         // target merely named like a feature reads another column, and its
         // reference is read at the row, which a feature may be (review
         // 2026-09-26, D7: the names were matched too, and refused that).
-        let is_target = |f: &String| self.targets.defs().iter().any(|t| &t.column == f);
+        // A formula target's columns may be features (docs/PLAN.md task 104,
+        // reviewed): a window over `mid` looking ahead is not the row's
+        // `mid`, and `closed` decides whether the row's own value is in it.
+        let is_target = |f: &String| {
+            self.targets
+                .defs()
+                .iter()
+                .any(|t| t.value_column() == Some(f.as_str()))
+        };
         if let Some(leak) = (!unsupervised)
             .then(|| self.features.iter().find(|f| is_target(f)))
             .flatten()
@@ -2752,7 +2760,12 @@ impl Spec {
         // holds something else -- a column an unsupervised model mirrors, a
         // label, a sign, a 0/1 a probability is fitted to -- it is refused
         // by name rather than turned into a number that means nothing.
-        if self.targets.any_relative() {
+        if self.targets.any_relative() || self.targets.any_formula() {
+            let what = if self.targets.any_relative() {
+                "a relative target (relative_to)"
+            } else {
+                "a formula target (a window expression looking ahead)"
+            };
             let why = match &self.model {
                 m if m.is_unsupervised() => Some("learns from no target"),
                 ModelKind::EwClass { .. } => Some("classifies its target as a label"),
@@ -2774,7 +2787,27 @@ impl Spec {
             };
             if let Some(why) = why {
                 return Err(format!(
-                    "spec {:?}: a relative target (relative_to) does not apply: this model {why}",
+                    "spec {:?}: {what} does not apply: this model {why}",
+                    self.name
+                ));
+            }
+        }
+        // A formula target is resolved by the bank's window core, which
+        // needs the stream's clock and runs the spec's clock policy
+        // (docs/PLAN.md task 104). A closed group cannot release the rows
+        // it holds, as under `embargo`.
+        if self.targets.any_formula() {
+            if self.group_close.is_some() {
+                return Err(format!(
+                    "spec {:?}: group_close does not work with a formula target; a closed \
+                     group cannot release the rows whose windows are still open",
+                    self.name
+                ));
+            }
+            if self.model.compares().is_some() {
+                return Err(format!(
+                    "spec {:?}: a comparison reads two other specs' residuals, not a formula \
+                     target",
                     self.name
                 ));
             }

@@ -45,7 +45,8 @@ SHAPES = [
     (
         po.spec.ewridge,
         dict(targets="y"),
-        "targets must be a list of strs or po.target tables, got str 'y'",
+        "targets must be a list of strs, po.target tables or window expressions "
+        "looking ahead, got str 'y'",
     ),
     (po.spec.ewridge, dict(features="x0"), "features must be a list of strs, got str 'x0'"),
     # A string is a duration's shape now ("10m", task 88), so a wrong
@@ -79,22 +80,26 @@ SHAPES = [
     (
         po.spec.ewridge,
         dict(targets=[3]),
-        "targets must be a list of strs or po.target tables, got list [3]",
+        "targets must be a list of strs, po.target tables or window expressions "
+        "looking ahead, got list [3]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[{"column": "p", "name": 1}]),
-        "targets must be a list of strs or po.target tables, got list [{'column': 'p', 'name': 1}]",
+        "targets must be a list of strs, po.target tables or window expressions "
+        "looking ahead, got list [{'column': 'p', 'name': 1}]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[{"col": "p"}]),
-        "targets must be a list of strs or po.target tables, got list [{'col': 'p'}]",
+        "targets must be a list of strs, po.target tables or window expressions "
+        "looking ahead, got list [{'col': 'p'}]",
     ),
     (
         po.spec.ewridge,
         dict(targets=[None]),
-        "targets must be a list of strs or po.target tables, got list [None]",
+        "targets must be a list of strs, po.target tables or window expressions "
+        "looking ahead, got list [None]",
     ),
     (po.spec.lasso, dict(lasso_path=0.1), "lasso_path must be a list of numbers, got float"),
     (po.spec.ewridge, dict(bogus=1), "ewridge() got an unexpected keyword argument 'bogus'"),

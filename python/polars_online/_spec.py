@@ -150,7 +150,9 @@ def _matches(v: Any, hint: Any) -> bool:
 def _describe(hint: Any, plural: bool = False) -> str:
     if hint == TargetList:
         return (
-            "lists of strs or po.target tables" if plural else "a list of strs or po.target tables"
+            "lists of strs, po.target tables or window expressions looking ahead"
+            if plural
+            else "a list of strs, po.target tables or window expressions looking ahead"
         )
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
@@ -386,30 +388,74 @@ class Target(TypedDict):
     name: NotRequired[str]
 
 
+class FormulaTarget(TypedDict):
+    """A target that is a formula of the row's future (docs/PLAN.md task 104):
+    what a window expression in ``targets`` becomes, and a ``[[specs]]`` target
+    table with ``name`` and ``formula`` in the CLI's TOML. ``formula`` is the
+    expression's compact tree (:mod:`polars_online.ops`), holding at least one
+    operator looking ahead."""
+
+    name: str
+    formula: list[Any]
+
+
 #: What a builder's ``targets`` takes: column names, with
-#: :func:`polars_online.target` tables among them. Two lists rather than one
-#: of the union, so a ``list[str]`` a caller already has type-checks.
-TargetList = list[str] | list[str | Target]
+#: :func:`polars_online.target` tables and window expressions
+#: (:mod:`polars_online.ops`, looking ahead) among them. Two lists rather than
+#: one of the union, so a ``list[str]`` a caller already has type-checks.
+TargetList = list[str] | list[str | Target | FormulaTarget | pl.Expr]
 
 #: How a relative target is taken against its reference.
 _RELATIVE = ("difference", "ratio", "log_ratio")
 
 
-def target_name(t: str | Target) -> str:
+def target_name(t: str | Target | FormulaTarget) -> str:
     """The name a target's output fields carry: a string target's own, a
     table's ``name``, or its ``column`` when it gives none."""
     if isinstance(t, str):
         return t
+    if "formula" in t:
+        return typing.cast(FormulaTarget, t)["name"]
     return t.get("name", t["column"])
 
 
-def target_columns(t: str | Target) -> list[str]:
+def target_columns(t: str | Target | FormulaTarget) -> list[str]:
     """The columns a target reads: a string target's own; a table's ``column``
-    and, for a relative one, the ``relative_to`` it is taken against. What a
-    plan must keep for the bank (review 2026-09-26, D1/F1)."""
+    and, for a relative one, the ``relative_to`` it is taken against; a
+    formula's columns. What a plan must keep for the bank (review 2026-09-26,
+    D1/F1)."""
     if isinstance(t, str):
         return [t]
+    if "formula" in t:
+        from polars_online import _formula
+
+        return _formula.columns(typing.cast(FormulaTarget, t)["formula"])
     return [t["column"]] + ([t["relative_to"]] if "relative_to" in t else [])
+
+
+def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
+    """A window expression as a target table (docs/PLAN.md task 104): named by
+    its alias, holding at least one operator looking ahead."""
+    from polars_online import _formula
+
+    tree = _formula.to_tree(expr)
+    name = expr.meta.output_name()
+    # The alias names the target; the tree kept is the formula under it.
+    if isinstance(tree, list) and tree and tree[0] == "alias":
+        name = tree[2]
+        tree = tree[1]
+    if name.startswith(_formula.PREFIX):
+        raise ValueError(
+            f"{who}: a target expression whose name would be an operator's needs a name: "
+            f'give it with .alias("...")'
+        )
+    if not _formula.looks_ahead(tree):
+        raise ValueError(
+            f"{who}: target {name!r} holds no operator looking ahead (rewm_mean, rewm_sum or "
+            f"rewm_rate), so it is known at its own row: add it as a column with "
+            f"po.stream.with_windows and name the column as the target"
+        )
+    return {"name": name, "formula": tree}
 
 
 def target(
@@ -531,10 +577,14 @@ def _common(
     group: str | None = None,
     group_close: str | None = None,
 ) -> dict[str, Any]:
+    written: list[str | Target | FormulaTarget] = [
+        formula_target(f"spec {json.dumps(name)}", t) if isinstance(t, pl.Expr) else t
+        for t in targets
+    ]
     spec = {
         "name": name,
         "model": model,
-        "targets": targets,
+        "targets": written,
         "features": features,
         "fit_intercept": fit_intercept,
         "clock": clock,

@@ -327,6 +327,16 @@ impl PyModelBank {
         this.inner.save_bytes().map_err(PyValueError::new_err)
     }
 
+    /// Whether the run keeps nothing but the state (`ModelBank.fit`): a
+    /// spec whose embargo does not cover its formula targets' longest
+    /// forward window then runs, where `fit_predict` refuses it
+    /// (docs/PLAN.md task 104).
+    fn set_learn_only(slf: &Bound<'_, Self>, learn_only: bool) -> PyResult<()> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("set_learn_only"))?;
+        this.inner.set_learn_only(learn_only);
+        Ok(())
+    }
+
     /// The state as JSON, for reading. `ValueError` when the state holds a
     /// value JSON cannot carry, rather than a quietly lossy export.
     #[pyo3(signature = (pretty = true))]

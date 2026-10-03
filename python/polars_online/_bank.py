@@ -624,8 +624,15 @@ class ModelBank:
         makes the fit out-of-sample, and the output columns are still built before
         they are dropped.
         """
-        for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
-            pass
+        # A formula target's window need not fit the embargo here: the run
+        # keeps the state alone, and each row is learned once its window
+        # closes (docs/PLAN.md task 104). `fit_predict` refuses that spec.
+        self._native.set_learn_only(True)
+        try:
+            for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
+                pass
+        finally:
+            self._native.set_learn_only(False)
 
     def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The coefficients behind every fit: one row per (spec, group, instance,
@@ -803,7 +810,8 @@ class ModelBank:
             feature or weight.
         ``rows_learned``
             Processed rows with a positive weight and, for a model with targets, at
-            least one usable target.
+            least one usable target -- a target that is a window expression counted
+            as handed over, its value to come when the window closes.
         ``rows_zero_weight``
             Processed rows with weight 0 (the clock moved; nothing learned).
         ``weight_sum``

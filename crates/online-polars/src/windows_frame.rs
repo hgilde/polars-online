@@ -433,6 +433,7 @@ fn session_hash(v: Option<&str>) -> u64 {
 }
 
 /// One `with_windows` run: the core, its plan, and the input rows it holds.
+#[derive(Clone)]
 pub struct WindowsRun {
     config: WindowsConfig,
     core: Windows,
@@ -625,6 +626,34 @@ impl WindowsRun {
     /// A chunk whose columns are not the input's, and every row refusal the
     /// core makes, each naming the row.
     pub fn feed(&mut self, df: &DataFrame, limit: Option<usize>) -> PolarsResult<DataFrame> {
+        self.feed_inner(df, limit, None)
+    }
+
+    /// Feed one chunk for a bank learning formula targets (docs/PLAN.md
+    /// task 104): every row it resolved, dropped ones included, as a frame
+    /// of the formulas' values -- null where a `"drop"` operator was partial
+    /// -- beside `@po:seq`, the row's number as the caller counts it (the
+    /// chunk's `@po:row` column), and `@po:at`, the number of the row that
+    /// resolved it (the row that closed, cut or discarded its windows),
+    /// read from `rows`, the chunk's rows' numbers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::feed`].
+    pub fn feed_resolving(&mut self, df: &DataFrame, rows: &[u64]) -> PolarsResult<DataFrame> {
+        polars_ensure!(
+            rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
+            ComputeError: "feed_resolving: a row number per row, and an @po:row column"
+        );
+        self.feed_inner(df, None, Some(rows))
+    }
+
+    fn feed_inner(
+        &mut self,
+        df: &DataFrame,
+        limit: Option<usize>,
+        resolving: Option<&[u64]>,
+    ) -> PolarsResult<DataFrame> {
         let n = df.height();
         let clock = self.clock_values(df)?;
         let session: Option<Vec<u64>> = match &self.config.session {
@@ -693,6 +722,13 @@ impl WindowsRun {
         let chunk_base = self.core.next_seq();
         let mut row_values = vec![0.0; self.inputs.len()];
         let mut consumed = n;
+        // Resolving: per resolved row, the number of the row that resolved
+        // it, read off the core's ready count after each push. Nothing is
+        // ready before the chunk: every resolving feed drains everything.
+        let mut at: Vec<u64> = Vec::new();
+        if let Some(rows) = resolving {
+            at.resize(self.core.ready(), rows.first().copied().unwrap_or(0));
+        }
         for i in 0..n {
             if let Some(l) = limit {
                 if self.core.ready_kept() >= l {
@@ -718,6 +754,9 @@ impl WindowsRun {
                 }
                 return Err(self.refusal(r, chunk_base));
             }
+            if let Some(rows) = resolving {
+                at.resize(self.core.ready(), rows[i]);
+            }
         }
         if consumed > 0 {
             self.held.push_back(chunk.slice(0, consumed));
@@ -726,7 +765,47 @@ impl WindowsRun {
             None => self.core.drain(),
             Some(l) => self.core.drain_kept(l),
         };
-        self.assemble(e)
+        if resolving.is_some() {
+            debug_assert_eq!(at.len(), e.rows);
+            self.assemble_resolved(e, &at)
+        } else {
+            self.assemble(e)
+        }
+    }
+
+    /// [`Self::assemble`] for [`Self::feed_resolving`]: the formulas over
+    /// every resolved row, null on a dropped one, with the row numbers.
+    fn assemble_resolved(
+        &mut self,
+        e: crate::windows::Emitted,
+        at: &[u64],
+    ) -> PolarsResult<DataFrame> {
+        let drop: BooleanChunked = e.drop.iter().map(|&d| Some(d)).collect();
+        let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
+        let mut frame = self.assemble_rows(e)?;
+        frame.hstack_mut(&[
+            drop.with_name("@po:drop".into()).into_column(),
+            resolved_at.with_name("@po:at".into()).into_column(),
+        ])?;
+        let exprs: Vec<Expr> = self
+            .config
+            .formulas
+            .iter()
+            .map(|f| {
+                when(col("@po:drop"))
+                    .then(lit(NULL))
+                    .otherwise(f.tree.to_expr(&|op| col(hidden(op).as_str())))
+                    .alias(f.name.as_str())
+            })
+            .collect();
+        let keep: Vec<Expr> = self
+            .config
+            .formulas
+            .iter()
+            .map(|f| col(f.name.as_str()))
+            .chain([col("@po:row").alias("@po:seq"), col("@po:at")])
+            .collect();
+        frame.lazy().with_columns(exprs).select(keep).collect()
     }
 
     /// The end of the input: every row still held goes out, each forward
@@ -966,6 +1045,42 @@ impl WindowsRun {
     /// The first `e.rows` held rows with the formulas evaluated beside
     /// them, less the dropped ones and the hidden columns.
     fn assemble(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
+        let drop = e.drop.clone();
+        let mut frame = self.assemble_rows(e)?;
+        if drop.iter().any(|&d| d) {
+            let keep: BooleanChunked = drop.iter().map(|&d| Some(!d)).collect();
+            frame = frame.filter(&keep)?;
+        }
+        // Pass four: the formulas, over the rows with their operators.
+        let exprs: Vec<Expr> = self
+            .config
+            .formulas
+            .iter()
+            .map(|f| {
+                f.tree
+                    .to_expr(&|op| col(hidden(op).as_str()))
+                    .alias(f.name.as_str())
+            })
+            .collect();
+        // The input's columns the chunk has (a projection may have narrowed
+        // it), then the formulas; the hidden columns stay behind.
+        let present: Vec<String> = frame
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .filter(|n| self.input.contains(n.as_str()))
+            .collect();
+        let keep: Vec<Expr> = present
+            .iter()
+            .map(|n| col(n.as_str()))
+            .chain(self.config.formulas.iter().map(|f| col(f.name.as_str())))
+            .collect();
+        frame.lazy().with_columns(exprs).select(keep).collect()
+    }
+
+    /// The emitted rows as one frame: the held input rows with their
+    /// increment columns, and each operator's values as its hidden column.
+    fn assemble_rows(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
         let mut out: Option<DataFrame> = None;
         let mut parts = 0;
         let mut left = e.rows;
@@ -1011,35 +1126,7 @@ impl WindowsRun {
             cols.push(ca.with_name(name.as_str().into()).into_column());
         }
         frame.hstack_mut(&cols)?;
-        if e.drop.iter().any(|&d| d) {
-            let keep: BooleanChunked = e.drop.iter().map(|&d| Some(!d)).collect();
-            frame = frame.filter(&keep)?;
-        }
-        // Pass four: the formulas, over the rows with their operators.
-        let exprs: Vec<Expr> = self
-            .config
-            .formulas
-            .iter()
-            .map(|f| {
-                f.tree
-                    .to_expr(&|op| col(hidden(op).as_str()))
-                    .alias(f.name.as_str())
-            })
-            .collect();
-        // The input's columns the chunk has (a projection may have narrowed
-        // it), then the formulas; the hidden columns stay behind.
-        let present: Vec<String> = frame
-            .get_column_names()
-            .iter()
-            .map(|n| n.to_string())
-            .filter(|n| self.input.contains(n.as_str()))
-            .collect();
-        let keep: Vec<Expr> = present
-            .iter()
-            .map(|n| col(n.as_str()))
-            .chain(self.config.formulas.iter().map(|f| col(f.name.as_str())))
-            .collect();
-        frame.lazy().with_columns(exprs).select(keep).collect()
+        Ok(frame)
     }
 
     /// The state as bytes: the call, the core, the rows it holds, which the

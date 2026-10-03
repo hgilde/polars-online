@@ -52,7 +52,8 @@ SHARED = "([shared field](#fields-most-models-write))"
 MEANING: dict[str, str] = {
     "pred_<t>": "the prediction for `<t>`, computed from the state **before** this row",
     "pred_<f>": "the predictive mean for feature `<f>` under the fitted model",
-    "resid_<t>": "`y - pred` for `<t>`; null where the target is null",
+    "resid_<t>": "`y - pred` for `<t>`; null where the target is null, and on every row of a "
+    "target that is a window expression, whose value is not known at its row",
     "weight_sum": f"accumulated weight before this row's update and before its own decay {SHARED}",
     "coef": f"the numbers behind the fit as one list, on the rows `coef_every` fills {SHARED}",
     "settled_frac": (

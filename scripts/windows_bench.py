@@ -16,6 +16,8 @@ in and `sink_parquet` out, and prints its wall time and peak RSS:
   window's weights taken from its own anchor;
 - `embargoed`: the window as an `ewridge` target learned `H` after its row
   (`embargo=H`, `like=spec`), in one query;
+- `target`: the same, with the expression in the spec's `targets` and the
+  bank's own window core resolving it (docs/PLAN.md task 104);
 - `model alone`: the same spec over the window's column, already written;
 - `scan and sink`: the file read and written, the floor under all of them;
 - `shared k`: `k` operators on one kernel (one queue, `k` values per row),
@@ -31,7 +33,7 @@ import sys
 import time
 from pathlib import Path
 
-CASES = ("with_windows", "rolling", "embargoed", "model alone", "scan and sink")
+CASES = ("with_windows", "rolling", "embargoed", "target", "model alone", "scan and sink")
 SHARED = ("shared 1", "shared 4", "shared 16", "separate 4", "separate 16")
 RUNS = [(1_000_000, "1m"), (4_000_000, "1m"), (16_000_000, "1m"), (4_000_000, "4m")]
 
@@ -99,6 +101,18 @@ def one(out: Path, case: str, n: int, h: str) -> None:
     elif case == "embargoed":
         plan = lf.online.with_windows(fwd_vwap=fwd_vwap, like=spec).online.fit_predict([spec])
         target = out / "embargoed.parquet"
+    elif case == "target":
+        native = po.spec.ewridge(
+            "fwd",
+            targets=[fwd_vwap.alias("fwd_vwap")],
+            features=["signal_a", "signal_b"],
+            clock="ts",
+            gap_cap="5m",
+            half_life="30m",
+            embargo=h,
+        )
+        plan = lf.online.fit_predict([native])
+        target = out / "target.parquet"
     elif case == "model alone":
         plan = pl.scan_parquet(columns).online.fit_predict([spec])
         target = out / "model.parquet"

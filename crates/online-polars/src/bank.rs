@@ -20,12 +20,19 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame_at, f64_values};
+use crate::arrow::{
+    ArrowChunk, ArrowCol, ClockArray, ClockCol, Form, chunk_from_frame_at, f64_values,
+};
 use crate::column::F64Column;
+use crate::formula::Formula;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
-use crate::stream::{AnyModel, ChunkOut, ClockRefusal, Stream, StreamState, combo_labels, usable};
+use crate::stream::{
+    AnyModel, ChunkOut, ClockRefusal, FormulaTargets, Resolutions, Stream, StreamState,
+    combo_labels, usable,
+};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
+use crate::windows_frame::{WindowsConfig, WindowsRun};
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
@@ -371,9 +378,11 @@ fn extract(
         }
         map_maybe_par(spec.targets.defs(), par, |t| {
             let c = t.column.as_str();
-            // A scoring call may leave a target out; a relative one is out
-            // when either of its two columns is.
-            if optional(c) || t.relative_to.as_deref().is_some_and(optional) {
+            // A formula target is not known at its row: the bank's window
+            // core resolves it later (docs/PLAN.md task 104), so here it is
+            // null on every row. A scoring call may leave a target out; a
+            // relative one is out when either of its two columns is.
+            if t.is_formula() || optional(c) || t.relative_to.as_deref().is_some_and(optional) {
                 Ok(vec![f64::NAN; chunk.height()])
             } else if let ModelKind::EwClass { classes, .. } = &spec.model {
                 label_column(chunk, spec, c, classes, layout)
@@ -805,6 +814,7 @@ fn process(
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
+    formulas: &[Option<FormulaBundle>],
     row_base: usize,
 ) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>) {
     type TaskOut = (Vec<(usize, StreamRows)>, Vec<ClosedRow>);
@@ -813,6 +823,7 @@ fn process(
         .map(|(si, key, idx, base, stream)| {
             let spec = &specs[si];
             let sc = &cols[si];
+            let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
             let mut outs: Vec<(usize, StreamRows)> = Vec::new();
             let mut closed: Vec<ClosedRow> = Vec::new();
             // A session close splits the run: the rows before the boundary
@@ -856,6 +867,7 @@ fn process(
                         base + off,
                         &mut out,
                         last,
+                        formula_targets,
                     );
                     off += run.len();
                     match r {
@@ -1038,6 +1050,260 @@ fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) 
 /// way out is a sort, skipping what a resumed state has learned, or setting
 /// it; given, a step back no larger than it is a late row, and the way out
 /// is a sort or a smaller value. Either way the bank was not updated.
+/// One chunk's formula-target inputs for a spec's streams (docs/PLAN.md
+/// task 104): which targets are formulas, each row's number in the bank's
+/// stream in the laid-out row order, and what each group's core resolved.
+struct FormulaBundle {
+    slots: Vec<usize>,
+    seqs: Vec<u64>,
+    groups: HashMap<GroupKey, Resolutions>,
+}
+
+impl FormulaBundle {
+    fn targets(&self, key: &GroupKey) -> FormulaTargets<'_> {
+        FormulaTargets {
+            slots: &self.slots,
+            seqs: &self.seqs,
+            resolved: self.groups.get(key),
+        }
+    }
+}
+
+/// A spec's formula targets' resolver (docs/PLAN.md task 104): task 143's
+/// window core over the targets' formulas, under the spec's clock policy,
+/// fed every row of every chunk -- rows the spec skips included, since a
+/// target depends on the prices ahead and not on the row's features -- in
+/// chunk order, before the streams run. One core per group, as the bank
+/// keeps one stream per group: a group's rows resolve in their own order on
+/// their own clock, so a resolution is known at the row that made it
+/// whatever the other groups hold open. (One core over every group emits a
+/// row only once every row before it, of any group, has resolved -- a wait
+/// that moved with the chunking.) Each core is built at its group's first
+/// chunk, which says what the columns are.
+#[derive(Clone, Default)]
+struct TargetWindows {
+    runs: HashMap<GroupKey, WindowsRun>,
+    /// A loaded bank's cores, each resumed at its group's first chunk.
+    saved: HashMap<GroupKey, Vec<u8>>,
+}
+
+/// The row-number column a resolver's frame carries: a row's number in the
+/// bank's stream, which a resolution names it by.
+const ROW_NUMBER: &str = "@po:row";
+
+/// The resolvers as a bank file carries them: per spec index, each group's
+/// core as `WindowsRun::save_bytes` writes it.
+type SavedResolvers = Vec<(usize, Vec<(GroupKey, Vec<u8>)>)>;
+
+/// The call a spec's formula targets amount to: the formulas under the
+/// spec's clock policy, over one group, with no `like=` (the core sees
+/// every row).
+fn resolver_config(spec: &Spec) -> WindowsConfig {
+    WindowsConfig {
+        formulas: spec
+            .targets
+            .defs()
+            .iter()
+            .filter_map(|t| {
+                t.formula.as_ref().map(|tree| Formula {
+                    name: t.name.clone(),
+                    tree: tree.clone(),
+                })
+            })
+            .collect(),
+        clock: spec.clock.clone(),
+        gap_cap: spec.gap_cap.clone(),
+        restart_after_step_back: spec.restart_after_step_back.clone(),
+        session: spec.session.clone(),
+        session_gap: spec.session_gap.clone(),
+        group: None,
+        like: None,
+    }
+}
+
+/// The columns a spec's resolver reads, each with the forms it takes them
+/// in: the clock and the session as the chunk holds them, and a formula's
+/// columns as numbers or text. The group is the core's key, not a column.
+fn resolver_columns(spec: &Spec) -> Vec<(String, &'static [Form])> {
+    const CLOCK: &[Form] = &[Form::Clock, Form::Number];
+    const SESSION: &[Form] = &[Form::Text, Form::Key, Form::Number];
+    const VALUE: &[Form] = &[Form::Number, Form::Text, Form::Key];
+    let mut out: Vec<(String, &'static [Form])> = Vec::new();
+    let mut put = |c: &str, forms: &'static [Form]| {
+        if !out.iter().any(|(n, _)| n == c) {
+            out.push((c.to_string(), forms));
+        }
+    };
+    if let Some(c) = &spec.clock {
+        put(c, CLOCK);
+    }
+    if let Some(c) = &spec.session {
+        put(c, SESSION);
+    }
+    for t in spec.targets.defs().iter().filter(|t| t.is_formula()) {
+        for c in t.columns() {
+            put(&c, VALUE);
+        }
+    }
+    out
+}
+
+/// The frame a spec's resolver is fed: its columns, from the chunk, and
+/// each row's number from `first_row` on.
+fn resolver_frame(
+    chunk: &ArrowChunk,
+    spec: &Spec,
+    columns: &[(String, &'static [Form])],
+    first_row: u64,
+) -> PolarsResult<DataFrame> {
+    let n = chunk.height();
+    let mut cols: Vec<Column> = Vec::with_capacity(columns.len() + 1);
+    for (name, forms) in columns {
+        let Some(s) = chunk.series(name, forms) else {
+            let have: Vec<&str> = chunk.names().iter().map(|n| n.as_str()).collect();
+            polars_bail!(ColumnNotFound:
+                "spec {:?}: formula target column {:?} not found; the input has columns {:?}",
+                spec.name, name, have
+            );
+        };
+        cols.push(s.into_column());
+    }
+    let rows: UInt64Chunked = (0..n as u64).map(|i| Some(first_row + i)).collect();
+    cols.push(rows.with_name(ROW_NUMBER.into()).into_column());
+    DataFrame::new(n, cols)
+}
+
+impl TargetWindows {
+    /// The group's core, built -- or resumed from the loaded state -- at
+    /// its first chunk.
+    fn run(
+        &mut self,
+        key: &GroupKey,
+        spec: &Spec,
+        frame: &DataFrame,
+    ) -> PolarsResult<&mut WindowsRun> {
+        if !self.runs.contains_key(key) {
+            let config = resolver_config(spec);
+            let schema = frame.schema();
+            let run = match self.saved.remove(key) {
+                None => WindowsRun::new(config, schema),
+                Some(bytes) => WindowsRun::load_bytes(&bytes, config, schema),
+            }
+            .map_err(
+                |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
+            )?;
+            self.runs.insert(key.clone(), run);
+        }
+        Ok(self.runs.get_mut(key).expect("inserted above"))
+    }
+
+    /// Every group's core as bytes, by key: the running ones, and the
+    /// loaded ones no chunk has reached yet.
+    fn save(&self) -> Result<Vec<(GroupKey, Vec<u8>)>, String> {
+        let mut out: Vec<(GroupKey, Vec<u8>)> = Vec::with_capacity(self.runs.len());
+        for (key, run) in &self.runs {
+            out.push((key.clone(), run.save_bytes()?));
+        }
+        for (key, bytes) in &self.saved {
+            out.push((key.clone(), bytes.clone()));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
+    /// The longest `window_size` among the formulas' forward operators,
+    /// which the embargo must cover for a prediction to be out of sample.
+    fn longest_forward_window(spec: &Spec) -> Option<crate::span::Span> {
+        spec.targets
+            .defs()
+            .iter()
+            .filter_map(|t| t.formula.as_ref())
+            .flat_map(|tree| {
+                tree.operators()
+                    .into_iter()
+                    .filter(|op| op.direction() == crate::windows::Direction::Forward)
+                    .filter_map(|op| op.window_size.clone())
+                    .collect::<Vec<_>>()
+            })
+            .max_by(|a, b| a.value().total_cmp(&b.value()))
+    }
+}
+
+/// Feed one chunk to a spec's resolver, group by group in the chunk's row
+/// order, and gather what it resolved: per resolved row, by its number in
+/// the bank's stream, the number of the row that resolved it and each
+/// formula target's value; and each row's number in the laid-out order the
+/// streams read.
+fn resolve_targets(
+    spec: &Spec,
+    resolver: &mut TargetWindows,
+    chunk: &ArrowChunk,
+    groups: &[(GroupKey, Vec<usize>)],
+    layout: Layout<'_>,
+    first_row: u64,
+) -> PolarsResult<FormulaBundle> {
+    let n = chunk.height();
+    let frame = resolver_frame(chunk, spec, &resolver_columns(spec), first_row)?;
+    let names: Vec<&str> = spec
+        .targets
+        .defs()
+        .iter()
+        .filter(|t| t.is_formula())
+        .map(|t| t.name.as_str())
+        .collect();
+    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
+    for (key, idx) in groups {
+        let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
+        let sub = if idx.len() == n {
+            frame.clone()
+        } else {
+            let take: IdxCa =
+                IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
+            frame.take(&take)?
+        };
+        let run = resolver.run(key, spec, &sub)?;
+        let out = run.feed_resolving(&sub, &rows).map_err(
+            |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
+        )?;
+        let h = out.height();
+        if h == 0 {
+            continue;
+        }
+        let width = names.len();
+        let mut values: Vec<f64> = vec![f64::NAN; h * width];
+        for (k, name) in names.iter().enumerate() {
+            let s = out.column(name)?.cast(&DataType::Float64)?;
+            for (r, v) in s.f64()?.iter().enumerate() {
+                if let Some(v) = v {
+                    values[r * width + k] = v;
+                }
+            }
+        }
+        let seqs: Vec<u64> = out.column("@po:seq")?.u64()?.iter().flatten().collect();
+        let ats: Vec<u64> = out.column("@po:at")?.u64()?.iter().flatten().collect();
+        debug_assert!(seqs.len() == h && ats.len() == h, "no null row number");
+        debug_assert!(
+            seqs.windows(2).all(|w| w[0] < w[1]),
+            "a group resolves in row order"
+        );
+        by_group.insert(
+            key.clone(),
+            Resolutions {
+                seqs,
+                ats,
+                values,
+                width,
+            },
+        );
+    }
+    let seqs = gathered((0..n).map(|i| first_row + i as u64).collect(), layout);
+    Ok(FormulaBundle {
+        slots: spec.targets.formula_slots(),
+        seqs,
+        groups: by_group,
+    })
+}
+
 fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     let row = row_base + refusal.row;
@@ -2100,6 +2366,12 @@ struct BankFile {
     /// where the flag is simply unknown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     key_integer: Vec<(usize, bool)>,
+    /// `(spec index, (group key, resolver state))` for the specs with a
+    /// formula target (docs/PLAN.md task 104): each group's window core
+    /// with the rows it holds, as `WindowsRun::save_bytes` writes it.
+    /// Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resolvers: SavedResolvers,
 }
 
 pub struct Bank {
@@ -2153,6 +2425,17 @@ pub struct Bank {
     /// Readiness notices raised and not yet taken
     /// ([`Self::take_notices`]); not state.
     notices: Vec<String>,
+    /// Per spec, its formula targets' resolver (docs/PLAN.md task 104):
+    /// empty for a spec without one.
+    resolvers: Vec<TargetWindows>,
+    /// Per spec with a formula target whose longest forward window the
+    /// embargo does not cover: why `fit_predict` refuses to run it. `fit`
+    /// takes any embargo ([`Self::set_learn_only`]).
+    short_embargo: Vec<Option<String>>,
+    /// Whether the run keeps nothing but the state (`fit`), where a
+    /// prediction need not be out of sample of its own target's window.
+    /// Not state.
+    learn_only: bool,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -2320,7 +2603,35 @@ impl Bank {
         let high_water = specs.iter().map(|_| None).collect();
         let key_integer = vec![None; specs.len()];
         let clock_dtypes = vec![None; specs.len()];
+        // A formula target's window must close before any row it covers is
+        // scored from a state that learned it (docs/PLAN.md task 104): the
+        // embargo covers the longest forward window, or `fit_predict`
+        // refuses the spec. Checked here, said at the first `fit_predict`.
+        let short_embargo = specs
+            .iter()
+            .map(|s| {
+                let longest = TargetWindows::longest_forward_window(s)?;
+                let embargo = s.embargo.as_ref().map(crate::span::Span::value);
+                (embargo.unwrap_or(0.0) < longest.value()).then(|| {
+                    format!(
+                        "spec {:?}: fit_predict needs an embargo of at least {longest}, the \
+                         longest window_size among its formula targets' forward operators \
+                         (got {}): a row's target is known only one window later, and a \
+                         state that learned it before then would score the rows that window \
+                         covers in sample. Give embargo={longest} or longer; fit takes any \
+                         embargo, none included, and learns each row once its window closes",
+                        s.name,
+                        s.embargo
+                            .as_ref()
+                            .map_or_else(|| "none".to_string(), ToString::to_string)
+                    )
+                })
+            })
+            .collect();
         Ok(Self {
+            resolvers: specs.iter().map(|_| TargetWindows::default()).collect(),
+            short_embargo,
+            learn_only: false,
             specs,
             clock_cfgs,
             derived,
@@ -2335,6 +2646,15 @@ impl Bank {
             window_prepass: true,
             notices: Vec::new(),
         })
+    }
+
+    /// Whether the run keeps nothing but the state (`fit`): then a spec
+    /// whose embargo does not cover its formula targets' longest forward
+    /// window runs, learning each row once its window closes, where
+    /// `fit_predict` refuses it (docs/PLAN.md task 104). Off by default,
+    /// and not state.
+    pub fn set_learn_only(&mut self, learn_only: bool) {
+        self.learn_only = learn_only;
     }
 
     pub fn specs(&self) -> &[Spec] {
@@ -2891,6 +3211,11 @@ impl Bank {
     /// [`crate::chunk_from_frame`], where every dtype decision about a frame is
     /// made, and naming each struct after its spec.
     pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        if !self.learn_only {
+            if let Some(why) = self.short_embargo.iter().flatten().next() {
+                polars_bail!(ComputeError: "{}", why);
+            }
+        }
         // The clock column's type, as first seen: what the clock fields
         // come out as, kept in the state for `last_row` (task 152).
         let seen: Vec<crate::stream::ClockDtype> = self
@@ -3056,6 +3381,41 @@ impl Bank {
             return Err(e);
         }
 
+        // ---- the formula targets (docs/PLAN.md task 104) ----
+        // Each spec's window core takes the chunk's rows in chunk order,
+        // after the clock check and before anything learns, and says which
+        // held rows it resolved and at which row. On a snapshot: a refusal
+        // below -- the core's own, or the window pre-pass -- puts it back,
+        // so a refused chunk leaves the bank as it was.
+        let mut formulas: Vec<Option<FormulaBundle>> = specs.iter().map(|_| None).collect();
+        let snapshot: Vec<TargetWindows> = self.resolvers.clone();
+        let mut resolved: Result<(), PolarsError> = Ok(());
+        for (si, spec) in specs.iter().enumerate() {
+            if !spec.targets.any_formula() {
+                continue;
+            }
+            match resolve_targets(
+                spec,
+                &mut self.resolvers[si],
+                chunk,
+                &groups[si],
+                layouts[si].as_deref(),
+                self.rows_fed,
+            ) {
+                Ok(b) => formulas[si] = Some(b),
+                Err(e) => {
+                    resolved = Err(e);
+                    break;
+                }
+            }
+        }
+        if let Err(e) = resolved {
+            drop(work);
+            self.resolvers = snapshot;
+            forget(&mut self.states, &fresh);
+            return Err(e);
+        }
+
         // A ring the chunk would take past a refusing `window_budget` refuses
         // it whole as well: every stream replays its schedule on shadows of
         // its rings before any stream runs (docs/PLAN.md task 115 (d)), so
@@ -3092,6 +3452,7 @@ impl Bank {
                             sc.weight.as_deref(),
                             run,
                             *base + start,
+                            formulas[*si].as_ref().map(|b| b.targets(key)),
                         ) {
                             return Some(over_budget(spec, key, bytes, every));
                         }
@@ -3100,6 +3461,7 @@ impl Bank {
                 });
             if let Some(e) = over {
                 drop(work);
+                self.resolvers = snapshot;
                 forget(&mut self.states, &fresh);
                 return Err(e);
             }
@@ -3120,7 +3482,7 @@ impl Bank {
         let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
-        let (rows1, closed1) = process(work1, specs, cfgs, &cols, chunk.row_base());
+        let (rows1, closed1) = process(work1, specs, cfgs, &cols, &formulas, chunk.row_base());
         closed.extend(closed1);
         for (si, r) in rows1 {
             match r {
@@ -3154,7 +3516,7 @@ impl Bank {
                         compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
                 }
             }
-            let (rows2, closed2) = process(work2, specs, cfgs, &cols, chunk.row_base());
+            let (rows2, closed2) = process(work2, specs, cfgs, &cols, &formulas, chunk.row_base());
             closed.extend(closed2);
             for (si, r) in rows2 {
                 match r {
@@ -3458,8 +3820,16 @@ impl Bank {
     /// built by this crate cannot make happen.
     /// The state as the struct every encoding writes. One builder, so the
     /// msgpack and JSON forms cannot drift apart.
-    fn to_file(&self) -> BankFile {
-        BankFile {
+    fn to_file(&self) -> Result<BankFile, String> {
+        let mut resolvers: SavedResolvers = Vec::new();
+        for (si, r) in self.resolvers.iter().enumerate() {
+            let groups = r.save()?;
+            if !groups.is_empty() {
+                resolvers.push((si, groups));
+            }
+        }
+        Ok(BankFile {
+            resolvers,
             magic: BANK_MAGIC.to_string(),
             format_version: format_version_for(&self.specs),
             rows_fed: self.rows_fed,
@@ -3517,12 +3887,12 @@ impl Bank {
                 .enumerate()
                 .filter_map(|(si, k)| k.map(|k| (si, k)))
                 .collect(),
-        }
+        })
     }
 
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
         self.refuse_if_broken().map_err(|e| e.to_string())?;
-        rmp_serde::to_vec_named(&self.to_file()).map_err(|e| e.to_string())
+        rmp_serde::to_vec_named(&self.to_file()?).map_err(|e| e.to_string())
     }
 
     /// The same state as JSON, for reading rather than for loading: a state
@@ -3535,7 +3905,7 @@ impl Bank {
     /// stream's `decay` read the same way -- rather than as the `null`
     /// `serde_json` would write unasked. See [`FiniteOrTag`].
     pub fn save_json_string(&self, pretty: bool) -> Result<String, String> {
-        let file = self.to_file();
+        let file = self.to_file()?;
         let text = if pretty {
             serde_json::to_string_pretty(&file)
         } else {
@@ -3645,6 +4015,15 @@ impl Bank {
         for (si, integer) in &file.key_integer {
             if let Some(slot) = bank.key_integer.get_mut(*si) {
                 *slot = Some(*integer);
+            }
+        }
+        // A resolver's cores resume at each group's first chunk, which
+        // says what the columns are (docs/PLAN.md task 104).
+        for (si, groups) in &file.resolvers {
+            if let Some(slot) = bank.resolvers.get_mut(*si) {
+                for (key, bytes) in groups {
+                    slot.saved.insert(key.clone(), bytes.clone());
+                }
             }
         }
         bank.rows_fed = if file.rows_fed > 0 {

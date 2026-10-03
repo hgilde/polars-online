@@ -828,19 +828,21 @@ the one-window core it replaced: see
 
 The columns are ordinary columns, so a model in the same query can learn
 from them. A trailing window is an input, and a look-ahead is a target:
+the expression goes straight into the spec's `targets`, named by its
+alias, and the bank resolves it with a window core of its own.
 
 ```python
 notional = pl.col("price") * pl.col("quantity")
 w = dict(half_life="10s", window_size="1m")
 clock = dict(clock="ts", gap_cap="5m", group="symbol")    # one clock for the windows and the model
-spec = po.spec.ewridge("edge", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
-                       half_life="30m", embargo="1m", **clock)   # the target is known a minute late
+fwd_edge = (po.rewm_sum(notional, **w) / po.rewm_sum("quantity", **w) - pl.col("mid")).alias("fwd_edge")
+spec = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_30s"],
+                       half_life="30m", embargo="1m", **clock)   # the target reads the next minute
 fitted = (
     trades.lazy()
     .online.with_windows(
         trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),   # the inputs read only the past
         trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
-        fwd_edge=po.rewm_sum(notional, **w) / po.rewm_sum("quantity", **w) - pl.col("mid"),  # the target reads the next minute
         **clock,
     )
     .online.fit_predict([spec])
@@ -848,32 +850,31 @@ fitted = (
 )
 ```
 
-When the inputs are columns of the input, one name for the window and the
-embargo says it all, and `like=spec` gives the window the model's clock:
+Each row is scored where it sits and learned from once its window has
+closed and its `embargo` has passed, whichever is later. `fit_predict`
+asks for an `embargo` of at least the look-ahead's `window_size`, on the
+same clock: a state that learned a row before its window closed would
+score the rows that window covers in sample. The embargo counts elapsed
+time, and a break releases nothing early, so a window longer than
+`gap_cap` is honest too; a gap past `gap_cap` or a session change cuts an
+open window, and the operator's `partial` says whether the row is learned
+from what the window saw (`"keep"`) or not at all (`"null"`, the default
+looking ahead). `fit` takes any embargo, none included, and learns each row
+once its window closes. The target is not known on the row it is scored
+on, so `resid_<name>` is null there; the diagnostics fold when the row is
+learned, as under any embargo. The spec, the saved state and the CLI's
+TOML carry the expression, and a bank saved mid-window resumes with its
+windows open.
 
-```python
-notional = pl.col("price") * pl.col("quantity")
-H = "1m"                                                    # the window, and the embargo
-spec = po.spec.ewridge("fwd", targets=["fwd_vwap"], features=["mid"],
-                       clock="ts", gap_cap="5m", half_life="30m",
-                       embargo=H)                           # each target learned H after its row
-fitted = (
-    trades.lazy()
-    .online.with_windows(fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size=H)
-                                  / po.rewm_sum("quantity", half_life="10s", window_size=H),
-                         like=spec)                         # the window reads the spec's clock
-    .online.fit_predict([spec])
-    .collect()
-)
-```
-
-Each row is scored where it sits, and learned from once its target is
-known. That takes `embargo` at least the look-ahead's `window_size`, on the
-same clock: the embargo counts elapsed time, and a break releases nothing
-early, so a window longer than `gap_cap` is honest too. When the model's
-inputs are columns of the input rather than windows, `like=spec` takes the
-clock from the spec itself, and makes the look-ahead null on every row the
-spec would not learn from.
+The same target as a column, `like=spec`, shows what the model learned:
+`po.stream.with_windows(trades, fwd_edge, like=spec)` writes the window
+under the spec's clock and nulls it on every row the spec would not learn
+from, and feeding that column back as a plain target under the same
+embargo gives the same predictions, row for row. Measured on 16M rows at
+two a second, that column form runs in 0.6 of the native form's time and
+a little more memory: its window and bank are two stages of one query and
+overlap, where the native form runs both in one source; see
+[PERFORMANCE.md §34](docs/PERFORMANCE.md#34-a-window-expression-as-a-target-task-104-2026-10-03).
 
 ## Running a bank
 

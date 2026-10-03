@@ -239,9 +239,13 @@ that to compare states.
 *Since then* (checked on 2026-09-23 against `BankFile`): the file has
 gained five optional fields, each skipped when it is empty. They are
 `closed`, the rows of closed groups that nobody has drained yet (E54),
-`high_water`, `pca_prev`, `pca_prev_by_group` and `key_integer`. A stream
-state holds more too, such as `pending`, the rows a `embargo` has
-accepted and not yet learned from.
+`high_water`, `pca_prev`, `pca_prev_by_group` and `key_integer`; since
+2026-10-03 (task 104) also `resolvers`, per spec with a window expression
+as a target, each group's window core with the rows it holds, so a bank
+saved mid-window resumes with its windows open. A stream state holds more
+too, such as `pending`, the rows a `embargo` has accepted and not yet
+learned from -- each with its row number and whether the core has resolved
+its target.
 
 ### 2. How polars executes a Python IO source — measured
 

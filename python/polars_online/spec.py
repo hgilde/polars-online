@@ -24,7 +24,14 @@ sees a stream* is the guide to them; this is the reference.
     target's place, and ``holt`` takes no features. A target may also be a
     :func:`polars_online.target`: a column taken against another column of
     its own row, ``po.target("price_5m", relative_to="mid")``, which the
-    model then learns and predicts on that relative scale.
+    model then learns and predicts on that relative scale. Or a window
+    expression looking ahead (:mod:`polars_online.ops`), named by its
+    alias: ``(po.rewm_mean("mid", half_life="10s", window_size="1m") -
+    pl.col("mid")).alias("fwd")``. The bank resolves it when the row's
+    window closes and learns the row then, under the ``embargo``, which
+    ``fit_predict`` asks to cover the longest forward ``window_size``;
+    :func:`polars_online.stream.with_windows` with ``like=`` the spec
+    writes the same target as a column (docs/PLAN.md task 104).
 ``fit_intercept``
     Whether the fit has a level of its own: a constant 1 is put in front of
     the features. Default ``True``. Without it nothing is centred, and a fit
