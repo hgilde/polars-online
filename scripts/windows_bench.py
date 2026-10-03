@@ -1,5 +1,7 @@
-"""A forward reverse-EWMA over a time window, alone and as an embargoed
-target, against polars' `rolling` recipe (docs/PERFORMANCE.md §32).
+"""A forward VWAP over a time window -- two decayed sums, one formula --
+alone and as an embargoed target, against polars' `rolling` recipe
+(docs/PERFORMANCE.md §32); and operators sharing one kernel against as many
+kernels (docs/PLAN.md task 143).
 
     uv run python scripts/windows_bench.py [OUTDIR]
 
@@ -9,13 +11,15 @@ is generated, seeded, into OUTDIR (default `.cache/windows_bench`, which git
 ignores) and reused by later runs. Each case runs in a fresh process, parquet
 in and `sink_parquet` out, and prints its wall time and peak RSS:
 
-- `with_windows`: `lf.online.with_windows([lookahead_rewm(...)])`;
+- `with_windows`: `lf.online.with_windows(fwd_vwap=rewm_sum(p q) / rewm_sum(q))`;
 - `rolling`: `rolling(period=H, offset="0s", closed="none")`, with each
   window's weights taken from its own anchor;
 - `embargoed`: the window as an `ewridge` target learned `H` after its row
   (`embargo=H`, `like=spec`), in one query;
 - `model alone`: the same spec over the window's column, already written;
-- `scan and sink`: the file read and written, the floor under all of them.
+- `scan and sink`: the file read and written, the floor under all of them;
+- `shared k`: `k` operators on one kernel (one queue, `k` values per row),
+  against `separate k`, `k` operators on `k` kernels (`k` queues).
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import time
 from pathlib import Path
 
 CASES = ("with_windows", "rolling", "embargoed", "model alone", "scan and sink")
+SHARED = ("shared 1", "shared 4", "shared 16", "separate 4", "separate 16")
 RUNS = [(1_000_000, "1m"), (4_000_000, "1m"), (16_000_000, "1m"), (4_000_000, "4m")]
 
 
@@ -70,16 +75,29 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         half_life="30m",
         embargo=h,
     )
-    window = po.window.lookahead_rewm(
-        "price", weight="quantity", half_life="10s", horizon=h, name="fwd_vwap"
+    notional = pl.col("price") * pl.col("quantity")
+    fwd_vwap = po.rewm_sum(notional, half_life="10s", window_size=h) / po.rewm_sum(
+        "quantity", half_life="10s", window_size=h
     )
     columns = out / f"windows_{n}_{h}.parquet"
     start = time.perf_counter()
     if case == "with_windows":
-        plan = lf.online.with_windows([window], clock="ts", gap_cap="5m")
+        plan = lf.online.with_windows(fwd_vwap=fwd_vwap, clock="ts", gap_cap="5m")
         target = columns
+    elif case.startswith(("shared", "separate")):
+        kind, k = case.split()
+        ops = {
+            f"m{i}": po.ewm_mean(
+                pl.col("mid") * (i + 1),
+                half_life="10s" if kind == "shared" else f"{10 + i}s",
+                window_size=h,
+            )
+            for i in range(int(k))
+        }
+        plan = lf.online.with_windows(**ops, clock="ts", gap_cap="5m")
+        target = out / "ops.parquet"
     elif case == "embargoed":
-        plan = lf.online.with_windows([window], like=spec).online.fit_predict([spec])
+        plan = lf.online.with_windows(fwd_vwap=fwd_vwap, like=spec).online.fit_predict([spec])
         target = out / "embargoed.parquet"
     elif case == "model alone":
         plan = pl.scan_parquet(columns).online.fit_predict([spec])
@@ -121,6 +139,10 @@ def main() -> None:
             subprocess.run(
                 [sys.executable, __file__, "--one", str(out), case, str(n), h], check=True
             )
+    for case in SHARED:
+        subprocess.run(
+            [sys.executable, __file__, "--one", str(out), case, str(16_000_000), "1m"], check=True
+        )
     print(f"load: {os.getloadavg()[0]:.1f}", flush=True)
 
 

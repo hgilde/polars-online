@@ -18,7 +18,7 @@ Around them: :mod:`polars_online.eval` scores the output;
 :mod:`polars_online.gram` solves and diagnoses the running sums a bank
 exports; :mod:`polars_online.corr` repairs and reads correlation matrices;
 :mod:`polars_online.stream` transforms a plan: late labels, asynchronous series,
-windowed EWMAs looking back or ahead (described with :mod:`polars_online.window`);
+windowed means, sums and rates looking back or ahead (the operators of :mod:`polars_online.ops`);
 :mod:`polars_online.sim` simulates streams whose truth is known.
 
 Errors follow one contract throughout, and each docstring says which of it
@@ -38,10 +38,10 @@ from polars_online import (
     corr,
     eval,
     gram,
+    ops,
     sim,
     spec,
     stream,
-    window,
 )
 from polars_online._bank import ModelBank
 from polars_online._frame import (
@@ -59,10 +59,19 @@ from polars_online._polars_online import (
     thread_pool_size,
 )
 from polars_online._spec import Target, target
+from polars_online.ops import ewm_mean, ewm_rate, ewm_sum, increment, rewm_mean, rewm_rate, rewm_sum
 
 __version__ = "0.13.0"
 
 __all__ = [
+    "ewm_mean",
+    "ewm_rate",
+    "ewm_sum",
+    "increment",
+    "ops",
+    "rewm_mean",
+    "rewm_rate",
+    "rewm_sum",
     "ArrowStruct",
     "ConsumedSourceWarning",
     "ModelBank",
@@ -80,7 +89,6 @@ __all__ = [
     "spec",
     "stream",
     "target",
-    "window",
     "Target",
     "thread_pool_size",
     "unnest",

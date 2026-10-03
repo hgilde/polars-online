@@ -3886,3 +3886,72 @@ rising to 9.5 with the recipe's own threads, moved every memory figure less
 than 7%, and every time of the window and the model less than 6% but one:
 0.17 s for the first 1M-row window, the run's first process. The recipe's
 times moved up to 13%, and the sub-second scan-and-sink's up to a third.
+
+## 33. Window operators (task 143, 2026-10-03)
+
+The window core rewritten around operators (`po.ewm_mean`, `po.rewm_sum`
+and the rest, docs/PLAN.md task 143) on the stream §32 measured: about two
+rows a second (exponential gaps), three in ten of them trades, parquet in
+and `sink_parquet` out, one group. Each run is its own process, peak RSS
+from `getrusage`. The forward VWAP is now two decayed sums and a formula --
+`po.rewm_sum(price * quantity) / po.rewm_sum(quantity)` -- where §32's was
+one weighted window. The four cases are §32's -- the window alone, the
+`rolling` recipe, the window as an `ewridge` target under an `embargo` of
+`H`, and the model alone on the written column -- and two new ones: `k`
+operators (`po.ewm_mean` of `mid` times `k` constants) on one kernel, one
+`half_life` and one queue, against the same `k` operators on `k` kernels,
+each its own `half_life`. `scripts/windows_bench.py` runs every case; the
+shared machine carried a load of 5.0 rising to 5.7 through the sweep (§32's
+ran at 2.9).
+
+| rows | `H` | `with_windows` | `rolling` | embargoed | model alone | scan and sink |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1M | 1m | 0.17 s, 0.24 GB | 1.30 s, 2.88 GB | 0.47 s, 0.41 GB | 0.38 s, 0.30 GB | 0.02 s, 0.20 GB |
+| 4M | 1m | 0.63 s, 0.47 GB | 5.04 s, 4.90 GB | 1.53 s, 0.65 GB | 1.47 s, 0.60 GB | 0.05 s, 0.47 GB |
+| 16M | 1m | 2.43 s, 0.99 GB | 19.52 s, 5.24 GB | 5.78 s, 1.21 GB | 5.69 s, 1.15 GB | 0.40 s, 1.03 GB |
+| 4M | 4m | 0.63 s, 0.48 GB | 29.12 s, 18.77 GB | 2.31 s, 0.65 GB | 2.27 s, 0.59 GB | |
+
+Operators sharing one kernel against as many kernels, 16M rows, `H` 1m:
+
+| case | time | peak RSS |
+|---|---:|---:|
+| one operator, one kernel | 2.45 s | 0.98 GB |
+| four operators, one kernel | 4.12 s | 1.13 GB |
+| sixteen operators, one kernel | 11.79 s | 1.11 GB |
+| four operators, four kernels | 5.82 s | 1.01 GB |
+| sixteen operators, sixteen kernels | 20.65 s | 1.27 GB |
+
+- **Memory is still the file's.** The window's peak is the scan-and-sink's
+  to 0.04 GB at every size, as in §32, and a 4-minute window costs what a
+  1-minute one does; sixteen operators on one kernel cost 0.13 GB more
+  than one, sixteen kernels 0.29 GB more.
+- **Sharing a kernel is what the design promised**: sixteen operators on
+  one queue run in 57% of the time of sixteen queues (four in 71%), and
+  each operator added to a kernel costs 0.6 s per 16M rows where its own
+  kernel costs 1.2 s.
+- **Embargoed still costs what the model costs**: 1.53 against 1.47 s,
+  5.78 against 5.69 s at 16M rows.
+- **Speed against task 78's core, at one load.** §32's 1.63 s at 16M rows
+  was measured at load 2.9; today's load made every figure incomparable
+  with it, so the pre-143 core (commit `c061b7a`) was rebuilt in a
+  worktree with its own `target/` and run beside this one, alternating:
+  task 78's core 1.65 and 1.60 s against this one's 2.49 and 2.44 s (16M
+  rows, `H` 1m, load 5.7 to 6.0), both at 1.0 GB. **1.5 times the time,
+  the memory equal.** The gap is the general engine's: a row's intervals
+  per operator, the equal-stamp bookkeeping, one value and one accumulator
+  per operator on the queue, and the formula Polars evaluates on each
+  chunk that goes out. Three per-row costs were found with the sampler on
+  an unstripped build (`CARGO_PROFILE_RELEASE_STRIP=false`) and removed on
+  the way. The first queue allocated seven `Vec`s a row (items, segment
+  sums, the open row's held values); a struct-of-arrays queue with flat
+  value and sum arenas and scratch buffers removed them (4M rows: 1.11 to
+  0.75 s, the old core at 0.41 and 0.42 s beside each). The nanosecond
+  clock's `seconds_of_ns` divided an `i128` and converted it to a float on
+  every clock step (`__divti3` and `__floattidf`, 11% of the samples); an
+  `i64` fast path with the same two Euclidean operations gives the same
+  bits (0.74 to 0.63 s against the old core's 0.42) and reaches every
+  clock in the library, the bank's included. A bare-column input and a
+  bare-operator formula now skip the Polars plan, which measured nothing
+  on this case and stays as the simpler path. Chunk size moves nothing
+  from 50k to 500k rows: the cost is per row.
+

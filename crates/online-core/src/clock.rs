@@ -218,8 +218,16 @@ impl From<f64> for ClockValue {
 }
 
 /// Nanoseconds as seconds: the whole seconds exact, the rest rounded once.
+/// A difference that fits an `i64` -- any two stamps less than 292 years
+/// apart -- takes the 64-bit road: the same two Euclidean operations on the
+/// same integers, so the same bits, without the 128-bit division and
+/// conversion that cost a window core a tenth of its row (task 143).
 pub fn seconds_of_ns(ns: i128) -> f64 {
     const PER: i128 = 1_000_000_000;
+    if let Ok(d) = i64::try_from(ns) {
+        const PER64: i64 = 1_000_000_000;
+        return d.div_euclid(PER64) as f64 + d.rem_euclid(PER64) as f64 / 1e9;
+    }
     ns.div_euclid(PER) as f64 + ns.rem_euclid(PER) as f64 / 1e9
 }
 

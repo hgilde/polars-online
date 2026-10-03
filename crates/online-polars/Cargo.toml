@@ -19,7 +19,9 @@ publish = false
 
 [dependencies]
 online-core.workspace = true
-polars = { workspace = true, features = ["lazy", "dtype-struct", "parquet", "ipc", "csv", "json"] }
+# `abs`, `log` and `round_series` (clip): the element-wise functions a formula
+# may use (docs/PLAN.md task 143), all inside polars itself.
+polars = { workspace = true, features = ["lazy", "dtype-struct", "parquet", "ipc", "csv", "json", "abs", "log", "round_series"] }
 # Same pin as `polars`; all four are internal polars crates the facade does
 # not re-export, and all four are already in `polars`' own tree (nothing new
 # is linked): `PlRefPath` for the scans, the IPC field defaults the batched

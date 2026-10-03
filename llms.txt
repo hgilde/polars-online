@@ -115,6 +115,10 @@ Windows alike.
 - [Gram accessors](https://hgilde.github.io/polars-online/gram.html)
 - [Correlation toolkit](https://hgilde.github.io/polars-online/corr.html)
 - [Stream transforms](https://hgilde.github.io/polars-online/stream.html)
+- [Window operators](https://hgilde.github.io/polars-online/ops.html): `po.ewm_mean`,
+  `po.rewm_mean`, `po.ewm_sum`, `po.rewm_sum`, `po.ewm_rate`, `po.rewm_rate`,
+  `po.increment` -- Polars expressions over a stream's clock, run by
+  `lf.online.with_windows(*exprs, **named, clock=...)` one pass, O(window) memory
 - [Simulation](https://hgilde.github.io/polars-online/sim.html)
 
 ## Guides

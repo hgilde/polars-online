@@ -37,7 +37,7 @@ import os
 import re
 import sys
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator
 from types import FrameType
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -50,7 +50,6 @@ from polars_online._spec import coef_fields, output_index, target_columns
 
 if TYPE_CHECKING:
     from polars_online._duration import Duration
-    from polars_online.window import Window
 
 __all__ = [
     "ConsumedSourceWarning",
@@ -1052,8 +1051,7 @@ class LazyFrameOnlineNamespace:
 
     def with_windows(
         self,
-        windows: Sequence[Window],
-        *,
+        *exprs: pl.Expr,
         clock: str | None = None,
         gap_cap: float | Duration | None = None,
         restart_after_step_back: float | Duration | None = None,
@@ -1064,17 +1062,20 @@ class LazyFrameOnlineNamespace:
         chunk_rows: int | None = None,
         load_state: State | None = None,
         save_state: State | None = None,
+        **named: pl.Expr,
     ) -> pl.LazyFrame:
-        """The plan's rows plus one column per window, as a plan that streams:
-        :func:`polars_online.stream.with_windows` as a method, so a query can add
-        windowed means and fit on them in one chain.
+        """The plan's rows plus one column per formula over the window operators,
+        as a plan that streams: :func:`polars_online.stream.with_windows` as a
+        method, so a query can add windowed means and fit on them in one chain.
 
         .. code-block:: python
 
             fitted = (
                 trades.lazy()
-                .online.with_windows([po.window.ewm("mid", half_life="5s", horizon="1m")],
-                                     clock="ts", gap_cap="5m", group="symbol")
+                .online.with_windows(
+                    mid_5s=po.ewm_mean("mid", half_life="5s", window_size="1m"),
+                    clock="ts", gap_cap="5m", group="symbol",
+                )
                 .collect()
             )
 
@@ -1085,7 +1086,7 @@ class LazyFrameOnlineNamespace:
 
         return with_windows(
             self._lf,
-            windows,
+            *exprs,
             clock=clock,
             gap_cap=gap_cap,
             restart_after_step_back=restart_after_step_back,
@@ -1096,6 +1097,7 @@ class LazyFrameOnlineNamespace:
             chunk_rows=chunk_rows,
             load_state=load_state,
             save_state=save_state,
+            **named,
         )
 
 
@@ -1168,8 +1170,7 @@ class DataFrameOnlineNamespace:
 
     def with_windows(
         self,
-        windows: Sequence[Window],
-        *,
+        *exprs: pl.Expr,
         clock: str | None = None,
         gap_cap: float | Duration | None = None,
         restart_after_step_back: float | Duration | None = None,
@@ -1180,8 +1181,9 @@ class DataFrameOnlineNamespace:
         chunk_rows: int | None = None,
         load_state: State | None = None,
         save_state: State | None = None,
+        **named: pl.Expr,
     ) -> pl.DataFrame:
-        """The frame plus one column per window:
+        """The frame plus one column per formula over the window operators:
         :func:`polars_online.stream.with_windows` as a method, as
         :meth:`LazyFrameOnlineNamespace.with_windows` is for a plan.
         """
@@ -1189,7 +1191,7 @@ class DataFrameOnlineNamespace:
 
         return with_windows(
             self._df,
-            windows,
+            *exprs,
             clock=clock,
             gap_cap=gap_cap,
             restart_after_step_back=restart_after_step_back,
@@ -1200,6 +1202,7 @@ class DataFrameOnlineNamespace:
             chunk_rows=chunk_rows,
             load_state=load_state,
             save_state=save_state,
+            **named,
         )
 
 

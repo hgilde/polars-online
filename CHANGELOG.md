@@ -7,8 +7,51 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **Window operators as Polars expressions** (task 143, with task 144's
+  window semantics): `po.ewm_mean`, `po.rewm_mean`, `po.ewm_sum`,
+  `po.rewm_sum`, `po.ewm_rate`, `po.rewm_rate` and `po.increment` each
+  return a `pl.Expr` that composes with `pl.col`, literals, arithmetic,
+  comparisons, `log`/`exp`/`abs`/`sqrt`/`pow`/`clip`/`fill_null`/`is_null`,
+  `when/then/otherwise`, `cast` and `alias`; `po.stream.with_windows(lf,
+  *exprs, **named, clock=..., ...)` reads like `with_columns`, computing
+  each distinct operator once (operators with one direction, half-life,
+  window and `closed` share a queue) and evaluating the formula with Polars
+  on each chunk it emits. The time-weighted mean is Polars' `ewm_mean_by`
+  (each value held from the operator's last valued row, as Polars skips a
+  null; the first of a stretch from before it), the sum `ewm_sum_by`, the
+  rate the sum over the decayed time the window covers, and the forward
+  forms their mirrors, each held to a brute-force loop from the definition
+  and to the time-reversal identity. Which rows a window holds follows
+  Polars' `rolling_*_by`: `closed` (`"right"` default), `min_samples`, and
+  every row at one stamp sharing one window -- so a backward output under
+  `"right"` or `"both"` waits for the next distinct stamp, and a forward
+  window counts a row exactly `window_size` later. A formula is kept as a
+  compact tree of this library's own, rebuilt through Polars' public
+  builders on both sides, so a saved state carries it and a node that is
+  not element-wise (`shift`, `cum_sum`, a rolling function, `over`, an
+  aggregation) is refused by name. The call's own keywords are not output
+  names. `tests/data.py` downloads and caches one symbol-day of Binance
+  USD-M futures quotes and trades for the tests.
+- `po.ops`, the operators' module, in the API reference.
+
+### Removed
+
+- `po.window.ewm` and `po.window.lookahead_rewm`, their descriptions
+  (`weight=`, `split=`, `total=`, `unlisted=`, `complete=`, name templates)
+  and the `windows=[...]` argument of `with_windows` (pre-1.0, no aliases):
+  a weighted mean is a ratio of two sums, a side's VWAP puts `when/then`
+  inside both, and a windows state file saved before this (version 1) is
+  refused by its version.
+
 ### Changed
 
+- The nanosecond clock's conversion to seconds takes a 64-bit road when the
+  difference fits one (any two stamps less than 292 years apart): the same
+  two Euclidean operations, so the same bits for every clock in the
+  library, without the 128-bit division that cost the window core a tenth
+  of each row (task 143).
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec

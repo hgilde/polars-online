@@ -22,7 +22,7 @@ written out in polars: useful for seeing what the delay does, for a model that
 has no ``embargo``, and as the oracle the native path is tested against.
 
 :func:`with_windows` adds exponentially weighted means with a hard cutoff, looking
-back or ahead, described with :mod:`polars_online.window`: any number of them
+back or ahead, described with :mod:`polars_online.ops`: any number of them
 in one pass, each row out once every window over it has closed.
 
 :func:`refresh_time` puts asynchronous series on a common grid by
@@ -50,6 +50,7 @@ from typing import Any, overload
 import polars as pl
 from polars.io.plugins import register_io_source
 
+from polars_online import _formula
 from polars_online import _polars_online as _native
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
 from polars_online._frame import (
@@ -63,7 +64,6 @@ from polars_online._frame import (
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
-from polars_online.window import Window
 
 __all__ = ["embargo", "refresh_time", "with_windows"]
 
@@ -451,11 +451,46 @@ def _clock_value(value: Any, who: str, key: str) -> Any:
     return duration_text(value, who, key)
 
 
+#: The clock keywords of ``with_windows``, reserved: not output names.
+_WINDOW_KEYS = ("clock", "gap_cap", "restart_after_step_back", "session", "session_gap", "group")
+
+
+def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[dict[str, Any]]:
+    """The call's expressions as named trees: a keyword names its expression,
+    a positional one is named by its alias."""
+    out: list[dict[str, Any]] = []
+    for e in exprs:
+        if not isinstance(e, pl.Expr):
+            raise TypeError(
+                f"{who}: an expression is a pl.Expr over the operators, got {type(e).__name__}"
+            )
+        tree = _formula.to_tree(e)
+        name = e.meta.output_name()
+        if name.startswith(_formula.PREFIX):
+            raise ValueError(
+                f"{who}: an expression whose name would be an operator's needs a name: give it "
+                f'with .alias("...") or as a keyword, with_windows(name=expr)'
+            )
+        out.append({"name": name, "tree": tree})
+    for name, e in named.items():
+        if not isinstance(e, pl.Expr):
+            raise TypeError(
+                f"{who}: {name} is a pl.Expr over the operators, got {type(e).__name__} {e!r}"
+            )
+        out.append({"name": name, "tree": _formula.to_tree(e)})
+    for f in out:
+        if not _formula.operators(f["tree"]):
+            raise ValueError(
+                f"{who}: {f['name']!r} holds no operator; a formula of the row alone is Polars' "
+                f"with_columns"
+            )
+    return out
+
+
 @overload
 def with_windows(
     lf: pl.LazyFrame,
-    windows: Sequence[Window],
-    *,
+    *exprs: pl.Expr,
     clock: str | None = None,
     gap_cap: float | Duration | None = None,
     restart_after_step_back: float | Duration | None = None,
@@ -466,14 +501,14 @@ def with_windows(
     chunk_rows: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
+    **named: pl.Expr,
 ) -> pl.LazyFrame: ...
 
 
 @overload
 def with_windows(
     lf: pl.DataFrame,
-    windows: Sequence[Window],
-    *,
+    *exprs: pl.Expr,
     clock: str | None = None,
     gap_cap: float | Duration | None = None,
     restart_after_step_back: float | Duration | None = None,
@@ -484,13 +519,13 @@ def with_windows(
     chunk_rows: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
+    **named: pl.Expr,
 ) -> pl.DataFrame: ...
 
 
 def with_windows(
     lf: pl.LazyFrame | pl.DataFrame,
-    windows: Sequence[Window],
-    *,
+    *exprs: pl.Expr,
     clock: str | None = None,
     gap_cap: float | Duration | None = None,
     restart_after_step_back: float | Duration | None = None,
@@ -501,90 +536,95 @@ def with_windows(
     chunk_rows: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
+    **named: pl.Expr,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """Windowed EWMAs over a stream, looking back and ahead, in one pass.
+    """Formulas over the window operators, computed over a stream in one
+    pass, looking back and ahead (:mod:`polars_online.ops`).
 
-    Each description from :mod:`polars_online.window` adds its columns, named by
-    its template; the input's columns come through unchanged, in order. For row
-    *t* at clock ``tau_t``, over the rows *j* in its window that count:
-
-    .. code-block:: text
-
-        y_t = sum_j w_j * lam**|tau_j - tau_a| * v_j / sum_j w_j * lam**|tau_j - tau_a|
-        lam = 2 ** (-1 / half-life)
-
-    over ``(tau_t - horizon, tau_t]`` for :func:`~polars_online.window.ewm` and
-    ``(tau_t, tau_t + horizon)`` for :func:`~polars_online.window.lookahead_rewm`.
-    Over ``trades``, quotes with a ``mid`` and trades between them with a
-    ``side``, a ``quantity`` and a ``price``, a trailing mean of the mid and
-    forward VWAPs of all trades, buys and sells:
+    Reads like ``with_columns``: each expression adds a column named by its
+    keyword or its ``.alias()``, and the input's columns come through
+    unchanged, in order. The operators -- :func:`polars_online.ewm_mean`,
+    :func:`polars_online.rewm_mean`, :func:`polars_online.ewm_sum`,
+    :func:`polars_online.rewm_sum`, :func:`polars_online.ewm_rate`,
+    :func:`polars_online.rewm_rate` and :func:`polars_online.increment` --
+    are stateful kernels computed by the core, each distinct one once; the
+    formula around them is element-wise Polars, evaluated on each chunk
+    emitted. Over ``trades``, quotes with a ``mid`` and trades between them
+    with a ``side``, a ``quantity`` and a ``price``, a trailing mean of the
+    mid and forward VWAPs of all trades and of the buys:
 
     .. code-block:: python
 
+        notional = pl.col("price") * pl.col("quantity")
+        buys = pl.when(pl.col("side") == "buy")
         out = po.stream.with_windows(
             trades,
-            [
-                po.window.ewm("mid", half_life="5s", horizon="1m"),
-                po.window.lookahead_rewm(
-                    "price", weight="quantity", split=("side", ["buy", "sell"]),
-                    half_life="10s", horizon="1m", name="fwd_vwap{split}",
-                ),
-            ],
+            mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
+            fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size="1m")
+                     / po.rewm_sum("quantity", half_life="10s", window_size="1m"),
+            fwd_buy_vwap=po.rewm_sum(buys.then(notional), half_life="10s", window_size="1m")
+                         / po.rewm_sum(buys.then("quantity"), half_life="10s", window_size="1m"),
             clock="ts", gap_cap="5m", group="symbol",
         )
 
-    **The clock is a spec's**, in the same words: ``clock`` (with none, one unit
-    is one row), ``gap_cap`` (required with a clock; a longer gap is a break),
-    ``restart_after_step_back`` (unset, a step back is refused; given, one at
-    least that large starts over), ``session`` and ``session_gap`` (a number, a
-    duration or ``"reset"``), and ``group``, whose groups each have their own
-    clock and windows. A horizon is measured on that policy clock, after the cap
-    and the session gap. A gap longer than ``gap_cap`` or a session change
-    ends every window open across it -- a partial window, under the
-    description's ``partial`` -- and a reset discards them: null, and never
-    dropped. The rows must be in clock order across groups, as one stream: the
-    clock is also read in input order, under the same policy, so a step back
-    there is refused or, at least ``restart_after_step_back``, resets every
-    group; a session change or a gap there ends every group's
-    windows. ``like=spec`` takes all of this from a spec instead, and with it
-    the spec's rule for the rows it learns from: a look-ahead is null on a row
-    whose features or weight the spec could not use, as the target the model
-    learns is never learned there. Any clock keyword beside ``like=`` is refused.
+    **The clock is a spec's**, in the same words: ``clock`` (with none, one
+    unit is one row), ``gap_cap`` (required with a clock; a longer gap is a
+    break), ``restart_after_step_back`` (unset, a step back is refused;
+    given, one at least that large starts over), ``session`` and
+    ``session_gap`` (a number, a duration or ``"reset"``), and ``group``,
+    whose groups each have their own clock and windows. A window is measured
+    on that policy clock, after the cap and the session gap. A gap longer
+    than ``gap_cap`` or a session change ends every window open across it,
+    under each operator's ``partial``; a reset discards them: null, never
+    dropped. The rows must be in clock order across groups, as one stream:
+    the clock is also read in input order, under the same policy, so a step
+    back there is refused or, at least ``restart_after_step_back``, resets
+    every group; a session change or a gap there ends every group's windows.
+    ``like=spec`` takes all of this from a spec instead, and with it the rule
+    for the rows the spec learns from: a forward window over a row the spec
+    would skip (a null feature or weight) is null, as the model never learns
+    its target. These keywords are the call's, not output names: an
+    expression passed as ``session=...`` is refused; name it with
+    ``.alias()``.
 
-    **Rows leave in input order**, each once every window over it has closed:
-    with only :func:`~polars_online.window.ewm` windows, as it arrives; with a
-    look-ahead, once its horizon has passed, so the output trails the input by
-    the longest horizon. A group that falls silent holds every later row for at
-    most ``gap_cap`` of the stream's time: past that its next row is certain
-    to open with a gap past the cap, so its windows end then. A row-count clock
-    has no such bound. The rows a look-ahead holds are kept as the input's own
-    chunks, not copied, so the memory is one horizon of input whatever its width,
-    and the windows' own sums are one horizon of the rows that count in them.
+    **A formula is element-wise.** Columns, literals, arithmetic,
+    comparisons, ``log``, ``exp``, ``abs``, ``sqrt``, ``pow``, ``clip``,
+    ``fill_null``, ``is_null``, ``when/then/otherwise``, ``cast`` and
+    ``alias`` over the operators; a ``shift``, a cumulative or rolling
+    function, ``over`` or an aggregation would depend on the chunking, and
+    is refused by name while the plan is built. An operator's input is the
+    same kind of formula, ``increment`` included, not another operator. The
+    formula is kept as a compact tree of its own, in the plan and in a saved
+    state (docs/PLAN.md task 143).
 
-    **It resumes.** ``save_state`` writes the windows' sums and the rows still
-    waiting for a horizon, which the next run, given ``load_state``, emits first:
-    feeding a stream in two runs gives what one run gives. Without it, a row
-    whose horizon has not passed when the input ends is emitted unresolved,
-    null. Under a slice of the output (``.head(n)``) the input is read only up to
-    the row that resolved the *n*-th row, so a saved state goes on from there.
-    A state resumes only the call that saved it, on the same kind of clock.
+    **Rows leave in input order**, each once every window over it has
+    resolved: a backward window under ``closed="right"`` or ``"both"`` waits
+    for the next distinct stamp, a look-ahead for its window to pass, so the
+    output trails the input by the longest window. A group that falls silent
+    holds every later row for at most ``gap_cap`` of the stream's time: past
+    that its next row is certain to open with a gap past the cap, so its
+    windows end then. The rows a look-ahead holds are kept as the input's
+    own chunks, not copied, so the memory is one window of input whatever
+    its width, and the kernels' own sums are one window of the rows that
+    count in them.
 
-    ``ValueError`` for a description, a clock policy or a column that cannot
-    run, an output name that collides, a ``load_state`` another call saved, and
-    -- naming the row -- a refused step back, a weight below zero and an
-    unlisted split value under ``unlisted="error"``; ``TypeError`` for
-    something that is not a description, or a clock keyword beside ``like=``;
-    ``FileNotFoundError`` for a ``load_state`` that is not there or a
-    ``save_state`` whose directory is not.
+    **It resumes.** ``save_state`` writes the kernels' sums and the rows
+    still waiting, which the next run, given ``load_state``, emits first:
+    feeding a stream in two runs gives what one run gives. Without it, a
+    row whose window has not passed when the input ends is emitted
+    unresolved, null. Under a slice of the output (``.head(n)``) the input
+    is read only up to the row that resolved the *n*-th row, so a saved
+    state goes on from there. A state resumes only the call that saved it,
+    on the same kind of clock.
+
+    ``ValueError`` for a formula, a clock policy or a column that cannot
+    run, an output name that collides, a ``load_state`` another call saved,
+    and -- naming the row -- a refused step back; ``TypeError`` for
+    something that is not an expression, or a clock keyword beside
+    ``like=``; ``FileNotFoundError`` for a ``load_state`` that is not there
+    or a ``save_state`` whose directory is not.
     """
     who = "with_windows"
-    descriptions = list(windows)
-    for d in descriptions:
-        if not (isinstance(d, dict) and d.get("kind") in ("ewm", "lookahead_rewm")):
-            raise TypeError(
-                f"{who}: windows must be po.window.ewm or po.window.lookahead_rewm "
-                f"descriptions, got {type(d).__name__} {d!r}"
-            )
     given = {
         "clock": clock,
         "gap_cap": gap_cap,
@@ -593,7 +633,14 @@ def with_windows(
         "session_gap": session_gap,
         "group": group,
     }
-    config: dict[str, Any] = {"windows": descriptions}
+    for key, value in given.items():
+        if isinstance(value, pl.Expr):
+            raise TypeError(
+                f"{who}: {key} is a clock keyword of the call, not an output name; name the "
+                f"expression with .alias({key!r}) or another keyword"
+            )
+    formulas = _formulas(who, exprs, named)
+    config: dict[str, Any] = {"formulas": formulas}
     if like is not None:
         if not (isinstance(like, dict) and isinstance(like.get("features"), list)):
             raise TypeError(
@@ -645,8 +692,8 @@ def with_windows(
             return _native.Windows.load_bytes(loaded, config_json, empty)
         return _native.Windows(config_json, empty)
 
-    # Built once now, so a description or a column that cannot run is
-    # reported while the plan is built, as polars reports its own errors.
+    # Built once now, so a formula or a column that cannot run is reported
+    # while the plan is built, as polars reports its own errors.
     first = build()
     schema = first.feed(empty).schema
     needed = set(first.needed())
@@ -689,7 +736,7 @@ def with_windows(
                 sliced = True
                 break
         if not sliced and save_path is None:
-            # The input's end: what still waits for a horizon is unresolved.
+            # The input's end: what still waits for a window is unresolved.
             out = w.finish()
             if n_rows is not None:
                 out = out.head(n_rows - seen)
@@ -720,6 +767,6 @@ def with_windows(
         schema=schema,
         validate_schema=True,
         is_pure=save_path is None,
-        **_explain_named(f"with_windows: {len(descriptions)} description(s)"),
+        **_explain_named(f"with_windows: {len(formulas)} formula(s)"),
     )
     return plan if isinstance(lf, pl.LazyFrame) else plan.collect()

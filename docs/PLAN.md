@@ -5641,9 +5641,10 @@ is not, since the model alone has `0.0` and `3.5` there.
       NumPy 3.0 that breaks this library blocks every release until it is
       fixed or capped, the trade the Polars range makes too.
 
-- [ ] 143. **Window expressions: factors and targets as Polars formulas
-      over exponentially weighted operators -- planned, not built.** Size M
-      to L. Depends on 78 (done); the target form on 104. Replaces
+- [x] 143. **Window expressions: factors and targets as Polars formulas
+      over exponentially weighted operators -- the column form built
+      2026-10-03 ("Built" at the end); the target form is task 104's.**
+      Size M to L. Depends on 78 (done); the target form on 104. Replaces
       `po.window.ewm` and `po.window.lookahead_rewm` (pre-1.0, no aliases).
       Constraints: the speed of task 78's core, and no memory beyond what
       each operator needs.
@@ -5898,9 +5899,104 @@ is not, since the model alone has `0.0` and `3.5` there.
         kernel against as many windows, at 16M rows; memory at the
         scan-and-sink floor, as task 78 measured.
 
-- [ ] 144. **Window expressions take Polars' names and semantics -- the
+      #### Built (the column form, 2026-10-03)
+
+      - **The core** (`windows.rs`, rewritten): a kernel per distinct
+        (direction, `half_life`, `window_size`, `closed`), any number of
+        operators on it sharing one two-stack queue whose items carry one
+        value and one accumulator per operator; the queue keeps suffix
+        sums on its front stack and prefix sums on its back, so a window
+        less its oldest rows is read without a subtraction. That is what
+        a held value cut at the window's edge needs: the first attempt
+        subtracted the boundary row's full mass from the sum, and at a row
+        exactly a window old the two cancelled to rounding dust that set
+        the mean (a `"left"` mean read 6.27 where the definition gave
+        6.34). The forward side closes a window before the kernel's open
+        row -- the last one, held until the next -- joins, and counts that
+        row directly, so no queued row is ever cut.
+      - **Each operator's intervals are its own** (measured 2026-10-03:
+        Polars' `ewm_mean_by` on `[1, null, 3]` at `t = [0, 1, 2]` gives
+        2.5, the recursion with `Δt` from the last *valued* row; the row
+        form gives 2.0). Looking back a value is held from the operator's
+        last valued row (`Group::last_valued`, a start per operator in
+        each item); looking ahead the last value is held until the next
+        (`Group::held`, forward-filled), and a held value counts only
+        where the row holding it is in the window -- a forward mean starts
+        at the first in-window row with a value of its own, since the rows
+        before it hold the row's own value or one its stamp excludes
+        (found by the brute force and the time-reversal identity both).
+        `min_samples` counts rows that carried a value.
+      - **Window boundaries in one form everywhere**: ages compared with
+        the window as differences (`tau - t > w`), in the core and the
+        brute force, since the sum form `t + w` and the difference form
+        disagree at an exact boundary by one ulp (a row exactly a window
+        later fell on different sides).
+      - **The frame runner** (`windows_frame.rs`): four passes a chunk --
+        Polars evaluates the increments' inputs, the runner takes each
+        increment one row back within the group's session (a step back
+        past `restart_after_step_back` starts it over; nanoseconds for a
+        temporal input, seconds out) as hidden columns; Polars evaluates
+        every operator input to a number; the core runs; Polars evaluates
+        the formulas over the held rows with the operators as hidden
+        columns, which are then dropped. Increments live in the runner,
+        not the core, because an operator's input may contain one and the
+        inputs are evaluated before the row loop. The output schema is the
+        formulas' dtypes over an empty frame. Windows state version 2.
+      - **The formula tree** (`formula.rs`, `_formula.py`): the list form
+        of the design, read on both sides, refused by name otherwise; the
+        operators are nodes with their parameters; `Over` is what Polars
+        calls an `over` node, `RollingExpr` a rolling function.
+      - **The call**: `with_windows(lf, *exprs, **named, clock=..., ...)`,
+        an expression named by its keyword or `.alias()` (an unnamed one
+        whose name would be an operator's is refused), the clock keywords
+        refused as expressions (3(a)), `like=` as before. `po.window`,
+        splits, weights, totals, `unlisted`, `complete` and name templates
+        are gone (a side's VWAP is `when/then` inside both sums); so is the
+        `complete` column -- `partial="null"` shows a cut window as null.
+      - **Tests**: Rust, every operator on nine kernels against a brute
+        force from the definitions on five streams (gaps, repeated stamps,
+        sessions, missing values, groups), chunking bit for bit, the
+        time-reversal identity, the Polars `rolling_sum_by` membership
+        table under each `closed`, the recursion, resets and cuts, the
+        state at every row; Python (`tests/test_windows.py`, 58), each
+        operator under each `closed` against a loop from the definition,
+        the recursions written out, Polars' `ewm_mean_by`, `ewm_sum_by`
+        (1.44.1 on) and `rolling_sum_by` as second opinions, the mirror,
+        the three VWAPs as ratios of sums (unchanged by a print split in
+        two or a zero-volume row), the VWAP from running sums' increments
+        equal to the one from prices and quantities, compositions on
+        either side of a Polars operator and their dtypes, the round trip
+        of every node kind, every refusal by name, the clock events,
+        `like=`, chunk invariance, resuming, slices and projections, the
+        namespaces, a model fed in one query, durations, and one real
+        Binance day (2.55M rows, 52% of trades sharing a millisecond with
+        a quote) through four formulas.
+      - **Measured** (`scripts/windows_bench.py`, 2026-10-03; PERFORMANCE
+        §33): memory at the scan-and-sink floor at every size, sixteen
+        operators on one kernel in 57% of sixteen kernels'
+        time; against task 78's core rebuilt from `c061b7a` in a worktree
+        and run beside it at one load, 1.5 times its time at 16M rows (2.44 and 2.49 s against 1.60 and 1.65 s, alternating), memory equal -- the constraint
+        "the speed of task 78's core" is not met on the one case the old
+        core could run, and the general engine is the reason. Three
+        costs were profiled (an unstripped build under the sampler) and
+        removed on the way: seven `Vec`s a row in the first queue (a
+        struct-of-arrays queue with flat arenas), the nanosecond clock's
+        `i128` division and conversion on every step (an `i64` fast path,
+        bit-identical, library-wide), and a Polars plan for a bare-column
+        input or a bare-operator formula (skipped; it measured nothing).
+        The user's call whether the remaining gap is worth a further
+        restructuring (the open-row bookkeeping and the two clock advances
+        a row are the next items).
+
+- [x] 144. **Window expressions take Polars' names and semantics -- the
       names built 2026-10-02 (the two tables below, "Built" at the end);
-      the window semantics are built with task 143's operators.** Where
+      the window semantics built 2026-10-03 inside task 143's core:
+      `closed` (right, the default; left; both; none), `min_samples`, a row
+      exactly `window_size` later counted under right and both, every row at
+      one stamp sharing one backward window and waiting for the next
+      distinct stamp under right and both, held to Polars' `rolling_sum_by`
+      membership table and to the brute force in both languages (task
+      143's "Built").** Where
       Polars has a parameter for the same thing, task 143's operators take
       its name, values, default and meaning, and the specs take
       `half_life`; the rest of the public names follow (below). Size L,

@@ -181,3 +181,88 @@ def public_intraday_or_skip(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataF
         return public_intraday(dates)
     except RuntimeError:
         pytest.skip("offline: could not download public intraday data")
+
+
+# ---------------------------------------------------------------------------
+# Interleaved quotes and trades (docs/PLAN.md task 143)
+
+_BINANCE_UM = "https://data.binance.vision/data/futures/um/daily"
+
+
+def public_quotes_and_trades(symbol: str = "ETCUSDT", date: str = "2024-01-02") -> pl.DataFrame:
+    """One symbol-day of Binance USD-M futures ``bookTicker`` (the best bid and
+    ask at each update) and ``trades``, interleaved by their millisecond
+    stamps, cached as parquet under ``.cache/microstructure``.
+
+    Columns: ``ts`` (Datetime, microseconds), ``kind`` (``"quote"`` or
+    ``"trade"``), ``bid``, ``ask``, ``bid_qty``, ``ask_qty`` (the book as of
+    each row: a trade carries the last quote's), ``price``, ``quantity`` and
+    ``side`` (``"buy"`` when the taker bought; null on a quote), ``mid``. At an
+    equal stamp a quote precedes a trade, as a trade is reported against the
+    book it hit; the order of a trade and a quote in one millisecond is not
+    in the data (about half the trades share a millisecond with a quote).
+    Downloads once (two zips, about 33 MB); raises when offline.
+    """
+    import io
+    import zipfile
+
+    out_dir = CACHE_DIR / "microstructure"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cached = out_dir / f"{symbol}-{date}.parquet"
+    if cached.exists():
+        return pl.read_parquet(cached)
+
+    def csv(kind: str) -> pl.DataFrame:
+        name = f"{symbol}-{kind}-{date}"
+        raw = out_dir / f"{name}.csv"
+        if not raw.exists():
+            data = _download(f"{_BINANCE_UM}/{kind}/{symbol}/{name}.zip")
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                raw.write_bytes(z.read(f"{name}.csv"))
+        return pl.read_csv(raw)
+
+    quotes = csv("bookTicker").select(
+        ts=pl.col("transaction_time"),
+        bid=pl.col("best_bid_price"),
+        ask=pl.col("best_ask_price"),
+        bid_qty=pl.col("best_bid_qty"),
+        ask_qty=pl.col("best_ask_qty"),
+    )
+    trades = csv("trades").select(
+        ts=pl.col("time"),
+        price=pl.col("price"),
+        quantity=pl.col("qty"),
+        side=pl.when(pl.col("is_buyer_maker")).then(pl.lit("sell")).otherwise(pl.lit("buy")),
+    )
+    both = (
+        pl.concat(
+            [
+                quotes.with_columns(
+                    kind=pl.lit("quote"),
+                    price=pl.lit(None, pl.Float64),
+                    quantity=pl.lit(None, pl.Float64),
+                    side=pl.lit(None, pl.String),
+                    order=pl.lit(0),
+                ),
+                trades.with_columns(
+                    kind=pl.lit("trade"),
+                    bid=pl.lit(None, pl.Float64),
+                    ask=pl.lit(None, pl.Float64),
+                    bid_qty=pl.lit(None, pl.Float64),
+                    ask_qty=pl.lit(None, pl.Float64),
+                    order=pl.lit(1),
+                ),
+            ],
+            how="diagonal",
+        )
+        .sort(["ts", "order"], maintain_order=True)
+        .drop("order")
+        .with_columns(ts=pl.from_epoch("ts", time_unit="ms").dt.cast_time_unit("us"))
+        .with_columns(pl.col("bid", "ask", "bid_qty", "ask_qty").forward_fill())
+        .with_columns(mid=(pl.col("bid") + pl.col("ask")) / 2)
+        .select(
+            "ts", "kind", "bid", "ask", "bid_qty", "ask_qty", "price", "quantity", "side", "mid"
+        )
+    )
+    both.write_parquet(cached)
+    return both

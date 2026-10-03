@@ -10,10 +10,18 @@
   __version__
   corr
   eval
+  ewm_mean
+  ewm_rate
+  ewm_sum
   fit_predict
   gram
+  increment
   native_version
+  ops
   predict
+  rewm_mean
+  rewm_rate
+  rewm_sum
   schema_version
   sim
   spec
@@ -21,7 +29,6 @@
   target
   thread_pool_size
   unnest
-  window
   schema_version = 22
 
 [common parameters]  # every constructor accepts these via **common
@@ -377,11 +384,11 @@
   LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame'
-  LazyFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
   DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None) -> 'pl.DataFrame'
   DataFrame.online.predict(bank: 'ModelBank | State') -> 'pl.DataFrame'
   DataFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.DataFrame'
-  DataFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
 
 [helper modules]  # po.<module>.<function>, the numpy-side arithmetic
   corr:
@@ -424,16 +431,20 @@
     solve
     subset
     vif
+  ops:
+    ewm_mean
+    ewm_rate
+    ewm_sum
+    increment
+    rewm_mean
+    rewm_rate
+    rewm_sum
   sim:
     regimes
   stream:
     embargo
     refresh_time
     with_windows
-  window:
-    Window
-    ewm
-    lookahead_rewm
 
 [output field grammar]  # the strings users index the output struct by
   ewridge minimal:

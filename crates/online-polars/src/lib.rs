@@ -42,6 +42,7 @@ pub mod arrow;
 mod atomic;
 mod bank;
 mod column;
+mod formula;
 mod pool;
 mod refresh;
 mod resid_window;
@@ -74,6 +75,7 @@ pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
     output_index,
 };
+pub use formula::{Formula, Literal, Node, OpNode};
 pub use online_core;
 pub use pool::{THREADS_VAR, pool, thread_pool_size};
 pub use refresh::{RefreshCols, RefreshTime};
@@ -93,7 +95,6 @@ pub use stream::{
 pub use summary::{ColumnStats, DataSummary, Role};
 pub use targets::{Relative, TargetDef, Targets};
 pub use windows::{
-    Direction, Emitted, Partial, Refusal, RowIn, SameClock, SplitDef, SplitValue, Unlisted,
-    WindowDef, Windows,
+    Closed, Direction, Emitted, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
 };
-pub use windows_frame::{Description, Kind, Like, SplitSpec, SplitWord, WindowsConfig, WindowsRun};
+pub use windows_frame::{Like, WindowsConfig, WindowsRun};

@@ -23,5 +23,5 @@ workflow, and performance. Install with ``pip install polars-online``.
    gram
    corr
    stream
-   window
+   ops
    sim

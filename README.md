@@ -741,59 +741,88 @@ the grid up.
 
 ### Windowed means, looking back or ahead
 
-A trailing EWMA with a hard cutoff, and its mirror image looking forward,
-are columns Polars has no cheap form of: a `rolling` window gathers its
-rows again for every row.
+A trailing time-weighted mean with a hard cutoff, and its mirror image
+looking forward, are columns Polars has no cheap form of: a `rolling`
+window gathers its rows again for every row.
 [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows)
 keeps each window's weighted sums in a queue instead, at the same small
-cost a row however long the window, and runs any number of windows over a
-stream in one pass. The windows are described with
-[`po.window`](https://hgilde.github.io/polars-online/window.html). The
-examples here read `trades`: quotes, each with a `mid`, and trades between
-them with a `side`, a `quantity` and a `price`, null on the quotes, for two
-symbols on the clock `ts`.
+cost a row however long the window, and runs any number of them over a
+stream in one pass. It reads like `with_columns`: each argument is a Polars
+expression over the window operators of
+[`po.ops`](https://hgilde.github.io/polars-online/ops.html), named by its
+keyword or its `.alias()`, and `pl.col` is the current row. The examples
+here read `trades`: quotes, each with a `mid`, and trades between them with
+a `side`, a `quantity` and a `price`, null on the quotes, for two symbols
+on the clock `ts`.
 
-| | `ewm` | `lookahead_rewm` |
+| operator | the window of row *t* | what it computes |
 |---|---|---|
-| the window of row *t* | the rows at or before *t*, less than `horizon` older | the rows after *t*, less than `horizon` later |
-| the weight | largest on *t*, halving every `half_life` back | largest on the next row, halving every `half_life` forward |
-| when a row goes out | as it arrives | once its horizon has passed on the clock |
-| `partial`, by default | `"keep"`: the first horizon of a group is a warm-up | `"null"`: a gap or a session change cut the window short |
-| in a model | an input: it reads only the past | a target, learned `horizon` late; never an input |
+| `po.ewm_mean(x, half_life, window_size)` | the rows at or before *t*, less than `window_size` older | Polars' `ewm_mean_by`: the time-weighted mean, each value held over the interval ending at its row and weighed by the decayed time, so a burst of rows does not outweigh a quiet stretch |
+| `po.rewm_mean(x, half_life, window_size)` | the rows after *t*, at most `window_size` later | its mirror: each value held until the next row |
+| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | the same | Polars' `ewm_sum_by`: `Σ λ^age x`, each row counted once at its own time |
+| `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | the same | the sum over the decayed time the window covers: a quantity per unit of clock |
+| `po.increment(x)` | one row back, within the group and session | `x_t − x_{t−1}`; seconds on a temporal column |
+
+A window is a set of timestamps, as Polars' `rolling_*_by` has it:
+`closed="right"`, the default, is `(t − w, t]` looking back and `(t, t + w]`
+looking ahead, and every row at one stamp gets the same window, later rows
+at that stamp included, so a backward output waits for the next distinct
+stamp; `"left"`, `"both"` and `"none"` move the ends, and `min_samples`
+nulls a window holding fewer rows with a value. The weights are largest
+nearest the row and halve every `half_life` away from it.
 
 #### Windows as columns
 
 On its own, `po.stream.with_windows` adds columns and changes nothing else.
-It is also a method, `lf.online.with_windows(windows, ...)`, for a chain:
+It is also a method, `lf.online.with_windows(...)`, for a chain. A weighted
+mean is a ratio of two sums -- a VWAP is decayed notional over decayed
+volume, the time mass cancelling -- and a side's VWAP puts `when/then`
+inside both sums:
 
 ```python
-windows = [
-    po.window.ewm("mid", half_life="5s", horizon="1m"),           # the quotes less than a minute old
-    po.window.lookahead_rewm("price", weight="quantity",          # the next minute's trades, weighted most
-                             split=("side", ["buy", "sell"]),     # on the next one: all trades, buys, sells
-                             half_life="10s", horizon="1m", name="fwd_vwap{split}"),
-]
-out = po.stream.with_windows(trades, windows, clock="ts", gap_cap="5m", group="symbol")
-# a DataFrame in, a DataFrame out: every input column, then mid_ewm_5s_1m,
-# fwd_vwap, fwd_vwap_buy and fwd_vwap_sell
+notional = pl.col("price") * pl.col("quantity")
+buys = pl.when(pl.col("side") == "buy")
+w = dict(half_life="10s", window_size="1m")
+out = po.stream.with_windows(
+    trades,
+    mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),  # the quotes less than a minute old, less the mid
+    fwd_vwap=po.rewm_sum(notional, **w) / po.rewm_sum("quantity", **w),      # the next minute's trades, weighted most on the next one
+    fwd_buy_vwap=po.rewm_sum(buys.then(notional), **w) / po.rewm_sum(buys.then("quantity"), **w),
+    clock="ts", gap_cap="5m", group="symbol",
+)
+# a DataFrame in, a DataFrame out: every input column, then mid_trend, fwd_vwap, fwd_buy_vwap
 
 (trades.lazy()
-    .online.with_windows(windows, clock="ts", gap_cap="5m", group="symbol")
+    .online.with_windows(fwd_vwap=po.rewm_sum(notional, **w) / po.rewm_sum("quantity", **w),
+                         clock="ts", gap_cap="5m", group="symbol")
     .sink_parquet("with_windows.parquet"))     # a query in, a query out: it streams, holding the
-                                               # rows of about one horizon until they can go out
+                                               # rows of about one window until they can go out
 ```
 
-Measured on 16M rows at two a second, a one-minute look-ahead ran at 9.8
-million rows a second, in the memory Polars needs to read and write the
-file. The `rolling` recipe for the same column took 12 times as long and
-5 GB, and a four-minute window took it 18 GB on a quarter of the rows
-([PERFORMANCE.md §32](docs/PERFORMANCE.md#32-windowed-means-against-the-rolling-recipe-task-78-2026-09-30)).
-Only rows whose value and weight are both present, and the weight not zero,
-enter a window, so quotes interleaved with trades cost a VWAP nothing. The
-clock is a spec's, in the same words: a gap longer than `gap_cap` or a
-session change ends every window open across it, and a reset discards them.
-A row still inside its horizon when the input ends is null, unless
-`save_state=` keeps it for the next run.
+The formula around the operators is element-wise Polars -- arithmetic,
+comparisons, `log`, `exp`, `abs`, `sqrt`, `clip`, `fill_null`,
+`when/then/otherwise`, `cast`, `alias` -- evaluated by Polars on each chunk
+that goes out; a `shift`, a cumulative or rolling function, `over` or an
+aggregation would depend on the chunking, and is refused by name while the
+plan is built. An operator's input is the same kind of formula,
+`po.increment` included, so a rate of traded volume is
+`po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m")`.
+One operator asked for twice is computed once, and operators with the same
+direction, half-life, window and `closed` share one queue. A row with no
+value for an operator holds the last one, as `ewm_mean_by` skips a null, so
+quotes interleaved with trades cost a VWAP nothing. The clock is a spec's,
+in the same words: a gap longer than `gap_cap` or a session change ends
+every window open across it, and a reset discards them. A row still inside
+its window when the input ends is null, unless `save_state=` keeps it for
+the next run. The call's own keywords -- `clock`, `gap_cap`,
+`restart_after_step_back`, `session`, `session_gap`, `group` -- are not
+output names: an expression passed as `session=` is refused.
+
+Measured on 16M rows at two a second, a window's memory is the parquet
+scan-and-sink's to 0.04 GB, sixteen operators sharing a kernel take 57% of
+the time of sixteen kernels, and the engine runs at 1.5 times the time of
+the one-window core it replaced: see
+[PERFORMANCE.md §33](docs/PERFORMANCE.md#33-window-operators-task-143-2026-10-03).
 
 #### Windows as a model's inputs and target
 
@@ -801,19 +830,19 @@ The columns are ordinary columns, so a model in the same query can learn
 from them. A trailing window is an input, and a look-ahead is a target:
 
 ```python
+notional = pl.col("price") * pl.col("quantity")
+w = dict(half_life="10s", window_size="1m")
 clock = dict(clock="ts", gap_cap="5m", group="symbol")    # one clock for the windows and the model
 spec = po.spec.ewridge("edge", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
                        half_life="30m", embargo="1m", **clock)   # the target is known a minute late
 fitted = (
     trades.lazy()
-    .online.with_windows([
-        po.window.ewm("mid", half_life=["5s", "30s"], horizon="2m", name="mid_{half_life}"),
-        po.window.lookahead_rewm("price", weight="quantity", half_life="10s", horizon="1m",
-                                 name="fwd_vwap"),
-    ], **clock)
-    .with_columns(trend_5s=pl.col("mid") - pl.col("mid_5s"),       # the inputs read only the past
-                  trend_30s=pl.col("mid") - pl.col("mid_30s"),
-                  fwd_edge=pl.col("fwd_vwap") - pl.col("mid"))     # the target reads the next minute
+    .online.with_windows(
+        trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),   # the inputs read only the past
+        trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
+        fwd_edge=po.rewm_sum(notional, **w) / po.rewm_sum("quantity", **w) - pl.col("mid"),  # the target reads the next minute
+        **clock,
+    )
     .online.fit_predict([spec])
     .collect()
 )
@@ -823,14 +852,15 @@ When the inputs are columns of the input, one name for the window and the
 embargo says it all, and `like=spec` gives the window the model's clock:
 
 ```python
+notional = pl.col("price") * pl.col("quantity")
 H = "1m"                                                    # the window, and the embargo
 spec = po.spec.ewridge("fwd", targets=["fwd_vwap"], features=["mid"],
                        clock="ts", gap_cap="5m", half_life="30m",
-                       embargo=H)                       # each target learned H after its row
+                       embargo=H)                           # each target learned H after its row
 fitted = (
     trades.lazy()
-    .online.with_windows([po.window.lookahead_rewm("price", weight="quantity", half_life="10s",
-                                                   horizon=H, name="fwd_vwap")],
+    .online.with_windows(fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size=H)
+                                  / po.rewm_sum("quantity", half_life="10s", window_size=H),
                          like=spec)                         # the window reads the spec's clock
     .online.fit_predict([spec])
     .collect()
@@ -838,12 +868,9 @@ fitted = (
 ```
 
 Each row is scored where it sits, and learned from once its target is
-known. That takes `embargo` at least the look-ahead's horizon, on the
-same clock, and a horizon no longer than `gap_cap`. The model adds the
-time of the rows it skips, for a null input, to the next row it learns
-from, and a step the cap cuts short releases every row it is holding back.
-A look-ahead window longer than the cap can still be open at that row, over
-rows the model has not reached. When the model's
+known. That takes `embargo` at least the look-ahead's `window_size`, on the
+same clock: the embargo counts elapsed time, and a break releases nothing
+early, so a window longer than `gap_cap` is honest too. When the model's
 inputs are columns of the input rather than windows, `like=spec` takes the
 clock from the spec itself, and makes the look-ahead null on every row the
 spec would not learn from.
