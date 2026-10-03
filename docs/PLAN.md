@@ -6711,11 +6711,82 @@ is not, since the model alone has `0.0` and `3.5` there.
       of noise explained by `1 / (n_kish − 3)` and twice the floor at
       `n_eff`. The docstring pass under `docs/WRITING.md` is task 149.
 
-- [ ] 149. **A docstring pass under `docs/WRITING.md` -- planned, not
-      built.** Size M. Task 148 put the facts right; the pass rewrites the
-      docstrings to the README's rules: map first, tables over lists, a
+- [ ] 149. **A docstring pass under `docs/WRITING.md` -- in progress
+      (2026-10-03).** Size M. Task 148 put the facts right; the pass rewrites
+      the docstrings to the README's rules: map first, tables over lists, a
       mechanism named rather than alluded to, sentences near 20 words,
-      every fact checked against the code.
+      every fact checked against the code. Each page is drafted beside its
+      old text, accounted by a diff of the backticked names, the numbers and
+      the link targets (nothing lost; a stale fact corrected against the
+      code is noted here), measured before and after, and checked by the
+      doc tests and Sphinx `-W`.
+
+      ### Task 149 -- the docstring pass under docs/WRITING.md (map, before any prose)
+      The map, the baseline and the pages done follow this entry, at the
+      document's own level.
+
+**Task 149, step 1, measured 2026-10-03 before the pass** (`measure_docstrings.py`, the
+public docstrings the reference renders: the spec module and its 20 builders,
+`ModelBank`, the two `online` namespaces, `stream`, `ops`, `eval`, `po.target`):
+93 docstrings, 1,540 sentences, a mean of 23.3 words, 116 sentences of 45 words
+or more, 104 bullet lines. The worst by long sentences: `spec.marginal` (13 of
+87), the `spec` module (11 of 148, 48 bullet lines), `spec.ewridge` (7),
+`stream.with_windows` (5, mean 34.6), `spec.micro` (5), `stream.embargo` (4,
+mean 35.3), the `ops` module (4, mean 33.2), the `stream` module (3, mean
+41.6); `ModelBank.last_row` (mean 40.6), `lf.online.unnest` (35.3),
+`ModelBank.fit` (32.2), `fit_predict` (33.2, 7 bullet lines),
+`closed_groups` (31.2, 5 bullets).
+
+**The reader and the altitude** (WRITING §0, §1): a docstring is a deep doc,
+reached from the Sphinx reference or `help()`, by a reader who has the
+README's words; it carries mechanisms, equations, units, defaults and
+refusals, and the README keeps the consequence. Nothing is cut: a sentence
+that leaves a docstring lands in the README, `docs/OUTPUTS.md`,
+`docs/PERFORMANCE.md` or `CHANGELOG.md`, and the cross-reference stays.
+
+**Task 149, the map, per page** (`←` marks what moves; the order is the order of work):
+
+| page | docstrings | the map each keeps | what changes |
+|---|---|---|---|
+| `spec` module | 1 | what a spec is → the stream parameters (one entry each, why / what / units) → clock units (the table stays) → what a spec writes (fields, the grid block, the diagnostics table) → errors | long entries split at the idea (`gap_cap`, `restart_after_step_back`, `embargo`, `min_weight`); the diagnostics table's long cells split into two sentences each; no history |
+| builders, linear family: `ewridge`, `rls`, `kalman`, `lasso`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` | 9 | one paragraph on what the model is → the update equations as a code block → parameters (why / what / units, default stated) → output fields → example as code with comments → raises | sweeps become tables (`ewridge`'s solvers and gates, `lasso`'s path, `kalman`'s clock forms); measurements → one number with its PERFORMANCE section |
+| builders, classification and tests: `ew_class`, `seqtest` | 2 | as above | as above |
+| builders, unsupervised: `ew_cov`, `kmeans`, `micro`, `deco`, `bocpd`, `corrchange`, `hmm`, `rcov`, `marginal` | 9 | as above | `marginal`: `serial_rule`'s three rules → a table (rule, the bracket, null when); the lag and window sizes → a table; `shards` and `feature_moments` → one number each ← PERFORMANCE §25, §27; `bins` split into what it reports, how edges are learned, memory (a table) |
+| `holt` | 1 | as above | -- |
+| `ModelBank` | 1 class + its methods | the class: what a bank is → the three ways in → state; each method: what it does → arguments → returns → raises | `fit_predict`/`fit`/`last_row`/`closed_groups`: bullets of parallel things → tables; sentences split |
+| `lf.online`, `df.online` | 2 namespaces | one line per method, the plan form first (WRITING §2) | `unnest`'s sentences split |
+| `stream` module + `embargo`, `with_windows`, `refresh_time`, `sample` | 5 | what the transform is → the clock paragraph → resumes → raises | the clock paragraph's sweep of policies → a table (keyword, what it does, units); `with_windows`'s resume paragraph stays prose (an argument) |
+| `ops` module + 7 operators | 8 | the semantics paragraph (membership rules) → the ratio paragraph → the operators | the membership rules → a table (closed, backward near/far, forward near/far); the exactness claim stays one sentence |
+| `eval` | the metrics functions | what each computes → arguments → returns | sentences split |
+| `po.target` | 1 | -- | sentences split |
+
+**Steps 3 to 8** (WRITING §6): draft a page, run its checks, account by a
+diff of the backticked names, numbers and link targets (a script in the
+scratchpad, `account.py`, prints what the new text lost), measure again, and
+the gate's doc tests (`tests/test_examples.py`, `tests/test_api_links.py`,
+`tests/test_doc_structure.py`, Sphinx `-W`).
+
+**Task 149, pages done.** The counts are sentences, the mean in words, and
+the number of sentences of 45 words or more, before and after, by
+`measure_pages.py` (the scratchpad's): headings, code blocks and list-tables
+dropped, then each paragraph split on its own, as WRITING §6 says (a first
+count that merged table cells overstated the after-counts). Nothing moved
+out of a page unless the row says so; a stale fact corrected against the
+code is named.
+
+| page | before | after | moved or corrected |
+|---|---|---|---|
+| `spec` module | 124, 19.5, 4 | 166, 14.5, 0 | `gap_cap`'s "``embargo`` releases the rows it holds" at a break was stale since task 153 (a break releases nothing early, `stream.rs`): corrected; the two refusal enumerations became lists |
+| `spec.marginal` | 90, 24.6, 12 | 110, 18.0, 1 | `serial_rule`'s three rules, the bins' two memory sizes and `window_lags`' snapshot sizes became tables; the raises a list |
+| `spec.ewridge` | 75, 23.4, 5 | 81, 18.7, 1 | `ridge_scale`'s two settings, `target_gaps`' two settings and `window_budget`'s three cases became tables |
+| `stream` module | 14, 21.4, 0 | 16, 17.8, 0 | the history paragraph (`polars_online.prep`, `time=`/`by=`) left for the CHANGELOG, which records the rename (0.12.0) |
+| `stream.embargo` | 17, 31.1, 3 | 24, 20.2, 0 | the two row kinds became a table; the raises a list; "cheaper" named as what is spent |
+| `stream.with_windows` | 25, 33.3, 6 | 36, 21.3, 0 | the clock keywords became a table |
+| `spec.micro` | 47, 20.2, 4 | 52, 17.3, 0 | the two wrong values of `eps` became the failure-mode table (WRITING §7's own example) |
+| `ops` module | 29, 25.7, 3 | 21, 19.7, 0 | the operators' definitions, the `closed` membership rules and `partial`'s three values became tables |
+| `stream.refresh_time` | 31, 25.8, 2 | 44, 18.1, 0 | the raises became a list |
+| `spec.ew_cov` | 49, 23.2, 2 | 54, 18.2, 0 | the four windowed caveats and the PCA's four fields became tables; "the cost" named as the work |
+| all ten | 501, 23.3, 41 (106 of 35 or more) | 604, 17.5, 2 (24) | |
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

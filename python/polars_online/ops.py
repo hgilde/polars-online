@@ -9,47 +9,78 @@ Every operator is defined once, by the library that has it, and held to it
 in the tests. For row *t* at policy time ``tau_t`` with ``lam = 2 ** (-1 /
 half_life)``:
 
-- :func:`ewm_mean`: Polars' ``ewm_mean_by``, the *time-weighted* mean. Row
-  *i*'s value is held over ``(t_{i-1}, t_i]``, the first value of a stretch
-  from before it; the mean over ``(tau_t - w, tau_t]`` weighs each held
-  value by ``integral lam**(tau_t - s) ds`` over its interval inside the
-  window. A burst of rows does not outweigh a quiet stretch, and a row at a
-  repeated stamp holds no interval, so it moves no mean -- as in Polars. No
-  mean counts rows; pandas' ``ewm(times=)`` is that form, and is not
-  offered.
-- :func:`rewm_mean`: the mirror. Value *j* is held over ``[t_j, t_{j+1})``,
-  until the next row, and weighed by ``integral lam**(s - tau_t) ds`` inside
-  ``(tau_t, tau_t + w]``.
-- :func:`ewm_sum` and :func:`rewm_sum`: ``sum lam**|t_j - tau_t| * x_j`` over
-  the rows of the window, each counted once at its own time (Polars'
-  ``ewm_sum_by``).
-- :func:`ewm_rate` and :func:`rewm_rate`: the sum over the decayed time the
-  window covers, ``integral_0^T lam**s ds = half_life / ln 2 * (1 - 2 **
-  (-T / half_life))``, ``T`` the window's span inside the stretch -- a
-  quantity per unit time.
-- :func:`increment`: ``x_i - x_{i-1}`` within the group and session; null on
-  a session's first row; seconds on a temporal column.
+.. list-table::
+   :header-rows: 1
+   :widths: 22 44 34
+
+   * - operator
+     - defined as
+     - held to
+   * - :func:`ewm_mean`
+     - the *time-weighted* mean: row *i*'s value is held over ``(t_{i-1},
+       t_i]``, the first value of a stretch from before it, and the mean
+       over ``(tau_t - w, tau_t]`` weighs each held value by ``integral
+       lam**(tau_t - s) ds`` over its interval inside the window
+     - Polars' ``ewm_mean_by``. A burst of rows does not outweigh a quiet
+       stretch, and a row at a repeated stamp holds no interval, so it moves
+       no mean. No mean counts rows; pandas' ``ewm(times=)`` is that form,
+       and is not offered
+   * - :func:`rewm_mean`
+     - the mirror: value *j* is held over ``[t_j, t_{j+1})``, until the next
+       row, and weighed by ``integral lam**(s - tau_t) ds`` inside ``(tau_t,
+       tau_t + w]``
+     - the reversed stream's :func:`ewm_mean`
+   * - :func:`ewm_sum`, :func:`rewm_sum`
+     - ``sum lam**|t_j - tau_t| * x_j`` over the rows of the window, each
+       counted once at its own time
+     - Polars' ``ewm_sum_by``
+   * - :func:`ewm_rate`, :func:`rewm_rate`
+     - the sum over the decayed time the window covers, ``integral_0^T lam**s
+       ds = half_life / ln 2 * (1 - 2 ** (-T / half_life))``, ``T`` the
+       window's span inside the stretch: a quantity per unit time
+     - the sum and the mass, each as above
+   * - :func:`increment`
+     - ``x_i - x_{i-1}`` within the group and session; null on a session's
+       first row; seconds on a temporal column
+     - the row before it
 
 **Which rows a window holds follows Polars' ``rolling_*_by``**: a window is a
-set of timestamps. ``closed="right"``, the default, is ``(tau_t - w, tau_t]``
-looking back and ``(tau_t, tau_t + w]`` looking ahead; ``"left"``, ``"both"``
-and ``"none"`` move the ends. Every row at one stamp gets the same backward
-window, later rows at that stamp included, so under ``"right"`` and
-``"both"`` a backward output waits for the next distinct stamp; under
-``"left"`` and ``"none"`` the stamp's own rows are outside, and the output
-is known as the stamp arrives. Looking ahead the mirror holds: under
-``"left"`` and ``"both"`` the window holds every row at the row's own
-stamp, the row itself included, as a backward ``"right"`` window holds every
-row at its stamp; under ``"right"`` and ``"none"`` none at the stamp is in.
-A forward window counts a row exactly ``w`` later under ``"right"`` and
-``"both"``, at any age of the stream: an edge between two rows is decided
-from the difference of their clocks, exact in nanoseconds on a temporal
-clock, as Polars decides it. ``min_samples``
-(Polars' name) nulls a window holding fewer rows with a value. A row is in
-a window by its stamp, but a mean weighs it by its held interval inside the
-window: a row exactly one window old under ``"left"`` or ``"both"`` counts
-for ``min_samples`` and weighs nothing, since its interval ends at its row,
-and a mean with no other value in the window is null.
+set of timestamps, and ``closed`` says which ends are in. Every row at one
+stamp gets the same backward window, later rows at that stamp included, and
+looking ahead the mirror holds:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 42 42
+
+   * - ``closed``
+     - looking back
+     - looking ahead
+   * - ``"right"`` (the default)
+     - ``(tau_t - w, tau_t]``: the stamp's own rows are in, so the output
+       waits for the next distinct stamp
+     - ``(tau_t, tau_t + w]``: none at the stamp is in; a row exactly ``w``
+       later is
+   * - ``"left"``
+     - ``[tau_t - w, tau_t)``: the stamp's own rows are outside, and the
+       output is known as the stamp arrives
+     - ``[tau_t, tau_t + w)``: every row at the row's own stamp is in, the
+       row itself included
+   * - ``"both"``
+     - both ends in; waits for the next stamp
+     - both ends in: the stamp's rows, and a row exactly ``w`` later
+   * - ``"none"``
+     - neither end; known as the stamp arrives
+     - neither end
+
+An edge between two rows is decided from the difference of their clocks,
+exact in nanoseconds on a temporal clock, as Polars decides it, at any age
+of the stream. ``min_samples`` (Polars' name) nulls a window holding fewer
+rows with a value. A row is in a window by its stamp, but a mean weighs it
+by its held interval inside the window. So a row exactly one window old
+under ``"left"`` or ``"both"`` counts for ``min_samples`` and weighs
+nothing, since its interval ends at its row, and a mean with no other value
+in the window is null.
 
 **A weighted mean is a ratio of two sums.** A VWAP is decayed notional over
 decayed volume, the time mass cancelling; a side's VWAP puts ``when/then``
@@ -73,19 +104,34 @@ inside both sums. There is no ``weight=``:
 ``restart_after_step_back``, ``session``, ``session_gap``, ``group`` -- are
 the call's, shared by every operator in it, in a spec's own words
 (:mod:`polars_online.spec`). A gap past ``gap_cap`` or a session change ends
-every window open across it: ``partial`` says what such a window gives,
-``"keep"`` (the value over what it saw, the window ending at the last row
-seen; the default looking back), ``"null"`` (the default looking ahead) or
-``"drop"`` (the row leaves the output). A reset discards it: null, never
-dropped -- and under ``session_gap="reset"`` a session change is a reset, so
-it discards rather than cuts. A forward window still open when the input
-ends is null.
+every window open across it, and ``partial`` says what such a window gives:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 54 30
+
+   * - ``partial``
+     - the window gives
+     - the default
+   * - ``"keep"``
+     - the value over what it saw, the window ending at the last row seen
+     - looking back
+   * - ``"null"``
+     - null
+     - looking ahead
+   * - ``"drop"``
+     - the row leaves the output
+     -
+
+A reset discards it: null, never dropped. Under ``session_gap="reset"`` a
+session change is a reset, so it discards rather than cuts. A forward window
+still open when the input ends is null.
 
 An operator's input is a column name or an element-wise expression of the
 row, :func:`increment` included -- not another window operator: a formula
 over an operator's output is a second call. ``half_life`` and
 ``window_size`` are in the clock's units: numbers on a numeric clock, and
-durations (``"10s"``, a ``timedelta``, ``pl.duration``) on a temporal one;
+durations (``"10s"``, a ``timedelta``, ``pl.duration``) on a temporal one.
 ``half_life=float("inf")`` weighs the window evenly, and needs a
 ``window_size`` for a mean.
 """

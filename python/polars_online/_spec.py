@@ -652,23 +652,23 @@ def ewridge(
 ) -> dict[str, Any]:
     """Exponentially weighted ridge regression on running sums -- the workhorse.
 
-    The model keeps the exponentially weighted means of ``z z'`` and ``z y``, with
-    ``z`` the features and the intercept in front, and solves the ridge normal
-    equations from them on a schedule. The sums are the whole state, so several
-    ridge values and feature subsets are fitted from the same sums at almost no
-    extra cost (a list of half-lives keeps one set of sums each), and the sums can
-    be read back
-    (:meth:`polars_online.ModelBank.gram`), pooled and solved offline
-    (:mod:`polars_online.gram`). Reach for it first. The other regressions here
-    each cover a case it does not: coefficients that drift (:func:`kalman`),
-    outliers (:func:`huber`), a quantile (:func:`quantile`), a sparse fit
-    (:func:`lasso`), a row cost of O(k) (:func:`sgd`, :func:`pa`).
+    The model keeps the exponentially weighted means of ``z z'`` and ``z y``,
+    with ``z`` the features and the intercept in front, and solves the ridge
+    normal equations from them on a schedule. The sums are the whole state. So
+    several ridge values and feature subsets are fitted from the same sums at
+    almost no extra cost (a list of half-lives keeps one set of sums each),
+    and the sums can be read back (:meth:`polars_online.ModelBank.gram`),
+    pooled and solved offline (:mod:`polars_online.gram`). Reach for it first.
+    The other regressions here each cover a case it does not: coefficients
+    that drift (:func:`kalman`), outliers (:func:`huber`), a quantile
+    (:func:`quantile`), a sparse fit (:func:`lasso`), a row cost of O(k)
+    (:func:`sgd`, :func:`pa`).
 
     .. rubric:: The fit
 
-    Per row, with ``w`` the row's weight, ``lam`` its decay ``0.5 ** (d_clock /
-    half-life)`` and ``W_j`` the weight behind target ``j`` over the rows that
-    target is present on:
+    Per row, with ``w`` the row's weight and ``lam`` its decay ``0.5 **
+    (d_clock / half-life)``. ``W_j`` is the weight behind target ``j`` over
+    the rows that target is present on:
 
     .. code-block:: text
 
@@ -678,10 +678,10 @@ def ewridge(
         on the schedule:  (S_j + ridge * D) beta_j = r_j      D = I with a 0 in the intercept slot
 
     The sums are means, not totals, so they stay bounded over a stream of any
-    length, and the second moments are kept centred (a weighted Welford update),
-    so a feature far from zero costs no precision. The solve is a Cholesky
-    factorization: a near-singular system is retried with a small diagonal jitter,
-    and a solve that needed one is counted in
+    length. The second moments are kept centred (a weighted Welford update),
+    so a feature far from zero loses no precision. The solve is a Cholesky
+    factorization: a near-singular system is retried with a small diagonal
+    jitter, and a solve that needed one is counted in
     :meth:`polars_online.ModelBank.solve_failures`. A prediction uses the
     coefficients of the last solve and the state before the row.
 
@@ -689,46 +689,62 @@ def ewridge(
 
     ``ridge``
         The penalty on the slopes, in the features' squared units unless
-        ``standardize``; on the intercept too under ``ridge_scale = "sum"``, and never
-        otherwise. Default ``1e-6``. A list fits one
-        instance per value from the same sums, reported side by side as
+        ``standardize``; on the intercept too under ``ridge_scale = "sum"``,
+        and never otherwise. Default ``1e-6``. A list fits one instance per
+        value from the same sums, reported side by side as
         ``pred_<t>__r<ridge>``.
     ``feature_sets``
-        Named subsets of ``features``, each a fit of its own from the same sums,
-        reported as ``pred_<t>__<set>``. The full set is fitted only when it is
-        one of them; ``emit_selected`` then reports the set doing best.
+        Named subsets of ``features``, each a fit of its own from the same
+        sums, reported as ``pred_<t>__<set>``. The full set is fitted only
+        when it is one of them; ``emit_selected`` then reports the set doing
+        best.
     ``standardize``
-        Solve in correlation form and unscale afterwards, so ``ridge`` means the
-        same thing whatever the features' units and a feature whose variance is
-        zero is dropped from the solve rather than blowing it up. Default
-        ``False``. Without an intercept nothing is centred: the system is scaled
-        by each column's root mean square instead, a fit through the origin is
-        least squares through the origin, and the column dropped is one that is
-        all zero. ``lasso``, ``kalman``, ``huber``, ``quantile`` and ``sgd``
-        standardize the same way.
+        Solve in correlation form and unscale afterwards, so ``ridge`` means
+        the same thing whatever the features' units, and a feature whose
+        variance is zero is dropped from the solve rather than blowing it up.
+        Default ``False``. Without an intercept nothing is centred. The system
+        is scaled by each column's root mean square instead, a fit through the
+        origin is least squares through the origin, and the column dropped is
+        one that is all zero. ``lasso``, ``kalman``, ``huber``, ``quantile``
+        and ``sgd`` standardize the same way.
     ``ridge_scale``
-        What the ridge is scaled against: ``"mean"`` (the default) or ``"sum"``.
-        ``S`` is a weighted mean, so under ``"mean"`` ``ridge`` is a fixed
-        per-observation penalty whose pull is permanent -- "always stay near
-        this belief". Under ``"sum"`` the prior sits on the decaying sum scale
-        and fades as data arrives -- the usual warm start, "begin at
-        yesterday's fit and let evidence take over". The system is then
-        RLS's, ``(W S + prior_scale * ridge * I) b = W r``,
-        penalizing every slot, **the intercept's included**: a constant target
-        of 5 reads an intercept of 3.5 at row 20 under ``ridge=10``,
-        ``half_life=50``, and 4.95 at row 200, until the prior fades. A
-        ``coef_prior`` intercept is what it shrinks toward.
+        What the ridge is scaled against. ``S`` is a weighted mean, so the two
+        settings mean two different priors:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 14 40 46
+
+           * - setting
+             - the prior
+             - the system
+           * - ``"mean"`` (the default)
+             - a fixed per-observation penalty whose pull is permanent:
+               "always stay near this belief"
+             - ``(S + ridge * D) b = r``, the intercept unpenalized
+           * - ``"sum"``
+             - sits on the decaying sum scale and fades as data arrives, the
+               usual warm start: "begin at yesterday's fit and let evidence
+               take over"
+             - RLS's, ``(W S + prior_scale * ridge * I) b = W r``, penalizing
+               every slot, **the intercept's included**
+
+        Under ``"sum"`` a constant target of 5 reads an intercept of 3.5 at
+        row 20 under ``ridge=10``, ``half_life=50``, and 4.95 at row 200,
+        until the prior fades. A ``coef_prior`` intercept is what it shrinks
+        toward.
     ``coef_prior``
-        Shrink toward these coefficients instead of toward zero: one vector per
-        target, in the features' original units, ``len(features) + 1`` long when
-        there is an intercept. The intercept slot is read only under
-        ``ridge_scale = "sum"``, the one solve that penalizes the intercept.
+        Shrink toward these coefficients instead of toward zero: one vector
+        per target, in the features' original units, ``len(features) + 1``
+        long when there is an intercept. The intercept slot is read only
+        under ``ridge_scale = "sum"``, the one solve that penalizes the
+        intercept.
     ``session_shrink``, ``long_half_life``
         A middle way between a session's decay and a full reset. A second
         accumulator follows the long-run relationship at ``long_half_life``
-        (``inf``: the whole history), and on a session boundary the fit's moments
-        become a mixture of the two data sets, ``1 - f`` of today's and ``f`` of
-        the long run's:
+        (``inf``: the whole history). On a session boundary the fit's moments
+        become a mixture of the two data sets, ``1 - f`` of today's and ``f``
+        of the long run's:
 
         .. code-block:: text
 
@@ -736,90 +752,122 @@ def ewridge(
             C' = (1 - f) * C_fast + f * C_slow + f * (1 - f) * (m_fast - m_slow)(m_fast - m_slow)'
 
         for the means and the centred moments. The weight stays today's, so
-        ``weight_sum``, the warm-up gates and the solve schedule do not move: ``0``
-        keeps today's fit, ``1`` takes the long run's moments at today's weight,
-        and ``f`` between fits on that share of the long run. Unlike
-        ``session_gap`` this changes what the model believes, not how confident
-        it is. With ``ridge_scale = "sum"`` the prior keeps today's scale too,
-        so at ``1`` the fit is the twin's moments under today's prior.
+        ``weight_sum``, the warm-up gates and the solve schedule do not move.
+        ``0`` keeps today's fit, ``1`` takes the long run's moments at today's
+        weight, and ``f`` between fits on that share of the long run. Unlike
+        ``session_gap`` this changes what the model believes, not how
+        confident it is. With ``ridge_scale = "sum"`` the prior keeps today's
+        scale too, so at ``1`` the fit is the twin's moments under today's
+        prior.
     ``solve_every``, ``max_rows_between_solves``
-        The solve schedule: every ``solve_every`` clock units, and at least every
-        ``max_rows_between_solves`` rows. Left out, the schedule is by weight: a
-        solve once the weight learned since the last reaches ``ln 2 / 50`` of the
-        weight the fit holds, which in steady state is every ``half_life / 50`` of
-        clock at any row spacing, and more often during warm-up and after a gap,
-        where the fit moves most. A half-life far longer than the stream still
-        solves, at rows further apart as the weight grows. ``half_life = inf`` and
-        ``lam`` solve every row. ``max_rows_between_solves`` is off by default.
-        The coefficients are the sums' as of the last solve.
+        The solve schedule: every ``solve_every`` clock units, and at least
+        every ``max_rows_between_solves`` rows. Left out, the schedule is by
+        weight: a solve once the weight learned since the last reaches ``ln 2
+        / 50`` of the weight the fit holds. In steady state that is every
+        ``half_life / 50`` of clock at any row spacing, and more often during
+        warm-up and after a gap, where the fit moves most. A half-life far
+        longer than the stream still solves, at rows further apart as the
+        weight grows. ``half_life = inf`` and ``lam`` solve every row.
+        ``max_rows_between_solves`` is off by default. The coefficients are
+        the sums' as of the last solve.
     ``gram_block_rows``
-        Hold that many rows back and bring the ``k x k`` matrix up to date once
-        per block, by one matrix product instead of one rank-one update per row:
-        ``256`` measured 6.6x faster at a thousand features. The matrix is brought
-        up to date before every solve too, so the block never exceeds the solve
-        cadence; the option is refused where there is none (``solve_every <= 0``
-        or ``max_rows_between_solves <= 1``) and with ``window_size``. ``weight_sum``, the
-        timing of every prediction and chunk invariance are unchanged to the bit;
-        the blocked sum is the same sum in another order, so a blocked fit agrees
-        with an unblocked one to rounding. The held rows travel in the state file,
-        and are refused over 256 MiB.
+        Hold that many rows back and bring the ``k x k`` matrix up to date
+        once per block, by one matrix product instead of one rank-one update
+        per row: ``256`` measured 6.6x faster at a thousand features. The
+        matrix is brought up to date before every solve too, so the block
+        never exceeds the solve cadence. The option is refused where there is
+        no cadence (``solve_every <= 0`` or ``max_rows_between_solves <= 1``)
+        and with ``window_size``. ``weight_sum``, the timing of every
+        prediction and chunk invariance are unchanged to the bit. The blocked
+        sum is the same sum in another order, so a blocked fit agrees with an
+        unblocked one to rounding. The held rows travel in the state file, and
+        are refused over 256 MiB.
     ``target_gaps``
-        Which rows a target's fit is read from where the target is null on some.
-        Target ``j`` keeps its mean ``ybar_j``, the column means ``m_j`` and the
-        centred cross-moments ``c_j = EW[(x - m_j)(y_j - ybar_j)]`` over the rows
-        it is present on. Its slopes solve ``(C + ridge * I) b = c_j``, with ``b_0
-        = ybar_j - m_j . b``. The option is which rows the feature covariance
-        ``C`` is taken over. ``"own_rows"``, the default, takes the target's own,
-        so its fit is the fit of the frame with its null rows dropped. Targets
-        present on the same rows share one ``C``. One that goes missing where the
-        others are present takes a copy and keeps its own from then on, so a bank
-        of targets costs a ``k x k`` matrix per pattern of missing rows, and a
-        single target nothing. ``"pairwise"`` takes every row, the way pandas'
-        ``DataFrame.cov`` takes a pairwise-complete covariance: one matrix
-        whatever the gaps. It is exact when the gaps have nothing to do with the
-        features; where they do, each slope is scaled by the ratio of the
-        feature's variance on the target's rows to its variance on all of them.
-        ``weight_sum`` counts every row either way, and a null target is still
-        predicted.
+        Which rows a target's fit is read from where the target is null on
+        some. Target ``j`` keeps its mean ``ybar_j``, the column means ``m_j``
+        and the centred cross-moments ``c_j = EW[(x - m_j)(y_j - ybar_j)]``
+        over the rows it is present on. Its slopes solve ``(C + ridge * I) b =
+        c_j``, with ``b_0 = ybar_j - m_j . b``. The option is which rows the
+        feature covariance ``C`` is taken over:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 16 44 40
+
+           * - setting
+             - ``C`` is taken over
+             - what that gives
+           * - ``"own_rows"`` (the default)
+             - the target's own rows, so its fit is the fit of the frame with
+               its null rows dropped; targets present on the same rows share
+               one ``C``, and one that goes missing where the others are
+               present takes a copy and keeps its own from then on
+             - a bank of targets keeps one ``k x k`` matrix per pattern of
+               missing rows, and a single target none
+           * - ``"pairwise"``
+             - every row, the way pandas' ``DataFrame.cov`` takes a
+               pairwise-complete covariance: one matrix whatever the gaps
+             - exact when the gaps have nothing to do with the features;
+               where they do, each slope is scaled by the ratio of the
+               feature's variance on the target's rows to its variance on all
+               of them
+
+        ``weight_sum`` counts every row either way, and a null target is
+        still predicted.
     ``window_size``, ``window_every``, ``window_budget``
-        A hard cutoff on the history the fit is solved from, in clock units: a row
-        older than ``window_size`` is not in the sums at all, where the exponential
-        weight alone would leave ``0.5 ** (age / half_life)`` of it. Inside the
-        window the weights are still exponential, so this is a windowed
-        exponentially weighted regression, not a rolling least squares. It is
-        exact: the sums are sums of per-row contributions, so everything at or
-        before a time ``u`` is ``lam ** (t - u)`` times the sums as they stood
-        then, and subtracting that leaves the window. The model keeps a ring of
-        snapshots to do it, which is the one place here where memory grows with a
-        window rather than with the state; a half-life grid is one instance per
-        entry, each with its own ring. ``window_every`` snapshots every ``n`` rows
-        instead, which divides the memory and can only shorten the effective
-        window.
+        A hard cutoff on the history the fit is solved from, in clock units:
+        a row older than ``window_size`` is not in the sums at all, where the
+        exponential weight alone would leave ``0.5 ** (age / half_life)`` of
+        it. Inside the window the weights are still exponential, so this is a
+        windowed exponentially weighted regression, not a rolling least
+        squares. It is exact. The sums are sums of per-row contributions, so
+        everything at or before a time ``u`` is ``lam ** (t - u)`` times the
+        sums as they stood then, and subtracting that leaves the window. The
+        model keeps a ring of snapshots to do it, which is the one place here
+        where memory grows with a window rather than with the state. A
+        half-life grid is one instance per entry, each with its own ring.
+        ``window_every`` snapshots every ``n`` rows instead, which divides the
+        memory and can only shorten the effective window.
 
-        ``window_budget`` bounds each ring in MiB, and says what happens when a
-        ring reaches the bound. ``{"thin": mib}`` drops every other snapshot and
-        doubles the spacing between the rest, as often as it takes; like
-        ``window_every``, that can only shorten the window. ``{"refuse": mib}``
-        refuses the chunk, naming the ring's size and ``window_every``. The bank
-        replays each chunk's clock schedule on its rings before it learns a row, so
-        such a chunk is refused whole and the bank goes on as it was. Under
-        ``drift_action="reset"``, whose resets the replay cannot foresee, the ring
-        finds the overrun as the rows go in instead, and the bank then refuses
-        every later ``fit_predict``, ``predict`` and ``save``; rebuild it from its
-        last save (:meth:`polars_online.ModelBank.fit_predict`). Unset, a window
-        refuses past 256 MiB per ring; ``{"refuse": float("inf")}`` is no bound.
+        ``window_budget`` bounds each ring in MiB, and says what happens when
+        a ring reaches the bound:
 
-        ``weight_sum``, ``sigma`` and ``zscore`` are the window's too, so the spread
-        describes the rows the fit describes; the spread keeps a ring of its own
-        for it, a pair of floats a slot, bounded with the fit's. Everything that
-        reads the spread is the window's with it: drift's scale, the conformal
-        band, and the ranking ``emit_selected`` and ``emit_averaged`` take. The
-        coefficients are the window's as of the last solve, so a coarse
-        ``solve_every`` reports a window that has since moved on. ``window_size`` is
-        refused with ``ridge_scale = "sum"`` (the decaying prior's scale is the product of
-        every decay the stream applied, which a window truncates the data of but
-        not the prior) and with ``session_shrink`` (the slow twin is a second
-        accumulator under a longer half-life).
+        .. list-table::
+           :header-rows: 1
+           :widths: 30 70
+
+           * - ``window_budget``
+             - at the bound
+           * - ``{"thin": mib}``
+             - drops every other snapshot and doubles the spacing between the
+               rest, as often as it takes; like ``window_every``, that can
+               only shorten the window
+           * - ``{"refuse": mib}``
+             - refuses the chunk, naming the ring's size and ``window_every``
+           * - unset
+             - refuses past 256 MiB per ring; ``{"refuse": float("inf")}`` is
+               no bound
+
+        The bank replays each chunk's clock schedule on its rings before it
+        learns a row, so such a chunk is refused whole and the bank goes on as
+        it was. Under ``drift_action="reset"``, whose resets the replay cannot
+        foresee, the ring finds the overrun as the rows go in instead, and the
+        bank then refuses every later ``fit_predict``, ``predict`` and
+        ``save``. Rebuild it from its last save
+        (:meth:`polars_online.ModelBank.fit_predict`).
+
+        ``weight_sum``, ``sigma`` and ``zscore`` are the window's too, so the
+        spread describes the rows the fit describes. The spread keeps a ring
+        of its own for it, a pair of floats a slot, bounded with the fit's.
+        Everything that reads the spread is the window's with it: drift's
+        scale, the conformal band, and the ranking ``emit_selected`` and
+        ``emit_averaged`` take. The coefficients are the window's as of the
+        last solve, so a coarse ``solve_every`` reports a window that has
+        since moved on. ``window_size`` is refused with ``ridge_scale =
+        "sum"``: the decaying prior's scale is the product of every decay the
+        stream applied, which a window truncates the data of but not the
+        prior. It is refused with ``session_shrink`` too: the slow twin is a
+        second accumulator under a longer half-life.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -831,21 +879,22 @@ def ewridge(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ewridge>`_):
 
     ``pred_<t>``, ``resid_<t>``
-        Per target: the prediction, and ``y - pred`` where the target is not null.
+        Per target: the prediction, and ``y - pred`` where the target is not
+        null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``coef``
         Per (target, ridge value, feature set) slot in the order the ``pred``
-        fields declare them, the intercept then one entry per feature, zero for a
-        feature outside the slot's set. :func:`coef_index` maps each position to
-        its term, and :func:`coef_fields` names the column each becomes when the
-        struct is unnested.
+        fields declare them, the intercept then one entry per feature, zero
+        for a feature outside the slot's set. :func:`coef_index` maps each
+        position to its term, and :func:`coef_fields` names the column each
+        becomes when the struct is unnested.
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. Under a grid each field is suffixed per instance. The sums
-    behind the fit are :meth:`polars_online.ModelBank.gram`'s, one entry per Gram
-    (under ``target_gaps = "own_rows"``, one per set of targets present on the
-    same rows), and a group that closes writes one row per Gram to
+    behind the fit are :meth:`polars_online.ModelBank.gram`'s, one entry per
+    Gram (under ``target_gaps = "own_rows"``, one per set of targets present
+    on the same rows). A group that closes writes one row per Gram to
     :meth:`polars_online.ModelBank.closed_groups`.
 
     .. rubric:: Example
@@ -866,10 +915,10 @@ def ewridge(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` naming
-    the problem for a ``feature_sets`` entry naming a column not in ``features``,
-    a ``coef_prior`` vector of the wrong length, and ``session_shrink`` without
-    ``long_half_life``.
+    As every builder does (:mod:`polars_online.spec`), and ``ValueError``
+    naming the problem for a ``feature_sets`` entry naming a column not in
+    ``features``, a ``coef_prior`` vector of the wrong length, and
+    ``session_shrink`` without ``long_half_life``.
     """
     model: dict[str, Any] = {
         "type": "ew_ridge",
@@ -1876,9 +1925,9 @@ def ew_cov(
     correlations, and what is read off them.
 
     Not a regression: there are no targets and no coefficients, only running
-    statistics of the columns named, decayed on the same clock as every model
-    here. Values are read from the state before each row, so an ``ew_cov`` output
-    can be a feature for that same row without leaking it.
+    statistics of the columns named, decayed on the same clock as every
+    model here. Values are read from the state before each row, so an
+    ``ew_cov`` output can be a feature for that same row without leaking it.
 
     .. rubric:: The recursion
 
@@ -1894,120 +1943,149 @@ def ew_cov(
         C'_ij  = a * C_ij + a * b * delta_i * delta_j
 
     so ``var_i = C_ii``, ``cov_ij = C_ij`` and ``corr_ij = C_ij / sqrt(C_ii
-    C_jj)`` are read off directly, and a variance stays accurate when the columns
-    sit on a large offset, where the raw ``E[x^2] - m^2`` form loses it. One O(k²)
-    update per row, which replaces the O(k²) passes a pure-Polars pairwise EW
-    correlation needs.
+    C_jj)`` are read off directly. A variance stays accurate when the columns
+    sit on a large offset, where the raw ``E[x^2] - m^2`` form loses it. One
+    O(k²) update per row, which replaces the O(k²) passes a pure-Polars
+    pairwise EW correlation needs.
 
     .. rubric:: Parameters
 
     ``stats``
         Which statistics to write, from ``mean``, ``var``, ``std``, ``cov``,
-        ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr``. Default ``["mean",
-        "std", "corr"]``. ``[]`` writes nothing but ``weight_sum`` and accumulates all
-        the same. The spec's value is then its state, read back with
-        :meth:`polars_online.ModelBank.gram` and
-        :meth:`polars_online.ModelBank.describe`; that is the form for a wide set
-        of columns, where even the means are k values per row nobody reads.
+        ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr``. Default
+        ``["mean", "std", "corr"]``. ``[]`` writes nothing but ``weight_sum``
+        and accumulates all the same. The spec's value is then its state,
+        read back with :meth:`polars_online.ModelBank.gram` and
+        :meth:`polars_online.ModelBank.describe`. That is the form for a wide
+        set of columns, where even the means are k values per row nobody
+        reads.
     ``precision_prior``
-        A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``: the
-        precision matrix is ``(C + s * prior * I)^-1``, solved on each row it is
-        read (O(k³), only when asked for), and like an RLS prior it fades as data
-        accumulates.
+        A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``:
+        the precision matrix is ``(C + s * prior * I)^-1``, solved on each
+        row it is read (O(k³), only when asked for). Like an RLS prior it
+        fades as data accumulates.
     ``mahal_quantiles``
-        Levels at which to keep the exponentially weighted quantile of the past
-        ``mahal`` scores (``mahal_q<p>``), at the model's half-life and each
-        row's weight, within ``tanh(1/128)`` (0.78%) of the exact one: a
-        threshold from the stream's own history instead of a table, so ``mahal
-        > mahal_q0.99`` is one row in a hundred without assuming a
-        distribution. The row's own score joins after it is read.
+        Levels at which to keep the exponentially weighted quantile of the
+        past ``mahal`` scores (``mahal_q<p>``), at the model's half-life and
+        each row's weight, within ``tanh(1/128)`` (0.78%) of the exact one.
+        That is a threshold from the stream's own history instead of a
+        table, so ``mahal > mahal_q0.99`` is one row in a hundred without
+        assuming a distribution. The row's own score joins after it is read.
     ``pca``, ``pca_every``
-        Track the top ``pca`` principal components of the covariance: per
-        component ``j`` the fields ``pc<j>_var`` (its eigenvalue), ``pc<j>_share``
-        (of the total variance), ``pc<j>_loading_<feature>`` (its unit loading on each
-        column, largest entry positive) and ``pc<j>_score`` (the row's coordinate
-        ``v_j . (x - m)``). The eigendecomposition is refreshed every
-        ``pca_every`` learned rows (default 1, O(k³) each) after the row is folded
-        in; between refreshes the loadings are frozen, so a row's scores never
-        depend on chunking, and each refresh keeps the previous sign, so a loading
-        never flips.
+        Track the top ``pca`` principal components of the covariance, per
+        component ``j``:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 34 66
+
+           * - field
+             - what it holds
+           * - ``pc<j>_var``
+             - its eigenvalue
+           * - ``pc<j>_share``
+             - its share of the total variance
+           * - ``pc<j>_loading_<feature>``
+             - its unit loading on each column, largest entry positive
+           * - ``pc<j>_score``
+             - the row's coordinate ``v_j . (x - m)``
+
+        The eigendecomposition is refreshed every ``pca_every`` learned rows
+        (default 1, O(k³) each) after the row is folded in. Between refreshes
+        the loadings are frozen, so a row's scores never depend on chunking.
+        Each refresh keeps the previous sign, so a loading never flips.
     ``lags``
-        Lagged cross-moments beside the contemporaneous ones. With ``W`` and ``m``
-        the weight and mean before the row, and both deviations against that mean:
+        Lagged cross-moments beside the contemporaneous ones. With ``W`` and
+        ``m`` the weight and mean before the row, and both deviations against
+        that mean:
 
         .. code-block:: text
 
             C_l' = a * C_l + a * b * (x_t - m) (x_{t-l} - m)'
 
         the same ``a`` and ``b`` the co-moments use, so lag 0 would be
-        ``comoments`` exactly. Lags are counted in learned rows within the group,
-        not clock units, and must be strictly increasing and ``>= 1``; the list
-        order is the output order. The ring of past rows is emptied on a session
-        change and on a clock gap beyond ``gap_cap``, one row's or a run of
-        skipped rows' whose total the ceiling cut: the events after which "the row
-        ``l`` back" is not a row ``l`` ago. A zero-weight row ages the matrices
-        and does not enter the ring. Add ``"lagcorr"`` to ``stats`` to write
-        ``lagcorr_<a>_<b>_l<l>`` = ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per
-        lag and ordered pair, the auto terms included: ``k²`` slots a lag, since a
-        lagged matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
+        ``comoments`` exactly. Lags are counted in learned rows within the
+        group, not clock units, and must be strictly increasing and ``>= 1``;
+        the list order is the output order. The ring of past rows is emptied
+        on a session change and on a clock gap beyond ``gap_cap``, one row's
+        or a run of skipped rows' whose total the ceiling cut. Those are the
+        events after which "the row ``l`` back" is not a row ``l`` ago. A
+        zero-weight row ages the matrices and does not enter the ring. Add
+        ``"lagcorr"`` to ``stats`` to write ``lagcorr_<a>_<b>_l<l>`` =
+        ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
+        auto terms included. That is ``k²`` slots a lag, since a lagged
+        matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
     ``window_size``, ``window_every``, ``window_budget``
-        A hard cutoff on the history, in clock units: a row older than ``window_size``
-        contributes nothing at all, where the exponential weight alone would still
-        leave ``0.5 ** (age / half_life)`` of it -- 12.5% at three half-lives.
-        Inside the window the weights are still exponential, so this is not a
-        rolling flat mean: the newest row dominates exactly as it does without a
-        window. It is exact, because an exponentially weighted sum contains its
-        own past: everything at or before a time ``u`` is ``lam ** (t - u)`` times
-        the accumulator as it stood at ``u``, so subtracting that leaves precisely
-        the rest. What the model keeps is a ring of snapshots, one per learned
-        row: the one place in this library where memory grows with a window rather
-        than with the state. A snapshot is ``k² + k + 2`` doubles, so a 1,000-row
-        window over 20 columns is about 3 MB per group. ``window_every`` snapshots
-        every ``n`` rows instead and divides that by ``n``; ``window_budget``
-        bounds each ring in MiB and thins or refuses past the bound, as for
-        :func:`ewridge`.
+        A hard cutoff on the history, in clock units: a row older than
+        ``window_size`` contributes nothing at all, where the exponential
+        weight alone would still leave ``0.5 ** (age / half_life)`` of it --
+        12.5% at three half-lives. Inside the window the weights are still
+        exponential, so this is not a rolling flat mean: the newest row
+        dominates exactly as it does without a window. It is exact, because
+        an exponentially weighted sum contains its own past. Everything at or
+        before a time ``u`` is ``lam ** (t - u)`` times the accumulator as it
+        stood at ``u``, so subtracting that leaves precisely the rest. What
+        the model keeps is a ring of snapshots, one per learned row: the one
+        place in this library where memory grows with a window rather than
+        with the state. A snapshot is ``k² + k + 2`` doubles, so a 1,000-row
+        window over 20 columns is about 3 MB per group. ``window_every``
+        snapshots every ``n`` rows instead and divides that by ``n``.
+        ``window_budget`` bounds each ring in MiB and thins or refuses past
+        the bound, as for :func:`ewridge`.
 
-        Four things to know before reading windowed numbers. The guarantee is
-        one-sided: the boundary is the oldest snapshot still inside the window, so
-        what is dropped is always a superset of what the window excludes. With
-        ``window_every`` above 1 the effective window is shorter than asked by at
-        most one snapshot's spacing, never longer. The clock is the decayed one:
-        ``window_size`` is measured on the clock the decay uses, after ``gap_cap``
-        caps a gap and after a ``session_gap`` is applied. The edge is a
-        discontinuity: a row ageing out drops its whole weight at once, so a
-        windowed series has small steps an EWMA does not. And it is a subtraction,
-        so precision falls with the fraction discarded: negligible at ``window =
-        3 * half-life`` (an eighth of the mass), worse as the window shortens
-        toward the half-life.
+        Four things to know before reading windowed numbers:
 
-        ``weight_sum`` becomes the weight inside the window, which stops growing once
-        the window fills, so ``min_weight`` gates on a quantity with a ceiling. A
-        clock gap longer than ``window_size`` empties it and the row reports nulls
-        rather than stale numbers. ``mahal``, ``partial_corr`` and the PCA read
-        the window's moments too, and the PCA refresh is gated on the window's
-        weight. ``window_size`` does not combine with ``lags`` or ``mahal_quantiles``,
-        which accumulate over a history it does not truncate; both are refused by
-        name.
+        .. list-table::
+           :header-rows: 1
+           :widths: 34 66
+
+           * - the caveat
+             - why
+           * - the guarantee is one-sided
+             - the boundary is the oldest snapshot still inside the window,
+               so what is dropped is always a superset of what the window
+               excludes; with ``window_every`` above 1 the effective window
+               is shorter than asked by at most one snapshot's spacing, never
+               longer
+           * - the clock is the decayed one
+             - ``window_size`` is measured on the clock the decay uses, after
+               ``gap_cap`` caps a gap and after a ``session_gap`` is applied
+           * - the edge is a discontinuity
+             - a row ageing out drops its whole weight at once, so a windowed
+               series has small steps an EWMA does not
+           * - it is a subtraction
+             - precision falls with the fraction discarded: negligible at
+               ``window = 3 * half-life`` (an eighth of the mass), worse as
+               the window shortens toward the half-life
+
+        ``weight_sum`` becomes the weight inside the window, which stops
+        growing once the window fills, so ``min_weight`` gates on a quantity
+        with a ceiling. A clock gap longer than ``window_size`` empties it
+        and the row reports nulls rather than stale numbers. ``mahal``,
+        ``partial_corr`` and the PCA read the window's moments too, and the
+        PCA refresh is gated on the window's weight. ``window_size`` does not
+        combine with ``lags`` or ``mahal_quantiles``, which accumulate over a
+        history it does not truncate; both are refused by name.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
-    rest. Nothing residual-based applies, and each such switch is refused by name:
-    ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
+    rest. Nothing residual-based applies, and each such switch is refused by
+    name: ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
     .. rubric:: Output
 
-    One struct column named after the spec, holding the statistics ``stats`` asks
-    for, each named after its column or pair (``mean_x0``, ``std_x0``,
+    One struct column named after the spec, holding the statistics ``stats``
+    asks for, each named after its column or pair (``mean_x0``, ``std_x0``,
     ``corr_x0_x1``; pairs are unordered, ``i < j``, except ``lagcorr``'s),
-    ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields, and ``weight_sum``; all null
-    until ``min_weight``. The plain spec's fields are listed in
+    ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields, and ``weight_sum``.
+    All are null until ``min_weight``. The plain spec's fields are listed in
     `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
-    The moments themselves are :meth:`polars_online.ModelBank.gram`'s ``means``,
-    ``comoments``, ``lags`` and ``lag_comoments``, and a group that closes writes
-    them to :meth:`polars_online.ModelBank.closed_groups` with ``eig_vals`` and
-    ``eig_vecs`` under ``pca``.
+    The moments themselves are :meth:`polars_online.ModelBank.gram`'s
+    ``means``, ``comoments``, ``lags`` and ``lag_comoments``. A group that
+    closes writes them to :meth:`polars_online.ModelBank.closed_groups` with
+    ``eig_vals`` and ``eig_vecs`` under ``pca``.
 
     .. rubric:: Example
 
@@ -2024,9 +2102,10 @@ def ew_cov(
         odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers
 
     For moments on data that fits in memory, polars already does this --
-    ``df.rolling(clock, period=...).agg(...)`` with an exponential weight agrees
-    to 1e-14. The reason to reach for the spec is a stream, a saved state, or the
-    cost: polars recomputes each window at ``O(n * W)`` where this is ``O(n)``.
+    ``df.rolling(clock, period=...).agg(...)`` with an exponential weight
+    agrees to 1e-14. The reason to reach for the spec is a stream, a saved
+    state, or the work: polars recomputes each window, ``O(n * W)``, where
+    this is ``O(n)``.
 
     .. rubric:: Raises
 
@@ -2662,21 +2741,21 @@ def micro(
     """Density-based clustering over the feature columns: DenStream-style
     micro-clusters with a linkage step over them.
 
-    Not a regression: there are no targets, and unlike :func:`kmeans` there is no
-    fixed number of clusters. The model keeps a bounded set of small summaries
-    (micro-clusters), each a decayed weight, centre and radius, and reads clusters
-    off them as the chains of summaries that touch. That finds clusters of any
-    shape (moons, rings), reports rows that belong to none, and lets clusters
-    appear and vanish as the stream moves.
+    Not a regression: there are no targets, and unlike :func:`kmeans` there is
+    no fixed number of clusters. The model keeps a bounded set of small
+    summaries (micro-clusters), each a decayed weight, centre and radius, and
+    reads clusters off them as the chains of summaries that touch. That finds
+    clusters of any shape (moons, rings), reports rows that belong to none,
+    and lets clusters appear and vanish as the stream moves.
 
     .. rubric:: The recursion
 
-    A summary is ``(n, c, r2)``: decayed weight, centre, and the EW mean squared
-    distance of its rows from the centre (DenStream's radius, with the fading
-    function being the decay). Distances are measured in the metric ``mw_i = 1 /
-    var_i`` when ``standardize`` (the default), so ``eps`` is a bound per
-    standardized coordinate and the bound in the metric is ``E = eps² p`` for
-    ``p`` features. Each row:
+    A summary is ``(n, c, r2)``: decayed weight, centre, and the EW mean
+    squared distance of its rows from the centre (DenStream's radius, with the
+    fading function being the decay). Distances are measured in the metric
+    ``mw_i = 1 / var_i`` when ``standardize`` (the default), so ``eps`` is a
+    bound per standardized coordinate and the bound in the metric is ``E =
+    eps² p`` for ``p`` features. Each row:
 
     .. code-block:: text
 
@@ -2687,75 +2766,91 @@ def micro(
               else a new summary at x with the next id
         n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  r2_j <- min(., E)
 
-    A summary is potential (established) once ``n >= beta_mu * w_bar`` and outlier
-    below, ``w_bar`` the EW mean weight of the rows learned from;
-    a new one is opened at the cap ``max_clusters`` by evicting the lightest
+    A summary is potential (established) once ``n >= beta_mu * w_bar`` and
+    outlier below, ``w_bar`` the EW mean weight of the rows learned from. A
+    new one is opened at the cap ``max_clusters`` by evicting the lightest
     outlier summary, else the lightest potential one. Every ``prune_every``
     learned rows a checkpoint prunes and links. It drops potential summaries
     lighter than ``beta_mu * w_bar``, and outlier summaries lighter than
-    DenStream's ``xi(age) * w_bar``, with ``xi(age) = sum_{i <= age / Tp} 2 ** (-i
-    Tp / h)``: the weight of a summary that had taken one row of the mean weight
-    every ``Tp`` clock units since it opened, with ``Tp = ceil(h log2(beta_mu /
-    (beta_mu - 1)))`` for half_life ``h``. Both count rows, as DenStream's do: a
-    stream with more rows to a clock unit fills its summaries faster. With no decay
-    nothing is pruned, only capped. Then it links the potential summaries by
-    single linkage: centres within ``L`` of each other share a label. Ids are
-    monotone and never reused; a label is the smallest id in its chain, so it
-    survives everything but the loss of that summary.
+    DenStream's ``xi(age) * w_bar``, with ``xi(age) = sum_{i <= age / Tp} 2 **
+    (-i Tp / h)``. That is the weight of a summary that had taken one row of
+    the mean weight every ``Tp`` clock units since it opened, with ``Tp =
+    ceil(h log2(beta_mu / (beta_mu - 1)))`` for half_life ``h``. Both count
+    rows, as DenStream's do: a stream with more rows to a clock unit fills its
+    summaries faster. With no decay nothing is pruned, only capped. Then it
+    links the potential summaries by single linkage: centres within ``L`` of
+    each other share a label. Ids are monotone and never reused; a label is
+    the smallest id in its chain, so it survives everything but the loss of
+    that summary.
 
     .. rubric:: Parameters
 
     ``eps``
         The within-cluster spread the model should read as one cluster, per
-        standardized coordinate; required. About 0.07 for two-dimensional shapes,
-        0.3 for well-separated Gaussians in twenty dimensions. Both ways to get it
-        wrong show in the outputs. If nearly every row is an ``outlier`` and
-        ``cluster`` stays null, ``eps`` is too small: no summary reaches
-        ``beta_mu`` before it is pruned. If ``n_micro`` is about the number of
-        clusters, ``eps`` is too coarse for the derived link, which then bridges
-        them; lower ``eps``, or set ``macro_link``.
+        standardized coordinate; required. About 0.07 for two-dimensional
+        shapes, 0.3 for well-separated Gaussians in twenty dimensions. Both
+        ways to get it wrong show in the outputs:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 34 36 30
+
+           * - what you see
+             - what it means
+             - what to do
+           * - nearly every row is an ``outlier`` and ``cluster`` stays null
+             - ``eps`` is too small: no summary reaches ``beta_mu`` before it
+               is pruned
+             - raise ``eps``
+           * - ``n_micro`` is about the number of clusters
+             - ``eps`` is too coarse for the derived link, which then bridges
+               them
+             - lower ``eps``, or set ``macro_link``
     ``beta_mu``
-        The weight at which a summary is established, in rows of the stream's
-        mean weight. Default 3. It is DenStream's point density (DBSCAN's
-        ``MinPts``), so it is set against the arrival rate: with half-life ``h``
-        and ``v`` rows in each unit of the clock the stream's steady-state weight
-        is about ``1.44 * v * h``, so a summary meant to hold a share ``s`` of the
-        stream needs ``beta_mu`` of about ``1.44 * s * v * h``.
+        The weight at which a summary is established, in rows of the
+        stream's mean weight. Default 3. It is DenStream's point density
+        (DBSCAN's ``MinPts``), so it is set against the arrival rate. With
+        half-life ``h`` and ``v`` rows in each unit of the clock the stream's
+        steady-state weight is about ``1.44 * v * h``. So a summary meant to
+        hold a share ``s`` of the stream needs ``beta_mu`` of about
+        ``1.44 * s * v * h``.
     ``max_clusters``
         The cap on live summaries. Default 200.
     ``prune_every``
         Learned rows between checkpoints. Default 100.
     ``macro_link``
         ``L`` as a multiple of ``eps sqrt(p)``: ``0`` links nothing, so each
-        summary is its own cluster; ``2`` links summaries that touch. Left out,
-        ``L`` is derived at each checkpoint from the spacing the summaries already
-        show: 1.5 times the 90th percentile of the nearest-neighbour distance,
-        never below ``2 eps sqrt(p)``. So a chain along a shape holds without a
-        constant that fragments one shape and bridges another.
+        summary is its own cluster; ``2`` links summaries that touch. Left
+        out, ``L`` is derived at each checkpoint from the spacing the
+        summaries already show: 1.5 times the 90th percentile of the
+        nearest-neighbour distance, never below ``2 eps sqrt(p)``. So a chain
+        along a shape holds without a constant that fragments one shape and
+        bridges another.
     ``standardize``
         Measure in units of each feature's EW standard deviation. Default
         ``True``.
     ``scale_floor``
         The metric's variance is floored at this fraction of the feature's
         long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
-        half-lives of a feature going quiet -- a flag that stops firing, a
-        sensor at rest -- a million at twenty, and the row on which the
-        feature moves again is then infinitely far from every centre; floored,
-        the weight grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The
-        long-run variance is tracked at eight times the half-life, a feature at
-        a time, with each row's weight and deviation clipped against it and
-        its start the medians of the feature's first five rows, so a row at
-        the input bound moves it by a factor of 26 at most, which a few of its
-        half-lives undo. Default ``0.1``; ``0`` is the EW variance alone, and
-        what a state saved before the floor loads with.
+        half-lives of a feature going quiet (a flag that stops firing, a
+        sensor at rest): a million at twenty, and the row on which the
+        feature moves again is then infinitely far from every centre.
+        Floored, the weight grows as ``2^(Q/8) / scale_floor``, about 57 at
+        twenty. The long-run variance is tracked at eight times the
+        half-life, a feature at a time. Each row's weight and deviation are
+        clipped against it, and its start is the medians of the feature's
+        first five rows, so a row at the input bound moves it by a factor of
+        26 at most, which a few of its half-lives undo. Default ``0.1``;
+        ``0`` is the EW variance alone, and what a state saved before the
+        floor loads with.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
     rest.
 
-    A row of weight ``w`` is admitted where a row of the mean weight would be and
-    absorbed with its full weight, so a constant multiple of every weight moves
-    nothing; a zero-weight row advances the clock and learns nothing.
+    A row of weight ``w`` is admitted where a row of the mean weight would be
+    and absorbed with its full weight, so a constant multiple of every weight
+    moves nothing. A zero-weight row advances the clock and learns nothing.
     Nothing residual-based applies, and each such switch is refused by name:
     ``emit_sigma``, ``emit_metrics``, ``conformal``, drift and the rest.
 
@@ -2766,24 +2861,24 @@ def micro(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#micro>`_):
 
     ``cluster``
-        The label of the nearest established summary (``i64``); null while there
-        is none.
+        The label of the nearest established summary (``i64``); null while
+        there is none.
     ``dist``
         The distance to that summary's centre.
     ``micro``
-        The id of the summary this row goes to (``i64``) -- the one it opens, when
-        none can take it.
+        The id of the summary this row goes to (``i64``) -- the one it opens,
+        when none can take it.
     ``outlier``
         Whether no established summary takes it (``bool``).
     ``n_clusters``, ``n_micro``
-        Live clusters and live summaries (``i32``), so churn is visible without
-        diffing labels.
+        Live clusters and live summaries (``i32``), so churn is visible
+        without diffing labels.
     ``weight_sum``
         As everywhere.
     ``coef``
-        The established summaries, one ``[id, label, n, radius, c_1, ..., c_p]``
-        row each, flattened -- as many rows as there are, so :func:`coef_index`
-        does not apply.
+        The established summaries, one ``[id, label, n, radius, c_1, ...,
+        c_p]`` row each, flattened -- as many rows as there are, so
+        :func:`coef_index` does not apply.
 
     .. rubric:: Example
 
@@ -3123,11 +3218,11 @@ def marginal(
     state and read back as a table.
 
     Not a regression and not a joint fit: each pair ``(x_j, y_t)`` is its own
-    two-column :func:`ew_cov`, so a wide feature set against a few targets costs
-    ``O(p * T)`` per row rather than the ``O((p + T)²)`` of one ``ew_cov`` over
-    all the columns. Nothing is written per row but ``weight_sum``; the pairs live in
-    the state and :meth:`polars_online.ModelBank.marginal` reads them. Use it to
-    screen thousands of features against a few targets in one pass.
+    two-column :func:`ew_cov`. A wide feature set against a few targets then
+    takes ``O(p * T)`` per row, not the ``O((p + T)²)`` of one ``ew_cov`` over
+    all the columns. Nothing is written per row but ``weight_sum``; the pairs
+    live in the state and :meth:`polars_online.ModelBank.marginal` reads them.
+    Use it to screen thousands of features against a few targets in one pass.
 
     .. rubric:: The recursion
 
@@ -3143,187 +3238,234 @@ def marginal(
         S'_xy[t,j] = a * S_xy[t,j] + a * b * (x_j - m_x[t,j]) * (y_t - m_y)
         m'  = m + b * (value - m)                     for m_y and each m_x[t,j]
 
-    (deviations from the means before the row), the same arithmetic as
-    ``ew_cov``'s, so a pair's ``corr`` equals the ``corr`` an ``ew_cov`` over the
-    two columns reports, to the bit. A null target ages that target (``W_t *=
-    lam``, ``Q_t *= lam^2``) and learns nothing for it; a null feature skips the
-    row, as everywhere.
+    The deviations are from the means before the row. The arithmetic is
+    ``ew_cov``'s, so a pair's ``corr`` equals the ``corr`` an ``ew_cov`` over
+    the two columns reports, to the bit. A null target ages that target
+    (``W_t *= lam``, ``Q_t *= lam^2``) and learns nothing for it; a null
+    feature skips the row, as everywhere.
 
     .. rubric:: Parameters
 
     ``lags``, ``cross_lags``, ``serial_rule``
-        The pair's moments at those lags too, counted in learned rows within the
-        group -- not in rows where that target was present, since the ring is
-        shared, so for a sparsely present target the lag is a row distance, not an
-        observation distance. They add four list columns per pair to the table:
-        ``lagcorr_xx`` and ``lagcorr_yy``, the two series' own autocorrelations,
-        and ``lagcorr_xy`` and ``lagcorr_yx``, the feature now against the target
-        ``l`` rows back and the target now against the feature ``l`` rows back. For
-        two series that describe the same moment, a feature whose
-        ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target, and one whose
-        ``lagcorr_xy[0]`` does follows it. That reading does not hold against a
-        forward-looking target, one built from the rows after its own. There the
-        target ``l`` rows back is built partly from the feature's newest ``l``
-        rows, so a feature built from the same news shows ``lagcorr_xy`` above
-        ``corr`` however it is sampled. The pair is the same statistic
-        ``ew_cov(lags=)`` computes, to the bit.
+        The pair's moments at those lags too. A lag counts learned rows within
+        the group, not rows where that target was present, since the ring is
+        shared. For a sparsely present target the lag is a row distance, not
+        an observation distance. They add four list columns per pair to the
+        table. ``lagcorr_xx`` and ``lagcorr_yy`` are the two series' own
+        autocorrelations. ``lagcorr_xy`` is the feature now against the target
+        ``l`` rows back, and ``lagcorr_yx`` the target now against the feature
+        ``l`` rows back. For two series that describe the same moment, a
+        feature whose ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target,
+        and one whose ``lagcorr_xy[0]`` does follows it. That reading does not
+        hold against a forward-looking target, one built from the rows after
+        its own. There the target ``l`` rows back is built partly from the
+        feature's newest ``l`` rows, so a feature built from the same news
+        shows ``lagcorr_xy`` above ``corr`` however it is sampled. The pair is
+        the same statistic ``ew_cov(lags=)`` computes, to the bit.
 
-        ``cross_lags`` keeps the two cross-correlations at fewer lags: strictly
-        increasing, each one of ``lags``, and ``[]`` for none, which leaves the
-        ``lagcorr_xy`` and ``lagcorr_yx`` columns out. By default they are kept at
-        every lag. ``lagcorr_xy`` and ``lagcorr_yx`` are then lists over
-        ``cross_lags``, in its order. The autocorrelations, and ``n_serial`` built
-        from them, are kept at every lag whatever it says, and are the same to the
-        bit. A lead or lag of a row or two is the usual question, and the cross
-        terms are two thirds of the lag work: ``lags=[1, 2, 5, 10, 20, 50],
-        cross_lags=[1]`` keeps the serial correction over fifty rows and the lead
-        and lag at one row, at eight lagged moments per pair instead of eighteen.
+        ``cross_lags`` keeps the two cross-correlations at fewer lags:
+        strictly increasing, each one of ``lags``, and ``[]`` for none, which
+        leaves the ``lagcorr_xy`` and ``lagcorr_yx`` columns out. By default
+        they are kept at every lag. ``lagcorr_xy`` and ``lagcorr_yx`` are then
+        lists over ``cross_lags``, in its order. The autocorrelations, and
+        ``n_serial`` built from them, are kept at every lag whatever it says,
+        and are the same to the bit. A lead or lag of a row or two is the
+        usual question, and the cross terms are two thirds of the lag work.
+        ``lags=[1, 2, 5, 10, 20, 50], cross_lags=[1]`` keeps the serial
+        correction over fifty rows and the lead and lag at one row, at eight
+        lagged moments per pair instead of eighteen.
 
         ``serial_rule`` turns them into an honest count. ``t`` is built on
         ``n_kish``, which is right for unequal weights and silent about serial
         dependence. On a smooth stream consecutive rows are nearly the same
-        observation, and the variance of a sample correlation is not ``1/n`` but
-        ``[1 + 2 * sum_l rho_x(l) * rho_y(l)] / n`` (Bartlett 1935). ``n_serial``
-        is ``n_kish`` divided by that bracket and ``t_serial`` the statistic
-        against it. ``"truncated"`` sums the kept lags as they are, and reports
-        null ``n_serial`` and ``t_serial`` when that takes the bracket to zero or
-        below (two series whose autocorrelations have opposite signs).
-        ``"bartlett"`` weights lag ``l`` by ``1 - l / (L + 1)``, ``L`` the longest
-        kept lag, as Newey and West do: the long lags, whose estimates are the
-        noisiest, count less, and over every lag ``1..L`` the bracket stays
-        positive where the lagged products form a positive-definite sequence.
-        With lags missing it can still reach zero, and is null there as under
-        ``"truncated"``.
-        ``"geometric"`` fits ``rho(l) = phi^l`` per series by least squares on
-        ``log rho`` over the kept lags with ``rho > 0`` and sums the tail in
-        closed form, which is the right choice when both series are exponentially
-        weighted, and the reason the lags need not be dense. It reports the fitted
-        ``phi_x`` and ``phi_y``, and gives up (null ``n_serial``) when fewer than
-        two kept lags are positive on either side. Measured on two independent
-        AR(1) series with ``phi_x = 0.9`` and ``phi_y = 0.8``: ``t = 2.39``,
-        significance that is not there, against ``t_serial = 1.03``, with ``n_kish
-        = 3000`` becoming ``n_serial = 557``. Cost: ``(L + 2C) * p * T + L * T``
-        doubles beside the pair moments, for ``L`` lags of which ``C`` keep the
-        cross terms, and a ring of ``max(lags)`` learned rows -- the one place
+        observation, and the variance of a sample correlation is not ``1/n``
+        but ``[1 + 2 * sum_l rho_x(l) * rho_y(l)] / n`` (Bartlett 1935).
+        ``n_serial`` is ``n_kish`` divided by that bracket, and ``t_serial``
+        the statistic against it. The rule says how the bracket sums the kept
+        lags:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 16 50 34
+
+           * - rule
+             - the bracket
+             - ``n_serial`` and ``t_serial`` null when
+           * - ``"truncated"``
+             - the kept lags as they are
+             - the bracket is zero or below (two series whose
+               autocorrelations have opposite signs)
+           * - ``"bartlett"``
+             - lag ``l`` weighted by ``1 - l / (L + 1)``, ``L`` the longest
+               kept lag, as Newey and West do: the long lags, whose estimates
+               are the noisiest, count less, and over every lag ``1..L`` the
+               bracket stays positive where the lagged products form a
+               positive-definite sequence
+             - with lags missing it can still reach zero, as under
+               ``"truncated"``
+           * - ``"geometric"``
+             - ``rho(l) = phi^l`` fitted per series by least squares on
+               ``log rho`` over the kept lags with ``rho > 0``, and the tail
+               summed in closed form: the right choice when both series are
+               exponentially weighted, and the reason the lags need not be
+               dense; the fitted ``phi_x`` and ``phi_y`` are reported
+             - fewer than two kept lags are positive on either side
+
+        Measured on two independent AR(1) series with ``phi_x = 0.9`` and
+        ``phi_y = 0.8``: ``t = 2.39``, significance that is not there, against
+        ``t_serial = 1.03``, with ``n_kish = 3000`` becoming ``n_serial =
+        557``. The lags add ``(L + 2C) * p * T + L * T`` doubles beside the
+        pair moments, for ``L`` lags of which ``C`` keep the cross terms. They
+        also hold a ring of ``max(lags)`` learned rows: the one place
         ``marginal`` holds rows rather than state.
     ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``, ``bin_budget``
-        The nonlinear view. Every statistic above is linear, and a feature can be
-        strongly related to a target with ``corr`` at zero: a threshold, a V, a
-        saturation. With ``bins = 16`` each pair also reports the target's weight,
-        mean and variance inside each of the feature's bins: its response curve,
-        in ``bin_edges``, ``bin_n``, ``bin_mean_y`` and ``bin_var_y``. It reports
-        the best single cut of that curve too. ``split_gain`` is the fraction of
-        the target's variance the cut removes, a regression stump's gain, directly
-        comparable with ``corr²``; ``split_at`` is where it falls;
+        The nonlinear view. Every statistic above is linear, and a feature
+        can be strongly related to a target with ``corr`` at zero: a
+        threshold, a V, a saturation. With ``bins = 16`` each pair also
+        reports the target's weight, mean and variance inside each of the
+        feature's bins: its response curve, in ``bin_edges``, ``bin_n``,
+        ``bin_mean_y`` and ``bin_var_y``. It reports the best single cut of
+        that curve too. ``split_gain`` is the fraction of the target's
+        variance the cut removes, a regression stump's gain, directly
+        comparable with ``corr²``. ``split_at`` is where it falls.
         ``split_gain_t`` is the ``t`` a ``corr`` would need to match it. Read
         ``split_gain_t`` as a ranking, not a p-value: the cut was chosen by
         maximising over ``bins - 1`` candidates, which the statistic does not
         know. It uses ``n_serial`` in place of ``n_kish`` when ``serial_rule``
-        gives one. It costs ``O(bins)`` of state per pair, one search of the
-        edges per feature per row, and a constant per pair.
+        gives one. The bins take ``O(bins)`` of state per pair, one search of
+        the edges per feature per row, and a constant per pair.
 
-        The edges are fixed once and never move, so a bin means the same thing for
-        the life of the stream. ``bin_edges`` sets them outright, as a list per
-        feature in ``features`` order or a dict keyed by feature name, which is
-        exact and comparable across runs and groups; ``bins``, ``bin_rule`` and
-        ``bin_warm_rows`` describe learning them and are refused beside it.
-        Otherwise they are learned from the first ``bin_warm_rows`` learned rows
-        (default 1,000) under ``bin_rule``. ``"quantile"`` (the default) gives
-        equal weight per bin; a value that carries more than a bin's share, an
-        indicator's zero say, fills a bin of its own and the remaining bins share
-        what is left. ``"fixed"`` gives equal widths between the smallest and
-        largest value seen. Those warm-up rows are held, not spent: the moment the
-        edges exist every one of them is replayed with its own decay, so the
-        histogram is what it would have been had the edges been known before the
-        first row: to the bit, or to about 1e-15 of the data's scale where rows of
-        weight zero fall inside the warm-up, whose decays are carried to the next
-        held row as one product. The price is memory: the hold takes about
-        ``bin_warm_rows * (8 * features + 16 * targets)`` bytes until the edges
-        are fixed, and the histogram about ``32 * features * targets * bins``
-        bytes for good. Each is refused up front past ``bin_budget`` MiB, 256 by
-        default and ``float("inf")`` for no bound, and each is per group, and per
-        half-life when ``half_life`` is a list: every one keeps its own. At the
-        warm-up's last row the two exist at once, while the held rows are
-        replayed into the histogram, so that row's peak is their sum. Until
-        the edges are fixed the bin columns are empty and the split columns null. A feature
-        keeps only the bins it can support, so the lists are ragged: a binary
-        feature gets two bins whatever ``bins`` says, and a constant one a single
-        bin and no split. Decay reaches the histogram as it reaches the pair
+        The edges are fixed once and never move, so a bin means the same
+        thing for the life of the stream. ``bin_edges`` sets them outright,
+        as a list per feature in ``features`` order or a dict keyed by
+        feature name: exact, and comparable across runs and groups. ``bins``,
+        ``bin_rule`` and ``bin_warm_rows`` describe learning them, and are
+        refused beside it. Otherwise they are learned from the first
+        ``bin_warm_rows`` learned rows (default 1,000) under ``bin_rule``.
+        ``"quantile"`` (the default) gives equal weight per bin; a value that
+        carries more than a bin's share, an indicator's zero say, fills a bin
+        of its own, and the remaining bins share what is left. ``"fixed"``
+        gives equal widths between the smallest and largest value seen. Those
+        warm-up rows are held, not spent. The moment the edges exist every
+        one of them is replayed with its own decay, so the histogram is what
+        it would have been had the edges been known before the first row.
+        That holds to the bit, or to about 1e-15 of the data's scale where
+        rows of weight zero fall inside the warm-up, whose decays are carried
+        to the next held row as one product. A feature keeps only the bins it can
+        support, so the lists are ragged: a binary feature gets two bins
+        whatever ``bins`` says, and a constant one a single bin and no split.
+        Until the edges are fixed the bin columns are empty and the split
+        columns null. Decay reaches the histogram as it reaches the pair
         moments, so a clock gap past ``gap_cap`` empties it along with them.
+
+        The memory, per group, and per half-life when ``half_life`` is a list
+        (every one keeps its own):
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 44 56
+
+           * - what
+             - about
+           * - the hold, until the edges are fixed
+             - ``bin_warm_rows * (8 * features + 16 * targets)`` bytes
+           * - the histogram, for good
+             - ``32 * features * targets * bins`` bytes
+
+        Each is refused up front past ``bin_budget`` MiB, 256 by default and
+        ``float("inf")`` for no bound. At the warm-up's last row the two
+        exist at once, while the held rows are replayed into the histogram,
+        so that row's peak is their sum.
     ``shards``
         Split the pair work across the bank's threads: a count of ranges of
         features, or ``"auto"`` for as many as the width keeps busy. The pool
-        runs a bank's groups and specs in parallel already, so one wide spec on
-        one group is one thread's work while the rest wait; with ``shards`` its
-        pairs are cut into ranges of features and each range runs on a thread of
-        its own, a batch of rows at a time. Every number is the same to the bit
-        whatever the count, so it is a setting and not part of the state: a
-        saved bank resumes under the count of the specs given to ``load``, or
-        under the saved one when given none, and ``"auto"`` sizes itself to the
-        machine it runs on. ``"auto"`` estimates a batch's pair work from the
-        width, the lags and the bins, and splits it into as many ranges as hold
-        a tenth of a millisecond each, up to twice the pool's threads; the
-        moments alone of fewer than about 1,300 pairs stay whole. By default
-        the pairs run row by row on the group's thread. Through the bank at
-        10,000 features on 14 threads, ``"auto"`` ran 1.2 times as fast at one
-        target and 4.9 times with nine targets, lags and bins; the bank's own
-        work on each row does not split (``docs/PERFORMANCE.md`` §25).
+        runs a bank's groups and specs in parallel already, so one wide spec
+        on one group is one thread's work while the rest wait. With
+        ``shards`` its pairs are cut into ranges of features, and each range
+        runs on a thread of its own, a batch of rows at a time. Every number
+        is the same to the bit whatever the count, so it is a setting and not
+        part of the state. A saved bank resumes under the count of the specs
+        given to ``load``, or under the saved one when given none.
+        ``"auto"`` sizes itself to the machine it runs on: it estimates a
+        batch's pair work from the width, the lags and the bins, and splits
+        the batch into as many ranges as hold a tenth of a millisecond each,
+        up to twice the pool's threads. The moments alone of fewer than about
+        1,300 pairs stay whole. By default the pairs run row by row on the
+        group's thread. Through the bank at 10,000 features on 14
+        threads, ``"auto"`` ran 1.2 times as fast at one target and 4.9 times
+        with nine targets, lags and bins; the bank's own work on each row
+        does not split (``docs/PERFORMANCE.md`` §25).
     ``window_size``, ``window_every``, ``window_budget``
-        A hard cutoff on the history the pairs are computed from, in clock units,
-        as for :func:`ewridge`: a row older than ``window_size`` contributes nothing,
-        and inside the window the weights are still exponential. Every moment a
-        pair is built from is truncated (the weight, both means and the three
-        centred second moments), so ``corr``, ``beta`` and ``t`` describe the
-        window and nothing else. That matters most for a screen: two regimes of
-        opposite sign average to nothing over a long history. ``window_every`` is
-        the snapshot cadence and ``window_budget`` bounds each ring in MiB. The
-        ``weight_sum`` the struct writes and the one the table reports are the weight
-        inside the window. ``lags`` under a window take ``window_lags=True``,
-        below. ``bins`` and ``window_size`` are refused together (a snapshot of the
-        histogram is ``bins`` times the size of one).
+        A hard cutoff on the history the pairs are computed from, in
+        clock units, as for :func:`ewridge`: a row older than ``window_size``
+        contributes nothing, and inside the window the weights are still
+        exponential. Every moment a pair is built from is truncated (the
+        weight, both means and the three centred second moments), so
+        ``corr``, ``beta`` and ``t`` describe the window and nothing else.
+        That matters most for a screen: two regimes of opposite sign average
+        to nothing over a long history. ``window_every`` is the snapshot
+        cadence, and ``window_budget`` bounds each ring in MiB. The
+        ``weight_sum`` the struct writes and the one the table reports are
+        the weight inside the window. ``lags`` under a window take
+        ``window_lags=True``, below. ``bins`` and ``window_size`` are refused
+        together (a snapshot of the histogram is ``bins`` times the size of
+        one).
     ``window_lags``
-        Accept ``lags`` under a ``window_size``, and the memory that costs. Each of the
-        window's snapshots then also holds the lag moments, ``L*T + (L + 2*C)*p*T``
-        doubles beside the ``(3*p + 5)*T`` it holds without them, for ``L`` lags,
-        ``C`` cross lags, ``p`` features and ``T`` targets: they add about
-        ``(L + 2*C) / 3`` times its size. So a snapshot is twice the size at one
-        lag, and six times at five lags with the default cross lags (every
-        lag). ``cross_lags=[]`` costs
-        least, ``L*(p + 1)*T``, and ``n_serial`` does not read the cross terms.
-        The snapshots count in ``window_budget``. Without it, ``lags`` and
-        ``window_size`` together are refused with this spec's own numbers; with it,
-        and without both, it is refused. Each windowed lag moment is the sum of
-        the increments made inside the window, each centred at the mean as it
-        stood when it was made: a lagged moment has no re-centring identity, so
-        against the rows inside the window it is a statistical estimate, as the
-        whole history's is. Default ``False``.
+        Accept ``lags`` under a ``window_size``, and the memory that takes.
+        Each of the window's snapshots then also holds the lag moments, in
+        doubles, for ``L`` lags, ``C`` cross lags, ``p`` features and ``T``
+        targets:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 44 56
+
+           * - a snapshot holds
+             - doubles
+           * - without lags
+             - ``(3*p + 5)*T``
+           * - the lag moments beside them
+             - ``L*T + (L + 2*C)*p*T``, about ``(L + 2*C) / 3`` times its size
+           * - with ``cross_lags=[]``, the least
+             - ``L*(p + 1)*T``; ``n_serial`` does not read the cross terms
+
+        So a snapshot is twice the size at one lag, and six times at five
+        lags with the default cross lags (every lag). The snapshots count in
+        ``window_budget``. Without it, ``lags`` and ``window_size`` together
+        are refused with this spec's own numbers; with it, and without both,
+        it is refused. Each windowed lag moment is the sum of the increments
+        made inside the window, each centred at the mean as it stood when it
+        was made. A lagged moment has no re-centring identity, so against
+        the rows inside the window it is a statistical estimate, as the whole
+        history's is. Default ``False``.
     ``feature_moments``
         Where the feature's mean and variance are kept. ``"per_target"``, the
-        default, keeps them per pair, over the rows the pair's target was present.
-        ``"shared"`` keeps one per feature, over every learned row, and each pair
-        only its covariance. Where every target is on every learned row the two
-        report the same numbers, to the bit. Where a target is absent on some rows,
-        ``"shared"`` is a different estimator: ``mean_x`` and ``var_x`` are the
-        feature's over every learned row, and ``cov`` is the target's rows
-        centred on that mean, so ``corr``, ``beta`` and ``t`` move with it. That
-        is sound where the absence says nothing about the feature. With a tenth of
-        a target's rows absent at a half-life of 69 rows, measured, ``corr`` moved
-        by at most 0.0065 and ``var_x`` by 2.5% at the median. At 20,000 pairs it
-        runs 2.7 times as fast at ten targets and 3.2 times at thirty, the same at
-        one, and a ten-target state is under half the size (docs/PERFORMANCE.md
-        §27). With ``lags`` it keeps the feature's autocovariance per feature too,
-        and at ten targets runs 4.6 times as fast with no cross lags. Refused with
-        a ``window_size``.
+        default, keeps them per pair, over the rows the pair's target was
+        present. ``"shared"`` keeps one per feature, over every learned row,
+        and each pair only its covariance. Where every target is on every
+        learned row the two report the same numbers, to the bit. Where a
+        target is absent on some rows, ``"shared"`` is a different estimator.
+        ``mean_x`` and ``var_x`` are the feature's over every learned row,
+        and ``cov`` is the target's rows centred on that mean, so ``corr``,
+        ``beta`` and ``t`` move with it. That is sound where the absence says
+        nothing about the feature. With a tenth of a target's rows absent at
+        a half-life of 69 rows, measured, ``corr`` moved by at most 0.0065
+        and ``var_x`` by 2.5% at the median. At 20,000 pairs it runs 2.7
+        times as fast at ten targets and 3.2 times at thirty, the same at
+        one, and a ten-target state is under half the size
+        (docs/PERFORMANCE.md §27). With ``lags`` it keeps the feature's
+        autocovariance per feature too, and at ten targets runs 4.6 times as
+        fast with no cross lags. Refused with a ``window_size``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
     rest.
 
-    ``fit_intercept`` and ``coef_every`` have nothing to act on here, and nothing
-    residual-based applies (there is no prediction), so the residual switches are
-    refused by name. A column may not be both a target and a feature.
-    ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever the
-    data, three the first one with content.
+    ``fit_intercept`` and ``coef_every`` have nothing to act on here. Nothing
+    residual-based applies (there is no prediction), so the residual switches
+    are refused by name. A column may not be both a target and a feature.
+    ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever
+    the data, three the first one with content.
 
     .. rubric:: Output
 
@@ -3332,11 +3474,11 @@ def marginal(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#marginal>`_).
     The pairs are read from the state with
     :meth:`polars_online.ModelBank.marginal`, one row per (group, instance,
-    feature, target) with the moments, ``corr``, ``beta``, ``t``, ``n_kish``, and
-    the lag and bin columns above; that method documents every column. A group
-    that closes writes the same pairs to
-    :meth:`polars_online.ModelBank.closed_groups` as ``pair_*`` columns, one entry
-    per pair.
+    feature, target) with the moments, ``corr``, ``beta``, ``t``, ``n_kish``,
+    and the lag and bin columns above. That method documents every column. A
+    group that closes writes the same pairs to
+    :meth:`polars_online.ModelBank.closed_groups` as ``pair_*`` columns, one
+    entry per pair.
 
     .. rubric:: Example
 
@@ -3353,12 +3495,14 @@ def marginal(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` naming
-    the problem for ``bin_edges`` that miss or add a feature, for ``bins`` beside
-    ``bin_edges``, for ``bins`` beside ``window_size``, for ``lags`` beside ``window_size``
-    without ``window_lags``, for ``bin_budget``
-    without bins or not above 0, for bins past ``bin_budget``, and for ``shards``
-    below 1 or a string other than ``"auto"``.
+    As every builder does (:mod:`polars_online.spec`), and ``ValueError``
+    naming the problem for:
+
+    - ``bin_edges`` that miss or add a feature;
+    - ``bins`` beside ``bin_edges``, or beside ``window_size``;
+    - ``lags`` beside ``window_size`` without ``window_lags``;
+    - ``bin_budget`` without bins or not above 0, and bins past ``bin_budget``;
+    - ``shards`` below 1, or a string other than ``"auto"``.
     """
     edges: list[list[float]] | None
     if isinstance(bin_edges, dict):
