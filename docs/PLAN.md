@@ -3557,6 +3557,25 @@ note, not a task.
         `with_windows` as a column, and is refused. Several targets in one
         spec share one `X'X` and one embargo; a buy-side, a sell-side and an
         all-trades VWAP are three targets.
+      - **Open, the user's call: a formula target outside Python.** A
+        formula is a Polars expression that py-polars evaluates between
+        chunks, and Polars' expression serialization differs between the
+        py-polars a caller runs and the Polars this wheel embeds, so the
+        command line's TOML cannot carry one and a saved state cannot store
+        one. Polars' SQL expression parser was examined (2026-10-02) as a
+        shared text form: it parses the element-wise part in both languages
+        (arithmetic, `CASE WHEN`, `LN`, a quoted placeholder column), but
+        not the operators. Polars SQL's windows are row frames only (no
+        `RANGE`, no `FOLLOWING`, no exponential weights); Python's
+        `pl.sql_expr` refuses a function of ours and cannot register one;
+        Rust's `polars-sql` registers functions only through a full query
+        (its expression parser with a registry is private); and it would add
+        `polars-sql` and `sqlparser`, statically linked (rule 12).
+        Recommended: TOML and saved states hold operators -- one, or a ratio
+        of two (a VWAP), with `relative_to` -- and anything more is
+        Python-only, re-supplied when resuming through `load(path, specs=)`.
+        The alternatives: the SQL text form with a pre-parse of our
+        operators, or no forward targets on the command line.
       - **Each forward operator states its own `window_size`.** The spec
         states the embargo.
       - **An operator's `partial` applies**: a window cut short by a gap past
@@ -5730,6 +5749,14 @@ is not, since the model alone has `0.0` and `3.5` there.
         hidden columns from each group's previous row, then Polars evaluates
         the expression around them.
       - **Names, boundaries and equal timestamps follow Polars**: task 144.
+      - **The call's own keywords are not output names** (decided
+        2026-10-02, the user: "3a"). `with_windows(session=po.ewma(...))`
+        is refused, with a message pointing at `.alias()`: the clock policy
+        (`clock`, `gap_cap`, `restart_after_step_back`, `session`,
+        `session_gap`, `group`), `like`, `chunk_rows`, `load_state` and
+        `save_state` are reserved. Polars' `with_columns` has no such clash,
+        since it takes no policy. Considered and not taken: the policy only
+        through `like=`.
       - **The clock and its policy** -- `max_dclock`, `on_clock_reset`,
         `min_backwards_jump`, sessions, groups -- are task 78's, shared by
         every operator in the call. Open: a clock per operator, Polars'
@@ -5744,7 +5771,17 @@ is not, since the model alone has `0.0` and `3.5` there.
       - **Against the current quote** is arithmetic: `- pl.col("mid")`,
         `/ pl.col("ask")`, `(op / pl.col("bid")).log()`; task 107's
         `relative_to` stays for plain-column targets.
-      - Open: the sum and rate operators' names.
+      - **Open, the user's call: a ratio target's hit test.** A plain-column
+        ratio target carries `relative="ratio"`, which centres `hit_rate`'s
+        sign test at 1 (task 107's review, D3); an expression `op /
+        pl.col("bid")` carries nothing, so its test centres at 0 and reads
+        1.0 whatever the fit. Recommended: the docs say a ratio target is
+        written as a log ratio or a difference; the alternative makes
+        `hit_rate` null on every expression target.
+      - Open: the sum and rate operators' names. Polars 1.44 has `ewm_mean`,
+        `ewm_sum` and their `_by` forms (checked 2026-10-02), so matching it
+        would make `po.ewma` `po.ewm_mean` and `po.rewma` `po.rewm_mean`,
+        beside `po.ewm_sum` and `po.rewm_sum`; the rate has no counterpart.
 
       #### Memory
 
