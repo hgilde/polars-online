@@ -134,7 +134,7 @@ def test_the_scalar_form_tests_the_equicorrelations_level():
         "features": cols,
         "span_rows": 400,
         "scalar": True,
-        "halflife": 200.0,
+        "half_life": 200.0,
         "alpha_adjust": "none",
     }
     steady = run(pair(500, 0.4, seed=20, k=6), **kw)
@@ -220,7 +220,7 @@ def test_reset_empties_the_windows_at_a_flag():
     df = pl.concat([pair(80, 0.0, seed=13), pair(200, 0.95, seed=14)])
     common = {"kind": "window", "span_rows": w, "crit": 0.4, "features": ["x0", "x1"]}
     kept = run(df, **common)
-    cleared = run(df, reset=True, **common)
+    cleared = run(df, reset_on_flag=True, **common)
     # After a flag the reset run has no statistic until both windows refill.
     first = kept["flag"].to_list().index(True)
     assert cleared["stat"][first + 1] is None
@@ -273,7 +273,7 @@ def test_a_capped_gap_abandons_the_span():
     """Task 47's signal: a span that straddles a break in the clock is not
     a span, so the ring is emptied and the statistic is deferred."""
     df = pair(300, 0.4, seed=17).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
-    kw = {"span_rows": 100, "clock": "t", "max_dclock": 5.0}
+    kw = {"span_rows": 100, "clock": "t", "gap_cap": 5.0}
     plain = run(df, **kw)
     gapped = run(
         df.with_columns(
@@ -307,7 +307,7 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"kind": "window", "span_rows": 2}, "span_rows of at least 3"),
         ({"kind": "window", "span_rows": 20, "n_perm": 2}, "n_perm >= 20"),
         ({"kind": "window", "span_rows": 20, "scalar": True}, "scalar applies to"),
-        ({"halflife": 100.0}, "apply to corrchange only with scalar"),
+        ({"half_life": 100.0}, "apply to corrchange only with scalar"),
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
         # flags or always does, and the permutation knobs.
@@ -339,7 +339,7 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
     ("kind", "kw", "applies_to"),
     [
         ("monitor", {"crit": 2.0}, '"window" or "sequential"'),
-        ("monitor", {"reset": True}, '"window"'),
+        ("monitor", {"reset_on_flag": True}, '"window"'),
         ("monitor", {"n_perm": 50}, '"window"'),
         ("monitor", {"seed": 3}, '"window"'),
         ("monitor", {"norm": "linf"}, '"window"'),
@@ -351,7 +351,7 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
         ("window", {"monitor_rows": 50}, '"sequential"'),
         ("window", {"boundary_gamma": 0.2}, '"sequential"'),
         ("sequential", {"n_perm": 50}, '"window"'),
-        ("sequential", {"reset": True}, '"window"'),
+        ("sequential", {"reset_on_flag": True}, '"window"'),
         ("sequential", {"norm": "linf"}, '"window"'),
         ("sequential", {"seed": 1}, '"window"'),
     ],

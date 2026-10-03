@@ -8,13 +8,13 @@ Three layers:
 
 * **Oracle** -- a Python replay of ``sgd`` and ``pa`` with the projection
   written out (breakpoint search, same arithmetic order), held to the bank's
-  ``pred`` / ``n_eff`` / ``coef`` row by row, under nulls, zero and NaN
+  ``pred`` / ``weight_sum`` / ``coef`` row by row, under nulls, zero and NaN
   weights, skipped rows and an irregular clock; plus an independent
   bisection-and-KKT check of the projection itself.
 * **Large data** -- 200k rows: weights on the simplex recovered and feasible
   at every row; a sign constraint lands on the clamped truth; a sum alone is
   the hyperplane projection; a box clamps; the constraint holds in the
-  caller's units under ``scale_features``.
+  caller's units under ``standardize``.
 * **Edge cases** -- pinned slopes, infinite bounds, list vs scalar bounds,
   several targets, zero-weight and null-target rows, the input bound, chunk
   invariance, save/load, ``predict``, groups, the expression,
@@ -189,8 +189,8 @@ def sgd_replay(
     y,
     *,
     lr=0.05,
-    halflife=INF,
-    min_periods=10.0,
+    half_life=INF,
+    min_weight=10.0,
     lo=None,
     hi=None,
     s=None,
@@ -200,14 +200,14 @@ def sgd_replay(
     clip=1e3,
     t=None,
     w=None,
-    max_dclock=INF,
+    gap_cap=INF,
 ):
     """``sgd`` (squared loss, no scaler) with the projection, row by row."""
     n, k = X.shape
     lo = [-INF] * k if lo is None else list(lo)
     hi = [INF] * k if hi is None else list(hi)
     constrained = s is not None or any(v != -INF for v in lo) or any(v != INF for v in hi)
-    d_all, _ = reference.compute_dclock(t, None, n, max_dclock=max_dclock)
+    d_all, _ = reference.compute_dclock(t, None, n, gap_cap=gap_cap)
     beta = [0.0] * (k + 1)
     if constrained:
         beta[1:] = project(beta[1:], lo, hi, s)
@@ -225,19 +225,19 @@ def sgd_replay(
             continue
         # Skipped rows fold their capped deltas in, and the total is capped
         # too (review 2026-09-12, S3).
-        d = min(pending, max_dclock)
+        d = min(pending, gap_cap)
         pending = 0.0
-        lam = 1.0 if halflife == INF else math.exp2(-(d / halflife))
+        lam = 1.0 if half_life == INF else math.exp2(-(d / half_life))
         z = [1.0, *map(float, X[i])]
         if lam != 1.0:
             g2 = [v * lam for v in g2]
-        n_eff = w_sum
-        ready = n_eff >= min_periods
+        weight_sum = w_sum
+        ready = weight_sum >= min_weight
         eta = 0.0
         for zi, bi in zip(z, beta, strict=True):
             eta += zi * bi
         preds.append(eta if ready else None)
-        neffs.append(n_eff)
+        neffs.append(weight_sum)
         yi = y[i]
         learned = False
         if yi is not None and not math.isnan(yi) and wi > 0.0 and math.isfinite(yi):
@@ -250,7 +250,7 @@ def sgd_replay(
                 if schedule == "constant":
                     rate = lr
                 elif schedule == "inv_scaling":
-                    rate = lr / (1.0 + n_eff) ** power
+                    rate = lr / (1.0 + weight_sum) ** power
                 else:
                     g2[j] += g * g
                     rate = lr / (math.sqrt(g2[j]) + 1e-8)
@@ -270,20 +270,20 @@ def pa_replay(
     mode="pa1",
     c=1.0,
     eps=0.1,
-    halflife=INF,
-    min_periods=10.0,
+    half_life=INF,
+    min_weight=10.0,
     lo=None,
     hi=None,
     s=None,
     t=None,
     w=None,
-    max_dclock=INF,
+    gap_cap=INF,
 ):
     n, k = X.shape
     lo = [-INF] * k if lo is None else list(lo)
     hi = [INF] * k if hi is None else list(hi)
     constrained = s is not None or any(v != -INF for v in lo) or any(v != INF for v in hi)
-    d_all, _ = reference.compute_dclock(t, None, n, max_dclock=max_dclock)
+    d_all, _ = reference.compute_dclock(t, None, n, gap_cap=gap_cap)
     beta = [0.0] * (k + 1)
     if constrained:
         beta[1:] = project(beta[1:], lo, hi, s)
@@ -300,12 +300,12 @@ def pa_replay(
             continue
         # Skipped rows fold their capped deltas in, and the total is capped
         # too (review 2026-09-12, S3).
-        d = min(pending, max_dclock)
+        d = min(pending, gap_cap)
         pending = 0.0
-        lam = 1.0 if halflife == INF else math.exp2(-(d / halflife))
+        lam = 1.0 if half_life == INF else math.exp2(-(d / half_life))
         z = [1.0, *map(float, X[i])]
-        n_eff = w_sum
-        ready = n_eff >= min_periods
+        weight_sum = w_sum
+        ready = weight_sum >= min_weight
         sq = 0.0
         for zi in z:
             sq += zi * zi
@@ -313,7 +313,7 @@ def pa_replay(
         for zi, bi in zip(z, beta, strict=True):
             p += zi * bi
         preds.append(p if ready else None)
-        neffs.append(n_eff)
+        neffs.append(weight_sum)
         yi = y[i]
         if (
             yi is not None
@@ -357,11 +357,11 @@ def _frame(X, y, t=None, w=None, **cols):
 
 def _same_as(out: pl.DataFrame, preds, neffs, coefs, what: str) -> None:
     got_p = out["m"].struct.field("pred_y").to_list()
-    got_n = out["m"].struct.field("n_eff").to_list()
+    got_n = out["m"].struct.field("weight_sum").to_list()
     got_c = out["m"].struct.field("coef").to_list()
     assert len(got_p) == len(preds)
     for i in range(len(preds)):
-        assert got_n[i] == neffs[i], f"{what}: n_eff[{i}] {got_n[i]!r} vs {neffs[i]!r}"
+        assert got_n[i] == neffs[i], f"{what}: weight_sum[{i}] {got_n[i]!r} vs {neffs[i]!r}"
         if preds[i] is None:
             assert got_p[i] is None, f"{what}: pred[{i}] {got_p[i]!r} should be null"
         else:
@@ -423,14 +423,14 @@ class TestOracle:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            halflife=50.0,
-            min_periods=5.0,
+            half_life=50.0,
+            min_weight=5.0,
             learning_rate=0.05,
             schedule=schedule,
             l2=0.01,
             clock="t",
             weight="w",
-            max_dclock=3.0,
+            gap_cap=3.0,
             coef_every=1,
             **kw,
         )
@@ -439,8 +439,8 @@ class TestOracle:
             X,
             y,
             lr=0.05,
-            halflife=50.0,
-            min_periods=5.0,
+            half_life=50.0,
+            min_weight=5.0,
             lo=lo,
             hi=hi,
             s=s,
@@ -448,7 +448,7 @@ class TestOracle:
             l2=0.01,
             t=t,
             w=w,
-            max_dclock=3.0,
+            gap_cap=3.0,
         )
         _same_as(out, *want, what=f"sgd {which} {schedule}")
 
@@ -464,14 +464,14 @@ class TestOracle:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            halflife=50.0,
-            min_periods=5.0,
+            half_life=50.0,
+            min_weight=5.0,
             mode=mode,
             c=0.2,
             eps=0.05,
             clock="t",
             weight="w",
-            max_dclock=3.0,
+            gap_cap=3.0,
             coef_every=1,
             **kw,
         )
@@ -482,14 +482,14 @@ class TestOracle:
             mode=mode,
             c=0.2,
             eps=0.05,
-            halflife=50.0,
-            min_periods=5.0,
+            half_life=50.0,
+            min_weight=5.0,
             lo=lo,
             hi=hi,
             s=s,
             t=t,
             w=w,
-            max_dclock=3.0,
+            gap_cap=3.0,
         )
         _same_as(out, *want, what=f"pa {which} {mode}")
 
@@ -498,14 +498,14 @@ class TestOracle:
         # constrained path with infinite bounds is bit-identical to it.
         X, y, t, w = _stream(2000, 2, seed=5, truth=[0.7, -0.3])
         base = dict(
-            targets=["y"], features=["x0", "x1"], halflife=INF, min_periods=5.0, coef_every=1
+            targets=["y"], features=["x0", "x1"], half_life=INF, min_weight=5.0, coef_every=1
         )
         plain = po.ModelBank([po.spec.sgd("m", **base)]).fit_predict(_frame(X, y))
         explicit = po.ModelBank(
             [po.spec.sgd("m", coef_min=-INF, coef_max=INF, **base)]
         ).fit_predict(_frame(X, y))
         assert plain.equals(explicit, null_equal=True)
-        _same_as(plain, *sgd_replay(X, y, min_periods=5.0, lr=0.01), what="plain sgd")
+        _same_as(plain, *sgd_replay(X, y, min_weight=5.0, lr=0.01), what="plain sgd")
 
 
 # --------------------------------------------------------------- large data
@@ -527,8 +527,8 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=[f"x{i}" for i in range(k)],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.01,
             coef_min=0.0,
             coef_sum=1.0,
@@ -559,8 +559,8 @@ class TestLargeData:
         base = dict(
             targets=["y"],
             features=["x0", "x1", "x2", "x3"],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.01,
             coef_every=1,
         )
@@ -589,8 +589,8 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.01,
             coef_sum=1.0,
             coef_every=1,
@@ -610,8 +610,8 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.01,
             coef_min=-0.25,
             coef_max=0.25,
@@ -636,8 +636,8 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=[f"x{i}" for i in range(k)],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.05 if schedule == "adagrad" else 0.5,
             schedule=schedule,
             coef_min=0.0,
@@ -659,8 +659,8 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=[f"x{i}" for i in range(k)],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             mode="pa1",
             c=0.05,
             eps=0.05,
@@ -684,10 +684,10 @@ class TestLargeData:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             learning_rate=0.01,
-            scale_features=True,
+            standardize=True,
             coef_min=0.0,
             coef_max=100.0,
             coef_sum=100.0,
@@ -709,14 +709,14 @@ class TestLargeData:
 
 def _base(**kw):
     d = dict(
-        targets=["y"], features=["x0", "x1", "x2"], halflife=INF, min_periods=5.0, coef_every=1
+        targets=["y"], features=["x0", "x1", "x2"], half_life=INF, min_weight=5.0, coef_every=1
     )
     d.update(kw)
     return d
 
 
 def _clocked(**kw):
-    d = dict(clock="t", max_dclock=3.0, weight="w", halflife=40.0)
+    d = dict(clock="t", gap_cap=3.0, weight="w", half_life=40.0)
     d.update(kw)
     return _base(**d)
 
@@ -795,7 +795,7 @@ class TestEdgeCases:
         # A zero-weight first row: the clock advances, nothing is learned,
         # and the projected start is what predict sees.
         fresh = po.ModelBank(
-            [po.spec.sgd("m", weight="w", coef_min=0.0, coef_sum=1.0, **_base(min_periods=0.0))]
+            [po.spec.sgd("m", weight="w", coef_min=0.0, coef_sum=1.0, **_base(min_weight=0.0))]
         )
         out = fresh.fit_predict(
             pl.DataFrame({"x0": [1.0], "x1": [2.0], "x2": [3.0], "y": [1.0], "w": [0.0]})
@@ -808,9 +808,9 @@ class TestEdgeCases:
         X[100] = [1e101, 0.0, 0.0]
         spec = po.spec.sgd("m", coef_min=0.0, coef_sum=1.0, **_base())
         out = po.ModelBank([spec]).fit_predict(_frame(X, y))
-        assert out["m"].struct.field("n_eff")[100] is None
+        assert out["m"].struct.field("weight_sum")[100] is None
         assert out["m"].struct.field("coef")[100] is None
-        assert out["m"].struct.field("n_eff")[101] == 100.0
+        assert out["m"].struct.field("weight_sum")[101] == 100.0
 
     def test_chunk_invariance(self):
         X, y, t, w = _stream(1000, 3, seed=15)
@@ -891,10 +891,10 @@ class TestEdgeCases:
                     'features = ["x0", "x1", "x2"]',
                     'targets = ["y"]',
                     'clock = "t"',
-                    "max_dclock = 3.0",
+                    "gap_cap = 3.0",
                     'weight = "w"',
-                    "halflife = 40.0",
-                    "min_periods = 5.0",
+                    "half_life = 40.0",
+                    "min_weight = 5.0",
                     "coef_every = 1",
                     "[specs.model]",
                     'type = "sgd"',
@@ -906,7 +906,7 @@ class TestEdgeCases:
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         spec = po.spec.sgd(
-            "m", coef_min=[0.0, 0.0, -0.1], coef_max=INF, coef_sum=1.0, **_clocked(halflife=40.0)
+            "m", coef_min=[0.0, 0.0, -0.1], coef_max=INF, coef_sum=1.0, **_clocked(half_life=40.0)
         )
         want = po.ModelBank([spec]).fit_predict(df)
         assert pl.read_parquet(dst).equals(want, null_equal=True)
@@ -917,7 +917,7 @@ class TestEdgeCases:
         assert idx["field"].to_list() == [
             "pred_y",
             "resid_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",

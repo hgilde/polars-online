@@ -7,8 +7,8 @@
 use online_polars::{Bank, Spec, Stream};
 use polars::prelude::*;
 
-/// Every diagnostic there is, on a two-halflife grid over two groups, so
-/// every buffer of the row is exercised: `sigma`, `resid_z`, the conformal
+/// Every diagnostic there is, on a two-half-life grid over two groups, so
+/// every buffer of the row is exercised: `sigma`, `zscore`, the conformal
 /// interval, the metrics, a residual quantile, autocorrelation, drift,
 /// `n_eff`, `coef`, and the selected and averaged predictions `assemble`
 /// derives from the row itself.
@@ -20,13 +20,13 @@ fn rich_spec() -> Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": [10.0, 20.0],
-            "max_dclock": 30.0,
+            "half_life": [10.0, 20.0],
+            "gap_cap": 30.0,
             "weight": "w",
             "group": "g",
-            "min_periods": 5.0,
+            "min_weight": 5.0,
             "emit_sigma": true,
-            "emit_resid_z": true,
+            "emit_zscore": true,
             "emit_selected": true,
             "emit_averaged": true,
             "emit_metrics": true,
@@ -48,7 +48,7 @@ fn other_specs() -> Vec<Spec> {
         "name": "l",
         "model": {"type": "lasso", "lasso_path": [0.1, 0.0]},
         "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
-        "halflife": 20.0, "max_dclock": 30.0, "group": "g"
+        "half_life": 20.0, "gap_cap": 30.0, "group": "g"
     }"#;
     // Ungrouped over the two interleaved groups, `c` reads the frame's one
     // clock as one stream.
@@ -56,7 +56,7 @@ fn other_specs() -> Vec<Spec> {
         "name": "c",
         "model": {"type": "ew_cov"},
         "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
-        "halflife": 20.0, "max_dclock": 30.0
+        "half_life": 20.0, "gap_cap": 30.0
     }"#;
     vec![
         serde_json::from_str(lasso).unwrap(),
@@ -162,7 +162,7 @@ fn last_row_is_the_output_s_last_learned_row_per_group() {
     let out = feed(&mut bank, &df, 7);
 
     // The grouped specs: the frame's last learned row of each group, whole.
-    for (si, name, n_eff) in [(0, "m", "n_eff@h10"), (1, "l", "n_eff")] {
+    for (si, name, n_eff) in [(0, "m", "weight_sum@h10"), (1, "l", "weight_sum")] {
         let rows = last_rows(&bank, si, name);
         assert_eq!(rows.height(), 2, "{name}: one row per group");
         for g in ["g0", "g1"] {
@@ -182,7 +182,7 @@ fn last_row_is_the_output_s_last_learned_row_per_group() {
                 .unwrap()
                 .struct_()
                 .unwrap()
-                .field_by_name("n_eff")
+                .field_by_name("weight_sum")
                 .unwrap()
                 .get(i)
                 .unwrap()
@@ -297,7 +297,7 @@ fn a_chunk_that_ends_in_skipped_rows_keeps_the_row_before_them() {
     let df = make_df(200);
     let mut bank = Bank::new(vec![rich_spec()]).unwrap();
     let out = feed(&mut bank, &df, 1);
-    let i = last_learned(&df, &out, "m", "n_eff@h10", "g0");
+    let i = last_learned(&df, &out, "m", "weight_sum@h10", "g0");
     // Skip g0's next four rows: null `x0` skips a row; the clock still moves.
     let tail = df
         .slice(200 - 40, 40)
@@ -322,7 +322,7 @@ fn a_chunk_that_ends_in_skipped_rows_keeps_the_row_before_them() {
         "g0 kept its row",
     );
     // g1 did: its row is the second frame's last learned one.
-    let j = last_learned(&tail, &out2, "m", "n_eff@h10", "g1");
+    let j = last_learned(&tail, &out2, "m", "weight_sum@h10", "g1");
     let g1 = rows
         .filter(&rows.column("group").unwrap().str().unwrap().equal("g1"))
         .unwrap();

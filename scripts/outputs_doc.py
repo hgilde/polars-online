@@ -53,7 +53,7 @@ MEANING: dict[str, str] = {
     "pred_<t>": "the prediction for `<t>`, computed from the state **before** this row",
     "pred_<f>": "the predictive mean for feature `<f>` under the fitted model",
     "resid_<t>": "`y - pred` for `<t>`; null where the target is null",
-    "n_eff": f"accumulated weight before this row's update and before its own decay {SHARED}",
+    "weight_sum": f"accumulated weight before this row's update and before its own decay {SHARED}",
     "coef": f"the numbers behind the fit as one list, on the rows `coef_every` fills {SHARED}",
     "settled_frac": (
         f"how far the decay window had filled before this row; null where nothing decays {SHARED}"
@@ -65,7 +65,7 @@ MEANING: dict[str, str] = {
         "on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid "
         "out like `coef`; the intercept is not a share (null)"
     ),
-    "lam_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
+    "penalty_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
     "mean_<f>": "EW mean of `<f>`",
     "var_<f>": "EW variance of `<f>`",
     "std_<f>": "EW standard deviation of `<f>`",
@@ -80,7 +80,7 @@ MEANING: dict[str, str] = {
     ),
     "dist": "distance from the row to the centre `cluster` was read from",
     "dist2": "distance to the second-nearest centre, so `dist2 - dist` is the margin",
-    "micro": "id of the micro-cluster the row joins, or opens when none can take it",
+    "micro_id": "id of the micro-cluster the row joins, or opens when none can take it",
     "outlier": "true when no established micro-cluster takes the row",
     "n_clusters": "macro-clusters currently linked",
     "n_micro": "live micro-clusters",
@@ -95,7 +95,6 @@ MEANING: dict[str, str] = {
     "n_neg_<t>": "learned rows whose `<t>` was negative",
     "u": "the equicorrelation this row alone implies (Lemma 2.3, from the standardized row)",
     "rho": "the block's equicorrelation level, the smoothed value `u` is folded into",
-    "loglik": "log-likelihood of the row under the fitted model",
     "stat": (
         "the test statistic for the span, the pair of windows or the monitored row; null "
         "except on a row one is due"
@@ -110,20 +109,23 @@ MEANING: dict[str, str] = {
     "p_change": "`P(run length <= 1)`: the mass sitting on a change at or just before this row",
     "run_mode": "most likely run length *before* this row, so `t - run_mode` dates the regime",
     "run_mean": "posterior mean run length",
-    "logscore": "log predictive density of the row under the run-length mixture",
-    "p_<j>": "posterior probability of state `<j>` before this row",
-    "p1_<j>": "one-step-ahead probability of state `<j>`",
-    "state": "the most likely state for this row: the one with the largest `p1_<j>`",
+    "loglik": (
+        "log predictive density of the row under the fitted model (`bocpd`: under the "
+        "run-length mixture)"
+    ),
+    "filtered_<j>": "posterior probability of state `<j>` before this row",
+    "predicted_<j>": "one-step-ahead probability of state `<j>`",
+    "state": "the most likely state for this row: the one with the largest `predicted_<j>`",
 }
 
 #: What a model writes when it writes nothing per row.
 STATE_ONLY = {
     "marginal": (
-        "`marginal` writes nothing per row but `n_eff`. Its product is the state, and "
+        "`marginal` writes nothing per row but `weight_sum`. Its product is the state, and "
         "`ModelBank.marginal()` reads the pairs from it."
     ),
     "rcov": (
-        "`rcov` writes nothing per row but `n_eff`. Its product is the closed block, in the "
+        "`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the "
         "row `ModelBank.closed_groups()` gives when a group closes (`group_close`)."
     ),
 }
@@ -148,9 +150,9 @@ NAME_PARTS: list[tuple[str, str, str]] = [
     ("`__<set>_r<ridge>`", "one of the `feature_sets`, with one value of a `ridge` grid", ""),
     ("`__l<lambda>`", "one value of `lasso_path`", "`__l0.1`, `__l0`"),
     (
-        "`@h<halflife>`",
-        "one halflife of a grid, at the end of every field's name: `n_eff@h500`, or "
-        "`n_eff@h10m` for a duration",
+        "`@h<half_life>`",
+        "one half_life of a grid, at the end of every field's name: `weight_sum@h500`, or "
+        "`weight_sum@h10m` for a duration",
         "",
     ),
 ]
@@ -159,20 +161,20 @@ NAME_PARTS: list[tuple[str, str, str]] = [
 #: where it is null.
 SHARED_FIELDS: list[tuple[str, str, str]] = [
     (
-        "`n_eff`",
+        "`weight_sum`",
         "the accumulated weight before this row's update and before its own decay",
         "",
     ),
     (
         "`settled_frac`",
         "how far the decay window had filled toward steady state before this row: "
-        "`1 - 2^(-T/halflife)`, with `T` the decay time seen so far, so 0.5 at one halflife "
+        "`1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half_life "
         "and 0.75 at two. `min_settled_frac` gates on it",
         "where nothing decays",
     ),
     (
         "`withheld_reason`",
-        "why the row's predictions are null: `below_min_settled_frac`, `below_min_periods` "
+        "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight` "
         "or `above_max_error_inflation`. That order is their precedence, so the first that "
         "applies is the one named",
         "where nothing was withheld",
@@ -258,16 +260,25 @@ def stem(field: str, targets: tuple[str, ...], features: tuple[str, ...]) -> str
             if base == f"{pre}_{f}":
                 return f"{pre}_<f>"
     for t in targets:
-        for pre in ("pred", "resid", "lam_selected", "log_e_pos", "log_e_neg", "n_pos", "n_neg"):
+        for pre in (
+            "pred",
+            "resid",
+            "penalty_selected",
+            "log_e_pos",
+            "log_e_neg",
+            "n_pos",
+            "n_neg",
+        ):
             if base == f"{pre}_{t}":
                 return f"{pre}_<t>"
     for pre in ("corr", "cov", "partial_corr"):
         if base.startswith(pre + "_"):
             return f"{pre}_<a>_<b>"
-    if base.startswith("p1_"):
-        return "p1_<j>"
+    for pre in ("filtered_", "predicted_"):
+        if base.startswith(pre) and base[len(pre) :].isdigit():
+            return f"{pre}<j>"
     if base.startswith("p_") and base != "p_change":
-        return "p_<j>" if base[2:].isdigit() else "p_<label>"
+        return "p_<label>"
     return base
 
 

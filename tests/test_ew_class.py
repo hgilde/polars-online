@@ -9,7 +9,7 @@ check:
 - **The oracle.** ``Oracle`` below replays the model operation for
   operation: one weighted Welford accumulator per class, the same decay of
   the others, the same prior scale, so the class weights, means and
-  ``n_eff`` are held **bit for bit** across every covariance shape, null
+  ``weight_sum`` are held **bit for bit** across every covariance shape, null
   labels, null features, weights and an irregular clock. The posteriors go
   through numpy's ``slogdet`` / ``solve`` instead of the core's Cholesky, so
   they are held to a relative ``1e-9``; the class is held exactly.
@@ -22,7 +22,7 @@ check:
   and every place the model touches the bank: warmup, an unseen class, null
   labels, null features, zero weights, integer and boolean label columns,
   an undeclared label, chunk invariance, save/load, ``predict``, groups, the
-  halflife grid, ``coef`` and its index, the expression path, the lazy
+  half-life grid, ``coef`` and its index, the expression path, the lazy
   path, the CLI, and the refusals.
 """
 
@@ -85,8 +85,8 @@ def spec(features=("x0", "x1"), classes=("a", "b", "c"), **kw):
         label="y",
         classes=list(classes),
         precision_prior=1.0,
-        halflife=200.0,
-        min_periods=5.0,
+        half_life=200.0,
+        min_weight=5.0,
     )
     d.update(kw)
     return po.spec.ew_class("m", **d)
@@ -107,11 +107,11 @@ class Oracle:
     other classes decayed by the same factor. The posteriors are the same
     equations through numpy, on deviations from the pairs."""
 
-    def __init__(self, k, n_classes, halflife, min_periods, covariance, prior):
+    def __init__(self, k, n_classes, half_life, min_weight, covariance, prior):
         self.k = k
         self.nc = n_classes
-        self.halflife = halflife
-        self.min_periods = min_periods
+        self.half_life = half_life
+        self.min_weight = min_weight
         self.covariance = covariance
         self.prior = prior
         self.n = [0.0] * n_classes
@@ -121,12 +121,12 @@ class Oracle:
         self.lo = [[0.0] * k for _ in range(n_classes)]
         self.c = [[[0.0] * k for _ in range(k)] for _ in range(n_classes)]
         self.ps = [1.0] * n_classes
-        self.n_eff = 0.0
+        self.weight_sum = 0.0
 
     def factor(self, d):
-        if math.isinf(self.halflife):
+        if math.isinf(self.half_life):
             return 1.0
-        return math.exp2(-(d / self.halflife))
+        return math.exp2(-(d / self.half_life))
 
     def _update(self, cls, x, lam, w):
         w_new = lam * self.n[cls] + w
@@ -148,7 +148,7 @@ class Oracle:
         self.n[cls] = w_new
 
     def score(self, x):
-        if self.n_eff < self.min_periods:
+        if self.weight_sum < self.min_weight:
             return None
         total = sum(self.n)
         if total <= 0.0:
@@ -186,9 +186,9 @@ class Oracle:
         return best, (z / z.sum()).tolist()
 
     def step(self, x, label, d, w=1.0):
-        """`(class, posteriors, n_eff)` for the row, then learn it."""
+        """`(class, posteriors, weight_sum)` for the row, then learn it."""
         lam = self.factor(d)
-        n_before = self.n_eff
+        n_before = self.weight_sum
         out = self.score(x)
         learn = w > 0.0
         for c in range(self.nc):
@@ -196,18 +196,18 @@ class Oracle:
                 self._update(c, x, lam, w)
             else:
                 self.n[c] *= lam
-        self.n_eff = lam * self.n_eff + (w if learn else 0.0)
+        self.weight_sum = lam * self.weight_sum + (w if learn else 0.0)
         return out, n_before
 
 
-def replay(X, lab, *, halflife, min_periods, covariance, prior, t=None, w=None, max_dclock=np.inf):
+def replay(X, lab, *, half_life, min_weight, covariance, prior, t=None, w=None, gap_cap=np.inf):
     """The oracle over a stream: rows with a non-finite feature or weight are
     skipped (their clock delta folds into the next accepted row); a label of
     `None` is scored, not learned from."""
     n, k = X.shape
     nc = int(max(v for v in lab if v is not None)) + 1 if any(v is not None for v in lab) else 1
-    o = Oracle(k, nc, halflife, min_periods, covariance, prior)
-    d, _ = reference.compute_dclock(t, None, n, max_dclock=max_dclock)
+    o = Oracle(k, nc, half_life, min_weight, covariance, prior)
+    d, _ = reference.compute_dclock(t, None, n, gap_cap=gap_cap)
     rows = []
     pending = 0.0
     for i in range(n):
@@ -217,22 +217,22 @@ def replay(X, lab, *, halflife, min_periods, covariance, prior, t=None, w=None, 
             rows.append(None)
             continue
         # The folded total is capped too (review 2026-09-12, S3).
-        out, n_eff = o.step(X[i].tolist(), lab[i], min(pending + d[i], max_dclock), wi)
+        out, weight_sum = o.step(X[i].tolist(), lab[i], min(pending + d[i], gap_cap), wi)
         pending = 0.0
-        rows.append((out, n_eff))
+        rows.append((out, weight_sum))
     return rows, o
 
 
 def _same_as_oracle(got: pl.DataFrame, rows, classes, what: str) -> None:
     cls = got["class"].to_list()
     ps = [got[f"p_{c}"].to_list() for c in classes]
-    n_eff = got["n_eff"].to_list()
+    weight_sum = got["weight_sum"].to_list()
     for i, r in enumerate(rows):
         if r is None:
-            assert cls[i] is None and n_eff[i] is None, f"{what}: row {i} not skipped"
+            assert cls[i] is None and weight_sum[i] is None, f"{what}: row {i} not skipped"
             continue
         out, want_n = r
-        assert n_eff[i] == want_n, f"{what}: n_eff[{i}] {n_eff[i]!r} vs {want_n!r}"
+        assert weight_sum[i] == want_n, f"{what}: weight_sum[{i}] {weight_sum[i]!r} vs {want_n!r}"
         if out is None:
             assert cls[i] is None, f"{what}: row {i} should be null"
             assert all(p[i] is None for p in ps), f"{what}: row {i} posteriors should be null"
@@ -263,11 +263,11 @@ class TestOracle:
     def test_every_shape_against_the_replay(self, covariance):
         X, lab = gaussians(1500, seed=1, **THREE)
         df = frame(X, lab)
-        params = dict(halflife=150.0, min_periods=3.0, precision_prior=0.7)
+        params = dict(half_life=150.0, min_weight=3.0, precision_prior=0.7)
         bank = po.ModelBank([spec(covariance=covariance, **params)])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
-            X, lab.tolist(), covariance=covariance, prior=0.7, halflife=150.0, min_periods=3.0
+            X, lab.tolist(), covariance=covariance, prior=0.7, half_life=150.0, min_weight=3.0
         )
         _same_as_oracle(got, rows, ["a", "b", "c"], covariance)
         _same_means(bank, o, covariance)
@@ -282,7 +282,7 @@ class TestOracle:
         rng = np.random.default_rng(3)
         X[rng.choice(900, 40, replace=False), 0] = np.nan
         t = np.cumsum(rng.integers(1, 4, 900).astype(float))
-        t[300:] += 50.0  # one long gap, capped by max_dclock
+        t[300:] += 50.0  # one long gap, capped by gap_cap
         w = rng.uniform(0.2, 2.0, 900)
         w[::17] = 0.0  # zero-weight rows: scored, clock advanced, not learned
         w[::23] = np.nan  # null weight: skipped
@@ -290,8 +290,8 @@ class TestOracle:
         df = frame(X, lab, t=t, w=w).with_columns(
             pl.Series("y", [None if v is None else str(NAMES[v]) for v in y], pl.String)
         )
-        params = dict(halflife=60.0, min_periods=2.0, precision_prior=0.3)
-        s = spec(clock="t", max_dclock=20.0, weight="w", covariance=covariance, **params)
+        params = dict(half_life=60.0, min_weight=2.0, precision_prior=0.3)
+        s = spec(clock="t", gap_cap=20.0, weight="w", covariance=covariance, **params)
         bank = po.ModelBank([s])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
@@ -299,11 +299,11 @@ class TestOracle:
             y,
             covariance=covariance,
             prior=0.3,
-            halflife=60.0,
-            min_periods=2.0,
+            half_life=60.0,
+            min_weight=2.0,
             t=t,
             w=w,
-            max_dclock=20.0,
+            gap_cap=20.0,
         )
         _same_as_oracle(got, rows, ["a", "b", "c"], covariance)
         _same_means(bank, o, covariance)
@@ -314,7 +314,7 @@ class TestOracle:
     def test_predict_matches_the_oracle_without_learning(self):
         X, lab = gaussians(800, seed=4, **THREE)
         df = frame(X, lab)
-        params = dict(halflife=100.0, min_periods=3.0, precision_prior=1.0)
+        params = dict(half_life=100.0, min_weight=3.0, precision_prior=1.0)
         bank = po.ModelBank([spec(**params)])
         bank.fit_predict(df.slice(0, 500))
         _, o = replay(
@@ -322,8 +322,8 @@ class TestOracle:
             lab[:500].tolist(),
             covariance="full",
             prior=1.0,
-            halflife=100.0,
-            min_periods=3.0,
+            half_life=100.0,
+            min_weight=3.0,
         )
         probe = df.slice(500, 300)
         # With the label column, and without it: predict reads neither.
@@ -333,11 +333,11 @@ class TestOracle:
                 best, post = o.score(x)
                 assert got["class"][i] == "abc"[best]
                 assert math.isclose(got["p_a"][i], post[0], rel_tol=1e-9)
-                assert got["n_eff"][i] == o.n_eff
+                assert got["weight_sum"][i] == o.weight_sum
         # ... and predicting changed nothing.
         after = unnested(bank.fit_predict(probe))
         rows, _ = replay(
-            X, lab.tolist(), covariance="full", prior=1.0, halflife=100.0, min_periods=3.0
+            X, lab.tolist(), covariance="full", prior=1.0, half_life=100.0, min_weight=3.0
         )
         _same_as_oracle(after, rows[500:], ["a", "b", "c"], "after predict")
 
@@ -365,8 +365,8 @@ class TestLargeData:
         df = frame(X, lab)
         s = spec(
             features=[f"x{i}" for i in range(6)],
-            halflife=20_000.0,
-            min_periods=50.0,
+            half_life=20_000.0,
+            min_weight=50.0,
             precision_prior=0.1,
         )
         got = unnested(po.ModelBank([s]).fit_predict(df))
@@ -394,7 +394,7 @@ class TestLargeData:
         df = frame(X, lab)
         out = {}
         for shape in ("full", "shared"):
-            s = spec(halflife=5000.0, min_periods=20.0, covariance=shape, precision_prior=0.1)
+            s = spec(half_life=5000.0, min_weight=20.0, covariance=shape, precision_prior=0.1)
             out[shape] = np.array(
                 unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[30_000:]
             )
@@ -416,7 +416,7 @@ class TestLargeData:
         assert ceiling > 0.8
         acc = {}
         for shape in SHAPES:
-            s = spec(classes=("a", "b"), halflife=5000.0, min_periods=20.0, covariance=shape)
+            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance=shape)
             got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
         assert acc["full"] >= ceiling - 0.01 and acc["diagonal"] >= ceiling - 0.01, acc
@@ -436,7 +436,7 @@ class TestLargeData:
         assert ceiling > 0.85
         acc = {}
         for shape in ("full", "diagonal"):
-            s = spec(classes=("a", "b"), halflife=5000.0, min_periods=20.0, covariance=shape)
+            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance=shape)
             got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
         assert acc["full"] >= ceiling - 0.01, acc
@@ -448,7 +448,7 @@ class TestLargeData:
         lab2 = lab.copy()
         lab2[15_000:] = np.where(lab[15_000:] == 0, 1, np.where(lab[15_000:] == 1, 0, 2))
         df = frame(X, lab2)
-        s = spec(halflife=500.0, min_periods=20.0)
+        s = spec(half_life=500.0, min_weight=20.0)
         got = np.array(unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list())
         truth = np.array(["abc"[v] for v in lab2])
         before = np.mean(got[10_000:15_000] == truth[10_000:15_000])
@@ -465,15 +465,15 @@ class TestEdgeCases:
     def test_outputs_are_null_until_min_periods_and_until_a_label(self):
         X, lab = gaussians(60, seed=10, **THREE)
         df = frame(X, lab)
-        got = unnested(po.ModelBank([spec(min_periods=5.0)]).fit_predict(df))
-        # n_eff before rows 0..5 is 0, 1, 1+lam, ... < 5 for the first six rows.
+        got = unnested(po.ModelBank([spec(min_weight=5.0)]).fit_predict(df))
+        # weight_sum before rows 0..5 is 0, 1, 1+lam, ... < 5 for the first six rows.
         assert got["class"][:6].null_count() == 6 and got["class"][6] is not None
-        assert got["n_eff"][0] == 0.0
+        assert got["weight_sum"][0] == 0.0
         # No label at all: scored rows stay null until the first labelled one.
         y = [None] * 20 + [str(NAMES[v]) for v in lab[20:]]
         df2 = df.with_columns(pl.Series("y", y, pl.String))
-        got2 = unnested(po.ModelBank([spec(min_periods=0.0)]).fit_predict(df2))
-        assert got2["class"][:21].null_count() == 21 and got2["n_eff"][20] > 19.0
+        got2 = unnested(po.ModelBank([spec(min_weight=0.0)]).fit_predict(df2))
+        assert got2["class"][:21].null_count() == 21 and got2["weight_sum"][20] > 19.0
         assert got2["class"][21] == str(NAMES[lab[20]])
 
     def test_an_unseen_class_has_posterior_zero_and_null_means(self):
@@ -497,16 +497,16 @@ class TestEdgeCases:
         X, lab = gaussians(400, seed=12, **THREE)
         full = frame(X, lab)
         holes = frame(X, lab, null_every=5)
-        s = spec(halflife=float("inf"), min_periods=1.0)
+        s = spec(half_life=float("inf"), min_weight=1.0)
         a = po.ModelBank([s])
         b = po.ModelBank([s])
         ga = unnested(a.fit_predict(full))
         gb = unnested(b.fit_predict(holes))
         # Every row is scored in both (b's row 1 excepted: row 0 carried no
-        # label, so no class had been seen), and n_eff counts every row in both.
+        # label, so no class had been seen), and weight_sum counts every row in both.
         assert ga["class"].null_count() == 1 and gb["class"].null_count() == 2
         assert gb["class"][1] is None and gb["class"][2] is not None
-        assert gb["n_eff"].to_list() == ga["n_eff"].to_list()
+        assert gb["weight_sum"].to_list() == ga["weight_sum"].to_list()
         # But b's class means are the means over the labelled rows only.
         ya = np.array([str(NAMES[v]) for v in lab])
         keep = np.arange(400) % 5 != 0
@@ -557,11 +557,15 @@ class TestEdgeCases:
         X, lab = gaussians(200, seed=15, **THREE)
         X[150, 1] = np.nan
         df = frame(X, lab)
-        got = unnested(po.ModelBank([spec(halflife=20.0, min_periods=1.0)]).fit_predict(df))
-        assert got["class"][150] is None and got["n_eff"][150] is None
+        got = unnested(po.ModelBank([spec(half_life=20.0, min_weight=1.0)]).fit_predict(df))
+        assert got["class"][150] is None and got["weight_sum"][150] is None
         lam = 0.5 ** (1 / 20)
-        assert got["n_eff"][151] == pytest.approx(got["n_eff"][149] * lam + 1.0, rel=1e-12)
-        assert got["n_eff"][152] == pytest.approx(got["n_eff"][151] * lam**2 + 1.0, rel=1e-12)
+        assert got["weight_sum"][151] == pytest.approx(
+            got["weight_sum"][149] * lam + 1.0, rel=1e-12
+        )
+        assert got["weight_sum"][152] == pytest.approx(
+            got["weight_sum"][151] * lam**2 + 1.0, rel=1e-12
+        )
 
     def test_a_zero_weight_first_row_is_legal(self):
         X, lab = gaussians(100, seed=16, **THREE)
@@ -569,9 +573,9 @@ class TestEdgeCases:
         w[0] = 0.0
         w[7] = 0.0
         df = frame(X, lab, w=w)
-        got = unnested(po.ModelBank([spec(weight="w", min_periods=1.0)]).fit_predict(df))
-        assert got["n_eff"][0] == 0.0 and got["n_eff"][1] == 0.0
-        assert got["class"][1] is None  # n_eff still below min_periods
+        got = unnested(po.ModelBank([spec(weight="w", min_weight=1.0)]).fit_predict(df))
+        assert got["weight_sum"][0] == 0.0 and got["weight_sum"][1] == 0.0
+        assert got["class"][1] is None  # weight_sum still below min_weight
         assert got["p_a"].drop_nulls().is_finite().all()
         assert got["class"][-1] is not None
 
@@ -580,10 +584,10 @@ class TestEdgeCases:
         X[100] = [1e100, -1e100]  # at the bound: accepted, and it moves a mean
         X[200] = [1e101, 1e101]  # beyond it: skipped like a null
         df = frame(X, lab)
-        bank = po.ModelBank([spec(min_periods=1.0)])
+        bank = po.ModelBank([spec(min_weight=1.0)])
         got = unnested(bank.fit_predict(df))
-        assert got["class"][100] is not None and got["n_eff"][101] > got["n_eff"][99]
-        assert got["class"][200] is None and got["n_eff"][200] is None
+        assert got["class"][100] is not None and got["weight_sum"][101] > got["weight_sum"][99]
+        assert got["class"][200] is None and got["weight_sum"][200] is None
         for c in "abc":
             assert got[f"p_{c}"].drop_nulls().is_finite().all()
         assert got["class"][-1] is not None
@@ -592,7 +596,7 @@ class TestEdgeCases:
     def test_chunk_invariance(self):
         X, lab = gaussians(700, seed=18, **THREE)
         df = frame(X, lab, null_every=9)
-        s = spec(min_periods=1.0, covariance="shared")
+        s = spec(min_weight=1.0, covariance="shared")
         one = unnested(po.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
             bank = po.ModelBank([s])
@@ -608,7 +612,7 @@ class TestEdgeCases:
     def test_save_load(self, tmp_path):
         X, lab = gaussians(600, seed=19, **THREE)
         df = frame(X, lab)
-        s = spec(min_periods=1.0, covariance="diagonal")
+        s = spec(min_weight=1.0, covariance="diagonal")
         for cut in (3, 100, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -628,13 +632,13 @@ class TestEdgeCases:
 
     def test_halflife_grid(self):
         X, lab = gaussians(400, seed=21, **THREE)
-        s = spec(classes=("a", "b", "c"), halflife=[50.0, 500.0])
+        s = spec(classes=("a", "b", "c"), half_life=[50.0, 500.0])
         assert po.spec.output_fields(s) == [
             "class@h50",
             "p_a@h50",
             "p_b@h50",
             "p_c@h50",
-            "n_eff@h50",
+            "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "coef@h50",
@@ -642,14 +646,14 @@ class TestEdgeCases:
             "p_a@h500",
             "p_b@h500",
             "p_c@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X, lab)))
         assert out["class@h50"].dtype == pl.String
-        assert out["n_eff@h50"][-1] < out["n_eff@h500"][-1]
+        assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
         assert out["p_a@h50"].to_list() != out["p_a@h500"].to_list()
 
     def test_coef_is_the_class_means_on_the_cadence(self):
@@ -661,7 +665,7 @@ class TestEdgeCases:
         assert len(coef[299]) == 6
 
     def test_coef_index_and_unnest_name_the_means(self):
-        s = spec(features=("u", "v", "w"), classes=("neg", "pos"), halflife=[10.0, 20.0])
+        s = spec(features=("u", "v", "w"), classes=("neg", "pos"), half_life=[10.0, 20.0])
         cf = po.spec.coef_fields(s)
         assert cf["name"].to_list()[:6] == [
             "coef_neg_u@h10",
@@ -678,7 +682,7 @@ class TestEdgeCases:
         df = pl.DataFrame({"u": X[:, 0], "v": X[:, 1], "w": X[:, 2]}).with_columns(
             pl.Series("y", [("neg", "pos")[v] for v in lab])
         )
-        s1 = spec(features=("u", "v", "w"), classes=("neg", "pos"), halflife=float("inf"))
+        s1 = spec(features=("u", "v", "w"), classes=("neg", "pos"), half_life=float("inf"))
         bank = po.ModelBank([s1])
         flat = bank.fit_predict(df).online.unnest([s1])
         names = po.spec.coef_fields(s1)["name"].to_list()
@@ -693,7 +697,7 @@ class TestEdgeCases:
 
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
-        tail = ["n_eff", "settled_frac", "withheld_reason", "coef"]
+        tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["field"].to_list() == ["class", "p_a", "p_b", "p_c", *tail]
         assert idx["kind"].to_list() == ["class", "p", "p", "p", *tail]
         assert idx["dtype"].to_list() == [
@@ -726,7 +730,7 @@ class TestRefusals:
         "flag",
         [
             {"emit_sigma": True},
-            {"emit_resid_z": True},
+            {"emit_zscore": True},
             {"emit_metrics": True},
             {"resid_quantiles": [0.5]},
             {"conformal": 0.9},
@@ -764,7 +768,7 @@ class TestRefusals:
         def build(**kw):
             d = dict(features=["x0"], label="y", classes=["a", "b"], precision_prior=1.0)
             d.update(kw)
-            return po.spec.ew_class("m", halflife=10.0, **d)
+            return po.spec.ew_class("m", half_life=10.0, **d)
 
         with pytest.raises(TypeError, match="classes must be a list of strs, got str 'ab'"):
             build(classes="ab")
@@ -788,7 +792,7 @@ class TestRefusals:
                 targets=["y"],
                 classes=["a", "b"],
                 precision_prior=1.0,
-                halflife=10.0,
+                half_life=10.0,
             )
         assert spec()["targets"] == ["y"]
 
@@ -815,8 +819,8 @@ class TestRefusals:
                     'name = "m"',
                     'features = ["x0", "x1"]',
                     'targets = ["y"]',
-                    "halflife = 200.0",
-                    "min_periods = 5.0",
+                    "half_life = 200.0",
+                    "min_weight = 5.0",
                     "[specs.model]",
                     'type = "ew_class"',
                     'classes = ["a", "b", "c"]',
@@ -847,8 +851,8 @@ def test_a_wide_class_problem_reaches_the_bayes_rate():
     df = frame(X, lab)
     s = spec(
         features=[f"x{i}" for i in range(k)],
-        halflife=20_000.0,
-        min_periods=50.0,
+        half_life=20_000.0,
+        min_weight=50.0,
         precision_prior=0.1,
     )
     got = unnested(po.ModelBank([s]).fit_predict(df))
@@ -870,7 +874,7 @@ def test_a_class_seen_once_still_scores_finite_posteriors():
     X = np.vstack([X, [10.0, 10.0]])
     lab = np.append(lab, 2)  # a single row of class "c"
     df = frame(X, lab)
-    got = unnested(po.ModelBank([spec(precision_prior=1.0, min_periods=5.0)]).fit_predict(df))
+    got = unnested(po.ModelBank([spec(precision_prior=1.0, min_weight=5.0)]).fit_predict(df))
     p = np.column_stack([got[f"p_{c}"].to_numpy() for c in "abc"])
     live = np.isfinite(p).all(axis=1)
     assert live.sum() > 1500

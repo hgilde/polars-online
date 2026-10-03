@@ -73,13 +73,13 @@ def stream(n: int = 400, seed: int = 7) -> pl.DataFrame:
 #: Where `states` stops: the first half of `stream()`.
 HALF = 200
 
-CLOCK = dict(clock="t", max_dclock=6.0, weight="w")
-FIT = dict(targets=["y"], features=["x0", "x1", "x2"], group="g", halflife=25.0, **CLOCK)
+CLOCK = dict(clock="t", gap_cap=6.0, weight="w")
+FIT = dict(targets=["y"], features=["x0", "x1", "x2"], group="g", half_life=25.0, **CLOCK)
 
 #: (name, builder, keyword arguments, the specs it reads, if any).
 WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
-    ("ridge", "ewridge", dict(FIT, min_periods=4.0), []),
-    ("ridge_grid", "ewridge", dict(FIT, ridge=[1e-6, 0.5], halflife=[10.0, 60.0]), []),
+    ("ridge", "ewridge", dict(FIT, min_weight=4.0), []),
+    ("ridge_grid", "ewridge", dict(FIT, ridge=[1e-6, 0.5], half_life=[10.0, 60.0]), []),
     (
         "ridge_diag",
         "ewridge",
@@ -87,7 +87,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
             FIT,
             targets=["y", "z"],
             emit_sigma=True,
-            emit_resid_z=True,
+            emit_zscore=True,
             emit_drift=True,
             emit_metrics=True,
             emit_autocorr=True,
@@ -96,25 +96,25 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         ),
         [],
     ),
-    ("ridge_window", "ewridge", dict(FIT, window=40.0), []),
-    ("ridge_origin", "ewridge", dict(FIT, add_intercept=False, standardize=False), []),
+    ("ridge_window", "ewridge", dict(FIT, window_size=40.0), []),
+    ("ridge_origin", "ewridge", dict(FIT, fit_intercept=False, standardize=False), []),
     (
         "ridge_session",
         "ewridge",
-        dict(FIT, session="s", session_gap=10.0, session_shrink=0.5, long_halflife=200.0),
+        dict(FIT, session="s", session_gap=10.0, session_shrink=0.5, long_half_life=200.0),
         [],
     ),
-    ("ridge_delay", "ewridge", dict(FIT, label_delay=3.0), []),
+    ("ridge_delay", "ewridge", dict(FIT, embargo=3.0), []),
     ("rls", "rls", dict(FIT), []),
     ("lasso", "lasso", dict(FIT, lasso_path=[0.2, 0.05, 0.0]), []),
     ("enet", "lasso", dict(FIT, lasso_path=[0.1, 0.0], l1_ratio=0.5), []),
-    ("kalman", "kalman", dict(FIT, coef_halflife=50.0), []),
+    ("kalman", "kalman", dict(FIT, coef_half_life=50.0), []),
     ("huber", "huber", dict(FIT), []),
     ("quantile", "quantile", dict(FIT, quantile=0.8), []),
     ("ftrl", "ftrl", dict(FIT, targets=["hit"]), []),
     ("sgd", "sgd", dict(FIT, learning_rate=0.01), []),
     ("pa", "pa", dict(FIT), []),
-    ("holt", "holt", dict(targets=["y"], group="g", halflife=25.0, **CLOCK), []),
+    ("holt", "holt", dict(targets=["y"], group="g", half_life=25.0, **CLOCK), []),
     (
         "ew_cov",
         "ew_cov",
@@ -122,7 +122,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
             features=["x0", "x1", "x2"],
             stats=["mean", "var", "std", "cov", "corr"],
             group="g",
-            halflife=25.0,
+            half_life=25.0,
             **CLOCK,
         ),
         [],
@@ -136,7 +136,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
             precision_prior=1e-6,
             mahal_quantiles=[0.5, 0.99],
             pca=2,
-            halflife=25.0,
+            half_life=25.0,
             **CLOCK,
         ),
         [],
@@ -144,11 +144,13 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     (
         "ew_cov_lags",
         "ew_cov",
-        dict(features=["x1", "x2"], stats=["corr", "lagcorr"], lags=[1, 3], halflife=25.0, **CLOCK),
+        dict(
+            features=["x1", "x2"], stats=["corr", "lagcorr"], lags=[1, 3], half_life=25.0, **CLOCK
+        ),
         [],
     ),
-    ("kmeans", "kmeans", dict(features=["x1", "x2"], k=2, halflife=25.0, **CLOCK), []),
-    ("micro", "micro", dict(features=["x1", "x2"], eps=0.5, halflife=25.0, **CLOCK), []),
+    ("kmeans", "kmeans", dict(features=["x1", "x2"], k=2, half_life=25.0, **CLOCK), []),
+    ("micro", "micro", dict(features=["x1", "x2"], eps=0.5, half_life=25.0, **CLOCK), []),
     (
         "ew_class",
         "ew_class",
@@ -157,7 +159,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
             label="lab",
             classes=["down", "up"],
             precision_prior=1.0,
-            halflife=25.0,
+            half_life=25.0,
             **CLOCK,
         ),
         [],
@@ -166,16 +168,16 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     (
         "marginal",
         "marginal",
-        dict(targets=["y"], features=["x1", "x2"], lags=[1], bins=4, halflife=25.0, **CLOCK),
+        dict(targets=["y"], features=["x1", "x2"], lags=[1], bins=4, half_life=25.0, **CLOCK),
         [],
     ),
-    ("deco", "deco", dict(features=["x0", "x1", "x2"], halflife=25.0, **CLOCK), []),
+    ("deco", "deco", dict(features=["x0", "x1", "x2"], half_life=25.0, **CLOCK), []),
     ("corrchange", "corrchange", dict(features=["x1", "x2"], span_rows=40, **CLOCK), []),
     ("bocpd", "bocpd", dict(features=["x1", "x2"], prior_scale=[1.0], **CLOCK), []),
     (
         "hmm",
         "hmm",
-        dict(features=["x1", "x2"], k=2, precision_prior=0.1, halflife=25.0, **CLOCK),
+        dict(features=["x1", "x2"], k=2, precision_prior=0.1, half_life=25.0, **CLOCK),
         [],
     ),
     (
@@ -187,6 +189,58 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
 ]
 
 
+#: Task 144's renames, new name -> old, so the probe can run under a released
+#: wheel that predates them (``scripts/compare_release.py``,
+#: ``tests/test_released_state.py``): the workload is written in the current
+#: names, and translated when the installed package lacks them.
+_OLD_NAMES = {
+    "half_life": "halflife",
+    "long_half_life": "long_halflife",
+    "coef_half_life": "coef_halflife",
+    "revert_half_life": "revert_halflife",
+    "select_half_life": "select_halflife",
+    "level_half_life": "level_halflife",
+    "trend_half_life": "trend_halflife",
+    "embargo": "label_delay",
+    "gap_cap": "max_dclock",
+    "window_size": "window",
+    "min_weight": "min_periods",
+    "emit_zscore": "emit_resid_z",
+    "fit_intercept": "add_intercept",
+    "max_iter": "max_cd_iters",
+    "tol": "cd_tol",
+    "reset_on_flag": "reset",
+}
+
+
+def _current_names() -> bool:
+    """Whether the installed package takes task 144's names: asked of a
+    builder, since a checked builder's signature is ``(*args, **kwargs)``."""
+    try:
+        po.spec.ewridge("probe", targets=["y"], features=["x"], half_life=10.0)
+    except TypeError:
+        return False
+    return True
+
+
+def _speak(builder: str, kw: dict) -> dict:
+    """``kw`` in the installed package's own names."""
+    if _current_names():
+        return kw
+    out: dict = {}
+    for key, value in kw.items():
+        if key == "restart_after_step_back":
+            out["on_clock_reset"] = "reset_state"
+            out["min_backwards_jump"] = value
+        elif key == "ridge_scale":
+            out["ridge_decay"] = value == "sum"
+        elif key == "standardize" and builder == "sgd":
+            out["scale_features"] = value
+        else:
+            out[_OLD_NAMES.get(key, key)] = value
+    return out
+
+
 def main(out_path: str, manifest_path: str) -> None:
     warnings.simplefilter("ignore")
     df = stream()
@@ -196,7 +250,7 @@ def main(out_path: str, manifest_path: str) -> None:
     built: dict[str, dict] = {}
     for name, builder, kw, reads in WORKLOAD:
         try:
-            built[name] = getattr(po.spec, builder)(name, **kw)
+            built[name] = getattr(po.spec, builder)(name, **_speak(builder, kw))
             bank = po.ModelBank([built[r] for r in reads] + [built[name]])
             out = bank.fit_predict(df)
             closed = bank.closed_groups()
@@ -227,7 +281,7 @@ def states(out_dir: str, manifest_path: str) -> None:
     built: dict[str, dict] = {}
     for name, builder, kw, reads in WORKLOAD:
         try:
-            built[name] = getattr(po.spec, builder)(name, **kw)
+            built[name] = getattr(po.spec, builder)(name, **_speak(builder, kw))
             bank = po.ModelBank([built[r] for r in reads] + [built[name]])
             bank.fit_predict(first)
             bank.save(f"{out_dir}/{name}.state")

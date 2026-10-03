@@ -48,11 +48,11 @@ fn spec(model: &str, extra: &str) -> Spec {
             "model": {model},
             "features": ["x0", "x1"],
             "clock": "t",
-            "max_dclock": 30.0,
-            "halflife": 40.0,
+            "gap_cap": 30.0,
+            "half_life": 40.0,
             "weight": "w",
             "group": "g",
-            "min_periods": 0.0
+            "min_weight": 0.0
             {extra}
         }}"#
     ))
@@ -122,7 +122,7 @@ fn prepass_against_the_ring(spec: &Spec, df: &DataFrame, size: usize) -> Option<
 fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
     let df = frame(600, 80);
     let short = frame(600, 16);
-    let ridge = r#"{"type": "ew_ridge", "window": 200.0, "window_every": 1,
+    let ridge = r#"{"type": "ew_ridge", "window_size": 200.0, "window_every": 1,
                     "window_budget": {"refuse": 0.004}}"#;
     // (label, spec, frame, whether the ring reaches the budget)
     let cases: Vec<(&str, Spec, &DataFrame, bool)> = vec![
@@ -136,7 +136,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 3",
             spec(
-                r#"{"type": "ew_ridge", "window": 600.0, "window_every": 3,
+                r#"{"type": "ew_ridge", "window_size": 600.0, "window_every": 3,
                     "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -163,14 +163,14 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         ),
         (
             "ewridge with a label delay",
-            spec(ridge, r#", "targets": ["y"], "label_delay": 8.0"#),
+            spec(ridge, r#", "targets": ["y"], "embargo": 8.0"#),
             &df,
             true,
         ),
         (
             "ew_cov",
             spec(
-                r#"{"type": "ew_cov", "stats": ["mean", "var", "cov"], "window": 200.0,
+                r#"{"type": "ew_cov", "stats": ["mean", "var", "cov"], "window_size": 200.0,
                     "window_budget": {"refuse": 0.003}}"#,
                 r#", "targets": []"#,
             ),
@@ -180,7 +180,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "marginal",
             spec(
-                r#"{"type": "marginal", "window": 200.0,
+                r#"{"type": "marginal", "window_size": 200.0,
                     "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -204,7 +204,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
 fn under_drift_resets_the_ring_still_stops_the_run() {
     let df = frame(400, 80);
     let s = spec(
-        r#"{"type": "ew_ridge", "window": 200.0, "window_every": 1,
+        r#"{"type": "ew_ridge", "window_size": 200.0, "window_every": 1,
             "window_budget": {"refuse": 0.004}}"#,
         r#", "targets": ["y"], "emit_drift": true, "drift_action": "reset""#,
     );

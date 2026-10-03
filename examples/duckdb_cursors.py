@@ -43,9 +43,9 @@ SPEC = po.spec.ewridge(
     targets=["y"],
     features=["x0"],
     clock="t",
-    halflife=600.0,
-    max_dclock=30.0,
-    min_periods=1.0,
+    half_life=600.0,
+    gap_cap=30.0,
+    min_weight=1.0,
 )
 N = 20_000
 QUERY = "SELECT t, x0, y FROM ticks WHERE {where} ORDER BY t"

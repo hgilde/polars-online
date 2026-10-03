@@ -70,7 +70,7 @@ pub struct HmmCfg {
     /// state's own data, as `ew_class`'s does. Required: a state's centred
     /// co-moments start at zero.
     pub precision_prior: f64,
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// Update the states and the transition counts. `false` filters with
     /// what it was given and learns nothing.
     pub learn: bool,
@@ -83,7 +83,7 @@ pub struct HmmCfg {
     /// State means, `K*d` row-major: given, there is no warm-up. The pair
     /// enters the accumulators at **weight 1** -- one row's worth -- so the
     /// given states are a starting point that the stream washes out under
-    /// `learn = true` -- within about one halflife under a finite one, since
+    /// `learn = true` -- within about one half-life under a finite one, since
     /// the pair weighs one row -- and are held exactly under `learn = false`.
     pub means: Option<Vec<f64>>,
     /// State covariances, `K*d*d` row-major, beside `means`.
@@ -116,8 +116,8 @@ impl HmmCfg {
         if !(self.transition_prior.is_finite() && self.transition_prior >= 0.0) {
             return Err("hmm: transition_prior must be finite and >= 0".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("hmm: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("hmm: min_weight must be >= 0".into());
         }
         let (k, d) = (self.k, self.n_features);
         if let Some(p) = &self.transition {
@@ -486,8 +486,8 @@ impl Hmm {
     /// Output slot labels in emission order: `p_<k>`, `p1_<k>`, `state`,
     /// `loglik`.
     pub fn labels(k: usize) -> Vec<String> {
-        let mut out: Vec<String> = (0..k).map(|s| format!("p_{s}")).collect();
-        out.extend((0..k).map(|s| format!("p1_{s}")));
+        let mut out: Vec<String> = (0..k).map(|s| format!("filtered_{s}")).collect();
+        out.extend((0..k).map(|s| format!("predicted_{s}")));
         out.push("state".into());
         out.push("loglik".into());
         out
@@ -546,13 +546,13 @@ impl Hmm {
         out.extend_from_slice(&pred);
         out.push(best as f64);
         out.push(loglik);
-        // `min_periods` gates what is *reported*, never what is learned: a
+        // `min_weight` gates what is *reported*, never what is learned: a
         // gated row still moves the filter, as it does in every other model
         // here. Returning `None` instead withheld the row from the update
         // and counted it as a solve failure, so under decay a filter whose
-        // `n_eff` plateaued below `min_periods` never learned at all
+        // `n_eff` plateaued below `min_weight` never learned at all
         // (docs/REVIEW-E54-E64.md H1).
-        if self.n_eff < self.cfg.min_periods {
+        if self.n_eff < self.cfg.min_weight {
             return (nan, Some((post, logf)));
         }
         (out, Some((post, logf)))
@@ -611,7 +611,7 @@ impl crate::OnlineModel for Hmm {
             // Advance the clock and learn nothing: the counts age with the
             // accumulators, `n_eff` decays with them -- hard rule 8, the
             // same recursion in every model, which is what makes
-            // `min_periods` mean the same number of rows across a bank
+            // `min_weight` mean the same number of rows across a bank
             // (docs/REVIEW-E54-E64.md H3) -- and `p` does not move.
             self.n_eff *= lam;
             if self.cfg.learn {
@@ -776,7 +776,7 @@ mod tests {
     /// A row whose densities are all non-finite cannot be scored or learned,
     /// but it still happened: it must age `n_eff`, the counts and the states
     /// together, as a zero-weight row does -- not advance `n_eff` alone
-    /// (review 2026-09-18). At `halflife = inf` (lam = 1) that means `n_eff`
+    /// (review 2026-09-18). At `half_life = inf` (lam = 1) that means `n_eff`
     /// does not move on the failed row. A huge but finite feature overflows
     /// the quadratic form and forces the failure.
     #[test]
@@ -816,7 +816,7 @@ mod tests {
             decay: Decay::Halflife(f64::INFINITY),
             covariance: Covariance::Full,
             precision_prior: 1e-3,
-            min_periods: 0.0,
+            min_weight: 0.0,
             learn: true,
             transition_prior: 1.0,
             transition: None,
@@ -880,7 +880,7 @@ mod tests {
             n_features: d,
             n_classes: 2,
             decay: Decay::Halflife(f64::INFINITY),
-            min_periods: 0.0,
+            min_weight: 0.0,
             covariance: Covariance::Full,
             precision_prior: 1e-3,
             window: None,
@@ -1173,7 +1173,14 @@ mod tests {
     fn the_labels_and_slot_count_follow_k() {
         assert_eq!(
             Hmm::labels(2),
-            ["p_0", "p_1", "p1_0", "p1_1", "state", "loglik"]
+            [
+                "filtered_0",
+                "filtered_1",
+                "predicted_0",
+                "predicted_1",
+                "state",
+                "loglik"
+            ]
         );
         assert_eq!(Hmm::n_outputs_for(2), 6);
         assert_eq!(Hmm::n_outputs_for(4), 10);

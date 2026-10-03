@@ -12,7 +12,7 @@
 //! the run's decayed weight with the window's: two numbers equal in exact
 //! arithmetic, which drift apart by about the rows in the window times a
 //! rounding step, past the tolerance under a long window and a long
-//! halflife (fifty thousand rows of each at a halflife of a million), where
+//! half-life (fifty thousand rows of each at a half-life of a million), where
 //! the held feature then read as moving. Row indices do not drift. A row of
 //! weight 0 learns nothing, so it neither starts nor ends a run, and the
 //! caller does not offer it; nor does the caller offer a row whose weight is

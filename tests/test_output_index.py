@@ -20,8 +20,8 @@ def grid_spec(**kw):
         features=["x0", "x1"],
         feature_sets={"a": ["x0"], "b": ["x0", "x1"]},
         ridge=[1e-6, 0.5],
-        halflife=[100.0, 500.0],
-        min_periods=3.0,
+        half_life=[100.0, 500.0],
+        min_weight=3.0,
         emit_sigma=True,
         resid_quantiles=[0.05, 0.95],
         conformal=0.9,
@@ -37,21 +37,21 @@ class TestOutputIndex:
         """The index IS the schema: same names, same order, nothing extra."""
         for spec in [
             grid_spec(),
-            po.spec.holt("m", targets=["y"], halflife=50.0, min_periods=2.0),
+            po.spec.holt("m", targets=["y"], half_life=50.0, min_weight=2.0),
             po.spec.lasso(
                 "m",
                 targets=["y"],
                 features=["x0"],
                 lasso_path=[0.1, 0.0],
-                halflife=50.0,
-                min_periods=2.0,
+                half_life=50.0,
+                min_weight=2.0,
             ),
             po.spec.ew_cov(
                 "m",
                 features=["x0", "x1", "x2"],
                 stats=["mean", "var", "cov", "corr"],
-                halflife=50.0,
-                min_periods=2.0,
+                half_life=50.0,
+                min_weight=2.0,
             ),
         ]:
             idx = po.spec.output_index(spec)
@@ -66,7 +66,7 @@ class TestOutputIndex:
             (pl.col("kind") == "pred")
             & (pl.col("target") == "z")
             & (pl.col("ridge") == 0.5)
-            & (pl.col("halflife") == 500.0)
+            & (pl.col("half_life") == 500.0)
             & (pl.col("feature_set") == "b")
         )["field"].item()
 
@@ -86,10 +86,10 @@ class TestOutputIndex:
         idx = po.spec.output_index(grid_spec())
         preds = idx.filter(pl.col("kind") == "pred")
         # Grid slots carry everything; selection outputs carry target only.
-        grid = preds.filter(pl.col("halflife").is_not_null())
+        grid = preds.filter(pl.col("half_life").is_not_null())
         assert grid["target"].null_count() == 0
         assert grid["ridge"].null_count() == 0
-        assert set(grid["halflife"].to_list()) == {100.0, 500.0}
+        assert set(grid["half_life"].to_list()) == {100.0, 500.0}
         sel = idx.filter(pl.col("kind").is_in(["pred_selected", "pred_averaged", "selected"]))
         assert sel.height == 6  # 3 kinds x 2 targets
         assert sel["target"].null_count() == 0
@@ -98,14 +98,14 @@ class TestOutputIndex:
         """With one ridge and one feature set the combo's metadata was
         empty, while a grid's carried both; and a single named set was
         dropped from a ridge grid's (review 2026-09-12, S5)."""
-        one = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=10.0, ridge=0.5)
+        one = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0, ridge=0.5)
         preds = po.spec.output_index(one).filter(pl.col("kind") == "pred")
         assert preds["ridge"].to_list() == [0.5]
         named = po.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
-            halflife=10.0,
+            half_life=10.0,
             ridge=[0.5, 1.0],
             feature_sets={"a": ["x0"]},
         )
@@ -116,7 +116,7 @@ class TestOutputIndex:
         """``feature_sets = []`` beside a ridge grid rendered no slots for a
         model that emits one per ridge (V23)."""
         spec = po.spec.ewridge(
-            "m", targets=["y"], features=["x0"], halflife=10.0, ridge=[1e-6, 1e-3]
+            "m", targets=["y"], features=["x0"], half_life=10.0, ridge=[1e-6, 1e-3]
         )
         spec["model"]["feature_sets"] = []
         with pytest.raises(ValueError, match="feature_sets"):
@@ -126,29 +126,29 @@ class TestOutputIndex:
 
     def test_quantile_levels_are_machine_readable(self):
         idx = po.spec.output_index(grid_spec())
-        q = idx.filter(pl.col("kind") == "absresid_q")
+        q = idx.filter(pl.col("kind") == "abs_resid_q")
         assert set(q["quantile"].to_list()) == {0.05, 0.95}
 
     def test_lam_specs_report_lam_not_halflife(self):
-        spec = grid_spec(halflife=None, lam=0.97, ridge=[1e-6])
+        spec = grid_spec(half_life=None, lam=0.97, ridge=[1e-6])
         idx = po.spec.output_index(spec)
-        assert idx["halflife"].null_count() == idx.height
+        assert idx["half_life"].null_count() == idx.height
         assert set(idx.filter(pl.col("kind") == "pred")["lam"].to_list()) == {0.97}
 
     def test_ew_cov_columns(self):
         spec = po.spec.ew_cov(
-            "m", features=["a", "b"], stats=["std", "corr"], halflife=10.0, min_periods=2.0
+            "m", features=["a", "b"], stats=["std", "corr"], half_life=10.0, min_weight=2.0
         )
         idx = po.spec.output_index(spec)
         rows = {r["field"]: r["columns"] for r in idx.iter_rows(named=True)}
         assert rows["std_a"] == ["a"]
         assert rows["corr_a_b"] == ["a", "b"]
-        assert rows["n_eff"] is None
+        assert rows["weight_sum"] is None
 
     def test_ew_cov_scores_are_over_every_column_and_carry_their_level(self):
         # E37/E38: `mahal` and the components are over all the columns, a
         # loading is over its own column, and a `mahal_q` row carries its
-        # level like `absresid_q` does.
+        # level like `abs_resid_q` does.
         spec = po.spec.ew_cov(
             "m",
             features=["a", "b"],
@@ -156,8 +156,8 @@ class TestOutputIndex:
             precision_prior=1e-6,
             mahal_quantiles=[0.95],
             pca=1,
-            halflife=[10.0, 100.0],
-            min_periods=2.0,
+            half_life=[10.0, 100.0],
+            min_weight=2.0,
         )
         idx = po.spec.output_index(spec)
         rows = {r["field"]: r for r in idx.iter_rows(named=True)}
@@ -165,9 +165,9 @@ class TestOutputIndex:
         assert rows["mahal@h10"]["kind"] == "mahal"
         assert rows["mahal_q0.95@h100"]["quantile"] == 0.95
         assert rows["mahal_q0.95@h100"]["kind"] == "mahal_q"
-        assert rows["mahal_q0.95@h100"]["halflife"] == 100.0
-        assert rows["pc0_a@h10"]["columns"] == ["a"]
-        assert rows["pc0_a@h10"]["kind"] == "pc_loading"
+        assert rows["mahal_q0.95@h100"]["half_life"] == 100.0
+        assert rows["pc0_loading_a@h10"]["columns"] == ["a"]
+        assert rows["pc0_loading_a@h10"]["kind"] == "pc_loading"
         assert rows["pc0_score@h10"]["columns"] == ["a", "b"]
         assert {rows[f"pc0_{k}@h10"]["kind"] for k in ("var", "share", "score")} == {
             "pc_var",
@@ -185,12 +185,12 @@ class TestOutputIndex:
             targets=["y"],
             features=["x0"],
             ridge=[1e-300, 0.5],
-            halflife=[100.0, 1e9],
-            min_periods=2.0,
+            half_life=[100.0, 1e9],
+            min_weight=2.0,
         )
         idx = po.spec.output_index(spec)
         name = idx.filter(
-            (pl.col("kind") == "pred") & (pl.col("ridge") == 1e-300) & (pl.col("halflife") == 1e9)
+            (pl.col("kind") == "pred") & (pl.col("ridge") == 1e-300) & (pl.col("half_life") == 1e9)
         )["field"].item()
         assert name == "pred_y__r1e-300@h1e9"
 
@@ -207,8 +207,8 @@ class TestCoefIndex:
             targets=["y"],
             features=["x0", "x1"],
             ridge=[1e-9, 0.5],
-            halflife=1e9,
-            min_periods=3.0,
+            half_life=1e9,
+            min_weight=3.0,
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -220,7 +220,7 @@ class TestCoefIndex:
             assert coef[pos] == pytest.approx(want, abs=1e-3), term
 
     def test_holt_terms(self):
-        spec = po.spec.holt("m", targets=["a", "b"], halflife=50.0, min_periods=2.0)
+        spec = po.spec.holt("m", targets=["a", "b"], half_life=50.0, min_weight=2.0)
         ci = po.spec.coef_index(spec)
         assert ci["term"].to_list() == ["level", "trend", "level", "trend"]
         assert ci["target"].to_list() == ["a", "a", "b", "b"]
@@ -230,14 +230,14 @@ class TestCoefIndex:
             "m",
             targets=["y"],
             features=["x0"],
-            halflife=50.0,
-            min_periods=2.0,
-            add_intercept=False,
+            half_life=50.0,
+            min_weight=2.0,
+            fit_intercept=False,
         )
         assert po.spec.coef_index(spec)["term"].to_list() == ["x0"]
 
     def test_ew_cov_is_refused(self):
-        spec = po.spec.ew_cov("m", features=["a"], stats=["mean"], halflife=10.0, min_periods=2.0)
+        spec = po.spec.ew_cov("m", features=["a"], stats=["mean"], half_life=10.0, min_weight=2.0)
         with pytest.raises(ValueError, match="statistics, not coefficients"):
             po.spec.coef_index(spec)
 
@@ -257,8 +257,8 @@ class TestUnpackWithSpec:
             "m",
             targets=["y", "y2"],
             features=["x0"],
-            halflife=50.0,
-            min_periods=3.0,
+            half_life=50.0,
+            min_weight=3.0,
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)

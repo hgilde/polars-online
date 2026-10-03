@@ -34,19 +34,19 @@ def _frame(seed: int = 0) -> pl.DataFrame:
 
 
 OLS = po.spec.ewridge(
-    "ols", targets=["y"], features=["x0", "x1"], halflife=50.0, min_periods=5.0, group="g"
+    "ols", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=5.0, group="g"
 )
 GRID = po.spec.ewridge(
     "grid",
     targets=["y", "z"],
     features=["x0", "x1", "x2"],
-    halflife=[50.0, 200.0],
+    half_life=[50.0, 200.0],
     ridge=[0.0, 0.5],
     feature_sets={"a": ["x0"], "b": ["x0", "x1", "x2"]},
-    min_periods=5.0,
+    min_weight=5.0,
 )
 COV = po.spec.ew_cov(
-    "cov", features=["x0", "x1"], stats=["mean", "corr"], halflife=50.0, min_periods=2.0
+    "cov", features=["x0", "x1"], stats=["mean", "corr"], half_life=50.0, min_weight=2.0
 )
 
 
@@ -58,11 +58,11 @@ class TestCoefFields:
             "position",
             "name",
             "target",
-            "halflife",
+            "half_life",
             "lam",
             "ridge",
             "feature_set",
-            "lambda",
+            "penalty",
             "term",
         ]
         # Per instance: targets x combos slots, each the full term vector.
@@ -74,7 +74,7 @@ class TestCoefFields:
         assert one["term"].to_list()[:terms] == ["intercept", "x0", "x1", "x2"]
         assert one["target"].to_list() == ["y"] * (combos * terms) + ["z"] * (combos * terms)
         assert set(cf["field"]) == {"coef@h50", "coef@h200"}
-        assert cf["halflife"].unique().sort().to_list() == [50.0, 200.0]
+        assert cf["half_life"].unique().sort().to_list() == [50.0, 200.0]
         assert cf["lam"].null_count() == cf.height
 
     def test_names_follow_the_field_grammar(self):
@@ -87,7 +87,7 @@ class TestCoefFields:
                 (pl.col("target") == row["target"])
                 & pl.col("ridge").eq_missing(row["ridge"])
                 & pl.col("feature_set").eq_missing(row["feature_set"])
-                & pl.col("halflife").eq_missing(row["halflife"])
+                & pl.col("half_life").eq_missing(row["half_life"])
             )["field"].item()
             suffix = pred.removeprefix(f"pred_{row['target']}")
             assert row["name"] == f"coef_{row['target']}_{row['term']}{suffix}"
@@ -100,7 +100,7 @@ class TestCoefFields:
         ]
 
     def test_holt_lasso_and_no_intercept(self):
-        holt = po.spec.holt("h", targets=["y", "z"], halflife=50.0, min_periods=2.0)
+        holt = po.spec.holt("h", targets=["y", "z"], half_life=50.0, min_weight=2.0)
         assert po.spec.coef_fields(holt)["name"].to_list() == [
             "coef_y_level",
             "coef_y_trend",
@@ -112,8 +112,8 @@ class TestCoefFields:
             targets=["y"],
             features=["x0"],
             lasso_path=[1.0, 0.1],
-            halflife=50.0,
-            min_periods=2.0,
+            half_life=50.0,
+            min_weight=2.0,
         )
         assert po.spec.coef_fields(lasso)["name"].to_list() == [
             "coef_y_intercept__l1",
@@ -122,7 +122,7 @@ class TestCoefFields:
             "coef_y_x0__l0.1",
         ]
         bare = po.spec.ewridge(
-            "m", targets=["y"], features=["x0"], halflife=50.0, min_periods=2.0, add_intercept=False
+            "m", targets=["y"], features=["x0"], half_life=50.0, min_weight=2.0, fit_intercept=False
         )
         assert po.spec.coef_fields(bare)["name"].to_list() == ["coef_y_x0"]
 
@@ -133,13 +133,13 @@ class TestCoefFields:
         cf = po.spec.coef_fields(GRID)
         ci = po.spec.coef_index(GRID)
         want = cf.filter(pl.col("field") == "coef@h50").select(
-            pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "lambda", "term"
+            pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
         )
         assert ci.equals(want)
 
     def test_invalid_spec_is_refused(self):
-        with pytest.raises(ValueError, match="halflife"):
-            po.spec.coef_fields({**OLS, "halflife": -1.0})
+        with pytest.raises(ValueError, match="half_life"):
+            po.spec.coef_fields({**OLS, "half_life": -1.0})
 
 
 class TestUnnest:
@@ -152,7 +152,7 @@ class TestUnnest:
             *df.columns,
             "pred_y",
             "resid_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef_y_intercept",
@@ -165,7 +165,7 @@ class TestUnnest:
             "grid",
         ]
         assert flat["grid"].dtype == nested["grid"].dtype
-        for field in ("pred_y", "resid_y", "n_eff"):
+        for field in ("pred_y", "resid_y", "weight_sum"):
             assert flat[field].equals(nested["ols"].struct.field(field))
         coef = nested["ols"].struct.field("coef")
         for pos, term in enumerate(["intercept", "x0", "x1"]):
@@ -220,7 +220,7 @@ class TestUnnest:
         assert [c for c in flat.columns if c not in _frame().columns] == po.spec.output_fields(COV)
 
     def test_holt(self):
-        holt = po.spec.holt("h", targets=["y"], halflife=50.0, min_periods=2.0)
+        holt = po.spec.holt("h", targets=["y"], half_life=50.0, min_weight=2.0)
         flat = _frame().online.fit_predict([holt]).online.unnest([holt])
         assert {"coef_y_level", "coef_y_trend"} <= set(flat.columns)
 
@@ -232,11 +232,11 @@ class TestUnnest:
         with pytest.raises(ValueError, match="'t' is Int64, not spec 't'"):
             nested.lazy().online.unnest([{**OLS, "name": "t"}])
         with pytest.raises(ValueError, match="lacks the field.*coef@h50"):
-            nested.lazy().online.unnest([{**OLS, "halflife": [50.0, 200.0]}])
+            nested.lazy().online.unnest([{**OLS, "half_life": [50.0, 200.0]}])
         with pytest.raises(ValueError, match="given twice"):
             nested.lazy().online.unnest([OLS, OLS])
-        with pytest.raises(ValueError, match="halflife"):
-            nested.lazy().online.unnest([{**OLS, "halflife": -1.0}])
+        with pytest.raises(ValueError, match="half_life"):
+            nested.lazy().online.unnest([{**OLS, "half_life": -1.0}])
         with pytest.raises(TypeError, match="specs, a ModelBank or the path"):
             nested.lazy().online.unnest([OLS, "ols"])  # type: ignore[list-item]
         with pytest.raises(FileNotFoundError):
@@ -257,16 +257,16 @@ class TestUnnest:
 
 def test_named_coefficients_predict_the_next_row():
     """`pred[t+1] == coef[t] . x[t+1]` per named column, over the whole grid:
-    targets, feature sets, ridges and halflives at once. A wrong slot order,
+    targets, feature sets, ridges and half-lives at once. A wrong slot order,
     or a name on the wrong list position, breaks this for some column."""
     spec = po.spec.ewridge(
         "grid",
         targets=["y", "z"],
         features=["x0", "x1", "x2"],
-        halflife=[50.0, 200.0],
+        half_life=[50.0, 200.0],
         ridge=[0.0, 0.5],
         feature_sets={"a": ["x0"], "b": ["x0", "x1", "x2"]},
-        min_periods=5.0,
+        min_weight=5.0,
         coef_every=1,
         max_rows_between_solves=1,
     )
@@ -280,7 +280,7 @@ def test_named_coefficients_predict_the_next_row():
             (pl.col("target") == pred["target"])
             & pl.col("ridge").eq_missing(pred["ridge"])
             & pl.col("feature_set").eq_missing(pred["feature_set"])
-            & pl.col("halflife").eq_missing(pred["halflife"])
+            & pl.col("half_life").eq_missing(pred["half_life"])
         )
         assert rows["term"].to_list() == ["intercept", "x0", "x1", "x2"]
         by_term = dict(zip(rows["term"], rows["name"], strict=True))

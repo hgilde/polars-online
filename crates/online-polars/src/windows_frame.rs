@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 
-use online_core::{ClockCfg, ClockValue, OnClockReset};
+use online_core::{ClockCfg, ClockValue};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +81,7 @@ fn yes() -> bool {
 pub struct Description {
     pub kind: Kind,
     pub columns: Vec<String>,
-    pub halflife: SpanList,
+    pub half_life: SpanList,
     #[serde(default)]
     pub horizon: Option<SpanList>,
     #[serde(default)]
@@ -121,11 +121,9 @@ pub struct WindowsConfig {
     #[serde(default)]
     pub clock: Option<String>,
     #[serde(default)]
-    pub max_dclock: Option<Span>,
+    pub gap_cap: Option<Span>,
     #[serde(default)]
-    pub on_clock_reset: OnClockReset,
-    #[serde(default)]
-    pub min_backwards_jump: Option<Span>,
+    pub restart_after_step_back: Option<Span>,
     #[serde(default)]
     pub session: Option<String>,
     #[serde(default)]
@@ -230,7 +228,7 @@ fn numeric(dtype: &DataType) -> bool {
 }
 
 /// The windows, their output names and the columns they read: a call's
-/// descriptions checked and expanded, columns × halflives × horizons in that
+/// descriptions checked and expanded, columns × half-lives × horizons in that
 /// order.
 struct Plan {
     defs: Vec<WindowDef>,
@@ -287,7 +285,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
         if let Some(first) = owner.insert(name.clone(), label.to_string()) {
             return Err(format!(
                 "{who}: output column {name:?} is also {first}'s; a name template needs a field \
-                 -- {{column}}, {{halflife}}, {{horizon}} or {{split}} -- for whatever tells two \
+                 -- {{column}}, {{half_life}}, {{horizon}} or {{split}} -- for whatever tells two \
                  windows apart"
             ));
         }
@@ -369,25 +367,25 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
         });
         let template = d.name.clone().unwrap_or_else(|| {
             match (d.kind, d.horizon.is_some()) {
-                (Kind::Ewm, true) => "{column}_ewm_{halflife}_{horizon}{split}",
-                (Kind::Ewm, false) => "{column}_ewm_{halflife}{split}",
-                (Kind::LookaheadRewm, _) => "{column}_rewm_{halflife}_{horizon}{split}",
+                (Kind::Ewm, true) => "{column}_ewm_{half_life}_{horizon}{split}",
+                (Kind::Ewm, false) => "{column}_ewm_{half_life}{split}",
+                (Kind::LookaheadRewm, _) => "{column}_rewm_{half_life}_{horizon}{split}",
             }
             .to_string()
         });
         // One `complete` column per horizon: every window of a description
         // with one horizon has the same flags, whatever its column or
-        // halflife.
+        // half-life.
         let mut complete_of: HashMap<Option<String>, usize> = HashMap::new();
         for c in &d.columns {
             let value = index_of(&mut p.values, c);
-            for h in d.halflife.spans() {
+            for h in d.half_life.spans() {
                 for &z in &horizons {
                     let def = WindowDef {
                         direction,
                         value,
                         weight,
-                        halflife: h.value(),
+                        half_life: h.value(),
                         horizon: z.map(Span::value),
                         split: split.as_ref().map(|(slot, text)| SplitDef {
                             column: *slot,
@@ -414,7 +412,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                             &template,
                             &[
                                 ("column", Some(c)),
-                                ("halflife", Some(&hl)),
+                                ("half_life", Some(&hl)),
                                 ("horizon", zl.as_deref()),
                                 ("split", Some(&sfield)),
                             ],
@@ -462,17 +460,17 @@ fn kind_of(v: ClockValue) -> ClockKind {
 fn check_scale(config: &WindowsConfig, input: &Schema) -> Result<(), String> {
     let mut spans: Vec<(&str, &Span)> = Vec::new();
     for d in &config.windows {
-        spans.extend(d.halflife.spans().iter().map(|s| ("halflife", s)));
+        spans.extend(d.half_life.spans().iter().map(|s| ("half_life", s)));
         if let Some(h) = &d.horizon {
             spans.extend(h.spans().iter().map(|s| ("horizon", s)));
         }
     }
-    spans.extend(config.max_dclock.iter().map(|s| ("max_dclock", s)));
+    spans.extend(config.gap_cap.iter().map(|s| ("gap_cap", s)));
     spans.extend(
         config
-            .min_backwards_jump
+            .restart_after_step_back
             .iter()
-            .map(|s| ("min_backwards_jump", s)),
+            .map(|s| ("restart_after_step_back", s)),
     );
     if let Some(SessionGapSpec::Gap(g)) = &config.session_gap {
         spans.push(("session_gap", g));
@@ -526,11 +524,11 @@ fn check_scale(config: &WindowsConfig, input: &Schema) -> Result<(), String> {
         };
         for (param, s) in &spans {
             let why = match *param {
-                "max_dclock" => {
+                "gap_cap" => {
                     "every step would be capped to it, so the clock would count rows rather \
                      than measure time"
                 }
-                "min_backwards_jump" => {
+                "restart_after_step_back" => {
                     "no step back could be as small, so every one would start the windows over, \
                      which 0 says directly"
                 }
@@ -603,9 +601,8 @@ impl WindowsRun {
         let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
             who: WHO,
             clock: config.clock.as_deref(),
-            max_dclock: config.max_dclock.as_ref(),
-            on_clock_reset: config.on_clock_reset,
-            min_backwards_jump: config.min_backwards_jump.as_ref(),
+            gap_cap: config.gap_cap.as_ref(),
+            restart_after_step_back: config.restart_after_step_back.as_ref(),
             session: config.session.as_deref(),
             session_gap: config.session_gap.as_ref(),
             spec_closes_on_session: None,
@@ -889,19 +886,20 @@ impl WindowsRun {
                 match min_backwards_jump {
                     None => polars_err!(ComputeError:
                         "{WHO}: clock column {column:?} goes backwards by {step} at row {} \
-                         (on_clock_reset = \"error\", the default). The input must be in clock \
-                         order across groups: sort it by the clock; or, if a step back starts \
-                         the stream over, set on_clock_reset = \"reset_state\" with a \
-                         min_backwards_jump.",
+                         (restart_after_step_back is unset, so every step back is refused). \
+                         The input must be in clock order across groups: sort it by the \
+                         clock; or, if a step back this large starts the stream over, set \
+                         restart_after_step_back to the smallest one that does.",
                         row(seq)
                     ),
                     Some(m) => polars_err!(ComputeError:
                         "{WHO}: clock column {column:?} goes backwards by {step} at row {}, no \
-                         more than min_backwards_jump = {}: a late row, not a new start. Sort \
-                         the input by the clock, or lower min_backwards_jump if a step back \
-                         this small starts the stream over (0 starts over at every one).",
+                         more than restart_after_step_back = {}: a late row, not a new start. \
+                         Sort the input by the clock, or lower restart_after_step_back if a \
+                         step back this small starts the stream over (0 starts over at every \
+                         one).",
                         row(seq),
-                        self.config.min_backwards_jump.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
+                        self.config.restart_after_step_back.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
                     ),
                 }
             }
@@ -1088,7 +1086,7 @@ mod tests {
     }
 
     const FORWARD: &str = r#"{"windows": [{"kind": "lookahead_rewm", "columns": ["x"],
-        "halflife": [1], "horizon": [2]}], "clock": "t", "max_dclock": 100}"#;
+        "half_life": [1], "horizon": [2]}], "clock": "t", "gap_cap": 100}"#;
 
     fn frame(t: &[f64]) -> DataFrame {
         df!(

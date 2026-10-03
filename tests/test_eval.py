@@ -13,11 +13,11 @@ def _fitted(n_groups=2, n_rows=300, **kw):
     opts = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        halflife=200.0,
+        half_life=200.0,
         clock="t",
-        max_dclock=50.0,
+        gap_cap=50.0,
         group="group",
-        min_periods=10.0,
+        min_weight=10.0,
     )
     opts.update(kw)
     return po.ModelBank([po.spec.ewridge("m", **opts)]).fit_predict(df)
@@ -36,9 +36,9 @@ def test_metrics_shape_and_values():
 
 def test_metrics_drops_nulls_not_rows():
     # Warmup rows have null predictions; they must not enter the counts.
-    # (min_periods must stay below the saturation level of n_eff, which for
-    # halflife 200 and ~10-unit clock deltas is around 29.)
-    out = _fitted(min_periods=20.0)
+    # (min_weight must stay below the saturation level of weight_sum, which for
+    # half-life 200 and ~10-unit clock deltas is around 29.)
+    out = _fitted(min_weight=20.0)
     m = po.eval.metrics(out, "m", targets=["y0"])
     n_finite = out["m"].struct.field("pred_y0").is_not_null().sum()
     assert m["n"][0] == n_finite
@@ -56,7 +56,7 @@ def test_r2_matches_a_manual_computation():
 
 def test_rolling_windows_partition_the_clock():
     out = _fitted(n_groups=1, n_rows=600)
-    r = po.eval.rolling_metrics(out, "m", clock="t", window=800.0, targets=["y0"], min_obs=5)
+    r = po.eval.rolling_metrics(out, "m", clock="t", window_size=800.0, targets=["y0"], min_obs=5)
     assert r.height > 1
     starts = r["window_start"].to_numpy()
     assert (np.diff(starts) == 800.0).all()
@@ -65,7 +65,7 @@ def test_rolling_windows_partition_the_clock():
 
 def test_compare_specs_stacks_with_a_spec_column():
     df, _ = synthetic(seed=52, n_groups=1, n_rows=250, k=3, null_frac=0.0)
-    common = dict(targets=["y0"], features=["x0", "x1", "x2"], halflife=200.0, min_periods=10.0)
+    common = dict(targets=["y0"], features=["x0", "x1", "x2"], half_life=200.0, min_weight=10.0)
     out = po.ModelBank(
         [
             po.spec.ewridge("a", ridge=1e-6, **common),
@@ -86,8 +86,8 @@ def test_grid_slots_resolve_to_their_target():
         targets=["y0", "y1"],
         features=["x0", "x1"],
         ridge=[1e-6, 1.0],
-        halflife=200.0,
-        min_periods=10.0,
+        half_life=200.0,
+        min_weight=10.0,
     )
     out = po.ModelBank([spec]).fit_predict(df)
     m = po.eval.metrics(out, "m", targets=["y0", "y1"])
@@ -116,17 +116,17 @@ def test_mistakes_are_named():
     out = _fitted(n_groups=1, n_rows=50)
     with pytest.raises(KeyError, match="nope"):
         po.eval.metrics(out, "nope")
-    cov = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], halflife=20.0)]).fit_predict(
+    cov = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], half_life=20.0)]).fit_predict(
         out.drop("m")
     )
     with pytest.raises(TypeError, match="no prediction fields"):
         po.eval.unpack(cov, "c")
     with pytest.raises(ValueError, match="cannot infer the target column for slot 'pred_y0'"):
         po.eval.unpack(out.drop("y0"), "m")
-    with pytest.raises(ValueError, match="window must be > 0, got 0"):
-        po.eval.rolling_metrics(out, "m", clock="t", window=0)
+    with pytest.raises(ValueError, match="window_size must be > 0, got 0"):
+        po.eval.rolling_metrics(out, "m", clock="t", window_size=0)
     with pytest.raises(TypeError, match="clock column 'group' must be numeric"):
-        po.eval.rolling_metrics(out, "m", clock="group", window=10.0)
+        po.eval.rolling_metrics(out, "m", clock="group", window_size=10.0)
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
         po.eval.metrics(out, "m", by=["zz"])
 
@@ -138,7 +138,7 @@ def test_noise_target_gives_no_edge():
         {"x0": rng.standard_normal(n), "x1": rng.standard_normal(n), "y0": rng.standard_normal(n)}
     )
     spec = po.spec.ewridge(
-        "m", targets=["y0"], features=["x0", "x1"], halflife=300.0, min_periods=20.0
+        "m", targets=["y0"], features=["x0", "x1"], half_life=300.0, min_weight=20.0
     )
     out = po.ModelBank([spec]).fit_predict(df)
     m = po.eval.metrics(out, "m", targets=["y0"])
@@ -165,8 +165,8 @@ def _logistic_fit(n=20000, seed=0, informative=True, emit_metrics=False):
         features=["x0", "x1"],
         loss="logistic",
         learning_rate=0.05,
-        halflife=float("inf"),
-        min_periods=50.0,
+        half_life=float("inf"),
+        min_weight=50.0,
         emit_metrics=emit_metrics,
     )
     return po.ModelBank([spec]).fit_predict(df), y
@@ -216,7 +216,7 @@ class TestBinary:
         out, _ = _logistic_fit(emit_metrics=True)
         last = out["m"].struct.field("hit_rate_y0")[-1]
         m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
-        # emit_metrics is exponentially weighted (halflife=inf here, so it is
+        # emit_metrics is exponentially weighted (half_life=inf here, so it is
         # a plain running mean) and read before the last row; po.eval scores
         # every row including the last, so compare to that same window.
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
@@ -242,7 +242,7 @@ def test_target_named_like_an_output_column_does_not_collide():
     df, _ = synthetic(seed=54, n_groups=1, n_rows=150, k=2, null_frac=0.0)
     df = df.rename({"y0": "y"})
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0", "x1"], halflife=200.0, min_periods=10.0
+        "m", targets=["y"], features=["x0", "x1"], half_life=200.0, min_weight=10.0
     )
     out = po.ModelBank([spec]).fit_predict(df)
     m = po.eval.metrics(out, "m", targets=["y"])

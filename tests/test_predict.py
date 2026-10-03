@@ -86,14 +86,14 @@ def _spec(model, extra, **kw):
     opts = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=30.0,
-        min_periods=2.0,
+        half_life=30.0,
+        min_weight=2.0,
         clock="t",
-        max_dclock=8.0,
+        gap_cap=8.0,
         group="g",
         weight="w",
         emit_sigma=True,
-        emit_resid_z=True,
+        emit_zscore=True,
         emit_metrics=True,
         resid_quantiles=[0.5],
         emit_autocorr=True,
@@ -123,7 +123,7 @@ def test_predict_is_fit_predict_of_the_next_row(model, extra):
 
 
 def test_all_the_shared_options_at_once():
-    """Two halflives, selection and averaging, sessions, a drift detector, a
+    """Two half-lives, selection and averaging, sessions, a drift detector, a
     lasso path and a trend model in one bank, over the synthetic stream."""
     df, _ = synthetic(seed=3, n_groups=2, n_rows=120, k=2)
     specs = [
@@ -131,16 +131,16 @@ def test_all_the_shared_options_at_once():
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=[50.0, 200.0],
+            half_life=[50.0, 200.0],
             clock="t",
-            max_dclock=100.0,
+            gap_cap=100.0,
             group="group",
             session="session",
             session_gap=50.0,
             weight="w",
-            min_periods=3.0,
+            min_weight=3.0,
             emit_sigma=True,
-            emit_resid_z=True,
+            emit_zscore=True,
             emit_drift=True,
             emit_metrics=True,
             resid_quantiles=[0.5, 0.9],
@@ -154,18 +154,18 @@ def test_all_the_shared_options_at_once():
             "h",
             targets=["y0"],
             features=[],
-            halflife=20.0,
+            half_life=20.0,
             clock="t",
             group="group",
-            max_dclock=30.0,
+            gap_cap=30.0,
         ),
         po.spec.lasso(
             "l",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=50.0,
+            half_life=50.0,
             clock="t",
-            max_dclock=100.0,
+            gap_cap=100.0,
             group="group",
             lasso_path=[1.0, 0.1, 0.0],
         ),
@@ -179,10 +179,10 @@ POLICIES = [
     pytest.param(dict(session="s", session_gap="reset"), id="session-reset"),
     pytest.param(dict(session="s", session_gap=5.0), id="session-gap"),
     pytest.param(
-        dict(session="s", session_gap=5.0, session_shrink=0.5, long_halflife=300.0),
+        dict(session="s", session_gap=5.0, session_shrink=0.5, long_half_life=300.0),
         id="session-shrink",
     ),
-    pytest.param(dict(on_clock_reset="reset_state", min_backwards_jump=0.0), id="clock-reset"),
+    pytest.param(dict(restart_after_step_back=0.0), id="clock-reset"),
     pytest.param({}, id="clock-error"),
 ]
 
@@ -202,7 +202,7 @@ def test_session_and_clock_policies_hold(policy):
     would blend toward the long run by a blended copy, a session gap by the
     delta the policy defines -- each exactly as `fit_predict` would have it
     for that row. A row dated before the last learned row is scored against
-    the state as it stands, a step of 0, under either `on_clock_reset`:
+    the state as it stands, a step of 0, whatever `restart_after_step_back` says:
     scoring learns nothing, so it neither refuses nor starts over, and such
     a row scores as it would at the last learned clock (task 120)."""
     df = _frame(n=60, groups=("a",)).with_columns(s=pl.lit("one"))
@@ -223,25 +223,25 @@ def test_session_and_clock_policies_hold(policy):
     assert_row_oracle(bank, specs, at_last)
     out = bank.predict(later)["m"]
     assert out.equals(bank.predict(at_last)["m"])
-    n_eff = out.struct.field("n_eff").to_list()
+    weight_sum = out.struct.field("weight_sum").to_list()
     pred = out.struct.field("pred_y0").to_list()
     if policy.get("session_gap") == "reset":
         # A fresh stream has nothing to say -- and the rows around it are
         # scored by the bank as it stands, unaffected.
         fresh = range(5, 10)
-        assert all(pred[i] is None and n_eff[i] == 0.0 for i in fresh)
+        assert all(pred[i] is None and weight_sum[i] == 0.0 for i in fresh)
         assert all(pred[i] is not None for i in range(20) if i not in fresh)
     elif "session_shrink" in policy:
         # The blend keeps the weight (task 145) and moves the fit, and only
         # for those rows: against the same rows in one session, every
         # prediction there differs and every other one is the same.
-        assert len(set(n_eff)) == 1
+        assert len(set(weight_sum)) == 1
         one = bank.predict(later.with_columns(s=pl.lit("one")))["m"]
         same = one.struct.field("pred_y0").to_list()
         assert all(pred[i] != same[i] for i in range(5, 10))
         assert all(pred[i] == same[i] for i in range(20) if i not in range(5, 10))
     else:
-        assert len(set(n_eff)) == 1 and all(p is not None for p in pred)
+        assert len(set(weight_sum)) == 1 and all(p is not None for p in pred)
 
 
 def test_a_backwards_clock_is_scored_and_refused_only_when_learned():
@@ -281,7 +281,7 @@ class TestInputs:
         bare = self.bank.predict(self.later.drop("y0", "w"))
         for f in _fields(full, "m"):
             a, b = full["m"].struct.field(f), bare["m"].struct.field(f)
-            if f in ("resid_y0", "resid_z_y0"):
+            if f in ("resid_y0", "zscore_y0"):
                 # The one thing a target is for.
                 assert b.is_null().all(), f
                 assert not a.is_null().all(), f
@@ -378,15 +378,15 @@ class TestInputs:
 
 
 def test_the_e31_scenario_no_longer_goes_null():
-    """`weight = 0` scored without learning but let the clock run, so `n_eff`
-    decayed under `min_periods` and the outputs went null mid-batch
+    """`weight = 0` scored without learning but let the clock run, so `weight_sum`
+    decayed under `min_weight` and the outputs went null mid-batch
     (measured in docs/ENHANCEMENTS.md E31). `predict` freezes it."""
     n = 100
     rng = np.random.default_rng(1)
     x = rng.standard_normal(200)
     df = pl.DataFrame({"x0": x, "y": 2 * x, "t": np.arange(200.0), "w": np.ones(200)})
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], halflife=20.0, min_periods=10.0, weight="w"
+        "m", targets=["y"], features=["x0"], half_life=20.0, min_weight=10.0, weight="w"
     )
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(n))
@@ -397,18 +397,18 @@ def test_the_e31_scenario_no_longer_goes_null():
     assert zero_w["m"].struct.field("pred_y").is_null().sum() > 30, "the scenario changed"
     scored = bank.predict(batch)
     assert not scored["m"].struct.field("pred_y").is_null().any()
-    n_eff = scored["m"].struct.field("n_eff")
-    assert n_eff.n_unique() == 1, "n_eff decayed while scoring"
+    weight_sum = scored["m"].struct.field("weight_sum")
+    assert weight_sum.n_unique() == 1, "weight_sum decayed while scoring"
 
 
 def test_holt_extrapolates_over_the_clock_distance():
     """A trend model's prediction is `level + trend * h`, where the horizon
     `h` is the row's clock distance from the last learned row, capped by
-    `max_dclock` -- measured from where the bank stands, not from the
+    `gap_cap` -- measured from where the bank stands, not from the
     previous scored row. `coef` is `[level, trend]`, so the oracle is exact."""
     t = np.arange(50.0)
     df = pl.DataFrame({"y": 3.0 + 0.5 * t, "t": t})
-    spec = po.spec.holt("h", targets=["y"], features=[], halflife=10.0, clock="t", max_dclock=20.0)
+    spec = po.spec.holt("h", targets=["y"], features=[], half_life=10.0, clock="t", gap_cap=20.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
     last = bank.groups()["last_clock"][0]
@@ -434,7 +434,7 @@ def test_predict_from_many_threads_at_once():
     n = 400_000
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=[10.0, 100.0, 1000.0])
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(1000))
     start = threading.Barrier(4)
@@ -465,7 +465,7 @@ def test_fit_predict_is_refused_while_scoring():
     n = 2_000_000
     rng = np.random.default_rng(0)
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=[10.0, 100.0, 1000.0])
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(1000))
     started = threading.Event()
@@ -507,10 +507,10 @@ class TestRunner:
             targets=["y"],
             features=["x0"],
             clock="t",
-            max_dclock=10.0,
-            halflife=500.0,
+            gap_cap=10.0,
+            half_life=500.0,
             group="g",
-            min_periods=20.0,
+            min_weight=20.0,
         )
 
     def _write(self, path, n=4000, seed=0):
@@ -637,10 +637,10 @@ class TestRunner:
                     'targets = ["y"]',
                     'features = ["x0"]',
                     'clock = "t"',
-                    "max_dclock = 10.0",
-                    "halflife = 500.0",
+                    "gap_cap = 10.0",
+                    "half_life = 500.0",
                     'group = "g"',
-                    "min_periods = 20.0",
+                    "min_weight = 20.0",
                     "",
                     "[specs.model]",
                     'type = "ew_ridge"',

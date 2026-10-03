@@ -9,7 +9,7 @@ catches skipping each step. Where a step says **no check**, that is the truth
 and not a to-do.
 
 It is written for a contributor adding a model kind, who knows the library's
-words (spec, bank, state, `n_eff`) but not yet the names of its plumbing.
+words (spec, bank, state, `weight_sum`) but not yet the names of its plumbing.
 Adding a common parameter, an output field or a kind of input column instead
 is [the last section](#adding-an-output-or-a-parameter-instead).
 
@@ -69,7 +69,7 @@ the update equations. The module's unit tests need an **oracle**, not a golden
 number alone: the recursion written out longhand, an equivalent model
 configured differently, or the optimality conditions.
 
-Four rules hold for every model. `n_eff` is the weight before this row's
+Four rules hold for every model. `n_eff` (emitted as `weight_sum`) is the weight before this row's
 update and before its own decay (CLAUDE.md rule 8). A zero-weight first row
 must not divide 0/0 (rule 9). A zero-weight row **still decays** `n_eff`: it
 advances the clock and nothing else. `zero_weight_rows_only_advance_the_clock`
@@ -88,8 +88,8 @@ Each such case overrides a method, and each has its check:
 | if the model … | it implements | the check |
 |---|---|---|
 | keeps a ring of past rows: a lag ring, a window | **`clear_lags`**, dropping that ring and nothing else (docs/PLAN.md task 47) | `probe_with` in `tests/model_contract.rs`, against `KEEPS_LAGS` |
-| has a `window` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the heap it holds, in bytes), and **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it (review 2026-09-12, P4) | `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder` |
-| is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `resid_z` at the fit's window (review 2026-09-12, S1) | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
+| has a `window_size` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the heap it holds, in bytes), and **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it (review 2026-09-12, P4) | `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder` |
+| is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `zscore` at the fit's window (review 2026-09-12, S1) | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
 | keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** (review 2026-09-12, S2) | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
 | reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** (docs/REVIEW-E54-E64.md C1) | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
 
@@ -122,7 +122,7 @@ that takes `window_budget` is in that test's table.
 parametrization.
 
 **A weight per target.** `ewridge`, `lasso`, `kalman`, `robust` and `holt`
-keep one. With `target_n_eff_into` overridden, each target's `min_periods` is
+keep one. With `target_n_eff_into` overridden, each target's `min_weight` is
 checked against its own weight rather than the shared `n_eff`. The default
 leaves every target on the shared one, and
 `test_a_sparse_target_warms_up_on_its_own_weight` fails for a model that keeps
@@ -152,7 +152,7 @@ slot held over the window (task 94).
 | if the model … | the check |
 |---|---|
 | standardizes by, divides by or reports a spread | `crates/online-core/tests/held_values.rs`, to which it is added |
-| has a `window` over such moments | a held-slot test beside it, as `window.rs` and `marginal.rs` have |
+| has a `window_size` over such moments | a held-slot test beside it, as `window.rs` and `marginal.rs` have |
 
 #### Restoring
 
@@ -272,7 +272,7 @@ over them:
 
 | arm | takes an arm when | for example |
 |---|---|---|
-| **`Spec::decays()`** | the model has no decay at all. Without the arm, the spec will demand a `halflife` it cannot use; `validate` should then refuse `halflife`/`lam` for it by name | `seqtest` counts trials, `rcov` accumulates a block, `corrchange` runs a test and `bocpd` has a run-length posterior instead |
+| **`Spec::decays()`** | the model has no decay at all. Without the arm, the spec will demand a `half_life` it cannot use; `validate` should then refuse `half_life`/`lam` for it by name | `seqtest` counts trials, `rcov` accumulates a block, `corrchange` runs a test and `bocpd` has a run-length posterior instead |
 | **`default_min_periods`** | the schema's own warm-up is the gate rather than `k + 1` | `corrchange`'s span, `bocpd`'s row one, `hmm`'s `warm_rows` |
 
 **Check:** neither is exhaustive; `tests/test_<model>.py` is where the refusal
@@ -281,7 +281,7 @@ and the gate get pinned.
 #### A block rather than a row
 
 A model whose value is a **block** rather than a row, such as `rcov`, is a
-third shape again. It needs `group` and `group_close`, emits `n_eff` alone per
+third shape again. It needs `group` and `group_close`, emits `weight_sum` alone per
 row, and its output leaves the bank through `Bank::closed_groups` when the
 group closes. `Spec::validate` refuses it without the two columns, and
 `tests/test_closed_groups.py` is the file that covers the queue.
@@ -289,7 +289,7 @@ group closes. `Spec::validate` refuses it without the two columns, and
 #### A parameter measured in clock units
 
 **A parameter measured in clock units** — a window, a solve cadence, a
-halflife of the model's own — is a `Span` (or a `SpanList` for one value per
+half-life of the model's own — is a `Span` (or a `SpanList` for one value per
 slot), not an `f64`, so a temporal clock can give it as a duration
 (docs/PLAN.md task 88). It goes into **`CLOCK_FIELDS`** under the model's
 `type`, and into the match in **`Spec::clock_spans`**, which the bank uses to
@@ -312,7 +312,7 @@ An `AnyModel::<Model>(Box<...>)` variant, and its arms:
 | `solve_failures` | 0 for a model that never factorizes |
 | `coefficients` | the per-target layout the `coef` field reports |
 | `restore` | the `ModelState` arm |
-| `build_one` | the `ModelKind` arm that turns spec fields into a `Cfg`. Defaults are decided here: `holt` reads the spec's `halflife` as its level halflife, so the shared parameter means the same thing everywhere |
+| `build_one` | the `ModelKind` arm that turns spec fields into a `Cfg`. Defaults are decided here: `holt` reads the spec's `half_life` as its level half-life, so the shared parameter means the same thing everywhere |
 | `combos` | `vec![Combo::default()]`, unless the model is a grid |
 
 **Check:** every match but `restore` is exhaustive. `restore` has a
@@ -343,10 +343,10 @@ combo, and are the cases in `output_index`:
 | `micro` | a label, an id, a flag, two counts |
 | `ew_class` | a class and its posteriors |
 | `seqtest` | two log e-values and two counts per target, no `coef` |
-| `marginal` | `n_eff` alone: its pairs are state, read by `Bank::marginal` as a frame, and a spec that is not a `marginal` is refused there by name |
+| `marginal` | `weight_sum` alone: its pairs are state, read by `Bank::marginal` as a frame, and a spec that is not a `marginal` is refused there by name |
 | `lasso` | a path |
 | `deco` | `u`, `rho` and a `loglik`, per block and per pair of blocks |
-| `rcov` | `n_eff` alone: its block leaves through `Bank::closed_groups` |
+| `rcov` | `weight_sum` alone: its block leaves through `Bank::closed_groups` |
 | `hmm` | a state and its posteriors, `ew_class`'s shape without the labels |
 | `corrchange` | a statistic, a critical value, a flag and a counter, on the rows where a span closes |
 | `bocpd` | a changepoint probability, two run lengths, a predictive mean per feature and a log score |
@@ -520,7 +520,7 @@ link to `crates/online-core/src/<file>.rs`, which must exist.
 
 **`docs/OUTPUTS.md`** is generated. In `scripts/outputs_doc.py`, place the
 model in its family in `FAMILIES`, give each new field stem a `MEANING` line,
-and a `STATE_ONLY` note if the model writes only `n_eff`; then
+and a `STATE_ONLY` note if the model writes only `weight_sum`; then
 `uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`. **Check:**
 `test_outputs_doc`'s `test_the_document_is_what_the_generator_writes`,
 `test_every_model_has_a_section` and `test_no_field_is_left_undocumented`.
@@ -550,7 +550,7 @@ will fail in between, which is what they are for.
 
 | what you add | where it goes | what pins it |
 |---|---|---|
-| **a new *common* parameter**, one every model takes, like `label_delay` | the field on `Spec` in `crates/online-polars/src/spec.rs` with `#[serde(default)]`, and its validation in `Spec::validate`; `ExprKwargs` in `python/polars_online/_kwargs.py`; `_common`'s signature *and* the dict it builds, in `python/polars_online/_spec.py` | the API snapshot (`tests/api_surface.txt`) records the new keyword and its default, and regenerating it is the diff to read |
+| **a new *common* parameter**, one every model takes, like `embargo` | the field on `Spec` in `crates/online-polars/src/spec.rs` with `#[serde(default)]`, and its validation in `Spec::validate`; `ExprKwargs` in `python/polars_online/_kwargs.py`; `_common`'s signature *and* the dict it builds, in `python/polars_online/_spec.py` | the API snapshot (`tests/api_surface.txt`) records the new keyword and its default, and regenerating it is the diff to read |
 | **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank.rs` carries the name and dtype (IMPROVEMENTS X1); the emit flag goes on `Spec` and `CommonKwargs` | `test_portability::test_exact_field_names_for_a_grid_spec`, plus the API snapshot |
 | **a new kind of input column**, beyond features, targets and the weight | `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs` decide which columns `describe()` lists, and in what order; `Bank::describe`'s `keep` decides which get moments | `tests/summary.rs` pins the frame's column names, and compares every statistic to an oracle computed over the frame, so a column the summary does not know is a failing count there |
 | **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9) | the inf-table test catches the Python half; the compiler catches the Rust half |

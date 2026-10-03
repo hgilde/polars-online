@@ -93,8 +93,8 @@ def test_the_posterior_is_the_longhand_algorithm_one():
     posts, scores = longhand(x, 50.0)
     # Row one is gated out: `P(r <= 1)` is 1 there whatever the data, so
     # every comparison starts at row two -- the row is still *learned*.
-    assert out["logscore"][0] is None
-    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["loglik"][0] is None
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
     p_change, mode, mean = [], [], []
     for p in posts:
         p_change.append(p[0] + (p[1] if len(p) > 1 else 0.0))
@@ -177,9 +177,9 @@ def test_the_gaussian_emission_is_the_longhand_at_three_features():
     common = dict(hazard=50.0, prune_below=0.0)
     out = run(x, emission="gaussian", **common)
     scores, p_change = longhand_gaussian(x, 50.0)
-    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
     assert out["p_change"].to_list()[1:] == pytest.approx(list(p_change[1:]), abs=1e-10)
-    diag = run(x, emission="diag", **common)["logscore"].to_numpy()[1:]
+    diag = run(x, emission="diag", **common)["loglik"].to_numpy()[1:]
     assert np.max(np.abs(diag - scores[1:])) > 1e-2, "the covariance matters here"
 
 
@@ -200,7 +200,7 @@ def test_two_features_are_a_product_of_student_ts():
     x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80)])
     out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     _, scores = longhand(x, 40.0)
-    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
 
 # --- what it detects ---------------------------------------------------------
@@ -270,7 +270,7 @@ def test_the_log_score_prefers_the_model_that_saw_the_break():
     # long enough and the stuck model's single run drags itself over to the
     # new mean too, and the gap closes.
     after = slice(150, 200)
-    assert sum(quick["logscore"].to_list()[after]) > sum(stuck["logscore"].to_list()[after]) + 5
+    assert sum(quick["loglik"].to_list()[after]) > sum(stuck["loglik"].to_list()[after]) + 5
 
 
 # --- the knobs ---------------------------------------------------------------
@@ -389,7 +389,7 @@ def test_predict_reads_the_hazard_column():
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(150))
     got = bank.predict(df.slice(150, 1))["b"].struct.unnest()
-    for col in ("p_change", "run_mode", "run_mean", "pred_x0", "logscore"):
+    for col in ("p_change", "run_mode", "run_mean", "pred_x0", "loglik"):
         assert got[col][0] == pytest.approx(step[col][150], rel=1e-12, abs=1e-12), col
 
 
@@ -400,7 +400,7 @@ def test_a_zero_weight_row_advances_nothing():
     kept = run(x, hazard=50.0, prior_scale=[1.0], prior_nu=2.0, weight="w", w=w)
     dropped = run(np.delete(x, 30), hazard=50.0, prior_scale=[1.0], prior_nu=2.0)
     assert kept["run_mode"].to_list()[31:] == dropped["run_mode"].to_list()[30:]
-    assert kept["n_eff"][31] == 30.0
+    assert kept["weight_sum"][31] == 30.0
 
 
 def test_the_first_row_of_every_group_is_silent():
@@ -411,7 +411,7 @@ def test_the_first_row_of_every_group_is_silent():
     assert out["p_change"][1] is not None and out["p_change"][21] is not None
     # And the groups are independent: the second starts its run over.
     assert out["run_mode"][21] == 1
-    assert out["n_eff"][20] == 0.0
+    assert out["weight_sum"][20] == 0.0
 
 
 # --- the robust emission -----------------------------------------------------
@@ -502,7 +502,7 @@ def test_chunks_and_a_reload_do_not_move_it():
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        (dict(halflife=10.0), "do not apply to bocpd"),
+        (dict(half_life=10.0), "do not apply to bocpd"),
         (dict(emission="student"), "unknown bocpd emission"),
         (dict(prior_scale=[1.0, 2.0]), "prior_scale is a scalar"),
         (dict(prior_mean=[0.0, 0.0]), "prior_mean must be 1 values"),
@@ -533,4 +533,4 @@ def test_three_features_are_a_product_of_student_ts():
     x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80), rng.normal(0, 0.5, 80)])
     out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     _, scores = longhand(x, 40.0)
-    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+    assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)

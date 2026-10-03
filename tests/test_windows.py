@@ -38,12 +38,12 @@ def _counts(v: Any, w: Any) -> bool:
 
 
 def _mean(
-    members: list[tuple[float, float, float]], anchor: float, halflife: float
+    members: list[tuple[float, float, float]], anchor: float, half_life: float
 ) -> float | None:
     """``sum w lam^|t - a| v / sum w lam^|t - a|`` over ``(t, v, w)``."""
     if not members:
         return None
-    lam = 1.0 if math.isinf(halflife) else 2.0 ** (-1.0 / halflife)
+    lam = 1.0 if math.isinf(half_life) else 2.0 ** (-1.0 / half_life)
     s = sum(w * lam ** abs(t - anchor) * v for t, v, w in members)
     d = sum(w * lam ** abs(t - anchor) for t, _, w in members)
     return s / d if d > 0 else None
@@ -53,7 +53,7 @@ def loop(
     df: pl.DataFrame,
     *,
     value: str,
-    halflife: float,
+    half_life: float,
     horizon: float | None,
     forward: bool,
     weight: str | None = None,
@@ -87,7 +87,7 @@ def loop(
                 ]
                 if any(t[j] - t[i] >= horizon for j in later):
                     complete[i] = True
-                    values[i] = _mean(members, members[0][0] if members else 0.0, halflife)
+                    values[i] = _mean(members, members[0][0] if members else 0.0, half_life)
             else:
                 members = [
                     (t[j], v[j], w[j])
@@ -95,7 +95,7 @@ def loop(
                     if (horizon is None or t[i] - t[j] < horizon) and _counts(v[j], w[j])
                 ]
                 complete[i] = horizon is None or t[i] - t[idx[0]] >= horizon
-                values[i] = _mean(members, members[-1][0] if members else 0.0, halflife)
+                values[i] = _mean(members, members[-1][0] if members else 0.0, half_life)
     return values, complete
 
 
@@ -133,7 +133,7 @@ def ticks(n: int, seed: int, *, groups: int = 1, unique: bool = False) -> pl.Dat
     )
 
 
-CLOCK = {"clock": "t", "max_dclock": 1e6}
+CLOCK = {"clock": "t", "gap_cap": 1e6}
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -143,22 +143,28 @@ def test_each_direction_matches_the_definition(seed: int, same_clock: str) -> No
     out = po.stream.with_windows(
         df,
         [
-            po.window.ewm("x", weight="w", halflife=4, horizon=10, complete="b_ok"),
-            po.window.ewm("x", halflife=6, name="x_all"),
+            po.window.ewm("x", weight="w", half_life=4, horizon=10, complete="b_ok"),
+            po.window.ewm("x", half_life=6, name="x_all"),
             po.window.lookahead_rewm(
-                "x", weight="w", halflife=3, horizon=7, same_clock=same_clock, complete="f_ok"
+                "x", weight="w", half_life=3, horizon=7, same_clock=same_clock, complete="f_ok"
             ),
         ],
         group="g",
         **CLOCK,
     )
     for name, ok, kwargs in [
-        ("x_ewm_4_10", "b_ok", {"halflife": 4, "horizon": 10, "forward": False, "weight": "w"}),
-        ("x_all", None, {"halflife": 6, "horizon": None, "forward": False}),
+        ("x_ewm_4_10", "b_ok", {"half_life": 4, "horizon": 10, "forward": False, "weight": "w"}),
+        ("x_all", None, {"half_life": 6, "horizon": None, "forward": False}),
         (
             "x_rewm_3_7",
             "f_ok",
-            {"halflife": 3, "horizon": 7, "forward": True, "weight": "w", "same_clock": same_clock},
+            {
+                "half_life": 3,
+                "horizon": 7,
+                "forward": True,
+                "weight": "w",
+                "same_clock": same_clock,
+            },
         ),
     ]:
         want, complete = loop(df, value="x", group="g", **kwargs)  # type: ignore[arg-type]
@@ -167,11 +173,11 @@ def test_each_direction_matches_the_definition(seed: int, same_clock: str) -> No
             assert out[ok].to_list() == complete, name
 
 
-def rolling_recipe(df: pl.DataFrame, horizon: int, halflife: float, forward: bool) -> pl.Series:
+def rolling_recipe(df: pl.DataFrame, horizon: int, half_life: float, forward: bool) -> pl.Series:
     """The recipe docs/PLAN.md measured: ``rolling`` with each window's
     weights taken from its own anchor, forward over ``(t, t + h)``
     (``closed="none"``) and backward over ``(t - h, t]`` (the default)."""
-    lam = 2.0 ** (-1.0 / halflife)
+    lam = 2.0 ** (-1.0 / half_life)
     w = pl.when(pl.col("x").is_not_null()).then(pl.col("w").fill_null(0.0)).otherwise(0.0)
     anchor = pl.col("t").min() if forward else pl.col("t").max()
     f = pl.lit(lam).pow((pl.col("t") - anchor).abs().cast(pl.Float64))
@@ -192,9 +198,9 @@ def test_each_direction_matches_polars_rolling(seed: int) -> None:
     out = po.stream.with_windows(
         df,
         [
-            po.window.ewm("x", weight="w", halflife=5, horizon=12),
+            po.window.ewm("x", weight="w", half_life=5, horizon=12),
             po.window.lookahead_rewm(
-                "x", weight="w", halflife=5, horizon=12, same_clock="exclude", complete="ok"
+                "x", weight="w", half_life=5, horizon=12, same_clock="exclude", complete="ok"
             ),
         ],
         **CLOCK,
@@ -246,7 +252,7 @@ def test_interleaved_trades_three_vwaps_and_one_split(same_clock: str) -> None:
         buy_qty=pl.when(pl.col("side") == "buy").then(pl.col("quantity")),
         sell_qty=pl.when(pl.col("side") == "sell").then(pl.col("quantity")),
     )
-    common = {"halflife": 10, "horizon": 60, "same_clock": same_clock}
+    common = {"half_life": 10, "horizon": 60, "same_clock": same_clock}
     three = po.stream.with_windows(
         df,
         [
@@ -284,7 +290,7 @@ def test_an_empty_window_is_null_and_complete() -> None:
     df = pl.DataFrame({"t": [0, 1, 2, 9], "p": [1.0, None, None, 5.0], "q": [1.0, None, None, 2.0]})
     out = po.stream.with_windows(
         df,
-        [po.window.lookahead_rewm("p", weight="q", halflife=1, horizon=5, complete="ok")],
+        [po.window.lookahead_rewm("p", weight="q", half_life=1, horizon=5, complete="ok")],
         **CLOCK,
     )
     assert out["p_rewm_1_5"].to_list() == [None, None, None, None]
@@ -311,7 +317,7 @@ def test_unlisted_under_each_setting() -> None:
                     split=("side", ["buy", "sell"]),
                     unlisted=unlisted,  # type: ignore[arg-type]
                     total=total,
-                    halflife=math.inf,
+                    half_life=math.inf,
                     horizon=10,
                     name="v{split}",
                 )
@@ -334,7 +340,7 @@ def test_unlisted_under_each_setting() -> None:
         df_ok,
         [
             po.window.lookahead_rewm(
-                "p", weight="q", split=("side", ["buy", "sell"]), halflife=1, horizon=10
+                "p", weight="q", split=("side", ["buy", "sell"]), half_life=1, horizon=10
             )
         ],
         **CLOCK,
@@ -350,24 +356,26 @@ def test_a_split_by_integers_matches_as_text() -> None:
     df = pl.DataFrame({"t": [0, 1, 2, 9], "k": [1, 2, 1, 1], "p": [1.0, 2.0, 3.0, 4.0]})
     out = po.stream.with_windows(
         df,
-        [po.window.lookahead_rewm("p", split=("k", [1, 2]), halflife=math.inf, horizon=5)],
+        [po.window.lookahead_rewm("p", split=("k", [1, 2]), half_life=math.inf, horizon=5)],
         **CLOCK,
     )
     assert out["p_rewm_inf_5_1"][0] == 3.0
     assert out["p_rewm_inf_5_2"][0] == 2.0
 
 
-def events(on_clock_reset: str = "error", session_gap: Any = 1.0, **kw: Any) -> dict[str, Any]:
-    policy: dict[str, Any] = {"clock": "t", "max_dclock": 10.0, "on_clock_reset": on_clock_reset}
-    if on_clock_reset == "reset_state":
-        policy["min_backwards_jump"] = 50.0
+def events(
+    restart_after_step_back: Any = None, session_gap: Any = 1.0, **kw: Any
+) -> dict[str, Any]:
+    policy: dict[str, Any] = {"clock": "t", "gap_cap": 10.0}
+    if restart_after_step_back is not None:
+        policy["restart_after_step_back"] = restart_after_step_back
     if session_gap is not None:
         policy.update(session="s", session_gap=session_gap)
     return policy | kw
 
 
 def test_a_gap_past_the_cap_cuts_and_a_session_change_cuts() -> None:
-    """Both end every window open across them, as the ``label_delay`` buffer
+    """Both end every window open across them, as the ``embargo`` buffer
     releases every waiting row: partial, under ``partial``."""
     df = pl.DataFrame(
         {
@@ -380,10 +388,10 @@ def test_a_gap_past_the_cap_cuts_and_a_session_change_cuts() -> None:
         df,
         [
             po.window.lookahead_rewm(
-                "x", halflife=math.inf, horizon=5, partial="keep", name="keep", complete="ok"
+                "x", half_life=math.inf, horizon=5, partial="keep", name="keep", complete="ok"
             ),
-            po.window.lookahead_rewm("x", halflife=math.inf, horizon=5, name="null"),
-            po.window.ewm("x", halflife=math.inf, horizon=5, name="back", complete="back_ok"),
+            po.window.lookahead_rewm("x", half_life=math.inf, horizon=5, name="null"),
+            po.window.ewm("x", half_life=math.inf, horizon=5, name="back", complete="back_ok"),
         ],
         **events(),
     )
@@ -402,11 +410,11 @@ def test_a_reset_discards_whatever_partial_says() -> None:
     df = pl.DataFrame(
         {"t": [100.0, 101.0, 102.0, 0.0, 1.0, 9.0], "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}
     )
-    policy = events("reset_state", session_gap=None)
+    policy = events(50.0, session_gap=None)
     for partial in ["keep", "null", "drop"]:
         out = po.stream.with_windows(
             df,
-            [po.window.lookahead_rewm("x", halflife=1, horizon=5, partial=partial, complete="ok")],  # type: ignore[arg-type]
+            [po.window.lookahead_rewm("x", half_life=1, horizon=5, partial=partial, complete="ok")],  # type: ignore[arg-type]
             **policy,
         )
         assert out.height == 6, partial
@@ -417,19 +425,19 @@ def test_a_reset_discards_whatever_partial_says() -> None:
     with pytest.raises(
         pl.exceptions.ComputeError, match="goes backwards by 12 at row 3, no more than"
     ):
-        po.stream.with_windows(late, [po.window.ewm("x", halflife=1)], **policy)
+        po.stream.with_windows(late, [po.window.ewm("x", half_life=1)], **policy)
     with pytest.raises(
         pl.exceptions.ComputeError,
-        match=r'goes backwards by 102 at row 3 \(on_clock_reset = "error"',
+        match=r"goes backwards by 102 at row 3 \(restart_after_step_back is unset",
     ):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1)], clock="t", max_dclock=10.0)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1)], clock="t", gap_cap=10.0)
 
 
 def test_session_gap_reset_discards() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "s": [0, 0, 1, 1], "x": [1.0, 2.0, 3.0, 4.0]})
     out = po.stream.with_windows(
         df,
-        [po.window.lookahead_rewm("x", halflife=1, horizon=5, partial="keep")],
+        [po.window.lookahead_rewm("x", half_life=1, horizon=5, partial="keep")],
         **events(session_gap="reset"),
     )
     assert out["x_rewm_1_5"].to_list() == [None, None, None, None]
@@ -441,7 +449,7 @@ def test_the_clock_is_read_across_groups() -> None:
     df = pl.DataFrame({"t": [5.0, 3.0], "g": ["a", "b"], "x": [1.0, 2.0]})
     with pytest.raises(pl.exceptions.ComputeError, match="goes backwards by 2 at row 1"):
         po.stream.with_windows(
-            df, [po.window.ewm("x", halflife=1)], clock="t", max_dclock=10.0, group="g"
+            df, [po.window.ewm("x", half_life=1)], clock="t", gap_cap=10.0, group="g"
         )
 
 
@@ -452,8 +460,8 @@ def test_a_silent_group_holds_the_output_for_at_most_the_cap() -> None:
     )
     df = pl.concat([quiet, busy])
     w = _native.Windows(
-        '{"windows": [{"kind": "lookahead_rewm", "columns": ["x"], "halflife": [5], '
-        '"horizon": [4], "partial": "keep"}], "clock": "t", "max_dclock": 10, "group": "g"}',
+        '{"windows": [{"kind": "lookahead_rewm", "columns": ["x"], "half_life": [5], '
+        '"horizon": [4], "partial": "keep"}], "clock": "t", "gap_cap": 10, "group": "g"}',
         df.clear(),
     )
     held = []
@@ -468,24 +476,24 @@ def test_a_silent_group_holds_the_output_for_at_most_the_cap() -> None:
 def test_negative_weight_and_bad_clock_are_refused_by_row() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0], "w": [1.0, -1.0, 1.0]})
     with pytest.raises(pl.exceptions.ComputeError, match='row 1 has weight "w" = -1'):
-        po.stream.with_windows(df, [po.window.ewm("x", weight="w", halflife=1)], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", weight="w", half_life=1)], **CLOCK)
     df = pl.DataFrame({"t": [0.0, None], "x": [1.0, 2.0]})
     with pytest.raises(pl.exceptions.ComputeError, match="row 1 has a null or non-finite clock"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1)], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1)], **CLOCK)
 
 
 def mixed(df: pl.DataFrame) -> list[po.window.Window]:
     return [
-        po.window.ewm(["x", "y"], halflife=[2, 5], horizon=8, complete="b_ok"),
-        po.window.ewm("x", halflife=3, partial="drop", horizon=4, name="dropping"),
+        po.window.ewm(["x", "y"], half_life=[2, 5], horizon=8, complete="b_ok"),
+        po.window.ewm("x", half_life=3, partial="drop", horizon=4, name="dropping"),
         po.window.lookahead_rewm(
-            "x", weight="w", halflife=2, horizon=6, partial="keep", complete="f_ok"
+            "x", weight="w", half_life=2, horizon=6, partial="keep", complete="f_ok"
         ),
         po.window.lookahead_rewm(
             "y",
             split=("g", ["0", "1"]),
             unlisted="total",
-            halflife=1e-3,
+            half_life=1e-3,
             horizon=3,
             name="tiny{split}",
         ),
@@ -505,7 +513,7 @@ def grouped_stream(n: int, seed: int) -> pl.DataFrame:
     )
 
 
-POLICY = {"clock": "t", "max_dclock": 10.0, "session": "s", "session_gap": 2.0, "group": "g"}
+POLICY = {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 2.0, "group": "g"}
 
 
 @pytest.mark.parametrize("rows", [1, 7, 64, 1000])
@@ -540,7 +548,7 @@ def test_a_state_resumes_only_its_own_call(tmp_path: Any) -> None:
     with pytest.raises(ValueError, match="saved by another call"):
         po.stream.with_windows(df, mixed(df)[:1], load_state=state, **POLICY)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="saved by another call"):
-        po.stream.with_windows(df, mixed(df), load_state=state, **(POLICY | {"max_dclock": 11.0}))  # type: ignore[arg-type]
+        po.stream.with_windows(df, mixed(df), load_state=state, **(POLICY | {"gap_cap": 11.0}))  # type: ignore[arg-type]
 
 
 def test_a_slice_and_a_filter_are_honoured() -> None:
@@ -562,16 +570,16 @@ def test_like_takes_the_spec_clock_and_its_rule() -> None:
         }
     )
     spec = po.spec.ewridge(
-        "m", targets=["p"], features=["f"], halflife=10.0, clock="t", max_dclock=100.0
+        "m", targets=["p"], features=["f"], half_life=10.0, clock="t", gap_cap=100.0
     )
     out = po.stream.with_windows(
-        df, [po.window.lookahead_rewm("p", halflife=math.inf, horizon=5)], like=spec
+        df, [po.window.lookahead_rewm("p", half_life=math.inf, horizon=5)], like=spec
     )
     # Row 1's features are null: the model never learns its target, so it is
     # null; the row still counts in row 0's window.
     assert out["p_rewm_inf_5"].to_list() == [3.0, None, 4.0, None, None]
     with pytest.raises(TypeError, match="leave out clock"):
-        po.stream.with_windows(df, [po.window.ewm("p", halflife=1)], like=spec, clock="t")
+        po.stream.with_windows(df, [po.window.ewm("p", half_life=1)], like=spec, clock="t")
 
 
 def test_names_and_collisions() -> None:
@@ -579,8 +587,8 @@ def test_names_and_collisions() -> None:
     out = po.stream.with_windows(
         df,
         [
-            po.window.ewm(["x", "y"], halflife=[1, "inf"], horizon=[5, 10]),
-            po.window.ewm("x", halflife=0.5),
+            po.window.ewm(["x", "y"], half_life=[1, "inf"], horizon=[5, 10]),
+            po.window.ewm("x", half_life=0.5),
         ],
         **CLOCK,
     )
@@ -591,39 +599,39 @@ def test_names_and_collisions() -> None:
     ]  # fmt: skip
     with pytest.raises(ValueError, match="is also"):
         po.stream.with_windows(
-            df, [po.window.ewm("x", halflife=1), po.window.ewm("x", halflife=1)], **CLOCK
+            df, [po.window.ewm("x", half_life=1), po.window.ewm("x", half_life=1)], **CLOCK
         )
     with pytest.raises(ValueError, match="already a column"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1, name="y")], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1, name="y")], **CLOCK)
     with pytest.raises(ValueError, match=r"is also"):
-        po.stream.with_windows(df, [po.window.ewm(["x", "y"], halflife=1, name="same")], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm(["x", "y"], half_life=1, name="same")], **CLOCK)
     with pytest.raises(ValueError, match=r"\{bogus\}"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1, name="{bogus}")], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1, name="{bogus}")], **CLOCK)
     with pytest.raises(ValueError, match="has no horizon"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1, name="a{horizon}")], **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1, name="a{horizon}")], **CLOCK)
 
 
 def test_a_description_that_cannot_run_is_refused_while_the_plan_is_built() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0], "s": ["a", "b"]})
     cases: list[tuple[Any, str]] = [
-        ([po.window.ewm("x", halflife=0)], "halflife must be above 0"),
-        ([po.window.lookahead_rewm("x", halflife=1, horizon=math.inf)], "horizon must be finite"),
-        ([po.window.ewm("nope", halflife=1)], "no value column"),
-        ([po.window.ewm("s", halflife=1)], "must be numbers"),
-        ([po.window.ewm("x", halflife="1m")], "halflife is a duration"),
+        ([po.window.ewm("x", half_life=0)], "half_life must be above 0"),
+        ([po.window.lookahead_rewm("x", half_life=1, horizon=math.inf)], "horizon must be finite"),
+        ([po.window.ewm("nope", half_life=1)], "no value column"),
+        ([po.window.ewm("s", half_life=1)], "must be numbers"),
+        ([po.window.ewm("x", half_life="1m")], "half_life is a duration"),
         ([], "no windows"),
     ]
     for windows, match in cases:
         with pytest.raises(ValueError, match=match):
             po.stream.with_windows(df.lazy(), windows, **CLOCK)
-    with pytest.raises(ValueError, match="max_dclock is required"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1)], clock="t")
+    with pytest.raises(ValueError, match="gap_cap is required"):
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1)], clock="t")
     with pytest.raises(ValueError, match="session_gap is required"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=1)], session="s", **CLOCK)
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=1)], session="s", **CLOCK)
     with pytest.raises(TypeError, match="descriptions"):
         po.stream.with_windows(df, ["x"], **CLOCK)  # type: ignore[list-item]
     with pytest.raises(ValueError, match="partial"):
-        po.window.ewm("x", halflife=1, partial="maybe")  # type: ignore[arg-type]
+        po.window.ewm("x", half_life=1, partial="maybe")  # type: ignore[arg-type]
 
 
 def test_a_temporal_clock_takes_durations() -> None:
@@ -633,12 +641,12 @@ def test_a_temporal_clock_takes_durations() -> None:
         )
     )
     out = po.stream.with_windows(
-        df, [po.window.lookahead_rewm("x", halflife="1s", horizon="2s")], clock="t", max_dclock="1m"
+        df, [po.window.lookahead_rewm("x", half_life="1s", horizon="2s")], clock="t", gap_cap="1m"
     )
     # Row 0: rows 1 (weight 1) only; the row 2 s later closes it.
     assert out["x_rewm_1s_2s"].to_list() == [2.0, 3.0, None, None]
     with pytest.raises(ValueError, match="plain number"):
-        po.stream.with_windows(df, [po.window.ewm("x", halflife=5)], clock="t", max_dclock="1m")
+        po.stream.with_windows(df, [po.window.ewm("x", half_life=5)], clock="t", gap_cap="1m")
 
 
 def test_queues_follow_the_rows_that_count() -> None:
@@ -651,7 +659,7 @@ def test_queues_follow_the_rows_that_count() -> None:
         df = df.with_columns(t=(pl.col("t") * 2 // (quotes + 1)))
         w = _native.Windows(
             '{"windows": [{"kind": "lookahead_rewm", "columns": ["price"], "weight": "quantity", '
-            '"halflife": [10], "horizon": [60]}], "clock": "t", "max_dclock": 1000}',
+            '"half_life": [10], "horizon": [60]}], "clock": "t", "gap_cap": 1000}',
             df.clear(),
         )
         peak = 0
@@ -671,11 +679,11 @@ def test_rows_are_held_once_however_many_windows() -> None:
         cfg = {
             "windows": [
                 {"kind": "lookahead_rewm", "columns": ["price"], "weight": "quantity",
-                 "halflife": [h], "horizon": [60]}
+                 "half_life": [h], "horizon": [60]}
                 for h in range(1, n + 1)
             ],
             "clock": "t",
-            "max_dclock": 1000,
+            "gap_cap": 1000,
         }  # fmt: skip
         import json
 
@@ -695,9 +703,9 @@ def test_window_columns_feed_a_model_in_one_query() -> None:
     """The README's use: trailing windows as a model's inputs in the same
     query, streaming, give the fit a frame of those columns gives."""
     df = grouped_stream(2000, 11).with_columns(target=pl.col("x").fill_null(0.0) * 2.0)
-    factors = [po.window.ewm("x", halflife=[3, 20], horizon=40)]
+    factors = [po.window.ewm("x", half_life=[3, 20], horizon=40)]
     spec = po.spec.ewridge(
-        "m", targets=["target"], features=["x_ewm_3_40", "x_ewm_20_40"], halflife=200.0, **POLICY
+        "m", targets=["target"], features=["x_ewm_3_40", "x_ewm_20_40"], half_life=200.0, **POLICY
     )
     lf = po.stream.with_windows(df.lazy(), factors, chunk_rows=97, **POLICY)  # type: ignore[arg-type]
     one_query = lf.online.fit_predict([spec], chunk_rows=61).collect()
@@ -742,13 +750,13 @@ def test_an_order_hazard_beneath_the_windows_is_reported() -> None:
     row order too, so they check the plan they are given, as a bank does."""
     left = pl.LazyFrame({"k": [1, 2, 3], "t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
     right = pl.LazyFrame({"k": [1, 2, 3], "z": [0.0, 1.0, 0.0]})
-    wins = [po.window.ewm("x", halflife=2)]
+    wins = [po.window.ewm("x", half_life=2)]
     with pytest.warns(po.OrderNotGuaranteedWarning, match="with_windows: .* taken over rows"):
-        left.join(right, on="k").online.with_windows(wins, clock="t", max_dclock=10.0)
+        left.join(right, on="k").online.with_windows(wins, clock="t", gap_cap=10.0)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         left.join(right, on="k", maintain_order="left").online.with_windows(
-            wins, clock="t", max_dclock=10.0
+            wins, clock="t", gap_cap=10.0
         )
 
 
@@ -764,7 +772,7 @@ def test_a_spent_stream_beneath_the_windows_is_reported() -> None:
             yield pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
 
     lf = register_io_source(once, schema={"t": pl.Float64, "x": pl.Float64})
-    plan = lf.online.with_windows([po.window.ewm("x", halflife=2)], clock="t", max_dclock=10.0)
+    plan = lf.online.with_windows([po.window.ewm("x", half_life=2)], clock="t", gap_cap=10.0)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert plan.collect().height == 2

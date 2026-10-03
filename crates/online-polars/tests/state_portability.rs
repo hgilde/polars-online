@@ -18,10 +18,10 @@ name = "m"
 targets = ["y"]
 features = ["x0", "x1"]
 clock = "t"
-halflife = 50.0
-max_dclock = 10.0
+half_life = 50.0
+gap_cap = 10.0
 group = "g"
-min_periods = 5.0
+min_weight = 5.0
 
 [model]
 type = "ew_ridge"

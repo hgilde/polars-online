@@ -38,7 +38,7 @@ replaced with what it does:
 
 | this library's own words | Polars-internal words | assumed statistics, safe to use |
 |---|---|---|
-| bank, model bank, spec, state, stream, chunk, clock, decay, halflife, session, group, warm-up, `n_eff`, accumulator, sufficient statistics, out-of-sample, fresh (bank) | plan, sink, collect, `collect_batches`, streaming engine, struct column, expression, scan, row group | regression, coefficient, residual, variance, correlation, kernel, weighted least squares, effective sample size |
+| bank, model bank, spec, state, stream, chunk, clock, decay, half-life, session, group, warm-up, `weight_sum`, accumulator, sufficient statistics, out-of-sample, fresh (bank) | plan, sink, collect, `collect_batches`, streaming engine, struct column, expression, scan, row group | regression, coefficient, residual, variance, correlation, kernel, weighted least squares, effective sample size |
 
 **A term of art is defined at first use, and again where its concept
 lives.** *The bank* is an English word with several meanings. It becomes a
@@ -110,7 +110,7 @@ what a sentence-by-sentence pass cannot. The README's map caught these:
 | what the map showed | where it went |
 |---|---|
 | *The models* and *Models*, two top-level sections nearly a thousand lines apart | one section, *Models*, with the model table at its head |
-| `label_delay`, a parameter every model shares, explained under *Preparing a stream* | *Labels that arrive late*, beside the other shared parameters |
+| `embargo`, a parameter every model shares, explained under *Preparing a stream* | *Labels that arrive late*, beside the other shared parameters |
 | *Install* and *Against scikit-learn*, each a top-level section | subsections of *Introduction* and of *Performance* |
 
 **A moderate number of large sections, each holding subsections.** About
@@ -181,7 +181,7 @@ the output is what the reader needs to see, show the output too.
 **Prose that stays must carry what a comment cannot hold at comment
 length.** A reason earns its sentence: *filter after the bank, because a
 filter before it makes Polars hold several blocks of each parquet file per
-thread*. So does a warning, such as *a huge finite halflife is not `inf`*,
+thread*. So does a warning, such as *a huge finite half-life is not `inf`*,
 and so does a trade-off. A restatement of what the code already shows does
 not (PHRASING: "As a query", clarification). The test for what remains:
 would its comment be longer than the code it sits beside? Then it is a
@@ -299,9 +299,9 @@ appears, or replaced by what it handles. *Session* is a capital-markets
 word, so it became *market-data-like sessions, with their boundaries,
 clock gaps and clock resets* (PHRASING: "a ceiling on gaps").
 
-**Why, then what, then units.** The sentence on `min_periods` gives the
+**Why, then what, then units.** The sentence on `min_weight` gives the
 reason first: a model reports only once it has seen enough data to have
-converged, so it never reports an uninformed number. Its units, `n_eff`,
+converged, so it never reports an uninformed number. Its units, `weight_sum`,
 come last. The draft put the units first and the reason never (PHRASING:
 "Groups, weights and warm-up").
 
@@ -369,7 +369,7 @@ rewrite"):
 
 | the content | the table | where the README does it |
 |---|---|---|
-| options compared | a row per option, a column per dimension | the three ways to hold a row back: scored, clock advances, fit moves, `n_eff`, use it to |
+| options compared | a row per option, a column per dimension | the three ways to hold a row back: scored, clock advances, fit moves, `weight_sum`, use it to |
 | settings | the setting, its default, what it does, what it reads | the two warm-up gates |
 | caveats | the caveat, and why | the three things to know before reading a Gram |
 | failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps` |
@@ -396,9 +396,9 @@ something concrete to be measured against:
 | before | after | rule |
 |---|---|---|
 | seventeen top-level sections, listed in a contents paragraph of sixteen links, with the twenty models flat | ten sections holding subsections, a contents table, and the models under four families | §2 |
-| three bullets comparing weight `0`, a null target and `predict`, each a paragraph | a table with one row per way, and a column each for scored, clock, fit, `n_eff` and use | §7 |
+| three bullets comparing weight `0`, a null target and `predict`, each a paragraph | a table with one row per way, and a column each for scored, clock, fit, `weight_sum` and use | §7 |
 | a paragraph listing the readiness fields a model writes | a runnable block that fits a spec and reads each field, with a comment on each | §3 |
-| the withheld reasons as `below_min_settled_frac`, `above_max_error_inflation`, `below_min_periods` | the order `WITHHELD_REASONS` declares, which is their precedence: `below_min_settled_frac`, `below_min_periods`, `above_max_error_inflation` | §4 |
+| the withheld reasons as `below_min_settled_frac`, `above_max_error_inflation`, `below_min_weight` | the order `WITHHELD_REASONS` declares, which is their precedence: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` | §4 |
 | *The order of the rows matters only when a model forgets* | *Row order matters when a model forgets … Without one, the models that solve or accumulate give the same answer in any order* | §4 |
 | *14 and 14 takes 2.6 s at a peak of 1.1 GB; 4 and 14 takes the same 2.6 s at 0.8 GB* | a table whose header says which number is which: Polars threads, bank threads, time, peak memory | §7 |
 | *Two things the comments cannot carry*, then both rules in one paragraph | two paragraphs, each led by its rule in bold | §5 |

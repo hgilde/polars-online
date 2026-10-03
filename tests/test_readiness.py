@@ -4,14 +4,14 @@ Two gates, both stated as intent rather than as a number that needs a formula
 in the user's head:
 
 - ``min_settled_frac`` -- how far the decay window has filled toward steady
-  state, ``settled_frac = 1 - 2 ** (-T / halflife)`` with ``T`` the decay time
+  state, ``settled_frac = 1 - 2 ** (-T / half_life)`` with ``T`` the decay time
   the models have actually seen. Off by default: under a stationary process a
   mean-form fit is unbiased from its first row, so what this guards is a
   history that does not represent the process, which only the user can judge.
 - ``max_error_inflation`` -- how much estimation error is expected to inflate
   a prediction's error over the noise floor, ``sqrt(1 + edf / n_kish)``.
   Default ``sqrt(2)``: withhold while the estimation variance exceeds the
-  noise being fitted. It replaces the ``k + 1`` floor ``min_periods`` gave
+  noise being fitted. It replaces the ``k + 1`` floor ``min_weight`` gave
   ``ewridge`` and, unlike it, tracks the model and reads Kish's sample size,
   so uneven weights withhold for longer.
 
@@ -31,7 +31,7 @@ import pytest
 
 import polars_online as po
 
-REASONS = {"below_min_settled_frac", "above_max_error_inflation", "below_min_periods"}
+REASONS = {"below_min_settled_frac", "above_max_error_inflation", "below_min_weight"}
 
 
 def frame(n: int = 300, k: int = 2, seed: int = 0, noise: float = 0.5) -> pl.DataFrame:
@@ -46,7 +46,7 @@ def frame(n: int = 300, k: int = 2, seed: int = 0, noise: float = 0.5) -> pl.Dat
 
 
 def spec(**kw) -> dict:
-    base = dict(targets=["y"], features=["x0", "x1"], halflife=20.0, max_rows_between_solves=1)
+    base = dict(targets=["y"], features=["x0", "x1"], half_life=20.0, max_rows_between_solves=1)
     base.update(kw)
     return po.spec.ewridge("m", **base)
 
@@ -66,7 +66,7 @@ def first_present(s: pl.Series) -> int:
 
 class TestSettledFrac:
     def test_is_the_decay_time_seen_before_the_row_as_a_fraction_of_steady_state(self):
-        out = po.ModelBank([spec(halflife=10.0)]).fit_predict(frame(60))
+        out = po.ModelBank([spec(half_life=10.0)]).fit_predict(frame(60))
         got = field(out, "settled_frac").to_list()
         # A row-count clock: one clock unit per row, and a group's first row
         # decays by nothing, so the decay time seen before row `i` is `i - 1`
@@ -79,31 +79,31 @@ class TestSettledFrac:
         assert got[31] == pytest.approx(0.875)
 
     def test_is_rate_independent_on_a_clock(self):
-        """Ten, fifty or a hundred rows per halflife: the fraction is the
-        same at one, two and three halflives, because it is the *clock* the
+        """Ten, fifty or a hundred rows per half-life: the fraction is the
+        same at one, two and three half-lives, because it is the *clock* the
         decay has covered, not a count of anything (§5.2)."""
         for rows_per_halflife in (10, 50, 100):
             n = 4 * rows_per_halflife
             df = frame(n).with_columns((pl.col("t") * (50.0 / rows_per_halflife)).alias("t"))
-            s = spec(clock="t", halflife=50.0, max_dclock=1e9)
+            s = spec(clock="t", half_life=50.0, gap_cap=1e9)
             got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
-            for halflives in (1, 2, 3):
+            for half_lives in (1, 2, 3):
                 # One row on: the first row's delta is zero.
-                assert got[halflives * rows_per_halflife + 1] == pytest.approx(
-                    1.0 - 2.0**-halflives
+                assert got[half_lives * rows_per_halflife + 1] == pytest.approx(
+                    1.0 - 2.0**-half_lives
                 ), rows_per_halflife
 
     def test_is_null_without_decay(self):
-        out = po.ModelBank([spec(halflife=math.inf)]).fit_predict(frame(30))
+        out = po.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
         assert field(out, "settled_frac").null_count() == 30
 
     def test_counts_a_capped_gap_as_the_cap(self):
-        """A weekend capped to ``max_dclock`` warms the model by
-        ``max_dclock``, since that is what it decayed by."""
+        """A weekend capped to ``gap_cap`` warms the model by
+        ``gap_cap``, since that is what it decayed by."""
         df = frame(40).with_columns(
             pl.when(pl.col("t") >= 20).then(pl.col("t") + 1e6).otherwise(pl.col("t")).alias("t")
         )
-        s = spec(clock="t", halflife=10.0, max_dclock=5.0)
+        s = spec(clock="t", half_life=10.0, gap_cap=5.0)
         got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
         # Rows 1..19 are one unit apart (19 units before row 20); the jump
         # at row 20 counts 5, not 1e6, and is seen from row 21 on.
@@ -117,10 +117,9 @@ class TestSettledFrac:
         )
         s = spec(
             clock="t",
-            halflife=10.0,
-            max_dclock=5.0,
-            on_clock_reset="reset_state",
-            min_backwards_jump=0.0,
+            half_life=10.0,
+            gap_cap=5.0,
+            restart_after_step_back=0.0,
         )
         got = field(po.ModelBank([s]).fit_predict(df), "settled_frac")
         # The reset row is a first row again: it decays by nothing.
@@ -130,7 +129,7 @@ class TestSettledFrac:
 
 class TestMinSettledFrac:
     def test_withholds_until_the_fraction_and_says_why(self):
-        s = spec(halflife=10.0, min_settled_frac=0.5)
+        s = spec(half_life=10.0, min_settled_frac=0.5)
         out = po.ModelBank([s]).fit_predict(frame(40))
         pred = field(out, "pred_y")
         why = reasons(out)
@@ -152,10 +151,10 @@ class TestMinSettledFrac:
 
     def test_needs_a_decay_to_settle_toward(self):
         with pytest.raises(ValueError, match="min_settled_frac"):
-            spec(halflife=math.inf, min_settled_frac=0.5)
+            spec(half_life=math.inf, min_settled_frac=0.5)
 
     def test_predict_withholds_the_same_way(self):
-        s = spec(halflife=10.0, min_settled_frac=0.5)
+        s = spec(half_life=10.0, min_settled_frac=0.5)
         bank = po.ModelBank([s])
         bank.fit_predict(frame(5))
         out = bank.predict(frame(3, seed=1))
@@ -169,7 +168,7 @@ class TestMinSettledFrac:
                 frame(20, seed=1).with_columns(pl.lit("b").alias("g")),
             ]
         )
-        s = spec(halflife=10.0, min_settled_frac=0.5, group="g")
+        s = spec(half_life=10.0, min_settled_frac=0.5, group="g")
         out = po.ModelBank([s]).fit_predict(df)
         why = reasons(out)
         assert why[40:51] == ["below_min_settled_frac"] * 11
@@ -180,10 +179,10 @@ class TestMaxErrorInflation:
     def test_the_default_is_the_old_floor_on_unit_weights(self):
         """``sqrt(2)`` opens where ``k + 1`` did on an undecayed stream: the
         first prediction is on row ``k + 1`` (rows count from zero), as it
-        always was. Under a halflife Kish's ``n`` after ``k + 1`` rows is a
+        always was. Under a half-life Kish's ``n`` after ``k + 1`` rows is a
         hair under ``k + 1`` -- the gate sits exactly on its boundary -- so
         it opens one row later."""
-        out = po.ModelBank([spec(halflife=math.inf)]).fit_predict(frame(30))
+        out = po.ModelBank([spec(half_life=math.inf)]).fit_predict(frame(30))
         pred = field(out, "pred_y")
         assert pred[:3].null_count() == 3
         assert pred[3:].null_count() == 0
@@ -195,11 +194,11 @@ class TestMaxErrorInflation:
     def test_uneven_weights_withhold_for_longer(self):
         """One row carrying a hundred times the weight of the others is not a
         hundred observations: Kish's ``n`` says it is barely one, and the gate
-        reads that. ``min_periods`` counted the weight and let it through."""
+        reads that. ``min_weight`` counted the weight and let it through."""
         df = frame(300).with_columns(
             pl.when(pl.col("t") == 0).then(100.0).otherwise(1.0).alias("w")
         )
-        out = po.ModelBank([spec(weight="w", halflife=math.inf)]).fit_predict(df)
+        out = po.ModelBank([spec(weight="w", half_life=math.inf)]).fit_predict(df)
         pred = field(out, "pred_y")
         why = reasons(out)
         assert pred[10] is None and pred[50] is None
@@ -222,7 +221,7 @@ class TestMaxErrorInflation:
                     "m",
                     targets=["y"],
                     features=["x0"],
-                    halflife=10.0,
+                    half_life=10.0,
                     max_error_inflation=2.0,
                     **kw,
                 )
@@ -246,15 +245,15 @@ class TestMaxErrorInflation:
     def test_min_periods_still_floors_when_set(self):
         """The explicit floor is the user's, so it is named ahead of the
         noise gate, whose ratio is infinite until the model has solved."""
-        s = spec(min_periods=20.0, halflife=math.inf)
+        s = spec(min_weight=20.0, half_life=math.inf)
         out = po.ModelBank([s]).fit_predict(frame(60))
         pred = field(out, "pred_y")
         assert pred[:20].null_count() == 20
         assert pred[20:].null_count() == 0
-        assert reasons(out)[10] == "below_min_periods"
+        assert reasons(out)[10] == "below_min_weight"
 
     def test_settled_takes_precedence_in_the_reason(self):
-        s = spec(halflife=10.0, min_settled_frac=0.5)
+        s = spec(half_life=10.0, min_settled_frac=0.5)
         out = po.ModelBank([s]).fit_predict(frame(20))
         assert reasons(out)[1] == "below_min_settled_frac"
 
@@ -277,7 +276,7 @@ class TestErrorInflationField:
                 "m",
                 targets=["y"],
                 features=["x0"],
-                halflife=20.0,
+                half_life=20.0,
                 learning_rate=0.01,
                 emit_error_inflation=True,
             )
@@ -286,7 +285,7 @@ class TestErrorInflationField:
 class TestSupportCoef:
     def test_a_duplicated_column_reads_half_and_a_clean_one_reads_one(self):
         df = frame(200, k=2).with_columns(pl.col("x0").alias("x2"))
-        s = spec(features=["x0", "x1", "x2"], ridge=1e-8, coef_every=1, halflife=math.inf)
+        s = spec(features=["x0", "x1", "x2"], ridge=1e-8, coef_every=1, half_life=math.inf)
         out = po.ModelBank([s]).fit_predict(df)
         support = field(out, "support_coef")[-1]
         assert support.to_list() == pytest.approx([None, 0.5, 1.0, 0.5], abs=1e-3)
@@ -298,7 +297,7 @@ class TestSupportCoef:
         assert field(out, "support_coef")[-1] is not None
 
     def test_a_heavy_ridge_reads_low_everywhere(self):
-        s = spec(ridge=5.0, coef_every=1, halflife=math.inf)
+        s = spec(ridge=5.0, coef_every=1, half_life=math.inf)
         out = po.ModelBank([s]).fit_predict(frame(200))
         support = field(out, "support_coef")[-1].to_list()
         assert all(v < 0.3 for v in support[1:]), support
@@ -324,7 +323,7 @@ class TestSummaryAndWarnings:
 
     def test_a_coefficient_more_ridge_than_data_is_named_once(self):
         df = frame(200, k=2).with_columns(pl.col("x0").alias("x2"))
-        s = spec(features=["x0", "x1", "x2"], ridge=1e-8, halflife=math.inf)
+        s = spec(features=["x0", "x1", "x2"], ridge=1e-8, half_life=math.inf)
         bank = po.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -336,11 +335,11 @@ class TestSummaryAndWarnings:
         assert "support_coef" in str(got[0].message)
 
     def test_an_unreachable_gate_is_named_with_the_fix(self):
-        """Halflife 2 rows tops Kish's ``n`` out near 5.8; with ten features
+        """Half-life 2 rows tops Kish's ``n`` out near 5.8; with ten features
         ``sqrt(1 + 11 / 5.8)`` never reaches ``sqrt(2)``."""
         k = 10
         df = frame(400, k=k)
-        s = spec(features=[f"x{j}" for j in range(k)], halflife=2.0)
+        s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0)
         bank = po.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -349,22 +348,22 @@ class TestSummaryAndWarnings:
         got = [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
         assert len(got) == 1, [str(w.message) for w in caught]
         msg = str(got[0].message)
-        assert "max_error_inflation" in msg and "halflife" in msg
+        assert "max_error_inflation" in msg and "half_life" in msg
 
     def test_an_ordinary_spec_does_not_warn_while_the_gates_withhold(self):
         """The first solve of any spec is under-determined by construction --
         one row against `k` slopes -- and the warning cannot be retracted, so
         it is raised only where the gates let the row's prediction through.
         Found verifying the shipped 0.9.0 wheel: an ordinary two-feature fit
-        warned at `n_eff = 1.00` ("0.27 data and 0.73 ridge") and read
+        warned at `weight_sum = 1.00` ("0.27 data and 0.73 ridge") and read
         `support_coef = 1.00` from the next row to the end of the stream."""
         with warnings.catch_warnings():
             warnings.simplefilter("error", po.ReadinessWarning)
             po.ModelBank([spec(coef_every=1)]).fit_predict(frame(60))
-            # `min_periods = 0` puts the first solve at `n_eff = 0`, where the
+            # `min_weight = 0` puts the first solve at `weight_sum = 0`, where the
             # fit is entirely the ridge -- what `tests/test_window_budget.py`
             # sets, and what made that file warn in CI.
-            po.ModelBank([spec(coef_every=1, min_periods=0.0)]).fit_predict(frame(60))
+            po.ModelBank([spec(coef_every=1, min_weight=0.0)]).fit_predict(frame(60))
 
     def test_a_reachable_gate_does_not_warn(self):
         with warnings.catch_warnings():
@@ -380,7 +379,7 @@ class TestInvariants:
             coef_every=1,
             emit_error_inflation=True,
             min_settled_frac=0.3,
-            halflife=15.0,
+            half_life=15.0,
         )
         one = po.ModelBank([s]).fit_predict(df)
         bank = po.ModelBank([s])
@@ -412,7 +411,7 @@ class TestInvariants:
         df = frame(400, k=6)
         kw = dict(
             features=[f"x{j}" for j in range(6)],
-            halflife=60.0,
+            half_life=60.0,
             max_rows_between_solves=4,
             max_error_inflation=limit,
             emit_error_inflation=True,
@@ -423,7 +422,7 @@ class TestInvariants:
             return pl.concat([bank.fit_predict(df[i : i + 100]) for i in range(0, 400, 100)])
 
         read, unread = run(1), run(10_000)
-        for name in ("pred_y", "resid_y", "error_inflation_y", "n_eff", "settled_frac"):
+        for name in ("pred_y", "resid_y", "error_inflation_y", "weight_sum", "settled_frac"):
             assert field(read, name).equals(field(unread, name)), name
         assert reasons(read) == reasons(unread)
         # Each chunk's last row reads the shares either way.
@@ -451,7 +450,7 @@ class TestInvariants:
             "pred_y",
             "resid_y",
             "error_inflation_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",

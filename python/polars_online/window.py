@@ -8,7 +8,7 @@ the rows *j* in its window, taken in stream order:
 .. code-block:: text
 
     y_t    = sum_j w_j * lam**|tau_j - tau_a| * v_j / sum_j w_j * lam**|tau_j - tau_a|
-    lam    = 2 ** (-1 / halflife)
+    lam    = 2 ** (-1 / half-life)
 
 :func:`ewm` looks back: the rows at or before *t* less than ``horizon``
 older, ``(tau_t - horizon, tau_t]``, the interval a time-indexed
@@ -68,7 +68,7 @@ class Window(TypedDict):
 
     kind: Literal["ewm", "lookahead_rewm"]
     columns: list[str]
-    halflife: list[float | str]
+    half_life: list[float | str]
     horizon: list[float | str] | None
     weight: str | None
     split: Split | None
@@ -83,7 +83,7 @@ class Window(TypedDict):
 def ewm(
     columns: str | Sequence[str],
     *,
-    halflife: Span | Sequence[Span],
+    half_life: Span | Sequence[Span],
     horizon: Span | Sequence[Span] | None = None,
     weight: str | None = None,
     split: tuple[str, Sequence[str | int]] | None = None,
@@ -102,17 +102,17 @@ def ewm(
     .. code-block:: text
 
         ewm_t = sum_j w_j * lam**(tau_t - tau_j) * v_j / sum_j w_j * lam**(tau_t - tau_j)
-        lam   = 2 ** (-1 / halflife)
+        lam   = 2 ** (-1 / half-life)
 
     With no ``horizon`` there is no cutoff, and the mean is the running EWMA
     ``S_t = lam**(tau_t - tau_{t-1}) * S_{t-1} + w_t * v_t`` over ``W_t``, the
     same recursion on the weights, kept in two numbers.
 
-    ``columns`` is one column or several, and ``halflife`` and ``horizon`` one
-    value or several: the description is one window per column, halflife and
+    ``columns`` is one column or several, and ``half_life`` and ``horizon`` one
+    value or several: the description is one window per column, half-life and
     horizon, in that order. Each is a number of clock units, or a duration on a
     temporal clock (``"10m"``, a ``timedelta``, ``pl.duration(minutes=10)``).
-    ``halflife=inf`` weighs the window evenly.
+    ``half_life=inf`` weighs the window evenly.
 
     ``weight`` names a column each row's weight is read from; with none, every
     row that has a value weighs 1. ``split=(column, [values])`` gives one
@@ -125,15 +125,15 @@ def ewm(
 
     ``partial`` is what a window cut short before its horizon passed gives:
     the first ``horizon`` of each group, and of the stream after a session
-    change, a gap longer than ``max_dclock`` or a reset. ``"keep"`` (a warm-up
+    change, a gap longer than ``gap_cap`` or a reset. ``"keep"`` (a warm-up
     over what there is), ``"null"``, or ``"drop"``, which removes the row.
     ``complete`` names a Boolean column saying which rows had a full window; a
     window with no cutoff is always full.
 
     ``name`` is the output columns' template, with the fields ``{column}``,
-    ``{halflife}``, ``{horizon}`` and ``{split}`` (``""`` for the total,
+    ``{half_life}``, ``{horizon}`` and ``{split}`` (``""`` for the total,
     ``"_<value>"`` for a listed value); the default is
-    ``"{column}_ewm_{halflife}_{horizon}{split}"``, less ``_{horizon}`` with
+    ``"{column}_ewm_{half_life}_{horizon}{split}"``, less ``_{horizon}`` with
     no horizon. ``complete`` may use ``{horizon}``.
 
     ``TypeError`` for an argument of the wrong type; ``ValueError`` for an
@@ -146,7 +146,7 @@ def ewm(
         who,
         "ewm",
         columns,
-        halflife=halflife,
+        half_life=half_life,
         horizon=horizon,
         weight=weight,
         split=split,
@@ -162,7 +162,7 @@ def ewm(
 def lookahead_rewm(
     columns: str | Sequence[str],
     *,
-    halflife: Span | Sequence[Span],
+    half_life: Span | Sequence[Span],
     horizon: Span | Sequence[Span],
     weight: str | None = None,
     split: tuple[str, Sequence[str | int]] | None = None,
@@ -182,11 +182,11 @@ def lookahead_rewm(
     .. code-block:: text
 
         rewm_t = sum_j w_j * lam**(tau_j - tau_f) * v_j / sum_j w_j * lam**(tau_j - tau_f)
-        lam    = 2 ** (-1 / halflife)
+        lam    = 2 ** (-1 / half-life)
 
     It is a label: a row's value is known only once its horizon has passed, so
     :func:`polars_online.stream.with_windows` holds each row until then, and a model
-    that learns from it must wait as long (a spec's ``label_delay``).
+    that learns from it must wait as long (a spec's ``embargo``).
 
     ``same_clock`` says whether a later row at *t*'s own clock is one of "the
     rows after": ``"include"`` is stream order, and what interleaved data needs,
@@ -195,16 +195,16 @@ def lookahead_rewm(
     clock when the step between them is zero on the policy clock.
 
     ``partial`` is what a window cut short gives: a session change, a gap
-    longer than ``max_dclock``, ends every window open across it. ``"null"``
+    longer than ``gap_cap``, ends every window open across it. ``"null"``
     (the default), ``"keep"`` (the mean of what the window saw), or ``"drop"``.
-    A reset -- ``session_gap="reset"``, a step back under
-    ``on_clock_reset="reset_state"`` -- discards the windows open across it:
+    A reset -- ``session_gap="reset"``, a step back of at least
+    ``restart_after_step_back`` -- discards the windows open across it:
     null, whatever ``partial`` says, and never dropped. A row whose horizon has
     not passed when the input ends is unresolved: null, unless
     :func:`~polars_online.stream.with_windows` saves a state, which holds it for the
     next run.
 
-    The default ``name`` is ``"{column}_rewm_{halflife}_{horizon}{split}"``.
+    The default ``name`` is ``"{column}_rewm_{half_life}_{horizon}{split}"``.
     Every other argument is as for :func:`ewm`, and ``horizon`` is required.
     """
     who = "po.window.lookahead_rewm"
@@ -212,7 +212,7 @@ def lookahead_rewm(
         who,
         "lookahead_rewm",
         columns,
-        halflife=halflife,
+        half_life=half_life,
         horizon=horizon,
         weight=weight,
         split=split,
@@ -230,7 +230,7 @@ def _describe(
     kind: Literal["ewm", "lookahead_rewm"],
     columns: str | Sequence[str],
     *,
-    halflife: Any,
+    half_life: Any,
     horizon: Any,
     weight: Any,
     split: Any,
@@ -252,7 +252,7 @@ def _describe(
     out: Window = {
         "kind": kind,
         "columns": cols,
-        "halflife": _spans(who, "halflife", halflife),
+        "half_life": _spans(who, "half_life", half_life),
         "horizon": None if horizon is None else _spans(who, "horizon", horizon),
         "weight": weight,
         "split": _split(who, split),

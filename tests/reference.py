@@ -10,12 +10,12 @@ section 9). Conventions, shared with the core:
   still advances (its decay is folded into the next accepted row's delta).
 - Target-j null => ``pred_j`` emitted, no update of ``r_j`` / ``sigma2_j``;
   the shared ``S`` still updates.
-- Warmup: all outputs NaN (except nothing) while ``n_eff`` before the update is
-  below ``min_periods``; additionally ``pred_j`` is NaN while target j has seen
+- Warmup: all outputs NaN (except nothing) while ``weight_sum`` before the update is
+  below ``min_weight``; additionally ``pred_j`` is NaN while target j has seen
   no data.
 - Accumulators are EW *means* (stable under long runs): ``W = lam*W + w``,
   ``S = (lam*W_prev*S + w*x x^T)/W``. ``ridge`` is applied at solve time on the
-  mean scale (per-observation, stable). With ``ridge_decay=True`` the ridge is a
+  mean scale (per-observation, stable). With ``ridge_scale=True`` the ridge is a
   decaying prior on the *sum* scale, penalizing the intercept too -- exactly
   classic RLS regularization (used by the RLS agreement test).
 - ``sigma2_j`` (EW residual variance) accumulates only on rows where ``pred_j``
@@ -31,24 +31,23 @@ def compute_dclock(
     t: np.ndarray | None,
     session: np.ndarray | None,
     n: int,
-    max_dclock: float = np.inf,
-    on_clock_reset: str = "error",
+    gap_cap: float = np.inf,
     session_gap: float | str | None = None,
-    min_backwards_jump: float | None = None,
+    restart_after_step_back: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-row clock deltas and state-reset flags (docs/PLAN.md section 3), as a
     stream learns them.
 
     Returns ``(dclock, reset)``. Row 0 has delta 0. A session change overrides
     the delta with ``session_gap`` (or resets state if it is "reset"). A step
-    back within a session is handled per ``on_clock_reset`` (task 120):
-    "error" raises, naming the row; "reset_state" raises for a step back no
-    larger than ``min_backwards_jump`` (a late row) and resets for a larger
-    one. ``max_dclock`` defaults to no cap for a row-count clock (``t`` None),
+    back within a session is handled per ``restart_after_step_back`` (task
+    120): unset, it raises, naming the row; given, it raises for a step back
+    no larger than it (a late row) and resets for a larger one. ``gap_cap`` defaults to
+    no cap for a row-count clock (``t`` None),
     which steps by one row.
 
     Per row only: the references below fold a skipped row's delta into the
-    next accepted row's and cap that total at their own ``max_dclock``, as
+    next accepted row's and cap that total at their own ``gap_cap``, as
     the stream does (review 2026-09-12, S3).
     """
     d = np.zeros(n)
@@ -64,22 +63,18 @@ def compute_dclock(
                 d[i] = 0.0
             else:
                 d[i] = float(session_gap) if session_gap is not None else d[i]
-                d[i] = min(max(d[i], 0.0), max_dclock)
+                d[i] = min(max(d[i], 0.0), gap_cap)
             continue
         if d[i] < 0:
             back = -d[i]
-            if on_clock_reset == "error":
+            if restart_after_step_back is None:
                 raise ValueError(f"row {i}: the clock goes backwards by {back}")
-            if on_clock_reset != "reset_state":
-                raise ValueError(on_clock_reset)
-            if min_backwards_jump is None:
-                raise ValueError("reset_state needs min_backwards_jump")
-            if back <= min_backwards_jump:
+            if back <= restart_after_step_back:
                 raise ValueError(f"row {i}: a late row, back by {back}")
             reset[i] = True
             d[i] = 0.0
         else:
-            d[i] = min(d[i], max_dclock)
+            d[i] = min(d[i], gap_cap)
     return d, reset
 
 
@@ -88,24 +83,24 @@ def _solve_ridge(
     r: np.ndarray,
     W: float,
     ridge: float,
-    add_intercept: bool,
+    fit_intercept: bool,
     standardize: bool,
-    ridge_decay: bool,
+    ridge_scale: bool,
     prior_scale: float,
 ) -> np.ndarray:
     """Solve for coefficients from mean-form stats. Returns beta (len k_total)."""
     k_total = S.shape[0]
-    if ridge_decay:
+    if ridge_scale:
         # Sum-scale decaying prior, intercept penalized: (W*S + ps*ridge*I) b = W*r
         A = W * S + prior_scale * ridge * np.eye(k_total)
         return np.linalg.solve(A, W * r)
     if not standardize:
         D = np.eye(k_total)
-        if add_intercept:
+        if fit_intercept:
             D[0, 0] = 0.0
         return np.linalg.solve(S + ridge * D, r)
     # Standardize features (not the target) using S's own means/variances.
-    if not add_intercept:
+    if not fit_intercept:
         s = np.sqrt(np.maximum(np.diag(S), 0.0))
         keep = s > 1e-12
         b = np.zeros(k_total)
@@ -136,30 +131,30 @@ def ewridge_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     reset: np.ndarray | None = None,
-    halflife: float = 100.0,
+    half_life: float = 100.0,
     ridge: float = 1e-6,
-    add_intercept: bool = True,
-    min_periods: float | None = None,
+    fit_intercept: bool = True,
+    min_weight: float | None = None,
     standardize: bool = False,
-    ridge_decay: bool = False,
-    max_dclock: float = np.inf,
+    ridge_scale: bool = False,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """EW-ridge oracle, solving every row. X: (n,k), Y: (n,m); NaN = null.
 
     ``target_gaps="own_rows"`` (docs/PLAN.md task 81): each target's Gram is
     over the rows it is present on, and ages with its weight over the rest;
-    ``n_eff`` is the weight over every row."""
+    ``weight_sum`` is the weight over every row."""
     n, k = X.shape
     m = Y.shape[1]
-    k_total = k + 1 if add_intercept else k
-    if min_periods is None:
-        min_periods = float(k_total)
+    k_total = k + 1 if fit_intercept else k
+    if min_weight is None:
+        min_weight = float(k_total)
     if reset is None:
         reset = np.zeros(n, dtype=bool)
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, k_total), np.nan)
     sig2_out = np.full((n, m), np.nan)
 
@@ -184,13 +179,13 @@ def ewridge_ref(
         if np.isnan(x_raw).any():
             st["pending"] += dclock[i]
             continue
-        xi = np.concatenate(([1.0], x_raw)) if add_intercept else x_raw
-        d = min(dclock[i] + st["pending"], max_dclock)
+        xi = np.concatenate(([1.0], x_raw)) if fit_intercept else x_raw
+        d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife)
+        lam = 0.5 ** (d / half_life)
 
         # ---- predict (state before update) ----
-        ready = st["W"] >= min_periods and st["beta"] is not None
+        ready = st["W"] >= min_weight and st["beta"] is not None
         # The model's own prediction, which its own statistics fold; what is
         # emitted waits, besides, for each target's own weight (review
         # 2026-09-12, S2) -- a gate on the output, not on the model.
@@ -199,11 +194,11 @@ def ewridge_ref(
             for j in range(m):
                 if st["Wj"][j] > 0.0:
                     p_own[j] = xi @ st["beta"][:, j]
-                    if st["Wj"][j] >= min_periods:
+                    if st["Wj"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
-        n_eff[i] = st["W"]
+        weight_sum[i] = st["W"]
 
         # ---- update ----
         W_new = lam * st["W"] + w[i]
@@ -237,15 +232,15 @@ def ewridge_ref(
                     st["r"][:, j],
                     st["Wj"][j],
                     ridge,
-                    add_intercept,
+                    fit_intercept,
                     standardize,
-                    ridge_decay,
+                    ridge_scale,
                     st["prior_scale"],
                 )
         st["beta"] = beta
         coef[i] = beta.T
 
-    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef, "sig2": sig2_out}
+    return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef, "sig2": sig2_out}
 
 
 def rls_ref(
@@ -254,31 +249,31 @@ def rls_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     reset: np.ndarray | None = None,
-    halflife: float = 100.0,
+    half_life: float = 100.0,
     ridge: float = 1.0,
-    add_intercept: bool = True,
-    min_periods: float | None = None,
-    max_dclock: float = np.inf,
+    fit_intercept: bool = True,
+    min_weight: float | None = None,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Classic RLS oracle via direct normal-equation solves (no Sherman-Morrison).
 
     A = decayed sum of w*x x^T plus the decaying prior ridge*I (intercept
     penalized); b_j = decayed sum of w*x*y_j. Rows with any NaN target are
     predict-only for all targets (RLS null-policy deviation, documented).
-    ``min_periods`` reads the weight of the rows learned from (hard rule 8,
-    docs/PLAN.md task 115 (d)); ``n_eff`` is every row's.
+    ``min_weight`` reads the weight of the rows learned from (hard rule 8,
+    docs/PLAN.md task 115 (d)); ``weight_sum`` is every row's.
     """
     n, k = X.shape
     m = Y.shape[1]
-    k_total = k + 1 if add_intercept else k
-    if min_periods is None:
-        min_periods = float(k_total)
+    k_total = k + 1 if fit_intercept else k
+    if min_weight is None:
+        min_weight = float(k_total)
     if reset is None:
         reset = np.zeros(n, dtype=bool)
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, k_total), np.nan)
 
     def init():
@@ -300,18 +295,18 @@ def rls_ref(
         if np.isnan(x_raw).any():
             st["pending"] += dclock[i]
             continue
-        xi = np.concatenate(([1.0], x_raw)) if add_intercept else x_raw
-        d = min(dclock[i] + st["pending"], max_dclock)
+        xi = np.concatenate(([1.0], x_raw)) if fit_intercept else x_raw
+        d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife)
+        lam = 0.5 ** (d / half_life)
 
-        ready = st["Wt"] >= min_periods and st["beta"] is not None and st["seen"]
+        ready = st["Wt"] >= min_weight and st["beta"] is not None and st["seen"]
         if ready:
             pred[i] = xi @ st["beta"]
             for j in range(m):
                 if not np.isnan(Y[i, j]):
                     resid[i, j] = Y[i, j] - pred[i, j]
-        n_eff[i] = st["W"]
+        weight_sum[i] = st["W"]
 
         st["A"] = lam * st["A"]
         st["b"] = lam * st["b"]
@@ -325,7 +320,7 @@ def rls_ref(
         st["beta"] = np.linalg.solve(st["A"], st["b"])
         coef[i] = st["beta"].T
 
-    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef}
 
 
 def _enet_descent(
@@ -361,11 +356,11 @@ def lasso_ref(
     w: np.ndarray,
     lasso_path: list[float],
     l1_ratio: float = 1.0,
-    halflife: float = np.inf,
-    min_periods: float | None = None,
+    half_life: float = np.inf,
+    min_weight: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
-    max_dclock: float = np.inf,
+    gap_cap: float = np.inf,
     tol: float = 1e-14,
 ) -> dict[str, np.ndarray]:
     """Lasso / elastic-net path oracle (docs/PLAN.md section 4.3), one target
@@ -393,32 +388,32 @@ def lasso_ref(
     smallest eigenvalue ``mu`` of ``C + l2 I`` is at least 1e-2. Below that
     it has no unique minimiser (fewer rows than features), or barely one, and
     a descent from zero takes about ``13 / mu`` sweeps to settle (measured).
-    Such problems are the first solves of a stream, before ``min_periods``
+    Such problems are the first solves of a stream, before ``min_weight``
     lets a row be scored. Their coefficients are NaN here, and a row scored
     with one raises.
 
     The schedule is ``ewridge``'s, which ``lasso`` takes:
 
     - a row is scored with the coefficients of the last solve before it, and
-      only once ``n_eff``, the weight before the row, reaches ``min_periods``.
+      only once ``weight_sum``, the weight before the row, reaches ``min_weight``.
       Before the first solve nothing is scored;
     - after the row is learned, a solve runs when the clock since the last one
       has reached ``solve_every`` (the capped step counts, so a gap of at
       least ``solve_every`` forces one). One also runs when
       ``max_rows_between_solves`` rows have gone by since it (a zero-weight
       row is a row), or when there has been none yet and the weight has
-      reached ``min_periods``;
+      reached ``min_weight``;
     - left out, ``solve_every`` gives way to the weight rule under a finite
-      halflife: a solve once the weight learned since the last reaches
+      half-life: a solve once the weight learned since the last reaches
       ``ln 2 / 50`` of the weight the fit holds (docs/PLAN.md task 115 (b));
       every row under an infinite one. ``max_rows_between_solves`` is off by
       default.
 
     Feature null => the row is skipped. Nothing is scored or learned and it
     is not a row for the schedule. Its clock step folds into the next accepted
-    row's, which is capped at ``max_dclock``.
+    row's, which is capped at ``gap_cap``.
 
-    Returns ``pred`` (n, P) and ``n_eff`` (n,). ``coef`` (n, P, k+1) holds
+    Returns ``pred`` (n, P) and ``weight_sum`` (n,). ``coef`` (n, P, k+1) holds
     each row's last-solve coefficients. It is NaN before the first solve, on a
     skipped row, and for a problem the reference does not hold. ``solved``
     (n,) marks the rows a solve ran after.
@@ -428,16 +423,16 @@ def lasso_ref(
     npath = len(lasso_path)
     if np.isnan(y).any():
         raise ValueError("lasso_ref takes a target with no nulls")
-    if min_periods is None:
-        min_periods = float(kt)
-    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
+    if min_weight is None:
+        min_weight = float(kt)
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(half_life) else None
     if solve_every is None:
         solve_every = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
     since_w = 0.0
 
     pred = np.full((n, npath), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, npath, kt), np.nan)
     solved = np.zeros(n, dtype=bool)
 
@@ -470,13 +465,13 @@ def lasso_ref(
             pending += dclock[i]
             continue
         z = np.concatenate(([1.0], X[i]))
-        d = min(dclock[i] + pending, max_dclock)
+        d = min(dclock[i] + pending, gap_cap)
         pending = 0.0
-        lam = 0.5 ** (d / halflife)
+        lam = 0.5 ** (d / half_life)
 
         # ---- score, from the state before the row ----
-        n_eff[i] = w_sum
-        if fit is not None and w_sum >= min_periods:
+        weight_sum[i] = w_sum
+        if fit is not None and w_sum >= min_weight:
             if np.isnan(fit).any():
                 raise ValueError(f"row {i} is scored with a fit the reference does not hold")
             pred[i] = fit @ z
@@ -498,14 +493,14 @@ def lasso_ref(
             by_cadence = since_w >= share * w_sum
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
-        if by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_periods):
+        if by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_weight):
             fit = solve(mean, raw, ry)
             solved[i] = True
             since_clock, since_rows, since_w = 0.0, 0, 0.0
         if fit is not None:
             coef[i] = fit
 
-    return {"pred": pred, "n_eff": n_eff, "coef": coef, "solved": solved}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef, "solved": solved}
 
 
 def _kalman_scales(st: dict, kt: int, off: int, standardize: bool) -> np.ndarray:
@@ -539,24 +534,24 @@ def kalman_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     reset: np.ndarray | None = None,
-    halflife: float = 500.0,
-    coef_halflife: float | list[float] = 100.0,
+    half_life: float = 500.0,
+    coef_half_life: float | list[float] = 100.0,
     q: list[float] | None = None,
     obs_var: float | None = None,
     p0: float = 1.0,
     share_p: bool = False,
-    add_intercept: bool = True,
-    min_periods: float = 10.0,
-    revert_halflife: float | list[float] = float("inf"),
+    fit_intercept: bool = True,
+    min_weight: float = 10.0,
+    revert_half_life: float | list[float] = float("inf"),
     standardize: bool = True,
-    max_dclock: float = np.inf,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4).
 
     Mirrors the core exactly, including the details that make it match:
 
     - the transition ``b <- Phi b``, ``P <- Phi P Phi`` with
-      ``Phi = diag(2^(-d / r_i))`` from ``revert_halflife`` runs first, before
+      ``Phi = diag(2^(-d / r_i))`` from ``revert_half_life`` runs first, before
       the prediction, on every accepted row (a null target or a zero weight
       still advances the clock); ``inf`` is ``Phi = I`` (E41);
     - features are standardized with the EW stats *before* the row's update,
@@ -576,17 +571,17 @@ def kalman_ref(
     """
     n, k = X.shape
     m = Y.shape[1]
-    off = 1 if add_intercept else 0
+    off = 1 if fit_intercept else 0
     kt = k + off
     if reset is None:
         reset = np.zeros(n, dtype=bool)
     hl = np.asarray(
-        [coef_halflife] * kt if np.isscalar(coef_halflife) else coef_halflife, dtype=float
+        [coef_half_life] * kt if np.isscalar(coef_half_life) else coef_half_life, dtype=float
     )
     if hl.size == 1:
         hl = np.repeat(hl, kt)
     rh = np.asarray(
-        [revert_halflife] * kt if np.isscalar(revert_halflife) else revert_halflife, dtype=float
+        [revert_half_life] * kt if np.isscalar(revert_half_life) else revert_half_life, dtype=float
     )
     if rh.size == 1:
         rh = np.repeat(rh, kt)
@@ -594,7 +589,7 @@ def kalman_ref(
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
 
     def init():
@@ -617,10 +612,10 @@ def kalman_ref(
         if np.isnan(X[i]).any():
             st["pending"] += dclock[i]
             continue
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = min(dclock[i] + st["pending"], max_dclock)
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i].copy()
+        d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife)
+        lam = 0.5 ** (d / half_life)
 
         # transition first: the clock moved by d since the last row
         if reverts:
@@ -639,8 +634,8 @@ def kalman_ref(
             for j in range(off, kt):
                 zs[j] = (z[j] - st["mean"][j]) / scales[j]
 
-        n_eff[i] = st["W"]
-        ready = st["W"] >= min_periods
+        weight_sum[i] = st["W"]
+        ready = st["W"] >= min_weight
         # The model's own prediction, which its own statistics fold; what is
         # emitted waits, besides, for each target's own weight (review
         # 2026-09-12, S2) -- a gate on the output, not on the model.
@@ -649,7 +644,7 @@ def kalman_ref(
             for j in range(m):
                 if st["wj"][j] > 0.0:
                     p_own[j] = zs @ st["beta"][j]
-                    if st["wj"][j] >= min_periods:
+                    if st["wj"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
@@ -709,11 +704,11 @@ def kalman_ref(
                 continue
             c = np.zeros(kt)
             c[off:] = st["beta"][j][off:] / after[off:]
-            if add_intercept:
+            if fit_intercept:
                 c[0] = st["beta"][j][0] - c[off:] @ st["mean"][off:]
             coef[i, j] = c
 
-    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef}
 
 
 def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps):
@@ -759,16 +754,16 @@ def robust_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     reset: np.ndarray | None = None,
-    halflife: float = 300.0,
+    half_life: float = 300.0,
     loss: str = "huber",
     huber_delta: float = 1.5,
     quantile: float = 0.5,
     quantile_eps: float = 0.2,
     ridge: float = 1e-6,
     standardize: bool = False,
-    add_intercept: bool = True,
-    min_periods: float | None = None,
-    max_dclock: float = np.inf,
+    fit_intercept: bool = True,
+    min_weight: float | None = None,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Huber / quantile oracle (docs/PLAN.md section 4.5).
 
@@ -787,16 +782,16 @@ def robust_ref(
     """
     n, k = X.shape
     m = Y.shape[1]
-    off = 1 if add_intercept else 0
+    off = 1 if fit_intercept else 0
     kt = k + off
-    if min_periods is None:
-        min_periods = float(kt)
+    if min_weight is None:
+        min_weight = float(kt)
     if reset is None:
         reset = np.zeros(n, dtype=bool)
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
 
     def init():
@@ -834,13 +829,13 @@ def robust_ref(
         if np.isnan(X[i]).any():
             st["pending"] += dclock[i]
             continue
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = min(dclock[i] + st["pending"], max_dclock)
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i].copy()
+        d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife)
+        lam = 0.5 ** (d / half_life)
 
-        n_eff[i] = st["w_raw"]
-        ready = st["w_raw"] >= min_periods and st["beta"] is not None
+        weight_sum[i] = st["w_raw"]
+        ready = st["w_raw"] >= min_weight and st["beta"] is not None
         # The model's own prediction, which its own statistics fold; what is
         # emitted waits, besides, for each target's own weight (review
         # 2026-09-12, S2) -- a gate on the output, not on the model.
@@ -849,7 +844,7 @@ def robust_ref(
             for j in range(m):
                 if st["wj"][j] > 0.0:
                     p_own[j] = z @ st["beta"][j]
-                    if st["wobs"][j] >= min_periods:
+                    if st["wobs"][j] >= min_weight:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
@@ -942,13 +937,13 @@ def robust_ref(
                     st["c"][j],
                     st["ybar"][j],
                     ridge,
-                    add_intercept,
+                    fit_intercept,
                     standardize,
                 )
         st["beta"] = beta
         coef[i] = beta
 
-    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef}
 
 
 def _solve_centred(
@@ -957,7 +952,7 @@ def _solve_centred(
     c: np.ndarray,
     ybar: float,
     ridge: float,
-    add_intercept: bool,
+    fit_intercept: bool,
     standardize: bool,
 ) -> np.ndarray:
     """`Robust::solve` on centred moments (review 2026-09-18, S2).
@@ -969,7 +964,7 @@ def _solve_centred(
     asked for: `E[z z'] = C + m m'` and `E[z·y] = c + m·ȳ`, scaled by the
     raw second-moment diagonals when standardized."""
     kt = len(mean)
-    if add_intercept:
+    if fit_intercept:
         Cf, cf, mf = C[1:, 1:], c[1:], mean[1:]
         s = np.sqrt(np.maximum(np.diag(Cf), 0.0)) if standardize else np.ones(kt - 1)
         keep = s > 1e-12
@@ -996,16 +991,16 @@ def ftrl_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     reset: np.ndarray | None = None,
-    halflife: float = float("inf"),
+    half_life: float = float("inf"),
     alpha: float = 0.1,
     beta: float = 1.0,
     l1: float = 0.0,
     l2: float = 1.0,
-    add_intercept: bool = True,
-    min_periods: float = 10.0,
+    fit_intercept: bool = True,
+    min_weight: float = 10.0,
     strict_binary: bool = False,
     loss: str = "logistic",
-    max_dclock: float = np.inf,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """FTRL-proximal oracle (docs/PLAN.md section 4.6, McMahan 2013), for the
     logistic loss and the squared one (E18).
@@ -1025,20 +1020,20 @@ def ftrl_ref(
     decayed form, where the model keeps the decay until the next row that
     teaches. ``pred_j`` waits for the target's own weight, the rows that
     carried it (a label ``strict_binary`` refuses does not), decayed, to
-    reach ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d));
-    ``n_eff`` is every row's.
+    reach ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d));
+    ``weight_sum`` is every row's.
     """
     n, k = X.shape
     m = Y.shape[1]
-    off = 1 if add_intercept else 0
+    off = 1 if fit_intercept else 0
     kt = k + off
     if reset is None:
         reset = np.zeros(n, dtype=bool)
-    forgets = np.isfinite(halflife)
+    forgets = np.isfinite(half_life)
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
 
     def init():
@@ -1072,20 +1067,20 @@ def ftrl_ref(
         if np.isnan(X[i]).any():
             st["pending"] += dclock[i]
             continue
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = min(dclock[i] + st["pending"], max_dclock)
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i].copy()
+        d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife) if forgets else 1.0
+        lam = 0.5 ** (d / half_life) if forgets else 1.0
 
         if lam != 1.0:
             st["n"] *= lam
             st["z"] *= lam
             st["d"] *= lam
 
-        n_eff[i] = st["w_sum"]
+        weight_sum[i] = st["w_sum"]
 
         for j in range(m):
-            ready = st["w_target"][j] >= min_periods
+            ready = st["w_target"][j] >= min_weight
             # The scale from the target's weight aged to this row, before it
             # learns, over its weight on the teaching clock.
             taught = st["w_taught"][j]
@@ -1122,14 +1117,14 @@ def ftrl_ref(
             carried = not np.isnan(y) and not refused
             st["w_target"][j] = lam * st["w_target"][j] + (w[i] if carried else 0.0)
 
-    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef}
 
 
 def seqtest_ref(
     Y: np.ndarray,
     w: np.ndarray | None = None,
     reset: np.ndarray | None = None,
-    min_periods: float = 0.0,
+    min_weight: float = 0.0,
 ) -> dict[str, np.ndarray]:
     """Sequential sign test oracle (docs/ENHANCEMENTS.md E42): per target,
     two Kelly bettors with a Krichevsky-Trofimov stake on the sign counts.
@@ -1143,10 +1138,10 @@ def seqtest_ref(
 
     A null, zero (or NaN) value bets nothing and counts nothing; a weight of
     0 skips the row; any other weight is one trial and counts itself toward
-    ``n_eff``. No decay, so no clock. ``reset[i]`` restarts the state before
+    ``weight_sum``. No decay, so no clock. ``reset[i]`` restarts the state before
     row ``i`` (a session change under ``session_gap="reset"``, a backwards
-    clock under ``on_clock_reset="reset_state"``). Outputs are the state
-    before the row, NaN while ``n_eff < min_periods`` (``n_eff`` always).
+    clock of at least ``restart_after_step_back``). Outputs are the state
+    before the row, NaN while ``weight_sum < min_weight`` (``weight_sum`` always).
     """
     import math
 
@@ -1159,7 +1154,7 @@ def seqtest_ref(
     log_e_neg = np.full((n, m), np.nan)
     n_pos = np.full((n, m), np.nan)
     n_neg = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
 
     def init():
         return {
@@ -1174,8 +1169,8 @@ def seqtest_ref(
     for i in range(n):
         if reset[i]:
             st = init()
-        n_eff[i] = st["w"]
-        if st["w"] >= min_periods:
+        weight_sum[i] = st["w"]
+        if st["w"] >= min_weight:
             log_e_pos[i] = st["lp"]
             log_e_neg[i] = st["ln"]
             n_pos[i] = st["pos"]
@@ -1202,5 +1197,5 @@ def seqtest_ref(
         "log_e_neg": log_e_neg,
         "n_pos": n_pos,
         "n_neg": n_neg,
-        "n_eff": n_eff,
+        "weight_sum": weight_sum,
     }

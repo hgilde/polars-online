@@ -225,7 +225,7 @@ def test_a_zero_weight_row_is_not_a_return():
     )
     got, _ = block(padded, kind="kernel", weight="w")
     # The row was fed, so the summary counts it; nothing else moved.
-    block_cols = ["rcov", "rcorr", "rcov_n", "bandwidth_used", "n_eff"]
+    block_cols = ["rcov", "rcorr", "rcov_n", "bandwidth_used", "weight_sum"]
     assert got.select(block_cols).equals(want.select(block_cols))
     assert got["rows_fed"][0] == want["rows_fed"][0] + 1
 
@@ -285,7 +285,7 @@ def test_the_block_survives_a_refresh_time_grid():
         # the same thing about it.
         ({"group": None}, "group_close needs a group column"),
         ({"group_close": None}, "needs `group` and `group_close`"),
-        ({"halflife": 50.0}, "do not apply to rcov"),
+        ({"half_life": 50.0}, "do not apply to rcov"),
         ({"lam": 0.99}, "do not apply to rcov"),
         ({"kernel": "bartlett"}, "not consistent"),
         ({"kind": "nope"}, "unknown rcov kind"),
@@ -309,7 +309,7 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
 
 
 def test_a_clock_break_splits_the_block_into_stretches():
-    """A gap over ``max_dclock`` says the returns on either side of it are
+    """A gap over ``gap_cap`` says the returns on either side of it are
     not adjacent, and a covariance of adjacent returns is the statistic. The
     block is then the two stretches added, and every return is still emitted
     exactly once (docs/REVIEW-E54-E64.md R2).
@@ -323,7 +323,7 @@ def test_a_clock_break_splits_the_block_into_stretches():
     t = np.arange(float(n))
     t[50:] += 1000.0  # one gap, inside the first block
     df = df.with_columns(t=pl.Series(t))
-    kw = dict(kind="kernel", bandwidth=0, max_bandwidth=0, clock="t", max_dclock=5.0)
+    kw = dict(kind="kernel", bandwidth=0, max_bandwidth=0, clock="t", gap_cap=5.0)
 
     broken, _ = block(df, **kw)
     row = broken.filter(pl.col("group") == "0").row(0, named=True)

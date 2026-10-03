@@ -38,7 +38,7 @@ same field.
 | `__<set>` | one of the `feature_sets`, with one ridge value | |
 | `__<set>_r<ridge>` | one of the `feature_sets`, with one value of a `ridge` grid | |
 | `__l<lambda>` | one value of `lasso_path` | `__l0.1`, `__l0` |
-| `@h<halflife>` | one halflife of a grid, at the end of every field's name: `n_eff@h500`, or `n_eff@h10m` for a duration | |
+| `@h<half_life>` | one half_life of a grid, at the end of every field's name: `weight_sum@h500`, or `weight_sum@h10m` for a duration | |
 
 EW, in a meaning below, is short for exponentially weighted.
 
@@ -48,9 +48,9 @@ Four fields appear in nearly every table below, and are defined here once:
 
 | field | what it holds | null |
 |---|---|---|
-| `n_eff` | the accumulated weight before this row's update and before its own decay | |
-| `settled_frac` | how far the decay window had filled toward steady state before this row: `1 - 2^(-T/halflife)`, with `T` the decay time seen so far, so 0.5 at one halflife and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
-| `withheld_reason` | why the row's predictions are null: `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation`. That order is their precedence, so the first that applies is the one named | where nothing was withheld |
+| `weight_sum` | the accumulated weight before this row's update and before its own decay | |
+| `settled_frac` | how far the decay window had filled toward steady state before this row: `1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half_life and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
+| `withheld_reason` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight` or `above_max_error_inflation`. That order is their precedence, so the first that applies is the one named | where nothing was withheld |
 | `coef` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve | on every row but those `coef_every` fills, which by default are each group's last row in each chunk; and before the model has anything to report, such as a first solve |
 
 ### What is not listed
@@ -79,7 +79,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -91,7 +91,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -104,11 +104,11 @@ hand: change the generator, then run
 | `resid_y__l0.1` | `y - pred` for `<t>`; null where the target is null |
 | `pred_y__l0` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y__l0` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
-| `lam_selected_y` | the path point in force for `<t>`, by lowest EW out-of-sample error |
+| `penalty_selected_y` | the path point in force for `<t>`, by lowest EW out-of-sample error |
 
 ## `kalman`
 
@@ -116,7 +116,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -127,7 +127,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -138,7 +138,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -149,7 +149,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -160,7 +160,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -171,7 +171,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -182,7 +182,7 @@ hand: change the generator, then run
 |---|---|
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -196,17 +196,17 @@ hand: change the generator, then run
 | `std_x0` | EW standard deviation of `<f>` |
 | `std_x1` | EW standard deviation of `<f>` |
 | `corr_x0_x1` | EW correlation of the pair |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 
 ## `marginal`
 
-`marginal` writes nothing per row but `n_eff`. Its product is the state, and `ModelBank.marginal()` reads the pairs from it.
+`marginal` writes nothing per row but `weight_sum`. Its product is the state, and `ModelBank.marginal()` reads the pairs from it.
 
 | field | meaning |
 |---|---|
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 
 ## `deco`
 
@@ -214,19 +214,19 @@ hand: change the generator, then run
 |---|---|
 | `u` | the equicorrelation this row alone implies (Lemma 2.3, from the standardized row) |
 | `rho` | the block's equicorrelation level, the smoothed value `u` is folded into |
-| `loglik` | log-likelihood of the row under the fitted model |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `loglik` | log predictive density of the row under the fitted model (`bocpd`: under the run-length mixture) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
 
 ## `rcov`
 
-`rcov` writes nothing per row but `n_eff`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`).
+`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`).
 
 | field | meaning |
 |---|---|
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 
 ## `kmeans`
 
@@ -235,7 +235,7 @@ hand: change the generator, then run
 | `cluster` | the nearest cluster's label, read before the row is learned from; null while there is none: before seeding, which waits for `max(warm_rows, k)` learned rows, or while no micro-cluster is established |
 | `dist` | distance from the row to the centre `cluster` was read from |
 | `dist2` | distance to the second-nearest centre, so `dist2 - dist` is the margin |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -246,11 +246,11 @@ hand: change the generator, then run
 |---|---|
 | `cluster` | the nearest cluster's label, read before the row is learned from; null while there is none: before seeding, which waits for `max(warm_rows, k)` learned rows, or while no micro-cluster is established |
 | `dist` | distance from the row to the centre `cluster` was read from |
-| `micro` | id of the micro-cluster the row joins, or opens when none can take it |
+| `micro_id` | id of the micro-cluster the row joins, or opens when none can take it |
 | `outlier` | true when no established micro-cluster takes the row |
 | `n_clusters` | macro-clusters currently linked |
 | `n_micro` | live micro-clusters |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -262,7 +262,7 @@ hand: change the generator, then run
 | `class` | the most likely class label |
 | `p_a` | posterior probability of class `<label>` |
 | `p_b` | posterior probability of class `<label>` |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -275,7 +275,7 @@ hand: change the generator, then run
 | `log_e_neg_y` | log of the e-process betting it is negative |
 | `n_pos_y` | learned rows whose `<t>` was positive |
 | `n_neg_y` | learned rows whose `<t>` was negative |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 
@@ -288,7 +288,7 @@ hand: change the generator, then run
 | `flag` | true on the row where `stat` crossed `crit` |
 | `since_flag` | learned rows since the last flag |
 | `since_change` | on a flag, the rows since the change it dates, through the flag's row from the first changed one; null otherwise |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 
@@ -296,13 +296,13 @@ hand: change the generator, then run
 
 | field | meaning |
 |---|---|
-| `p_0` | posterior probability of state `<j>` before this row |
-| `p_1` | posterior probability of state `<j>` before this row |
-| `p1_0` | one-step-ahead probability of state `<j>` |
-| `p1_1` | one-step-ahead probability of state `<j>` |
-| `state` | the most likely state for this row: the one with the largest `p1_<j>` |
-| `loglik` | log-likelihood of the row under the fitted model |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `filtered_0` | posterior probability of state `<j>` before this row |
+| `filtered_1` | posterior probability of state `<j>` before this row |
+| `predicted_0` | one-step-ahead probability of state `<j>` |
+| `predicted_1` | one-step-ahead probability of state `<j>` |
+| `state` | the most likely state for this row: the one with the largest `predicted_<j>` |
+| `loglik` | log predictive density of the row under the fitted model (`bocpd`: under the run-length mixture) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
@@ -316,7 +316,7 @@ hand: change the generator, then run
 | `run_mean` | posterior mean run length |
 | `pred_x0` | the predictive mean for feature `<f>` under the fitted model |
 | `pred_x1` | the predictive mean for feature `<f>` under the fitted model |
-| `logscore` | log predictive density of the row under the run-length mixture |
-| `n_eff` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `loglik` | log predictive density of the row under the fitted model (`bocpd`: under the run-length mixture) |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |

@@ -21,7 +21,7 @@ from conftest import run_online
 from polars_online import _spec
 
 INF = float("inf")
-BASE = dict(targets=["y"], features=["x0"], halflife=10.0)
+BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
 
 def _df(n: int = 50) -> pl.DataFrame:
@@ -52,13 +52,13 @@ SHAPES = [
     # shape for a clock parameter is anything that is neither.
     (
         po.spec.ewridge,
-        dict(halflife=True),
-        "halflife must be a number or a duration or a list of numbers or durations, got bool",
+        dict(half_life=True),
+        "half_life must be a number or a duration or a list of numbers or durations, got bool",
     ),
     (
         po.spec.ewridge,
-        dict(halflife=[10, None]),
-        "halflife must be a number or a duration or a list of numbers or durations, got list",
+        dict(half_life=[10, None]),
+        "half_life must be a number or a duration or a list of numbers or durations, got list",
     ),
     (
         po.spec.ewridge,
@@ -116,12 +116,12 @@ def test_a_spec_name_must_be_a_string():
 
 def test_ew_cov_has_no_targets():
     with pytest.raises(TypeError, match='spec "m": ew_cov\\(\\) takes no targets'):
-        po.spec.ew_cov("m", features=["x0", "y"], targets=["y"], halflife=10.0)
+        po.spec.ew_cov("m", features=["x0", "y"], targets=["y"], half_life=10.0)
 
 
 def test_kmeans_has_no_targets():
     with pytest.raises(TypeError, match='spec "m": kmeans\\(\\) takes no targets'):
-        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], k=2, halflife=10.0)
+        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], k=2, half_life=10.0)
 
 
 def test_ew_class_takes_a_label_not_targets():
@@ -133,7 +133,7 @@ def test_ew_class_takes_a_label_not_targets():
             targets=["y"],
             classes=["a", "b"],
             precision_prior=1.0,
-            halflife=10.0,
+            half_life=10.0,
         )
 
 
@@ -147,7 +147,7 @@ VALUES = [
         "cross_lags must be >= 1, got list [-1]",
     ),
     (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
-    (po.spec.lasso, dict(lasso_path=[0.1], max_cd_iters=-1), "max_cd_iters must be >= 0"),
+    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=-1), "max_iter must be >= 0"),
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
     (po.spec.rls, dict(ridge=-INF), "ridge must be finite, got float -inf"),
@@ -232,9 +232,9 @@ def test_a_bad_value_names_the_parameter(builder, kw, msg):
 
 def test_numpy_scalars_are_plain_numbers():
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], halflife=np.float64(10.0), coef_every=np.int64(3)
+        "m", targets=["y"], features=["x0"], half_life=np.float64(10.0), coef_every=np.int64(3)
     )
-    assert spec["halflife"] == 10.0 and spec["coef_every"] == 3
+    assert spec["half_life"] == 10.0 and spec["coef_every"] == 3
     out = po.ModelBank([spec]).fit_predict(_df())
     assert out["m"].struct.field("coef").null_count() < out.height
 
@@ -243,7 +243,7 @@ BUILDERS = {
     po.spec.ewridge: {},
     po.spec.rls: {},
     po.spec.lasso: dict(lasso_path=[0.1]),
-    po.spec.kalman: dict(coef_halflife=10.0),
+    po.spec.kalman: dict(coef_half_life=10.0),
     po.spec.huber: {},
     po.spec.quantile: dict(quantile=0.5),
     po.spec.ftrl: {},
@@ -256,19 +256,19 @@ BUILDERS = {
     po.spec.marginal: {},
     # The seven the sweeps below never saw until task 111.
     po.spec.micro: dict(features=["x0", "y"], targets=None, eps=0.3),
-    po.spec.seqtest: dict(features=None, halflife=None),
+    po.spec.seqtest: dict(features=None, half_life=None),
     po.spec.deco: dict(features=["x0", "y"], targets=None),
     po.spec.rcov: dict(
         features=["x0", "y"],
         targets=None,
-        halflife=None,
+        half_life=None,
         group="g",
         group_close="monotone",
         block_rows=100,
     ),
     po.spec.hmm: dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1),
-    po.spec.corrchange: dict(features=["x0", "y"], targets=None, halflife=None, span_rows=20),
-    po.spec.bocpd: dict(features=["x0", "y"], targets=None, halflife=None),
+    po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, span_rows=20),
+    po.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
 }
 
 
@@ -348,7 +348,7 @@ def test_nan_is_no_setting_for_any_float_parameter(builder):
     NaN to carry into it; TOML's ``nan`` literal is the Rust side's
     ``spec_inf.rs``). The spec layer named every key it validates itself; the
     core validators of ``sgd`` (``clip_gradient``, ``power``, ``l2``,
-    ``eps``) and ``kalman`` (``halflife``, ``p0``, ``q``, ``obs_var``) tested
+    ``eps``) and ``kalman`` (``half_life``, ``p0``, ``q``, ``obs_var``) tested
     ``v <= 0.0`` / ``v < 0.0``, which a NaN passes, and ``rls`` never checked
     its prior's entries: a NaN ``clip_gradient`` then panicked in
     ``f64::clamp`` on the first learned row, and a NaN ``obs_var`` made
@@ -386,9 +386,9 @@ def _nan_shaped_like(inf):
 INF_MEANS_SOMETHING = [
     (po.spec.huber, "huber_delta", {}),  # least squares
     (po.spec.sgd, "huber_delta", dict(loss="huber")),  # least squares
-    (po.spec.ewridge, "long_halflife", dict(session="s", session_gap=1.0, session_shrink=0.5)),
-    (po.spec.lasso, "select_halflife", {}),  # selection over the whole history
-    (po.spec.holt, "level_halflife", dict(halflife=None)),  # the cumulative fit (S30)
+    (po.spec.ewridge, "long_half_life", dict(session="s", session_gap=1.0, session_shrink=0.5)),
+    (po.spec.lasso, "select_half_life", {}),  # selection over the whole history
+    (po.spec.holt, "level_half_life", dict(half_life=None)),  # the cumulative fit (S30)
     (po.spec.pa, "c", dict(mode="pa1")),  # mode "pa": the step is not capped
     (po.spec.ewridge, "average_eta", dict(ridge=[1e-6, 1.0], emit_averaged=True)),  # the argmin
 ]
@@ -420,7 +420,7 @@ def _kwargs(builder, extra):
     ids=[f"{b.__name__}.{k}" for b, k, _ in INF_MEANS_SOMETHING],
 )
 def test_inf_is_taken_where_it_means_something(builder, key, extra):
-    """A halflife that forgets nothing, a Huber loss that is least squares, a
+    """A half-life that forgets nothing, a Huber loss that is least squares, a
     step that is not capped, weights that are the argmin: the builder takes
     ``inf`` and the bank builds with it. Python refused every one, and so did
     Rust's parser, while its validation let TOML's ``inf`` through."""
@@ -457,16 +457,16 @@ def test_a_hand_built_dict_is_checked_by_path():
     base = dict(name="m", model={"type": "ew_ridge"}, targets=["y"], features=["x0"])
     for bad, msg in [
         (dict(targets="y"), '[0].targets: invalid type: string "y", expected a sequence'),
-        (dict(halflife="10"), '[0].halflife: "10" is not a duration: 10 has no unit'),
-        (dict(halflife=[10, "x"]), '[0].halflife[1]: "x" is not a duration'),
+        (dict(half_life="10"), '[0].half_life: "10" is not a duration: 10 has no unit'),
+        (dict(half_life=[10, "x"]), '[0].half_life[1]: "x" is not a duration'),
         (
-            dict(halflife=10, session_gap=[1]),
+            dict(half_life=10, session_gap=[1]),
             "[0].session_gap: invalid type: sequence, expected a gap in clock units",
         ),
-        (dict(halflife=10, model={"type": "ew_rdige"}), "[0].model.type: unknown variant"),
-        (dict(halflife=10, model={}), "[0].model: missing field `type`"),
-        (dict(halflife=10, targets=[3]), "[0].targets[0]: invalid type: integer `3`"),
-        (dict(halflife=10, targets="y"), "[0].targets: invalid type: string"),
+        (dict(half_life=10, model={"type": "ew_rdige"}), "[0].model.type: unknown variant"),
+        (dict(half_life=10, model={}), "[0].model: missing field `type`"),
+        (dict(half_life=10, targets=[3]), "[0].targets[0]: invalid type: integer `3`"),
+        (dict(half_life=10, targets="y"), "[0].targets: invalid type: string"),
     ]:
         with pytest.raises(ValueError) as exc:
             po.ModelBank([{**base, **bad}])
@@ -484,7 +484,7 @@ def test_a_hand_built_dict_is_checked_by_path():
         ("target", dict(targets=["nope"])),
         ("target", dict(targets=[po.target("nope", relative_to="y")])),
         ("relative_to", dict(targets=[po.target("y", relative_to="nope")])),
-        ("clock", dict(clock="nope", max_dclock=5.0)),
+        ("clock", dict(clock="nope", gap_cap=5.0)),
         ("session", dict(session="nope", session_gap=1.0)),
         ("weight", dict(weight="nope")),
         ("group", dict(group="nope")),
@@ -507,7 +507,7 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
         ("feature", dict(features=["s"])),
         ("target", dict(targets=["s"])),
         ("relative_to", dict(targets=[po.target("y", relative_to="s")])),
-        ("clock", dict(clock="s", max_dclock=5.0)),
+        ("clock", dict(clock="s", gap_cap=5.0)),
         ("weight", dict(weight="s")),
     ],
 )
@@ -596,9 +596,9 @@ def test_a_column_the_spec_never_names_is_ignored_whatever_its_dtype(name):
     column, on a column the spec never asked for. The dtype features are on
     now (IMPROVEMENTS U5); this table is what keeps them on."""
     df = _two_rows().with_columns(DTYPES[name]().alias("c"))
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=5.0, min_periods=1.0)
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=1.0)
     out = po.ModelBank([spec]).fit_predict(df)
-    assert out["m"].struct.field("n_eff").len() == 2
+    assert out["m"].struct.field("weight_sum").len() == 2
 
 
 @pytest.mark.parametrize("name", list(DTYPES), ids=list(DTYPES))
@@ -606,7 +606,7 @@ def test_a_feature_of_any_dtype_is_either_used_or_named(name):
     """The other half: used as a feature, a dtype either casts to f64 or is
     refused by name. Never a panic, and never silently all-null."""
     df = _two_rows().with_columns(DTYPES[name]().alias("c"))
-    spec = po.spec.ewridge("m", targets=["y"], features=["c"], halflife=5.0, min_periods=1.0)
+    spec = po.spec.ewridge("m", targets=["y"], features=["c"], half_life=5.0, min_weight=1.0)
     if name in NUMERIC:
         po.ModelBank([spec]).fit_predict(df)
         return
@@ -622,7 +622,7 @@ def test_a_narrow_dtype_gives_the_same_answer_as_float64(dtype):
     exactly what the same numbers as `Float64` would."""
     x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
     df = pl.DataFrame({"y": [2 * v + 1 for v in x], "x0": x})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=5.0, min_periods=2.0)
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=5.0, min_weight=2.0)
     want = po.ModelBank([spec]).fit_predict(df)
     got = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("x0").cast(dtype)))
     assert want.equals(got, null_equal=True)
@@ -647,7 +647,7 @@ def test_a_decimal_parquet_runs_through_the_cli(tmp_path, online_cli):
         }
     )
     df.write_parquet(src)
-    spec = po.spec.ewridge("m", targets=["y"], features=["price", "code"], halflife=50.0)
+    spec = po.spec.ewridge("m", targets=["y"], features=["price", "code"], half_life=50.0)
     run_online(online_cli, tmp_path, [spec], input=src, output=out)
     plain = df.with_columns(pl.col("price", "code").cast(pl.Float64))
     want = po.ModelBank([spec]).fit_predict(plain)["m"]
@@ -685,7 +685,7 @@ def test_concurrent_fit_predict_says_so(method):
             "y": np.random.default_rng(1).standard_normal(n),
         }
     )
-    bank = po.ModelBank([_spec_dict(halflife=[10.0, 100.0, 1000.0], coef_every=1)])
+    bank = po.ModelBank([_spec_dict(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
     call = getattr(bank, method)
     start = threading.Barrier(4)
     errors: list[BaseException] = []

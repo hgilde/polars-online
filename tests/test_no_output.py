@@ -2,7 +2,7 @@
 not have to invent a target.
 
 The two go together. An accumulator-only spec (`ew_cov` with `stats=[]`, or a
-`marginal`) emits `n_eff` a row and nothing else, and the value of running it
+`marginal`) emits `weight_sum` a row and nothing else, and the value of running it
 is the state it leaves behind -- so writing that column to a file, at 8 GB a
 billion rows, is I/O nobody reads. And such a spec has no target, which a
 TOML author should not have to make one up for.
@@ -31,12 +31,12 @@ def frame(n=500, seed=0):
 
 
 def cov_spec(name="c", **kw):
-    return po.spec.ew_cov(name, features=["x0", "x1"], stats=[], halflife=200.0, **kw)
+    return po.spec.ew_cov(name, features=["x0", "x1"], stats=[], half_life=200.0, **kw)
 
 
 def ridge_spec(name="m", **kw):
     return po.spec.ewridge(
-        name, targets=["y"], features=["x0", "x1"], halflife=200.0, min_periods=3.0, **kw
+        name, targets=["y"], features=["x0", "x1"], half_life=200.0, min_weight=3.0, **kw
     )
 
 
@@ -147,7 +147,7 @@ chunk_rows = 100
 name = "c"
 targets = ["x0"]
 features = ["x0", "x1"]
-halflife = 200.0
+half_life = 200.0
 [specs.model]
 type = "ew_cov"
 stats = []
@@ -173,7 +173,7 @@ save_state = "{(tmp_path / "b.state").as_posix()}"
 [[specs]]
 name = "c"
 features = ["x0", "x1"]
-halflife = 200.0
+half_life = 200.0
 [specs.model]
 type = "ew_cov"
 """
@@ -222,7 +222,7 @@ save_state = "{state.as_posix()}"
 [[specs]]
 name = "u"
 features = ["x0", "x1"]
-halflife = 200.0
+half_life = 200.0
 [specs.model]
 type = "{model}"
 {extra}
@@ -249,7 +249,7 @@ chunk_rows = 100
 [[specs]]
 name = "c"
 features = ["x0", "x1"]
-halflife = 200.0
+half_life = 200.0
 [specs.model]
 type = "ew_cov"
 stats = []

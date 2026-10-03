@@ -110,7 +110,7 @@ def frame(n=1500):
     return d.with_columns(y=pl.col("x0") * 2)
 
 
-SPEC = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], halflife=50.0, min_periods=2.0)
+SPEC = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=2.0)
 
 
 class TestNothingLeaksAcrossTheBoundary:
@@ -140,7 +140,7 @@ class TestNothingLeaksAcrossTheBoundary:
             }
         )
         spec = po.spec.ewridge(
-            "m", targets=["y"], features=["x0"], halflife=50.0, group="g", min_periods=2.0
+            "m", targets=["y"], features=["x0"], half_life=50.0, group="g", min_weight=2.0
         )
         # A wider window than the default: fanning fifty groups across the pool
         # makes each call's allocator traffic noisier than a single group's, so
@@ -228,7 +228,7 @@ class TestNothingCrashes:
             import numpy as np, polars as pl, polars_online as po
             rng = np.random.default_rng(0)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
+                                   half_life=20.0, min_weight=2.0)
             bank = po.ModelBank([spec])
             keep = []
             for i in range(200):
@@ -252,7 +252,7 @@ class TestNothingCrashes:
             import numpy as np, polars as pl, polars_online as po
             rng = np.random.default_rng(1)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
+                                   half_life=20.0, min_weight=2.0)
             df = pl.DataFrame({"x0": rng.standard_normal(800)})
             df = df.with_columns(y=pl.col("x0"))
             out = po.ModelBank([spec]).fit_predict(df)
@@ -281,7 +281,7 @@ class TestNothingCrashes:
             # land there.
             rng = np.random.default_rng(2)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
+                                   half_life=20.0, min_weight=2.0)
             for _ in range(30):
                 d = {}
                 d["self"] = d
@@ -300,7 +300,7 @@ class TestNothingCrashes:
         run_isolated("""
             import polars as pl, polars_online as po
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
+                                   half_life=20.0, min_weight=2.0)
             bank = po.ModelBank([spec])
             empty = pl.DataFrame({"x0": pl.Series([], dtype=pl.Float64),
                                   "y": pl.Series([], dtype=pl.Float64)})
@@ -322,7 +322,7 @@ class TestNothingCrashes:
             import numpy as np, polars as pl, polars_online as po
             rng = np.random.default_rng(4)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
+                                   half_life=20.0, min_weight=2.0)
             bank = po.ModelBank([spec])
             df = pl.DataFrame({"x0": rng.standard_normal(400)})
             df = df.with_columns(y=pl.col("x0"))

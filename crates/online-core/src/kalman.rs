@@ -15,21 +15,21 @@
 //! P_j <- P_j - k z' P_j
 //! ```
 //!
-//! **Reversion (ENHANCEMENTS E41).** `revert_halflife` gives each slot a
-//! reversion halflife `r_i`: between observations the coefficient mean
+//! **Reversion (ENHANCEMENTS E41).** `revert_half_life` gives each slot a
+//! reversion half-life `r_i`: between observations the coefficient mean
 //! shrinks toward zero by `2^(-d/r_i)`, so a coefficient no row has
 //! supported for a while is forgotten rather than carried. `r_i = inf` (the
 //! default) is `Phi = I`, the random walk, and costs nothing. The pull is
 //! toward zero in the *standardized* coordinates when `standardize` is on:
 //! a slope toward "no effect", the intercept toward "the target averages
 //! zero"; give the intercept `inf` to leave it a random walk. With `Q`
-//! from `coef_halflife` a reverting slot settles at prior variance
+//! from `coef_half_life` a reverting slot settles at prior variance
 //! `q_i d / (1 - phi_i^2)`, a stationary AR(1) instead of an unbounded walk.
 //!
-//! **Process noise from a per-factor halflife.** On standardized features, the
-//! steady-state gain of a random-walk-beta filter matches EW-RLS with halflife
-//! `h_i` when `q_i = sigma^2 * (ln2 / h_i)^2` (docs/PLAN.md §4.4). `halflife`
-//! may be scalar or per factor; `halflife = inf` gives `q_i = 0`, pinning that
+//! **Process noise from a per-factor half-life.** On standardized features, the
+//! steady-state gain of a random-walk-beta filter matches EW-RLS with half-life
+//! `h_i` when `q_i = sigma^2 * (ln2 / h_i)^2` (docs/PLAN.md §4.4). `half_life`
+//! may be scalar or per factor; `half_life = inf` gives `q_i = 0`, pinning that
 //! coefficient. An explicit `q` overrides the derivation.
 //!
 //! Features are standardized internally against a shared [`EwDiag`] over `z`
@@ -51,33 +51,33 @@ use crate::{Decay, EwDiag};
 pub struct KalmanCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     /// Decay used for the standardization statistics and the EW residual
     /// variance (NOT for the coefficients: those follow the random walk).
     pub decay: Decay,
-    /// Per-factor coefficient halflife in clock units (length 1 or `k_total`).
+    /// Per-factor coefficient half-life in clock units (length 1 or `k_total`).
     /// `f64::INFINITY` pins a coefficient. Ignored when `q` is given.
     #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
-    pub halflife: Vec<f64>,
+    pub half_life: Vec<f64>,
     /// Explicit process-noise variances (length `k_total`), overriding
-    /// `halflife`.
+    /// `half_life`.
     pub q: Option<Vec<f64>>,
     /// Fixed observation variance; defaults to the EW residual variance.
     pub obs_var: Option<f64>,
     /// Initial coefficient covariance (diagonal).
     pub p0: f64,
     pub share_p: bool,
-    pub min_periods: f64,
-    /// Per-slot reversion halflife in clock units (length 1 or `k_total`,
+    pub min_weight: f64,
+    /// Per-slot reversion half-life in clock units (length 1 or `k_total`,
     /// intercept first): the coefficient mean shrinks toward zero by
     /// `2^(-d/r_i)` per row before the process noise is added. `f64::INFINITY`
     /// (the default) is the random walk. See the module doc.
     #[serde(default = "default_revert")]
     #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
-    pub revert_halflife: Vec<f64>,
+    pub revert_half_life: Vec<f64>,
     /// Standardize features internally before filtering (default).
     ///
-    /// On by default because the halflife-derived process noise
+    /// On by default because the half-life-derived process noise
     /// `q_i = sigma^2 (ln2/h_i)^2` is only comparable across features on a
     /// common scale. Turn it off when the features are already on a sensible
     /// scale and you want the filter to operate on them directly — that makes
@@ -97,7 +97,7 @@ fn default_revert() -> Vec<f64> {
 
 impl KalmanCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -118,18 +118,24 @@ impl KalmanCfg {
                 return Err("kalman: q values must be >= 0".into());
             }
         } else {
-            if self.halflife.len() != 1 && self.halflife.len() != k {
-                return Err(format!("kalman: halflife must have length 1 or {k}"));
+            if self.half_life.len() != 1 && self.half_life.len() != k {
+                return Err(format!("kalman: half_life must have length 1 or {k}"));
             }
-            if self.halflife.iter().any(|&h| h.is_nan() || h <= 0.0) {
-                return Err("kalman: halflife values must be > 0 (inf pins)".into());
+            if self.half_life.iter().any(|&h| h.is_nan() || h <= 0.0) {
+                return Err("kalman: half_life values must be > 0 (inf pins)".into());
             }
         }
-        if self.revert_halflife.len() != 1 && self.revert_halflife.len() != k {
-            return Err(format!("kalman: revert_halflife must have length 1 or {k}"));
+        if self.revert_half_life.len() != 1 && self.revert_half_life.len() != k {
+            return Err(format!(
+                "kalman: revert_half_life must have length 1 or {k}"
+            ));
         }
-        if self.revert_halflife.iter().any(|&h| h.is_nan() || h <= 0.0) {
-            return Err("kalman: revert_halflife values must be > 0 (inf = random walk)".into());
+        if self
+            .revert_half_life
+            .iter()
+            .any(|&h| h.is_nan() || h <= 0.0)
+        {
+            return Err("kalman: revert_half_life values must be > 0 (inf = random walk)".into());
         }
         if self.p0.is_nan() || self.p0 <= 0.0 {
             return Err("kalman: p0 must be > 0".into());
@@ -143,16 +149,16 @@ impl KalmanCfg {
     /// Whether any slot reverts (`Phi != I`). The default random walk skips
     /// the transition entirely, so it stays bit-identical to before E41.
     fn reverts(&self) -> bool {
-        self.revert_halflife.iter().any(|h| h.is_finite())
+        self.revert_half_life.iter().any(|h| h.is_finite())
     }
 
     /// The transition factor of slot `i` over a clock delta `d`,
     /// `2^(-d/r_i)`, spelled as [`Decay::factor`] is.
     fn phi(&self, i: usize, d_clock: f64) -> f64 {
-        let r = if self.revert_halflife.len() == 1 {
-            self.revert_halflife[0]
+        let r = if self.revert_half_life.len() == 1 {
+            self.revert_half_life[0]
         } else {
-            self.revert_halflife[i]
+            self.revert_half_life[i]
         };
         Decay::Halflife(r).factor(d_clock)
     }
@@ -295,8 +301,8 @@ impl Kalman {
     /// variance: that would carry `P` through the transition and add the
     /// process noise for the next step's gap, `zᵀ(Φ P Φᵀ + Q·Δ)z + R`. The
     /// two differ by `zᵀ(Φ P Φᵀ − P + Q·Δ)z`, which the default random walk
-    /// (`Φ = I`) reduces to `Q·Δ`: negligible under a halflife-derived `q`
-    /// (about 0.7 % of `R` at halflife 100), not under a large explicit `q`
+    /// (`Φ = I`) reduces to `Q·Δ`: negligible under a half-life-derived `q`
+    /// (about 0.7 % of `R` at half-life 100), not under a large explicit `q`
     /// (review 2026-09-18, D2).
     ///
     /// This is the piece `sigma` alone cannot give. `sigma` is the spread of
@@ -354,7 +360,7 @@ impl Kalman {
 
     /// [`Self::scales`] into a caller's buffer of length `k_total`.
     fn scales_into(&self, out: &mut [f64]) {
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         for (i, s) in out.iter_mut().enumerate() {
             *s = if !self.cfg.standardize || i < off {
                 1.0
@@ -391,7 +397,7 @@ impl Kalman {
             return self.beta.clone();
         }
         let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let s = self.scales();
         let mut out = Vec::with_capacity(self.cfg.n_targets);
         for b in &self.beta {
@@ -399,7 +405,7 @@ impl Kalman {
             for (i, ci) in c.iter_mut().enumerate().skip(off) {
                 *ci = b[i] / s[i];
             }
-            if self.cfg.add_intercept {
+            if self.cfg.fit_intercept {
                 // b0_std is on centered features: unshift by the feature means.
                 let mut b0 = b[0];
                 for (i, ci) in c.iter().enumerate().skip(off) {
@@ -427,9 +433,9 @@ impl Kalman {
             out.copy_from_slice(q);
             return;
         }
-        let shared = self.cfg.halflife.len() == 1;
+        let shared = self.cfg.half_life.len() == 1;
         for (i, qi) in out.iter_mut().enumerate() {
-            let h = self.cfg.halflife[if shared { 0 } else { i }];
+            let h = self.cfg.half_life[if shared { 0 } else { i }];
             *qi = if h.is_infinite() {
                 0.0
             } else {
@@ -442,7 +448,7 @@ impl Kalman {
     /// `[1, x]` standardized against the stats as they stand, as `step`
     /// fills `zs` before its own update.
     fn standardized(&self, x: &[f64]) -> Vec<f64> {
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let s = self.scales();
         (0..self.cfg.k_total())
             .map(|i| {
@@ -480,8 +486,8 @@ impl Kalman {
             return;
         }
         let k = self.cfg.k_total();
-        if self.cfg.revert_halflife.len() == 1 {
-            // One halflife for every slot: one exponential, not `k`.
+        if self.cfg.revert_half_life.len() == 1 {
+            // One half-life for every slot: one exponential, not `k`.
             self.phi.fill(self.cfg.phi(0, d_clock));
         } else {
             for (i, ph) in self.phi.iter_mut().enumerate() {
@@ -515,10 +521,10 @@ impl OnlineModel for Kalman {
         self.ensure_buffers();
         let k = self.cfg.k_total();
         let m = self.cfg.n_targets;
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let lam = self.cfg.decay.factor(d_clock);
 
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -551,7 +557,7 @@ impl OnlineModel for Kalman {
 
         // ---- predict (state before the update) ----
         let n_eff = self.stats.n_eff();
-        let ready = n_eff >= self.cfg.min_periods;
+        let ready = n_eff >= self.cfg.min_weight;
         let mut pred = vec![f64::NAN; m];
         if ready {
             for (j, p) in pred.iter_mut().enumerate() {
@@ -638,7 +644,7 @@ impl OnlineModel for Kalman {
             // EW residual variance from the out-of-sample prediction. Its
             // weight ages on every row, this one included, and the row adds
             // its squared residual when it has a prediction to measure one
-            // from: a row with no prediction -- `min_periods` unmet after a
+            // from: a row with no prediction -- `min_weight` unmet after a
             // clock gap -- aged nothing, so `σ²` forgot less across it than
             // across a null (N6). The update is skipped when it would not be
             // finite: `sig2` feeds the process noise, and an `inf` there puts
@@ -671,7 +677,7 @@ impl OnlineModel for Kalman {
         let m = self.cfg.n_targets;
         let n_eff = self.stats.n_eff();
         let mut pred = vec![f64::NAN; m];
-        if n_eff >= self.cfg.min_periods {
+        if n_eff >= self.cfg.min_weight {
             let zs = self.standardized(x);
             // The same numbers `step` would emit: its transition scales
             // `b_i` by `phi_i` before the dot product, and `b * phi` is
@@ -741,15 +747,15 @@ mod tests {
         KalmanCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(200.0),
-            halflife: hl,
+            half_life: hl,
             q: None,
             obs_var: None,
             p0: 1.0,
             share_p: false,
-            min_periods: 10.0,
-            revert_halflife: vec![f64::INFINITY],
+            min_weight: 10.0,
+            revert_half_life: vec![f64::INFINITY],
             standardize: true,
         }
     }
@@ -794,12 +800,12 @@ mod tests {
         bad(&|c| c.q = Some(vec![0.0, 0.0, -1e-9]), "must be >= 0");
         good(&|c| c.q = Some(vec![0.0; 3]));
 
-        // Without `q`, the halflives are broadcast: one value, or one per slot.
-        bad(&|c| c.halflife = vec![1.0, 2.0], "length 1 or 3");
-        bad(&|c| c.halflife = vec![0.0], "must be > 0");
-        bad(&|c| c.halflife = vec![-1.0], "must be > 0");
-        good(&|c| c.halflife = vec![f64::INFINITY]);
-        good(&|c| c.halflife = vec![1.0, 2.0, 3.0]);
+        // Without `q`, the half-lives are broadcast: one value, or one per slot.
+        bad(&|c| c.half_life = vec![1.0, 2.0], "length 1 or 3");
+        bad(&|c| c.half_life = vec![0.0], "must be > 0");
+        bad(&|c| c.half_life = vec![-1.0], "must be > 0");
+        good(&|c| c.half_life = vec![f64::INFINITY]);
+        good(&|c| c.half_life = vec![1.0, 2.0, 3.0]);
 
         // p0 is the prior variance and obs_var the measurement noise; both
         // divide, so neither may be zero. obs_var may be absent (inferred).
@@ -815,7 +821,7 @@ mod tests {
         // stream with no error and no counted failure (review 2026-09-18, B4).
         bad(&|c| c.obs_var = Some(f64::NAN), "obs_var must be > 0");
         bad(&|c| c.p0 = f64::NAN, "p0 must be > 0");
-        bad(&|c| c.halflife = vec![f64::NAN], "must be > 0");
+        bad(&|c| c.half_life = vec![f64::NAN], "must be > 0");
         bad(&|c| c.q = Some(vec![0.0, f64::NAN, 0.0]), "must be >= 0");
 
         cfg(2, 1, vec![100.0]).validate().unwrap();
@@ -828,9 +834,9 @@ mod tests {
         // behaviour that state was produced under. Defaulting to `false`
         // instead would silently change every restored model's numbers.
         let json = r#"{
-            "n_features": 2, "n_targets": 1, "add_intercept": true,
-            "decay": {"Halflife": 200.0}, "halflife": [100.0], "q": null,
-            "obs_var": null, "p0": 1.0, "share_p": false, "min_periods": 10.0
+            "n_features": 2, "n_targets": 1, "fit_intercept": true,
+            "decay": {"Halflife": 200.0}, "half_life": [100.0], "q": null,
+            "obs_var": null, "p0": 1.0, "share_p": false, "min_weight": 10.0
         }"#;
         let cfg: KalmanCfg = serde_json::from_str(json).expect("should load without the field");
         assert!(cfg.standardize, "the omitted field must default to true");
@@ -842,7 +848,7 @@ mod tests {
         // has to undo both -- divide by the scale, then unshift the intercept
         // by the feature means -- or the numbers a caller reads are not the
         // ones their data is in.
-        // A coefficient halflife rather than a pinned one, so the filter keeps
+        // A coefficient half-life rather than a pinned one, so the filter keeps
         // re-learning as the standardization stats settle. With `q = 0` and a
         // near-zero observation noise it would instead converge in a handful of
         // rows, locking its betas into the standardized space of the first few
@@ -850,7 +856,7 @@ mod tests {
         // why the Bayesian-regression correspondence test turns standardization
         // off rather than working around it.
         let mut c = cfg(2, 1, vec![500.0]);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Kalman::new(c).unwrap();
         let mut s = 149u64;
         // Features on very different scales and far from zero, so a missing
@@ -876,7 +882,7 @@ mod tests {
     fn pred_var_after_a_load_is_the_saved_filters() {
         let mut c = cfg(2, 1, vec![100.0]);
         c.obs_var = Some(0.25);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let m = fit(c, 80, 61);
         let x = [0.3, -0.2];
         let before = m.pred_var(&x);
@@ -896,7 +902,7 @@ mod tests {
         // and R against the configured or inferred observation noise.
         let mut c = cfg(2, 1, vec![100.0]);
         c.obs_var = Some(0.25);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let m = fit(c, 80, 61);
         let k = m.cfg.k_total();
         let x = [0.4, -0.7];
@@ -916,7 +922,7 @@ mod tests {
         // Without a configured obs_var it falls back to the tracked residual
         // variance of that target.
         let mut c = cfg(2, 1, vec![100.0]);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let m = fit(c, 80, 61);
         let got = m.pred_var(&x)[0];
         assert!(got > m.sigma2()[0], "{got} vs {}", m.sigma2()[0]);
@@ -929,7 +935,7 @@ mod tests {
         // is the mean across targets rather than each target's own.
         let mut shared = cfg(2, 2, vec![100.0]);
         shared.share_p = true;
-        shared.min_periods = 3.0;
+        shared.min_weight = 3.0;
         let ms = fit(shared, 200, 71);
         assert_eq!(ms.p.len(), 1, "one covariance for all targets");
         // Both targets read the same P, so their pred_var differs only through
@@ -948,7 +954,7 @@ mod tests {
         );
 
         let mut separate = cfg(2, 2, vec![100.0]);
-        separate.min_periods = 3.0;
+        separate.min_weight = 3.0;
         let msep = fit(separate, 200, 71);
         assert_eq!(msep.p.len(), 2, "one covariance per target");
         let pv2 = msep.pred_var(&[0.3, -0.2]);
@@ -962,7 +968,7 @@ mod tests {
     fn a_null_target_decays_its_weights_and_leaves_the_filter_alone() {
         let mut c = cfg(2, 1, vec![100.0]);
         c.decay = Decay::Halflife(10.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Kalman::new(c).unwrap();
         let mut s = 73u64;
         for i in 0..60 {
@@ -988,7 +994,7 @@ mod tests {
     #[test]
     fn a_zero_weight_row_does_not_correct_the_filter() {
         let mut c = cfg(2, 1, vec![100.0]);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Kalman::new(c).unwrap();
         let mut s = 79u64;
         for i in 0..60 {
@@ -1015,7 +1021,7 @@ mod tests {
     fn a_zero_weight_row_decays_its_weights_as_a_null_does() {
         let mut c = cfg(2, 1, vec![100.0]);
         c.decay = Decay::Halflife(10.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Kalman::new(c).unwrap();
         let mut s = 73u64;
         for i in 0..60 {
@@ -1052,7 +1058,7 @@ mod tests {
     fn residual_variance_is_the_ew_mean_of_squared_out_of_sample_errors() {
         let mut c = cfg(1, 1, vec![f64::INFINITY]);
         c.decay = Decay::Halflife(25.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         c.standardize = false;
         c.obs_var = Some(0.5);
         let mut m = Kalman::new(c).unwrap();
@@ -1081,7 +1087,7 @@ mod tests {
     }
 
     /// The same mean across rows with no prediction: after a clock gap
-    /// takes `n_eff` under `min_periods`, the next rows have a target and
+    /// takes `n_eff` under `min_weight`, the next rows have a target and
     /// no prediction. They add nothing, and age `σ²`'s weight as every row
     /// does; they aged nothing, so `σ²` -- which sets `R` and `Q` -- forgot
     /// less across them than the clock says (N6, found beside review
@@ -1091,7 +1097,7 @@ mod tests {
         let hl = 25.0;
         let mut c = cfg(1, 1, vec![f64::INFINITY]);
         c.decay = Decay::Halflife(hl);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         c.standardize = false;
         c.obs_var = Some(0.5);
         let mut m = Kalman::new(c).unwrap();
@@ -1136,15 +1142,15 @@ mod tests {
         let mut m = Kalman::new(KalmanCfg {
             n_features: 2,
             n_targets: 1,
-            add_intercept: false,
+            fit_intercept: false,
             decay: Decay::Halflife(f64::INFINITY),
-            halflife: vec![f64::INFINITY],
+            half_life: vec![f64::INFINITY],
             q: Some(vec![0.0, 0.0]),
             obs_var: Some(obs_var),
             p0,
             share_p: false,
-            min_periods: 0.0,
-            revert_halflife: vec![f64::INFINITY],
+            min_weight: 0.0,
+            revert_half_life: vec![f64::INFINITY],
             standardize: false,
         })
         .unwrap();
@@ -1360,7 +1366,7 @@ mod tests {
 
     fn revert_cfg(r: Vec<f64>) -> KalmanCfg {
         KalmanCfg {
-            revert_halflife: r,
+            revert_half_life: r,
             ..cfg(2, 1, vec![100.0])
         }
     }
@@ -1368,12 +1374,12 @@ mod tests {
     #[test]
     fn revert_halflife_defaults_to_the_random_walk_when_a_state_file_omits_it() {
         let json = r#"{
-            "n_features": 2, "n_targets": 1, "add_intercept": true,
-            "decay": {"Halflife": 200.0}, "halflife": [100.0], "q": null,
-            "obs_var": null, "p0": 1.0, "share_p": false, "min_periods": 10.0
+            "n_features": 2, "n_targets": 1, "fit_intercept": true,
+            "decay": {"Halflife": 200.0}, "half_life": [100.0], "q": null,
+            "obs_var": null, "p0": 1.0, "share_p": false, "min_weight": 10.0
         }"#;
         let cfg: KalmanCfg = serde_json::from_str(json).expect("should load without the field");
-        assert_eq!(cfg.revert_halflife, vec![f64::INFINITY]);
+        assert_eq!(cfg.revert_half_life, vec![f64::INFINITY]);
         assert!(!cfg.reverts());
     }
 
@@ -1497,7 +1503,7 @@ mod tests {
             (walk[2] - 2.0).abs() < 0.1,
             "random walk keeps the slope: {walk:?}"
         );
-        // 300 rows at halflife 30 is 2^-10 of the slope.
+        // 300 rows at half-life 30 is 2^-10 of the slope.
         assert!(
             revert[2].abs() < 2.0 * 2f64.powi(-9),
             "reverting slot forgets it: {revert:?}"
@@ -1534,7 +1540,7 @@ mod tests {
         let p0 = m.p[0].clone();
         let b0 = m.beta.clone();
         m.step(&[0.1, 0.2], &[None, None], 10.0, 1.0);
-        // phi = 2^-1 for both slopes over d = 10 at halflife 10.
+        // phi = 2^-1 for both slopes over d = 10 at half-life 10.
         assert!((m.p[0][4] - p0[4] * 0.25).abs() <= 1e-12 * p0[4].abs());
         assert!((m.p[0][1] - p0[1] * 0.5).abs() <= 1e-12 * p0[1].abs());
         for (after, before) in m.beta.iter().zip(&b0) {
@@ -1575,7 +1581,7 @@ mod tests {
     #[test]
     fn a_state_without_the_standardizer_is_refused() {
         let mut c = cfg(2, 1, vec![100.0]);
-        c.revert_halflife = vec![500.0]; // JSON has no `inf`
+        c.revert_half_life = vec![500.0]; // JSON has no `inf`
         let m = fit(c, 30, 5);
         let v = serde_json::to_value(&m).unwrap();
         // The control: the same value loads with the field present.

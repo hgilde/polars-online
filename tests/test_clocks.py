@@ -3,7 +3,7 @@ of the newest row the models had learned from when it was scored.
 
 Every expected value is counted from the frame: the learned row at row *i*
 is the newest earlier row that was accepted at a positive weight and, under
-``label_delay``, whose delay had passed on the clock column by row *i*. A
+``embargo``, whose delay had passed on the clock column by row *i*. A
 ``Datetime`` clock comes back in its own unit and zone, exact to the
 nanosecond; with no clock, the row's index in its group, every row counted.
 """
@@ -29,9 +29,9 @@ def spec(**kw):
         targets=["y"],
         features=["x"],
         clock="t",
-        max_dclock=5.0,
-        halflife=20.0,
-        min_periods=0.0,
+        gap_cap=5.0,
+        half_life=20.0,
+        min_weight=0.0,
         emit_clocks=True,
     )
     d.update(kw)
@@ -98,7 +98,7 @@ class TestUnderADelay:
         t = df["t"].to_numpy().copy()
         t[60:] += 3.0  # a capped gap inside the delay holds the rows (task 153)
         df = df.with_columns(t=pl.Series(t))
-        out = po.ModelBank([spec(label_delay=self.DELAY)]).fit_predict(df)
+        out = po.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
         accept = np.ones(df.height, dtype=bool)
         s_want, l_want = expected(t, accept, accept, self.DELAY)
         s_got, l_got = fields(out)
@@ -108,7 +108,7 @@ class TestUnderADelay:
     def test_the_embargo_is_visible_on_every_row(self):
         df = frame(n=150, seed=2)
         t = df["t"].to_numpy()
-        out = po.ModelBank([spec(label_delay=self.DELAY)]).fit_predict(df)
+        out = po.ModelBank([spec(embargo=self.DELAY)]).fit_predict(df)
         s_got, l_got = fields(out)
         for i, (s, lrn) in enumerate(zip(s_got, l_got, strict=True)):
             if lrn is None:
@@ -135,7 +135,7 @@ class TestTypes:
             clock = clock.dt.replace_time_zone(tz)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": clock, "x": x, "y": 2 * x + rng.standard_normal(n)})
-        out = po.ModelBank([spec(max_dclock="10s", halflife="20s")]).fit_predict(df)
+        out = po.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == df["t"].dtype
         assert st.field("learned_clock").dtype == df["t"].dtype
@@ -149,7 +149,7 @@ class TestTypes:
         days = [start + timedelta(days=int(i)) for i in range(n)]
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": days, "x": x, "y": x + rng.standard_normal(n)})
-        out = po.ModelBank([spec(max_dclock="5d", halflife="20d")]).fit_predict(df)
+        out = po.ModelBank([spec(gap_cap="5d", half_life="20d")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Date
         assert st.field("scored_clock").to_list() == days
@@ -163,7 +163,7 @@ class TestTypes:
         df = pl.DataFrame(
             {"t": pl.Series(ms).cast(pl.Duration("ms")), "x": x, "y": x + rng.standard_normal(n)}
         )
-        out = po.ModelBank([spec(max_dclock="10s", halflife="20s")]).fit_predict(df)
+        out = po.ModelBank([spec(gap_cap="10s", half_life="20s")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Duration("ms")
         assert st.field("scored_clock").to_list() == df["t"].to_list()
@@ -187,7 +187,7 @@ class TestTypes:
         df = pl.DataFrame(
             {"x": x, "y": np.nan_to_num(x) + rng.standard_normal(n), "g": g}
         ).with_columns(x=pl.col("x").fill_nan(None))
-        out = po.ModelBank([spec(clock=None, max_dclock=None, group="g")]).fit_predict(df)
+        out = po.ModelBank([spec(clock=None, gap_cap=None, group="g")]).fit_predict(df)
         st = out["m"].struct
         assert st.field("scored_clock").dtype == pl.Int64
         s_got, l_got = fields(out)
@@ -209,7 +209,7 @@ class TestEvents:
         t = df["t"].to_numpy().copy()
         t[30:] -= t[30] - 1.0  # the clock jumps back at row 30
         df = df.with_columns(t=pl.Series(t))
-        s = spec(on_clock_reset="reset_state", min_backwards_jump=0.0)
+        s = spec(restart_after_step_back=0.0)
         out = po.ModelBank([s]).fit_predict(df)
         _, l_got = fields(out)
         assert l_got[30] is None
@@ -234,18 +234,18 @@ class TestPlumbing:
     @pytest.mark.parametrize("size", [1, 3, 7, 50, 199])
     def test_chunk_invariance(self, size):
         df = self._df()
-        s = spec(weight="w", label_delay=4.0)
+        s = spec(weight="w", embargo=4.0)
         one = po.ModelBank([s]).fit_predict(df)["m"].struct
         bank = po.ModelBank([s])
         many = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])[
             "m"
         ].struct
-        for f in ("scored_clock", "learned_clock", "pred_y", "n_eff"):
+        for f in ("scored_clock", "learned_clock", "pred_y", "weight_sum"):
             assert one.field(f).to_list() == many.field(f).to_list(), (f, size)
 
     def test_save_and_load(self, tmp_path):
         df = self._df()
-        s = spec(weight="w", label_delay=4.0)
+        s = spec(weight="w", embargo=4.0)
         whole = po.ModelBank([s]).fit_predict(df)["m"].struct
         a = po.ModelBank([s])
         a.fit_predict(df.head(100))
@@ -268,7 +268,7 @@ class TestPlumbing:
 
     def test_last_row_carries_the_clocks(self):
         df = self._df()
-        bank = po.ModelBank([spec(weight="w", label_delay=4.0)])
+        bank = po.ModelBank([spec(weight="w", embargo=4.0)])
         out = bank.fit_predict(df)["m"].struct
         last = bank.last_row()
         # The last row processed is the last row of the frame, scored where it sat.

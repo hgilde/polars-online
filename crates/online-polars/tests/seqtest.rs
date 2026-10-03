@@ -11,7 +11,7 @@ use polars::prelude::*;
 
 /// The fixture's clock is one clock over both groups, so an ungrouped spec
 /// reads it in order.
-fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
+fn ridge(name: &str, half_life: f64, group: bool) -> Spec {
     let g = if group { r#""group": "g","# } else { "" };
     serde_json::from_str(&format!(
         r#"{{
@@ -20,10 +20,10 @@ fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": {halflife},
-            "max_dclock": 30.0,
+            "half_life": {half_life},
+            "gap_cap": 30.0,
             {g}
-            "min_periods": 5.0
+            "min_weight": 5.0
         }}"#
     ))
     .unwrap()
@@ -38,9 +38,9 @@ fn compare(name: &str, a: &str, b: &str, group: bool) -> Spec {
             "targets": ["y"],
             "features": [],
             "clock": "t",
-            "max_dclock": 30.0,
+            "gap_cap": 30.0,
             {g}
-            "min_periods": 0
+            "min_weight": 0
         }}"#
     ))
     .unwrap()
@@ -55,7 +55,7 @@ fn column_mode(name: &str, target: &str, group: bool) -> Spec {
             "targets": ["{target}"],
             "features": [],
             {g}
-            "min_periods": 0
+            "min_weight": 0
         }}"#
     ))
     .unwrap()
@@ -63,7 +63,7 @@ fn column_mode(name: &str, target: &str, group: bool) -> Spec {
 
 /// Two interleaved groups (so the bank lays the chunk out group by group),
 /// a null feature and a null target now and then, and a target one ridge's
-/// halflife suits better than the other's: `y` follows a slope that drifts.
+/// half-life suits better than the other's: `y` follows a slope that drifts.
 fn make_df(n: usize) -> DataFrame {
     let mut s = 20260905u64;
     let mut lcg = move || {
@@ -134,7 +134,7 @@ fn the_fields_and_their_dtypes() {
             "log_e_neg_y",
             "n_pos_y",
             "n_neg_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason"
         ]
@@ -142,7 +142,7 @@ fn the_fields_and_their_dtypes() {
     let idx = output_index(&spec);
     let dtypes: Vec<&str> = idx.iter().map(|f| f.dtype.as_str()).collect();
     assert_eq!(dtypes, ["f64", "f64", "i64", "i64", "f64", "f64", "enum"]);
-    assert!(idx.iter().all(|f| f.halflife.is_none() && f.lam.is_none()));
+    assert!(idx.iter().all(|f| f.half_life.is_none() && f.lam.is_none()));
     assert_eq!(idx[0].target.as_deref(), Some("y"));
     assert_eq!(idx[0].kind, "log_e_pos");
 
@@ -154,7 +154,7 @@ fn the_fields_and_their_dtypes() {
             "log_e_b_y",
             "wins_a_y",
             "wins_b_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason"
         ]
@@ -170,7 +170,7 @@ fn column_mode_is_the_core_model_on_the_signs() {
     let out = run(&mut bank, &df, 4);
     let mut twin = SeqTest::new(SeqTestCfg {
         n_targets: 1,
-        min_periods: 0.0,
+        min_weight: 0.0,
     })
     .unwrap();
     let ys = df.column("y").unwrap().f64().unwrap();
@@ -179,7 +179,7 @@ fn column_mode_is_the_core_model_on_the_signs() {
         field(&out, "s", "log_e_neg_y"),
     );
     let (n_pos, n_neg) = (field(&out, "s", "n_pos_y"), field(&out, "s", "n_neg_y"));
-    let n_eff = field(&out, "s", "n_eff");
+    let n_eff = field(&out, "s", "weight_sum");
     assert_eq!(n_pos.dtype(), &DataType::Int64);
     for i in 0..df.height() {
         let step = twin.step(&[], &[ys.get(i)], 1.0, 1.0);
@@ -233,7 +233,7 @@ fn a_comparison_is_the_column_mode_on_the_residual_difference() {
             ("log_e_b_y", "log_e_neg_d"),
             ("wins_a_y", "n_pos_d"),
             ("wins_b_y", "n_neg_d"),
-            ("n_eff", "n_eff"),
+            ("weight_sum", "weight_sum"),
         ] {
             let g = field(&out, "c", got);
             let w = field(&want, "c", exp);
@@ -243,7 +243,7 @@ fn a_comparison_is_the_column_mode_on_the_residual_difference() {
         // sides' output for the same chunk: the columns come back in spec
         // order, the comparison's built last.
         assert_eq!(out.get_column_names(), ["c", "a", "b"]);
-        // The shorter halflife tracks the drifting slope: `a` wins more rows
+        // The shorter half-life tracks the drifting slope: `a` wins more rows
         // and the evidence for it is positive, for the pooled stream and
         // for each group.
         let at = |name: &str, i: usize| field(&out, "c", name).get(i).unwrap().extract::<f64>();
@@ -260,18 +260,18 @@ fn a_comparison_is_the_column_mode_on_the_residual_difference() {
 
 #[test]
 fn a_suffix_picks_the_grid_instance() {
-    // `a` is a two-halflife grid; the comparison with `a_suffix = "@h20"`
-    // is the comparison of a single-instance spec at halflife 20.
+    // `a` is a two-half-life grid; the comparison with `a_suffix = "@h20"`
+    // is the comparison of a single-instance spec at half-life 20.
     let df = make_df(400);
     let mut grid = ridge("a", 20.0, true);
-    grid.halflife = Some(online_polars::SpanList::List(vec![
+    grid.half_life = Some(online_polars::SpanList::List(vec![
         online_polars::Span::Units(20.0),
         online_polars::Span::Units(200.0),
     ]));
     let picked: Spec = serde_json::from_str(
         r#"{"name": "c", "model": {"type": "seqtest", "a": "a", "b": "b",
             "a_suffix": "@h20"}, "targets": ["y"], "features": [], "group": "g",
-            "clock": "t", "max_dclock": 30.0}"#,
+            "clock": "t", "gap_cap": 30.0}"#,
     )
     .unwrap();
     let mut with_grid = Bank::new(vec![grid, ridge("b", 200.0, true), picked]).unwrap();
@@ -303,7 +303,13 @@ fn a_comparison_is_chunk_invariant_over_interleaved_groups() {
     let many = run(&mut Bank::new(specs()).unwrap(), &df, 61);
     let each = run(&mut Bank::new(specs()).unwrap(), &df, 500);
     for other in [&many, &each] {
-        for f in ["log_e_a_y", "log_e_b_y", "wins_a_y", "wins_b_y", "n_eff"] {
+        for f in [
+            "log_e_a_y",
+            "log_e_b_y",
+            "wins_a_y",
+            "wins_b_y",
+            "weight_sum",
+        ] {
             assert!(
                 field(&one, "c", f).equals_missing(&field(other, "c", f)),
                 "{f} differs between chunkings"
@@ -319,7 +325,7 @@ fn a_comparison_is_chunk_invariant_over_interleaved_groups() {
     ])
     .unwrap();
     let out = run(&mut pooled, &df, 7);
-    let n_eff = field(&out, "c", "n_eff");
+    let n_eff = field(&out, "c", "weight_sum");
     assert_eq!(n_eff.f64().unwrap().get(499), Some(499.0));
 }
 
@@ -343,7 +349,13 @@ fn scoring_reads_the_state_before_the_chunk() {
     for g in ["g0", "g1"] {
         let gs = rest.column("g").unwrap().str().unwrap();
         let first = (0..100).find(|&i| gs.get(i) == Some(g)).unwrap();
-        for f in ["log_e_a_y", "log_e_b_y", "wins_a_y", "wins_b_y", "n_eff"] {
+        for f in [
+            "log_e_a_y",
+            "log_e_b_y",
+            "wins_a_y",
+            "wins_b_y",
+            "weight_sum",
+        ] {
             let s = field(&scored, "c", f);
             let l = field(&learned, "c", f);
             for i in (0..100).filter(|&i| gs.get(i) == Some(g)) {
@@ -358,7 +370,7 @@ fn scoring_reads_the_state_before_the_chunk() {
     }
     // Scoring learned nothing, on either side or in the comparison.
     let again = DataFrame::new(100, bank.predict(&rest).unwrap()).unwrap();
-    assert!(!field(&again, "c", "n_eff").equals_missing(&field(&scored, "c", "n_eff")));
+    assert!(!field(&again, "c", "weight_sum").equals_missing(&field(&scored, "c", "weight_sum")));
     let mut twin = Bank::new(specs()).unwrap();
     run(&mut twin, &df.slice(0, 300), 3);
     let fresh = DataFrame::new(100, twin.predict(&rest).unwrap()).unwrap();
@@ -367,15 +379,12 @@ fn scoring_reads_the_state_before_the_chunk() {
 
 #[test]
 fn a_refused_chunk_updates_neither_phase() {
-    let strict = |mut s: Spec| {
-        s.on_clock_reset = online_core::OnClockReset::Error;
-        s
-    };
+    // A step back is refused by default (`restart_after_step_back` unset).
     let specs = || {
         vec![
-            strict(ridge("a", 20.0, true)),
-            strict(ridge("b", 200.0, true)),
-            strict(compare("c", "a", "b", true)),
+            ridge("a", 20.0, true),
+            ridge("b", 200.0, true),
+            compare("c", "a", "b", true),
         ]
     };
     let df = make_df(200);
@@ -457,7 +466,7 @@ fn the_refusals_name_the_problem() {
 
     // A grid's residual fields carry the suffix, and so must the target.
     let mut grid = ridge("a", 20.0, false);
-    grid.halflife = Some(online_polars::SpanList::List(vec![
+    grid.half_life = Some(online_polars::SpanList::List(vec![
         online_polars::Span::Units(20.0),
         online_polars::Span::Units(200.0),
     ]));
@@ -522,11 +531,11 @@ fn the_refusals_name_the_problem() {
     let e = weighted.validate().unwrap_err();
     assert!(e.contains("weight does not apply to seqtest"), "{e}");
     let mut decayed = column_mode("s", "y", false);
-    decayed.halflife = Some(online_polars::SpanList::One(online_polars::Span::Units(
+    decayed.half_life = Some(online_polars::SpanList::One(online_polars::Span::Units(
         50.0,
     )));
     let e = decayed.validate().unwrap_err();
-    assert!(e.contains("halflife/lam do not apply to seqtest"), "{e}");
+    assert!(e.contains("half_life/lam do not apply to seqtest"), "{e}");
     let mut featured = column_mode("s", "y", false);
     featured.features = vec!["x0".into()];
     let e = featured.validate().unwrap_err();

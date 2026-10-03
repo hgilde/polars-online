@@ -15,7 +15,7 @@ The windows here run on a row-count clock, so a row's age is the number of
 rows between it and the reference row. A window keeps the rows whose age is
 **at most** ``window`` -- a row exactly ``window`` old is not older than the
 window, which is how ``crates/online-core/src/window.rs`` states the
-boundary -- each at weight ``0.5 ** (age / halflife)``.
+boundary -- each at weight ``0.5 ** (age / half_life)``.
 """
 
 from __future__ import annotations
@@ -31,11 +31,11 @@ import polars_online as po
 
 
 def _window(
-    ages: np.ndarray, halflife: float, window: float | None
+    ages: np.ndarray, half_life: float, window: float | None
 ) -> tuple[np.ndarray, np.ndarray]:
     """The rows a window keeps, and their weights."""
     keep = np.ones(ages.shape, bool) if window is None else ages <= window
-    return keep, 0.5 ** (ages[keep] / halflife)
+    return keep, 0.5 ** (ages[keep] / half_life)
 
 
 class TestWindowAtALargeOffset:
@@ -45,7 +45,7 @@ class TestWindowAtALargeOffset:
     -- and so correctly at any offset. The truncation used to go back through
     ``E[x x'] = C + m m'``, subtract and re-centre, which at a level of ``1e8``
     left the variance with a resolution of about 2. The unwindowed
-    accumulator (Welford) never had the defect, which makes ``window=None``
+    accumulator (Welford) never had the defect, which makes ``window_size=None``
     the negative control in every test here.
 
     Spreads are unit-scale, so at ``1e8`` an absolute error of ``1e-6``
@@ -67,9 +67,9 @@ class TestWindowAtALargeOffset:
             "m",
             features=["x0", "x1"],
             stats=["mean", "var", "cov"],
-            halflife=self.HALFLIFE,
-            min_periods=0,
-            window=window,
+            half_life=self.HALFLIFE,
+            min_weight=0,
+            window_size=window,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         tol = 1e-12 if offset == 0.0 else 1e-6
@@ -87,7 +87,7 @@ class TestWindowAtALargeOffset:
                     [out["cov_x0_x1"][i], out["var_x1"][i]],
                 ]
             )
-            assert out["n_eff"][i] == pytest.approx(w.sum(), rel=1e-10)
+            assert out["weight_sum"][i] == pytest.approx(w.sum(), rel=1e-10)
             np.testing.assert_allclose(
                 [out["mean_x0"][i], out["mean_x1"][i]], mean, rtol=1e-12, atol=1e-12
             )
@@ -97,22 +97,22 @@ class TestWindowAtALargeOffset:
     @pytest.mark.parametrize("offset", [0.0, 1e8])
     def test_a_marginal_pair_is_numpy_of_the_rows_inside_the_window(self, offset, window):
         rng = np.random.default_rng(11)
-        n, halflife = 400, 25.0
+        n, half_life = 400, 25.0
         u = rng.normal(0.0, 1.0, n)
         x = offset + u
         y = offset + 2.0 * u + rng.normal(0.0, 0.2, n)
         spec = po.spec.marginal(
-            "m", features=["x"], targets=["y"], halflife=halflife, window=window
+            "m", features=["x"], targets=["y"], half_life=half_life, window_size=window
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
         pair = bank.marginal("m").row(0, named=True)
         # A readout is referenced at the last learned row, which is inside.
-        keep, w = _window((n - 1) - np.arange(n), halflife, window)
+        keep, w = _window((n - 1) - np.arange(n), half_life, window)
         xs, ys = x[keep], y[keep]
         cov = np.cov(np.vstack([xs, ys]), aweights=w, ddof=0)
         tol = (1e-12 if offset == 0.0 else 1e-6) * np.abs(cov).max()
-        assert pair["n_eff"] == pytest.approx(w.sum(), rel=1e-10)
+        assert pair["weight_sum"] == pytest.approx(w.sum(), rel=1e-10)
         assert pair["mean_x"] == pytest.approx(np.average(xs, weights=w), rel=1e-12, abs=1e-12)
         assert pair["mean_y"] == pytest.approx(np.average(ys, weights=w), rel=1e-12, abs=1e-12)
         assert abs(pair["var_x"] - cov[0, 0]) <= tol
@@ -131,7 +131,7 @@ def _wls(x: np.ndarray, y: np.ndarray, w: np.ndarray, intercept: bool = True) ->
 
 class TestWindowedFit:
     """C1: a windowed ``ewridge`` is the weighted least-squares fit of the rows
-    inside the window, each at ``0.5 ** (age / halflife)`` -- ``numpy``'s
+    inside the window, each at ``0.5 ** (age / half_life)`` -- ``numpy``'s
     ``lstsq`` on those rows is the second opinion. The standardized solve with
     an intercept read its centred Gram and means from the live accumulator
     while its right-hand side came from the window, so the fit mixed two
@@ -144,7 +144,7 @@ class TestWindowedFit:
     @pytest.mark.parametrize("standardize", [False, True])
     def test_pred_is_the_numpy_fit_of_the_rows_inside_the_window(self, standardize, window):
         rng = np.random.default_rng(3)
-        n, halflife = 400, 25.0
+        n, half_life = 400, 25.0
         # Offset so that centring (and so the intercept branch) matters.
         x = rng.normal(0.0, 1.0, (n, 2)) + 3.0
         y = np.where(
@@ -156,24 +156,24 @@ class TestWindowedFit:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=halflife,
+            half_life=half_life,
             ridge=1e-10,
             standardize=standardize,
-            window=window,
+            window_size=window,
             solve_every=1e-9,  # solve on every row, so every pred is comparable
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
         for i in range(260, n, 9):
             # Out of sample: the fit on the rows before row i predicts row i.
-            keep, w = _window((i - 1) - np.arange(i), halflife, window)
+            keep, w = _window((i - 1) - np.arange(i), half_life, window)
             b = _wls(x[:i][keep], y[:i][keep], w)
             assert pred[i] == pytest.approx(b[0] + x[i] @ b[1:], abs=1e-8)
 
 
 class TestTheWindowIsAllTheModelSees:
     """Pattern D and C2. Under a ``window`` every model reports, gates and fits
-    on the weight *inside* it -- ``Σ 0.5 ** (age / halflife)`` over the rows
+    on the weight *inside* it -- ``Σ 0.5 ** (age / half_life)`` over the rows
     the window keeps, which ``numpy`` sums from the rows. Before the fixes,
     ``lasso`` (C9), ``ew_class`` (S14) and ``marginal`` (S17) reported the
     whole history's weight while fitting on the window; ``ewridge`` and
@@ -200,7 +200,7 @@ class TestTheWindowIsAllTheModelSees:
         return x, y0, y1, labels
 
     def _spec(self, kind: str, window: float | None):
-        common = {"halflife": self.HALFLIFE, "window": window}
+        common = {"half_life": self.HALFLIFE, "window_size": window}
         feats = ["x0", "x1"]
         if kind == "ewridge":
             return po.spec.ewridge("m", targets=["y0"], features=feats, ridge=1e-10, **common)
@@ -220,12 +220,14 @@ class TestTheWindowIsAllTheModelSees:
         x, y0, _, labels = self._rows()
         n = len(y0)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "c": labels})
-        n_eff = po.ModelBank([self._spec(kind, window)]).fit_predict(df)["m"].struct.field("n_eff")
+        weight_sum = (
+            po.ModelBank([self._spec(kind, window)]).fit_predict(df)["m"].struct.field("weight_sum")
+        )
         for i in range(100, n, 13):
-            # The n_eff a row reports is the weight before it, with ages
+            # The weight_sum a row reports is the weight before it, with ages
             # counted from the row before.
             _, w = _window((i - 1) - np.arange(i), self.HALFLIFE, window)
-            assert n_eff[i] == pytest.approx(w.sum(), rel=1e-10), (kind, i)
+            assert weight_sum[i] == pytest.approx(w.sum(), rel=1e-10), (kind, i)
 
     @pytest.mark.parametrize("kind", ["ewridge", "lasso"])
     def test_a_target_that_leaves_the_window_does_not_unwindow_the_others(self, kind):
@@ -235,7 +237,7 @@ class TestTheWindowIsAllTheModelSees:
         # window from row 161 on, and from then on it has nothing to fit.
         y1_sparse = [float(v) if i < 100 else None for i, v in enumerate(y1)]
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "y1": y1_sparse})
-        feats, common = ["x0", "x1"], {"halflife": self.HALFLIFE, "window": self.WINDOW}
+        feats, common = ["x0", "x1"], {"half_life": self.HALFLIFE, "window_size": self.WINDOW}
         if kind == "ewridge":
             spec = po.spec.ewridge(
                 "m", targets=["y0", "y1"], features=feats, ridge=1e-10, solve_every=1e-9, **common
@@ -274,12 +276,12 @@ def _regime_rows(n: int, seed: int) -> np.ndarray:
 
 
 class TestWindowedSpread:
-    """S1: under a ``window`` the bank's ``sigma`` and ``resid_z`` are the
+    """S1: under a ``window`` the bank's ``sigma`` and ``zscore`` are the
     window's -- the EW root mean square of the out-of-sample residuals
     inside it, ``sqrt(Σ λ^age r² / Σ λ^age)``, over the rows the fit is read
     from. They were the stream's own EW mean over the whole history, so a
     burst of errors the window had dropped still widened ``sigma`` for as
-    long as the halflife remembered it -- the spread of a history the fit no
+    long as the half-life remembered it -- the spread of a history the fit no
     longer sees. ``numpy`` over the residuals the bank itself emitted is the
     second opinion (review 2026-09-12, S1; the user's decision of
     2026-09-15)."""
@@ -291,7 +293,7 @@ class TestWindowedSpread:
         x = rng.normal(0.0, 1.0, (n, 2))
         y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.1, n)
         # A burst of large errors: the window drops it at row 320 + W, long
-        # before a halflife of 40 forgets it.
+        # before a half-life of 40 forgets it.
         y[300:320] += rng.normal(0.0, 5.0, 20)
         return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
 
@@ -299,11 +301,11 @@ class TestWindowedSpread:
         common = dict(
             targets=["y"],
             features=["x0", "x1"],
-            halflife=self.H,
-            window=self.W,
+            half_life=self.H,
+            window_size=self.W,
             solve_every=1e-9,
             emit_sigma=True,
-            emit_resid_z=True,
+            emit_zscore=True,
             **kw,
         )
         if kind == "lasso":
@@ -322,7 +324,7 @@ class TestWindowedSpread:
         out = po.ModelBank([spec]).fit_predict(df)
         resid = self._field(out, spec, "resid_y")
         sigma = self._field(out, spec, "sigma_y")
-        z = self._field(out, spec, "resid_z_y")
+        z = self._field(out, spec, "zscore_y")
         ok = np.isfinite(resid)
         checked = 0
         for i in range(1, len(resid)):
@@ -355,7 +357,7 @@ class TestWindowedSpread:
         # fit_predict value.
         df = self._frame()
         spec = self._spec("ewridge")
-        cols = ["pred_y", "resid_y", "sigma_y", "resid_z_y", "n_eff"]
+        cols = ["pred_y", "resid_y", "sigma_y", "zscore_y", "weight_sum"]
         whole = po.ModelBank([spec]).fit_predict(df)
         bank = po.ModelBank([spec])
         parts = [bank.fit_predict(df[:97]), bank.fit_predict(df[97:180])]
@@ -383,8 +385,8 @@ class TestWindowedSpread:
             "m",
             targets=["y"],
             features=["x0"],
-            halflife=500.0,
-            window=2000.0,
+            half_life=500.0,
+            window_size=2000.0,
             ridge=[10.0 ** (-k / 20) for k in range(200)],
             emit_sigma=True,
             window_budget={"refuse": 1.0},
@@ -394,7 +396,7 @@ class TestWindowedSpread:
 
 
 class TestWindowedGaussian:
-    """C12 and C14, the review's T-S6 and T-S8. At ``halflife = inf`` every row
+    """C12 and C14, the review's T-S6 and T-S8. At ``half_life = inf`` every row
     inside the window weighs 1 and the precision prior does not fade, so a
     windowed ``ew_class`` and ``ew_cov`` are plain Gaussian computations on the
     rows the window keeps: ``scipy.stats.multivariate_normal`` for the class
@@ -405,7 +407,7 @@ class TestWindowedGaussian:
     C12: the ``full`` shape factorized the *live* class covariance while
     scoring against the windowed mean. C14: ``mahal`` and the PCA refresh read
     the live accumulator. ``diagonal`` and ``shared`` (which read the view)
-    and ``window=None`` are the controls. The covariance changes halfway, so
+    and ``window_size=None`` are the controls. The covariance changes halfway, so
     the whole history and the window disagree by construction."""
 
     WINDOW, PRIOR = 80.0, 1e-9
@@ -425,9 +427,9 @@ class TestWindowedGaussian:
             classes=["a", "b"],
             covariance=shape,
             precision_prior=self.PRIOR,
-            halflife=float("inf"),
-            window=window,
-            min_periods=0,
+            half_life=float("inf"),
+            window_size=window,
+            min_weight=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": labels})
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
@@ -468,9 +470,9 @@ class TestWindowedGaussian:
             precision_prior=self.PRIOR,
             pca=1,
             pca_every=1,
-            halflife=float("inf"),
-            window=window,
-            min_periods=0,
+            half_life=float("inf"),
+            window_size=window,
+            min_weight=0,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
         out = out["m"].struct.unnest()
@@ -506,8 +508,8 @@ class TestMahalQuantiles:
             lags=[1] if "lagcorr" in stats else None,
             precision_prior=1e-6,
             mahal_quantiles=[0.5, 0.9],
-            halflife=float("inf"),
-            min_periods=5,
+            half_life=float("inf"),
+            min_weight=5,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
         out = out["m"].struct.unnest()
@@ -518,8 +520,8 @@ class TestMahalQuantiles:
 
 class TestSessionShrinkBlend:
     """C16 and C3, the review's T-S10 (ii), and task 145. A ``session_shrink``
-    blend at ``f`` mixes the fast accumulators (``halflife``) with their slow
-    twin (``long_halflife``), which saw the *same* rows, as two data sets: ``1
+    blend at ``f`` mixes the fast accumulators (``half_life``) with their slow
+    twin (``long_half_life``), which saw the *same* rows, as two data sets: ``1
     - f`` of today's and ``f`` of the long run's, at today's weight. So the
     blend is itself one weighted accumulator, each row at ``W_h · ((1 - f)
     λ_h^age / W_h + f λ_H^age / W_H)``, each kernel normalised by its weight.
@@ -550,11 +552,11 @@ class TestSessionShrinkBlend:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=self.H_FAST,
+            half_life=self.H_FAST,
             session="s",
             session_gap=1.0,
             session_shrink=f,
-            long_halflife=self.H_SLOW,
+            long_half_life=self.H_SLOW,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "s": session}))
@@ -570,7 +572,7 @@ class TestSessionShrinkBlend:
         cov = np.cov(x.T, aweights=w, ddof=0)
         got = np.asarray(g["comoments"])[np.ix_(cols, cols)]
         tol = (1e-12 if offset == 0.0 else 1e-6) * np.abs(cov).max()
-        assert g["n_eff"] == pytest.approx(w.sum(), rel=1e-12)
+        assert g["weight_sum"] == pytest.approx(w.sum(), rel=1e-12)
         np.testing.assert_allclose(
             np.asarray(g["means"])[cols], np.average(x, axis=0, weights=w), rtol=1e-12, atol=1e-12
         )
@@ -580,8 +582,8 @@ class TestSessionShrinkBlend:
         assert g["target_means"][0] == pytest.approx(ybar, rel=1e-12, abs=1e-12)
         assert abs(g["target_vars"][0] - yvar) <= (1e-12 if offset == 0.0 else 1e-6) * yvar
 
-    @pytest.mark.parametrize("long_halflife", [2000.0, float("inf")])
-    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self, long_halflife):
+    @pytest.mark.parametrize("long_half_life", [2000.0, float("inf")])
+    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self, long_half_life):
         rng = np.random.default_rng(32)
         n1, n2 = 4300, 10
         n = n1 + n2
@@ -595,18 +597,18 @@ class TestSessionShrinkBlend:
             targets=["y"],
             features=["x"],
             ridge=1e-10,
-            halflife=100.0,
+            half_life=100.0,
             session="s",
             session_gap=1.0,
             session_shrink=1.0,  # the blend is the slow twin itself
-            long_halflife=long_halflife,
+            long_half_life=long_half_life,
         )
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
         # The slow twin's fit: every row of session 1 at 0.5 ** (age / H). At
         # H = inf the weights are numpy's unit ones: the long run is the whole
         # history, which the builder refused (review 2026-09-12, S27).
         age = (n1 - 1) - np.arange(n1)
-        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / long_halflife))
+        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / long_half_life))
         assert pred[n1] == pytest.approx(b[0] + b[1] * x[n1], abs=1e-8)
         # E31: scoring that row against the bank fitted to the end of session 1
         # gives the same number, from a blended copy.
@@ -629,13 +631,13 @@ def _no_intercept_rows(n: int, seed: int):
 
 class TestNoInterceptIsNotCentred:
     """Pattern B: C8 (``lasso``), C10 (``kalman``), C11 (``robust``), C13
-    (``sgd``). With ``add_intercept=False`` and standardization on, these
+    (``sgd``). With ``fit_intercept=False`` and standardization on, these
     models centred the features anyway -- ``ewridge`` alone scaled by the raw
     second moment -- so each solved a system that is neither the centred
     problem (which needs an intercept) nor the raw one, and ``coef`` could not
     reproduce ``pred``. Without an intercept there is nothing to centre on:
     the reference is ``numpy.linalg.lstsq`` on the raw features, no constant
-    column. ``add_intercept=True`` (and, where the model has it,
+    column. ``fit_intercept=True`` (and, where the model has it,
     ``standardize=False``) is the control."""
 
     def test_lasso_at_zero_penalty_is_numpy_least_squares(self):
@@ -647,11 +649,11 @@ class TestNoInterceptIsNotCentred:
                 targets=["y"],
                 features=["x0", "x1"],
                 lasso_path=[0.0],
-                halflife=float("inf"),
+                half_life=float("inf"),
                 solve_every=1e-9,
-                max_cd_iters=100_000,
-                cd_tol=1e-14,
-                add_intercept=intercept,
+                max_iter=100_000,
+                tol=1e-14,
+                fit_intercept=intercept,
             )
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
             pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y__l0")
@@ -674,9 +676,9 @@ class TestNoInterceptIsNotCentred:
             huber_delta=delta,
             ridge=1e-12,
             standardize=standardize,
-            halflife=float("inf"),
+            half_life=float("inf"),
             solve_every=1e-9,
-            add_intercept=False,
+            fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
@@ -696,13 +698,13 @@ class TestNoInterceptIsNotCentred:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            coef_halflife=50.0,
+            coef_half_life=50.0,
             q=[0.0, 0.0],
             p0=1e6,
             obs_var=0.01,
-            halflife=float("inf"),
+            half_life=float("inf"),
             coef_every=1,
-            add_intercept=False,
+            fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
@@ -726,11 +728,11 @@ class TestNoInterceptIsNotCentred:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            scale_features=True,
+            standardize=True,
             learning_rate=0.01,
-            halflife=1e6,
+            half_life=1e6,
             coef_every=1,
-            add_intercept=False,
+            fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
@@ -772,7 +774,7 @@ class TestAZeroWeightRowIsNotSeen:
             "m",
             targets=["y"],
             features=["x"],
-            halflife=200.0,
+            half_life=200.0,
             weight="w",
             emit_sigma=True,
             resid_quantiles=[0.5, 0.9],
@@ -818,7 +820,7 @@ class TestAZeroWeightRowIsNotSeen:
 
 
 class TestLabelDelayFoldsWhatWasScored:
-    """C21 and C5, the review's T-S16. Under ``label_delay`` a row is scored
+    """C21 and C5, the review's T-S16. Under ``embargo`` a row is scored
     when it arrives and learned from ``delay`` rows later -- exactly what
     river's progressive validation does with ``delay``: it predicts each row
     with a model that has learned only the rows at least ``delay`` behind it.
@@ -836,7 +838,7 @@ class TestLabelDelayFoldsWhatWasScored:
     is where the two definitions part most.
 
     C5 has no library oracle -- the review's numpy count needs a closed
-    group, which ``label_delay`` refuses -- but the queue C21 keeps must stay
+    group, which ``embargo`` refuses -- but the queue C21 keeps must stay
     aligned with the rows waiting, and a reset on a skipped row used to leave
     them waiting. Its test is the definition: after such a reset the model
     is the model a fresh bank fed the new session builds."""
@@ -854,11 +856,11 @@ class TestLabelDelayFoldsWhatWasScored:
             targets=["y"],
             features=["zero"],  # no information: the fit is the running mean
             ridge=1e-10,
-            halflife=float("inf"),
+            half_life=float("inf"),
             solve_every=1e-9,
-            min_periods=1,
+            min_weight=1,
             emit_sigma=True,
-            label_delay=float(self.DELAY),
+            embargo=float(self.DELAY),
             **kw,
         )
 
@@ -959,16 +961,16 @@ class TestLabelDelayFoldsWhatWasScored:
             "m",
             targets=["y"],
             features=["x"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             session="s",
             session_gap="reset",
-            label_delay=5.0,
-            min_periods=2,
+            embargo=5.0,
+            min_weight=2,
         )
         whole = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         fresh = po.ModelBank([spec]).fit_predict(df[n1:])["m"].struct.unnest()
         tail = whole[n1:]
-        for col in ("pred_y", "n_eff"):
+        for col in ("pred_y", "weight_sum"):
             assert tail[col].equals(fresh[col], null_equal=True), col
         assert whole["coef"][-1].to_list() == fresh["coef"][-1].to_list()
 
@@ -1016,7 +1018,7 @@ class TestPcaSignsRunAlongOneGroup:
             features=["x0", "x1"],
             stats=["mean"],
             pca=1,
-            halflife=float("inf"),
+            half_life=float("inf"),
             group="g",
             session="s",
             group_close="session",
@@ -1049,8 +1051,8 @@ class TestTheGramIsTheWindowsToo:
     ``po.gram.solve`` on them gave the whole history's fit beside a ``coef``
     solved on the window: two histories behind one spec. The reference is
     ``numpy.linalg.lstsq`` on the rows the last fit was read from, at
-    ``0.5 ** (age / halflife)``: both ``coef()`` and the solve of the Gram must
-    land on it. ``window=None`` is the control, where the two histories are
+    ``0.5 ** (age / half_life)``: both ``coef()`` and the solve of the Gram must
+    land on it. ``window_size=None`` is the control, where the two histories are
     the same one. The target moments are the window's too (task 136): the
     weighted mean and variance of the in-window targets are ``statsmodels``'
     ``DescrStatsW``, and Kish's count ``(Σw)² / Σw²``. Under a window they
@@ -1059,7 +1061,7 @@ class TestTheGramIsTheWindowsToo:
     @pytest.mark.parametrize("window", [None, 60.0])
     def test_the_gram_solves_to_the_fit_the_bank_reports(self, window):
         rng = np.random.default_rng(81)
-        n, halflife = 400, 25.0
+        n, half_life = 400, 25.0
         x = rng.normal(0.0, 1.0, (n, 2)) + 3.0
         y = np.where(
             np.arange(n) < 250,
@@ -1070,20 +1072,20 @@ class TestTheGramIsTheWindowsToo:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=halflife,
+            half_life=half_life,
             ridge=1e-10,
-            window=window,
+            window_size=window,
             solve_every=1e-9,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
         # The last fit was solved after the last row: ages count from it.
-        keep, w = _window((n - 1) - np.arange(n), halflife, window)
+        keep, w = _window((n - 1) - np.arange(n), half_life, window)
         want = _wls(x[keep], y[keep], w)
         coef = bank.coef("m")["coef"].to_numpy()
         np.testing.assert_allclose(coef, want, atol=1e-6)
         g = bank.gram("m")[0]
-        assert g["n_eff"] == pytest.approx(w.sum(), rel=1e-10)
+        assert g["weight_sum"] == pytest.approx(w.sum(), rel=1e-10)
         np.testing.assert_allclose(po.gram.solve(g, ridge=1e-10), want, atol=1e-6)
         from statsmodels.stats.weightstats import DescrStatsW
 
@@ -1115,7 +1117,7 @@ class TestTheCrossMomentsAreCentred:
     @pytest.mark.parametrize("standardize", [False, True])
     def test_a_level_regressed_on_levels_is_the_numpy_fit(self, standardize, offset):
         rng = np.random.default_rng(97)
-        n, halflife = 600, 200.0
+        n, half_life = 600, 200.0
         u = rng.normal(0.0, 1.0, (n, 2))
         x = offset + u
         # y = 2·x0 − x1 + noise: the target sits at the level too.
@@ -1124,7 +1126,7 @@ class TestTheCrossMomentsAreCentred:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=halflife,
+            half_life=half_life,
             ridge=0.0,
             standardize=standardize,
             solve_every=1e-9,
@@ -1134,7 +1136,7 @@ class TestTheCrossMomentsAreCentred:
         worst = 0.0
         for t in range(100, n, 50):
             # Row t is predicted by the fit of the rows before it.
-            w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+            w = 0.5 ** (((t - 1) - np.arange(t)) / half_life)
             xm = w @ x[:t] / w.sum()
             ym = w @ y[:t] / w.sum()
             slopes = _wls(x[:t] - xm, y[:t] - ym, w, intercept=False)
@@ -1179,7 +1181,7 @@ class TestTheGramIsCentredToo:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             ridge=0.0,
             standardize=standardize,
             solve_every=1e-9,
@@ -1250,11 +1252,13 @@ class TestTheGramIsCentredToo:
         assert stats["resid_var"] == pytest.approx(np.mean(resid**2), rel=rel, abs=1e-12)
 
 
-def _holt(y: np.ndarray, halflife: float, trend_halflife: float) -> tuple[np.ndarray, float, float]:
+def _holt(
+    y: np.ndarray, half_life: float, trend_half_life: float
+) -> tuple[np.ndarray, float, float]:
     """``holt``'s ``pred`` on a row-count clock, and its final level and
     trend. ``NaN`` in ``y`` is a null target."""
     spec = po.spec.holt(
-        "h", targets=["y"], halflife=halflife, trend_halflife=trend_halflife, min_periods=0.0
+        "h", targets=["y"], half_life=half_life, trend_half_life=trend_half_life, min_weight=0.0
     )
     bank = po.ModelBank([spec])
     frame = pl.DataFrame(
@@ -1279,14 +1283,14 @@ class TestHoltAcrossAMissingObservation:
     means (review 2026-09-12, S29/S30), whose gains ``w / (lam·W + w)`` start
     at 1 and fall to those fixed ones as the weight saturates. So the two part
     over the first rows by design and agree exactly from row ``SETTLED`` on a
-    row-count clock -- the control that pins the mapping from halflives to
+    row-count clock -- the control that pins the mapping from half-lives to
     smoothing weights (the review's T-S14). Its state-space
     ``ExponentialSmoothing`` takes ``NaN`` in the
     series and answers it with the prediction step alone, so the row after a
     missing one forecasts ``l + 2b`` from the ``l`` and ``b`` that stood
     before it, a number the gain does not enter (T-S17). Past that row the two
     part by design: its gain is fixed, and ours grows with the clock since the
-    last observation, which is what a halflife in clock units means."""
+    last observation, which is what a half-life in clock units means."""
 
     H_LEVEL, H_TREND = 6.0, 25.0
     #: The row from which the weighted means' gains equal the fixed ones to
@@ -1366,12 +1370,12 @@ class TestHoltAcrossAMissingObservation:
         spec = po.spec.holt(
             "h",
             targets=["y"],
-            halflife=self.H_LEVEL,
-            trend_halflife=self.H_TREND,
+            half_life=self.H_LEVEL,
+            trend_half_life=self.H_TREND,
             clock="t",
-            max_dclock=10.0,
+            gap_cap=10.0,
             weight="w",
-            min_periods=0.0,
+            min_weight=0.0,
         )
         got = po.ModelBank([spec]).fit_predict(full)["h"].struct.field("pred_y").to_numpy()
         # The same stream with those rows removed: the clock folds their
@@ -1387,7 +1391,7 @@ class TestALevelOnlyHoltIsAnEwMean:
     mean of the target's observations. pandas' ``ewm(times=, adjust=True)``
     computes that mean on an irregular clock, passing a null by its time as
     ``holt`` does; statsmodels' ``DescrStatsW`` computes the weighted one,
-    each observation at its weight times ``0.5 ** (age / halflife)``. The
+    each observation at its weight times ``0.5 ** (age / half_life)``. The
     row's prediction is the mean through the row before it. Measured:
     ``5.6e-16`` against ``DescrStatsW`` and ``2.2e-12`` against pandas, whose
     time clock carries an error of its own; with the trend on, the forecasts
@@ -1410,9 +1414,9 @@ class TestALevelOnlyHoltIsAnEwMean:
             "m",
             targets=["y"],
             clock="t",
-            max_dclock=1e9,
-            level_halflife=self.HALFLIFE,
-            min_periods=0.0,
+            gap_cap=1e9,
+            level_half_life=self.HALFLIFE,
+            min_weight=0.0,
             weight="w",
             coef_every=1,
             **kw,
@@ -1495,7 +1499,7 @@ class TestBocpdAtALevel:
             prior_scale=[psi0],
             prune_below=0.0,
             max_run=n + 2,
-            min_periods=0.0,
+            min_weight=0.0,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x}))["b"]
         r, maxes = bcd.online_changepoint_detection(
@@ -1517,7 +1521,7 @@ class TestKalmanZeroWeightRow:
     """S9. ``kalman``'s per-target weights -- ``wj``, which gates the
     prediction, and ``wsig``, the memory of the residual variance ``σ²`` that
     sets both the observation noise ``σ²/w`` and the process noise ``σ²·(ln 2
-    / coef_halflife)²`` -- decayed on a row whose target was null and not on
+    / coef_half_life)²`` -- decayed on a row whose target was null and not on
     one whose target was present at weight zero. The filter treats the two
     alike, a prediction step and no update, so ``σ²`` remembered more across
     one than the other.
@@ -1533,7 +1537,7 @@ class TestKalmanZeroWeightRow:
 
     @staticmethod
     def filterpy_pred(
-        kalman: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray, halflife: float, coef_hl: float
+        kalman: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray, half_life: float, coef_hl: float
     ) -> np.ndarray:
         n, k = x.shape
         kf = kalman.KalmanFilter(dim_x=k + 1, dim_z=1)
@@ -1544,7 +1548,7 @@ class TestKalmanZeroWeightRow:
         pred = np.full(n, np.nan)
         for i in range(n):
             d = 0.0 if i == 0 else 1.0
-            lam = 0.5 ** (d / halflife)
+            lam = 0.5 ** (d / half_life)
             s2 = sig2 if sig2 > 0.0 else 1.0
             kf.predict(Q=np.eye(k + 1) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
             z = np.concatenate(([1.0], x[i]))
@@ -1570,7 +1574,7 @@ class TestKalmanZeroWeightRow:
         import filterpy.kalman as kalman
 
         rng = np.random.default_rng(41)
-        n, halflife, coef_hl = 300, 30.0, 50.0
+        n, half_life, coef_hl = 300, 30.0, 50.0
         x = rng.normal(0.0, 1.0, (n, 2))
         drift = np.arange(n) / n
         y = 0.5 + (1.5 - drift) * x[:, 0] + (-0.8 + 2.0 * drift) * x[:, 1]
@@ -1591,15 +1595,15 @@ class TestKalmanZeroWeightRow:
             "k",
             targets=["y"],
             features=["x0", "x1"],
-            coef_halflife=coef_hl,
+            coef_half_life=coef_hl,
             standardize=False,
             p0=1.0,
             weight="w",
-            halflife=halflife,
-            min_periods=0.0,
+            half_life=half_life,
+            min_weight=0.0,
         )
         got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
-        want = self.filterpy_pred(kalman, x, y_seen, w, halflife, coef_hl)
+        want = self.filterpy_pred(kalman, x, y_seen, w, half_life, coef_hl)
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
 
 
@@ -1642,7 +1646,7 @@ class TestAHopelessSerialFactorSaysSo:
             features=["x"],
             lags=[1],
             serial_rule="truncated",
-            halflife=float("inf"),
+            half_life=float("inf"),
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
@@ -1690,10 +1694,10 @@ class TestAWindowedLagIsTheWindows:
             targets=["y"],
             features=["x"],
             lags=[1, 2, 3],
-            halflife=float("inf"),
+            half_life=float("inf"),
             clock="t",
-            max_dclock=1.0,
-            window=float(window - 1),
+            gap_cap=1.0,
+            window_size=float(window - 1),
             window_lags=True,
         )
         bank = po.ModelBank([spec])
@@ -1704,7 +1708,7 @@ class TestAWindowedLagIsTheWindows:
         whole = stattools.acf(x, nlags=3)[1:]
         np.testing.assert_allclose(row["lagcorr_xx"], inside, atol=0.02)
         assert np.all(np.abs(inside - whole) > 0.15), (inside, whole)
-        assert row["n_eff"] == pytest.approx(window, rel=1e-12)
+        assert row["weight_sum"] == pytest.approx(window, rel=1e-12)
 
 
 class TestTheBartlettSerialFactor:
@@ -1740,7 +1744,7 @@ class TestTheBartlettSerialFactor:
             features=["x"],
             lags=lags,
             serial_rule="bartlett",
-            halflife=float("inf"),
+            half_life=float("inf"),
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
@@ -1777,24 +1781,24 @@ def _gappy_frame(x: np.ndarray, **targets: np.ndarray) -> pl.DataFrame:
     return pl.DataFrame(cols, schema={c: pl.Float64 for c in cols})
 
 
-def _own_rows_pred(x: np.ndarray, y: np.ndarray, t: int, halflife: float) -> float:
+def _own_rows_pred(x: np.ndarray, y: np.ndarray, t: int, half_life: float) -> float:
     """Row ``t`` predicted by the weighted least-squares fit of the rows
     before it on which the target is present, each at ``0.5 ** (age /
-    halflife)`` -- the age counted in rows, the target's missing ones
+    half-life)`` -- the age counted in rows, the target's missing ones
     included, since the clock runs on every row."""
     keep = ~np.isnan(y[:t])
-    w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+    w = 0.5 ** (((t - 1) - np.arange(t)) / half_life)
     b = _wls(x[:t][keep], y[:t][keep], w[keep])
     return float(b[0] + x[t] @ b[1:])
 
 
-def _pairwise_pred(x: np.ndarray, y: np.ndarray, t: int, halflife: float) -> float:
+def _pairwise_pred(x: np.ndarray, y: np.ndarray, t: int, half_life: float) -> float:
     """Row ``t`` predicted from pairwise-complete weighted moments of the rows
     before it: the features' covariance over every row, their covariance
     with the target and every mean over the rows the target is present on,
     each by ``numpy.cov`` with the rows' weights as ``aweights``."""
     keep = ~np.isnan(y[:t])
-    w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+    w = 0.5 ** (((t - 1) - np.arange(t)) / half_life)
     cxx = np.cov(x[:t].T, aweights=w, ddof=0)
     joint = np.cov(np.column_stack([x[:t][keep], y[:t][keep]]).T, aweights=w[keep], ddof=0)
     slopes = np.linalg.solve(cxx, joint[:2, 2])
@@ -1835,7 +1839,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=h,
+            half_life=h,
             ridge=0.0,
             standardize=standardize,
             solve_every=1e-9,
@@ -1867,7 +1871,7 @@ class TestATargetWithGaps:
             "m",
             targets=list(ys),
             features=["x0", "x1"],
-            halflife=h,
+            half_life=h,
             ridge=0.0,
             standardize=standardize,
             solve_every=1e-9,
@@ -1890,7 +1894,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             ridge=0.0,
             target_gaps="pairwise",
             max_rows_between_solves=1,
@@ -1918,7 +1922,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=h,
+            half_life=h,
             ridge=0.0,
             target_gaps="pairwise",
             solve_every=1e-9,
@@ -1940,11 +1944,11 @@ class TestATargetWithGaps:
             targets=["y"],
             features=["x0", "x1"],
             lasso_path=[0.5, 0.0],
-            halflife=h,
+            half_life=h,
             target_gaps=target_gaps,
             max_rows_between_solves=1,
-            max_cd_iters=10_000,
-            cd_tol=1e-15,
+            max_iter=10_000,
+            tol=1e-15,
         )
         pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__l0")
         ref = _own_rows_pred if target_gaps == "own_rows" else _pairwise_pred
@@ -1957,7 +1961,7 @@ class TestATargetWithGaps:
         under ``"own_rows"`` the two part inside the window's history and
         each Gram is truncated against the one its target read at the
         boundary. The fit is of the rows inside the window, each at ``0.5 **
-        (age / halflife)``: the target's own by ``numpy.linalg.lstsq`` under
+        (age / half-life)``: the target's own by ``numpy.linalg.lstsq`` under
         ``"own_rows"``, and under ``"pairwise"`` every row's feature
         covariance against the target's own cross-covariance, both by
         ``numpy.cov``."""
@@ -1969,9 +1973,9 @@ class TestATargetWithGaps:
             "m",
             targets=["ya", "y"],
             features=["x0", "x1"],
-            halflife=h,
+            half_life=h,
             ridge=0.0,
-            window=window,
+            window_size=window,
             target_gaps=target_gaps,
             solve_every=1e-9,
         )
@@ -2006,7 +2010,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=h,
+            half_life=h,
             ridge=0.0,
             standardize=standardize,
             solve_every=1e-9,
@@ -2036,7 +2040,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             ridge=ridge,
             standardize=standardize,
             max_rows_between_solves=1,
@@ -2077,10 +2081,10 @@ class TestATargetWithGaps:
             features=["x0", "x1", "x2"],
             lasso_path=[lam],
             l1_ratio=l1_ratio,
-            halflife=float("inf"),
+            half_life=float("inf"),
             max_rows_between_solves=1,
-            max_cd_iters=100_000,
-            cd_tol=1e-15,
+            max_iter=100_000,
+            tol=1e-15,
         )
         frame = pl.DataFrame(
             {
@@ -2154,9 +2158,9 @@ class TestPassiveAggressiveIsRivers:
             mode=mode,
             c=c,
             eps=eps,
-            add_intercept=False,
-            halflife=float("inf"),
-            min_periods=0.0,
+            fit_intercept=False,
+            half_life=float("inf"),
+            min_weight=0.0,
             coef_every=1,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
@@ -2185,8 +2189,8 @@ class TestPassiveAggressiveIsRivers:
             features=["x0", "x1"],
             mode="pa",
             eps=eps,
-            halflife=float("inf"),
-            min_periods=0.0,
+            half_life=float("inf"),
+            min_weight=0.0,
         )
         again = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y")[1]
         assert again == pytest.approx(y - eps, abs=1e-12)
@@ -2207,7 +2211,7 @@ class TestTheEwMomentsArePandas:
     deviations (measured: ``6e-8`` on the mean, ``2e-8`` on the rest), where
     a relative one means nothing for a covariance of two independent
     columns, which crosses 0. ``bias=False`` would be Kish's correction,
-    ``n_kish``, not ``n_eff``."""
+    ``n_kish``, not ``weight_sum``."""
 
     H = 25.0
 
@@ -2221,9 +2225,9 @@ class TestTheEwMomentsArePandas:
         spec = po.spec.ew_cov(
             "m",
             features=["x0", "x1"],
-            halflife=self.H,
+            half_life=self.H,
             stats=["mean", "var", "cov", "corr"],
-            min_periods=0.0,
+            min_weight=0.0,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
@@ -2257,12 +2261,12 @@ class TestTheEwMomentsArePandas:
         spec = po.spec.ew_cov(
             "m",
             features=["x0"],
-            halflife=self.H,
+            half_life=self.H,
             clock="t",
             # A cap no gap here reaches (they are under 3): pandas has none.
-            max_dclock=1e9,
+            gap_cap=1e9,
             stats=["mean"],
-            min_periods=0.0,
+            min_weight=0.0,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
         got = out["m"].struct.field("mean_x0").to_numpy().astype(float)[1:]
@@ -2283,13 +2287,15 @@ class TestTheEwMomentsArePandas:
         x = rng.normal(0.0, 1.0, n)
         y = 0.7 * x + rng.normal(0.0, 1.0, n)
         frame = pl.DataFrame({"x0": x, "y": y})
-        bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=self.H)])
+        bank = po.ModelBank(
+            [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=self.H)]
+        )
         bank.fit_predict(frame)
         g = bank.gram("m")[0]
         ys = pd.Series(y).ewm(halflife=self.H)
         assert g["target_means"][0] == pytest.approx(ys.mean().iloc[-1], rel=1e-12)
         assert g["target_vars"][0] == pytest.approx(ys.var(bias=True).iloc[-1], rel=1e-12)
-        spec = po.spec.marginal("m", targets=["y"], features=["x0"], halflife=self.H)
+        spec = po.spec.marginal("m", targets=["y"], features=["x0"], half_life=self.H)
         pair = po.ModelBank([spec])
         pair.fit_predict(frame)
         corr = pd.Series(x).ewm(halflife=self.H).corr(pd.Series(y)).iloc[-1]
@@ -2323,7 +2329,7 @@ class TestSgdQuantileIsQuantReg:
             quantile=tau,
             schedule="inv_scaling",
             learning_rate=0.5,
-            halflife=float("inf"),
+            half_life=float("inf"),
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
@@ -2373,7 +2379,7 @@ class TestQuantileIsQuantReg:
         import statsmodels.api as sm
 
         x, y = self._rows(20_000)
-        got = self._fit(x, y, tau, halflife=float("inf"))
+        got = self._fit(x, y, tau, half_life=float("inf"))
         z = sm.add_constant(x)
         want = np.asarray(sm.QuantReg(y, z).fit(q=tau).params)
         assert np.max(np.abs(got - want)) <= tol, (got, want)
@@ -2386,7 +2392,7 @@ class TestQuantileIsQuantReg:
         stream settles ``sigma``, so the band is the residual scale's."""
         x, y = self._rows(20_000)
         tau, eps = 0.9, 0.2
-        got = self._fit(x, y, tau, halflife=float("inf"), quantile_eps=eps)
+        got = self._fit(x, y, tau, half_life=float("inf"), quantile_eps=eps)
         z = np.column_stack([np.ones(len(y)), x])
         b = np.linalg.lstsq(z, y, rcond=None)[0]
         h = eps * np.std(y - z @ b)
@@ -2401,17 +2407,17 @@ class TestQuantileIsQuantReg:
         assert np.max(np.abs(got - b)) <= 0.05, (got, b)
 
     def test_it_follows_a_shift_the_frozen_weights_lagged(self):
-        """Under a halflife the fit has to move when the level does. The
+        """Under a half-life the fit has to move when the level does. The
         weights the frozen IRLS left on old rows pulled it back toward the
         fits those rows were scored by: 600 rows after a jump of 3 -- three
-        halflives -- it had covered 1.5 of it, where the quantile regression
+        half-lives -- it had covered 1.5 of it, where the quantile regression
         of the rows then in the window had moved the whole way."""
         import statsmodels.api as sm
 
         x, y = self._rows(10_000)
         y[5000:] += 3.0
         stop, window = 5600, 600
-        got = self._fit(x[:stop], y[:stop], 0.5, halflife=200.0)
+        got = self._fit(x[:stop], y[:stop], 0.5, half_life=200.0)
         lo = stop - window
         want = np.asarray(sm.QuantReg(y[lo:stop], sm.add_constant(x[lo:stop])).fit(q=0.5).params)
         assert np.max(np.abs(got - want)) <= 0.35, (got, want)
@@ -2440,9 +2446,9 @@ class TestHuberAgainstScikitLearn:
             "h",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             max_rows_between_solves=1,
-            min_periods=0.0,
+            min_weight=0.0,
             **kw,
         )
         bank = po.ModelBank([spec])
@@ -2457,7 +2463,7 @@ class TestHuberAgainstScikitLearn:
         x = rng.normal(0.0, 1.0, (n, 2)) + np.array([3.0, -1.0])
         y = 0.8 * x[:, 0] - 1.7 * x[:, 1] + rng.normal(0.0, 0.5, n)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        got = self.fit(df, huber_delta=1e9, ridge=1e-12, standardize=True, add_intercept=False)
+        got = self.fit(df, huber_delta=1e9, ridge=1e-12, standardize=True, fit_intercept=False)
         want = LinearRegression(fit_intercept=False).fit(x, y).coef_
         np.testing.assert_allclose(got, want, rtol=1e-9)
 
@@ -2484,7 +2490,7 @@ class TestHuberAgainstScikitLearn:
 
 
 class TestTheBinsAgainstScipyAndAStump:
-    """T-S12 (``docs/REVIEW-2026-09-12.md``). With given edges, ``halflife =
+    """T-S12 (``docs/REVIEW-2026-09-12.md``). With given edges, ``half_life =
     inf`` and unit weights, ``marginal``'s bins are
     ``scipy.stats.binned_statistic``'s -- the count, the mean -- and each
     bin's population variance, exactly: the bins are half-open ``[a, b)``
@@ -2510,9 +2516,9 @@ class TestTheBinsAgainstScipyAndAStump:
             "m",
             targets=["y"],
             features=["x"],
-            halflife=float("inf"),
+            half_life=float("inf"),
             bin_edges=[edges],
-            min_periods=2.0,
+            min_weight=2.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
@@ -2539,7 +2545,7 @@ class TestTheBinsAgainstScipyAndAStump:
 
 
 class TestAMeanRevertingKalmanIsFilterpy:
-    """T-S5 in full (``docs/REVIEW-2026-09-12.md``): with ``revert_halflife``
+    """T-S5 in full (``docs/REVIEW-2026-09-12.md``): with ``revert_half_life``
     finite the transition is ``F = diag(2^(-d / r_i))`` and the process noise
     is added after it, which is ``filterpy``'s ``predict`` with that ``F``.
     Unstandardized, so the pull is toward zero in the columns' own units and
@@ -2552,7 +2558,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
         import filterpy.kalman as kalman
 
         rng = np.random.default_rng(17)
-        n, halflife, coef_hl = 300, 30.0, 50.0
+        n, half_life, coef_hl = 300, 30.0, 50.0
         x = rng.normal(0.0, 1.0, (n, 2))
         y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + rng.normal(0.0, 0.3, n)
         t = np.arange(n, dtype=float)
@@ -2563,13 +2569,13 @@ class TestAMeanRevertingKalmanIsFilterpy:
             targets=["y"],
             features=["x0", "x1"],
             clock="t",
-            coef_halflife=coef_hl,
-            revert_halflife=revert,
+            coef_half_life=coef_hl,
+            revert_half_life=revert,
             standardize=False,
             p0=1.0,
-            halflife=halflife,
-            max_dclock=1e9,
-            min_periods=0.0,
+            half_life=half_life,
+            gap_cap=1e9,
+            min_weight=0.0,
         )
         got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
 
@@ -2580,7 +2586,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
         want = np.full(n, np.nan)
         for i in range(n):
             d = 0.0 if i == 0 else t[i] - t[i - 1]
-            lam = 0.5 ** (d / halflife)
+            lam = 0.5 ** (d / half_life)
             s2 = sig2 if sig2 > 0.0 else 1.0
             kf.F = np.diag(0.5 ** (d / r))
             kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
@@ -2610,7 +2616,7 @@ class TestEwRidgeIsSklearnsRidge:
     standardized penalty is the same fit on features divided by their
     deviation (centred) or root mean square (through the origin); a
     ``coef_prior`` ``c0`` is the ridge fit of ``y − X·c0``, shifted back by
-    ``c0``; and ``ridge_decay``'s sum-scale system is ``Ridge`` at
+    ``c0``; and ``ridge_scale``'s sum-scale system is ``Ridge`` at
     ``alpha = λ`` with the intercept column penalized as a feature."""
 
     @staticmethod
@@ -2623,13 +2629,13 @@ class TestEwRidgeIsSklearnsRidge:
     @pytest.mark.parametrize("with_prior", [False, True])
     @pytest.mark.parametrize("lam", [0.7, 4.0])
     @pytest.mark.parametrize(
-        "mode", ["centred", "centred standardized", "origin", "origin standardized", "ridge_decay"]
+        "mode", ["centred", "centred standardized", "origin", "origin standardized", "ridge_scale"]
     )
     def test_the_fit_is_sklearns_ridge(self, mode, lam, with_prior):
         from sklearn.linear_model import Ridge
 
         x, y, w = self.rows()
-        intercept = mode.startswith("centred") or mode == "ridge_decay"
+        intercept = mode.startswith("centred") or mode == "ridge_scale"
         standardize = "standardized" in mode
         prior = np.array([0.4, -1.0, 2.0, 0.5]) if with_prior else np.zeros(4)
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "w": w})
@@ -2639,19 +2645,19 @@ class TestEwRidgeIsSklearnsRidge:
             features=["x0", "x1", "x2"],
             ridge=lam,
             standardize=standardize,
-            ridge_decay=mode == "ridge_decay",
-            add_intercept=intercept,
+            ridge_scale="sum" if mode == "ridge_scale" else "mean",
+            fit_intercept=intercept,
             coef_prior=[list(prior if intercept else prior[1:])] if with_prior else None,
-            halflife=float("inf"),
+            half_life=float("inf"),
             weight="w",
-            min_periods=0.0,
+            min_weight=0.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         got = bank.coef("m").sort("position")["coef"].to_numpy()
         sw = w.sum()
         c0 = prior[1:]
-        if mode == "ridge_decay":
+        if mode == "ridge_scale":
             z = np.column_stack([np.ones(len(y)), x])
             fit = Ridge(alpha=lam, fit_intercept=False).fit(z, y - z @ prior, sample_weight=w)
             want = prior + fit.coef_
@@ -2670,7 +2676,7 @@ class TestEwRidgeIsSklearnsRidge:
 
 
 class TestFtrlIsVowpalWabbits:
-    """``ftrl`` without a halflife against Vowpal Wabbit's ``--ftrl``, on
+    """``ftrl`` without a half-life against Vowpal Wabbit's ``--ftrl``, on
     every row: a second FTRL-proximal beside river's (T-R1), reaching the
     options river's comparison does not (docs/PLAN.md task 115; the user:
     "find an alternative oracle for ftrl that supports more options"). VW's
@@ -2697,8 +2703,8 @@ class TestFtrlIsVowpalWabbits:
     prediction and ``9e-7`` on a coefficient over 400 rows, against ``1e-5``
     here. The control shows a slip in the mapping, the squared loss at its
     full weight, missing by more than ``0.2``. None of the libraries checked
-    (river, VW, Keras's ``Ftrl``) forgets as a halflife does, so the finite
-    halflife stays with ``tests/reference.py``'s ``ftrl_ref`` and the
+    (river, VW, Keras's ``Ftrl``) forgets as a half-life does, so the finite
+    half-life stays with ``tests/reference.py``'s ``ftrl_ref`` and the
     longhand and closed forms in ``ftrl.rs``'s tests (review 2026-09-12,
     C24)."""
 
@@ -2747,13 +2753,13 @@ class TestFtrlIsVowpalWabbits:
             targets=list(self.TARGETS),
             features=list(self.FEATURES),
             loss=loss,
-            add_intercept=intercept,
+            fit_intercept=intercept,
             alpha=alpha,
             beta=beta,
             l1=l1,
             l2=l2,
-            halflife=float("inf"),
-            min_periods=0.0,
+            half_life=float("inf"),
+            min_weight=0.0,
             coef_every=1,
             **({"weight": "w"} if weighted else {}),
         )

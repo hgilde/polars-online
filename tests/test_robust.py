@@ -25,8 +25,8 @@ def test_huber_beats_least_squares_under_outliers():
     common = dict(
         targets=["y0"],
         features=["x0"],
-        halflife=1e9,
-        min_periods=10.0,
+        half_life=1e9,
+        min_weight=10.0,
         # The oracle below refits every row; the default cadence solves by
         # weight, so ask for every row.
         max_rows_between_solves=1,
@@ -45,8 +45,8 @@ def test_huge_delta_reduces_to_least_squares():
     common = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=1e9,
-        min_periods=10.0,
+        half_life=1e9,
+        min_weight=10.0,
         max_rows_between_solves=1,
     )
     a = po.ModelBank([po.spec.huber("m", huber_delta=1e9, **common)]).fit_predict(df)
@@ -63,8 +63,8 @@ def test_quantile_levels_are_ordered():
     common = dict(
         targets=["y0"],
         features=["x0"],
-        halflife=1e9,
-        min_periods=20.0,
+        half_life=1e9,
+        min_weight=20.0,
         max_rows_between_solves=1,
     )
     preds = {}
@@ -85,8 +85,8 @@ def test_quantile_coverage_is_the_level_asked_for():
                 quantile=0.9,
                 targets=["y0"],
                 features=["x0"],
-                halflife=2000.0,
-                min_periods=50.0,
+                half_life=2000.0,
+                min_weight=50.0,
                 max_rows_between_solves=1,
             )
         ]
@@ -106,12 +106,12 @@ def test_quantile_coverage_is_the_level_asked_for():
 
 
 def test_quantile_predicts_every_row_under_a_finite_halflife():
-    """The per-target ``min_periods`` gate reads the rows a target was present
+    """The per-target ``min_weight`` gate reads the rows a target was present
     on (hard rule 8, S2). From N9 to the second review's F1 the quantile fit
-    reported its band's weight instead, which a halflife caps at the band's
+    reported its band's weight instead, which a half-life caps at the band's
     share of the effective sample -- a fifteenth of it at ``tau = 0.9`` -- so
-    a ``min_periods`` above that share closed the gate again after the first
-    predictions: at ``halflife = 100`` and ``min_periods = 20`` the rows with
+    a ``min_weight`` above that share closed the gate again after the first
+    predictions: at ``half_life = 100`` and ``min_weight = 20`` the rows with
     a prediction ran 178, 233, 2, 88, 155 and 203 per thousand, where
     ``huber`` predicted every one. Once the gate opens, it stays open."""
     rng = np.random.default_rng(13)
@@ -122,8 +122,8 @@ def test_quantile_predicts_every_row_under_a_finite_halflife():
         quantile=0.9,
         targets=["y0"],
         features=["x0"],
-        halflife=100.0,
-        min_periods=20.0,
+        half_life=100.0,
+        min_weight=20.0,
         max_rows_between_solves=1,
     )
     p = _pred(po.ModelBank([spec]).fit_predict(df))
@@ -135,10 +135,10 @@ def test_quantile_predicts_every_row_under_a_finite_halflife():
     assert finite[first:].all(), np.flatnonzero(~finite[first:])[:5] + first
 
 
-@pytest.mark.parametrize("halflife", [30.0, 40.0])
-def test_quantile_hits_its_level_under_a_short_halflife(halflife):
-    """A short halflife leaves a tail quantile's band few rows: at ``tau =
-    0.9`` and ``halflife = 30`` about three rows' weight against a warm-up
+@pytest.mark.parametrize("half_life", [30.0, 40.0])
+def test_quantile_hits_its_level_under_a_short_halflife(half_life):
+    """A short half-life leaves a tail quantile's band few rows: at ``tau =
+    0.9`` and ``half_life = 30`` about three rows' weight against a warm-up
     bar of six, so the fit kept falling back into warm-up -- least-squares
     rows aimed at the mean -- and its coverage read 0.825, and 0.864 at 40
     (the second review's F3). The warm-up reads the rows present now, and
@@ -151,8 +151,8 @@ def test_quantile_hits_its_level_under_a_short_halflife(halflife):
         quantile=0.9,
         targets=["y0"],
         features=["x0"],
-        halflife=halflife,
-        min_periods=5.0,
+        half_life=half_life,
+        min_weight=5.0,
         max_rows_between_solves=1,
     )
     p = _pred(po.ModelBank([spec]).fit_predict(df))
@@ -174,8 +174,8 @@ def test_out_of_sample_on_noise():
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
-                halflife=300.0,
-                min_periods=20.0,
+                half_life=300.0,
+                min_weight=20.0,
                 max_rows_between_solves=1,
             )
         ]
@@ -191,10 +191,10 @@ def _plumbing_case():
     kw = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=300.0,
+        half_life=300.0,
         clock="t",
-        max_dclock=50.0,
-        min_periods=10.0,
+        gap_cap=50.0,
+        min_weight=10.0,
         huber_delta=1.5,
     )
     return df, kw, po.spec.huber("m", group="group", **kw)
@@ -215,9 +215,9 @@ def test_chunk_invariance():
 
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="quantile"):
-        po.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], halflife=10.0)
+        po.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], half_life=10.0)
     with pytest.raises(ValueError, match="huber_delta"):
-        po.spec.huber("m", huber_delta=-1.0, targets=["y0"], features=["x0"], halflife=10.0)
+        po.spec.huber("m", huber_delta=-1.0, targets=["y0"], features=["x0"], half_life=10.0)
 
 
 @pytest.mark.parametrize("standardize", [False, True], ids=["plain", "standardized"])
@@ -237,8 +237,8 @@ def test_a_level_costs_the_fit_nothing(standardize):
     common = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=1e9,
-        min_periods=10.0,
+        half_life=1e9,
+        min_weight=10.0,
         max_rows_between_solves=1,
         coef_every=1,
         huber_delta=1e9,
@@ -269,8 +269,8 @@ def test_a_level_costs_the_quantile_fit_nothing():
     common = dict(
         targets=["y0"],
         features=["x0"],
-        halflife=1e9,
-        min_periods=20.0,
+        half_life=1e9,
+        min_weight=20.0,
         max_rows_between_solves=1,
         coef_every=1,
         quantile=0.75,

@@ -102,7 +102,7 @@ off there over lags from 192 to 512 rows
 ([§6](#6-the-epps-effect-and-the-two-ways-out)).
 
 **`deco`'s level settles near two-thirds of the true equicorrelation, and
-moves at its halflife.** The row's estimate is biased low, as its paper
+moves at its half-life.** The row's estimate is biased low, as its paper
 warns, and the level is an EW mean of it
 ([§7](#7-deco-an-equicorrelation-that-moves)).
 
@@ -129,10 +129,10 @@ puts in that one true state.
 | streams | 8 seeds of `po.sim.regimes`: two series, 10 blocks of 400 rows, 4000 rows each, differenced into 3999 returns |
 | states drawn | correlation 0.1 and 0.8, under the sticky transition matrix `[[0.99, 0.01], [0.02, 0.98]]` |
 | states realised | state 0, at correlation 0.1, in every block of every seed |
-| the filter | `k = 2`, `halflife = 4000`, and `precision_prior = 0.01` except in the last row |
+| the filter | `k = 2`, `half_life = 4000`, and `precision_prior = 0.01` except in the last row |
 | seeded from the rows | `warm_rows = 500` and `transition_prior = 200` |
 | started from the truth | the true transition matrix, zero means, and covariances built from the true correlations and each seed's sample variances |
-| the score | the share of rows in state 0, read as `p_1` at most 0.5, with a row that has no `p_1` counted there. The script takes the better of the two ways to match states to the truth, which here is this share |
+| the score | the share of rows in state 0, read as `filtered_1` at most 0.5, with a row that has no `filtered_1` counted there. The script takes the better of the two ways to match states to the truth, which here is this share |
 
 | how it was started | mean share in the true state | worst seed |
 |---|---|---|
@@ -182,7 +182,7 @@ which agrees with either state within a row or two.
 |---|---|
 | streams | 8 seeds of `po.sim.regimes` with `durations=[3, 3]`: two series, 12 blocks of 400 rows, 4799 returns each, switching at rows 1200, 2400 and 3600, 24 switches in all |
 | the filter | as above, but the true start's transition is the per-row hazard `1/1200` |
-| the score | the share of rows in the true state, a row with no `p_1` counted as a miss; and the rows after each switch until the filter holds the new state for 20 rows |
+| the score | the share of rows in the true state, a row with no `filtered_1` counted as a miss; and the rows after each switch until the filter holds the new state for 20 rows |
 
 | how it was started | mean share in the true state | worst seed | median rows to hold the new state | longest | switches never held |
 |---|---|---|---|---|---|
@@ -488,11 +488,11 @@ between 0.2 and 0.6.
 | condition | value |
 |---|---|
 | streams | 8 seeds of `po.sim.regimes`: m = 5, `states=[0.2, 0.6]`, `durations=[3, 3]`, 12 blocks of 400 rows, 4799 returns each, 24 switches in all |
-| the model | `po.spec.deco` with the default `dynamics="ew"`, at halflives of 25, 100 and 400 rows |
+| the model | `po.spec.deco` with the default `dynamics="ew"`, at half-lives of 25, 100 and 400 rows |
 | settled | `rho` averaged over the last 200 rows of each stretch of one state |
 | rows to the midpoint | the rows after a switch until `rho` passes the midpoint of the two settled levels |
 
-| halflife | `rho` settled, true 0.2 | `rho` settled, true 0.6 | median rows to the midpoint | range | switches never crossed |
+| half-life | `rho` settled, true 0.2 | `rho` settled, true 0.6 | median rows to the midpoint | range | switches never crossed |
 |---|---|---|---|---|---|
 | 25 | 0.129 | 0.377 | 26 | 8–58 | 0 of 24 |
 | 100 | 0.130 | 0.381 | 100 | 66–172 | 0 of 24 |
@@ -505,12 +505,12 @@ is a ratio, and its mean is not the ratio of the means. `rho` is an EW mean
 of `u`, so it carries the same bias. Read `rho` as a signal that moves with
 the correlation, not as the correlation.
 
-**It moves at its halflife.** An EW mean reaches the midpoint of a step in
-one halflife, and `rho` does: a median of 26 rows at a halflife of 25, and
-100 at a halflife of 100. At 400 the median is 330. A state lasts 1200
-rows, three of those halflives, so `rho` has not settled when the next
+**It moves at its half-life.** An EW mean reaches the midpoint of a step in
+one half-life, and `rho` does: a median of 26 rows at a half-life of 25, and
+100 at a half-life of 100. At 400 the median is 330. A state lasts 1200
+rows, three of those half-lives, so `rho` has not settled when the next
 switch comes. Its two levels, 0.146 and 0.348, are closer together than at
-the shorter halflives, and it starts nearer their midpoint.
+the shorter half-lives, and it starts nearer their midpoint.
 
 ## 8. `rcov`: three estimators against each block's truth
 

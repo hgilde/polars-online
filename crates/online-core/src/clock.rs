@@ -7,10 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Per-row decay: `halflife` in clock units, or a fixed per-unit factor `lam`.
+/// Per-row decay: `half_life` in clock units, or a fixed per-unit factor `lam`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Decay {
-    /// `factor = 0.5^(d_clock / halflife)`
+    /// `factor = 0.5^(d_clock / half_life)`
     ///
     /// `inf` is a documented setting -- it means no decay -- so this is one
     /// of the floats a human-readable encoding has to be told about, or JSON
@@ -46,7 +46,7 @@ impl Decay {
 }
 
 /// What a clock that goes back within a session means (docs/PLAN.md §3 and
-/// task 120). Two policies: `"max"`, which took `max_dclock` as the step,
+/// task 120). Two policies: `"max"`, which took `gap_cap` as the step,
 /// and `"zero"`, which took none, were removed on 2026-09-28 -- a cap is not
 /// a step, and both absorbed a data bug into plausible, wrong output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ pub struct ClockCfg {
     /// which two rows are no longer adjacent ([`ClockAdvance::capped`]). The
     /// spec requires it finite and positive with a clock column (task 120);
     /// `f64::INFINITY` is the row-count clock's, whose step is always 1.
-    pub max_dclock: f64,
+    pub gap_cap: f64,
     pub on_clock_reset: OnClockReset,
     pub session_gap: Option<SessionGap>,
     /// Under [`OnClockReset::ResetState`], a step back by no more than this,
@@ -97,7 +97,7 @@ impl Default for ClockCfg {
     /// default policy, which refuses a step back.
     fn default() -> Self {
         Self {
-            max_dclock: f64::INFINITY,
+            gap_cap: f64::INFINITY,
             on_clock_reset: OnClockReset::default(),
             session_gap: None,
             min_backwards_jump: 0.0,
@@ -139,7 +139,7 @@ pub struct ClockAdvance {
     /// from `reset` so a caller can do something gentler than starting over —
     /// see `session_shrink` (ENHANCEMENTS E6).
     pub session_changed: bool,
-    /// The raw delta asked for more clock than `max_dclock` allows, so the
+    /// The raw delta asked for more clock than `gap_cap` allows, so the
     /// delta handed to the models is the ceiling rather than the truth.
     ///
     /// Decay copes with that by construction — it only ever forgets more —
@@ -153,7 +153,7 @@ pub struct ClockAdvance {
     /// The time that passed since the previous accepted row, uncapped: the
     /// clock column's forward steps, skipped rows' included, and at a
     /// session change that restarts the clock, the session's gap. What a
-    /// delay counts (docs/PLAN.md task 153): `max_dclock` and `session_gap`
+    /// delay counts (docs/PLAN.md task 153): `gap_cap` and `session_gap`
     /// say how much a model forgets across a break, not how long it lasted,
     /// so `d_clock` runs slower than the clock across a capped gap and
     /// faster across a session gap longer than its step. `0` on the first
@@ -272,7 +272,7 @@ impl ClockState {
     /// ```
     /// use online_core::{ClockCfg, ClockState, ClockValue, OnClockReset};
     ///
-    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Error, ..ClockCfg::default() };
+    /// let cfg = ClockCfg { gap_cap: 60.0, on_clock_reset: OnClockReset::Error, ..ClockCfg::default() };
     /// let mut clock = ClockState::new();
     /// // The first row of a stream has nothing to be a delta from.
     /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1000.0)), None, true).d_clock, 0.0);
@@ -281,14 +281,14 @@ impl ClockState {
     /// // the next accepted row's delta.
     /// assert!(!clock.advance(&cfg, Some(ClockValue::F64(1015.0)), None, false).accepted);
     /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1020.0)), None, true).d_clock, 10.0);
-    /// // A gap is capped at `max_dclock`, so a weekend does not decay the
+    /// // A gap is capped at `gap_cap`, so a weekend does not decay the
     /// // state to nothing.
     /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1e6)), None, true).d_clock, 60.0);
     /// ```
     ///
     /// `on_clock_reset` handles a *backwards* delta, and only within a
     /// session: on a session change the delta is `session_gap` if set,
-    /// otherwise the raw delta clamped to `[0, max_dclock]` -- so a backwards
+    /// otherwise the raw delta clamped to `[0, gap_cap]` -- so a backwards
     /// raw delta whose row *also* changes session is clamped to 0 rather than
     /// routed through `on_clock_reset`. The bank never builds that
     /// combination (a spec with a `session` column requires `session_gap`
@@ -373,12 +373,12 @@ impl ClockState {
                             0.0
                         }
                         Some(SessionGap::Gap(g)) => {
-                            capped = g > cfg.max_dclock;
-                            g.clamp(0.0, cfg.max_dclock)
+                            capped = g > cfg.gap_cap;
+                            g.clamp(0.0, cfg.gap_cap)
                         }
                         None => {
-                            capped = raw > cfg.max_dclock;
-                            raw.clamp(0.0, cfg.max_dclock)
+                            capped = raw > cfg.gap_cap;
+                            raw.clamp(0.0, cfg.gap_cap)
                         }
                     }
                 } else if raw < 0.0 {
@@ -413,8 +413,8 @@ impl ClockState {
                         }
                     }
                 } else {
-                    capped = raw > cfg.max_dclock;
-                    raw.min(cfg.max_dclock)
+                    capped = raw > cfg.gap_cap;
+                    raw.min(cfg.gap_cap)
                 }
             }
         };
@@ -431,7 +431,7 @@ impl ClockState {
 
         if accept {
             // The skipped rows' time is carried into this row's, and the
-            // ceiling holds for the total: `max_dclock` is the most a model
+            // ceiling holds for the total: `gap_cap` is the most a model
             // sees between two rows it learns from. Ten skipped rows 100
             // apart under a cap of 60 handed the next one 660 (review
             // 2026-09-12, S3). A total over the cap is a capped gap.
@@ -440,13 +440,13 @@ impl ClockState {
             let elapsed = self.skipped_elapsed + elapsed;
             self.skipped_elapsed = 0.0;
             ClockAdvance {
-                d_clock: total.min(cfg.max_dclock),
+                d_clock: total.min(cfg.gap_cap),
                 reset,
                 accepted: true,
                 backwards,
                 disorder,
                 session_changed,
-                capped: capped || total > cfg.max_dclock,
+                capped: capped || total > cfg.gap_cap,
                 elapsed,
             }
         } else {
@@ -472,7 +472,7 @@ mod tests {
 
     fn cfg(max: f64) -> ClockCfg {
         ClockCfg {
-            max_dclock: max,
+            gap_cap: max,
             ..Default::default()
         }
     }
@@ -498,7 +498,7 @@ mod tests {
         assert_eq!((after.d_clock, after.elapsed), (2.0, 4.0));
 
         let sessions = ClockCfg {
-            max_dclock: 2.0,
+            gap_cap: 2.0,
             session_gap: Some(SessionGap::Gap(30.0)),
             ..Default::default()
         };
@@ -638,7 +638,7 @@ mod tests {
     fn a_step_back_caps_nothing() {
         for policy in [OnClockReset::ResetState, OnClockReset::Error] {
             let cfg = ClockCfg {
-                max_dclock: 60.0,
+                gap_cap: 60.0,
                 on_clock_reset: policy,
                 ..Default::default()
             };
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn a_session_gap_caps_only_when_it_is_over_the_ceiling() {
         let with_gap = |g: f64| ClockCfg {
-            max_dclock: 60.0,
+            gap_cap: 60.0,
             session_gap: Some(SessionGap::Gap(g)),
             ..Default::default()
         };
@@ -666,7 +666,7 @@ mod tests {
         }
         // A session reset rebuilds the model, so it caps nothing.
         let cfg = ClockCfg {
-            max_dclock: 60.0,
+            gap_cap: 60.0,
             session_gap: Some(SessionGap::Reset),
             ..Default::default()
         };
@@ -727,7 +727,7 @@ mod tests {
     fn a_scored_step_back_is_the_state_as_it_stands() {
         for policy in [OnClockReset::Error, OnClockReset::ResetState] {
             let cfg = ClockCfg {
-                max_dclock: 50.0,
+                gap_cap: 50.0,
                 on_clock_reset: policy,
                 min_backwards_jump: 5.0,
                 ..Default::default()
@@ -755,7 +755,7 @@ mod tests {
         for policy in [OnClockReset::ResetState, OnClockReset::Error] {
             let mut c = ClockState::new();
             let cfg = ClockCfg {
-                max_dclock: 10.0,
+                gap_cap: 10.0,
                 on_clock_reset: policy,
                 ..Default::default()
             };
@@ -786,7 +786,7 @@ mod tests {
     fn error_policy_reports_a_backwards_clock() {
         let mut c = ClockState::new();
         let cfg = ClockCfg {
-            max_dclock: 50.0,
+            gap_cap: 50.0,
             on_clock_reset: OnClockReset::Error,
             ..Default::default()
         };
@@ -815,7 +815,7 @@ mod tests {
     fn session_change_is_reported_separately_from_reset() {
         let mut c = ClockState::new();
         let cfg = ClockCfg {
-            max_dclock: 50.0,
+            gap_cap: 50.0,
             session_gap: Some(SessionGap::Gap(5.0)),
             ..Default::default()
         };
@@ -836,7 +836,7 @@ mod tests {
     fn session_gap_overrides_delta() {
         let mut c = ClockState::new();
         let cfg = ClockCfg {
-            max_dclock: 50.0,
+            gap_cap: 50.0,
             session_gap: Some(SessionGap::Gap(7.5)),
             ..Default::default()
         };
@@ -848,7 +848,7 @@ mod tests {
 
         let mut c = ClockState::new();
         let cfg = ClockCfg {
-            max_dclock: 50.0,
+            gap_cap: 50.0,
             session_gap: Some(SessionGap::Reset),
             ..Default::default()
         };
@@ -865,7 +865,7 @@ mod tests {
     #[test]
     fn a_step_back_no_larger_than_the_minimum_is_a_late_row() {
         let cfg = ClockCfg {
-            max_dclock: 100.0,
+            gap_cap: 100.0,
             on_clock_reset: OnClockReset::ResetState,
             min_backwards_jump: 100.0,
             ..Default::default()
@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn the_first_delta_is_judged_like_any_other() {
         let cfg = ClockCfg {
-            max_dclock: 100.0,
+            gap_cap: 100.0,
             on_clock_reset: OnClockReset::ResetState,
             min_backwards_jump: 100.0,
             ..Default::default()
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn a_minimum_of_zero_resets_on_every_step_back() {
         let cfg = ClockCfg {
-            max_dclock: 1e9,
+            gap_cap: 1e9,
             on_clock_reset: OnClockReset::ResetState,
             ..Default::default()
         };
@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn the_error_policy_keeps_its_own_refusal() {
         let cfg = ClockCfg {
-            max_dclock: 100.0,
+            gap_cap: 100.0,
             min_backwards_jump: 100.0,
             on_clock_reset: OnClockReset::Error,
             ..Default::default()
@@ -976,7 +976,7 @@ mod tests {
 
     /// A skipped row's delta is capped on its own, and so is the total the
     /// next accepted row is handed: ten skipped rows 100 apart under a cap of
-    /// 60 handed it 660, eleven times the ceiling `max_dclock` promises a
+    /// 60 handed it 660, eleven times the ceiling `gap_cap` promises a
     /// model sees (review 2026-09-12, S3). The fold is capped, and says so.
     #[test]
     fn a_skipped_run_hands_the_next_row_at_most_the_cap() {
@@ -1036,7 +1036,7 @@ mod finite_steps {
                 (
                     ClockCfg {
                         // A row-count clock has no cap (`Spec::clock_cfg`).
-                        max_dclock: cap.unwrap_or(f64::INFINITY),
+                        gap_cap: cap.unwrap_or(f64::INFINITY),
                         on_clock_reset: if reset {
                             OnClockReset::ResetState
                         } else {
@@ -1074,7 +1074,7 @@ mod finite_steps {
                 let a = learned.advance(&cfg, c, Some(session), accept);
                 for (what, d) in [("learned", a.d_clock), ("scored", scored.d_clock)] {
                     prop_assert!(
-                        d.is_finite() && d >= 0.0 && d <= cfg.max_dclock,
+                        d.is_finite() && d >= 0.0 && d <= cfg.gap_cap,
                         "{what} step {d} under {cfg:?}"
                     );
                 }

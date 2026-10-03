@@ -56,7 +56,7 @@ fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<
         } else {
             format!("{path}: ")
         };
-        format!("invalid {what}: {at}{msg}")
+        format!("invalid {what}: {at}{}", online_polars::name_renamed(&msg))
     })
 }
 
@@ -789,7 +789,7 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
 }
 
 /// The output index as JSON: one object per field with the machine values its
-/// name encodes (kind, target, halflife/lam, ridge, feature_set, lambda,
+/// name encodes (kind, target, half-life/lam, ridge, feature_set, penalty,
 /// quantile, columns). JSON keeps the FFI trivial; the Python side turns it
 /// into a DataFrame.
 #[pyfunction]
@@ -802,7 +802,7 @@ fn spec_output_index(spec_json: &str) -> PyResult<String> {
 
 /// Every coefficient of a spec's output as JSON: the `coef` field and
 /// position it sits at, the column name `unnest` gives it, and the machine
-/// values (target, halflife/lam, ridge, feature_set, lambda, term).
+/// values (target, half-life/lam, ridge, feature_set, penalty, term).
 #[pyfunction]
 fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
     let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;

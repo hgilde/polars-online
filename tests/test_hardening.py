@@ -72,18 +72,18 @@ def kitchen_sink_spec(**overrides):
         features=["x0", "x1", "x2", "x3"],
         feature_sets={"pair": ["x0", "x1"], "all": ["x0", "x1", "x2", "x3"]},
         ridge=[1e-6, 0.3],
-        halflife=[150.0, 900.0],
+        half_life=[150.0, 900.0],
         clock="t",
-        max_dclock=25.0,
+        gap_cap=25.0,
         session="session",
         session_gap=10.0,
         weight="w",
         group="g",
-        min_periods=[10.0, 20.0],
+        min_weight=[10.0, 20.0],
         max_rows_between_solves=16,
         coef_every=997,
         emit_sigma=True,
-        emit_resid_z=True,
+        emit_zscore=True,
         emit_drift=True,
         emit_metrics=True,
         emit_autocorr=True,
@@ -120,8 +120,8 @@ class TestKitchenSinkAtScale:
 
     def test_the_spec_is_as_wide_as_it_claims(self, frame):
         fields = po.spec.output_fields(kitchen_sink_spec())
-        # 2 instances x (2 targets x 4 combos x (pred,resid,sigma,resid_z,
-        # drift,ic,r2,hit_rate,autocorr,2 quantiles) + n_eff + coef) + selection.
+        # 2 instances x (2 targets x 4 combos x (pred,resid,sigma,zscore,
+        # drift,ic,r2,hit_rate,autocorr,2 quantiles) + weight_sum + coef) + selection.
         assert len(fields) > 150, f"only {len(fields)} fields -- the stress is gone"
         out = run_chunked(frame, kitchen_sink_spec(), None)
         assert out.columns == fields
@@ -198,8 +198,8 @@ class TestCoupledDriftPath:
         d = dict(
             targets=["y0"],
             features=["x0"],
-            halflife=[1e5, 2e5],  # two instances -> the coupled branch
-            min_periods=20.0,
+            half_life=[1e5, 2e5],  # two instances -> the coupled branch
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_drift=True,
             drift_action="reset",
@@ -227,10 +227,11 @@ class TestCoupledDriftPath:
         assert len(hits) >= 1, "the sign flip was not detected"
         first = hits[0]
         for c in out.columns:
-            if c.startswith("n_eff"):
-                n_eff = out[c].to_numpy().astype(float)
-                assert n_eff[first + 1] < n_eff[first], (
-                    f"{c}: instance not reset at the break ({n_eff[first]} -> {n_eff[first + 1]})"
+            if c.startswith("weight_sum"):
+                weight_sum = out[c].to_numpy().astype(float)
+                assert weight_sum[first + 1] < weight_sum[first], (
+                    f"{c}: instance not reset at the break "
+                    f"({weight_sum[first]} -> {weight_sum[first + 1]})"
                 )
 
     def test_the_coupled_path_is_chunk_invariant(self):
@@ -268,9 +269,9 @@ class TestParameterRanges:
             targets=["y0"],
             features=["x0"],
             clock="t",
-            max_dclock=10.0,
-            halflife=200.0,
-            min_periods=3.0,
+            gap_cap=10.0,
+            half_life=200.0,
+            min_weight=3.0,
             max_rows_between_solves=1,
         )
         d.update(kw)
@@ -279,35 +280,35 @@ class TestParameterRanges:
     def test_halflife_extremes_give_the_exact_limits(self):
         n = 5000
         df = self._df(n)
-        # Infinite halflife: no forgetting, n_eff counts every accepted row.
-        out = po.ModelBank([self._spec(halflife=float("inf"))]).fit_predict(df)
-        n_eff = out["m"].struct.field("n_eff").to_list()
-        assert n_eff[-1] == pytest.approx(n - 1, abs=1e-9)
-        # Tiny halflife: everything before this row has decayed to nothing.
-        out = po.ModelBank([self._spec(halflife=1e-3)]).fit_predict(df)
-        n_eff = out["m"].struct.field("n_eff").to_list()
-        assert n_eff[-1] == pytest.approx(1.0, abs=1e-6), "only the previous row survives"
+        # Infinite half-life: no forgetting, weight_sum counts every accepted row.
+        out = po.ModelBank([self._spec(half_life=float("inf"))]).fit_predict(df)
+        weight_sum = out["m"].struct.field("weight_sum").to_list()
+        assert weight_sum[-1] == pytest.approx(n - 1, abs=1e-9)
+        # Tiny half-life: everything before this row has decayed to nothing.
+        out = po.ModelBank([self._spec(half_life=1e-3)]).fit_predict(df)
+        weight_sum = out["m"].struct.field("weight_sum").to_list()
+        assert weight_sum[-1] == pytest.approx(1.0, abs=1e-6), "only the previous row survives"
         preds = out["m"].struct.field("pred_y0").to_list()
         assert all(v is None or np.isfinite(v) for v in preds), "no NaN under extreme decay"
 
     def test_weight_scale_invariance(self):
         """Mean-form accumulators divide weight by accumulated weight, so
-        multiplying every weight by c must change nothing but `n_eff` (which
-        scales by c) provided `min_periods` scales with it. Exercised at 1e-6
+        multiplying every weight by c must change nothing but `weight_sum` (which
+        scales by c) provided `min_weight` scales with it. Exercised at 1e-6
         and 1e6, where a sum-form implementation would lose precision or
         overflow -- this is the test that the mean form is real."""
         base = self._df().with_columns(w=pl.lit(1.0))
         for c in (1e-6, 1e6):
             scaled = base.with_columns(w=pl.lit(float(c)))
-            a = po.ModelBank([self._spec(weight="w", min_periods=3.0)]).fit_predict(base)
-            b = po.ModelBank([self._spec(weight="w", min_periods=3.0 * c)]).fit_predict(scaled)
+            a = po.ModelBank([self._spec(weight="w", min_weight=3.0)]).fit_predict(base)
+            b = po.ModelBank([self._spec(weight="w", min_weight=3.0 * c)]).fit_predict(scaled)
             pa_ = a["m"].struct.field("pred_y0").to_numpy().astype(float)
             pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
             mask = np.isfinite(pa_) | np.isfinite(pb)
             np.testing.assert_allclose(pa_[mask], pb[mask], rtol=1e-9, err_msg=f"c={c}")
-            na = a["m"].struct.field("n_eff").to_numpy().astype(float)
-            nb = b["m"].struct.field("n_eff").to_numpy().astype(float)
-            np.testing.assert_allclose(nb, na * c, rtol=1e-9, err_msg=f"n_eff c={c}")
+            na = a["m"].struct.field("weight_sum").to_numpy().astype(float)
+            nb = b["m"].struct.field("weight_sum").to_numpy().astype(float)
+            np.testing.assert_allclose(nb, na * c, rtol=1e-9, err_msg=f"weight_sum c={c}")
 
     def test_sixty_four_features(self):
         """Wide: k=64 exercises the solve and the extraction fan-out well past
@@ -323,8 +324,8 @@ class TestParameterRanges:
             "m",
             targets=["y0"],
             features=[f"x{i}" for i in range(k)],
-            halflife=1e6,
-            min_periods=float(k + 5),
+            half_life=1e6,
+            min_weight=float(k + 5),
             max_rows_between_solves=64,
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -345,15 +346,15 @@ class TestParameterRanges:
             "m",
             targets=[f"y{j}" for j in range(m)],
             features=["x0"],
-            halflife=float("inf"),
-            min_periods=thresholds,
+            half_life=float("inf"),
+            min_weight=thresholds,
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         for j, thr in enumerate(thresholds):
             preds = out["m"].struct.field(f"pred_y{j}").to_list()
             first = next(i for i, v in enumerate(preds) if v is not None)
-            # n_eff before row i is i (unit weights, no decay), so the first
+            # weight_sum before row i is i (unit weights, no decay), so the first
             # emitted row is exactly ceil(thr).
             assert first == int(np.ceil(thr)), f"target {j}: first pred at {first}"
 
@@ -361,8 +362,8 @@ class TestParameterRanges:
         df = self._df(8000)
         spec = self._spec(resid_quantiles=[0.001, 0.999])
         out = po.ModelBank([spec]).fit_predict(df)
-        lo = out["m"].struct.field("absresid_q0.001_y0").to_list()[-1]
-        hi = out["m"].struct.field("absresid_q0.999_y0").to_list()[-1]
+        lo = out["m"].struct.field("abs_resid_q0.001_y0").to_list()[-1]
+        hi = out["m"].struct.field("abs_resid_q0.999_y0").to_list()[-1]
         assert 0.0 <= lo <= hi, f"{lo} vs {hi}"
         assert hi < 2.0, "q0.999 of |resid| should be near the noise scale"
 
@@ -399,7 +400,7 @@ class TestRunnerErrorPaths:
 
     def _spec(self):
         return po.spec.ewridge(
-            "m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=3.0
+            "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0
         )
 
     def test_corrupt_input_errors_cleanly(self, tmp_path, online_cli):
@@ -431,8 +432,8 @@ class TestRunnerErrorPaths:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=100.0,
-            min_periods=3.0,
+            half_life=100.0,
+            min_weight=3.0,
             weight="w",
         )
         res = run_online(
@@ -464,7 +465,7 @@ class TestRunnerErrorPaths:
         bad = good.with_columns(pl.Series("w", w))
         bad.write_parquet(src)
         spec = po.spec.ewridge(
-            "m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=3.0, weight="w"
+            "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
         res = run_online(
             online_cli, tmp_path, [spec], input=src, output=out, chunk_rows=500, check=False
@@ -484,7 +485,7 @@ class TestExpressionSpecCache:
     other, and the cache must not survive incorrectly across .over groups."""
 
     def test_two_specs_in_one_query_stay_distinct(self):
-        """Two specs differing only in halflife must not share a state: the
+        """Two specs differing only in half-life must not share a state: the
         faster one accumulates less weight at every row. Equality here would
         mean one spec's model served both."""
         n = 4000
@@ -494,16 +495,16 @@ class TestExpressionSpecCache:
             {"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(n), "g": np.arange(n) % 8}
         )
         fast = po.spec.ewridge(
-            "fast", targets=["y"], features=["x0"], halflife=50.0, min_periods=5.0, group="g"
+            "fast", targets=["y"], features=["x0"], half_life=50.0, min_weight=5.0, group="g"
         )
         slow = po.spec.ewridge(
-            "slow", targets=["y"], features=["x0"], halflife=5000.0, min_periods=5.0, group="g"
+            "slow", targets=["y"], features=["x0"], half_life=5000.0, min_weight=5.0, group="g"
         )
         out = po.ModelBank([fast, slow]).fit_predict(df)
-        pf = out["fast"].struct.field("n_eff").to_numpy().astype(float)
-        ps = out["slow"].struct.field("n_eff").to_numpy().astype(float)
+        pf = out["fast"].struct.field("weight_sum").to_numpy().astype(float)
+        ps = out["slow"].struct.field("weight_sum").to_numpy().astype(float)
         mask = np.isfinite(pf) & np.isfinite(ps) & (np.arange(n) > 800)
-        assert (pf[mask] < ps[mask]).all(), "the fast halflife must accumulate less weight"
+        assert (pf[mask] < ps[mask]).all(), "the fast half_life must accumulate less weight"
 
 
 def test_an_infinity_in_a_later_chunk_of_a_column_is_skipped():
@@ -519,7 +520,7 @@ def test_an_infinity_in_a_later_chunk_of_a_column_is_skipped():
     tail = pl.DataFrame({"x0": x_tail, "y": y[20:]})
     df = pl.concat([head, tail], rechunk=False)
     assert df["x0"].n_chunks() == 2
-    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=50.0)])
+    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)])
     out = bank.fit_predict(df).unnest("m")
     assert bank.summary()["rows_skipped"].to_list() == [1]
     last = out["pred_y"][-1]

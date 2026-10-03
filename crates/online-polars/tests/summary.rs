@@ -31,46 +31,46 @@ fn spec(json: &str) -> Spec {
 /// `make_df` steps the clock back by 3 within a session on purpose, so the
 /// summary's `clock_backwards` count has something to count. The default
 /// policy refuses that step, so every clocked spec starts over at it
-/// (`on_clock_reset = "reset_state"`, with no step back a late row).
+/// (`restart_after_step_back = 0`, with no step back a late row).
 fn specs() -> Vec<Spec> {
     vec![
         spec(
             r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "session": "sess", "session_gap": "reset", "weight": "w",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
+                "group": "g", "half_life": 10.0, "gap_cap": 30.0,
+                "restart_after_step_back": 0}"#,
         ),
         spec(
             r#"{"name": "r", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
-                "on_clock_reset": "reset_state", "group": "g",
-                "halflife": 10.0, "max_dclock": 30.0,
-                "min_backwards_jump": 0}"#,
+                "group": "g",
+                "half_life": 10.0, "gap_cap": 30.0,
+                "restart_after_step_back": 0}"#,
         ),
         spec(
             r#"{"name": "c", "model": {"type": "ew_cov"},
                 "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
+                "group": "g", "half_life": 10.0, "gap_cap": 30.0,
+                "restart_after_step_back": 0}"#,
         ),
         spec(
             r#"{"name": "k", "model": {"type": "ew_class", "classes": ["up", "down"],
                 "precision_prior": 1.0},
                 "targets": ["lbl"], "features": ["x0", "x1"], "clock": "t",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
+                "group": "g", "half_life": 10.0, "gap_cap": 30.0,
+                "restart_after_step_back": 0}"#,
         ),
         spec(
             r#"{"name": "n", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x1"], "group": "g",
-                "halflife": 10.0}"#,
+                "half_life": 10.0}"#,
         ),
         spec(
             r#"{"name": "s", "model": {"type": "seqtest", "a": "m", "b": "r"},
                 "targets": ["y"], "features": [], "group": "g", "clock": "t",
-                "max_dclock": 30.0,
-                "on_clock_reset": "reset_state", "min_backwards_jump": 0}"#,
+                "gap_cap": 30.0,
+                "restart_after_step_back": 0}"#,
         ),
     ]
 }
@@ -811,7 +811,7 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
     let specs = vec![spec(
         r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6},
             "targets": ["y"], "features": ["x0"], "clock": "t", "weight": "w",
-            "group": "g", "halflife": 10.0, "max_dclock": 30.0}"#,
+            "group": "g", "half_life": 10.0, "gap_cap": 30.0}"#,
     )];
     let mut bank = Bank::new(specs.clone()).unwrap();
     feed(&mut bank, &df, 2);
@@ -872,7 +872,7 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
 #[test]
 fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
     let df = make_df(60);
-    // (kind, model, targets, features, halflife): what runs on `make_df`.
+    // (kind, model, targets, features, half-life): what runs on `make_df`.
     let kinds: &[(&str, &str, &str, &str, bool)] = &[
         (
             "ew_ridge",
@@ -890,7 +890,7 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
         ),
         (
             "kalman",
-            r#"{"type": "kalman", "coef_halflife": 100.0}"#,
+            r#"{"type": "kalman", "coef_half_life": 100.0}"#,
             r#"["y"]"#,
             r#"["x0", "x1"]"#,
             true,
@@ -1005,9 +1005,9 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
         ),
     ];
     let mut seen = Vec::new();
-    for &(kind, model, targets, features, halflife) in kinds {
-        let halflife = if halflife {
-            r#", "halflife": 10.0"#
+    for &(kind, model, targets, features, half_life) in kinds {
+        let half_life = if half_life {
+            r#", "half_life": 10.0"#
         } else {
             ""
         };
@@ -1026,7 +1026,7 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
         };
         let specs = vec![spec(&format!(
             r#"{{"name": "m", "model": {model}, "targets": {targets}, "features": {features},
-                "clock": "t", "group": "g", "max_dclock": 30.0{weight}{halflife}{close}}}"#
+                "clock": "t", "group": "g", "gap_cap": 30.0{weight}{half_life}{close}}}"#
         ))];
         assert_eq!(specs[0].model.kind_name(), kind);
         let mut bank = Bank::new(specs.clone()).unwrap_or_else(|e| panic!("{kind}: {e}"));

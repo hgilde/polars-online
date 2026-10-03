@@ -20,7 +20,7 @@ spec = po.spec.ewridge(
     "ridge",
     targets=["ret"], features=["signal_a", "signal_b"],
     clock="ts",                    # a Datetime column, so the clock parameters are durations
-    halflife=pl.duration(minutes=10), max_dclock=pl.duration(minutes=5),
+    half_life=pl.duration(minutes=10), gap_cap=pl.duration(minutes=5),
     group="stock_id",              # one independent state per stock
 )
 
@@ -49,23 +49,23 @@ bank.save("bank.state")
   `coef` field: it is filled on each group's last row in every chunk, and every
   `coef_every` learned rows, so its schedule follows the chunking.
 - **Decay runs on the clock, not on row count.** A `Datetime`, `Date` or `Duration`
-  clock takes its clock parameters (`halflife`, `max_dclock`, `window`, ...) as
+  clock takes its clock parameters (`half_life`, `gap_cap`, `window_size`, ...) as
   durations: `pl.duration(minutes=10)`, a `timedelta` or `"10m"`. A numeric clock takes
   plain numbers in its own units. Either mixture is refused, naming the parameter.
-  `max_dclock`, `session` / `session_gap` and `on_clock_reset` say what happens across a
-  gap, a session boundary or a clock that goes backwards. A jump back smaller than
-  `min_backwards_jump` (default `max_dclock`) is refused as a late row, whatever
-  `on_clock_reset` says.
-- **The clock need not be a time.** Sort by a feature, clock on it, and the halflife is
+  `gap_cap`, `session` / `session_gap` and `restart_after_step_back` say what happens
+  across a gap, a session boundary or a clock that goes backwards. A step back is
+  refused unless `restart_after_step_back` is set and the step is larger, which starts
+  the model over; a smaller one is a late row, refused.
+- **The clock need not be a time.** Sort by a feature, clock on it, and the half-life is
   a bandwidth in that feature's units. The fit is then a local regression in it (LOESS
   with a one-sided exponential kernel), and `ew_cov` clocked the same way gives local
   moments.
-- **`n_eff` is accumulated weight**, before this row's update and before its own decay —
-  the same definition in every model. `min_periods` is in those units, so it is a
+- **`weight_sum` is accumulated weight**, before this row's update and before its own decay —
+  the same definition in every model. `min_weight` is in those units, so it is a
   weight, not a number of rows.
 - **A zero-weight row is legal** and means "advance the clock, learn nothing", including
   as the first row of a stream.
-- **Every spec adds one struct column**, named after the spec. `n_eff` is in every one;
+- **Every spec adds one struct column**, named after the spec. `weight_sum` is in every one;
   the linear models add `pred_<target>`, `resid_<target>` and `coef`; diagnostics add
   theirs when switched on.
   [OUTPUTS.md](https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md) lists

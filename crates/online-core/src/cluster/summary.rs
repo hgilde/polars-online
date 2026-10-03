@@ -211,7 +211,7 @@ impl ClusterSummary {
 }
 
 /// The metric's floor references each feature's long-run scale, tracked at
-/// this many model halflives (docs/PLAN.md task 102).
+/// this many model half-lives (docs/PLAN.md task 102).
 pub const LONG_HALFLIVES: f64 = 8.0;
 /// The reference clips a squared deviation at this multiple of its own
 /// variance (ten standard deviations), and the mean's step at the root.
@@ -223,13 +223,13 @@ pub const START_ROWS: usize = 5;
 /// recursion as `ewcov.rs` without the co-moments (O(p) a row), with the
 /// means as pairs (`crate::comp`, docs/PLAN.md task 101), and beside them,
 /// a feature at a time, the reference the metric's floor is a fraction of
-/// (task 102): the same moments at [`LONG_HALFLIVES`] times the halflife,
+/// (task 102): the same moments at [`LONG_HALFLIVES`] times the half-life,
 /// each row's weight clipped at the reference's own and its squared
 /// deviation at [`CLIP`] times the reference's variance, started from the
 /// medians of the feature's first [`START_ROWS`] learned rows and started
 /// over by a first move from no spread. A row at the input bound moves the
 /// reference by a factor of `1 + CLIP / 4` at most, which a few of its
-/// halflives undo, where the EW variance takes a thousand to forget such a
+/// half-lives undo, where the EW variance takes a thousand to forget such a
 /// row; a reference that took rows as they came never forgot one, and the
 /// metric was lost for good (`model_contract`'s recovery).
 ///
@@ -418,7 +418,7 @@ impl FeatureMoments {
     /// `scale_floor` times the reference's variance, where that is positive
     /// and its reciprocal finite, else `1` (raw units); all ones when not
     /// standardizing. The floor slows what a feature that has gone quiet can
-    /// come to count for: `1 / var` alone grows as `2^Q` over `Q` halflives
+    /// come to count for: `1 / var` alone grows as `2^Q` over `Q` half-lives
     /// of quiet, a million at twenty, and the row on which the feature moves
     /// again is then infinitely far from every centre, which the argmin
     /// cancels but a radius does not; floored, the weight grows as
@@ -714,7 +714,7 @@ mod tests {
             m.absorb(&[2.0, (i % 3) as f64], 1.0);
         }
         assert!(m.var[0] >= 0.0 && m.var[0] < 1e-12, "{}", m.var[0]);
-        // Sixty rows at halflife 1 are 7.5 of the reference's halflives.
+        // Sixty rows at half-life 1 are 7.5 of the reference's half-lives.
         let decayed = m.var_long[0] / reference;
         assert!(decayed > 0.002 && decayed < 0.02, "{decayed}");
         assert!(
@@ -735,7 +735,7 @@ mod tests {
     /// being kept. A row at the input bound among them does not move the
     /// medians, nor a weight at the bound: the values' median, the squared
     /// deviations' median, and five times the weights' median. The EW
-    /// moments take that row, and forget it in a thousand halflives; the
+    /// moments take that row, and forget it in a thousand half-lives; the
     /// reference never has it, and the floor sits far below the EW variance
     /// until then.
     #[test]
@@ -798,7 +798,7 @@ mod tests {
     /// reference by a bounded factor -- `1 + CLIP / 4` in the variance (a
     /// row takes at most half of it, so `(1 − b)(1 + CLIP·b)` peaks at
     /// `b = 1/2`), half the root of `CLIP` standard deviations in the
-    /// mean, twice in the weight -- and its halflives undo it: the
+    /// mean, twice in the weight -- and its half-lives undo it: the
     /// reference is within a factor of two of its old value eleven of them
     /// later, with and without decay.
     #[test]
@@ -834,8 +834,8 @@ mod tests {
                 m.var[0]
             );
             if lam < 1.0 {
-                // Six hundred rows at halflife 6.6 are eleven of the
-                // reference's halflives; 2.8 times its old value after six.
+                // Six hundred rows at half-life 6.6 are eleven of the
+                // reference's half-lives; 2.8 times its old value after six.
                 for _ in 0..600 {
                     m.decay(lam, lam_long(lam));
                     m.absorb(&[g.uniform()], 1.0);
@@ -850,7 +850,7 @@ mod tests {
     /// move starts its reference over: five rows of one value, then a row a
     /// million away, then rows of unit spread. Taken as it came, the row put
     /// 1e11 into the reference and the floor held the feature under-weighted
-    /// a millionfold for two hundred halflives; started over, the reference
+    /// a millionfold for two hundred half-lives; started over, the reference
     /// is the medians of that row and the next four, at the unit spread.
     #[test]
     fn a_feature_without_spread_starts_its_reference_over_on_its_first_move() {
@@ -933,7 +933,7 @@ mod tests {
     }
 
     /// A reference whose weight has decayed to nothing -- a gap of
-    /// thousands of its halflives -- takes the next row whole and starts
+    /// thousands of its half-lives -- takes the next row whole and starts
     /// over on the one after, with no NaN on the way.
     #[test]
     fn a_gap_past_the_references_weight_starts_it_over() {

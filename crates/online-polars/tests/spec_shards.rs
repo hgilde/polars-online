@@ -9,7 +9,7 @@ use online_polars::{ModelKind, ShardSpec, Spec};
 fn spec_json(model: &str) -> Result<Spec, String> {
     serde_json::from_str(&format!(
         r#"{{"name": "m", "model": {{"type": "marginal"{model}}},
-            "targets": ["y"], "features": ["x0", "x1"], "halflife": 20.0}}"#
+            "targets": ["y"], "features": ["x0", "x1"], "half_life": 20.0}}"#
     ))
     .map_err(|e| e.to_string())
 }
@@ -65,7 +65,7 @@ fn shards_read_a_count_or_auto_and_refuse_the_rest() {
     }
     let toml_spec = |shards: &str| -> Result<Spec, String> {
         toml::from_str(&format!(
-            "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\nhalflife = 20.0\n\
+            "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 20.0\n\
              [model]\ntype = \"marginal\"\nshards = {shards}\n"
         ))
         .map_err(|e| e.to_string())

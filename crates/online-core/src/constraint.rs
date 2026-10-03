@@ -13,7 +13,7 @@
 //! one with `g <= 0` names the segment that holds the root, on which `g` is
 //! linear and `mu` is exact. O(k) for a box alone, O(k log k) with a sum.
 //!
-//! The weights `a_i` carry a standardization: `sgd` with `scale_features`
+//! The weights `a_i` carry a standardization: `sgd` with `standardize`
 //! steps in standardized coordinates `b_i = c_i * scale_i`, where the
 //! caller's bound on `c_i` is a bound `lo_i * scale_i` on `b_i` and the sum
 //! `sum(c_i) = sum(b_i / scale_i)`, i.e. `a_i = 1 / scale_i`. Without

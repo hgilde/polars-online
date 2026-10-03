@@ -58,7 +58,7 @@ WARM = dict(
     grow_every=50,
     bin_rows=2000,
     warm_start=True,
-    halflife=3000.0,
+    half_life=3000.0,
 )
 
 
@@ -95,18 +95,18 @@ def run_ours(cfg: Cfg, X, y, d_clock, w, label, segs):
     return m, pred
 
 
-def run_ew_mean(y, d_clock, halflife):
+def run_ew_mean(y, d_clock, half_life):
     pred = np.full(len(y), np.nan)
     G = H = 0.0
     for i in range(len(y)):
-        lam = 0.5 ** (d_clock[i] / halflife)
+        lam = 0.5 ** (d_clock[i] / half_life)
         G, H = lam * G, lam * H
         pred[i] = G / H if H > 0 else np.nan
         G, H = G + y[i], H + 1.0
     return pred
 
 
-def run_ewridge(X, y, d_clock, halflife):
+def run_ewridge(X, y, d_clock, half_life):
     import polars as pl
 
     import polars_online as po
@@ -118,9 +118,9 @@ def run_ewridge(X, y, d_clock, halflife):
         targets=["y"],
         features=[f"x{j}" for j in range(X.shape[1])],
         clock="t",
-        halflife=halflife,
-        max_dclock=100.0,
-        min_periods=X.shape[1] + 1,
+        half_life=half_life,
+        gap_cap=100.0,
+        min_weight=X.shape[1] + 1,
     )
     out = po.fit_predict(df, [spec])
     return out.select(pl.col("r").struct.field("pred_y")).to_numpy().ravel()
@@ -136,7 +136,7 @@ def run_xgb_window(X, y, W, R, rounds, start):
     return pred
 
 
-def run_xgb_leaf_refresh(X, y, d_clock, warm, rounds, halflife):
+def run_xgb_leaf_refresh(X, y, d_clock, warm, rounds, half_life):
     """XGBoost structure from the first ``warm`` rows; leaf (G, H) refreshed online."""
     b = xgb.train(XGB_PARAMS, xgb.DMatrix(X[:warm], y[:warm]), num_boost_round=rounds)
 
@@ -148,7 +148,7 @@ def run_xgb_leaf_refresh(X, y, d_clock, warm, rounds, halflife):
         rounds,
         XGB_PARAMS["eta"],
         XGB_PARAMS["lambda"],
-        halflife,
+        half_life,
         base=float(np.mean(y[:warm])),
     )
     pred = np.empty(len(y))
@@ -197,7 +197,7 @@ def exp_baselines(seed: int = 4) -> None:
         )
         for hl in (math.inf, 3000.0):
             run_ours(
-                Cfg(**dict(WARM, halflife=hl, freeze_after_warm=True)),
+                Cfg(**dict(WARM, half_life=hl, freeze_after_warm=True)),
                 X,
                 y,
                 d_clock,
@@ -206,7 +206,7 @@ def exp_baselines(seed: int = 4) -> None:
                 segs,
             )
             run_ours(
-                Cfg(**dict(WARM, halflife=hl)),
+                Cfg(**dict(WARM, half_life=hl)),
                 X,
                 y,
                 d_clock,
@@ -217,7 +217,7 @@ def exp_baselines(seed: int = 4) -> None:
                 segs,
             )
         run_ours(
-            Cfg(**dict(WARM, halflife=8000.0)),
+            Cfg(**dict(WARM, half_life=8000.0)),
             X,
             y,
             d_clock,
@@ -339,7 +339,7 @@ def exp_negatives(seed: int = 4) -> None:
             segs,
         )
         run_ours(
-            Cfg(**dict(WARM, halflife=math.inf)),
+            Cfg(**dict(WARM, half_life=math.inf)),
             X,
             y,
             d_clock,
@@ -396,7 +396,7 @@ def exp_invariance(seed: int = 6) -> None:
         f"{np.array_equal(p4, p5, equal_nan=True)}; all finite={np.isfinite(p4[2000:]).all()}"
     )
     print(
-        f"n_eff before/after the zero-weight block: {e5[12999]:.3f} -> {e5[13500]:.3f}, "
+        f"weight_sum before/after the zero-weight block: {e5[12999]:.3f} -> {e5[13500]:.3f}, "
         f"ratio {e5[13500] / e5[12999]:.4f} (decay only; pure decay over that span = "
         f"{math.exp(-math.log(2) * d_clock[13000:13501].sum() / 3000.0):.4f})"
     )
@@ -406,7 +406,7 @@ def exp_invariance(seed: int = 6) -> None:
     print(
         "zero-weight first row: not a learned row, so warm-up ends one row later "
         f"(pred[2000] nan={np.isnan(p6[2000])}); finite after={np.isfinite(p6[2001:]).all()}; "
-        f"n_eff[0]={e6[0]}, n_eff[1]={e6[1]}"
+        f"weight_sum[0]={e6[0]}, weight_sum[1]={e6[1]}"
     )
     # Parallel additivity: a segment's histogram contribution is the sum of its blocks'.
     m = OnlineGBT(Cfg(**dict(WARM, grow_every=10**9)), P)

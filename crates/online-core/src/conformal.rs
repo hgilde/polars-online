@@ -115,7 +115,7 @@ impl Conformal {
     }
 
     /// [`Self::update`] for a row whose label arrives after the row was
-    /// shown its interval (`label_delay`): the row is scored against the
+    /// shown its interval (`embargo`): the row is scored against the
     /// radius it was *shown*, `shown`, not the radius the recursion has
     /// reached since, and the step moves the current radius by that error --
     /// the delayed-feedback form of adaptive conformal inference. Scored

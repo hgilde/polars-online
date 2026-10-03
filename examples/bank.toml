@@ -20,13 +20,13 @@ name = "ridge"
 targets = ["y"]
 features = ["x0", "x1", "x2"]
 clock = "t"
-halflife = 600.0
-max_dclock = 300.0
+half_life = 600.0
+gap_cap = 300.0
 session = "session"
 session_gap = 1800.0
 weight = "w"
 group = "group"
-min_periods = 20.0
+min_weight = 20.0
 coef_every = 1000
 
 [specs.model]
@@ -35,21 +35,21 @@ ridge = [1e-6, 0.1]
 standardize = true
 
 # The same stream through a Kalman filter, coefficients drifting with a
-# 1-hour halflife.
+# 1-hour half-life.
 [[specs]]
 name = "kalman"
 targets = ["y"]
 features = ["x0", "x1", "x2"]
 clock = "t"
-halflife = 600.0
-max_dclock = 300.0
+half_life = 600.0
+gap_cap = 300.0
 group = "group"
-min_periods = 20.0
+min_weight = 20.0
 
 [specs.model]
 type = "kalman"
-coef_halflife = 3600.0
-# revert_halflife = ["inf", 7200.0, 7200.0, 7200.0]  # slopes revert toward zero; intercept stays a random walk
+coef_half_life = 3600.0
+# revert_half_life = ["inf", 7200.0, 7200.0, 7200.0]  # slopes revert toward zero; intercept stays a random walk
 
 # Which of the two is closer, row by row: a sequential test on the sign of
 # `|resid_kalman| - |resid_ridge|`, anytime-valid at every row
@@ -63,7 +63,7 @@ name = "ridge_vs_kalman"
 targets = ["y"]
 features = []
 clock = "t"
-max_dclock = 300.0
+gap_cap = 300.0
 group = "group"
 
 [specs.model]

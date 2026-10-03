@@ -34,8 +34,8 @@ SPEC = po.spec.ewridge(
     "ridge",
     targets=["y"],
     features=["x0", "x1"],
-    halflife=500.0,
-    min_periods=20.0,
+    half_life=500.0,
+    min_weight=20.0,
     emit_sigma=True,
     emit_drift=True,
 )

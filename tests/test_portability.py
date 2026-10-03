@@ -21,7 +21,7 @@ import polars_online as po
 
 #: `withheld_reason`, an enum over the three gates, on every model that
 #: writes a row (docs/WARMUP-AND-CONVERGENCE.md §3).
-REASON_DTYPE = pl.Enum(["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"])
+REASON_DTYPE = pl.Enum(["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"])
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -46,10 +46,10 @@ def _spec(**kw):
         targets=["y0"],
         features=["x0", "x1"],
         clock="t",
-        max_dclock=10.0,
-        halflife=50.0,
+        gap_cap=10.0,
+        half_life=50.0,
         group="g",
-        min_periods=5.0,
+        min_weight=5.0,
         max_rows_between_solves=1,
     )
     d.update(kw)
@@ -57,21 +57,21 @@ def _spec(**kw):
 
 
 def _bank_specs():
-    """The plain spec beside one with a halflife grid, `coef` on every row and
+    """The plain spec beside one with a half-life grid, `coef` on every row and
     every optional output on, so that a field of every kind is compared."""
     grid = po.spec.ewridge(
         "grid",
         targets=["y0"],
         features=["x0", "x1"],
         clock="t",
-        max_dclock=10.0,
-        halflife=[10.0, 50.0, 200.0],
+        gap_cap=10.0,
+        half_life=[10.0, 50.0, 200.0],
         group="g",
-        min_periods=5.0,
+        min_weight=5.0,
         max_rows_between_solves=1,
         coef_every=1,
         emit_sigma=True,
-        emit_resid_z=True,
+        emit_zscore=True,
         emit_selected=True,
         emit_averaged=True,
         emit_metrics=True,
@@ -213,8 +213,8 @@ class TestOutputSchemaStability:
             features=["x0", "x1", "x2"],
             ridge=[1e-6, 0.1, 10.0],
             feature_sets={"fast": ["x0", "x1"], "slow": ["x2"]},
-            halflife=[100.0, 500.0],
-            min_periods=5.0,
+            half_life=[100.0, 500.0],
+            min_weight=5.0,
         )
         got = po.spec.output_fields(spec)
         assert got == [
@@ -242,7 +242,7 @@ class TestOutputSchemaStability:
             "resid_y1__slow_r0.1@h100",
             "pred_y1__slow_r10@h100",
             "resid_y1__slow_r10@h100",
-            "n_eff@h100",
+            "weight_sum@h100",
             "settled_frac@h100",
             "withheld_reason@h100",
             "coef@h100",
@@ -271,7 +271,7 @@ class TestOutputSchemaStability:
             "resid_y1__slow_r0.1@h500",
             "pred_y1__slow_r10@h500",
             "resid_y1__slow_r10@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
             "coef@h500",
@@ -284,7 +284,7 @@ class TestOutputSchemaStability:
             targets=["y0"],
             features=["x0"],
             lasso_path=[1.0, 0.01, 0.0],
-            halflife=100.0,
+            half_life=100.0,
         )
         assert po.spec.output_fields(spec) == [
             "pred_y0__l1",
@@ -293,25 +293,25 @@ class TestOutputSchemaStability:
             "resid_y0__l0.01",
             "pred_y0__l0",
             "resid_y0__l0",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",
-            "lam_selected_y0",
+            "penalty_selected_y0",
         ]
 
     @pytest.mark.parametrize(
         "extra",
         [
             {},
-            {"emit_sigma": True, "emit_resid_z": True},
+            {"emit_sigma": True, "emit_zscore": True},
             {"emit_selected": True, "emit_averaged": True},
             {"emit_drift": True},
             {"resid_quantiles": [0.5, 0.99], "emit_autocorr": True},
             {"conformal": 0.9},
             {
                 "emit_sigma": True,
-                "emit_resid_z": True,
+                "emit_zscore": True,
                 "emit_drift": True,
                 "emit_selected": True,
                 "emit_averaged": True,
@@ -333,8 +333,8 @@ class TestOutputSchemaStability:
             targets=["y0"],
             features=["x0", "x1"],
             ridge=[1e-6, 0.5],
-            halflife=50.0,
-            min_periods=2.0,
+            half_life=50.0,
+            min_weight=2.0,
             max_rows_between_solves=1,
             **extra,
         )
@@ -346,7 +346,7 @@ class TestOutputSchemaStability:
     _ALL_MODELS = [
         ("ewridge", {"features": ["x0", "x1"]}),
         ("rls", {"features": ["x0", "x1"], "ridge": 1.0}),
-        ("kalman", {"features": ["x0", "x1"], "coef_halflife": 100.0}),
+        ("kalman", {"features": ["x0", "x1"], "coef_half_life": 100.0}),
         ("lasso", {"features": ["x0", "x1"], "lasso_path": [0.1, 0.0]}),
         ("huber", {"features": ["x0", "x1"]}),
         ("quantile", {"features": ["x0", "x1"], "quantile": 0.5}),
@@ -361,7 +361,7 @@ class TestOutputSchemaStability:
         "extra",
         [
             {},
-            {"emit_sigma": True, "emit_resid_z": True, "emit_drift": True},
+            {"emit_sigma": True, "emit_zscore": True, "emit_drift": True},
             {"resid_quantiles": [0.5], "emit_autocorr": True, "emit_metrics": True},
             {"conformal": 0.9, "emit_sigma": True},
         ],
@@ -381,8 +381,8 @@ class TestOutputSchemaStability:
         spec = getattr(po.spec, model)(
             "m",
             targets=["y0"],
-            halflife=50.0,
-            min_periods=2.0,
+            half_life=50.0,
+            min_weight=2.0,
             **kw,
             **extra,
         )
@@ -400,24 +400,24 @@ class TestOutputSchemaStability:
             "m",
             features=["x0", "x1"],
             stats=["mean", "var", "std", "cov", "corr"],
-            halflife=50.0,
-            min_periods=2.0,
+            half_life=50.0,
+            min_weight=2.0,
         )
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
 
-    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
-    def test_kmeans_names_match_the_realized_struct(self, halflife, coef_every):
+    def test_kmeans_names_match_the_realized_struct(self, half_life, coef_every):
         """`kmeans` has no targets either: an `i32` assignment, two distances,
-        `n_eff` and the centres as `coef`, per instance."""
+        `weight_sum` and the centres as `coef`, per instance."""
         spec = po.spec.kmeans(
             "m",
             features=["x0", "x1"],
             k=2,
             warm_rows=5,
-            halflife=halflife,
-            min_periods=2.0,
+            half_life=half_life,
+            min_weight=2.0,
             coef_every=coef_every,
         )
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
@@ -433,18 +433,18 @@ class TestOutputSchemaStability:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
 
-    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
-    def test_micro_names_match_the_realized_struct(self, halflife, coef_every):
+    def test_micro_names_match_the_realized_struct(self, half_life, coef_every):
         """`micro` has four integer-like outputs of three widths -- `i64` ids
         (`cluster`, `micro`), a `bool` flag and `i32` counts -- plus a
-        distance, `n_eff` and the summaries as a ragged `coef` list."""
+        distance, `weight_sum` and the summaries as a ragged `coef` list."""
         spec = po.spec.micro(
             "m",
             features=["x0", "x1"],
             eps=0.5,
-            halflife=halflife,
-            min_periods=2.0,
+            half_life=half_life,
+            min_weight=2.0,
             coef_every=coef_every,
         )
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
@@ -463,18 +463,18 @@ class TestOutputSchemaStability:
             assert names[f.dtype] == declared, (f, declared)
         per_instance = [pl.Int64, pl.Float64, pl.Int64, pl.Boolean, pl.Int32, pl.Int32]
         per_instance += [pl.Float64, pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
-        n_instances = len(halflife) if isinstance(halflife, list) else 1
+        n_instances = len(half_life) if isinstance(half_life, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
-    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize(
         "blocks",
         [None, {"all": ["x0", "x1", "x2"]}, {"a": ["x0", "x1"], "b": ["x2", "x3"]}],
         ids=["plain", "one_block", "two_blocks"],
     )
-    def test_deco_names_match_the_realized_struct(self, halflife, blocks):
+    def test_deco_names_match_the_realized_struct(self, half_life, blocks):
         """`deco` predicts no target: `u`, `rho` and `loglik` per correlation
-        value, `n_eff`, and the levels as `coef`."""
+        value, `weight_sum`, and the levels as `coef`."""
         features = (
             ["x0", "x1", "x2"]
             if blocks is None or len(blocks) == 1
@@ -489,8 +489,8 @@ class TestOutputSchemaStability:
             "m",
             features=features,
             blocks=blocks,
-            halflife=halflife,
-            min_periods=2.0,
+            half_life=half_life,
+            min_weight=2.0,
         )
         df = _frame().drop("g").with_columns(x2=pl.col("x0") * 0.5, x3=pl.col("x1") * -0.5)
         out = po.ModelBank([spec]).fit_predict(df)
@@ -498,19 +498,19 @@ class TestOutputSchemaStability:
         idx = po.spec.output_index(spec)
         assert [f["field"] for f in idx.iter_rows(named=True)] == po.spec.output_fields(spec)
 
-    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
-    def test_ew_class_names_match_the_realized_struct(self, halflife, coef_every):
+    def test_ew_class_names_match_the_realized_struct(self, half_life, coef_every):
         """`ew_class` predicts a label: a `str` class, one `f64` posterior per
-        class, `n_eff` and the class means as `coef`, per instance."""
+        class, `weight_sum` and the class means as `coef`, per instance."""
         spec = po.spec.ew_class(
             "m",
             features=["x0", "x1"],
             label="y",
             classes=["neg", "pos"],
             precision_prior=1.0,
-            halflife=halflife,
-            min_periods=2.0,
+            half_life=half_life,
+            min_weight=2.0,
             coef_every=coef_every,
         )
         df = (
@@ -534,24 +534,24 @@ class TestOutputSchemaStability:
             assert names[f.dtype] == declared, (f, declared)
         per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64]
         per_instance += [pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
-        n_instances = len(halflife) if isinstance(halflife, list) else 1
+        n_instances = len(half_life) if isinstance(half_life, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
     @pytest.mark.parametrize("compare", [False, True], ids=["column", "compare"])
     def test_seqtest_names_match_the_realized_struct(self, compare):
         """`seqtest` predicts nothing: two `f64` log e-values and two `i64`
-        counts per target, then `n_eff`; no instances (nothing decays), no
+        counts per target, then `weight_sum`; no instances (nothing decays), no
         `coef`. The comparison renames the four and reads the sides'
         residuals, so it is realized inside a bank holding them."""
         if compare:
             sides = [
-                po.spec.ewridge("a", targets=["y0"], features=["x0"], halflife=50.0),
-                po.spec.ewridge("b", targets=["y0"], features=["x1"], halflife=50.0),
+                po.spec.ewridge("a", targets=["y0"], features=["x0"], half_life=50.0),
+                po.spec.ewridge("b", targets=["y0"], features=["x1"], half_life=50.0),
             ]
-            spec = po.spec.seqtest("m", targets=["y0"], a="a", b="b", min_periods=2.0)
+            spec = po.spec.seqtest("m", targets=["y0"], a="a", b="b", min_weight=2.0)
         else:
             sides = []
-            spec = po.spec.seqtest("m", targets=["y0", "x0"], min_periods=2.0)
+            spec = po.spec.seqtest("m", targets=["y0", "x0"], min_weight=2.0)
         out = po.ModelBank([*sides, spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
@@ -561,7 +561,7 @@ class TestOutputSchemaStability:
             assert names[f.dtype] == declared, (f, declared)
         per_target = [pl.Float64, pl.Float64, pl.Int64, pl.Int64]
         n_targets = len(spec["targets"])
-        tail = [pl.Float64, pl.Float64, REASON_DTYPE]  # n_eff, settled_frac, withheld_reason
+        tail = [pl.Float64, pl.Float64, REASON_DTYPE]  # weight_sum, settled_frac, withheld_reason
         assert [f.dtype for f in out.schema["m"].fields] == per_target * n_targets + tail
         assert "coef" not in po.spec.output_fields(spec)
 
@@ -604,8 +604,8 @@ class TestConfigParsing:
             'name = "m"\n'
             'targets = ["y"]\n'
             'features = ["x0"]\n'
-            "halflife = 100.0\n"
-            "min_periods = 5.0\n"
+            "half_life = 100.0\n"
+            "min_weight = 5.0\n"
             "\n[specs.model]\n"
             'type = "ew_ridge"\n'
             "ridge = 1e-6\n"
@@ -644,8 +644,8 @@ class TestConfigParsing:
             'name = "m"\n'
             'targets = ["y"]\n'
             'features = ["x0"]\n'
-            "halflife = 100.0\n"
-            "min_periods = 1.0\n"
+            "half_life = 100.0\n"
+            "min_weight = 1.0\n"
             "\n[specs.model]\n"
             'type = "ew_ridge"\n'
             "ridge = 1e-6\n"
@@ -666,8 +666,8 @@ class TestConfigParsing:
             'name = "m"\n'
             'targets = ["y"]\n'
             'features = ["x0"]\n'
-            "halflife = 100.0\n"
-            "min_periods = 1.0\n"
+            "half_life = 100.0\n"
+            "min_weight = 1.0\n"
             "\n[specs.model]\n"
             'type = "ew_ridge"\n'
             "ridge = 1e-6\n"
@@ -724,8 +724,8 @@ class TestConfigParsing:
                 'name = "ridge"',
                 'targets = ["y"]',
                 'features = ["x0"]',
-                "halflife = 100.0",
-                "min_periods = 5.0",
+                "half_life = 100.0",
+                "min_weight = 5.0",
                 "",
                 "[specs.model]",
                 'type = "ew_ridge"',
@@ -752,7 +752,7 @@ class TestConfigParsing:
             'name = "ridge"\n'
             'targets = ["y"]\n'
             'features = ["x0"]\n'
-            "halflife = 100.0\n"
+            "half_life = 100.0\n"
             "\n[specs.model]\n"
             'type = "ew_ridge"\n'
         )
@@ -771,7 +771,7 @@ class TestConfigParsing:
             'name = "ridge"\n'
             'targets = ["y"]\n'
             'features = ["x0"]\n'
-            "halflife = 100.0\n"
+            "half_life = 100.0\n"
             "\n[specs.model]\n"
             'type = "ew_ridge"\n'
         )

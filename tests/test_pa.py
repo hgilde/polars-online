@@ -11,8 +11,8 @@ def _spec(**kw):
     d = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=float("inf"),
-        min_periods=10.0,
+        half_life=float("inf"),
+        min_weight=10.0,
     )
     d.update(kw)
     return po.spec.pa("m", **d)
@@ -62,8 +62,8 @@ def test_no_learning_rate_is_needed():
                 targets=["y0"],
                 features=["x0", "x1"],
                 learning_rate=1e-4,
-                halflife=float("inf"),
-                min_periods=10.0,
+                half_life=float("inf"),
+                min_weight=10.0,
                 coef_every=1,
             )
         ]

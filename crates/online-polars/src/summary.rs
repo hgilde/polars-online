@@ -166,10 +166,11 @@ pub struct DataSummary {
     /// Rows whose session id differed from the previous row's.
     pub session_changes: u64,
     /// Rows whose clock was below the previous row's within a session --
-    /// what `on_clock_reset` had to decide about.
+    /// what `restart_after_step_back` had to decide about.
     pub clock_backwards: u64,
     /// Rows at which the session or clock policy restarted the stream's
-    /// state (`session_gap = "reset"`, `on_clock_reset = "reset_state"`).
+    /// state (`session_gap = "reset"`, a step back of at least
+    /// `restart_after_step_back`).
     pub resets: u64,
     /// Features, then targets, then the weight column when there is one.
     pub columns: Vec<ColumnStats>,

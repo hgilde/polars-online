@@ -12,7 +12,7 @@ collinearity (:func:`vif`, :func:`condition`).
 Every function takes the mapping ``gram()`` produces (``columns``,
 ``targets``, ``means``, ``comoments``, ``cross_moments``, ``means_by_target``,
 ``cross_centred``, ``target_weights``, ``target_means``, ``target_vars``,
-``n_eff``, ``n_kish``, ``target_n_kish``), and :func:`merge`, :func:`subset`
+``weight_sum``, ``n_kish``, ``target_n_kish``), and :func:`merge`, :func:`subset`
 and :func:`from_row` return one of the same shape, so a closed group's row
 (:meth:`~polars_online.ModelBank.closed_groups`) is read the same way.
 
@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 #: The name :meth:`~polars_online.ModelBank.gram` gives the constant column a
-#: spec's ``add_intercept`` puts in front of the features, matching the
+#: spec's ``fit_intercept`` puts in front of the features, matching the
 #: ``term`` column of :func:`polars_online.spec.coef_index`.
 INTERCEPT = "intercept"
 
@@ -183,8 +183,8 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     one per group being combined, one per worker. Not two halves of a decayed
     stream in time order: each part's weights are relative to its own last row, so
     the earlier part is over-weighted by exactly the decay between them. Either
-    run the parts under an infinite halflife, or scale the earlier part's
-    ``n_eff`` by ``lam**dt`` and its ``sum(w**2)`` by ``lam**(2*dt)`` before
+    run the parts under an infinite half-life, or scale the earlier part's
+    ``weight_sum`` by ``lam**dt`` and its ``sum(w**2)`` by ``lam**(2*dt)`` before
     merging; the means and co-moments are unaffected, being weighted means
     already.
 
@@ -228,7 +228,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
             msg = "merge() needs the same targets in every part"
             raise ValueError(msg)
 
-    w = float(parts[0]["n_eff"])
+    w = float(parts[0]["weight_sum"])
     mean = np.asarray(parts[0]["means"], dtype=float).copy()
     como = np.asarray(parts[0]["comoments"], dtype=float).copy()
     q = _q_of(parts[0])
@@ -243,7 +243,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     ybar = _ybar_of(np, parts[0], icept)
 
     for p in parts[1:]:
-        wb = float(p["n_eff"])
+        wb = float(p["weight_sum"])
         total = w + wb
         if total > 0.0:
             mb = np.asarray(p["means"], dtype=float)
@@ -299,7 +299,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "instance": None,
         "columns": cols,
         "targets": targets,
-        "n_eff": w,
+        "weight_sum": w,
         "n_kish": None if q is None or q <= 0.0 else w * w / q,
         "means": mean,
         "comoments": como,
@@ -412,7 +412,7 @@ def from_row(row: Any) -> dict[str, Any]:
         "instance": d.get("instance"),
         "columns": columns,
         "targets": targets,
-        "n_eff": float(d["n_eff"]),
+        "weight_sum": float(d["weight_sum"]),
         "n_kish": None if n_kish is None else float(n_kish),
         "means": _floats(np, d["means"]),
         "comoments": _unvech(np, d["comoments"], k),
@@ -447,7 +447,7 @@ def _q_of(g: dict[str, Any]) -> float | None:
     nk = g.get("n_kish")
     if nk is None or not nk > 0.0:
         return None
-    w = float(g["n_eff"])
+    w = float(g["weight_sum"])
     return w * w / float(nk)
 
 
@@ -531,7 +531,7 @@ def solve(
     """Ridge coefficients from the Gram, in the features' original units.
 
     The model's own algebra (``EwRidge::solve``), so the result is the fit that
-    spec would report on the same accumulator -- except under ``ridge_decay`` or
+    spec would report on the same accumulator -- except under ``ridge_scale = "sum"`` or
     ``coef_prior``, whose penalties this does not take: a decaying prior on the
     sum scale that reaches the intercept, and a target other than zero. Their
     fits are not reproduced here. With an intercept in ``columns`` it
@@ -665,7 +665,7 @@ def lasso_path(
     ``target``, ``features``
         As for :func:`solve`.
     ``max_iter``, ``tol``
-        The model's ``max_cd_iters`` and ``cd_tol``.
+        The model's ``max_iter`` and ``tol``.
 
     Returns an array of shape ``(len(lambdas), k)`` over the Gram's columns, the
     intercept first when there is one.
@@ -772,7 +772,7 @@ def coef_stats(
         ``nan``: its standard error depends on the design's centring, which the
         Gram has already absorbed.
 
-    ``n`` is Kish's effective sample size, not ``n_eff``: a weighted stream's
+    ``n`` is Kish's effective sample size, not ``weight_sum``: a weighted stream's
     weight sum is not a count, and dividing by it would report standard errors too
     small by the factor the weights are unequal by. The rows behind an
     exponentially weighted fit are also neither independent nor identically

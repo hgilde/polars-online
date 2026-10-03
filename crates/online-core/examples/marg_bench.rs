@@ -83,7 +83,7 @@ fn main() {
             n_features: k,
             n_targets,
             decay: Decay::Halflife(500.0),
-            min_periods: vec![3.0; n_targets],
+            min_weight: vec![3.0; n_targets],
             lags: lags.clone(),
             serial_rule: None,
             cross_lags: cross_lags.clone(),

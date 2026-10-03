@@ -28,7 +28,7 @@
 //!             label = the smallest id in the component
 //!             L = macro_link · eps √p, or, unset, derived from the spacing:
 //!             max(LINK_FLOOR, LINK_FACTOR · p90 of the nearest-neighbour distance) · eps √p
-//! decay       n_j *= lam, W *= lam, age_j += d_clock       lam = 0.5^(d/halflife)
+//! decay       n_j *= lam, W *= lam, age_j += d_clock       lam = 0.5^(d/half_life)
 //! ```
 //!
 //! `w̄` is the EW mean weight of the rows learned from (docs/PLAN.md task
@@ -37,7 +37,7 @@
 //! weight `w̄ = 1`. `ξ(a) = Σ_{i ≤ a/Tp} 2^(−i Tp/h)` is the weight of a
 //! summary that took one such row every `Tp` clock units since it opened.
 //! `beta_mu` is DenStream's point density, DBSCAN's `MinPts`, set against
-//! the arrival rate (docs/PLAN.md task 151): with halflife `h` and `v` rows
+//! the arrival rate (docs/PLAN.md task 151): with half-life `h` and `v` rows
 //! per clock unit the stream's steady-state weight is about `1.44·v·h`, so a
 //! summary meant to hold a share `s` of it needs `beta_mu ≈ 1.44·s·v·h`.
 //!
@@ -74,7 +74,7 @@
 //! weight, and since `w > w̄` can carry the radius past the bound, the
 //! radius is capped at the bound after the absorb. Left above it, the
 //! summary would admit nothing — not even a row at its centre — until
-//! decay brought its weight under `E / (r2 − E)`, halflives later; capped,
+//! decay brought its weight under `E / (r2 − E)`, half-lives later; capped,
 //! it is merely full, and the cap costs one row's worth of spread that the
 //! next rows re-estimate. (DenStream has no row weights; this is the
 //! extension.) So `r2 ≤ E` holds for every summary at all times, and the
@@ -100,8 +100,8 @@ use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schem
 pub struct MicroCfg {
     pub n_features: usize,
     pub decay: Decay,
-    /// Outputs are null while `n_eff < min_periods`.
-    pub min_periods: f64,
+    /// Outputs are null while `n_eff < min_weight`.
+    pub min_weight: f64,
     /// Bound on a summary's RMS radius per standardized coordinate, `> 0`.
     pub eps: f64,
     /// Weight at which an outlier summary becomes potential, `> 0`.
@@ -117,7 +117,7 @@ pub struct MicroCfg {
     pub standardize: bool,
     /// Floor the metric's variance at this fraction of the feature's
     /// long-run variance (`FeatureMoments`' reference), so that a feature
-    /// quiet for `Q` halflives comes to count `2^(Q/8) / scale_floor` times
+    /// quiet for `Q` half-lives comes to count `2^(Q/8) / scale_floor` times
     /// what its history says, where `1 / var` alone gave `2^Q`; `0` is the
     /// EW variance alone, and what a state written before the floor loads
     /// with (docs/PLAN.md task 102).
@@ -130,8 +130,8 @@ impl MicroCfg {
         if self.n_features == 0 {
             return Err("micro: n_features must be >= 1".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("micro: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("micro: min_weight must be >= 0".into());
         }
         if !self.eps.is_finite() || self.eps <= 0.0 {
             return Err("micro: eps must be finite and > 0".into());
@@ -401,7 +401,7 @@ impl Micro {
     /// `n_clusters`, `n_micro`; all NaN when not ready.
     fn score(&self, dec: Option<&Decision>, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 6];
-        if let Some(dec) = dec.filter(|_| n_eff >= self.cfg.min_periods) {
+        if let Some(dec) = dec.filter(|_| n_eff >= self.cfg.min_weight) {
             if let Some((jp, d)) = dec.nearest_potential {
                 pred[0] = self.mc[jp].label as f64;
                 pred[1] = d;
@@ -508,8 +508,8 @@ impl Micro {
         }
     }
 
-    /// The decay's halflife in clock units (infinite for none).
-    fn halflife(&self) -> f64 {
+    /// The decay's half-life in clock units (infinite for none).
+    fn half_life(&self) -> f64 {
         match self.cfg.decay {
             Decay::Halflife(h) => h,
             Decay::Lam(l) => {
@@ -526,7 +526,7 @@ impl Micro {
     /// `beta_mu ≤ 1`, in which case outlier summaries are never pruned and
     /// only the cap bounds them.
     fn prune_horizon(&self) -> Option<(f64, f64)> {
-        let h = self.halflife();
+        let h = self.half_life();
         if !h.is_finite() || self.cfg.beta_mu <= 1.0 {
             return None;
         }
@@ -756,7 +756,7 @@ mod tests {
         MicroCfg {
             n_features: 2,
             decay: Decay::Halflife(500.0),
-            min_periods: 0.0,
+            min_weight: 0.0,
             eps: 0.3,
             beta_mu: 3.0,
             max_clusters: 50,
@@ -780,7 +780,7 @@ mod tests {
         let mut m = Micro::new(MicroCfg {
             standardize: true,
             scale_floor: 0.1,
-            min_periods: 3.0,
+            min_weight: 3.0,
             eps: 0.6,
             beta_mu: 2.0,
             decay: Decay::Halflife(20.0),
@@ -893,7 +893,7 @@ mod tests {
             assert!(pred[0].is_nan(), "no potential summary yet at row {i}");
             assert_eq!(pred[3], 1.0);
         }
-        // Weight 3 (three rows at halflife 500 decay a little: 2.997) — not
+        // Weight 3 (three rows at half-life 500 decay a little: 2.997) — not
         // yet; the fourth row promotes.
         assert!(!m.micro_clusters()[0].potential);
         m.step(&[0.0, 0.0], &[], 1.0, 1.0);
@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn outputs_are_null_until_min_periods() {
         let mut m = Micro::new(MicroCfg {
-            min_periods: 3.0,
+            min_weight: 3.0,
             decay: Decay::Halflife(f64::INFINITY),
             ..cfg()
         })
@@ -1261,9 +1261,9 @@ mod tests {
         assert_eq!(run(&mut r, &more), run(&mut m, &more));
         let other = crate::Holt::new(crate::HoltCfg {
             n_targets: 1,
-            level_halflife: 10.0,
-            trend_halflife: 40.0,
-            min_periods: 0.0,
+            level_half_life: 10.0,
+            trend_half_life: 40.0,
+            min_weight: 0.0,
             trend: true,
         })
         .unwrap()
@@ -1343,7 +1343,7 @@ mod tests {
         }
     }
 
-    /// The reference decays at `LONG_HALFLIVES` times the halflife: over a
+    /// The reference decays at `LONG_HALFLIVES` times the half-life: over a
     /// clock of 2 a row, the model's moments carry what a `FeatureMoments`
     /// given `decay.factor(2 / 8)` carries, to the bit.
     #[test]
@@ -1464,7 +1464,7 @@ mod tests {
                 ..cfg()
             },
             MicroCfg {
-                min_periods: -1.0,
+                min_weight: -1.0,
                 ..cfg()
             },
         ];

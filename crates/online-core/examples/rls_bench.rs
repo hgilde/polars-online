@@ -20,11 +20,11 @@ fn main() {
             let mut m = Rls::new(RlsCfg {
                 n_features: k,
                 n_targets: 1,
-                add_intercept: true,
+                fit_intercept: true,
                 decay: Decay::Halflife(500.0),
                 ridge: 1.0,
                 coef_prior: None,
-                min_periods: 25.0,
+                min_weight: 25.0,
             })
             .unwrap();
             let mut s = 12345u64;

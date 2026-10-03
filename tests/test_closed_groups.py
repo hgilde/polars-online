@@ -24,7 +24,7 @@ HALFLIFE = 40.0
 
 def cov_spec(**kw):
     kw.setdefault("group", "g")
-    return po.spec.ew_cov("c", features=["x0", "x1"], halflife=HALFLIFE, **kw)
+    return po.spec.ew_cov("c", features=["x0", "x1"], half_life=HALFLIFE, **kw)
 
 
 def frame(keys, n_per=5, seed=0, session=None):
@@ -61,7 +61,7 @@ def test_a_closed_row_is_the_gram_read_at_the_same_point():
     g = plain.gram("c")[0]
 
     got = po.gram.from_row(row)
-    assert got["n_eff"] == g["n_eff"]
+    assert got["weight_sum"] == g["weight_sum"]
     assert got["n_kish"] == g["n_kish"]
     assert got["columns"] == g["columns"] == ["x0", "x1"]
     assert np.array_equal(got["means"], g["means"])
@@ -82,7 +82,7 @@ def test_a_closed_ridge_row_carries_the_target_moments_and_coef():
         "r",
         targets=["y"],
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         group="g",
         group_close="monotone",
     )
@@ -101,7 +101,7 @@ def test_a_closed_ridge_row_carries_the_target_moments_and_coef():
 
 def test_the_clock_range_and_the_weight_counts_come_from_the_summary():
     df = frame(["a", "b"]).with_columns(w=pl.lit(2.0))
-    bank = po.ModelBank([cov_spec(group_close="monotone", clock="t", max_dclock=1e9, weight="w")])
+    bank = po.ModelBank([cov_spec(group_close="monotone", clock="t", gap_cap=1e9, weight="w")])
     bank.fit_predict(df)
     row = bank.closed_groups()
     assert row["clock_min"][0] == 0.0 and row["clock_max"][0] == 4.0
@@ -113,7 +113,7 @@ def test_eig_is_the_eigendecomposition_of_the_rows_own_comoments():
     spec = po.spec.ew_cov(
         "c",
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         group="g",
         group_close="monotone",
         pca=2,
@@ -138,7 +138,7 @@ def test_a_marginal_spec_closes_with_its_pairs():
         "m",
         targets=["y"],
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         group="g",
         group_close="monotone",
     )
@@ -159,7 +159,7 @@ def test_one_bank_gives_one_schema_whatever_closed():
             "m",
             targets=["x0"],
             features=["x1"],
-            halflife=HALFLIFE,
+            half_life=HALFLIFE,
             group="g",
             group_close="monotone",
         ),
@@ -185,7 +185,7 @@ def test_a_closed_marginal_row_carries_its_lags_and_bins():
     kw = dict(
         targets=["y"],
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         lags=[1, 2],
         serial_rule="truncated",
         bin_edges=[[0.0], [-0.5, 0.5]],
@@ -228,7 +228,7 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
     schema for the bank, and on the row of the one that did not ask the
     columns are null -- the columns ``marginal()`` would not have."""
     common = dict(
-        targets=["y"], features=["x0", "x1"], halflife=HALFLIFE, group="g", group_close="monotone"
+        targets=["y"], features=["x0", "x1"], half_life=HALFLIFE, group="g", group_close="monotone"
     )
     specs = [
         po.spec.marginal("plain", **common),
@@ -258,7 +258,7 @@ def test_the_cross_terms_follow_the_specs_that_keep_them():
     common = dict(
         targets=["y"],
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         group="g",
         group_close="monotone",
         lags=[1, 2],
@@ -289,7 +289,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
         "m",
         targets=["y"],
         features=["x0", "x1"],
-        halflife=HALFLIFE,
+        half_life=HALFLIFE,
         lags=[1, 3],
         bins=4,
         bin_warm_rows=10,
@@ -389,7 +389,7 @@ def test_a_group_split_across_chunks_closes_once_and_at_the_same_numbers():
 def test_a_session_close_splits_the_run_and_restarts_the_stream():
     sess = ["m"] * 5 + ["t"] * 5 + ["w"] * 5
     df = frame(["a"], n_per=15, session=sess)
-    bank = po.ModelBank([cov_spec(group_close="session", session="s", clock="t", max_dclock=1e9)])
+    bank = po.ModelBank([cov_spec(group_close="session", session="s", clock="t", gap_cap=1e9)])
     bank.fit_predict(df)
     closed = bank.closed_groups()
     assert closed["session"].to_list() == ["m", "t"]
@@ -397,10 +397,10 @@ def test_a_session_close_splits_the_run_and_restarts_the_stream():
     # The new session's first row is a first row: its clock starts over.
     assert closed["clock_min"].to_list() == [0.0, 5.0]
     # The live gram is the current five-row span. The old assertion compared
-    # `n_eff` with `height and n_eff`, and `height` (5) is truthy, so it
+    # `weight_sum` with `height and weight_sum`, and `height` (5) is truthy, so it
     # compared the value with itself (review 2026-09-18, minor). Five rows at
-    # halflife 40 sum to 4.83.
-    assert 4.5 < bank.gram("c")[0]["n_eff"] < 5.0, bank.gram("c")[0]["n_eff"]
+    # half-life 40 sum to 4.83.
+    assert 4.5 < bank.gram("c")[0]["weight_sum"] < 5.0, bank.gram("c")[0]["weight_sum"]
 
 
 @pytest.mark.parametrize("size", [1, 2, 4, 15])
@@ -483,22 +483,22 @@ def test_building_a_predict_plan_leaves_the_queue_alone():
 def test_predict_scores_a_new_session_as_the_row_after_the_close():
     """Under ``group_close = "session"`` a new session's rows are a fresh
     stream's first rows to ``fit_predict``, which restarts at the change.
-    ``predict`` scored them with the closed session's fit and ``n_eff``
+    ``predict`` scored them with the closed session's fit and ``weight_sum``
     (review 2026-09-12, C19)."""
     sess = ["m"] * 20 + ["t"] * 10
     df = frame(["a"], n_per=30, session=sess)
-    spec = cov_spec(group_close="session", session="s", min_periods=5.0)
+    spec = cov_spec(group_close="session", session="s", min_weight=5.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(20))
     scored = bank.predict(df.tail(10))["c"].struct.unnest()
-    assert scored["n_eff"].to_list() == [0.0] * 10
+    assert scored["weight_sum"].to_list() == [0.0] * 10
     # `withheld_reason` says why the rest is null, so it is not null itself,
     # and a fresh stream's `settled_frac` is 0, a value.
-    readiness = ("n_eff", "settled_frac", "withheld_reason")
+    readiness = ("weight_sum", "settled_frac", "withheld_reason")
     stats = [c for c in scored.columns if c not in readiness]
     assert all(scored[c].null_count() == 10 for c in stats), scored
     fresh = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest().tail(10)
-    assert fresh["n_eff"][0] == 0.0, "fit_predict restarts at the change"
+    assert fresh["weight_sum"][0] == 0.0, "fit_predict restarts at the change"
     assert scored.head(1).equals(fresh.head(1))
 
 
@@ -516,8 +516,8 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
             "two prescriptions for one event",
         ),
         (
-            {"group_close": "monotone", "label_delay": 5.0},
-            "does not work with label_delay",
+            {"group_close": "monotone", "embargo": 5.0},
+            "does not work with embargo",
         ),
     ],
 )
@@ -614,7 +614,7 @@ def toml_config(tmp_path, **kw):
         'features = ["x0", "x1"]',
         'group = "g"',
         'group_close = "monotone"',
-        "halflife = 40.0",
+        "half_life = 40.0",
         "[specs.model]",
         'type = "ew_cov"',
     ]
@@ -778,11 +778,11 @@ def test_the_cli_writes_the_sidecar(tmp_path, online_cli):
 
 
 def test_from_row_refuses_a_row_with_no_accumulators():
-    spec = po.spec.holt("h", targets=["x0"], halflife=HALFLIFE, group="g", group_close="monotone")
+    spec = po.spec.holt("h", targets=["x0"], half_life=HALFLIFE, group="g", group_close="monotone")
     bank = po.ModelBank([spec])
     bank.fit_predict(frame(["a", "b"]))
     row = bank.closed_groups()
-    assert row.height == 1 and row["n_eff"][0] > 0
+    assert row.height == 1 and row["weight_sum"][0] > 0
     with pytest.raises(ValueError, match="no accumulators"):
         po.gram.from_row(row)
 
@@ -803,7 +803,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 21
+    assert po.schema_version() == 22
     assert sys.version_info >= (3, 12)
 
 
@@ -826,12 +826,12 @@ def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
         "m",
         targets=["y"],
         features=["x0"],
-        halflife=10.0,
+        half_life=10.0,
         group="k",
         session="k",
         session_gap=1.0,
         clock="t",
-        max_dclock=100.0,
+        gap_cap=100.0,
         group_close="monotone",
     )
     bank = po.ModelBank([spec])

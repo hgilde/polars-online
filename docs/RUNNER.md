@@ -40,8 +40,8 @@ output = "fitted.parquet"    # the input's columns, plus one column per spec
 name = "ridge"               # the name of the spec's output column
 targets = ["y"]              # or a table: { column = "p", relative_to = "mid" }, as po.target
 features = ["x0"]
-halflife = 500.0             # in rows, since the spec names no clock column
-min_periods = 5.0            # the floor, in n_eff units, below which no prediction is made
+half_life = 500.0             # in rows, since the spec names no clock column
+min_weight = 5.0            # the floor, in weight_sum units, below which no prediction is made
 [specs.model]
 type = "ew_ridge"
 ```
@@ -182,9 +182,9 @@ name = "ridge"
 targets = ["y"]
 features = ["x0", "x1"]
 clock = "ts"           # a Datetime column
-halflife = "10m"       # a row's weight halves every ten minutes
-max_dclock = "5m"
-label_delay = "30s"
+half_life = "10m"       # a row's weight halves every ten minutes
+gap_cap = "5m"
+embargo = "30s"
 [specs.model]
 type = "ew_ridge"
 ```

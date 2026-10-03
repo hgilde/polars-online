@@ -52,8 +52,8 @@
 //!
 //! # A break inside a block
 //!
-//! Nothing here decays, so `halflife` is refused -- but a clock still
-//! matters: a gap over `max_dclock`, or a session change, says the returns
+//! Nothing here decays, so `half_life` is refused -- but a clock still
+//! matters: a gap over `gap_cap`, or a session change, says the returns
 //! on either side of it are not adjacent, and a covariance of adjacent
 //! returns is the whole statistic. Such a break splits the group into
 //! **stretches** ([`crate::OnlineModel::clear_lags`]). Each stretch is

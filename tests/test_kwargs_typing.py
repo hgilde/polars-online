@@ -82,12 +82,12 @@ def test_the_typed_dicts_change_nothing_at_runtime():
     # A TypedDict is a plain dict at runtime: the same kwargs reach the same
     # builder, and a required key missing is still the builder's error.
     df = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "x0": [1.0, 3.0, 2.0, 5.0]})
-    spec = po.spec.ewridge("f", targets=["y"], features=["x0"], halflife=2.0, min_periods=1.0)
+    spec = po.spec.ewridge("f", targets=["y"], features=["x0"], half_life=2.0, min_weight=1.0)
     out = po.ModelBank([spec]).fit_predict(df)
     assert isinstance(out.schema["f"], pl.Struct)
     assert out["f"].struct.field("pred_y").null_count() < 4
     with pytest.raises(TypeError, match="missing 1 required keyword-only argument: 'lasso_path'"):
-        po.spec.lasso("m", targets=["y"], features=["x0"], halflife=2.0)
+        po.spec.lasso("m", targets=["y"], features=["x0"], half_life=2.0)
 
 
 def test_the_native_stub_names_the_built_module():

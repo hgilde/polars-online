@@ -2,9 +2,9 @@
 ``ewridge_ref``, which solves after every row) does not reach, held row by
 row to ``tests/reference_paths.py::ewridge_paths_ref``: the solve schedule
 (``solve_every``, its default by weight, ``max_rows_between_solves``,
-``gram_block_rows``), the grids (a ridge list, ``feature_sets``, a halflife
+``gram_block_rows``), the grids (a ridge list, ``feature_sets``, a half-life
 list), both ``target_gaps`` with a penalty and ``standardize``,
-``add_intercept=False``, a ``window`` over weights and skipped rows, and
+``fit_intercept=False``, a ``window`` over weights and skipped rows, and
 sessions -- a gap, a reset and a ``session_shrink`` blend.
 
 The reference recomputes each solve from the raw rows at their effective
@@ -29,7 +29,7 @@ from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 MAX_DCLOCK = 6.0
 
 # Measured over the cases below as |got - expected| / (1 + |expected|): pred
-# 1.1e-14, resid 2.4e-14, n_eff 1.5e-15, coef 9.7e-14. Each tolerance is 100x the
+# 1.1e-14, resid 2.4e-14, weight_sum 1.5e-15, coef 9.7e-14. Each tolerance is 100x the
 # largest it covers, rounded up to a power of ten.
 #
 # Seeded into a copy of the reference, each of these fails every case it
@@ -38,7 +38,7 @@ MAX_DCLOCK = 6.0
 # the raw scale under `standardize`, 1.2e-6 to 0.78; centred without an
 # intercept, 3.7-5.0; own_rows and pairwise swapped, 0.22-3.4; each feature
 # set solved on every feature, 1.0-1.3; the window's boundary strict (`<`),
-# 0.28; the blend after the row's own decay, 6.4e-4 to 2.8e-3 (n_eff
+# 0.28; the blend after the row's own decay, 6.4e-4 to 2.8e-3 (weight_sum
 # 6.8e-3 to 2.7e-2), or at 1 - f, 3.3e-2 to 4.3e-2; the blend mixing the
 # weights, as before task 145, 3.5e-2 to 8.4e-2; each target's rows
 # normalised by the Gram's weight in place of their own, 5.0e-4 to 9.1e-4; a
@@ -57,22 +57,22 @@ def _session_stream(seed: int) -> pl.DataFrame:
     return df.with_columns(pl.Series("s", s))
 
 
-def _check(df, halflife, *, sets=None, add_intercept=True, **kw):
+def _check(df, half_life, *, sets=None, fit_intercept=True, **kw):
     """Fit one ``ewridge`` spec that ``kw`` completes and hold every
     instance, target and grid slot to the reference: ``pred``, ``resid``,
-    ``n_eff``, every held ``coef`` and the rows where each is null. ``sets``
-    is ``{name: columns}``; ``halflife`` may be a list, one instance each."""
+    ``weight_sum``, every held ``coef`` and the rows where each is null. ``sets``
+    is ``{name: columns}``; ``half_life`` may be a list, one instance each."""
     spec_only = {k: kw.pop(k) for k in ("gram_block_rows",) if k in kw}
     spec = po.spec.ewridge(
         "m",
         targets=TARGETS,
         features=FEATURES,
         clock="t",
-        max_dclock=MAX_DCLOCK,
+        gap_cap=MAX_DCLOCK,
         weight="w",
-        halflife=halflife,
+        half_life=half_life,
         feature_sets=sets,
-        add_intercept=add_intercept,
+        fit_intercept=fit_intercept,
         coef_every=1,
         max_error_inflation=float("inf"),
         **spec_only,
@@ -90,23 +90,23 @@ def _check(df, halflife, *, sets=None, add_intercept=True, **kw):
         ref_kw["session"] = df[ref_kw["session"]].to_numpy()
     names = list(sets) if sets else None
     idx_sets = [[FEATURES.index(c) for c in sets[name]] for name in names] if sets else None
-    halflives = halflife if isinstance(halflife, list) else [halflife]
-    z = np.column_stack([np.ones(n), x]) if add_intercept else x
-    for h in halflives:
+    half_lives = half_life if isinstance(half_life, list) else [half_life]
+    z = np.column_stack([np.ones(n), x]) if fit_intercept else x
+    for h in half_lives:
         ref = ewridge_paths_ref(
             x,
             y,
             dc,
             df["w"].to_numpy(),
-            halflife=h,
+            half_life=h,
             feature_sets=idx_sets,
-            add_intercept=add_intercept,
-            max_dclock=MAX_DCLOCK,
+            fit_intercept=fit_intercept,
+            gap_cap=MAX_DCLOCK,
             **ref_kw,
         )
         assert ref["solved"].sum() >= 20, "the stream should span many solves"
-        mine = index.filter(pl.col("halflife") == h) if len(halflives) > 1 else index
-        suffix = f"@h{h:g}" if len(halflives) > 1 else ""
+        mine = index.filter(pl.col("half_life") == h) if len(half_lives) > 1 else index
+        suffix = f"@h{h:g}" if len(half_lives) > 1 else ""
         _held(out, mine, ref, y, z, suffix, names, idx_sets)
 
 
@@ -132,8 +132,8 @@ def _held(out, index, ref, y, z, suffix, names, idx_sets):
             resid = out.struct.field(f).to_numpy().astype(float)
             _close(resid, y[:, j] - ref["pred"][:, j, c], PRED_TOL, f)
         assert np.isfinite(ref["pred"][:, j, 0]).sum() > 100, f"{t} is scored too little"
-    n_eff = out.struct.field(f"n_eff{suffix}").to_numpy().astype(float)
-    _close(n_eff, ref["n_eff"], PRED_TOL, f"n_eff{suffix}")
+    weight_sum = out.struct.field(f"weight_sum{suffix}").to_numpy().astype(float)
+    _close(weight_sum, ref["weight_sum"], PRED_TOL, f"weight_sum{suffix}")
 
     # `coef` is each row's last solve: null on a skipped row and wherever the
     # model has none yet -- before its first, and after a reset until the
@@ -178,7 +178,7 @@ class TestTheSchedule:
     def test_the_default_cadence_over_a_grid_of_ridges_and_sets(self):
         """No ``solve_every``: a solve once the weight learned since the last
         reaches ``ln 2 / 50`` of the weight the fit holds (task 115 (b); in
-        steady state every ``halflife / 50`` = 0.8 clock units), over two
+        steady state every ``half_life / 50`` = 0.8 clock units), over two
         ridges times two feature sets, each target gated on its own
         threshold."""
         _check(
@@ -186,14 +186,14 @@ class TestTheSchedule:
             40.0,
             ridge=[1e-6, 0.5],
             sets=SETS,
-            min_periods=[15.0, 10.0, 20.0],
+            min_weight=[15.0, 10.0, 20.0],
         )
 
     def test_a_long_halflife_solves_every_four_clock_units(self):
-        """``halflife = 200``: the default cadence is by weight, about every
+        """``half_life = 200``: the default cadence is by weight, about every
         four clock units in steady state, so a row is scored with
         coefficients that stale."""
-        _check(_stream(46), 200.0, min_periods=12.0)
+        _check(_stream(46), 200.0, min_weight=12.0)
 
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
@@ -207,7 +207,7 @@ class TestTheSchedule:
             gram_block_rows=8,
             max_rows_between_solves=8,
             solve_every=5.0,
-            min_periods=12.0,
+            min_weight=12.0,
         )
 
 
@@ -225,13 +225,13 @@ class TestGrids:
             target_gaps="pairwise",
             max_rows_between_solves=4,
             solve_every=1e9,
-            min_periods=15.0,
+            min_weight=15.0,
         )
 
     def test_a_halflife_grid_is_one_model_per_halflife(self):
-        """Two halflives: two accumulators, two cadences (``20 / 50`` and
-        ``80 / 50``), two ``n_eff``, each instance held on its own."""
-        _check(_stream(47), [20.0, 80.0], sets=SETS, min_periods=10.0)
+        """Two half-lives: two accumulators, two cadences (``20 / 50`` and
+        ``80 / 50``), two ``weight_sum``, each instance held on its own."""
+        _check(_stream(47), [20.0, 80.0], sets=SETS, min_weight=10.0)
 
 
 class TestWithoutAnIntercept:
@@ -245,9 +245,9 @@ class TestWithoutAnIntercept:
             _stream(42, level=3.0),
             60.0,
             ridge=[1e-6, 0.3],
-            add_intercept=False,
+            fit_intercept=False,
             standardize=standardize,
-            min_periods=15.0,
+            min_weight=15.0,
         )
 
 
@@ -256,35 +256,35 @@ class TestWindow:
         ("target_gaps", "standardize"), [("own_rows", True), ("pairwise", False)]
     )
     def test_the_rows_at_most_window_old(self, target_gaps, standardize):
-        """A window of 24 clock units under a halflife of 40, over weights,
+        """A window of 24 clock units under a half-life of 40, over weights,
         zero weights, skipped rows and capped gaps."""
         _check(
             _stream(43),
             40.0,
-            window=24.0,
+            window_size=24.0,
             standardize=standardize,
             target_gaps=target_gaps,
-            min_periods=10.0,
+            min_weight=10.0,
             solve_every=1.0,
         )
 
 
 class TestSessions:
     def test_a_session_gap(self):
-        _check(_session_stream(44), 40.0, session="s", session_gap=3.0, min_periods=10.0)
+        _check(_session_stream(44), 40.0, session="s", session_gap=3.0, min_weight=10.0)
 
     def test_a_reset_starts_over(self):
-        _check(_session_stream(44), 40.0, session="s", session_gap="reset", min_periods=10.0)
+        _check(_session_stream(44), 40.0, session="s", session_gap="reset", min_weight=10.0)
 
     @pytest.mark.parametrize(
-        ("shrink", "long_halflife", "schedule"),
+        ("shrink", "long_half_life", "schedule"),
         [
             (0.3, 200.0, {"solve_every": 1e-9}),
             (0.7, float("inf"), {"standardize": True, "max_rows_between_solves": 3}),
             (0.5, 300.0, {"target_gaps": "own_rows"}),
         ],
     )
-    def test_a_blend_with_the_slow_twin(self, shrink, long_halflife, schedule):
+    def test_a_blend_with_the_slow_twin(self, shrink, long_half_life, schedule):
         """``session_shrink``: the fit takes ``1 - f`` of today's rows and
         ``f`` of the twin's, each normalised by its weight, at today's weight
         (task 145); the new session's first row is scored from the blend, and
@@ -295,7 +295,7 @@ class TestSessions:
             session="s",
             session_gap=2.0,
             session_shrink=shrink,
-            long_halflife=long_halflife,
-            min_periods=10.0,
+            long_half_life=long_half_life,
+            min_weight=10.0,
             **schedule,
         )

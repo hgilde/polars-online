@@ -3,7 +3,7 @@
 //! msgpack save/load.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use online_core::{ClockCfg, Disorder};
@@ -79,8 +79,9 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// the models' own: a bank file keeps the stream's diagnostics, and before
 /// 21 they counted rows where they now run on the clock (task 146). Refused
 /// by its version rather than by a parse error deep in a spec; pre-1.0, no
-/// loader is written.
-const MIN_BANK_SCHEMA_VERSION: u32 = 21;
+/// loader is written. **22 since task 144** (2026-10-02): the specs a bank
+/// file stores carry the renamed parameters.
+const MIN_BANK_SCHEMA_VERSION: u32 = 22;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -1032,12 +1033,11 @@ fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) 
 }
 
 /// The error for a refused backwards clock: names the spec, the column, the
-/// size of the step back, the row, and the way out. Under `on_clock_reset =
-/// "error"`, the default (`why` is `None`), the way out is a sort, skipping
-/// what a resumed state has learned, or `"reset_state"`; under
-/// `"reset_state"` a step back no larger than `min_backwards_jump` is a late
-/// row, and the way out is a sort or a smaller minimum. Either way the bank
-/// was not updated.
+/// size of the step back, the row, and the way out. With
+/// `restart_after_step_back` unset, the default (`disorder` is `None`), the
+/// way out is a sort, skipping what a resumed state has learned, or setting
+/// it; given, a step back no larger than it is a late row, and the way out
+/// is a sort or a smaller value. Either way the bank was not updated.
 fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     let row = row_base + refusal.row;
@@ -1049,23 +1049,24 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
     };
     match refusal.disorder {
         None => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {} (on_clock_reset = \
-             \"error\", the default); the bank was not updated. Sort each group by the \
-             clock; to resume a saved state on input that overlaps it, feed \
-             ModelBank.skip_learned(frame); or, if a step back starts the stream over, set \
-             on_clock_reset = \"reset_state\" with a min_backwards_jump.",
+            "spec {:?}: clock column {:?} goes backwards by {} at row {} \
+             (restart_after_step_back is unset, so every step back is refused); the bank \
+             was not updated. Sort each group by the clock; to resume a saved state on \
+             input that overlaps it, feed ModelBank.skip_learned(frame); or, if a step back \
+             this large starts the stream over, set restart_after_step_back to the smallest \
+             one that does.",
             spec.name, column, step, row
         ),
         Some(Disorder {
             min_backwards_jump, ..
         }) => polars_err!(ComputeError:
             "spec {:?}: clock column {:?} goes backwards by {} at row {}, no more than \
-             min_backwards_jump = {}: a late row, not a new start; the bank was not \
-             updated. Sort each group by the clock, or lower min_backwards_jump if a step \
-             back this small starts the stream over (0 starts over at every one).",
+             restart_after_step_back = {}: a late row, not a new start; the bank was not \
+             updated. Sort each group by the clock, or lower restart_after_step_back if a \
+             step back this small starts the stream over (0 starts over at every one).",
             spec.name, column, step, row,
             // As the spec wrote it: a duration's text is exact.
-            spec.min_backwards_jump
+            spec.restart_after_step_back
                 .as_ref()
                 .map_or_else(|| clock_amount(spec, min_backwards_jump), ToString::to_string)
         ),
@@ -1073,12 +1074,12 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
 }
 
 /// A clock amount as the spec measures it: on a temporal clock a duration
-/// (`1d`, not `86400`), whose every clock parameter is one, `max_dclock`
+/// (`1d`, not `86400`), whose every clock parameter is one, `gap_cap`
 /// among them (task 120: a `Date` clock's refusal said `86400`); a number of
 /// the column's units otherwise.
 fn clock_amount(spec: &Spec, v: f64) -> String {
     if spec
-        .max_dclock
+        .gap_cap
         .as_ref()
         .is_some_and(crate::span::Span::is_duration)
     {
@@ -1222,7 +1223,7 @@ pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
     // target that keeps a Gram (review 2026-09-12, D7).
     let unsupervised = matches!(spec.model, ModelKind::EwCov { .. });
     let mut columns = spec.features.clone();
-    if spec.add_intercept && !unsupervised {
+    if spec.fit_intercept && !unsupervised {
         columns.insert(0, "intercept".to_string());
     }
     let targets = if unsupervised {
@@ -1686,7 +1687,7 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
                 .collect::<Vec<_>>(),
         ),
         Column::new(
-            "n_eff".into(),
+            "weight_sum".into(),
             rows.iter().map(|r| opt(r.n_eff)).collect::<Vec<_>>(),
         ),
         Column::new(
@@ -1801,7 +1802,10 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             (!empty(r)).then(|| r.pairs.iter().map(|p| p.target.clone()).collect())
         }));
         for (name, f) in [
-            ("pair_n_eff", (|p: &PairRow| p.n_eff) as fn(&PairRow) -> f64),
+            (
+                "pair_weight_sum",
+                (|p: &PairRow| p.n_eff) as fn(&PairRow) -> f64,
+            ),
             ("pair_n_kish", |p| p.n_kish),
             ("pair_mean_x", |p| p.mean_x),
             ("pair_var_x", |p| p.var_x),
@@ -1949,9 +1953,9 @@ pub struct Coef {
     /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
     pub instance: String,
     /// The accumulated weight behind the fit -- the next row's `n_eff`. The
-    /// solve schedule, not `min_periods`, decides when `coef` first appears,
+    /// solve schedule, not `min_weight`, decides when `coef` first appears,
     /// so this is how a caller tells a warm fit from one over fewer rows
-    /// than `min_periods` asks for (`pred` waits for that; `coef` does not).
+    /// than `min_weight` asks for (`pred` waits for that; `coef` does not).
     pub n_eff: f64,
     /// The flat list the output's `coef` field reports, in
     /// `polars_online.spec.coef_index` order; `None` before the first solve.
@@ -1975,12 +1979,12 @@ pub struct CoefField {
     /// the feature column of that name in the same frame.
     pub name: String,
     pub target: String,
-    pub halflife: Option<f64>,
+    pub half_life: Option<f64>,
     pub lam: Option<f64>,
     pub ridge: Option<f64>,
     pub feature_set: Option<String>,
     /// Lasso path point.
-    pub lambda: Option<f64>,
+    pub penalty: Option<f64>,
     /// `intercept`, a feature name, or `level` / `trend` for `holt`.
     pub term: String,
 }
@@ -2294,20 +2298,10 @@ impl Bank {
             if !names.insert(s.name.clone()) {
                 return Err(format!("duplicate spec name {:?}", s.name));
             }
-            // The rendered field names are the user's handle on every output;
-            // a duplicate inside one struct would otherwise surface much later
-            // as a confusing polars error. `Spec::validate` refuses every way
-            // the grammar has of making one (a feature-set name given twice
-            // got here until review 2026-09-12, S7), so this is a tripwire for
-            // future grammar changes.
-            let fields = output_fields(s);
-            let mut seen_fields = HashSet::with_capacity(fields.len());
-            if let Some(dup) = fields.into_iter().find(|f| !seen_fields.insert(f.clone())) {
-                return Err(format!(
-                    "spec {:?}: two outputs render to the same field name {dup:?}; \
-                     rename a target or grid label to disambiguate",
-                    s.name
-                ));
+            // `Spec::check` refuses two outputs rendered to one field name;
+            // kept here as a tripwire for a spec built some other way.
+            if let Some(err) = duplicate_field(s) {
+                return Err(err);
             }
         }
         let clock_cfgs = specs
@@ -2443,7 +2437,7 @@ impl Bank {
     /// (docs/ENHANCEMENTS.md E30).
     ///
     /// Returns one [`Gram`] per (group, instance), sorted by group then by the
-    /// spec's halflife order. `spec` is an index into [`Self::specs`].
+    /// spec's half-life order. `spec` is an index into [`Self::specs`].
     ///
     /// The point is that these are the *same* matrices the deployed model
     /// solves against, at any point in the stream, from a single pass over data
@@ -2478,7 +2472,7 @@ impl Bank {
     /// The pairs of a `marginal` spec (docs/ENHANCEMENTS.md E44), as a long
     /// frame: one row per (group, decay instance, feature, target), sorted
     /// by group, in spec order within one, with `group`, `instance` (the
-    /// halflife-grid suffix, `""` for a single instance), `feature`,
+    /// half-life-grid suffix, `""` for a single instance), `feature`,
     /// `target` (the target's name, which is its column unless a table
     /// target gave one), `n_eff` (the weight behind the target's pairs), `n_kish`
     /// (Kish's effective sample size, `(Σw)²/Σw²`), `mean_x`, `var_x`,
@@ -2486,7 +2480,7 @@ impl Bank {
     /// the feature) and `t` (the t-statistic of the correlation at Kish's
     /// `n`), as [`online_core::Marginal::pair`] reads them from the state
     /// as it stands, with the core's NaN -- `corr`, `beta` and `t` below the
-    /// target's `min_periods` or undefined, `n_kish` before its first row --
+    /// target's `min_weight` or undefined, `n_kish` before its first row --
     /// as null.
     ///
     /// `group` narrows the frame to one group; a group the bank has never
@@ -2541,7 +2535,7 @@ impl Bank {
             Column::new("instance".into(), instance),
             Column::new("feature".into(), feature),
             Column::new("target".into(), target),
-            Column::new("n_eff".into(), num(|p| p.n_eff)),
+            Column::new("weight_sum".into(), num(|p| p.n_eff)),
             Column::new("n_kish".into(), num(|p| p.n_kish)),
             Column::new("mean_x".into(), num(|p| p.mean_x)),
             Column::new("var_x".into(), num(|p| p.var_x)),
@@ -2614,7 +2608,7 @@ impl Bank {
     /// its terms in order. `None` before a stream's first solve, and for a
     /// model without coefficients (`ew_cov`, `seqtest`). The first solve is the solve
     /// schedule's to decide (`solve_every`, `max_rows_between_solves`), not
-    /// `min_periods`: `pred` waits for `min_periods`, `coef` does not, so a
+    /// `min_weight`: `pred` waits for `min_weight`, `coef` does not, so a
     /// row's `n_eff` says how much weight is behind it.
     ///
     /// `group` narrows the list to one group; a group the bank has never
@@ -2853,8 +2847,8 @@ impl Bank {
     /// `ComputeError` for a target, feature, clock or weight column that is
     /// not numeric (a temporal clock is refused rather than read as its
     /// epoch integer), a clock with a null or non-finite value, a finite
-    /// negative weight, or a group's clock running backwards under
-    /// `on_clock_reset = "error"`; `Duplicate` for a spec named like an
+    /// negative weight, or a group's clock running backwards with
+    /// `restart_after_step_back` unset; `Duplicate` for a spec named like an
     /// input column, which its struct would replace; and a window whose
     /// snapshots the chunk would take past a refusing `window_budget`
     /// (`ComputeError`, naming the ring's size and `window_every`), found by
@@ -3537,7 +3531,7 @@ impl Bank {
     ///
     /// Faithful, including the values JSON has no literal for. A non-finite
     /// `f64` is written as `"inf"`, `"-inf"` or `"nan"` -- the spelling
-    /// [`crate::spec::Num`] already uses, so a spec's `halflife` and a
+    /// [`crate::spec::Num`] already uses, so a spec's `half_life` and a
     /// stream's `decay` read the same way -- rather than as the `null`
     /// `serde_json` would write unasked. See [`FiniteOrTag`].
     pub fn save_json_string(&self, pretty: bool) -> Result<String, String> {
@@ -3698,20 +3692,20 @@ impl Bank {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FieldMeta {
     pub field: String,
-    /// pred / resid / sigma / resid_z / ic / r2 / hit_rate / absresid_q /
+    /// pred / resid / sigma / zscore / ic / r2 / hit_rate / abs_resid_q /
     /// autocorr / drift / n_eff / coef / lam_selected / selected /
     /// pred_selected / pred_averaged — or an `ew_cov` statistic name.
     pub kind: String,
     pub target: Option<String>,
     /// The instance's decay, as configured (present even when the suffix is
     /// empty because there is a single instance).
-    pub halflife: Option<f64>,
+    pub half_life: Option<f64>,
     pub lam: Option<f64>,
     pub ridge: Option<f64>,
     pub feature_set: Option<String>,
     /// Lasso path point.
-    pub lambda: Option<f64>,
-    /// Quantile level (`absresid_q*` fields).
+    pub penalty: Option<f64>,
+    /// Quantile level (`abs_resid_q*` fields).
     pub quantile: Option<f64>,
     /// Lag, in learned rows, of an `ew_cov` `lagcorr_*` field
     /// (docs/ENHANCEMENTS.md E56); `None` for every other field.
@@ -3796,11 +3790,11 @@ impl FieldMeta {
             field,
             kind: kind.to_string(),
             target: None,
-            halflife: None,
+            half_life: None,
             lam: None,
             ridge: None,
             feature_set: None,
-            lambda: None,
+            penalty: None,
             quantile: None,
             lag: None,
             columns: None,
@@ -3841,7 +3835,7 @@ impl FieldMeta {
     }
     fn decay(mut self, d: &online_core::Decay) -> Self {
         match d {
-            online_core::Decay::Halflife(h) => self.halflife = Some(*h),
+            online_core::Decay::Halflife(h) => self.half_life = Some(*h),
             online_core::Decay::Lam(l) => self.lam = Some(*l),
         }
         self
@@ -3853,7 +3847,7 @@ impl FieldMeta {
     fn combo(mut self, c: &crate::stream::Combo) -> Self {
         self.ridge = c.ridge;
         self.feature_set = c.feature_set.clone();
-        self.lambda = c.lambda;
+        self.penalty = c.lambda;
         self
     }
 }
@@ -3909,7 +3903,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                     position,
                     name: format!("coef_{slot}{suffix}"),
                     target: slot.to_string(),
-                    halflife: match d {
+                    half_life: match d {
                         online_core::Decay::Halflife(h) => Some(h),
                         online_core::Decay::Lam(_) => None,
                     },
@@ -3919,7 +3913,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                     },
                     ridge: None,
                     feature_set: None,
-                    lambda: None,
+                    penalty: None,
                     term: "rho".to_string(),
                 });
             }
@@ -3944,7 +3938,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         spec.features.clone()
     } else {
         let mut t = Vec::with_capacity(spec.features.len() + 1);
-        if spec.add_intercept {
+        if spec.fit_intercept {
             t.push("intercept".to_string());
         }
         t.extend(spec.features.iter().cloned());
@@ -3954,7 +3948,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     let decays = spec.decays().expect("validated");
     let mut out = Vec::new();
     for (suffix, d) in &decays {
-        let (halflife, lam) = match d {
+        let (half_life, lam) = match d {
             online_core::Decay::Halflife(h) => (Some(*h), None),
             online_core::Decay::Lam(l) => (None, Some(*l)),
         };
@@ -3967,11 +3961,11 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                         position,
                         name: format!("coef_{t}_{term}{}{suffix}", c.label),
                         target: t.clone(),
-                        halflife,
+                        half_life,
                         lam,
                         ridge: c.ridge,
                         feature_set: c.feature_set.clone(),
-                        lambda: c.lambda,
+                        penalty: c.lambda,
                         term: term.clone(),
                     });
                     position += 1;
@@ -3980,6 +3974,53 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         }
     }
     out
+}
+
+/// The refusal for two outputs that render to one field name, naming the
+/// inputs that collided -- a target, a feature, a grid label -- since the
+/// rendered names are the user's handle on every output, and a duplicate
+/// inside one struct would otherwise surface much later as a polars error.
+/// `Spec::validate` refuses every way the grammar has of making one that it
+/// can see (a feature-set name given twice got through until review
+/// 2026-09-12, S7; a target `z_y` beside `y` under `emit_resid_z` until task
+/// 144, which renamed the field); the names that remain are the columns'
+/// own, as `ew_cov`'s `corr_a_b_c` over `a_b, c` and over `a, b_c`.
+pub fn duplicate_field(spec: &Spec) -> Option<String> {
+    let index = output_index(spec);
+    let mut seen: HashMap<&str, &FieldMeta> = HashMap::with_capacity(index.len());
+    for f in &index {
+        let Some(first) = seen.insert(f.field.as_str(), f) else {
+            continue;
+        };
+        let describe = |m: &FieldMeta| {
+            let mut s = format!("{:?}", m.kind);
+            if let Some(t) = &m.target {
+                s.push_str(&format!(" of target {t:?}"));
+            }
+            if let Some(c) = &m.columns {
+                s.push_str(&format!(" over columns {c:?}"));
+            }
+            if let Some(fs) = &m.feature_set {
+                s.push_str(&format!(" in feature set {fs:?}"));
+            }
+            if let Some(r) = m.ridge {
+                s.push_str(&format!(" at ridge {r}"));
+            }
+            if let Some(h) = m.half_life {
+                s.push_str(&format!(" at half_life {h}"));
+            }
+            s
+        };
+        return Some(format!(
+            "spec {:?}: two outputs render to the same field name {:?}: {} and {}; rename a \
+             target, feature or grid label to tell them apart",
+            spec.name,
+            f.field,
+            describe(first),
+            describe(f)
+        ));
+    }
+    None
 }
 
 /// Output field names for a spec, in struct order (used by Python for dtypes).
@@ -4007,17 +4048,17 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     for f in base {
         // The instance the field belongs to, as its `n_eff` or `coef`
         // carries it: the same suffix and the same decay (none, for a model
-        // that does not decay -- `seqtest`'s fields carry no halflife).
-        let (src, suffix, halflife, lam) = (f.src.clone(), f.field.clone(), f.halflife, f.lam);
+        // that does not decay -- `seqtest`'s fields carry no half-life).
+        let (src, suffix, half_life, lam) = (f.src.clone(), f.field.clone(), f.half_life, f.lam);
         fields.push(f);
         let like = |mut m: FieldMeta| {
-            m.halflife = halflife;
+            m.half_life = half_life;
             m.lam = lam;
             m
         };
         match src {
             Source::NEff(mi) => {
-                let suffix = suffix.strip_prefix("n_eff").unwrap_or("");
+                let suffix = suffix.strip_prefix("weight_sum").unwrap_or("");
                 fields.push(like(
                     FieldMeta::new(format!("settled_frac{suffix}"), "settled_frac")
                         .src(Source::Settled(mi)),
@@ -4109,7 +4150,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(m);
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4226,7 +4267,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(m);
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4260,7 +4301,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Stat(mi * n_slots + 2)),
             ));
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4296,7 +4337,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Stat(at(1))),
             ));
             fields.push(over(
-                FieldMeta::new(format!("micro{suffix}"), "micro")
+                FieldMeta::new(format!("micro_id{suffix}"), "micro_id")
                     .decay(d)
                     .src(Source::Id(at(2))),
             ));
@@ -4316,7 +4357,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Cluster(at(5))),
             ));
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4351,7 +4392,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(m);
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4379,7 +4420,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(m);
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4411,7 +4452,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(m);
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4449,7 +4490,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 ));
             }
             fields.push(
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi)),
             );
@@ -4496,7 +4537,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Id(at(3))),
             );
         }
-        fields.push(FieldMeta::new("n_eff".into(), "n_eff").src(Source::NEff(0)));
+        fields.push(FieldMeta::new("weight_sum".into(), "weight_sum").src(Source::NEff(0)));
         return fields;
     }
     // rcov and marginal emit nothing per row but `n_eff`, one per instance:
@@ -4510,7 +4551,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             .iter()
             .enumerate()
             .map(|(mi, (suffix, d))| {
-                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                     .decay(d)
                     .src(Source::NEff(mi))
             })
@@ -4557,10 +4598,10 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 }
             }
         }
-        if spec.emit_resid_z {
+        if spec.emit_zscore {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 for (c_i, c) in combos.iter().enumerate() {
-                    fields.push(mk("resid_z", t, c, Source::ResidZ(dst(t_i, c_i))));
+                    fields.push(mk("zscore", t, c, Source::ResidZ(dst(t_i, c_i))));
                 }
             }
         }
@@ -4589,12 +4630,12 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 for (t_i, t) in spec.targets.iter().enumerate() {
                     for (c_i, c) in combos.iter().enumerate() {
                         let name = format!(
-                            "absresid_q{}_{t}{}{suffix}",
+                            "abs_resid_q{}_{t}{}{suffix}",
                             crate::spec::num_label(*q),
                             c.label
                         );
                         let idx = (li * n_models + mi) * m * nc + t_i * nc + c_i;
-                        let mut f = FieldMeta::new(name, "absresid_q")
+                        let mut f = FieldMeta::new(name, "abs_resid_q")
                             .decay(d)
                             .target(t)
                             .combo(c)
@@ -4620,7 +4661,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             }
         }
         fields.push(
-            FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+            FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
                 .decay(d)
                 .src(Source::NEff(mi)),
         );
@@ -4632,7 +4673,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 fields.push(
-                    FieldMeta::new(format!("lam_selected_{t}{suffix}"), "lam_selected")
+                    FieldMeta::new(format!("penalty_selected_{t}{suffix}"), "penalty_selected")
                         .decay(d)
                         .target(t)
                         .src(Source::LamSelected(mi * m + t_i)),
@@ -4666,7 +4707,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
     fields
 }
 
-/// Labels for every prediction slot of one target, across halflife instances
+/// Labels for every prediction slot of one target, across half-life instances
 /// and combos, in the order the slots appear.
 fn slot_labels(spec: &Spec) -> Vec<String> {
     let decays = spec.decays().expect("validated");
@@ -4861,7 +4902,7 @@ fn assemble(
     // Online selection across every slot of a target: pick the slot with the
     // lowest EW out-of-sample error so far (`sigma`, already tracked for E12),
     // and emit that slot's prediction plus its label. Same idea as the lasso's
-    // `lam_selected`, generalized to ridge / feature-set / halflife grids.
+    // `lam_selected`, generalized to ridge / feature-set / half-life grids.
     let mut sel_pred = vec![vec![None::<f64>; n]; if spec.emit_selected { m } else { 0 }];
     let mut sel_name = vec![vec![None::<&str>; n]; if spec.emit_selected { m } else { 0 }];
     let mut avg_pred = vec![vec![None::<f64>; n]; if spec.emit_averaged { m } else { 0 }];
@@ -5019,10 +5060,10 @@ fn assemble(
                     scatter(n, chunks, false, |ch, nr| &ch.sigma[at(ch, nr, i)..][..nr])
                         .finish_array_boxed()
                 }
-                Source::ResidZ(i) => scatter(n, chunks, false, |ch, nr| {
-                    &ch.resid_z[at(ch, nr, i)..][..nr]
-                })
-                .finish_array_boxed(),
+                Source::ResidZ(i) => {
+                    scatter(n, chunks, false, |ch, nr| &ch.zscore[at(ch, nr, i)..][..nr])
+                        .finish_array_boxed()
+                }
                 Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr| {
                     &ch.autocorr[at(ch, nr, i)..][..nr]
                 })
@@ -5158,8 +5199,8 @@ mod over_budget_tests {
 
     fn spec(budget: &str) -> Spec {
         serde_json::from_str(&format!(
-            r#"{{"name": "m", "model": {{"type": "ew_ridge", "window": 50{budget}}},
-                "targets": ["y"], "features": ["x"], "halflife": 20}}"#
+            r#"{{"name": "m", "model": {{"type": "ew_ridge", "window_size": 50{budget}}},
+                "targets": ["y"], "features": ["x"], "half_life": 20}}"#
         ))
         .unwrap()
     }
@@ -5215,16 +5256,10 @@ mod envelope_tests {
     #[test]
     fn a_file_says_version_3_only_when_a_spec_carries_a_duration() {
         for (extra, version) in [
-            (r#", "halflife": 50"#, 2),
-            (r#", "clock": "t", "halflife": 600, "max_dclock": 300"#, 2),
-            (
-                r#", "clock": "t", "halflife": "inf", "max_dclock": 1e12"#,
-                2,
-            ),
-            (
-                r#", "clock": "t", "halflife": "10m", "max_dclock": "5m""#,
-                3,
-            ),
+            (r#", "half_life": 50"#, 2),
+            (r#", "clock": "t", "half_life": 600, "gap_cap": 300"#, 2),
+            (r#", "clock": "t", "half_life": "inf", "gap_cap": 1e12"#, 2),
+            (r#", "clock": "t", "half_life": "10m", "gap_cap": "5m""#, 3),
         ] {
             let specs = vec![spec(extra)];
             assert_eq!(format_version_for(&specs), version, "{extra}");
@@ -5233,7 +5268,7 @@ mod envelope_tests {
             assert_eq!(header.format_version, version, "{extra}");
             // And the file loads back, specs and all.
             let back = Bank::load_bytes(&bytes, None).unwrap();
-            assert_eq!(back.specs()[0].halflife, spec(extra).halflife, "{extra}");
+            assert_eq!(back.specs()[0].half_life, spec(extra).half_life, "{extra}");
         }
     }
 }
@@ -5255,7 +5290,7 @@ mod readiness_settle_tests {
         let spec: Spec = serde_json::from_str(
             r#"{"name": "m", "model": {"type": "ew_ridge", "max_rows_between_solves": 1},
                 "targets": ["y"], "features": ["x0", "x1"], "group": "g",
-                "halflife": 20.0, "coef_every": 1000}"#,
+                "half_life": 20.0, "coef_every": 1000}"#,
         )
         .unwrap();
         let n = 120;
@@ -5302,8 +5337,8 @@ mod schema_14_loader_tests {
     fn a_schema_14_stream_rebuilds_the_held_rows_clock_from_the_held_rows() {
         let spec: Spec = serde_json::from_str(
             r#"{"name": "m", "model": {"type": "rls"}, "targets": ["y"],
-                "features": ["x0"], "clock": "t", "halflife": 0.2,
-                "max_dclock": 0.4, "label_delay": 0.3}"#,
+                "features": ["x0"], "clock": "t", "half_life": 0.2,
+                "gap_cap": 0.4, "embargo": 0.3}"#,
         )
         .unwrap();
         let mut bank = Bank::new(vec![spec.clone()]).unwrap();

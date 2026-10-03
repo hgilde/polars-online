@@ -26,7 +26,7 @@ NO_DECAY = float("inf")
 
 
 def _spec(features=("x0", "x1"), **kw):
-    d = dict(features=list(features), halflife=NO_DECAY, min_periods=5.0)
+    d = dict(features=list(features), half_life=NO_DECAY, min_weight=5.0)
     d.update(kw)
     return po.spec.ew_cov("c", **d)
 
@@ -61,7 +61,7 @@ class TestStatistics:
             "corr_x0_x1",
             "corr_x0_x2",
             "corr_x1_x2",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
@@ -74,13 +74,13 @@ class TestStatistics:
         assert (np.abs(vals) <= 1.0).all()
 
     def test_decay_tracks_a_regime_change(self):
-        # correlation flips sign halfway; a short halflife must follow it
+        # correlation flips sign halfway; a short half-life must follow it
         rng = np.random.default_rng(3)
         n = 4000
         a = rng.standard_normal(n)
         b = np.concatenate([0.9 * a[: n // 2], -0.9 * a[n // 2 :]]) + 0.2 * rng.standard_normal(n)
         df = pl.DataFrame({"x0": a, "x1": b})
-        out = po.ModelBank([_spec(halflife=200.0, stats=["corr"])]).fit_predict(df)
+        out = po.ModelBank([_spec(half_life=200.0, stats=["corr"])]).fit_predict(df)
         corr = out["c"].struct.field("corr_x0_x1").to_numpy().astype(float)
         assert corr[n // 2 - 10] > 0.8
         assert corr[-1] < -0.8
@@ -103,9 +103,9 @@ class TestStatistics:
 class TestPlumbing:
     def test_warmup_and_null_policy(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, None, 4.0, 5.0], "x1": [1.0, 3.0, 2.0, 4.0, 6.0]})
-        out = po.ModelBank([_spec(min_periods=2.0)]).fit_predict(df)
-        n_eff = out["c"].struct.field("n_eff").to_list()
-        assert n_eff[2] is None, "a null feature must skip the row"
+        out = po.ModelBank([_spec(min_weight=2.0)]).fit_predict(df)
+        weight_sum = out["c"].struct.field("weight_sum").to_list()
+        assert weight_sum[2] is None, "a null feature must skip the row"
         assert out["c"].struct.field("mean_x0").to_list()[0] is None, "warmup"
 
     def test_chunk_invariance(self):
@@ -141,15 +141,15 @@ class TestPlumbing:
 
     def test_halflife_grid(self):
         df = _df(n=200)
-        spec = _spec(halflife=[50.0, 500.0], stats=["corr"])
+        spec = _spec(half_life=[50.0, 500.0], stats=["corr"])
         fields = po.spec.output_fields(spec)
         assert fields == [
             "corr_x0_x1@h50",
-            "n_eff@h50",
+            "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "corr_x0_x1@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
         ]
@@ -188,8 +188,8 @@ class TestPartialCorrelation:
         spec = po.spec.ew_cov(
             "c",
             features=["x0", "x1", "x2"],
-            halflife=NO_DECAY,
-            min_periods=5.0,
+            half_life=NO_DECAY,
+            min_weight=5.0,
             **kw,
         )
         return po.ModelBank([spec]).fit_predict(df)["c"][-1]
@@ -199,9 +199,9 @@ class TestPartialCorrelation:
         # x1 and x2 are both driven by x0, so they correlate marginally...
         assert row["corr_x1_x2"] > 0.9
         # ...but not once x0 is controlled for
-        assert abs(row["pcorr_x1_x2"]) < 0.1
+        assert abs(row["partial_corr_x1_x2"]) < 0.1
         # and each child keeps its genuine link to the driver
-        assert abs(row["pcorr_x0_x1"]) > 0.5
+        assert abs(row["partial_corr_x0_x1"]) > 0.5
 
     def test_keeps_a_direct_link(self):
         # A chain x0 -> x1 with x2 independent: pcorr(x0, x1) survives.
@@ -216,13 +216,13 @@ class TestPartialCorrelation:
             }
         )
         row = self._last(df, stats=["partial_corr"], precision_prior=1e-6)
-        assert abs(row["pcorr_x0_x1"]) > 0.7
-        assert abs(row["pcorr_x0_x2"]) < 0.1
+        assert abs(row["partial_corr_x0_x1"]) > 0.7
+        assert abs(row["partial_corr_x0_x2"]) < 0.1
 
     def test_is_bounded(self):
         row = self._last(self._driver_data(seed=3), stats=["partial_corr"], precision_prior=1e-6)
         for k, v in row.items():
-            if k.startswith("pcorr_"):
+            if k.startswith("partial_corr_"):
                 assert -1.0 <= v <= 1.0, f"{k} = {v}"
 
     def test_field_names(self):
@@ -231,20 +231,20 @@ class TestPartialCorrelation:
             features=["a", "b", "c"],
             stats=["partial_corr"],
             precision_prior=1e-6,
-            halflife=NO_DECAY,
+            half_life=NO_DECAY,
         )
         assert po.spec.output_fields(spec) == [
-            "pcorr_a_b",
-            "pcorr_a_c",
-            "pcorr_b_c",
-            "n_eff",
+            "partial_corr_a_b",
+            "partial_corr_a_c",
+            "partial_corr_b_c",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
 
     def test_requires_a_precision_prior(self):
         with pytest.raises(ValueError, match="needs .precision_prior."):
-            po.spec.ew_cov("c", features=["x0", "x1"], stats=["partial_corr"], halflife=NO_DECAY)
+            po.spec.ew_cov("c", features=["x0", "x1"], stats=["partial_corr"], half_life=NO_DECAY)
 
     def test_rejects_a_bad_prior(self):
         with pytest.raises(ValueError, match="precision_prior"):
@@ -253,7 +253,7 @@ class TestPartialCorrelation:
                 features=["x0", "x1"],
                 stats=["partial_corr"],
                 precision_prior=0.0,
-                halflife=NO_DECAY,
+                half_life=NO_DECAY,
             )
 
     def test_chunk_invariance_and_save_load(self, tmp_path):
@@ -263,8 +263,8 @@ class TestPartialCorrelation:
             features=["x0", "x1", "x2"],
             stats=["partial_corr"],
             precision_prior=1e-4,
-            halflife=NO_DECAY,
-            min_periods=5.0,
+            half_life=NO_DECAY,
+            min_weight=5.0,
         )
         one = po.ModelBank([spec]).fit_predict(df).select("c").unnest("c")
         bank = po.ModelBank([spec])
@@ -285,7 +285,7 @@ class TestPartialCorrelation:
 
 
 class TestAccumulateOnly:
-    """E43: ``stats=[]`` learns the same moments and emits nothing but ``n_eff``.
+    """E43: ``stats=[]`` learns the same moments and emits nothing but ``weight_sum``.
 
     The spec's value is its state, so every accessor that reads the state --
     ``gram``, ``describe``, ``summary`` -- must agree with a spec that also
@@ -295,25 +295,29 @@ class TestAccumulateOnly:
     def _pair(self):
         bare = _spec(("x0", "x1", "x2"), stats=[])
         full = po.spec.ew_cov(
-            "f", features=["x0", "x1", "x2"], stats=["mean", "corr"], halflife=NO_DECAY
+            "f", features=["x0", "x1", "x2"], stats=["mean", "corr"], half_life=NO_DECAY
         )
         return bare, full
 
     def test_emits_only_n_eff_and_keeps_the_same_state(self):
         df = _df(n=1200)
         bare, full = self._pair()
-        assert po.spec.output_fields(bare) == ["n_eff", "settled_frac", "withheld_reason"]
+        assert po.spec.output_fields(bare) == ["weight_sum", "settled_frac", "withheld_reason"]
         bank = po.ModelBank([bare, full])
         out = bank.fit_predict(df)
-        reasons = ["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"]
+        reasons = ["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"]
         assert out.schema["c"] == pl.Struct(
-            {"n_eff": pl.Float64, "settled_frac": pl.Float64, "withheld_reason": pl.Enum(reasons)}
+            {
+                "weight_sum": pl.Float64,
+                "settled_frac": pl.Float64,
+                "withheld_reason": pl.Enum(reasons),
+            }
         )
-        assert out["c"].struct.field("n_eff").to_list()[-1] == df.height - 1
+        assert out["c"].struct.field("weight_sum").to_list()[-1] == df.height - 1
         g, f = bank.gram("c")[0], bank.gram("f")[0]
         assert np.array_equal(g["comoments"], f["comoments"])
         assert np.array_equal(g["means"], f["means"])
-        assert g["n_eff"] == f["n_eff"] == df.height
+        assert g["weight_sum"] == f["weight_sum"] == df.height
         # And against numpy: the state is the product, so it is what is tested.
         x = df.select("x0", "x1", "x2").to_numpy()
         assert np.allclose(g["comoments"], np.cov(x, rowvar=False, bias=True))
@@ -327,7 +331,7 @@ class TestAccumulateOnly:
         bare, _ = self._pair()
         ref = po.ModelBank([bare])
         one = ref.fit_predict(df).select("c").unnest("c")
-        # Chunked and lazy: the same n_eff column, and the same Gram wherever
+        # Chunked and lazy: the same weight_sum column, and the same Gram wherever
         # a state comes out.
         bank = po.ModelBank([bare])
         many = pl.concat([bank.fit_predict(df.slice(i, 101)) for i in range(0, df.height, 101)])
@@ -344,7 +348,7 @@ class TestAccumulateOnly:
         df = _df(n=600)
         spec = _spec(("x0", "x1", "x2"), stats=[], pca=1, pca_every=50)
         fields = po.spec.output_fields(spec)
-        assert fields[0] == "pc0_var" and fields[-3] == "n_eff" and "mean_x0" not in fields
+        assert fields[0] == "pc0_var" and fields[-3] == "weight_sum" and "mean_x0" not in fields
         out = po.ModelBank([spec]).fit_predict(df)
         assert out["c"].struct.field("pc0_score").drop_nulls().len() > 0
         with pytest.raises(ValueError, match='needs "mahal"'):
@@ -361,9 +365,9 @@ class TestLaggedComoments:
     """
 
     @staticmethod
-    def _oracle(x, lags, halflife, weights=None):
+    def _oracle(x, lags, half_life, weights=None):
         """The recursion longhand: means, co-moments and lagged matrices."""
-        lam = 1.0 if np.isinf(halflife) else 2.0 ** (-1.0 / halflife)
+        lam = 1.0 if np.isinf(half_life) else 2.0 ** (-1.0 / half_life)
         n, k = x.shape
         w_sum = 0.0
         m = np.zeros(k)
@@ -393,7 +397,7 @@ class TestLaggedComoments:
     def test_the_recursion_is_the_longhand_one(self):
         df = _df(n=800)
         lags = [1, 3]
-        spec = _spec(("x0", "x1", "x2"), lags=lags, halflife=200.0)
+        spec = _spec(("x0", "x1", "x2"), lags=lags, half_life=200.0)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
@@ -413,7 +417,7 @@ class TestLaggedComoments:
         rng = np.random.default_rng(3)
         a = rng.standard_normal(n)
         df = pl.DataFrame({"x0": a, "x1": np.concatenate([[0.0], a[:-1]])})
-        spec = _spec(("x0", "x1"), lags=[1], stats=["lagcorr"], halflife=150.0)
+        spec = _spec(("x0", "x1"), lags=[1], stats=["lagcorr"], half_life=150.0)
         out = po.ModelBank([spec]).fit_predict(df)
         assert _last(out, "lagcorr_x1_x0_l1") > 0.98
         assert abs(_last(out, "lagcorr_x0_x1_l1")) < 0.15
@@ -421,13 +425,13 @@ class TestLaggedComoments:
     def test_lags_leave_the_contemporaneous_moments_bit_identical(self):
         df = _df(n=700)
         cols = ("x0", "x1", "x2")
-        plain = po.ModelBank([_spec(cols, halflife=200.0)])
-        lagged = po.ModelBank([_spec(cols, lags=[1, 2, 4], halflife=200.0)])
+        plain = po.ModelBank([_spec(cols, half_life=200.0)])
+        lagged = po.ModelBank([_spec(cols, lags=[1, 2, 4], half_life=200.0)])
         a = plain.fit_predict(df)["c"].struct.unnest()
         b = lagged.fit_predict(df)["c"].struct.unnest()
         assert a.equals(b), "the emitted statistics moved"
         ga, gb = plain.gram("c")[0], lagged.gram("c")[0]
-        for key in ("n_eff", "n_kish"):
+        for key in ("weight_sum", "n_kish"):
             assert ga[key] == gb[key]
         assert np.array_equal(ga["means"], gb["means"])
         assert np.array_equal(ga["comoments"], gb["comoments"])
@@ -436,7 +440,7 @@ class TestLaggedComoments:
     @pytest.mark.parametrize("size", [1, 13, 300, 800])
     def test_chunk_invariance(self, size):
         df = _df(n=800)
-        spec = _spec(("x0", "x1"), lags=[1, 5], stats=["lagcorr"], halflife=200.0)
+        spec = _spec(("x0", "x1"), lags=[1, 5], stats=["lagcorr"], half_life=200.0)
         want = po.ModelBank([spec]).fit_predict(df)
         bank = po.ModelBank([spec])
         got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])
@@ -444,7 +448,7 @@ class TestLaggedComoments:
 
     def test_the_ring_clears_on_a_capped_gap_a_session_change_and_a_reset(self):
         """Task 47's events, and a fourth that is not one: a gap just under
-        `max_dclock` leaves the ring alone."""
+        `gap_cap` leaves the ring alone."""
         n = 60
         rng = np.random.default_rng(5)
         base = pl.DataFrame(
@@ -460,14 +464,14 @@ class TestLaggedComoments:
         # the numbers except through the ring: any difference below is the
         # clearing, not the decay.
         def run(df, **kw):
-            kw.setdefault("max_dclock", 5.0)
+            kw.setdefault("gap_cap", 5.0)
             spec = _spec(
                 ("x0", "x1"),
                 lags=[1],
                 stats=["lagcorr"],
-                halflife=NO_DECAY,
+                half_life=NO_DECAY,
                 clock="t",
-                min_periods=0.0,
+                min_weight=0.0,
                 **kw,
             )
             out = po.ModelBank([spec]).fit_predict(df)
@@ -481,14 +485,14 @@ class TestLaggedComoments:
         under = base.with_columns(
             t=pl.when(pl.int_range(pl.len()) >= 30).then(pl.col("t") + 4.0).otherwise(pl.col("t"))
         )
-        assert run(under) == plain, "a gap under max_dclock is not a break"
+        assert run(under) == plain, "a gap under gap_cap is not a break"
         # The same frame with a ceiling above the gap: also not a break, which
         # separates "the gap was capped" from "the gap was long".
         # A gap of 50: capped, so the ring goes.
         over = base.with_columns(
             t=pl.when(pl.int_range(pl.len()) >= 30).then(pl.col("t") + 50.0).otherwise(pl.col("t"))
         )
-        assert run(over, max_dclock=100.0) == plain
+        assert run(over, gap_cap=100.0) == plain
         capped = run(over)
         assert capped[:30] == plain[:30]
         assert capped[31] != plain[31], "the row after a capped gap saw a stale partner"
@@ -505,13 +509,13 @@ class TestLaggedComoments:
 
     def test_a_state_without_lags_resumes_under_a_spec_that_has_them(self):
         df = _df(n=200)
-        bare = _spec(("x0", "x1"), halflife=200.0)
+        bare = _spec(("x0", "x1"), half_life=200.0)
         bank = po.ModelBank([bare])
         bank.fit_predict(df[:100])
         data = bank.save_bytes()
         # The same spec plus lags: the moments come through, the ring starts
         # empty and the matrices from zero.
-        with_lags = _spec(("x0", "x1"), lags=[1], halflife=200.0)
+        with_lags = _spec(("x0", "x1"), lags=[1], half_life=200.0)
         # The saved specs are checked, so the resume is explicitly unchecked.
         resumed = po.ModelBank.load_bytes(data)
         assert resumed.gram("c")[0]["lags"] is None
@@ -531,7 +535,7 @@ class TestLaggedComoments:
         (docs/REVIEW-E54-E64.md L1).
         """
         df = _df(n=60)
-        spec = _spec(("x0", "x1"), lags=[1, 2, 3], halflife=1e9)
+        spec = _spec(("x0", "x1"), lags=[1, 2, 3], half_life=1e9)
         whole = po.ModelBank([spec])
         whole.fit_predict(df)
 
@@ -546,7 +550,7 @@ class TestLaggedComoments:
 
     def test_merge_reports_no_lags_and_subset_slices_them(self):
         df = _df(n=400)
-        spec = _spec(("x0", "x1", "x2"), lags=[1, 2], halflife=1e9)
+        spec = _spec(("x0", "x1", "x2"), lags=[1, 2], half_life=1e9)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
@@ -574,7 +578,7 @@ class TestLaggedComoments:
         spec = po.spec.ew_cov(
             "c",
             features=["x0", "x1"],
-            halflife=1e9,
+            half_life=1e9,
             lags=[1, 2],
             group="g",
             group_close="monotone",

@@ -6,7 +6,7 @@ format: ``load`` reads msgpack and only msgpack.
 
 The whole risk is silent loss. JSON has no literal for ``NaN`` or ``±inf``
 and ``serde_json`` writes all three as ``null`` without a word -- and a state
-reaches that on the most ordinary setting there is, ``halflife=inf`` (no
+reaches that on the most ordinary setting there is, ``half_life=inf`` (no
 decay), which puts an infinity in every stream's ``decay``. So the crate
 tags them as ``"inf"`` / ``"-inf"`` / ``"nan"`` (``online_core::humanfloat``,
 the spelling specs already use) and the exporter re-reads its own output and
@@ -43,40 +43,40 @@ B = dict(targets=["y"], features=["x0", "x1"])
 #: One per model family, each with a non-finite value wherever the spec allows
 #: one -- which is what makes this a test of the tagging and not of JSON.
 EVERY_MODEL = {
-    "ewridge": po.spec.ewridge("s", halflife=INF, **B),
+    "ewridge": po.spec.ewridge("s", half_life=INF, **B),
     "ewridge_grid": po.spec.ewridge(
         "s",
-        halflife=[INF, 10.0],
+        half_life=[INF, 10.0],
         clock="t",
         # Finite, as a cap and a session gap must be since task 120.
-        max_dclock=1e9,
+        gap_cap=1e9,
         session="g",
         session_gap=1e9,
         group="g",
         **B,
     ),
-    "rls": po.spec.rls("s", halflife=INF, **B),
-    "lasso": po.spec.lasso("s", halflife=INF, lasso_path=[0.1, 0.01], **B),
-    "kalman": po.spec.kalman("s", halflife=50.0, coef_halflife=INF, **B),
-    "sgd": po.spec.sgd("s", halflife=INF, clip_gradient=INF, **B),
-    "pa": po.spec.pa("s", halflife=INF, **B),
-    "huber": po.spec.huber("s", halflife=INF, **B),
-    "quantile": po.spec.quantile("s", halflife=INF, quantile=0.5, **B),
-    "ftrl": po.spec.ftrl("s", halflife=INF, **B),
-    "holt": po.spec.holt("s", targets=["y"], halflife=INF, trend_halflife=INF),
-    "ew_cov": po.spec.ew_cov("s", features=["x0", "x1"], stats=["corr"], halflife=INF),
+    "rls": po.spec.rls("s", half_life=INF, **B),
+    "lasso": po.spec.lasso("s", half_life=INF, lasso_path=[0.1, 0.01], **B),
+    "kalman": po.spec.kalman("s", half_life=50.0, coef_half_life=INF, **B),
+    "sgd": po.spec.sgd("s", half_life=INF, clip_gradient=INF, **B),
+    "pa": po.spec.pa("s", half_life=INF, **B),
+    "huber": po.spec.huber("s", half_life=INF, **B),
+    "quantile": po.spec.quantile("s", half_life=INF, quantile=0.5, **B),
+    "ftrl": po.spec.ftrl("s", half_life=INF, **B),
+    "holt": po.spec.holt("s", targets=["y"], half_life=INF, trend_half_life=INF),
+    "ew_cov": po.spec.ew_cov("s", features=["x0", "x1"], stats=["corr"], half_life=INF),
     "marginal": po.spec.marginal(
         "s",
-        halflife=INF,
+        half_life=INF,
         lags=[1, 2],
         serial_rule="geometric",
         bins=4,
         bin_warm_rows=20,
         **B,
     ),
-    "kmeans": po.spec.kmeans("s", features=["x0", "x1"], k=2, halflife=INF),
-    "micro": po.spec.micro("s", features=["x0", "x1"], eps=0.5, halflife=INF),
-    "deco": po.spec.deco("s", features=["x0", "x1"], halflife=INF),
+    "kmeans": po.spec.kmeans("s", features=["x0", "x1"], k=2, half_life=INF),
+    "micro": po.spec.micro("s", features=["x0", "x1"], eps=0.5, half_life=INF),
+    "deco": po.spec.deco("s", features=["x0", "x1"], half_life=INF),
     "seqtest": po.spec.seqtest("s", targets=["y"]),
     "corrchange": po.spec.corrchange("s", features=["x0", "x1"], span_rows=40),
     "bocpd": po.spec.bocpd("s", features=["x0"]),
@@ -95,13 +95,13 @@ def test_every_model_exports_without_losing_a_value(name):
 
 
 def test_a_non_finite_is_tagged_rather_than_nulled():
-    """``halflife=inf`` is the case that made this necessary: it is a
+    """``half_life=inf`` is the case that made this necessary: it is a
     documented setting, and it lands in the state's own ``decay``."""
-    bank = po.ModelBank([po.spec.ewridge("s", halflife=INF, **B)])
+    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     doc = json.loads(bank.to_json())
 
-    assert doc["specs"][0]["halflife"] == "inf", "the spec's own field"
+    assert doc["specs"][0]["half_life"] == "inf", "the spec's own field"
 
     def decays(node):
         if isinstance(node, dict):
@@ -141,10 +141,10 @@ def test_a_column_that_never_held_a_value_exports(how):
     suite on Python 3.15, 2026-09-29)."""
     df = _df()
     if how == "a target null on every row":
-        spec = po.spec.ewridge("s", halflife=10.0, **B)
+        spec = po.spec.ewridge("s", half_life=10.0, **B)
         df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("y"))
     else:
-        spec = po.spec.ewridge("s", halflife=10.0, weight="w", **B)
+        spec = po.spec.ewridge("s", half_life=10.0, weight="w", **B)
         df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("w"))
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
@@ -158,8 +158,8 @@ def test_the_export_is_the_state_and_not_a_summary():
     """Same envelope, same specs, one entry per (spec, group) as the bank
     holds -- not a digest of them."""
     specs = [
-        po.spec.ewridge("r", group="g", halflife=20.0, **B),
-        po.spec.ew_cov("c", features=["x0", "x1"], stats=["corr"], halflife=20.0, group="g"),
+        po.spec.ewridge("r", group="g", half_life=20.0, **B),
+        po.spec.ew_cov("c", features=["x0", "x1"], stats=["corr"], half_life=20.0, group="g"),
     ]
     bank = po.ModelBank(specs)
     bank.fit_predict(_df())
@@ -175,7 +175,7 @@ def test_the_export_is_the_state_and_not_a_summary():
 
 
 def test_pretty_and_compact_carry_the_same_thing():
-    bank = po.ModelBank([po.spec.ewridge("s", halflife=INF, **B)])
+    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     pretty, compact = bank.to_json(), bank.to_json(pretty=False)
     assert len(compact) < len(pretty)
@@ -183,7 +183,7 @@ def test_pretty_and_compact_carry_the_same_thing():
 
 
 def test_save_json_writes_what_to_json_returns(tmp_path):
-    bank = po.ModelBank([po.spec.ewridge("s", halflife=INF, **B)])
+    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
     bank.save_json(p)
@@ -193,7 +193,7 @@ def test_save_json_writes_what_to_json_returns(tmp_path):
 def test_the_export_does_not_disturb_the_state(tmp_path):
     """Reading a bank must not change it: the msgpack before and after an
     export is the same bytes, and the bank keeps predicting identically."""
-    bank = po.ModelBank([po.spec.ewridge("s", halflife=INF, group="g", **B)])
+    bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, group="g", **B)])
     df = _df()
     bank.fit_predict(df)
     before = bank.save_bytes()
@@ -204,7 +204,7 @@ def test_the_export_does_not_disturb_the_state(tmp_path):
 def test_json_is_an_export_and_not_a_load_format(tmp_path):
     """``load`` takes msgpack. Handing it JSON is refused as what it is --
     not a bank file -- rather than half-read."""
-    bank = po.ModelBank([po.spec.ewridge("s", halflife=20.0, **B)])
+    bank = po.ModelBank([po.spec.ewridge("s", half_life=20.0, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
     bank.save_json(p)

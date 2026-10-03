@@ -2,7 +2,7 @@
 //! of 2026-09-15).
 //!
 //! Under a `window` the fit is read from the rows inside it, and `sigma`
-//! describes those rows too -- with `resid_z`, the drift detector's scale,
+//! describes those rows too -- with `zscore`, the drift detector's scale,
 //! the conformal band and the ranking of `emit_selected` and
 //! `emit_averaged`, which all read it. The spread is the stream's own, one
 //! EW mean of squared residuals per slot (`Stream::resid_var`), so it is cut

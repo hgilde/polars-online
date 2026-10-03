@@ -27,7 +27,7 @@ def spec(**kw):
         "features": ["x0", "x1"],
         "k": 2,
         "precision_prior": 1e-2,
-        "halflife": 1e9,
+        "half_life": 1e9,
         "warm_rows": 100,
         "seed_rule": "lloyd",
     }
@@ -53,7 +53,7 @@ def test_the_filter_finds_the_states_and_the_chain():
     agree = (state[ok] == truth[ok]).mean()
     assert max(agree, 1 - agree) > 0.95, agree
     # The chain is sticky, and `p` is a distribution on every live row.
-    p = live.select("p_0", "p_1").to_numpy()
+    p = live.select("filtered_0", "filtered_1").to_numpy()
     assert np.allclose(p.sum(axis=1), 1.0)
     assert ((p >= 0) & (p <= 1)).all()
 
@@ -93,8 +93,8 @@ def test_the_filter_is_the_longhand_hamilton_recursion():
             ]
         )
         z = float(pred @ f)
-        assert out["p_0"][t] == pytest.approx(p[0], abs=1e-12)
-        assert out["p1_0"][t] == pytest.approx(pred[0], abs=1e-12)
+        assert out["filtered_0"][t] == pytest.approx(p[0], abs=1e-12)
+        assert out["predicted_0"][t] == pytest.approx(pred[0], abs=1e-12)
         assert out["loglik"][t] == pytest.approx(np.log(z), rel=1e-9)
         assert out["state"][t] == int(np.argmax(pred))
         p = pred * f / z
@@ -114,14 +114,14 @@ def test_a_given_transition_is_the_prior_mean():
         transition=pi,
     )
     # p starts uniform, so p1 = mean of the two rows of Pi.
-    assert out["p1_0"][0] == pytest.approx(0.5 * (pi[0] + pi[2]))
-    assert out["p1_1"][0] == pytest.approx(0.5 * (pi[1] + pi[3]))
+    assert out["predicted_0"][0] == pytest.approx(0.5 * (pi[0] + pi[2]))
+    assert out["predicted_1"][0] == pytest.approx(0.5 * (pi[1] + pi[3]))
 
 
 def test_nothing_is_reported_before_the_states_are_seeded():
     out = run(blobs(n=300, run=30), warm_rows=100)
-    assert out["p_0"][:100].null_count() == 100
-    assert out["p_0"][150] is not None
+    assert out["filtered_0"][:100].null_count() == 100
+    assert out["filtered_0"][150] is not None
 
 
 def test_the_state_means_are_the_coef():
@@ -158,11 +158,11 @@ def test_save_load_mid_stream():
 
 
 def test_a_zero_weight_row_teaches_nothing():
-    # At an infinite halflife the decay factor is exactly 1, so the only
+    # At an infinite half-life the decay factor is exactly 1, so the only
     # thing the extra row could change is what it teaches -- which is
     # nothing.
     df = blobs(n=800, run=50, seed=8).with_columns(w=pl.lit(1.0))
-    want = run(df, warm_rows=100, weight="w", halflife=float("inf"))
+    want = run(df, warm_rows=100, weight="w", half_life=float("inf"))
     padded = pl.concat(
         [
             df[:400],
@@ -170,16 +170,16 @@ def test_a_zero_weight_row_teaches_nothing():
             df[400:],
         ]
     )
-    got = run(padded, warm_rows=100, weight="w", halflife=float("inf"))
-    assert got["p_0"][:400].to_list() == want["p_0"][:400].to_list()
-    assert got["p_0"][401:].to_list() == want["p_0"][400:].to_list()
+    got = run(padded, warm_rows=100, weight="w", half_life=float("inf"))
+    assert got["filtered_0"][:400].to_list() == want["filtered_0"][:400].to_list()
+    assert got["filtered_0"][401:].to_list() == want["filtered_0"][400:].to_list()
 
 
 @pytest.mark.parametrize("c", [2.0, 8.0, 3.0])
 def test_the_clock_is_a_number(c):
     df = blobs(n=600, run=50, seed=9).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
-    base = spec(halflife=200.0, clock="t", max_dclock=1e12, warm_rows=100)
-    scaled = spec(halflife=200.0 * c, clock="t", max_dclock=1e12, warm_rows=100)
+    base = spec(half_life=200.0, clock="t", gap_cap=1e12, warm_rows=100)
+    scaled = spec(half_life=200.0 * c, clock="t", gap_cap=1e12, warm_rows=100)
     want = po.ModelBank([base]).fit_predict(df)["h"].struct.unnest()
     got = (
         po.ModelBank([scaled]).fit_predict(df.with_columns(t=pl.col("t") * c))["h"].struct.unnest()
@@ -187,7 +187,7 @@ def test_the_clock_is_a_number(c):
     if c in (2.0, 8.0):
         assert want.equals(got)
     else:
-        for col in ("p_0", "p1_0", "loglik"):
+        for col in ("filtered_0", "predicted_0", "loglik"):
             a, b = want[col].to_numpy(), got[col].to_numpy()
             live = np.isfinite(a) & np.isfinite(b)
             assert np.allclose(a[live], b[live], rtol=1e-10, atol=1e-10)
@@ -205,15 +205,18 @@ def test_exog_tvtp_reads_the_column():
         exog_tvtp="z",
         tvtp_coef=[[0.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0]],
     )
-    assert out["p1_0"].drop_nulls().len() > 0
+    assert out["predicted_0"].drop_nulls().len() > 0
     # z = 0: the base transition. z = 1: it leans hard to state 1, so a row
     # in the z = 1 stretch predicts state 1 more strongly than one in the
-    # z = 0 stretch. The old assertion had an `or p1_0[50] < 1.0` disjunct
+    # z = 0 stretch. The old assertion had an `or predicted_0[50] < 1.0` disjunct
     # that is true on any non-degenerate row, so nothing failed if the column
     # was ignored (review 2026-09-18, T5).
-    assert out["p1_1"][350] > out["p1_1"][50], (out["p1_1"][350], out["p1_1"][50])
+    assert out["predicted_1"][350] > out["predicted_1"][50], (
+        out["predicted_1"][350],
+        out["predicted_1"][50],
+    )
     # Control: the same stream with z = 0 everywhere is the base transition,
-    # so if the column were read at all its p1_1 at row 350 must differ.
+    # so if the column were read at all its predicted_1 at row 350 must differ.
     base = run(
         df.with_columns(z=pl.lit(0.0)),
         learn=False,
@@ -222,31 +225,31 @@ def test_exog_tvtp_reads_the_column():
         exog_tvtp="z",
         tvtp_coef=[[0.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0]],
     )
-    assert abs(out["p1_1"][350] - base["p1_1"][350]) > 0.05, (
-        out["p1_1"][350],
-        base["p1_1"][350],
+    assert abs(out["predicted_1"][350] - base["predicted_1"][350]) > 0.05, (
+        out["predicted_1"][350],
+        base["predicted_1"][350],
     )
 
 
 def test_min_periods_gates_the_report_not_the_update():
-    """`min_periods` withholds output and nothing else, as it does in every
+    """`min_weight` withholds output and nothing else, as it does in every
     other model here. It used to withhold the row from the *filter* too, so
-    a warm-up row was never learned from -- and under decay an `n_eff` that
+    a warm-up row was never learned from -- and under decay an `weight_sum` that
     plateaued below it meant a filter that never learned at all
     (docs/REVIEW-E54-E64.md H1)."""
     df = blobs(n=600, run=50, seed=12)
-    base = run(df, min_periods=0.0)
-    gated = run(df, min_periods=200.0)
+    base = run(df, min_weight=0.0)
+    gated = run(df, min_weight=200.0)
     # Once past the threshold the two are the same filter, bit for bit.
-    for col in ("p_0", "p_1", "state", "loglik"):
+    for col in ("filtered_0", "filtered_1", "state", "loglik"):
         assert base[col][250:].equals(gated[col][250:]), col
     # And below it, nulls rather than numbers.
-    assert gated["p_0"][:150].null_count() == 150
+    assert gated["filtered_0"][:150].null_count() == 150
 
-    # Under decay `n_eff` plateaus; a `min_periods` above the plateau must
+    # Under decay `weight_sum` plateaus; a `min_weight` above the plateau must
     # still be reached by the row count, not silently never.
-    decayed = run(df, halflife=20.0, min_periods=25.0)
-    assert decayed["p_0"].null_count() < df.height
+    decayed = run(df, half_life=20.0, min_weight=25.0)
+    assert decayed["filtered_0"].null_count() < df.height
 
 
 def test_predict_reads_the_exogenous_column():
@@ -265,7 +268,7 @@ def test_predict_reads_the_exogenous_column():
     bank = po.ModelBank([spec(**kw)])
     bank.fit_predict(df.head(300))
     got = bank.predict(df.slice(300, 1))["h"].struct.unnest()
-    for col in ("p_0", "p1_0", "p1_1", "state", "loglik"):
+    for col in ("filtered_0", "predicted_0", "predicted_1", "state", "loglik"):
         assert got[col][0] == pytest.approx(step[col][300], rel=1e-12, abs=1e-12), col
 
 
@@ -280,7 +283,7 @@ def test_a_missing_exogenous_value_is_the_base_transition():
     )
     zeros = run(df, **kw)
     nulls = run(df.with_columns(z=pl.lit(None, dtype=pl.Float64)), **kw)
-    assert zeros["p_0"].equals(nulls["p_0"])
+    assert zeros["filtered_0"].equals(nulls["filtered_0"])
 
 
 @pytest.mark.parametrize(
@@ -369,8 +372,8 @@ def test_the_filter_at_three_states_and_one_feature_is_the_hamilton_recursion():
             ]
         )
         z = float(pred @ f)
-        assert out["p_0"][t] == pytest.approx(p[0], abs=1e-12)
-        assert out["p1_0"][t] == pytest.approx(pred[0], abs=1e-12)
+        assert out["filtered_0"][t] == pytest.approx(p[0], abs=1e-12)
+        assert out["predicted_0"][t] == pytest.approx(pred[0], abs=1e-12)
         assert out["loglik"][t] == pytest.approx(np.log(z), rel=1e-9)
         p = pred * f / z
 
@@ -388,6 +391,6 @@ def test_the_full_covariance_filter_recovers_states_at_four_features():
     ok = np.isfinite(state.astype(float))
     agree = (state[ok] == truth[ok]).mean()
     assert max(agree, 1 - agree) > 0.9, agree
-    p = live.select("p_0", "p_1").to_numpy()
+    p = live.select("filtered_0", "filtered_1").to_numpy()
     assert np.allclose(p.sum(axis=1), 1.0)
     assert ((p >= 0) & (p <= 1)).all()

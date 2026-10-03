@@ -121,7 +121,11 @@ fn run() -> Result<(), String> {
         } else {
             ""
         };
-        format!("parsing {}: {e}{backslash_hint}", cli.config.display())
+        format!(
+            "parsing {}: {}{backslash_hint}",
+            cli.config.display(),
+            online_polars::name_renamed(&e.to_string())
+        )
     })?;
 
     if let Some(p) = cli.input {

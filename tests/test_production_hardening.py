@@ -49,8 +49,8 @@ def _spec(**kw):
     d = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=200.0,
-        min_periods=5.0,
+        half_life=200.0,
+        min_weight=5.0,
         max_rows_between_solves=1,
     )
     d.update(kw)
@@ -79,14 +79,14 @@ class TestLeakageAndDuplicateRejection:
     def test_every_model_rejects_the_leak(self):
         for name, extra in [
             ("rls", {}),
-            ("kalman", {"coef_halflife": 100.0}),
+            ("kalman", {"coef_half_life": 100.0}),
             ("lasso", {"lasso_path": [0.0]}),
             ("sgd", {"learning_rate": 0.01}),
             ("ftrl", {}),
         ]:
             with pytest.raises(ValueError, match="both a target and a feature"):
                 getattr(po.spec, name)(
-                    "m", targets=["y0"], features=["y0"], halflife=100.0, **extra
+                    "m", targets=["y0"], features=["y0"], half_life=100.0, **extra
                 )
 
 
@@ -132,7 +132,7 @@ class TestDegenerateColumns:
             assert all(v is None for v in vals), f"{f.name} produced a value from no data"
 
     def test_all_null_target_is_predict_only_forever(self):
-        """`n_eff` counts accepted rows, and a null target does not reject a
+        """`weight_sum` counts accepted rows, and a null target does not reject a
         row -- so its whole trajectory must be *identical* to the same frame
         with targets present."""
         df = _df()
@@ -141,8 +141,8 @@ class TestDegenerateColumns:
             df.with_columns(y0=pl.lit(None, dtype=pl.Float64))
         )
         assert (
-            out["m"].struct.field("n_eff").to_list()
-            == with_targets["m"].struct.field("n_eff").to_list()
+            out["m"].struct.field("weight_sum").to_list()
+            == with_targets["m"].struct.field("weight_sum").to_list()
         )
         assert all(v is None for v in out["m"].struct.field("resid_y0").to_list())
 
@@ -167,11 +167,11 @@ class TestFirstRowPathologies:
     @pytest.mark.parametrize("standardize", [False, True])
     def test_e12_outlier_first_row_washes_out(self, standardize):
         """A 1e12 first row injects ~1e24 into the second moments, so washout
-        needs ~80 halflives -- inherent to EW accumulators, not a defect. 4000
-        rows at halflife 40 is 100 halflives: recovery must be complete."""
+        needs ~80 half-lives -- inherent to EW accumulators, not a defect. 4000
+        rows at half-life 40 is 100 half-lives: recovery must be complete."""
         df = _df(n=4000)
         df = pl.concat([pl.DataFrame({"x0": [1e12], "x1": [-1e12], "y0": [1e12]}), df])
-        out = po.ModelBank([_spec(standardize=standardize, halflife=40.0)]).fit_predict(df)
+        out = po.ModelBank([_spec(standardize=standardize, half_life=40.0)]).fit_predict(df)
         coef = out["m"].struct.field("coef").to_list()[-1]
         assert coef[1] == pytest.approx(1.0, abs=0.05), f"slope x0: {coef[1]}"
         assert coef[2] == pytest.approx(2.0, abs=0.05), f"slope x1: {coef[2]}"
@@ -180,10 +180,10 @@ class TestFirstRowPathologies:
         n = 4000
         y = np.concatenate([[1e9], 3.0 + 0.5 * np.arange(n)])
         df = pl.DataFrame({"y0": y})
-        # 80 halflives of washout for the poisoned trend (the first update
+        # 80 half-lives of washout for the poisoned trend (the first update
         # sees a slope of -1e9).
         spec = po.spec.holt(
-            "m", targets=["y0"], halflife=50.0, trend_halflife=50.0, min_periods=3.0
+            "m", targets=["y0"], half_life=50.0, trend_half_life=50.0, min_weight=3.0
         )
         out = po.ModelBank([spec]).fit_predict(df)
         level, trend = out["m"].struct.field("coef").to_list()[-1]
@@ -213,8 +213,8 @@ class TestParameterExtremes:
     CASES = [
         ("ewridge", {"ridge": [1e-15]}),
         ("ewridge", {"ridge": [1e15]}),
-        ("kalman", {"coef_halflife": 100.0, "p0": 1e-12}),
-        ("kalman", {"coef_halflife": 100.0, "p0": 1e12}),
+        ("kalman", {"coef_half_life": 100.0, "p0": 1e-12}),
+        ("kalman", {"coef_half_life": 100.0, "p0": 1e12}),
         ("quantile", {"quantile": 0.01}),
         ("quantile", {"quantile": 0.99}),
         ("huber", {"huber_delta": 1e-6}),
@@ -232,7 +232,7 @@ class TestParameterExtremes:
     )
     def test_extreme_parameters_never_produce_nonfinite(self, model, extra):
         df = _df(n=1500)
-        kw = dict(targets=["y0"], features=["x0", "x1"], halflife=100.0, min_periods=5.0)
+        kw = dict(targets=["y0"], features=["x0", "x1"], half_life=100.0, min_weight=5.0)
         if model not in ("rls", "kalman", "ftrl", "sgd", "pa"):
             kw["max_rows_between_solves"] = 8
         kw.update(extra)
@@ -247,8 +247,8 @@ class TestParameterExtremes:
     def test_lam_is_halflife_by_another_name(self):
         df = _df()
         h = 137.0
-        a = po.ModelBank([_spec(halflife=h)]).fit_predict(df)
-        b = po.ModelBank([_spec(halflife=None, lam=0.5 ** (1.0 / h))]).fit_predict(df)
+        a = po.ModelBank([_spec(half_life=h)]).fit_predict(df)
+        b = po.ModelBank([_spec(half_life=None, lam=0.5 ** (1.0 / h))]).fit_predict(df)
         pa_ = a["m"].struct.field("pred_y0").to_numpy().astype(float)
         pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(pa_)
@@ -264,12 +264,12 @@ class TestParameterExtremes:
             features=["x0", "x1"],
             lasso_path=[1e-10],
             l1_ratio=0.0,
-            halflife=1e9,
-            min_periods=5.0,
+            half_life=1e9,
+            min_weight=5.0,
             max_rows_between_solves=1,
         )
         a = po.ModelBank([lasso]).fit_predict(df)
-        b = po.ModelBank([_spec(halflife=1e9, ridge=[1e-10])]).fit_predict(df)
+        b = po.ModelBank([_spec(half_life=1e9, ridge=[1e-10])]).fit_predict(df)
         ca = a["m"].struct.field("coef").to_list()[-1][:3]
         cb = b["m"].struct.field("coef").to_list()[-1]
         np.testing.assert_allclose(ca, cb, rtol=1e-6)
@@ -290,7 +290,7 @@ df = pl.DataFrame({
     "g": [f"g{i % 200}" for i in range(2000)],
 })
 bank = po.ModelBank([po.spec.ewridge("m", targets=["y0"], features=["x0"],
-                                     halflife=50.0, group="g")])
+                                     half_life=50.0, group="g")])
 bank.fit_predict(df)
 bank.save(path)
 good = open(path, "rb").read()
@@ -326,9 +326,9 @@ class TestScoringWithoutLearning:
             targets=["y"],
             features=["x0"],
             clock="t",
-            max_dclock=5.0,
-            halflife=20.0,
-            min_periods=3.0,
+            gap_cap=5.0,
+            half_life=20.0,
+            min_weight=3.0,
             weight="w",
             max_rows_between_solves=1,
             coef_every=1,
@@ -365,7 +365,7 @@ class TestScoringWithoutLearning:
 
     def _score_null_targets(self, **kw):
         """The coefficients before and after 60 rows whose target is null,
-        and the `n_eff` those rows report."""
+        and the `weight_sum` those rows report."""
         fit = self._frame(100)
         bank = self._fitted(fit, **kw)
         before = bank.fit_predict(fit.tail(1))["m"].struct.field("coef").to_list()[-1]
@@ -373,21 +373,23 @@ class TestScoringWithoutLearning:
             pl.col("t") + 100.0, pl.lit(None, dtype=pl.Float64).alias("y")
         )
         out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
-        return before, out.field("coef").to_list()[-1], out.field("n_eff").to_list()
+        return before, out.field("coef").to_list()[-1], out.field("weight_sum").to_list()
 
     def test_a_null_target_leaves_its_fit_where_it_was(self):
         """Under `target_gaps="own_rows"`, the default, a target's Gram is over
         the rows it is present on, so a row without it ages the Gram and the
         cross-moments alike, and mean-form accumulators aged with nothing
         added are themselves: the coefficients do not move by one bit, as
-        with weight 0. What differs from weight 0 is `n_eff`, which counts
+        with weight 0. What differs from weight 0 is `weight_sum`, which counts
         every row and so keeps counting (docs/PLAN.md task 81)."""
-        before, after, n_eff = self._score_null_targets()
+        before, after, weight_sum = self._score_null_targets()
         assert after == before, "a row without the target moved its fit"
-        # Weight 0 decays `n_eff` toward nothing; here it holds at the steady
-        # state of a halflife of 20 rows, `1 / (1 - lam)`.
+        # Weight 0 decays `weight_sum` toward nothing; here it holds at the steady
+        # state of a half-life of 20 rows, `1 / (1 - lam)`.
         steady = 1.0 / (1.0 - 0.5 ** (1.0 / 20.0))
-        assert n_eff[-1] == pytest.approx(steady, rel=1e-2), "every row counts toward n_eff"
+        assert weight_sum[-1] == pytest.approx(steady, rel=1e-2), (
+            "every row counts toward weight_sum"
+        )
 
     def test_under_pairwise_a_null_target_still_moves_the_fit(self):
         """Under `"pairwise"` the one Gram is over every row, so a row without
@@ -400,13 +402,13 @@ class TestScoringWithoutLearning:
 
     def test_a_long_scoring_tail_decays_n_eff_under_min_periods(self):
         """The documented cost of scoring with weight 0: the clock still
-        advances, so `n_eff` decays and eventually `min_periods` blanks the
+        advances, so `weight_sum` decays and eventually `min_weight` blanks the
         output even though the fit behind it is unchanged."""
         bank = self._fitted(self._frame(100))
         scored = self._frame(200, seed=2, weight=0.0).with_columns(pl.col("t") + 100.0)
         out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
-        n_eff = out.field("n_eff").to_list()
-        assert n_eff[0] > 3.0 > n_eff[-1], (n_eff[0], n_eff[-1])
+        weight_sum = out.field("weight_sum").to_list()
+        assert weight_sum[0] > 3.0 > weight_sum[-1], (weight_sum[0], weight_sum[-1])
         preds = out.field("pred_y").to_list()
         assert preds[0] is not None and preds[-1] is None
         # ... and it is only the gate: the fit is still there underneath.
@@ -544,8 +546,8 @@ class TestOddNames:
             targets=["my target"],
             features=["价格 Δ"],
             group="g",
-            halflife=100.0,
-            min_periods=5.0,
+            half_life=100.0,
+            min_weight=5.0,
             max_rows_between_solves=1,
         )
         bank = po.ModelBank([spec])
@@ -723,28 +725,28 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             "venue": ["X", "Y"] * (n // 2),
         }
     )
-    common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0)
+    common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0)
     # `spec` as section 2 shows it, and `grid` as the "output field names"
-    # section introduces it (ridge 0.5, halflife 500 are what its blocks filter on).
+    # section introduces it (ridge 0.5, half-life 500 are what its blocks filter on).
     spec = po.spec.ewridge(
         "ridge",
         targets=["y"],
         features=["x0", "x1", "x2"],
         clock="t",
-        halflife=600.0,
-        max_dclock=300.0,
+        half_life=600.0,
+        gap_cap=300.0,
         group="stock_id",
         ridge=[1e-6, 0.1],
         standardize=True,
     )
     grid = po.spec.ewridge(
-        "m", halflife=[100.0, 500.0], ridge=[1e-6, 0.5], min_periods=5.0, **common
+        "m", half_life=[100.0, 500.0], ridge=[1e-6, 0.5], min_weight=5.0, **common
     )
     scored = po.ModelBank(
         [
-            po.spec.ewridge("ridge", halflife=500.0, group="stock_id", **common),
+            po.spec.ewridge("ridge", half_life=500.0, group="stock_id", **common),
             po.spec.kalman(
-                "kalman", halflife=500.0, coef_halflife=100.0, group="stock_id", **common
+                "kalman", half_life=500.0, coef_half_life=100.0, group="stock_id", **common
             ),
         ]
     ).fit_predict(df)
@@ -766,12 +768,12 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     fed.fit_predict(df)
     fed.save(tmp_path / "bank.state")  # what section 2's `bank.save` left behind
     cli_spec = po.spec.ewridge(
-        "ridge", targets=["y"], features=["x0"], halflife=500.0, min_periods=5.0
+        "ridge", targets=["y"], features=["x0"], half_life=500.0, min_weight=5.0
     )
     (tmp_path / "bank.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
-        'halflife = 500.0\nmin_periods = 5.0\n[specs.model]\ntype = "ew_ridge"\n',
+        'half_life = 500.0\nmin_weight = 5.0\n[specs.model]\ntype = "ew_ridge"\n',
         encoding="utf-8",
     )
     # The guide's `--resume` examples need a state *its own config's* spec
@@ -786,7 +788,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     (tmp_path / "blocks.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "cov"\nfeatures = ["x0", "x1"]\n'
-        'halflife = 500.0\ngroup = "stock_id"\ngroup_close = "session"\n'
+        'half_life = 500.0\ngroup = "stock_id"\ngroup_close = "session"\n'
         'session = "session"\n[specs.model]\ntype = "ew_cov"\n',
         encoding="utf-8",
     )
@@ -840,8 +842,8 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
 class TestReadmeExamples:
     """The README's python blocks are the first code anyone runs, so they are
     run here -- not just compiled, which is all this checked before and which
-    let `po.spec.holt(..., level_halflife=200.0)` sit in the README raising
-    "one of halflife/lam is required" (IMPROVEMENTS U6).
+    let `po.spec.holt(..., level_half_life=200.0)` sit in the README raising
+    "one of half-life/lam is required" (IMPROVEMENTS U6).
 
     Each block runs in its own copy of a namespace holding what the prose has
     already introduced, so blocks do not depend on each other's order or

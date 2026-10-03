@@ -248,23 +248,21 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         targets=["y"],
         features=["x"],
         clock="t",
-        halflife=10.0,
-        max_dclock=5.0,
+        half_life=10.0,
+        gap_cap=5.0,
         session="sess",
         session_gap="reset",
         weight="w",
-        on_clock_reset="reset_state",
-        min_backwards_jump=0.0,
+        restart_after_step_back=0.0,
     )
     reset_on_backwards = po.spec.ewridge(
         "rb",
         targets=["y"],
         features=["x"],
         clock="t",
-        halflife=10.0,
-        max_dclock=5.0,
-        on_clock_reset="reset_state",
-        min_backwards_jump=0.0,
+        half_life=10.0,
+        gap_cap=5.0,
+        restart_after_step_back=0.0,
     )
     bank = po.ModelBank([reset_on_session, reset_on_backwards])
     feed(bank, df, 3)
@@ -284,7 +282,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
 
 def test_a_row_count_clock_has_no_range():
     df = stream(40)
-    spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=10.0, group="g")
+    spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=10.0, group="g")
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
     s = bank.summary()

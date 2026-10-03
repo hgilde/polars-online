@@ -45,7 +45,7 @@ fn f64_array() -> Float64Array {
 fn struct_array() -> StructArray {
     let fields = vec![
         ArrowField::new("pred_y".into(), ArrowDataType::Float64, true),
-        ArrowField::new("n_eff".into(), ArrowDataType::Float64, true),
+        ArrowField::new("weight_sum".into(), ArrowDataType::Float64, true),
     ];
     let values: Vec<Box<dyn Array>> = vec![Box::new(f64_array()), Box::new(f64_array())];
     StructArray::new(ArrowDataType::Struct(fields), 4, values, None)

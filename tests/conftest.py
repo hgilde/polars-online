@@ -66,7 +66,7 @@ def _toml_value(v: object) -> str:
     """One TOML scalar, list or inline table.
 
     Infinities go as the strings the spec layer already uses for them
-    (`online_core::humanfloat`), so a config round-trips a `halflife = inf`
+    (`online_core::humanfloat`), so a config round-trips a `half_life = inf`
     the way `po.spec` writes it.
     """
     if isinstance(v, bool):  # before int: bool is an int in Python

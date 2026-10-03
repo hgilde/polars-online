@@ -37,7 +37,7 @@ def frame(n: int = 600, seed: int = 3) -> pl.DataFrame:
 
 
 def common(**kw):
-    d = dict(features=["x0", "x1"], clock="t", max_dclock=5.0, halflife=80.0, emit_sigma=True)
+    d = dict(features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=80.0, emit_sigma=True)
     d.update(kw)
     return d
 
@@ -54,7 +54,7 @@ def test_a_relative_target_is_the_column_computed_first(model, relative):
     """The relative target against the same spec given the computed column:
     every field, to the bit."""
     df = frame()
-    kw = {} if model != "kalman" else {"coef_halflife": 200.0}
+    kw = {} if model != "kalman" else {"coef_half_life": 200.0}
     if model == "holt":
         kw["features"] = []
     target = po.target("p", relative_to="mid", relative=relative)
@@ -197,12 +197,12 @@ def test_the_lazy_plan_reads_a_relative_targets_columns():
     "kw",
     [
         dict(group="g"),
-        dict(label_delay=3.0),
-        dict(group="g", label_delay=3.0),
-        dict(window=60.0),
+        dict(embargo=3.0),
+        dict(group="g", embargo=3.0),
+        dict(window_size=60.0),
         dict(conformal=0.9, emit_metrics=True, resid_quantiles=[0.5]),
     ],
-    ids=["group", "label_delay", "both", "window", "diagnostics"],
+    ids=["group", "embargo", "both", "window", "diagnostics"],
 )
 def test_the_equality_holds_under_what_the_stream_does_around_the_model(kw):
     """The same equality under a group, a label delay, both, a window and the
@@ -358,7 +358,7 @@ def test_a_relative_target_is_refused_where_the_loss_wants_a_label_or_a_count(mo
     refused)."""
     kw = {} if loss is None else {"loss": loss}
     if model == "sgd" or loss == "squared":
-        kw["halflife"] = 10.0
+        kw["half_life"] = 10.0
     target = po.target("p", relative_to="mid")
     build = getattr(po.spec, model)
     if refused is None:
@@ -406,7 +406,7 @@ def with_targets(spec: dict, *targets) -> dict:
                     classes=["a", "b"],
                     features=["x0"],
                     precision_prior=1.0,
-                    halflife=50.0,
+                    half_life=50.0,
                 ),
                 t,
             ),
@@ -473,8 +473,8 @@ def test_the_cli_reads_the_toml_table_form(tmp_path, online_cli):
                 'features = ["x0"]',
                 'targets = ["x1", { column = "p", relative_to = "mid", relative = "log_ratio" }]',
                 'clock = "t"',
-                "max_dclock = 5.0",
-                "halflife = 80.0",
+                "gap_cap = 5.0",
+                "half_life = 80.0",
                 "[specs.model]",
                 'type = "ew_ridge"',
             ]

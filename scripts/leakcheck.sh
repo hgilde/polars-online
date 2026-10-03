@@ -43,7 +43,7 @@ if control:
     import ctypes
 rng = np.random.default_rng(0)
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"],
-                       halflife=50.0, min_periods=2.0)
+                       half_life=50.0, min_weight=2.0)
 cat = None
 for i in range(n):
     df = pl.DataFrame({"x0": rng.standard_normal(700), "x1": rng.standard_normal(700)})

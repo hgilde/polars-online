@@ -20,7 +20,7 @@ import polars_online as po
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"ridge": 1.0}),
-    ("kalman", {"coef_halflife": 50.0}),
+    ("kalman", {"coef_half_life": 50.0}),
     ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
@@ -100,11 +100,11 @@ def build(model, extra, **kw):
         targets=["y0"],
         features=["x0", "x1"],
         clock="t",
-        max_dclock=100.0,
-        halflife=20.0,
+        gap_cap=100.0,
+        half_life=20.0,
         weight="w",
         group="g",
-        min_periods=2.0,
+        min_weight=2.0,
     )
     opts.update(extra)
     opts.update(kw)
@@ -149,7 +149,7 @@ class TestUniversalProperties:
         step back past the minimum starts its group over, and where the chunks
         fall cannot move a number."""
         df = binarize(df, model)
-        spec = build(model, extra, on_clock_reset="reset_state", min_backwards_jump=MINIMUM)
+        spec = build(model, extra, restart_after_step_back=MINIMUM)
         one = unnested(po.ModelBank([spec]).fit_predict(df))
         bank = po.ModelBank([spec])
         parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
@@ -181,8 +181,8 @@ class TestUniversalProperties:
             w=pl.when(ordinary).then(1.0).otherwise("w"),
         )
         df = binarize(df, model)
-        spec = build(model, extra, on_clock_reset="reset_state", min_backwards_jump=MINIMUM)
-        says = f"goes backwards by 2 at row {i}, no more than min_backwards_jump = 5"
+        spec = build(model, extra, restart_after_step_back=MINIMUM)
+        says = f"goes backwards by 2 at row {i}, no more than restart_after_step_back = 5"
         with pytest.raises(ValueError, match=says):
             po.ModelBank([spec]).fit_predict(df)
         chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]
@@ -228,10 +228,10 @@ class TestUniversalProperties:
         for f in spec["features"]:
             cond = cond | pl.col(f).is_null()
         skipped = df.select(cond).to_series().to_list()
-        neff = out["m"].struct.field("n_eff").to_list()
+        neff = out["m"].struct.field("weight_sum").to_list()
         for i, skip in enumerate(skipped):
             if skip:
-                assert neff[i] is None, f"row {i} was skipped but reported n_eff"
+                assert neff[i] is None, f"row {i} was skipped but reported weight_sum"
 
     @SETTINGS
     @given(df=streams(max_groups=3))

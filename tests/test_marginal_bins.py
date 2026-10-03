@@ -39,9 +39,9 @@ def spec(**kw):
         targets=["y"],
         features=["x"],
         clock="t",
-        halflife=float("inf"),
-        max_dclock=1e12,
-        min_periods=2.0,
+        half_life=float("inf"),
+        gap_cap=1e12,
+        min_weight=2.0,
         bins=8,
         bin_warm_rows=500,
     )
@@ -145,7 +145,7 @@ def test_the_response_curve_is_the_targets_moments_in_each_bin():
     """`bin_n`, `bin_mean_y` and `bin_var_y` against the same numbers computed
     with polars over the reported edges."""
     df = stream(shape="threshold")
-    p = pairs(df, halflife=float("inf"))
+    p = pairs(df, half_life=float("inf"))
     edges = list(p["bin_edges"])
     assert len(edges) == 7, "eight bins means seven edges"
     assert edges == sorted(edges)
@@ -187,7 +187,7 @@ def test_explicit_edges_skip_the_warm_up_and_are_reported_back():
     assert list(by_list["bin_edges"]) == edges
     assert by_list == by_dict
     # No warm-up to wait for: the first rows are already binned.
-    early = pairs(df.head(5), bins=None, bin_edges=[edges], min_periods=2.0)
+    early = pairs(df.head(5), bins=None, bin_edges=[edges], min_weight=2.0)
     assert list(early["bin_n"]) != []
 
 
@@ -255,7 +255,7 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        (dict(bins=8, window=100.0), "bins and window"),
+        (dict(bins=8, window_size=100.0), "bins and window"),
         (dict(bins=8, bin_warm_rows=4), "bin_warm_rows"),
         (dict(bins=1), "at least 2"),
         (dict(bins=8, bin_rule="tertiles"), "unknown bin_rule"),
@@ -290,7 +290,7 @@ def test_bin_budget_sets_the_limit():
                     "m",
                     targets=["y"],
                     features=features,
-                    halflife=500.0,
+                    half_life=500.0,
                     bins=8,
                     bin_warm_rows=100_000,
                     **kw,
@@ -314,8 +314,8 @@ def test_given_edges_refuse_the_learned_kinds_knobs(kw):
         targets=["y"],
         features=["x"],
         clock="t",
-        halflife=float("inf"),
-        max_dclock=1e12,
+        half_life=float("inf"),
+        gap_cap=1e12,
         bin_edges=[[0.0]],
     )
     d.update(kw)
@@ -327,15 +327,15 @@ def test_given_edges_refuse_the_learned_kinds_knobs(kw):
 
 
 def test_the_decayed_histogram_is_the_ew_moments_per_bin():
-    """With a finite halflife the histogram is what a weighted group-by over
+    """With a finite half-life the histogram is what a weighted group-by over
     the decayed weights gives, and the bin weights sum to the target's
-    ``n_eff`` -- the same recursion as the pair moments, bin by bin."""
+    ``weight_sum`` -- the same recursion as the pair moments, bin by bin."""
     df = stream(n=3000, shape="v", seed=1)
-    p = pairs(df, halflife=100.0)
+    p = pairs(df, half_life=100.0)
     lam = 0.5 ** (1.0 / 100.0)
     x, y = df["x"].to_numpy(), df["y"].to_numpy()
     assert_histogram(p, ew_histogram(x, y, np.ones(len(x)), p["bin_edges"], lam))
-    assert sum(p["bin_n"]) == pytest.approx(p["n_eff"], rel=1e-12)
+    assert sum(p["bin_n"]) == pytest.approx(p["weight_sum"], rel=1e-12)
     # The pair's own variance is the histogram's total variance, so a gain
     # is a fraction of something the caller can also read directly.
     n = np.asarray(p["bin_n"])
@@ -347,16 +347,16 @@ def test_the_decayed_histogram_is_the_ew_moments_per_bin():
 
 
 def test_a_tiny_halflife_folds_the_scale_many_times_and_changes_nothing():
-    """At a halflife of one row the undecayed weights the histogram keeps
+    """At a half-life of one row the undecayed weights the histogram keeps
     grow by two per row and reach the fold every ~500 rows; the numbers
     read out must not notice, in one chunk or many."""
     df = stream(n=4000, shape="threshold", seed=2)
-    one = pairs(df, halflife=1.0, bin_warm_rows=100)
+    one = pairs(df, half_life=1.0, bin_warm_rows=100)
     lam = 0.5
     x, y = df["x"].to_numpy(), df["y"].to_numpy()
     assert_histogram(one, ew_histogram(x, y, np.ones(len(x)), one["bin_edges"], lam), rel=1e-6)
-    many = pairs(df, chunks=333, halflife=1.0, bin_warm_rows=100, frame=True)
-    assert pairs(df, halflife=1.0, bin_warm_rows=100, frame=True).equals(many)
+    many = pairs(df, chunks=333, half_life=1.0, bin_warm_rows=100, frame=True)
+    assert pairs(df, half_life=1.0, bin_warm_rows=100, frame=True).equals(many)
 
 
 def test_weights_and_null_targets_count_as_they_do_in_the_pair():
@@ -370,10 +370,10 @@ def test_weights_and_null_targets_count_as_they_do_in_the_pair():
     y = df["y"].to_numpy().copy()
     y[::5] = np.nan
     df = df.with_columns(w=pl.Series(w), y=pl.Series(y))
-    p = pairs(df, weight="w", halflife=200.0, bin_warm_rows=200)
+    p = pairs(df, weight="w", half_life=200.0, bin_warm_rows=200)
     lam = 0.5 ** (1.0 / 200.0)
     assert_histogram(p, ew_histogram(df["x"].to_numpy(), y, w, p["bin_edges"], lam))
-    assert sum(p["bin_n"]) == pytest.approx(p["n_eff"], rel=1e-12)
+    assert sum(p["bin_n"]) == pytest.approx(p["weight_sum"], rel=1e-12)
     # The warm-up counted every weighted row, null target or not, so the
     # edges are the weighted quantiles of those rows' features.
     assert len(p["bin_edges"]) == 7
@@ -384,7 +384,7 @@ def test_each_target_gets_its_own_histogram():
     y2 = -df["y"].to_numpy()
     y2[1::2] = np.nan
     df = df.with_columns(y2=pl.Series(y2))
-    frame = pairs(df, targets=["y", "y2"], halflife=50.0, frame=True)
+    frame = pairs(df, targets=["y", "y2"], half_life=50.0, frame=True)
     lam = 0.5 ** (1.0 / 50.0)
     rows = {r["target"]: r for r in frame.to_dicts()}
     x = df["x"].to_numpy()
@@ -393,20 +393,20 @@ def test_each_target_gets_its_own_histogram():
         r = rows[t]
         assert_histogram(r, ew_histogram(x, df[t].to_numpy(), w, r["bin_edges"], lam))
     assert rows["y"]["bin_edges"] == rows["y2"]["bin_edges"], "one feature, one set of edges"
-    assert rows["y2"]["n_eff"] < rows["y"]["n_eff"]
+    assert rows["y2"]["weight_sum"] < rows["y"]["weight_sum"]
 
 
 def test_a_clock_gap_past_max_dclock_empties_the_histogram_with_the_moments():
-    """`max_dclock` is where the plumbing stops the clock; a gap that large
+    """`gap_cap` is where the plumbing stops the clock; a gap that large
     decays the pair moments to nothing, and the histogram with them."""
     df = stream(n=1000, shape="threshold", seed=6)
     t = df["t"].to_numpy().copy()
     t[500:] += 1e6
     df = df.with_columns(t=pl.Series(t))
-    kw = dict(halflife=10.0, max_dclock=1e5, bin_warm_rows=100)
+    kw = dict(half_life=10.0, gap_cap=1e5, bin_warm_rows=100)
     after = pairs(df, **kw)
-    alone = pairs(df[500:], bin_edges=[list(after["bin_edges"])], halflife=10.0, max_dclock=1e5)
-    assert after["n_eff"] == pytest.approx(alone["n_eff"])
+    alone = pairs(df[500:], bin_edges=[list(after["bin_edges"])], half_life=10.0, gap_cap=1e5)
+    assert after["weight_sum"] == pytest.approx(alone["weight_sum"])
     assert list(after["bin_n"]) == pytest.approx(list(alone["bin_n"]))
     assert list(after["bin_mean_y"]) == pytest.approx(list(alone["bin_mean_y"]))
 
@@ -416,8 +416,8 @@ def test_a_clock_gap_past_max_dclock_empties_the_histogram_with_the_moments():
 
 def test_a_bank_saved_during_the_warm_up_resumes_with_its_held_rows(tmp_path):
     df = stream(n=1500, shape="threshold", seed=8)
-    whole = pairs(df, halflife=300.0, frame=True)
-    bank = po.ModelBank([spec(halflife=300.0)])
+    whole = pairs(df, half_life=300.0, frame=True)
+    bank = po.ModelBank([spec(half_life=300.0)])
     bank.fit_predict(df[:300])
     assert list(bank.marginal("m").row(0, named=True)["bin_edges"]) == [], "still warming up"
     bank.save(tmp_path / "m.state")
@@ -433,8 +433,8 @@ def test_label_delay_is_the_doubled_stream_here_too():
     agree with the doubled stream `po.stream.embargo` builds, to the bit."""
 
     df = stream(n=1200, shape="threshold", seed=9)
-    kw = dict(halflife=200.0, bin_warm_rows=300, lags=[1, 2, 3], serial_rule="geometric")
-    native = po.ModelBank([spec(label_delay=7.0, **kw)])
+    kw = dict(half_life=200.0, bin_warm_rows=300, lags=[1, 2, 3], serial_rule="geometric")
+    native = po.ModelBank([spec(embargo=7.0, **kw)])
     native.fit_predict(df)
     doubled = po.ModelBank([spec(weight=po.stream.ROLE + "_weight", **kw)])
     # The doubled stream carries the last rows' lessons past the end of the
@@ -479,7 +479,7 @@ def test_a_far_offset_target_keeps_its_variance():
     x = rng.uniform(-1.0, 1.0, n)
     y = 1e7 + 1e-3 * rng.standard_normal(n)
     df = pl.DataFrame({"t": np.arange(n).astype(float), "x": x, "y": y})
-    p = pairs(df, bins=4, bin_warm_rows=200, halflife=500.0)
+    p = pairs(df, bins=4, bin_warm_rows=200, half_life=500.0)
     assert p["var_y"] == pytest.approx(1e-6, rel=0.2)
     for v in p["bin_var_y"]:
         assert v == pytest.approx(p["var_y"], rel=0.3)

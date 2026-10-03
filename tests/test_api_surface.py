@@ -115,7 +115,7 @@ def describe_api() -> str:
 
     w("[output field grammar]  # the strings users index the output struct by")
     cases: list[tuple[str, dict]] = [
-        ("ewridge minimal", dict(targets=["y"], features=["x0"], halflife=100.0)),
+        ("ewridge minimal", dict(targets=["y"], features=["x0"], half_life=100.0)),
         (
             "ewridge full grid, every output",
             dict(
@@ -123,9 +123,9 @@ def describe_api() -> str:
                 features=["x0", "x1"],
                 feature_sets={"a": ["x0"], "b": ["x0", "x1"]},
                 ridge=[1e-6, 0.5],
-                halflife=[100.0, 500.0],
+                half_life=[100.0, 500.0],
                 emit_sigma=True,
-                emit_resid_z=True,
+                emit_zscore=True,
                 emit_drift=True,
                 emit_metrics=True,
                 emit_autocorr=True,
@@ -137,9 +137,12 @@ def describe_api() -> str:
         ),
         (
             "float rendering at the extremes",
-            dict(targets=["y"], features=["x0"], ridge=[1e-300, 0.5], halflife=[100.0, 1e9]),
+            dict(targets=["y"], features=["x0"], ridge=[1e-300, 0.5], half_life=[100.0, 1e9]),
         ),
-        ("lasso path", dict(targets=["y"], features=["x0"], lasso_path=[0.1, 0.0], halflife=100.0)),
+        (
+            "lasso path",
+            dict(targets=["y"], features=["x0"], lasso_path=[0.1, 0.0], half_life=100.0),
+        ),
     ]
     for label, kw in cases:
         model = (
@@ -147,24 +150,24 @@ def describe_api() -> str:
             if "_model" in kw
             else ("lasso" if "lasso_path" in kw else "ewridge")
         )
-        s = getattr(po.spec, model)("m", min_periods=2.0, **kw)
+        s = getattr(po.spec, model)("m", min_weight=2.0, **kw)
         w(f"  {label}:")
         for f in po.spec.output_fields(s):
             w(f"    {f}")
     for model, kw in [
-        ("rls", dict(targets=["y"], features=["x0"], halflife=100.0)),
-        ("lasso", dict(targets=["y"], features=["x0"], halflife=100.0, lasso_path=[0.1, 0.0])),
-        ("kalman", dict(targets=["y"], features=["x0"], halflife=100.0, coef_halflife=50.0)),
-        ("huber", dict(targets=["y"], features=["x0"], halflife=100.0)),
-        ("quantile", dict(targets=["y"], features=["x0"], halflife=100.0, quantile=0.5)),
-        ("sgd", dict(targets=["y"], features=["x0"], halflife=100.0, learning_rate=0.01)),
-        ("pa", dict(targets=["y"], features=["x0"], halflife=100.0)),
-        ("ftrl", dict(targets=["y"], features=["x0"], halflife=100.0)),
-        ("holt", dict(targets=["y"], halflife=100.0)),
+        ("rls", dict(targets=["y"], features=["x0"], half_life=100.0)),
+        ("lasso", dict(targets=["y"], features=["x0"], half_life=100.0, lasso_path=[0.1, 0.0])),
+        ("kalman", dict(targets=["y"], features=["x0"], half_life=100.0, coef_half_life=50.0)),
+        ("huber", dict(targets=["y"], features=["x0"], half_life=100.0)),
+        ("quantile", dict(targets=["y"], features=["x0"], half_life=100.0, quantile=0.5)),
+        ("sgd", dict(targets=["y"], features=["x0"], half_life=100.0, learning_rate=0.01)),
+        ("pa", dict(targets=["y"], features=["x0"], half_life=100.0)),
+        ("ftrl", dict(targets=["y"], features=["x0"], half_life=100.0)),
+        ("holt", dict(targets=["y"], half_life=100.0)),
         (
             "ew_cov",
             dict(
-                features=["x0", "x1"], stats=["mean", "var", "std", "cov", "corr"], halflife=100.0
+                features=["x0", "x1"], stats=["mean", "var", "std", "cov", "corr"], half_life=100.0
             ),
         ),
         (
@@ -176,11 +179,11 @@ def describe_api() -> str:
                 mahal_quantiles=[0.5, 0.99],
                 pca=2,
                 pca_every=10,
-                halflife=100.0,
+                half_life=100.0,
             ),
         ),
-        ("kmeans", dict(features=["x0", "x1"], k=2, halflife=100.0)),
-        ("micro", dict(features=["x0", "x1"], eps=0.3, halflife=100.0)),
+        ("kmeans", dict(features=["x0", "x1"], k=2, half_life=100.0)),
+        ("micro", dict(features=["x0", "x1"], eps=0.3, half_life=100.0)),
         (
             "ew_class",
             dict(
@@ -188,7 +191,7 @@ def describe_api() -> str:
                 label="y",
                 classes=["a", "b"],
                 precision_prior=1.0,
-                halflife=100.0,
+                half_life=100.0,
             ),
         ),
         ("seqtest", dict(targets=["y", "z"])),
@@ -196,37 +199,37 @@ def describe_api() -> str:
             "seqtest comparing two specs",
             dict(targets=["y"], a="ridge", b="kalman", a_suffix="@h50"),
         ),
-        ("marginal", dict(targets=["y", "z"], features=["x0", "x1"], halflife=100.0)),
+        ("marginal", dict(targets=["y", "z"], features=["x0", "x1"], half_life=100.0)),
         (
             "ew_cov with lags",
             dict(
                 features=["x0", "x1"],
                 stats=["corr", "lagcorr"],
                 lags=[1, 5],
-                halflife=100.0,
+                half_life=100.0,
             ),
         ),
         ("bocpd", dict(features=["x0", "x1"], prior_scale=[1.0])),
         ("corrchange", dict(features=["x0", "x1"], span_rows=100)),
         (
             "hmm",
-            dict(features=["x0", "x1"], k=3, precision_prior=0.1, halflife=100.0),
+            dict(features=["x0", "x1"], k=3, precision_prior=0.1, half_life=100.0),
         ),
         (
             "rcov",
             dict(features=["x0", "x1"], group="g", group_close="monotone", block_rows=500),
         ),
-        ("deco", dict(features=["x0", "x1", "x2"], halflife=100.0)),
+        ("deco", dict(features=["x0", "x1", "x2"], half_life=100.0)),
         (
             "deco blocked",
             dict(
                 features=["x0", "x1", "x2", "x3"],
-                halflife=100.0,
+                half_life=100.0,
                 blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]},
             ),
         ),
     ]:
-        s = getattr(po.spec, model.split(" ")[0])("m", min_periods=2.0, **kw)
+        s = getattr(po.spec, model.split(" ")[0])("m", min_weight=2.0, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
         for f in po.spec.output_fields(s):
             w(f"    {f}")
@@ -246,7 +249,7 @@ def describe_api() -> str:
     ]
     frames: list[tuple[str, list[str]]] = []
     for label, extra in variants:
-        kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "halflife": 50.0}
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
         kw.update(extra)
         kw.setdefault("group", "g")
         kw.setdefault("group_close", "monotone")

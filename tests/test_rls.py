@@ -26,18 +26,18 @@ class TestRls:
     """Task 9: RLS (docs/PLAN.md section 4.2) and its agreement with EW-ridge."""
 
     def test_matches_ewridge_solved_every_row(self):
-        # ew_ridge with ridge_decay is algebraically the same estimator as RLS
+        # ew_ridge with ridge_scale is algebraically the same estimator as RLS
         # with the same prior; solving every row must reproduce it exactly.
         df, _ = synthetic(seed=21, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         common = dict(
             targets=["y0"],
             features=["x0", "x1", "x2"],
             clock="t",
-            halflife=HL,
-            max_dclock=MAXD,
+            half_life=HL,
+            gap_cap=MAXD,
             weight="w",
             group="group",
-            min_periods=5.0,
+            min_weight=5.0,
         )
         a = po.ModelBank([po.spec.rls("m", ridge=0.7, **common)]).fit_predict(df)
         b = po.ModelBank(
@@ -45,7 +45,7 @@ class TestRls:
                 po.spec.ewridge(
                     "m",
                     ridge=0.7,
-                    ridge_decay=True,
+                    ridge_scale="sum",
                     max_rows_between_solves=1,
                     **common,
                 )
@@ -63,26 +63,26 @@ class TestRls:
             targets=["y0"],
             features=["x0", "x1"],
             clock="t",
-            halflife=HL,
-            max_dclock=MAXD,
+            half_life=HL,
+            gap_cap=MAXD,
             weight="w",
             ridge=1.0,
-            min_periods=5.0,
+            min_weight=5.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
         y = df["y0"].to_numpy().reshape(-1, 1)
-        dc, rs = compute_dclock(df["t"].to_numpy(), None, df.height, max_dclock=MAXD)
+        dc, rs = compute_dclock(df["t"].to_numpy(), None, df.height, gap_cap=MAXD)
         ref = rls_ref(
             x,
             y,
             dc,
             df["w"].to_numpy(),
             rs,
-            halflife=HL,
+            half_life=HL,
             ridge=1.0,
-            min_periods=5.0,
-            max_dclock=MAXD,
+            min_weight=5.0,
+            gap_cap=MAXD,
         )
         _close(_np(out, "pred_y0"), ref["pred"][:, 0])
 
@@ -93,7 +93,7 @@ class TestRls:
                 "y0": [2.0, 4.0, 1.0, None, 5.0],
             }
         )
-        spec = po.spec.rls("m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=1.0)
+        spec = po.spec.rls("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=1.0)
         out = po.ModelBank([spec]).fit_predict(df)
         row = out.row(3, named=True)["m"]
         assert row["pred_y0"] is not None

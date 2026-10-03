@@ -1,6 +1,6 @@
 """Durations for the clock parameters of a spec (docs/PLAN.md task 88).
 
-A parameter measured in clock units -- ``halflife``, ``max_dclock``,
+A parameter measured in clock units -- ``half_life``, ``gap_cap``,
 ``window`` and the rest -- is a plain number when the clock column is
 numeric, and a duration when it is a ``Datetime``, ``Date`` or ``Duration``
 column. A duration may be written three ways: a polars expression such as

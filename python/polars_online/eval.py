@@ -266,26 +266,26 @@ def rolling_metrics(
     spec_name: str,
     *,
     clock: str,
-    window: float | Duration,
+    window_size: float | Duration,
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
-    """:func:`metrics` in non-overlapping windows of ``window`` clock units.
+    """:func:`metrics` in non-overlapping windows of ``window_size`` clock units.
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the left
-    edge of each bucket (``floor(clock / window) * window``); ``binary`` is
-    :func:`metrics`'s. ``window`` is measured the way a spec's clock parameters
+    edge of each bucket (``floor(clock / window_size) * window_size``); ``binary`` is
+    :func:`metrics`'s. ``window_size`` is measured the way a spec's clock parameters
     are: a number for a numeric clock, and a duration for a ``Datetime``, ``Date``
     or ``Duration`` one, when ``window_start`` is of the clock's own dtype.
 
     .. code-block:: python
 
-        by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window=100.0)
-        # on a Datetime clock: window=pl.duration(hours=1), timedelta(hours=1) or "1h"
+        by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window_size=100.0)
+        # on a Datetime clock: window_size=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
-    Raises as :func:`unpack` does, ``ValueError`` for a ``window`` that is not
+    Raises as :func:`unpack` does, ``ValueError`` for a ``window_size`` that is not
     above 0 or of the wrong kind for the clock, ``TypeError`` for a ``clock``
     column that is neither numeric nor temporal, and polars'
     ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the frame has not
@@ -295,16 +295,16 @@ def rolling_metrics(
     ns = (
         None
         if dtype is None
-        else clock_nanoseconds(window, dtype, "rolling_metrics", "window", clock)
+        else clock_nanoseconds(window_size, dtype, "rolling_metrics", "window_size", clock)
     )
-    if ns is None and not window > 0:  # type: ignore[operator]
-        msg = f"window must be > 0, got {window}"
+    if ns is None and not window_size > 0:  # type: ignore[operator]
+        msg = f"window_size must be > 0, got {window_size}"
         raise ValueError(msg)
     if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
         msg = f"clock column {clock!r} must be numeric or temporal, got {dtype}"
         raise TypeError(msg)
     if ns is None:
-        start = (pl.col(clock) / window).floor() * window
+        start = (pl.col(clock) / window_size).floor() * window_size
     elif isinstance(dtype, pl.Duration):
         start = (
             (pl.col(clock).dt.total_nanoseconds() // ns * ns).cast(pl.Duration("ns")).cast(dtype)
@@ -367,7 +367,7 @@ def seqtest(
     a_suffix: str = "",
     b_suffix: str = "",
     by: Iterable[str] = (),
-    min_periods: float = 0.0,
+    min_weight: float = 0.0,
     name: str = "seqtest",
 ) -> pl.DataFrame:
     """:func:`polars_online.spec.seqtest` in polars expressions, over a frame in
@@ -394,13 +394,13 @@ def seqtest(
         In column mode: the two gamblers' log wealth and the signs counted.
     ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``, ``wins_b_<t>``
         In compare mode: the same, for "``a`` was closer" and "``b`` was closer".
-    ``n_eff``
+    ``weight_sum``
         The rows before this one in its ``by`` group; every other field is null
-        until it reaches ``min_periods``.
+        until it reaches ``min_weight``.
 
     ``by`` runs one process per group, in row order (``.over(by)``). A null, zero
     or NaN value bets nothing and counts nothing, as in the bank; what the bank
-    adds is the clock (``session``, ``on_clock_reset``), which a frame in memory
+    adds is the clock (``session``, ``restart_after_step_back``), which a frame in memory
     has not got. The bank's struct is held to this one to the last bit; the
     difference is that the bank is O(state) over a stream and this is O(rows) over
     a frame.
@@ -477,7 +477,7 @@ def seqtest(
         taken.add(column)
         return column
 
-    n_eff_col = temp("n_eff")
+    n_eff_col = temp("weight_sum")
     first: list[pl.Expr] = [over(pl.int_range(pl.len())).cast(pl.Float64).alias(n_eff_col)]
     staged: dict[str, tuple[str, str, str]] = {}
     for i, (t, d) in enumerate(signs.items()):
@@ -494,7 +494,7 @@ def seqtest(
             before((d < 0).cast(pl.Int64).fill_null(0)).alias(cols[2]),
         ]
         staged[t] = cols
-    ready = pl.col(n_eff_col) >= min_periods
+    ready = pl.col(n_eff_col) >= min_weight
     fields: list[pl.Expr] = []
     for t, (s_col, pos_col, neg_col) in staged.items():
         s, n_pos, n_neg = pl.col(s_col), pl.col(pos_col), pl.col(neg_col)
@@ -505,7 +505,7 @@ def seqtest(
         log_e_neg = before((-lam_neg * s).log1p())
         for label, e in zip(names, (log_e_pos, log_e_neg, n_pos, n_neg), strict=True):
             fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
-    fields.append(pl.col(n_eff_col).alias("n_eff"))
+    fields.append(pl.col(n_eff_col).alias("weight_sum"))
     temps = [n_eff_col, *(c for cols in staged.values() for c in cols)]
     return df.with_columns(first).with_columns(pl.struct(fields).alias(name)).drop(temps)
 

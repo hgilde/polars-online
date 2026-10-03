@@ -5898,11 +5898,13 @@ is not, since the model alone has `0.0` and `3.5` there.
         kernel against as many windows, at 16M rows; memory at the
         scan-and-sink floor, as task 78 measured.
 
-- [ ] 144. **Window expressions take Polars' names and semantics -- planned,
-      not built.** Where Polars has a parameter for the same thing, task
-      143's operators take its name, values, default and meaning, and the
-      specs take `half_life`; the rest of the public names follow (below).
-      Size L, with 143.
+- [ ] 144. **Window expressions take Polars' names and semantics -- the
+      names built 2026-10-02 (the two tables below, "Built" at the end);
+      the window semantics are built with task 143's operators.** Where
+      Polars has a parameter for the same thing, task 143's operators take
+      its name, values, default and meaning, and the specs take
+      `half_life`; the rest of the public names follow (below). Size L,
+      with 143.
 
     | Polars (`rolling_mean_by`, `ewm_mean_by`) | the window operators |
     |---|---|
@@ -6008,6 +6010,42 @@ is not, since the model alone has `0.0` and `3.5` there.
         model rename breaks more than any parameter).
       - Specs are stored in saved states, so the bank's
         `MIN_SCHEMA_VERSION` rises once for all of it.
+
+      #### Built (the names, 2026-10-02)
+
+      Every row of both tables, plus: `po.eval.rolling_metrics` takes
+      `window_size` too (the same concept, Polars' name); `ridge_scale` is
+      a two-value enum (`"mean"` default, `"sum"`), where `ridge_decay` was
+      a bool. Schema 22: the bank refuses a file older than 22 by version
+      (`MIN_BANK_SCHEMA_VERSION`); the models' own states did not change
+      and the core minimum stays 14. The Rust accessor keeps the name
+      `n_eff` (CLAUDE.md rule 8 says so): only the emitted field is
+      `weight_sum`. An old name is refused naming the new one from the spec
+      builders (`_RENAMED` in `_spec.py`) and, through
+      `online_polars::name_renamed`, from a spec dict, a windows config and
+      the command line's TOML, at the spec's level and the model's;
+      `with_windows`' own Python keywords refuse an old name as any Python
+      function does, by `TypeError`, since its signature is explicit. The
+      builder refuses two outputs rendered to one field name, naming the
+      inputs (`duplicate_field`): the one collision the columns' own names
+      can still make is `ew_cov`'s `corr_a_b_c` over `a_b, c` and over `a,
+      b_c`. The rename ran as a script over the live tree (code as
+      identifiers; prose outside code spans says half-life), with history
+      files and this plan's earlier entries left as written.
+      `docs/OUTPUTS.md` and `tests/api_surface.txt` are regenerated. Tests:
+      `tests/test_renames.py` (the builders' table against this one, every
+      old name refused from a builder and from a dict, no old output name
+      in the release probe's workload, the new names, the old collisions
+      gone, the duplicate refusal naming the inputs, the same number under
+      one name in every frame, `restart_after_step_back` as one rule), the
+      Rust `an_old_name_is_refused_naming_the_new_one` (JSON and TOML),
+      `spec_defaults.rs` for the one clock rule, and every existing test
+      under the new names. Cost: none -- no hot path changed. Measured
+      2026-10-02 against the task 152 build (`ewridge`, k=20, 400k rows,
+      load 4.8): 3.01M rows/s against 3.01M, 3.02M with `emit_clocks`
+      against 3.02M, 2.01M under `embargo=10` against 2.00M; state 10,029
+      bytes, unchanged; peak RSS 531 MB (the first RSS figure recorded, the
+      baseline for the next task).
 
       Tests: each `closed` value in both directions against Polars'
       `rolling` on the same rows, equal timestamps included; `min_samples`

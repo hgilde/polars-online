@@ -21,11 +21,11 @@ fn spec() -> Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": 60.0,
-            "max_dclock": 30.0,
+            "half_life": 60.0,
+            "gap_cap": 30.0,
             "weight": "w",
             "group": "g",
-            "min_periods": 5.0
+            "min_weight": 5.0
         }"#,
     )
     .unwrap()

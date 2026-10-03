@@ -183,7 +183,7 @@ impl EwDiag {
         if w_new <= 0.0 {
             // Nothing carried and nothing added: `a` and `b` are 0/0, and no
             // moment moves. The weight is 0 either way -- it was, at the
-            // head of a stream, and the decay took it, from 1075 halflives
+            // head of a stream, and the decay took it, from 1075 half-lives
             // on, where it used to be kept (task 115 (c), PLAN §12).
             self.w_sum = w_new;
             return;

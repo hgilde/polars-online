@@ -2,7 +2,7 @@
 
 The promise is narrow and testable: with `window = w`, a row older than `w`
 clock units contributes *nothing*, where the exponential weight alone would
-leave `0.5^(age/halflife)` of it. Inside the window the weights are still
+leave `0.5^(age/half-life)` of it. Inside the window the weights are still
 exponential — this is not a flat window, and the tests say so by comparing
 against a weighted sum rather than a plain mean.
 
@@ -30,21 +30,21 @@ def stream(n=240, seed=0, step=None):
     return pl.DataFrame({"t": t.astype(float), "x": x})
 
 
-def spec(window=None, **kw):
+def spec(window_size=None, **kw):
     d = dict(
         features=["x"],
         clock="t",
-        halflife=HALFLIFE,
-        max_dclock=1e12,
-        min_periods=0.0,
+        half_life=HALFLIFE,
+        gap_cap=1e12,
+        min_weight=0.0,
         stats=["mean"],
     )
     d.update(kw)
-    return po.spec.ew_cov("w", window=window, **d)
+    return po.spec.ew_cov("w", window_size=window_size, **d)
 
 
-def run(df, window=None, chunks=1, **kw):
-    bank = po.ModelBank([spec(window, **kw)])
+def run(df, window_size=None, chunks=1, **kw):
+    bank = po.ModelBank([spec(window_size, **kw)])
     parts = [df] if chunks == 1 else [d for d in df.iter_slices(max(1, len(df) // chunks))]
     return pl.concat([bank.fit_predict(p) for p in parts]).unnest("w")
 
@@ -131,8 +131,8 @@ def test_a_saved_bank_resumes_mid_window(tmp_path):
 def test_the_window_shrinks_n_eff_to_what_it_covers():
     df = stream(step=1.0)
     lam = 0.5 ** (1 / HALFLIFE)
-    windowed = run(df, 60.0)["n_eff"][-1]
-    plain = run(df)["n_eff"][-1]
+    windowed = run(df, 60.0)["weight_sum"][-1]
+    plain = run(df)["weight_sum"][-1]
     # A geometric sum over the window, against one over the whole stream.
     assert windowed == pytest.approx((1 - lam**60) / (1 - lam), rel=0.02)
     assert plain > windowed * 1.4
@@ -141,13 +141,13 @@ def test_the_window_shrinks_n_eff_to_what_it_covers():
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"window": 0.0}, "window must be finite and > 0"),
-        ({"window": -1.0}, "window must be finite and > 0"),
-        ({"window": float("inf")}, "window must be finite"),
+        ({"window_size": 0.0}, "window_size must be finite and > 0"),
+        ({"window_size": -1.0}, "window_size must be finite and > 0"),
+        ({"window_size": float("inf")}, "window_size must be finite"),
         ({"window_every": 5}, "window_every needs"),
-        ({"window": 10.0, "window_every": 0}, "window_every must be >= 1"),
-        ({"window": 10.0, "lags": [1]}, "window and lags do not combine"),
-        ({"window": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
+        ({"window_size": 10.0, "window_every": 0}, "window_every must be >= 1"),
+        ({"window_size": 10.0, "lags": [1]}, "window_size and lags do not combine"),
+        ({"window_size": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
     ],
 )
 def test_a_bad_window_is_refused_by_name(kw, msg):
@@ -160,26 +160,26 @@ def test_only_the_models_that_can_honour_it_accept_it(model):
     """The identity holds where the state is a sum of per-row contributions.
     Everywhere else the keyword is refused, naming the model, rather than
     accepted and quietly ignored."""
-    with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window'"):
-        getattr(po.spec, model)("m", targets=["y"], features=["x"], window=10.0)
+    with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window_size'"):
+        getattr(po.spec, model)("m", targets=["y"], features=["x"], window_size=10.0)
 
 
 # --- the same cutoff on a regression -----------------------------------------
 
 
-def ridge_spec(window=None, **kw):
+def ridge_spec(window_size=None, **kw):
     d = dict(
         targets=["y"],
         features=["x"],
         clock="t",
-        halflife=HALFLIFE,
-        max_dclock=1e12,
-        min_periods=2.0,
+        half_life=HALFLIFE,
+        gap_cap=1e12,
+        min_weight=2.0,
         ridge=1e-8,
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.ewridge("w", window=window, **d)
+    return po.spec.ewridge("w", window_size=window_size, **d)
 
 
 def regime_stream(n=300, flip=200, seed=1):
@@ -189,8 +189,8 @@ def regime_stream(n=300, flip=200, seed=1):
     return pl.DataFrame({"t": np.arange(n).astype(float), "x": x, "y": y})
 
 
-def fit(df, window=None, chunks=1, **kw):
-    bank = po.ModelBank([ridge_spec(window, **kw)])
+def fit(df, window_size=None, chunks=1, **kw):
+    bank = po.ModelBank([ridge_spec(window_size, **kw)])
     parts = [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks)))
     for p in parts:
         bank.fit_predict(p)
@@ -201,7 +201,7 @@ def test_a_windowed_fit_forgets_the_regime_the_window_excludes():
     """The point of the feature, as an experiment: a relationship that ended
     before the window cannot bend the coefficients inside it."""
     df = regime_stream()
-    intercept, slope = fit(df, window=40.0)
+    intercept, slope = fit(df, window_size=40.0)
     assert slope == pytest.approx(-2.0, abs=1e-4)
     assert intercept == pytest.approx(5.0, abs=1e-4)
     # Without one, the decayed tail of the old regime is still in the fit.
@@ -225,7 +225,7 @@ def test_the_windowed_fit_is_the_weighted_least_squares_of_its_rows():
     """Against the normal equations over exactly the rows inside the window."""
     df = regime_stream(n=260, flip=170, seed=4)
     window = 50.0
-    got = fit(df, window=window)
+    got = fit(df, window_size=window)
     age = df["t"][-1] - df["t"].to_numpy()
     assert got == pytest.approx(list(windowed_wls(df, age <= window)), rel=1e-5)
 
@@ -242,7 +242,7 @@ def test_a_row_exactly_one_window_old_is_inside_it():
     df = pl.DataFrame(
         {"t": np.arange(n, dtype=float), "x": x, "y": 1.5 * x + 0.3 + rng.standard_normal(n)}
     )
-    got = fit(df, window=window)
+    got = fit(df, window_size=window)
     age = df["t"][-1] - df["t"].to_numpy()
     assert (age == window).sum() == 1, "a row must sit exactly on the boundary"
     inside, outside = windowed_wls(df, age <= window), windowed_wls(df, age < window)
@@ -272,15 +272,15 @@ def test_a_windowed_fit_resumes_from_a_saved_bank(tmp_path):
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"ridge_decay": True}, "window and ridge_decay do not combine"),
+        ({"ridge_scale": "sum"}, "window_size and ridge_scale do not combine"),
         (
             {
                 "session_shrink": 0.5,
-                "long_halflife": 500.0,
+                "long_half_life": 500.0,
                 "session": "t",
                 "session_gap": 10.0,
             },
-            "window and session_shrink",
+            "window_size and session_shrink",
         ),
     ],
 )
@@ -292,19 +292,19 @@ def test_a_window_is_refused_where_the_identity_does_not_hold(kw, msg):
 # --- and on a path that selects ----------------------------------------------
 
 
-def lasso_spec(window=None, **kw):
+def lasso_spec(window_size=None, **kw):
     d = dict(
         targets=["y"],
         features=["x0", "x1"],
         clock="t",
-        halflife=HALFLIFE,
-        max_dclock=1e12,
-        min_periods=2.0,
+        half_life=HALFLIFE,
+        gap_cap=1e12,
+        min_weight=2.0,
         lasso_path=[0.05],
         max_rows_between_solves=1,
     )
     d.update(kw)
-    return po.spec.lasso("w", window=window, **d)
+    return po.spec.lasso("w", window_size=window_size, **d)
 
 
 def two_regime_features(n=300, flip=200, seed=2):
@@ -315,8 +315,8 @@ def two_regime_features(n=300, flip=200, seed=2):
     return pl.DataFrame({"t": np.arange(n).astype(float), "x0": x0, "x1": x1, "y": y})
 
 
-def lasso_coef(df, window=None, chunks=1):
-    bank = po.ModelBank([lasso_spec(window)])
+def lasso_coef(df, window_size=None, chunks=1):
+    bank = po.ModelBank([lasso_spec(window_size)])
     for part in [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks))):
         bank.fit_predict(part)
     return bank.coef("w")["coef"].to_list()
@@ -327,7 +327,7 @@ def test_a_windowed_path_drops_the_support_the_window_excludes():
     with no evidence for `x0` inside it, the penalty takes it to exactly
     zero, where the decayed fit still carries it."""
     df = two_regime_features()
-    _, x0, x1 = lasso_coef(df, window=40.0)
+    _, x0, x1 = lasso_coef(df, window_size=40.0)
     assert x0 == 0.0, "a feature with no in-window evidence should be dropped"
     assert x1 == pytest.approx(2.5, abs=0.1)
     _, plain_x0, _ = lasso_coef(df)
@@ -364,10 +364,10 @@ def test_a_windowed_screen_sees_the_relationship_the_full_history_cancels():
             clock="t",
             # Slow enough that the old regime is still half the weight: that
             # is what makes the two signs cancel.
-            halflife=60.0,
-            max_dclock=1e12,
-            min_periods=2.0,
-            window=window,
+            half_life=60.0,
+            gap_cap=1e12,
+            min_weight=2.0,
+            window_size=window,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -400,12 +400,12 @@ def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
             label="c",
             classes=["a", "b"],
             clock="t",
-            halflife=120.0,
-            max_dclock=1e12,
-            min_periods=2.0,
+            half_life=120.0,
+            gap_cap=1e12,
+            min_weight=2.0,
             covariance="diagonal",
             precision_prior=1e-3,
-            window=window,
+            window_size=window,
         )
         out = po.ModelBank([spec]).fit_predict(df).unnest("m")
         return (out["class"].tail(100) == df["c"].tail(100)).mean()

@@ -26,25 +26,25 @@ def _frame(n: int = 300) -> pl.DataFrame:
     return pl.DataFrame({"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(n)})
 
 
-#: This file's spec is frozen on its first solve by construction: `min_periods
+#: This file's spec is frozen on its first solve by construction: `min_weight
 #: = 0` solves at one row, where the slope has no variance to read and is
-#: entirely the ridge, and `halflife = 1e9` leaves no solve cadence to refit --
+#: entirely the ridge, and `half_life = 1e9` leaves no solve cadence to refit --
 #: `pred_y` is one constant for all 300 rows. `support_coef` reads 0.00 and the
 #: warning that names it is *correct*; it is simply beside the point here,
-#: where what is under test is the window ring's bookkeeping (`n_eff`), which
+#: where what is under test is the window ring's bookkeeping (`weight_sum`), which
 #: does not depend on the fit (2026-09-21).
 pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
 
 
 def _spec(**kw):
-    kw.setdefault("halflife", 1e9)
+    kw.setdefault("half_life", 1e9)
     return po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], window=50.0, window_every=1, min_periods=0.0, **kw
+        "m", targets=["y"], features=["x0"], window_size=50.0, window_every=1, min_weight=0.0, **kw
     )
 
 
 def _n_eff(spec, df):
-    return po.ModelBank([spec]).fit_predict(df).unnest("m")["n_eff"].to_numpy()
+    return po.ModelBank([spec]).fit_predict(df).unnest("m")["weight_sum"].to_numpy()
 
 
 def test_past_the_budget_the_ring_thins_and_never_keeps_an_older_row():
@@ -152,9 +152,9 @@ def test_a_bad_budget_is_refused_by_name(budget, message):
 
 
 def test_a_budget_without_a_window_is_refused():
-    with pytest.raises(ValueError, match="window_budget needs `window`"):
+    with pytest.raises(ValueError, match="window_budget needs `window_size`"):
         po.spec.ewridge(
-            "m", targets=["y"], features=["x0"], halflife=10.0, window_budget={"thin": 1.0}
+            "m", targets=["y"], features=["x0"], half_life=10.0, window_budget={"thin": 1.0}
         )
 
 
@@ -176,7 +176,7 @@ def test_the_budget_holds_after_a_load():
     head = first.fit_predict(df.head(150)).unnest("m")
     tail = po.ModelBank.load_bytes(first.save_bytes()).fit_predict(df.tail(250)).unnest("m")
     both = pl.concat([head, tail])
-    for col in ("n_eff", "pred_y"):
+    for col in ("weight_sum", "pred_y"):
         assert both[col].equals(whole[col]), col
 
 
@@ -203,7 +203,9 @@ def test_every_windowed_model_holds_its_budget(kind):
     refusing budget without a word (docs/EXTENDING.md)."""
     label = pl.when(pl.col("x0") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
     df = _frame().with_columns(c=label)
-    spec = WINDOWED[kind](halflife=1e9, window=50.0, window_every=1, window_budget={"refuse": TINY})
+    spec = WINDOWED[kind](
+        half_life=1e9, window_size=50.0, window_every=1, window_budget={"refuse": TINY}
+    )
     with pytest.raises(ValueError, match="window_budget"):
         po.ModelBank([spec]).fit_predict(df)
 

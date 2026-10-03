@@ -2,7 +2,7 @@
 
     uv run python scripts/benchmark.py [--rows N] [--markdown]
 
-Reports rows/sec for k in {5, 20, 50}, 1 vs 10 targets, and 1 vs 5 halflives,
+Reports rows/sec for k in {5, 20, 50}, 1 vs 10 targets, and 1 vs 5 half-lives,
 plus a model comparison at a fixed size, then the same for the families that
 are not regressions (moments, classification, clustering, sequential tests)
 and the options that add a second pass (conformal, constraints, reversion).
@@ -67,7 +67,7 @@ def main() -> None:
 
     results: list[tuple[str, str, float]] = []
 
-    # --- k sweep, single target, single halflife ---
+    # --- k sweep, single target, single half-life ---
     for k in (5, 20, 50):
         df = make(rows, k, 1)
         feats = [f"x{j}" for j in range(k)]
@@ -76,11 +76,11 @@ def main() -> None:
             targets=["y0"],
             features=feats,
             clock="t",
-            halflife=1000.0,
-            max_dclock=100.0,
-            min_periods=float(k),
+            half_life=1000.0,
+            gap_cap=100.0,
+            min_weight=float(k),
         )
-        results.append((f"ew_ridge k={k}", "1 target, 1 halflife", time_spec(df, spec)))
+        results.append((f"ew_ridge k={k}", "1 target, 1 half_life", time_spec(df, spec)))
 
     # --- targets sweep at k=20 ---
     for m in (1, 10):
@@ -91,13 +91,13 @@ def main() -> None:
             targets=[f"y{j}" for j in range(m)],
             features=feats,
             clock="t",
-            halflife=1000.0,
-            max_dclock=100.0,
-            min_periods=20.0,
+            half_life=1000.0,
+            gap_cap=100.0,
+            min_weight=20.0,
         )
-        results.append((f"ew_ridge k=20, {m} target(s)", "1 halflife", time_spec(df, spec)))
+        results.append((f"ew_ridge k=20, {m} target(s)", "1 half_life", time_spec(df, spec)))
 
-    # --- halflife grid at k=20 (one accumulator per halflife) ---
+    # --- half-life grid at k=20 (one accumulator per half-life) ---
     for n_hl in (1, 5):
         df = make(rows, 20, 1)
         feats = [f"x{j}" for j in range(20)]
@@ -107,11 +107,11 @@ def main() -> None:
             targets=["y0"],
             features=feats,
             clock="t",
-            halflife=hl[0] if n_hl == 1 else hl,
-            max_dclock=100.0,
-            min_periods=20.0,
+            half_life=hl[0] if n_hl == 1 else hl,
+            gap_cap=100.0,
+            min_weight=20.0,
         )
-        results.append((f"ew_ridge k=20, {n_hl} halflife(s)", "1 target", time_spec(df, spec)))
+        results.append((f"ew_ridge k=20, {n_hl} half_life(s)", "1 target", time_spec(df, spec)))
 
     # --- model comparison at k=20 ---
     df = make(rows, 20, 1)
@@ -120,14 +120,14 @@ def main() -> None:
         targets=["y0"],
         features=feats,
         clock="t",
-        halflife=1000.0,
-        max_dclock=100.0,
-        min_periods=20.0,
+        half_life=1000.0,
+        gap_cap=100.0,
+        min_weight=20.0,
     )
     models = {
         "ew_ridge": po.spec.ewridge("m", **common),
         "rls": po.spec.rls("m", ridge=1.0, **common),
-        "kalman": po.spec.kalman("m", coef_halflife=2000.0, **common),
+        "kalman": po.spec.kalman("m", coef_half_life=2000.0, **common),
         "lasso": po.spec.lasso("m", lasso_path=[0.1, 0.01, 0.0], **common),
         "huber": po.spec.huber("m", **common),
         "ftrl": po.spec.ftrl("m", **common),
@@ -144,9 +144,9 @@ def main() -> None:
     classes = ["0", "1", "2"]
 
     def no_decay(base: dict, drop_weight: bool = False) -> dict:
-        """The models with no decay of their own refuse `halflife`, and
-        `min_periods` is theirs to default."""
-        out = {k: v for k, v in base.items() if k not in ("halflife", "min_periods")}
+        """The models with no decay of their own refuse `half-life`, and
+        `min_weight` is theirs to default."""
+        out = {k: v for k, v in base.items() if k not in ("half_life", "min_weight")}
         if drop_weight:
             out.pop("weight", None)
         return out
@@ -166,8 +166,8 @@ def main() -> None:
         ("pa", "k=20", po.spec.pa("m", **common)),
         (
             "kalman + revert",
-            "k=20, revert_halflife",
-            po.spec.kalman("m", coef_halflife=2000.0, revert_halflife=5000.0, **common),
+            "k=20, revert_half_life",
+            po.spec.kalman("m", coef_half_life=2000.0, revert_half_life=5000.0, **common),
         ),
         ("ew_cov", "k=20: mean, std, corr (230 statistics)", po.spec.ew_cov("m", **no_target)),
         (
@@ -216,7 +216,7 @@ def main() -> None:
         (
             "seqtest",
             "sign of one column",
-            po.spec.seqtest("m", targets=["y0"], clock="t", max_dclock=100.0),
+            po.spec.seqtest("m", targets=["y0"], clock="t", gap_cap=100.0),
         ),
         # The correlation families (tasks 45-56). `rcov` and `corrchange`
         # need a group that closes and a span that closes; `bocpd`'s cost is

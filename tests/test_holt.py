@@ -8,7 +8,7 @@ import polars_online as po
 
 
 def _spec(**kw):
-    d = dict(targets=["y0"], clock="t", max_dclock=100.0, halflife=5.0, min_periods=3.0)
+    d = dict(targets=["y0"], clock="t", gap_cap=100.0, half_life=5.0, min_weight=3.0)
     d.update(kw)
     return po.spec.holt("m", **d)
 
@@ -29,7 +29,7 @@ def test_needs_no_features():
     assert po.spec.output_fields(spec) == [
         "pred_y0",
         "resid_y0",
-        "n_eff",
+        "weight_sum",
         "settled_frac",
         "withheld_reason",
         "coef",
@@ -51,41 +51,41 @@ def test_predicts_the_next_value():
 
 
 def test_an_infinite_trend_halflife_learns_the_whole_history_drift():
-    """``trend_halflife=inf`` forgets no slope, as ``inf`` means everywhere
+    """``trend_half_life=inf`` forgets no slope, as ``inf`` means everywhere
     else here. It used to pin the trend at zero, so the fit lagged a trending
     series (review 2026-09-12, S30)."""
-    out = _run(_trending(), trend_halflife=float("inf"))
+    out = _run(_trending(), trend_half_life=float("inf"))
     _, trend = out["m"].struct.field("coef").to_list()[-1]
     assert trend == pytest.approx(2.0, abs=0.1)
 
 
 def test_lam_one_is_an_infinite_halflife():
     """``lam=1`` is no forgetting, as for every other model: the same fit as
-    ``halflife=inf``. It became ``-inf`` on its way to a halflife and was
-    refused in ``level_halflife``'s name (review 2026-09-12, S30)."""
+    ``half_life=inf``. It became ``-inf`` on its way to a half-life and was
+    refused in ``level_half_life``'s name (review 2026-09-12, S30)."""
     df = _trending(n=200)
-    kw = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0)
-    kw["trend_halflife"] = float("inf")
+    kw = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0)
+    kw["trend_half_life"] = float("inf")
     by_lam = po.ModelBank([po.spec.holt("m", lam=1.0, **kw)]).fit_predict(df)
-    by_inf = po.ModelBank([po.spec.holt("m", halflife=float("inf"), **kw)]).fit_predict(df)
+    by_inf = po.ModelBank([po.spec.holt("m", half_life=float("inf"), **kw)]).fit_predict(df)
     assert by_lam.equals(by_inf, null_equal=True)
 
 
 def test_an_infinite_level_halflife_is_an_infinite_halflife():
-    """``level_halflife`` and ``halflife`` are one knob for holt, and ``inf``
+    """``level_half_life`` and ``half_life`` are one knob for holt, and ``inf``
     is no forgetting under either name: the builder took it under one and
     refused it under the other (review 2026-09-12, S27)."""
     df = _trending(n=200)
-    kw = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0)
-    by_level = po.ModelBank([po.spec.holt("m", level_halflife=float("inf"), **kw)]).fit_predict(df)
-    by_inf = po.ModelBank([po.spec.holt("m", halflife=float("inf"), **kw)]).fit_predict(df)
+    kw = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0)
+    by_level = po.ModelBank([po.spec.holt("m", level_half_life=float("inf"), **kw)]).fit_predict(df)
+    by_inf = po.ModelBank([po.spec.holt("m", half_life=float("inf"), **kw)]).fit_predict(df)
     assert by_level.equals(by_inf, null_equal=True)
 
 
 def test_irregular_clock_extrapolates_the_right_distance():
     # The trend is per clock unit, so a 5-unit gap must forecast 5 units ahead.
     df = _trending(n=400, step=5.0, noise=0.0)
-    out = _run(df, halflife=20.0)
+    out = _run(df, half_life=20.0)
     pred = out["m"].struct.field("pred_y0").to_list()[-1]
     assert pred == pytest.approx(df["y0"].to_list()[-1], rel=0.01)
 
@@ -106,7 +106,7 @@ def test_is_a_baseline_a_regression_should_beat():
     x = rng.standard_normal(n)
     df = pl.DataFrame({"t": t, "x0": x, "y0": 0.05 * t + 3.0 * x + 0.1 * rng.standard_normal(n)})
 
-    holt_out = _run(df, halflife=20.0)
+    holt_out = _run(df, half_life=20.0)
     ridge_out = po.ModelBank(
         [
             po.spec.ewridge(
@@ -114,9 +114,9 @@ def test_is_a_baseline_a_regression_should_beat():
                 targets=["y0"],
                 features=["x0"],
                 clock="t",
-                max_dclock=100.0,
-                halflife=20.0,
-                min_periods=3.0,
+                gap_cap=100.0,
+                half_life=20.0,
+                min_weight=3.0,
                 max_rows_between_solves=1,
             )
         ]
@@ -154,14 +154,14 @@ def test_chunk_invariance_and_save_load(tmp_path):
 
 
 def test_level_halflife_alone_is_enough(tmp_path):
-    """`halflife` and `level_halflife` are one knob under two names -- the
-    level defaults to the spec's halflife -- so giving either satisfies the
-    "one of halflife/lam is required" rule. The README's own Holt example
-    gives only `level_halflife`, and used to be refused (IMPROVEMENTS U6)."""
+    """`half-life` and `level_half_life` are one knob under two names -- the
+    level defaults to the spec's half-life -- so giving either satisfies the
+    "one of half-life/lam is required" rule. The README's own Holt example
+    gives only `level_half_life`, and used to be refused (IMPROVEMENTS U6)."""
     df = _trending(n=200)
-    d = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0, trend_halflife=80.0)
-    by_level = po.spec.holt("m", level_halflife=20.0, **d)
-    by_halflife = po.spec.holt("m", halflife=20.0, **d)
+    d = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0, trend_half_life=80.0)
+    by_level = po.spec.holt("m", level_half_life=20.0, **d)
+    by_halflife = po.spec.holt("m", half_life=20.0, **d)
     a = po.ModelBank([by_level]).fit_predict(df)
     b = po.ModelBank([by_halflife]).fit_predict(df)
     assert a.equals(b, null_equal=True)
@@ -170,24 +170,24 @@ def test_level_halflife_alone_is_enough(tmp_path):
 
 
 def test_a_holt_spec_still_needs_one_of_them():
-    with pytest.raises(ValueError, match="one of halflife/lam is required"):
-        po.spec.holt("m", targets=["y0"], trend_halflife=100.0)
-    with pytest.raises(ValueError, match="level_halflife must be > 0"):
-        po.spec.holt("m", targets=["y0"], level_halflife=-1.0)
+    with pytest.raises(ValueError, match="one of half_life/lam is required"):
+        po.spec.holt("m", targets=["y0"], trend_half_life=100.0)
+    with pytest.raises(ValueError, match="level_half_life must be > 0"):
+        po.spec.holt("m", targets=["y0"], level_half_life=-1.0)
 
 
 def test_other_models_do_not_get_the_exemption():
-    with pytest.raises(ValueError, match="one of halflife/lam is required"):
-        po.spec.kalman("m", targets=["y0"], features=["x0"], coef_halflife=50.0)
+    with pytest.raises(ValueError, match="one of half_life/lam is required"):
+        po.spec.kalman("m", targets=["y0"], features=["x0"], coef_half_life=50.0)
 
 
 def test_bad_config_rejected():
-    with pytest.raises(ValueError, match="level_halflife"):
-        _spec(level_halflife=0.0)
-    with pytest.raises(ValueError, match="trend_halflife"):
-        _spec(trend_halflife=0.0)
+    with pytest.raises(ValueError, match="level_half_life"):
+        _spec(level_half_life=0.0)
+    with pytest.raises(ValueError, match="trend_half_life"):
+        _spec(trend_half_life=0.0)
 
 
 def test_other_models_still_require_features():
     with pytest.raises(ValueError, match="features must be non-empty"):
-        po.spec.ewridge("m", targets=["y0"], features=[], halflife=10.0)
+        po.spec.ewridge("m", targets=["y0"], features=[], half_life=10.0)

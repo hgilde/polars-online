@@ -6,7 +6,7 @@ The models whose state is a sum -- :func:`lasso_paths_ref`,
 :func:`ewridge_paths_ref`, :func:`rls_paths_ref` -- are recomputed **from the
 raw rows** at the moment each statistic is needed, where
 `tests/reference.py` runs each model's own recursion longhand: each past row
-at its weight ``w * 0.5 ** (age / halflife)``, the age read on the capped
+at its weight ``w * 0.5 ** (age / half_life)``, the age read on the capped
 clock the decay uses. That makes them independent of the mean-form
 recursion as well as of the solver, and it is what lets a ``window`` be
 written from its definition -- the rows whose age is at most ``window``,
@@ -19,8 +19,8 @@ hard rules 2, 8 and 9):
 
 - A row with a null feature is skipped: every output NaN, nothing learned,
   and its clock step folds into the next accepted row's, which
-  ``max_dclock`` caps.
-- ``n_eff`` is the weight before the row's update and before its own decay,
+  ``gap_cap`` caps.
+- ``weight_sum`` is the weight before the row's update and before its own decay,
   so its ages are counted from the last accepted row; under a ``window`` it
   is the weight inside the window, as seen from there.
 - A zero-weight row advances the clock and teaches nothing.
@@ -57,25 +57,25 @@ def lasso_paths_ref(
     lasso_path: list[float],
     *,
     l1_ratio: float = 1.0,
-    halflife: float = np.inf,
-    select_halflife: float | None = None,
-    min_periods: float | list[float] | None = None,
+    half_life: float = np.inf,
+    select_half_life: float | None = None,
+    min_weight: float | list[float] | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
-    max_dclock: float = np.inf,
-    window: float | None = None,
-    add_intercept: bool = True,
+    gap_cap: float = np.inf,
+    window_size: float | None = None,
+    fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     tol: float = 1e-14,
 ) -> dict[str, np.ndarray]:
     """The ``lasso`` builder's path over several targets, null targets,
-    ``target_gaps``, ``window``, ``add_intercept=False`` and
+    ``target_gaps``, ``window_size``, ``fit_intercept=False`` and
     ``lam_selected`` (docs/PLAN.md section 4.3 and task 81, the ``lasso`` and
     ``ewridge`` docstrings).
 
     **The fit.** Each solve fits every path point ``l`` of every target
     ``j`` from the rows learned so far, each at ``w * 0.5 ** (age /
-    halflife)`` with the age counted from the solve's row, minimising::
+    half-life)`` with the age counted from the solve's row, minimising::
 
         1/2 b'Cb - c'b + l1 |b|_1 + l2/2 |b|^2      l1 = l * l1_ratio, l2 = l * (1 - l1_ratio)
 
@@ -87,7 +87,7 @@ def lasso_paths_ref(
       target's rows, centred at the target's own means (pandas'
       pairwise-complete covariance). The intercept reads the target's own
       means either way;
-    - ``window``: of those, only the rows whose age is at most ``window``.
+    - ``window_size``: of those, only the rows whose age is at most ``window_size``.
 
     With an intercept, ``C`` is the correlation matrix of the centred
     features, ``c_i = cov(x_i, y) / s_i``, ``coef_i = b_i / s_i`` and the
@@ -112,26 +112,26 @@ def lasso_paths_ref(
 
     **Scoring.** Row ``i`` is scored with the last solve before it, target
     ``j`` only once its own weight -- the rows it is present on, at their raw
-    weights, decayed, inside the window -- reaches its ``min_periods``
-    (scalar or one per target). ``n_eff`` is the weight of every row.
+    weights, decayed, inside the window -- reaches its ``min_weight``
+    (scalar or one per target). ``weight_sum`` is the weight of every row.
 
     **The schedule** is ``lasso_ref``'s: after the row is learned a solve
     runs when the clock since the last one reaches ``solve_every`` (left out:
     once the weight learned since the last reaches ``ln 2 / 50`` of the weight
-    the fit holds under a finite halflife, docs/PLAN.md task 115 (b); every row
+    the fit holds under a finite half-life, docs/PLAN.md task 115 (b); every row
     for an infinite one), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
-    none yet and ``n_eff`` has reached ``min_periods``. That last rule is
+    none yet and ``weight_sum`` has reached ``min_weight``. That last rule is
     written for one target and one threshold; with several the reference
     raises if it is ever the one that decides, so a test must let the cadence
     solve first.
 
     **``lam_selected``.** Per target, the path point with the least weighted
     sum of squared out-of-sample errors so far, each at ``w * 0.5 ** (age /
-    select_halflife)`` (default the halflife) and, under a window, inside it
+    select_half_life)`` (default the half-life) and, under a window, inside it
     -- as it stood before the row. The errors are the model's own
     predictions' wherever the target is present: the model predicts once
-    ``n_eff`` reaches the smallest threshold (docs/ENHANCEMENTS.md E7) and a
+    ``weight_sum`` reaches the smallest threshold (docs/ENHANCEMENTS.md E7) and a
     target once it has any weight, and what the target's own threshold
     withholds is the output, not the model (review 2026-09-12, S2, as
     ``ewridge_ref``'s ``sigma2`` folds it). NaN where there is no error yet,
@@ -139,33 +139,33 @@ def lasso_paths_ref(
     to hold a library to), and for good once an error came from a fit the
     reference does not hold.
 
-    Returns ``pred`` (n, m, P), ``n_eff`` (n,), ``w_target`` (n, m), each
+    Returns ``pred`` (n, m, P), ``weight_sum`` (n,), ``w_target`` (n, m), each
     target's weight before the row, ``coef`` (n, m, P, kt), the last solve's
     fit, NaN before the first and on skipped rows, ``lam_selected`` (n, m)
     and ``solved`` (n,).
     """
     n, k = X.shape
     m = Y.shape[1]
-    kt = k + 1 if add_intercept else k
+    kt = k + 1 if fit_intercept else k
     npath = len(lasso_path)
     path = np.asarray(lasso_path, dtype=float)
     if target_gaps not in ("own_rows", "pairwise"):
         raise ValueError(target_gaps)
-    if min_periods is None:
-        min_periods = float(kt)
-    mp = np.broadcast_to(np.asarray(min_periods, dtype=float), (m,))
-    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
+    if min_weight is None:
+        min_weight = float(kt)
+    mp = np.broadcast_to(np.asarray(min_weight, dtype=float), (m,))
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(half_life) else None
     if solve_every is None:
         solve_every = 0.0
     since_w = 0.0
-    if select_halflife is None:
-        select_halflife = halflife
+    if select_half_life is None:
+        select_half_life = half_life
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
-    horizon = np.inf if window is None else window
-    single = m == 1 and np.ndim(min_periods) == 0
+    horizon = np.inf if window_size is None else window_size
+    single = m == 1 and np.ndim(min_weight) == 0
 
     pred = np.full((n, m, npath), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     w_target = np.full((n, m), np.nan)
     coef = np.full((n, m, npath, kt), np.nan)
     lam_selected = np.full((n, m), np.nan)
@@ -180,7 +180,7 @@ def lasso_paths_ref(
         fit = np.full((npath, kt), np.nan)
         if omo.sum() <= 0.0:
             return fit
-        if add_intercept:
+        if fit_intercept:
             mg = _weighted_mean(xg, omg)
             cov = (omg[:, None, None] * np.einsum("ri,rj->rij", xg - mg, xg - mg)).sum(
                 axis=0
@@ -202,7 +202,7 @@ def lasso_paths_ref(
             C = raw[np.ix_(kept, kept)] / np.outer(s, s)
             c = rxy[kept] / s
         floor = np.linalg.eigvalsh(C)[0] if kept.size else np.inf
-        off = 1 if add_intercept else 0
+        off = 1 if fit_intercept else 0
         for p, lam in enumerate(path):
             l1, l2 = lam * l1_ratio, lam * (1.0 - l1_ratio)
             if floor + l2 < 1e-2:
@@ -210,7 +210,7 @@ def lasso_paths_ref(
             b = np.zeros(k)
             b[kept] = _enet_descent(C, c, l1, l2, tol) / s
             fit[p, off:] = b
-            if add_intercept:
+            if fit_intercept:
                 fit[p, 0] = ybar - mo @ b
         return fit
 
@@ -218,7 +218,7 @@ def lasso_paths_ref(
         ta, wa, xa, ya = (np.asarray(v) for v in (T, Wr, Xr, Yr))
         ages = t_now - ta
         inside = ages <= horizon
-        om = wa * decay(ages, halflife)
+        om = wa * decay(ages, half_life)
         fit = np.full((m, npath, kt), np.nan)
         for j in range(m):
             own = inside & ~np.isnan(ya[:, j])
@@ -241,25 +241,25 @@ def lasso_paths_ref(
         if np.isnan(X[i]).any():
             pending += dclock[i]
             continue
-        d = min(dclock[i] + pending, max_dclock)
+        d = min(dclock[i] + pending, gap_cap)
         pending = 0.0
         t_now = (t_last + d) if T else 0.0
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
 
         # ---- before the row: every weight is seen from the last accepted row ----
         if T:
             ages = t_last - np.asarray(T)
             inside = ages <= horizon
-            om = np.where(inside, np.asarray(Wr) * decay(ages, halflife), 0.0)
+            om = np.where(inside, np.asarray(Wr) * decay(ages, half_life), 0.0)
             present = ~np.isnan(np.asarray(Yr))
-            n_eff[i] = om.sum()
+            weight_sum[i] = om.sum()
             w_target[i] = om @ present
         else:
-            n_eff[i] = 0.0
+            weight_sum[i] = 0.0
             w_target[i] = 0.0
         own = np.full((m, npath), np.nan)
         for j in range(m):
-            if fit is not None and w_target[i, j] > 0.0 and n_eff[i] >= float(np.min(mp)):
+            if fit is not None and w_target[i, j] > 0.0 and weight_sum[i] >= float(np.min(mp)):
                 own[j] = fit[j] @ z
                 if w_target[i, j] >= mp[j]:
                     if np.isnan(own[j]).any():
@@ -270,7 +270,7 @@ def lasso_paths_ref(
             if errs[j] and not unheld[j]:
                 te, we, ee = (np.asarray(v) for v in zip(*errs[j], strict=True))
                 ages_e = t_last - te
-                wt = np.where(ages_e <= horizon, we * decay(ages_e, select_halflife), 0.0)
+                wt = np.where(ages_e <= horizon, we * decay(ages_e, select_half_life), 0.0)
                 if wt.sum() > 0.0:
                     score = wt @ (ee**2)
                     lo, second = np.sort(score)[:2]
@@ -285,7 +285,7 @@ def lasso_paths_ref(
         for j in range(m):
             if fit is None or np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
-            if w_target[i, j] > 0.0 and n_eff[i] >= float(np.min(mp)):
+            if w_target[i, j] > 0.0 and weight_sum[i] >= float(np.min(mp)):
                 if np.isnan(own[j]).any():
                     unheld[j] = True
                 errs[j].append((t_now, float(w[i]), Y[i, j] - own[j]))
@@ -297,14 +297,14 @@ def lasso_paths_ref(
         since_w += max(float(w[i]), 0.0)
         if share is not None:
             ages = t_now - np.asarray(T)
-            held = (np.asarray(Wr) * decay(ages, halflife))[ages <= horizon].sum()
+            held = (np.asarray(Wr) * decay(ages, half_life))[ages <= horizon].sum()
             by_cadence = since_w >= share * held
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         cadence = by_cadence or since_rows >= max_rows
         if not cadence and fit is None:
             ages = t_now - np.asarray(T)
-            weight = (np.asarray(Wr) * decay(ages, halflife))[ages <= horizon].sum()
+            weight = (np.asarray(Wr) * decay(ages, half_life))[ages <= horizon].sum()
             if weight >= float(np.min(mp)):
                 if not single:
                     raise ValueError(
@@ -321,7 +321,7 @@ def lasso_paths_ref(
 
     return {
         "pred": pred,
-        "n_eff": n_eff,
+        "weight_sum": weight_sum,
         "w_target": w_target,
         "coef": coef,
         "lam_selected": lam_selected,
@@ -342,7 +342,7 @@ def _share(kf: np.ndarray, ks: np.ndarray, rows: np.ndarray, f: float) -> np.nda
     return out
 
 
-def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept):
+def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, fit_intercept):
     """One ridge problem, from the Gram's rows ``xg`` at ``omg`` and the
     target's own rows ``xo``, ``yo`` at ``omo`` (the ``ewridge`` docstring).
 
@@ -366,7 +366,7 @@ def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept):
     their correlation matrix below 1e-3)."""
     if omo.sum() <= 0.0 or omg.sum() <= 0.0:
         return None
-    if add_intercept:
+    if fit_intercept:
         mg = _weighted_mean(xg, omg)
         M = (omg[:, None, None] * np.einsum("ri,rj->rij", xg - mg, xg - mg)).sum(axis=0) / omg.sum()
         mo = _weighted_mean(xo, omo)
@@ -392,7 +392,7 @@ def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept):
         b[kept] /= scale[kept]
     else:
         b = np.linalg.solve(M + ridge * np.eye(len(scale)), v)
-    return (ybar - mo @ b if add_intercept else 0.0), b
+    return (ybar - mo @ b if fit_intercept else 0.0), b
 
 
 def ewridge_paths_ref(
@@ -401,54 +401,54 @@ def ewridge_paths_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     *,
-    halflife: float,
+    half_life: float,
     ridge: float | list[float] = 1e-6,
     feature_sets: list[list[int]] | None = None,
     standardize: bool = False,
-    add_intercept: bool = True,
+    fit_intercept: bool = True,
     target_gaps: str = "own_rows",
-    window: float | None = None,
-    min_periods: float | list[float] = 0.0,
+    window_size: float | None = None,
+    min_weight: float | list[float] = 0.0,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
-    max_dclock: float = np.inf,
+    gap_cap: float = np.inf,
     session: np.ndarray | None = None,
     session_gap: float | str | None = None,
     session_shrink: float | None = None,
-    long_halflife: float | None = None,
+    long_half_life: float | None = None,
 ) -> dict[str, object]:
     """``ewridge`` on its documented schedule, over a ridge grid and feature
     sets, from the raw rows (the ``ewridge`` builder's docstring, docs/PLAN.md
     section 4.1 and task 81).
 
     Every past row of the current state enters a solve at its **effective
-    weight**: ``w * 0.5 ** (age / halflife)``, with the age on the capped
+    weight**: ``w * 0.5 ** (age / half_life)``, with the age on the capped
     clock, inside the window under one. A ``session_shrink`` blend at ``f``
     fits on ``1 - f`` of today's rows and ``f`` of the long run's, at today's
     weight (docs/PLAN.md task 145): each row's weight becomes ``W_h · ((1 -
     f) ω_h / W_h + f ω_H / W_H)``, ``ω_h`` its weight here, ``ω_H`` its
-    weight in the slow twin at ``long_halflife``, and ``W`` each side's total,
+    weight in the slow twin at ``long_half_life``, and ``W`` each side's total,
     as the rows stand before the first row of the new session. The Gram
     normalises over every row, and each target over its own rows, so a row
     keeps one weight per target beside the Gram's; the mean-form sums are
     linear in these weights, so the blend is exact on them
     (``tests/test_second_opinion.py`` ``TestSessionShrinkBlend`` pins that
     reading). The new session's first row is then scored from the blend,
-    re-solved, and every row ages from there at ``halflife``.
+    re-solved, and every row ages from there at ``half_life``.
     ``session_gap="reset"`` starts the state over.
 
     **Scoring.** Target ``j`` is scored with the last solve once its own
-    weight (the rows it is present on) reaches its ``min_periods``, scalar or
-    one per target. ``n_eff`` is the weight of every row. Both are seen from
+    weight (the rows it is present on) reaches its ``min_weight``, scalar or
+    one per target. ``weight_sum`` is the weight of every row. Both are seen from
     the last accepted row, before the row's own decay (hard rule 8).
 
     **The schedule** is ``lasso_paths_ref``'s: after the row is learned a
     solve runs when the clock since the last one reaches ``solve_every``
     (left out: once the weight learned since the last reaches ``ln 2 / 50`` of
-    the weight the fit holds under a finite halflife, docs/PLAN.md task 115
+    the weight the fit holds under a finite half-life, docs/PLAN.md task 115
     (b); every row for ``inf``), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
-    none yet and ``n_eff`` has reached the smallest ``min_periods`` -- which
+    none yet and ``weight_sum`` has reached the smallest ``min_weight`` -- which
     with ``ewridge``'s default of 0 is the first row.
 
     **The combinations** are every feature set (column indices; ``None`` is
@@ -456,7 +456,7 @@ def ewridge_paths_ref(
     :func:`_ridge_fit` into a full-length coefficient vector, zero outside its
     set.
 
-    Returns ``pred`` (n, m, C), ``n_eff`` (n,), ``coef`` (n, m, C, kt) --
+    Returns ``pred`` (n, m, C), ``weight_sum`` (n,), ``coef`` (n, m, C, kt) --
     NaN before the first solve, on a skipped row, and for a problem the
     reference does not hold, which a scored row may not use -- ``solved``
     (n,), ``has_fit`` (n,), the rows after which the model has a solve (a
@@ -465,23 +465,23 @@ def ewridge_paths_ref(
     """
     n, k = X.shape
     m = Y.shape[1]
-    kt = k + 1 if add_intercept else k
+    kt = k + 1 if fit_intercept else k
     ridges = [ridge] if np.isscalar(ridge) else list(ridge)
     sets = [list(range(k))] if feature_sets is None else [list(s) for s in feature_sets]
     combos = [(s, r) for s in sets for r in ridges]
-    mp = np.broadcast_to(np.asarray(min_periods, dtype=float), (m,))
-    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(halflife) else None
+    mp = np.broadcast_to(np.asarray(min_weight, dtype=float), (m,))
+    share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(half_life) else None
     if solve_every is None:
         solve_every = 0.0
     since_w = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
-    horizon = np.inf if window is None else window
+    horizon = np.inf if window_size is None else window_size
     blend = session_shrink is not None
-    if blend and long_halflife is None:
-        raise ValueError("session_shrink needs long_halflife")
+    if blend and long_half_life is None:
+        raise ValueError("session_shrink needs long_half_life")
 
     pred = np.full((n, m, len(combos)), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, len(combos), kt), np.nan)
     solved = np.zeros(n, dtype=bool)
     has_fit = np.zeros(n, dtype=bool)
@@ -507,14 +507,14 @@ def ewridge_paths_ref(
                     wt[own, j],
                     r,
                     standardize,
-                    add_intercept,
+                    fit_intercept,
                 )
                 if got is None:
                     continue
                 fit[j, c] = 0.0
-                if add_intercept:
+                if fit_intercept:
                     fit[j, c, 0] = got[0]
-                fit[j, c, (1 if add_intercept else 0) + np.asarray(cols)] = got[1]
+                fit[j, c, (1 if fit_intercept else 0) + np.asarray(cols)] = got[1]
         return fit
 
     def restart():
@@ -539,9 +539,9 @@ def ewridge_paths_ref(
             since_w = 0.0
             d = 0.0
         elif changed and session_gap is not None:
-            d = min(float(session_gap), max_dclock)
+            d = min(float(session_gap), gap_cap)
         else:
-            d = min(max(dclock[i], 0.0) + pending, max_dclock) if started else 0.0
+            d = min(max(dclock[i], 0.0) + pending, gap_cap) if started else 0.0
         pending = 0.0
         started = True
         if changed and blend and fast:
@@ -555,17 +555,17 @@ def ewridge_paths_ref(
             fast_t = list(wt)
             fit = solve()
             since_clock, since_rows, since_w = 0.0, 0, 0.0
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
 
         # ---- before the row, seen from the last accepted row ----
         if fast:
             inside = (t_last - np.asarray(T)) <= horizon
             om = np.where(inside, np.asarray(fast), 0.0)
-            n_eff[i] = om.sum()
+            weight_sum[i] = om.sum()
             wt = np.where(inside[:, None], np.asarray(fast_t), 0.0)
             w_target = (wt * ~np.isnan(np.asarray(Yr))).sum(axis=0)
         else:
-            n_eff[i], w_target = 0.0, np.zeros(m)
+            weight_sum[i], w_target = 0.0, np.zeros(m)
         for j in range(m):
             if fit is not None and w_target[j] > 0.0 and w_target[j] >= mp[j]:
                 if np.isnan(fit[j]).any():
@@ -573,11 +573,11 @@ def ewridge_paths_ref(
                 pred[i, j] = fit[j] @ z
 
         # ---- learn: age every row by this row's step, then take it ----
-        lam = factor(d, halflife)
+        lam = factor(d, half_life)
         fast = [v * lam for v in fast] + [float(w[i])]
         fast_t = [v * lam for v in fast_t] + [np.full(m, float(w[i]))]
         if blend:
-            lam_s = factor(d, long_halflife)
+            lam_s = factor(d, long_half_life)
             slow = [v * lam_s for v in slow] + [float(w[i])]
         t_last = (t_last + d) if T else 0.0
         T.append(t_last)
@@ -606,7 +606,7 @@ def ewridge_paths_ref(
 
     return {
         "pred": pred,
-        "n_eff": n_eff,
+        "weight_sum": weight_sum,
         "coef": coef,
         "solved": solved,
         "has_fit": has_fit,
@@ -620,12 +620,12 @@ def rls_paths_ref(
     dclock: np.ndarray,
     w: np.ndarray,
     *,
-    halflife: float,
+    half_life: float,
     ridge: float = 1.0,
     coef_prior: np.ndarray | None = None,
-    add_intercept: bool = True,
-    min_periods: float | None = None,
-    max_dclock: float = np.inf,
+    fit_intercept: bool = True,
+    min_weight: float | None = None,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """``rls`` from its documented recursion (the ``rls`` builder's
     docstring), summed from the raw rows rather than rotated in::
@@ -637,20 +637,20 @@ def rls_paths_ref(
     ``A = ridge * lam^T I + sum_r w_r lam^a_r z_r z_r'`` and ``b_j`` likewise.
     The factor ``R`` is shared, so a row with any null target is learned
     for none (it still ages the sums). Scoring: once the weight of the rows
-    learned from reaches ``min_periods`` (default the number of
+    learned from reaches ``min_weight`` (default the number of
     coefficients; hard rule 8, docs/PLAN.md task 115 (d)); the prior alone
-    predicts nothing (review 2026-09-12, S10). ``n_eff`` is the weight of
+    predicts nothing (review 2026-09-12, S10). ``weight_sum`` is the weight of
     every row. ``coef`` is ``beta`` after the row.
 
-    Returns ``pred`` and ``coef`` per target, and ``n_eff``."""
+    Returns ``pred`` and ``coef`` per target, and ``weight_sum``."""
     n, k = X.shape
     m = Y.shape[1]
-    kt = k + 1 if add_intercept else k
-    if min_periods is None:
-        min_periods = float(kt)
+    kt = k + 1 if fit_intercept else k
+    if min_weight is None:
+        min_weight = float(kt)
     prior = np.zeros((m, kt)) if coef_prior is None else np.asarray(coef_prior, float)
     pred = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
 
     t_now, pending, started = 0.0, 0.0, False
@@ -663,8 +663,8 @@ def rls_paths_ref(
 
     def solve(t: float) -> np.ndarray:
         age = t - np.asarray(T)
-        om = np.asarray(Wr) * 0.5 ** (age / halflife) * np.asarray(learned)
-        prior_w = ridge * 0.5 ** (t / halflife)
+        om = np.asarray(Wr) * 0.5 ** (age / half_life) * np.asarray(learned)
+        prior_w = ridge * 0.5 ** (t / half_life)
         za, ya = np.asarray(Z), np.nan_to_num(np.asarray(Yr))
         A = prior_w * np.eye(kt) + (om[:, None, None] * np.einsum("ri,rj->rij", za, za)).sum(axis=0)
         b = prior_w * prior.T + (om[:, None, None] * np.einsum("ri,rj->rij", za, ya)).sum(axis=0)
@@ -674,16 +674,16 @@ def rls_paths_ref(
         if np.isnan(X[i]).any():
             pending += dclock[i]
             continue
-        d = min(dclock[i] + pending, max_dclock) if started else 0.0
+        d = min(dclock[i] + pending, gap_cap) if started else 0.0
         pending = 0.0
         if started:
-            aged = np.asarray(Wr) * 0.5 ** ((t_now - np.asarray(T)) / halflife)
-            n_eff[i] = float(aged.sum())
+            aged = np.asarray(Wr) * 0.5 ** ((t_now - np.asarray(T)) / half_life)
+            weight_sum[i] = float(aged.sum())
             w_learned = float((aged * np.asarray(learned)).sum())
         else:
-            n_eff[i], w_learned = 0.0, 0.0
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        if beta is not None and any(learned) and w_learned >= min_periods:
+            weight_sum[i], w_learned = 0.0, 0.0
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i].copy()
+        if beta is not None and any(learned) and w_learned >= min_weight:
             pred[i] = beta @ z
         t_now = t_now + d if started else 0.0
         started = True
@@ -694,19 +694,19 @@ def rls_paths_ref(
         Yr.append(Y[i].copy())
         beta = solve(t_now)
         coef[i] = beta
-    return {"pred": pred, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef}
 
 
-def _accepted_steps(X: np.ndarray, dclock: np.ndarray, max_dclock: float):
+def _accepted_steps(X: np.ndarray, dclock: np.ndarray, gap_cap: float):
     """Yield ``(i, d)`` for each accepted row: a row with a null feature is
     skipped, its clock step folding into the next accepted row's, which
-    ``max_dclock`` caps; the first accepted row's step is 0."""
+    ``gap_cap`` caps; the first accepted row's step is 0."""
     pending, started = 0.0, False
     for i in range(X.shape[0]):
         if np.isnan(X[i]).any():
             pending += dclock[i]
             continue
-        d = min(dclock[i] + pending, max_dclock) if started else 0.0
+        d = min(dclock[i] + pending, gap_cap) if started else 0.0
         pending, started = 0.0, True
         yield i, d
 
@@ -720,10 +720,10 @@ def pa_ref(
     mode: str = "pa1",
     c: float = 1.0,
     eps: float = 0.1,
-    halflife: float = np.inf,
-    add_intercept: bool = True,
-    min_periods: float = 0.0,
-    max_dclock: float = np.inf,
+    half_life: float = np.inf,
+    fit_intercept: bool = True,
+    min_weight: float = 0.0,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Passive-aggressive regression, Crammer et al. (2006), as the ``pa``
     builder's docstring states it::
@@ -733,24 +733,24 @@ def pa_ref(
         b += min(w, 1) * tau * sign(y - p) * z
 
     per target, from zero. A null target or a zero weight moves nothing; the
-    coefficients never decay, ``n_eff`` does. ``pred_j`` is null while the
+    coefficients never decay, ``weight_sum`` does. ``pred_j`` is null while the
     target's own weight, the rows that carried it, decayed, is below
-    ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d)); ``n_eff`` is
-    every row's. Returns ``pred``, ``n_eff`` and ``coef`` (after the row)."""
+    ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d)); ``weight_sum`` is
+    every row's. Returns ``pred``, ``weight_sum`` and ``coef`` (after the row)."""
     n, k = X.shape
     m = Y.shape[1]
-    kt = k + 1 if add_intercept else k
+    kt = k + 1 if fit_intercept else k
     pred = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
     b = np.zeros((m, kt))
     w_sum = 0.0
     w_target = np.zeros(m)
-    for i, d in _accepted_steps(X, dclock, max_dclock):
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
-        n_eff[i] = w_sum
+    for i, d in _accepted_steps(X, dclock, gap_cap):
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        weight_sum[i] = w_sum
         p = b @ z
-        pred[i] = np.where(w_target >= min_periods, p, np.nan)
+        pred[i] = np.where(w_target >= min_weight, p, np.nan)
         s = z @ z
         for j in range(m):
             if np.isnan(Y[i, j]) or not w[i] > 0.0 or s <= 0.0:
@@ -763,11 +763,11 @@ def pa_ref(
                 "pa2": loss / (s + 1.0 / (2.0 * c)),
             }[mode]
             b[j] += min(w[i], 1.0) * tau * np.sign(r) * z
-        lam = 1.0 if np.isinf(halflife) else 0.5 ** (d / halflife)
+        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
-    return {"pred": pred, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef}
 
 
 def sgd_ref(
@@ -783,10 +783,10 @@ def sgd_ref(
     huber_delta: float = 1.0,
     quantile: float = 0.5,
     eps: float = 0.1,
-    halflife: float = np.inf,
-    add_intercept: bool = True,
-    min_periods: float = 0.0,
-    max_dclock: float = np.inf,
+    half_life: float = np.inf,
+    fit_intercept: bool = True,
+    min_weight: float = 0.0,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
     it, with ``l2 = 0`` and a gradient clip that never binds (both are
@@ -799,20 +799,20 @@ def sgd_ref(
         g_i = d * z_i * w    b_i -= lr_i * g_i
 
     ``lr`` is ``learning_rate`` for ``"constant"``, ``learning_rate / (1 +
-    n_eff) ** power`` for ``"inv_scaling"`` with ``n_eff`` the weight before
+    weight_sum) ** power`` for ``"inv_scaling"`` with ``weight_sum`` the weight before
     the row, and ``learning_rate / (sqrt(G_i) + 1e-8)`` for ``"adagrad"``,
-    ``G_i`` the sum of squared gradients with this row's in it. ``n_eff``
+    ``G_i`` the sum of squared gradients with this row's in it. ``weight_sum``
     and ``G`` decay on the clock; the coefficients do not. Per target, from
     zero; a null target or a zero weight moves nothing. ``pred_j`` is ``p``,
     null while the target's own weight, the rows that carried it, decayed,
-    is below ``min_periods`` (hard rule 8, docs/PLAN.md task 115 (d));
-    ``n_eff`` is every row's. Returns ``pred``, ``n_eff`` and ``coef``
+    is below ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d));
+    ``weight_sum`` is every row's. Returns ``pred``, ``weight_sum`` and ``coef``
     (after the row)."""
     n, k = X.shape
     m = Y.shape[1]
-    kt = k + 1 if add_intercept else k
+    kt = k + 1 if fit_intercept else k
     pred = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
     b = np.zeros((m, kt))
     G = np.zeros((m, kt))
@@ -822,13 +822,13 @@ def sgd_ref(
         "poisson": np.exp,
         "logistic": lambda e: 1.0 / (1.0 + np.exp(-e)),
     }
-    for i, d in _accepted_steps(X, dclock, max_dclock):
-        lam = 1.0 if np.isinf(halflife) else 0.5 ** (d / halflife)
+    for i, d in _accepted_steps(X, dclock, gap_cap):
+        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
         G *= lam
-        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i]
-        n_eff[i] = w_sum
+        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        weight_sum[i] = w_sum
         p = links.get(loss, lambda e: e)(b @ z)
-        pred[i] = np.where(w_target >= min_periods, p, np.nan)
+        pred[i] = np.where(w_target >= min_weight, p, np.nan)
         for j in range(m):
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
@@ -853,7 +853,7 @@ def sgd_ref(
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
-    return {"pred": pred, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef}
 
 
 def holt_ref(
@@ -861,10 +861,10 @@ def holt_ref(
     t: np.ndarray,
     w: np.ndarray,
     *,
-    level_halflife: float,
-    trend_halflife: float | None = None,
-    min_periods: float = 0.0,
-    max_dclock: float = np.inf,
+    level_half_life: float,
+    trend_half_life: float | None = None,
+    min_weight: float = 0.0,
+    gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Holt's linear trend as the ``holt`` builder's docstring states it, per
     target, with ``s`` the clock since the target was last observed (this
@@ -874,27 +874,27 @@ def holt_ref(
         l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)      W' = lam_l * W + w
         b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)      V' = lam_b * V + w
 
-    ``lam_l = 0.5 ** (s / level_halflife)`` and ``lam_b`` likewise at
-    ``trend_halflife``, default four times the level's. The first
+    ``lam_l = 0.5 ** (s / level_half_life)`` and ``lam_b`` likewise at
+    ``trend_half_life``, default four times the level's. The first
     observation sets the level; the second, at gain 1, the trend. A row at
     the last observation's clock (``s = 0``) is a second observation the
     level takes in, and the trend holds. A null target or a zero weight
     leaves ``l``, ``b``, ``W`` and ``V`` where they were and carries its
     clock to the next observation. ``pred`` is emitted from the second
     observation's row on, once the target's weight -- the rows it was
-    present on, at their raw weights, decayed at the level halflife and seen
-    before the row's own step -- reaches ``min_periods``; ``n_eff`` is every
-    row's weight so decayed. Each clock step is capped at ``max_dclock``.
-    Returns ``pred``, ``n_eff`` and ``coef`` (``[level, trend]`` after the
+    present on, at their raw weights, decayed at the level half-life and seen
+    before the row's own step -- reaches ``min_weight``; ``weight_sum`` is every
+    row's weight so decayed. Each clock step is capped at ``gap_cap``.
+    Returns ``pred``, ``weight_sum`` and ``coef`` (``[level, trend]`` after the
     row, NaN until the first observation)."""
     n, m = Y.shape
-    th = 4.0 * level_halflife if trend_halflife is None else trend_halflife
+    th = 4.0 * level_half_life if trend_half_life is None else trend_half_life
 
     def lam(s: float, h: float) -> float:
         return 1.0 if np.isinf(h) else 0.5 ** (s / h)
 
     pred = np.full((n, m), np.nan)
-    n_eff = np.full(n, np.nan)
+    weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, 2), np.nan)
     level = np.full(m, np.nan)
     trend = np.zeros(m)
@@ -904,12 +904,12 @@ def holt_ref(
     seen = np.zeros(m, dtype=int)
     w_sum, w_own = 0.0, np.zeros(m)
     for i in range(n):
-        d = 0.0 if i == 0 else min(max(t[i] - t[i - 1], 0.0), max_dclock)
-        n_eff[i] = w_sum
+        d = 0.0 if i == 0 else min(max(t[i] - t[i - 1], 0.0), gap_cap)
+        weight_sum[i] = w_sum
         for j in range(m):
             since[j] += d
             s = since[j]
-            if seen[j] >= 1 and w_own[j] >= min_periods and w_own[j] > 0.0:
+            if seen[j] >= 1 and w_own[j] >= min_weight and w_own[j] > 0.0:
                 pred[i, j] = level[j] + trend[j] * s
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
@@ -917,7 +917,7 @@ def holt_ref(
                 level[j], W[j] = Y[i, j], w[i]
             else:
                 p = level[j] + trend[j] * s
-                ll = lam(s, level_halflife)
+                ll = lam(s, level_half_life)
                 new = (ll * W[j] * p + w[i] * Y[i, j]) / (ll * W[j] + w[i])
                 W[j] = ll * W[j] + w[i]
                 if s > 0.0:
@@ -929,10 +929,10 @@ def holt_ref(
                 level[j] = new
             seen[j] += 1
             since[j] = 0.0
-        step = lam(d, level_halflife)
+        step = lam(d, level_half_life)
         w_sum = step * w_sum + w[i]
         w_own = step * w_own + w[i] * ~np.isnan(Y[i])
         for j in range(m):
             if seen[j]:
                 coef[i, j] = (level[j], trend[j])
-    return {"pred": pred, "n_eff": n_eff, "coef": coef}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef}

@@ -17,9 +17,9 @@ same rules (docs/PLAN.md task 105):
 :func:`embargo` turns a frame into the doubled stream a forward-looking target
 needs: every row appears twice, once as a prediction at its own clock with
 zero weight, and once as a lesson at ``clock + delay``, the two merged back
-into clock order. It is the recipe a spec's ``label_delay`` runs natively,
+into clock order. It is the recipe a spec's ``embargo`` runs natively,
 written out in polars: useful for seeing what the delay does, for a model that
-has no ``label_delay``, and as the oracle the native path is tested against.
+has no ``embargo``, and as the oracle the native path is tested against.
 
 :func:`with_windows` adds exponentially weighted means with a hard cutoff, looking
 back or ahead, described with :mod:`polars_online.window`: any number of them
@@ -128,21 +128,22 @@ def embargo(
 
         doubled = po.stream.embargo(lf, clock="t", delay=5.0)  # adds two role columns
         scored = doubled.online.fit_predict(
-            [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", max_dclock=10.0,
-                             halflife=50.0, weight="_online_role_weight")]
+            [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
+                             half_life=50.0, weight="_online_role_weight")]
         ).filter(pl.col("_online_role") == "predict").collect()
 
     The frame must already be in ``clock`` order across all its rows, not only
     within each group, which is all a stream needs: the two copies are merged by the
     clock alone, so a frame sorted within its groups but not across them comes back
-    with a group's rows out of order, and a bank then refuses it under the default
-    ``on_clock_reset`` (task 120). Sort by the clock first (``lf.sort(clock,
+    with a group's rows out of order, and a bank then refuses it, as it refuses
+    every step back unless ``restart_after_step_back`` says it is a new start
+    (task 120). Sort by the clock first (``lf.sort(clock,
     maintain_order=True)``), or embargo each group and concatenate. The result is
     sorted by ``clock`` with learn rows before predict rows at the same clock value:
     a label whose ``delay`` has just run out is known at that instant, so a
-    prediction made then may use it. A spec's ``label_delay`` releases in the same
+    prediction made then may use it. A spec's ``embargo`` releases in the same
     order, which is what lets the two be compared row for row. A spec's
-    ``label_delay=`` does the same thing in the stream with no doubling and no
+    ``embargo=`` does the same thing in the stream with no doubling and no
     filtering, which is cheaper and does not need the frame rewritten; reach for
     this when a delay has to be visible in the data (an oracle, a demonstration, or
     an engine that is not this one).
@@ -323,8 +324,8 @@ def refresh_time(
     holding the grid up, and the one whose value is freshest.
 
     Rows must be in ``clock`` order within each ``group``, as a stream must be; a
-    clock below the previous row's is a ``ValueError`` naming the row, as under a
-    spec's default ``on_clock_reset``. A temporal clock is compared exactly, in
+    clock below the previous row's is a ``ValueError`` naming the row, as a spec
+    refuses one with ``restart_after_step_back`` unset. A temporal clock is compared exactly, in
     integer nanoseconds. A null ``value`` is a tick that observed nothing, so it
     does not update the series. Feeding the input in one chunk or a thousand
     gives the same grid, since a point is a property of the ticks up to it. Ties
@@ -431,9 +432,8 @@ def refresh_time(
 #: The clock keywords ``like=`` takes from a spec, and refuses beside it.
 _CLOCK_KEYS = (
     "clock",
-    "max_dclock",
-    "on_clock_reset",
-    "min_backwards_jump",
+    "gap_cap",
+    "restart_after_step_back",
     "session",
     "session_gap",
     "group",
@@ -457,9 +457,8 @@ def with_windows(
     windows: Sequence[Window],
     *,
     clock: str | None = None,
-    max_dclock: float | Duration | None = None,
-    on_clock_reset: str | None = None,
-    min_backwards_jump: float | Duration | None = None,
+    gap_cap: float | Duration | None = None,
+    restart_after_step_back: float | Duration | None = None,
     session: str | None = None,
     session_gap: float | Duration | None = None,
     group: str | None = None,
@@ -476,9 +475,8 @@ def with_windows(
     windows: Sequence[Window],
     *,
     clock: str | None = None,
-    max_dclock: float | Duration | None = None,
-    on_clock_reset: str | None = None,
-    min_backwards_jump: float | Duration | None = None,
+    gap_cap: float | Duration | None = None,
+    restart_after_step_back: float | Duration | None = None,
     session: str | None = None,
     session_gap: float | Duration | None = None,
     group: str | None = None,
@@ -494,9 +492,8 @@ def with_windows(
     windows: Sequence[Window],
     *,
     clock: str | None = None,
-    max_dclock: float | Duration | None = None,
-    on_clock_reset: str | None = None,
-    min_backwards_jump: float | Duration | None = None,
+    gap_cap: float | Duration | None = None,
+    restart_after_step_back: float | Duration | None = None,
     session: str | None = None,
     session_gap: float | Duration | None = None,
     group: str | None = None,
@@ -514,7 +511,7 @@ def with_windows(
     .. code-block:: text
 
         y_t = sum_j w_j * lam**|tau_j - tau_a| * v_j / sum_j w_j * lam**|tau_j - tau_a|
-        lam = 2 ** (-1 / halflife)
+        lam = 2 ** (-1 / half-life)
 
     over ``(tau_t - horizon, tau_t]`` for :func:`~polars_online.window.ewm` and
     ``(tau_t, tau_t + horizon)`` for :func:`~polars_online.window.lookahead_rewm`.
@@ -527,28 +524,28 @@ def with_windows(
         out = po.stream.with_windows(
             trades,
             [
-                po.window.ewm("mid", halflife="5s", horizon="1m"),
+                po.window.ewm("mid", half_life="5s", horizon="1m"),
                 po.window.lookahead_rewm(
                     "price", weight="quantity", split=("side", ["buy", "sell"]),
-                    halflife="10s", horizon="1m", name="fwd_vwap{split}",
+                    half_life="10s", horizon="1m", name="fwd_vwap{split}",
                 ),
             ],
-            clock="ts", max_dclock="5m", group="symbol",
+            clock="ts", gap_cap="5m", group="symbol",
         )
 
     **The clock is a spec's**, in the same words: ``clock`` (with none, one unit
-    is one row), ``max_dclock`` (required with a clock; a longer gap is a break),
-    ``on_clock_reset`` (``"error"``, the default, or ``"reset_state"`` with
-    ``min_backwards_jump``), ``session`` and ``session_gap`` (a number, a
+    is one row), ``gap_cap`` (required with a clock; a longer gap is a break),
+    ``restart_after_step_back`` (unset, a step back is refused; given, one at
+    least that large starts over), ``session`` and ``session_gap`` (a number, a
     duration or ``"reset"``), and ``group``, whose groups each have their own
     clock and windows. A horizon is measured on that policy clock, after the cap
-    and the session gap. A gap longer than ``max_dclock`` or a session change
+    and the session gap. A gap longer than ``gap_cap`` or a session change
     ends every window open across it -- a partial window, under the
     description's ``partial`` -- and a reset discards them: null, and never
     dropped. The rows must be in clock order across groups, as one stream: the
     clock is also read in input order, under the same policy, so a step back
-    there is refused or, past ``min_backwards_jump`` under ``"reset_state"``,
-    resets every group; a session change or a gap there ends every group's
+    there is refused or, at least ``restart_after_step_back``, resets every
+    group; a session change or a gap there ends every group's
     windows. ``like=spec`` takes all of this from a spec instead, and with it
     the spec's rule for the rows it learns from: a look-ahead is null on a row
     whose features or weight the spec could not use, as the target the model
@@ -558,7 +555,7 @@ def with_windows(
     with only :func:`~polars_online.window.ewm` windows, as it arrives; with a
     look-ahead, once its horizon has passed, so the output trails the input by
     the longest horizon. A group that falls silent holds every later row for at
-    most ``max_dclock`` of the stream's time: past that its next row is certain
+    most ``gap_cap`` of the stream's time: past that its next row is certain
     to open with a gap past the cap, so its windows end then. A row-count clock
     has no such bound. The rows a look-ahead holds are kept as the input's own
     chunks, not copied, so the memory is one horizon of input whatever its width,
@@ -590,9 +587,8 @@ def with_windows(
             )
     given = {
         "clock": clock,
-        "max_dclock": max_dclock,
-        "on_clock_reset": on_clock_reset,
-        "min_backwards_jump": min_backwards_jump,
+        "gap_cap": gap_cap,
+        "restart_after_step_back": restart_after_step_back,
         "session": session,
         "session_gap": session_gap,
         "group": group,
@@ -620,7 +616,7 @@ def with_windows(
     for key, value in policy.items():
         if value is None:
             continue
-        if key in ("max_dclock", "min_backwards_jump", "session_gap"):
+        if key in ("gap_cap", "restart_after_step_back", "session_gap"):
             value = _clock_value(value, who, key)
         config[key] = value
     config_json = json.dumps(config)

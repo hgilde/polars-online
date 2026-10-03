@@ -34,7 +34,7 @@
 //! ```
 //!
 //! `"ew"` runs on the clock; `"linear"` steps once per row, as a DCC model's
-//! recursion does, so a gap capped at `max_dclock` moves `ρ` by one row's
+//! recursion does, so a gap capped at `gap_cap` moves `ρ` by one row's
 //! `α·u`, as a millisecond does (docs/PLAN.md task 146).
 //!
 //! Two departures from the paper, deliberate (docs/PLAN.md §11a). Their
@@ -121,7 +121,7 @@ pub struct DecoCfg {
     /// Feature indices per block, in emission order. Empty means one block
     /// holding every feature, which is the unblocked model.
     pub blocks: Vec<Vec<usize>>,
-    pub min_periods: f64,
+    pub min_weight: f64,
 }
 
 impl DecoCfg {
@@ -198,8 +198,8 @@ impl DecoCfg {
                 }
             }
         }
-        if self.min_periods < 0.0 || self.min_periods.is_nan() {
-            return Err("deco: min_periods must be >= 0".into());
+        if self.min_weight < 0.0 || self.min_weight.is_nan() {
+            return Err("deco: min_weight must be >= 0".into());
         }
         Ok(())
     }
@@ -459,7 +459,7 @@ impl crate::OnlineModel for Deco {
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         let n_eff = self.diag.n_eff();
-        let pred = if n_eff >= self.cfg.min_periods {
+        let pred = if n_eff >= self.cfg.min_weight {
             self.read(x)
         } else {
             vec![f64::NAN; Self::n_outputs_for(self.blocks.len())]
@@ -530,7 +530,7 @@ impl Deco {
     /// pair ([`crate::comp`]), not the algebraically equal `a·ρ + b·u` -- so
     /// that `rho` under `"ew"` is
     /// **bit-identical** to an `ew_cov(stats = ["mean"])` over the same `u`
-    /// sequence at the same halflife. The two forms differ in the last bit,
+    /// sequence at the same half-life. The two forms differ in the last bit,
     /// and a test pins this one.
     fn advance(&mut self, u: &[f64], lam: f64, w: f64) {
         let n = self.rho_bar.len();
@@ -546,7 +546,7 @@ impl Deco {
                 continue;
             }
             // A zero-weight row after a decay that took the whole history --
-            // `lam·W` is 0 from 1075 halflives on -- is the row one halflife
+            // `lam·W` is 0 from 1075 half-lives on -- is the row one half-life
             // short of it: `b` is 0 and the weight goes to 0, where the
             // history used to be kept whole (task 115 (c), PLAN §12).
             let b = if w_new > 0.0 { w / w_new } else { 0.0 };
@@ -652,7 +652,7 @@ mod tests {
             alpha: None,
             beta: None,
             blocks: Vec::new(),
-            min_periods: 0.0,
+            min_weight: 0.0,
         }
     }
 
@@ -957,7 +957,7 @@ mod tests {
     fn a_log_density_past_the_range_is_no_reading() {
         use crate::OnlineModel;
         let mut m = Deco::new(DecoCfg {
-            min_periods: 3.0,
+            min_weight: 3.0,
             ..cfg(2)
         })
         .unwrap();

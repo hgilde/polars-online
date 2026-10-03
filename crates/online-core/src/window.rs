@@ -1,6 +1,6 @@
 //! A hard cutoff on an exponentially weighted accumulator (docs/PLAN.md §13).
 //!
-//! An EW mean never forgets: a halflife of `h` still leaves 12.5% of the
+//! An EW mean never forgets: a half-life of `h` still leaves 12.5% of the
 //! weight on data older than `3h`. Some questions need the other thing —
 //! *nothing* from before a point, as a guarantee. The identity that makes it
 //! cheap is that an EW sum contains its own past:
@@ -330,7 +330,7 @@ impl<S> Snapshots<S> {
     /// `window` in clock units, `every` rows between snapshots.
     pub fn new(window: f64, every: usize) -> Result<Self, String> {
         if !window.is_finite() || window <= 0.0 {
-            return Err(format!("window must be > 0 (got {window})"));
+            return Err(format!("window_size must be > 0 (got {window})"));
         }
         if every == 0 {
             return Err("window_every must be >= 1".into());
@@ -506,8 +506,8 @@ impl<S: Footprint> Snapshots<S> {
 /// empty window (review 2026-09-12, C2: "clamp the truncated weight at 0
 /// before the test"). A genuine window never gets near it: its newest row
 /// alone carries weight 1 against a history of at most `1/(1 - lam^d)` for
-/// rows `d` apart, about `1.44 · halflife / d`, which reaches `1e12` only
-/// with a trillion unit rows to a halflife.
+/// rows `d` apart, about `1.44 · half_life / d`, which reaches `1e12` only
+/// with a trillion unit rows to a half-life.
 pub const EMPTY_FRACTION: f64 = 1e-12;
 
 /// An [`EwCov`]'s data, decayed to the clock of the row it precedes. Means and
@@ -584,8 +584,8 @@ impl Footprint for Moments {
 ///
 /// What precision remains to lose is the fraction discarded: the result is a
 /// difference of positives of size `C`, so it is negligible at `window =
-/// 3·halflife`, where the correction is an eighth, and worse as the window
-/// shortens toward the halflife.
+/// 3·half-life`, where the correction is an eighth, and worse as the window
+/// shortens toward the half-life.
 pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let k = cov.k();
     let w_now = cov.n_eff();
@@ -641,7 +641,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // when it started at or before the first learned row inside the window,
     // the one after the snapshot's count. (The run's decayed weight against
     // the window's, equal in exact arithmetic, drifted past a tolerance of
-    // 1e-12 under a long window and a long halflife: review 2026-09-25.)
+    // 1e-12 under a long window and a long half-life: review 2026-09-25.)
     if let Some(rows) = old.rows {
         for i in 0..k {
             if let Some(value) = cov.held_from(i, rows + 1) {
@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn a_window_cancelling_to_its_rounding_reads_as_no_spread() {
         let mut s = 41u64;
-        // A long halflife keeps the old rows' share of the live state near
+        // A long half-life keeps the old rows' share of the live state near
         // one, so `g·C` and `ratio·C_u` are nearly equal.
         let rows: Vec<[f64; 3]> = (0..400)
             .map(|i| {
@@ -1034,18 +1034,18 @@ mod tests {
     /// leftover grows with the level and with the rows since the boundary;
     /// the accumulator knows instead which features have held their value,
     /// and on what weight. The run starts at the boundary row or before it,
-    /// across the levels, spreads, halflives and window lengths measured,
-    /// the last a window of a thousand halflives, where the history's
+    /// across the levels, spreads, half-lives and window lengths measured,
+    /// the last a window of a thousand half-lives, where the history's
     /// spread has decayed to its last ulp.
     /// The run's weight and the window's are equal in exact arithmetic;
     /// in doubles the window's is `w_now − f·old.w` with `f` one `exp2` over
     /// the window's clock and the run's a product of per-row factors, and
     /// the two drift apart by about the rows in the window times a rounding
     /// step, scaled by the history's weight. A long window under a long
-    /// halflife -- a regime dummy held over a day of second bars under a
-    /// month's halflife -- is where that drift is largest (review
+    /// half-life -- a regime dummy held over a day of second bars under a
+    /// month's half-life -- is where that drift is largest (review
     /// 2026-09-25, tasks 94-97, finding 1): fifty thousand rows of history,
-    /// a window of as many, halflives up to 1e7, unit and random weights.
+    /// a window of as many, half-lives up to 1e7, unit and random weights.
     #[test]
     fn a_long_window_under_a_long_halflife_still_reads_a_held_feature() {
         for (h, window, seed) in [

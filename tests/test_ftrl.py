@@ -24,7 +24,7 @@ def _binary_df(n=6000, seed=21, noise=0.0):
 
 
 def _spec(**kw):
-    d = dict(targets=["y0"], features=["x0", "x1"], halflife=1e9, min_periods=50.0)
+    d = dict(targets=["y0"], features=["x0", "x1"], half_life=1e9, min_weight=50.0)
     d.update(kw)
     return po.spec.ftrl("m", **d)
 
@@ -71,7 +71,7 @@ def test_out_of_sample_on_noise():
             "y0": (rng.random(n) < 0.5).astype(float),
         }
     )
-    out = po.ModelBank([_spec(halflife=2000.0)]).fit_predict(df)
+    out = po.ModelBank([_spec(half_life=2000.0)]).fit_predict(df)
     p = _pred(out)
     m = np.isfinite(p)
     ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
@@ -84,7 +84,7 @@ def test_forgets_a_regime_flip_on_the_clock():
     x0 = rng.standard_normal(2 * n)
     y = np.concatenate([(x0[:n] > 0).astype(float), (x0[n:] < 0).astype(float)])
     df = pl.DataFrame({"x0": x0, "x1": np.zeros(2 * n), "y0": y})
-    out = po.ModelBank([_spec(halflife=300.0)]).fit_predict(df)
+    out = po.ModelBank([_spec(half_life=300.0)]).fit_predict(df)
     p = _pred(out)
     late = slice(2 * n - 500, 2 * n)
     hi = p[late][x0[late] > 0.5]
@@ -96,10 +96,10 @@ def _plumbing_case():
     df = df.with_columns(y0=(pl.col("y0") > 0).cast(pl.Float64))
     kw = dict(
         features=["x0", "x1"],
-        halflife=300.0,
+        half_life=300.0,
         clock="t",
-        max_dclock=50.0,
-        min_periods=10.0,
+        gap_cap=50.0,
+        min_weight=10.0,
     )
     return df, kw, po.spec.ftrl("m", targets=["y0"], group="group", **kw)
 
@@ -119,7 +119,7 @@ def test_chunk_invariance():
 
 def test_strict_binary_refuses_a_target_other_than_0_or_1():
     """``strict_binary`` was documented as an error and ran as a silent skip
-    that still counted the row toward ``n_eff`` (review 2026-09-12, S31). The
+    that still counted the row toward ``weight_sum`` (review 2026-09-12, S31). The
     chunk is refused, naming the row and the value, before any stream is
     touched -- as a label outside ``ew_class``'s classes is -- so the bank is
     left as it was and the corrected chunk can be fed. A null is no value,
@@ -128,7 +128,7 @@ def test_strict_binary_refuses_a_target_other_than_0_or_1():
         {"x0": [1.0, 2.0, 3.0, 4.0], "x1": [0.0] * 4, "y0": [0.0, None, 0.5, 1.0]},
         schema={"x0": pl.Float64, "x1": pl.Float64, "y0": pl.Float64},
     )
-    bank = po.ModelBank([_spec(strict_binary=True, min_periods=0.0)])
+    bank = po.ModelBank([_spec(strict_binary=True, min_weight=0.0)])
     before = bank.save_bytes()
     with pytest.raises(ValueError, match=r"strict_binary.*row 2") as exc:
         bank.fit_predict(df)
@@ -156,8 +156,8 @@ class TestSquaredLoss:
             alpha=0.5,
             l1=0.0,
             l2=0.01,
-            halflife=float("inf"),
-            min_periods=10.0,
+            half_life=float("inf"),
+            min_weight=10.0,
         )
         d.update(kw)
         return po.spec.ftrl("m", **d)
@@ -189,7 +189,7 @@ class TestSquaredLoss:
         n = 5000
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "x1": np.zeros(n), "x2": np.zeros(n), "y0": 20.0 * x})
-        out = po.ModelBank([self._spec(min_periods=5.0)]).fit_predict(df)
+        out = po.ModelBank([self._spec(min_weight=5.0)]).fit_predict(df)
         p = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         assert np.nanmax(p) > 5.0
 
@@ -202,8 +202,8 @@ class TestSquaredLoss:
                     "m",
                     targets=["y0"],
                     features=["x0", "x1", "x2"],
-                    halflife=float("inf"),
-                    min_periods=10.0,
+                    half_life=float("inf"),
+                    min_weight=10.0,
                 )
             ]
         ).fit_predict(df)
@@ -222,7 +222,7 @@ class TestSquaredLoss:
                 "y0": rng.standard_normal(n),
             }
         )
-        out = po.ModelBank([self._spec(halflife=2000.0)]).fit_predict(df)
+        out = po.ModelBank([self._spec(half_life=2000.0)]).fit_predict(df)
         p = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(p)
         ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]

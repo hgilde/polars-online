@@ -38,8 +38,8 @@ class TestTheMatrixIsTheOneTheModelSolves:
             targets=["y"],
             features=["x0", "x1", "x2"],
             ridge=1e-12,
-            halflife=1e9,
-            min_periods=5.0,
+            half_life=1e9,
+            min_weight=5.0,
             max_rows_between_solves=1,
             standardize=False,
         )
@@ -63,11 +63,11 @@ class TestTheMatrixIsTheOneTheModelSolves:
         assert k == len(model_coef)
 
     def test_moments_match_a_from_scratch_computation(self):
-        """With halflife enormous, the EW moments are the plain unweighted
+        """With half-life enormous, the EW moments are the plain unweighted
         ones, so numpy can check them directly."""
         df, _ = stream(n=2000, k=3, seed=1)
         spec = po.spec.ew_cov(
-            "c", features=["x0", "x1", "x2"], stats=["cov"], halflife=1e12, min_periods=2.0
+            "c", features=["x0", "x1", "x2"], stats=["cov"], half_life=1e12, min_weight=2.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -82,7 +82,7 @@ class TestTheMatrixIsTheOneTheModelSolves:
         """The documented relation: raw = centered + outer(means, means)."""
         df, _ = stream(n=1500, k=3, seed=2)
         spec = po.spec.ew_cov(
-            "c", features=["x0", "x1", "x2"], stats=["cov"], halflife=1e12, min_periods=2.0
+            "c", features=["x0", "x1", "x2"], stats=["cov"], half_life=1e12, min_weight=2.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -100,14 +100,14 @@ class TestShape:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            halflife=[100.0, 500.0],
-            min_periods=3.0,
+            half_life=[100.0, 500.0],
+            min_weight=3.0,
             group="gid",
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         rows = bank.gram("m")
-        assert len(rows) == 6  # 3 groups x 2 halflives
+        assert len(rows) == 6  # 3 groups x 2 half-lives
         assert sorted({r["group"] for r in rows}) == ["a", "b", "c"]
         assert sorted({r["instance"] for r in rows}) == ["@h100", "@h500"]
         assert len(bank.gram("m", group="b")) == 2
@@ -116,7 +116,7 @@ class TestShape:
         df, _ = stream()
         df = df.with_columns(z=2 * pl.col("y"))
         spec = po.spec.ewridge(
-            "m", targets=["y", "z"], features=["x0", "x1"], halflife=1e9, min_periods=3.0
+            "m", targets=["y", "z"], features=["x0", "x1"], half_life=1e9, min_weight=3.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -129,7 +129,7 @@ class TestShape:
     def test_ew_cov_has_no_cross_moments(self):
         df, _ = stream()
         spec = po.spec.ew_cov(
-            "c", features=["x0", "x1"], stats=["corr"], halflife=100.0, min_periods=2.0
+            "c", features=["x0", "x1"], stats=["corr"], half_life=100.0, min_weight=2.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -144,8 +144,8 @@ class TestShape:
             targets=["y"],
             features=["x0", "x1"],
             lasso_path=[0.1, 0.0],
-            halflife=1e9,
-            min_periods=3.0,
+            half_life=1e9,
+            min_weight=3.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -156,9 +156,9 @@ class TestShape:
         """Silence rather than a fabricated matrix: rls and kalman track an
         inverse, the gradient models track no second moment at all."""
         df, _ = stream(n=300)
-        kw = dict(targets=["y"], features=["x0", "x1"], halflife=100.0, min_periods=3.0)
+        kw = dict(targets=["y"], features=["x0", "x1"], half_life=100.0, min_weight=3.0)
         if model == "kalman":
-            kw["coef_halflife"] = 500.0
+            kw["coef_half_life"] = 500.0
         spec = getattr(po.spec, model)("m", **kw)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -166,21 +166,21 @@ class TestShape:
 
     def test_spec_by_name_or_index(self):
         df, _ = stream(n=300)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0, min_periods=3.0)
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         assert len(bank.gram(0)) == len(bank.gram("m")) == 1
 
     def test_it_tracks_the_stream_rather_than_a_snapshot(self):
-        """n_eff grows with the stream: these are live accumulators, and
+        """weight_sum grows with the stream: these are live accumulators, and
         reading them mid-stream is the point."""
         df, _ = stream(n=2000)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=1e9, min_periods=3.0)
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=1e9, min_weight=3.0)
         bank = po.ModelBank([spec])
         seen = []
         for chunk in df.iter_slices(500):
             bank.fit_predict(chunk)
-            seen.append(bank.gram("m")[0]["n_eff"])
+            seen.append(bank.gram("m")[0]["weight_sum"])
         assert seen == sorted(seen)
         assert seen[-1] == pytest.approx(2000, rel=1e-6)
 
@@ -191,7 +191,7 @@ def test_missing_numpy_says_what_to_do(monkeypatch):
     import builtins
 
     df, _ = stream(n=200)
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0, min_periods=3.0)
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
 
@@ -216,8 +216,8 @@ class TestTheCompleteSufficientStatistic:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            halflife=1e12,
-            min_periods=3.0,
+            half_life=1e12,
+            min_weight=3.0,
             standardize=False,
         )
         bank = po.ModelBank([spec])
@@ -235,7 +235,7 @@ class TestTheCompleteSufficientStatistic:
         takes the `a`/`b` the cross-moment update computed."""
         df, _ = stream(n=1200, k=2, seed=4)
         df = df.with_columns(w=pl.Series([0.5 + (i % 4) for i in range(df.height)]))
-        common = dict(halflife=80.0, weight="w", min_periods=3.0)
+        common = dict(half_life=80.0, weight="w", min_weight=3.0)
         ridge = po.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1"], standardize=False, **common
         )
@@ -250,9 +250,9 @@ class TestTheCompleteSufficientStatistic:
     def test_kish_is_a_row_count_where_n_eff_is_a_weight(self):
         n, lam = 6000, 0.5 ** (1 / 100.0)
         df, _ = stream(n=n, k=1, seed=5)
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0, min_periods=3.0)
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0)
         heavy = po.spec.ewridge(
-            "h", targets=["y"], features=["x0"], halflife=100.0, min_periods=3.0, weight="w"
+            "h", targets=["y"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
         bank = po.ModelBank([spec, heavy])
         bank.fit_predict(df.with_columns(w=pl.lit(7.0)))
@@ -260,14 +260,14 @@ class TestTheCompleteSufficientStatistic:
         # The closed form for an exponentially weighted window of unit rows.
         assert light["n_kish"] == pytest.approx((1 + lam) / (1 - lam), rel=1e-6)
         # Seven times the weight is the same information.
-        assert weighty["n_eff"] == pytest.approx(7 * light["n_eff"], rel=1e-9)
+        assert weighty["weight_sum"] == pytest.approx(7 * light["weight_sum"], rel=1e-9)
         assert weighty["n_kish"] == pytest.approx(light["n_kish"], rel=1e-9)
 
     def test_both_settle_at_the_decay_over_the_row_spacing(self):
-        """Task 148: with unit rows ``d`` clock units apart, ``n_eff`` settles
+        """Task 148: with unit rows ``d`` clock units apart, ``weight_sum`` settles
         at ``1 / (1 - lam**d)`` and the Kish size at ``(1 + lam**d) / (1 -
         lam**d)``; ``1 / (1 - lam)`` is the one-unit spacing alone. At a
-        halflife of 6 and rows 0.1 apart that is 87.1 against 9.2."""
+        half-life of 6 and rows 0.1 apart that is 87.1 against 9.2."""
         h, d, n = 6.0, 0.1, 2400
         df, _ = stream(n=n, k=1, seed=5)
         df = df.with_columns(t=pl.Series(np.arange(n) * d))
@@ -276,17 +276,17 @@ class TestTheCompleteSufficientStatistic:
             targets=["y"],
             features=["x0"],
             clock="t",
-            max_dclock=1.0,
-            halflife=h,
-            min_periods=3.0,
+            gap_cap=1.0,
+            half_life=h,
+            min_weight=3.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("m")[0]
         lam_d = 0.5 ** (d / h)
-        assert g["n_eff"] == pytest.approx(1 / (1 - lam_d), rel=1e-9)
+        assert g["weight_sum"] == pytest.approx(1 / (1 - lam_d), rel=1e-9)
         assert g["n_kish"] == pytest.approx((1 + lam_d) / (1 - lam_d), rel=1e-9)
-        assert g["n_eff"] > 9 * (1 / (1 - 0.5 ** (1 / h)))
+        assert g["weight_sum"] > 9 * (1 / (1 - 0.5 ** (1 / h)))
 
     def test_a_target_that_stops_arriving_keeps_its_sample_size(self):
         """`n_kish` is scale-free: pure decay scales `W` and `Q` together, so
@@ -300,7 +300,7 @@ class TestTheCompleteSufficientStatistic:
             y2=pl.when(pl.int_range(pl.len()) < n // 2).then(pl.col("y")).otherwise(None)
         )
         spec = po.spec.ewridge(
-            "m", targets=["y", "y2"], features=["x0", "x1"], halflife=50.0, min_periods=3.0
+            "m", targets=["y", "y2"], features=["x0", "x1"], half_life=50.0, min_weight=3.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df.head(n // 2))
@@ -322,11 +322,11 @@ class TestTheCompleteSufficientStatistic:
         assert np.array_equal(stale["means"], at_the_break["means"])
         assert np.array_equal(stale["comoments"], at_the_break["comoments"])
         # The weight behind it is what decayed away: 450 more rows at a
-        # halflife of 50 is nine halvings, and nothing else touched it.
+        # half-life of 50 is nine halvings, and nothing else touched it.
         assert stale["target_weights"][0] == pytest.approx(
             at_the_break["target_weights"][1] / 2**9, rel=1e-9
         )
-        assert stale["n_eff"] == stale["target_weights"][0], "a Gram's weight is its target's"
+        assert stale["weight_sum"] == stale["target_weights"][0], "a Gram's weight is its target's"
         assert stale["target_weights"][0] < 0.01 * live["target_weights"][0]
         # The live target keeps counting, alongside the features.
         assert live["n_kish"] == pytest.approx(live["target_n_kish"][0], rel=1e-9)
@@ -339,8 +339,8 @@ class TestTheCompleteSufficientStatistic:
             targets=["y"],
             features=["x0", "x1", "x2"],
             ridge=1e-12,
-            halflife=1e12,
-            min_periods=5.0,
+            half_life=1e12,
+            min_weight=5.0,
             standardize=False,
         )
         bank = po.ModelBank([spec])
@@ -364,8 +364,8 @@ class TestTheCompleteSufficientStatistic:
             targets=["y"],
             features=["x0", "x1"],
             lasso_path=[0.1, 0.0],
-            halflife=1e12,
-            min_periods=3.0,
+            half_life=1e12,
+            min_weight=3.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -379,7 +379,7 @@ class TestTheCompleteSufficientStatistic:
         """Empty says "no targets"; None would say "this state cannot tell
         you", which is a different answer."""
         df, _ = stream(n=500, k=2)
-        spec = po.spec.ew_cov("c", features=["x0", "x1"], stats=["var"], halflife=100.0)
+        spec = po.spec.ew_cov("c", features=["x0", "x1"], stats=["var"], half_life=100.0)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
@@ -394,7 +394,7 @@ class TestTheCompleteSufficientStatistic:
         `"own_rows"`, so there are none, and over every row under
         `"pairwise"`, so there is one (docs/PLAN.md task 81)."""
         spec = po.spec.ewridge(
-            "m", targets=["y"], features=["x0"], halflife=100.0, target_gaps=target_gaps
+            "m", targets=["y"], features=["x0"], half_life=100.0, target_gaps=target_gaps
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(
@@ -407,7 +407,7 @@ class TestTheCompleteSufficientStatistic:
     def test_they_survive_a_save_and_load(self, tmp_path):
         df, _ = stream(n=800, k=2, seed=9)
         spec = po.spec.ewridge(
-            "m", targets=["y"], features=["x0", "x1"], halflife=200.0, min_periods=3.0
+            "m", targets=["y"], features=["x0", "x1"], half_life=200.0, min_weight=3.0
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -420,7 +420,7 @@ class TestTheCompleteSufficientStatistic:
     def test_chunking_cannot_move_them(self):
         df, _ = stream(n=1000, k=2, seed=10)
         spec = po.spec.ewridge(
-            "m", targets=["y"], features=["x0", "x1"], halflife=120.0, min_periods=3.0
+            "m", targets=["y"], features=["x0", "x1"], half_life=120.0, min_weight=3.0
         )
         one = po.ModelBank([spec])
         one.fit_predict(df)

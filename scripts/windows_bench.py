@@ -13,7 +13,7 @@ in and `sink_parquet` out, and prints its wall time and peak RSS:
 - `rolling`: `rolling(period=H, offset="0s", closed="none")`, with each
   window's weights taken from its own anchor;
 - `embargoed`: the window as an `ewridge` target learned `H` after its row
-  (`label_delay=H`, `like=spec`), in one query;
+  (`embargo=H`, `like=spec`), in one query;
 - `model alone`: the same spec over the window's column, already written;
 - `scan and sink`: the file read and written, the floor under all of them.
 """
@@ -66,17 +66,17 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         targets=["fwd_vwap"],
         features=["signal_a", "signal_b"],
         clock="ts",
-        max_dclock="5m",
-        halflife="30m",
-        label_delay=h,
+        gap_cap="5m",
+        half_life="30m",
+        embargo=h,
     )
     window = po.window.lookahead_rewm(
-        "price", weight="quantity", halflife="10s", horizon=h, name="fwd_vwap"
+        "price", weight="quantity", half_life="10s", horizon=h, name="fwd_vwap"
     )
     columns = out / f"windows_{n}_{h}.parquet"
     start = time.perf_counter()
     if case == "with_windows":
-        plan = lf.online.with_windows([window], clock="ts", max_dclock="5m")
+        plan = lf.online.with_windows([window], clock="ts", gap_cap="5m")
         target = columns
     elif case == "embargoed":
         plan = lf.online.with_windows([window], like=spec).online.fit_predict([spec])

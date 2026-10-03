@@ -40,9 +40,9 @@
 //! effective sample `n`, its present rows counted one each and decayed, so a
 //! weight's scale reaches neither (docs/PLAN.md task 147) -- the smoothed-quantile bandwidth rate, which a long
 //! stream leaves behind and which keeps the Hessian fed under a short
-//! halflife, where the band's share of the sample is a few rows. The warm-up
+//! half-life, where the band's share of the sample is a few rows. The warm-up
 //! read the band's weight until the second review of 2026-09-15 (F3), which a
-//! halflife caps at that share, so a tail quantile at `halflife = 30` kept
+//! half-life caps at that share, so a tail quantile at `half_life = 30` kept
 //! falling back into warm-up and covered 0.825 where 0.9 was asked. What
 //! that warm-up also did was rebuild a fit a row at the input bound had
 //! left behind. Such a row sets the Gram and the cross-moment at its own
@@ -52,7 +52,7 @@
 //! `2h * psi * z` over the band's weight -- nothing beside the bound's
 //! moments until that weight has decayed to nothing, and a step that
 //! outgrows the band once it has. The fit oscillates, the band's weight
-//! underflows after 1400 halflives, and the prediction is withheld (the
+//! underflows after 1400 half-lives, and the prediction is withheld (the
 //! bounded-extremes contract). So a band holding under one row per
 //! coefficient takes least-squares rows until it holds rows again: from
 //! one row up an outside row's step, `2h * |psi| / wj`, lands inside the
@@ -92,19 +92,19 @@ pub enum RobustLoss {
 pub struct RobustCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     pub loss: RobustLoss,
     pub ridge: f64,
     pub standardize: bool,
-    pub min_periods: f64,
+    pub min_weight: f64,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
     /// holds, in place of `solve_every`'s clock. In steady state that is the
-    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
-    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// clock's own `half_life / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a half-life far longer than the stream -- it
     /// keeps the fit that close to its data, where the clock solved once and
     /// never again. `None` keeps the clock.
     #[serde(default)]
@@ -138,7 +138,7 @@ const WARM_ROWS: f64 = 3.0;
 
 impl RobustCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -183,9 +183,9 @@ pub struct Robust {
     /// and so is `cov`, whose weight it equals.
     wj: Vec<f64>,
     /// Per target, the rows it was present on at their raw weights, decayed:
-    /// what the per-target `min_periods` gate reads (hard rule 8, S2) and the
+    /// what the per-target `min_weight` gate reads (hard rule 8, S2) and the
     /// quantile fit's warm-up counts. `wj` stood in for it, and for the
-    /// quantile that is the band's weight, which a halflife caps at the
+    /// quantile that is the band's weight, which a half-life caps at the
     /// band's share of the sample (the second review of 2026-09-15, F1).
     wobs: Vec<f64>,
     /// Per target, the same rows counted one each, decayed alike: `wobs`
@@ -211,7 +211,7 @@ pub struct Robust {
     sig2: Vec<f64>,
     wsig: Vec<f64>,
     /// EW count of *observations* using the raw row weights, i.e. ignoring
-    /// what the loss does with them. This is what `n_eff` and `min_periods`
+    /// what the loss does with them. This is what `n_eff` and `min_weight`
     /// mean everywhere else, so the robust models report it too: Huber scales
     /// the accumulators by its weights and a quantile fit weighs only the rows
     /// inside its band, and the observation count must follow neither. (The
@@ -357,7 +357,7 @@ impl Robust {
             // `None` is a solve that failed at every jitter: counted, and the
             // previous fit kept. It returned through `?` before the count
             // (review 2026-09-12, S13).
-            let solved = if self.cfg.add_intercept {
+            let solved = if self.cfg.fit_intercept {
                 self.solve_centred(k, j)
             } else {
                 self.solve_through_origin(k, j)
@@ -501,7 +501,7 @@ impl OnlineModel for Robust {
             self.zbuf = vec![0.0; k];
         }
         let lam = self.cfg.decay.factor(d_clock);
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -517,7 +517,7 @@ impl OnlineModel for Robust {
             // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
             // it only with a target, a weight and a prediction to measure the
             // residual from. A zero or NaN weight skipped the ageing, and so
-            // did a row with no prediction (`min_periods` unmet after a clock
+            // did a row with no prediction (`min_weight` unmet after a clock
             // gap), so `σ²` -- the scale of every cut -- forgot less across
             // either than across a null (review 2026-09-12, S13; N6).
             self.wsig[j] *= lam;
@@ -604,7 +604,7 @@ impl OnlineModel for Robust {
                             .zbuf
                             .iter()
                             .enumerate()
-                            .skip(usize::from(self.cfg.add_intercept))
+                            .skip(usize::from(self.cfg.fit_intercept))
                             .map(|(i, &zi)| {
                                 let d = cov.deviation(i, zi);
                                 let v = cov.cov(i, i);
@@ -667,7 +667,7 @@ impl OnlineModel for Robust {
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.w_raw >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
         if due {
             self.solve();
         }
@@ -677,10 +677,10 @@ impl OnlineModel for Robust {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         let n_eff = self.w_raw;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.wj[j] > 0.0 {
-                    *p = dot_aug(&beta[j], x, self.cfg.add_intercept);
+                    *p = dot_aug(&beta[j], x, self.cfg.fit_intercept);
                 }
             }
         }
@@ -790,7 +790,7 @@ mod tests {
         let mut c = cfg(2, 2, RobustLoss::Quantile { tau: 0.5 });
         c.decay = Decay::Halflife(20.0);
         c.ridge = 1e-6;
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Robust::new(c).unwrap();
         let rows: Vec<([f64; 2], Option<f64>, f64)> = vec![
             ([0.0, 0.0], None, 1.0),
@@ -828,12 +828,12 @@ mod tests {
         RobustCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             loss,
             ridge: 1e-8,
             standardize: false,
-            min_periods: (k + 1) as f64,
+            min_weight: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -899,7 +899,7 @@ mod tests {
     fn n_eff_counts_observations_not_irls_weights() {
         // The defect T-A5 found: the IRLS weights a quantile fit then used
         // reached `2 / quantile_eps`, so counting them made `n_eff` -- and
-        // therefore `min_periods` -- meaningless. It must be the plain
+        // therefore `min_weight` -- meaningless. It must be the plain
         // weighted observation count, identical to every other model's, and it
         // still is now that the fit weighs the rows in its band (N9).
         for loss in [
@@ -909,7 +909,7 @@ mod tests {
         ] {
             let mut c = cfg(1, 1, loss);
             c.decay = Decay::Halflife(20.0);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Robust::new(c).unwrap();
             let mut want = 0.0;
             for i in 0..30 {
@@ -936,8 +936,8 @@ mod tests {
         // than emit NaN, and say so in `solve_failures`.
         let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
         c.ridge = 0.0;
-        c.add_intercept = true;
-        c.min_periods = 2.0;
+        c.fit_intercept = true;
+        c.min_weight = 2.0;
         let mut m = Robust::new(c).unwrap();
         let mut s = 101u64;
         for i in 0..40 {
@@ -970,7 +970,7 @@ mod tests {
         let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
         c.ridge = 0.0;
         c.standardize = true;
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = Robust::new(c).unwrap();
         let mut s = 101u64;
         for i in 0..40 {
@@ -1042,7 +1042,7 @@ mod tests {
     fn a_zero_weight_row_ages_the_residual_variance_as_a_null_does() {
         let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1.5 });
         c.decay = Decay::Halflife(10.0);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = Robust::new(c).unwrap();
         let mut s = 53u64;
         for i in 0..60 {
@@ -1067,14 +1067,14 @@ mod tests {
     /// ages its weight, and a row with a target, a weight and a prediction
     /// adds `w·r²` (the row weight, not the robust one). Held on a stream
     /// with zero-weight rows (S13) and a clock gap that takes `n_eff` under
-    /// `min_periods`, whose next rows have a target and no prediction and
+    /// `min_weight`, whose next rows have a target and no prediction and
     /// aged nothing either (N6).
     #[test]
     fn the_residual_variance_ages_on_every_row() {
         let hl = 10.0;
         let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1.5 });
         c.decay = Decay::Halflife(hl);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Robust::new(c).unwrap();
         let (mut want, mut wsig, mut unpredicted) = (0.0f64, 0.0f64, 0);
         let mut s = 61u64;
@@ -1121,16 +1121,16 @@ mod tests {
         let mut ols = EwRidge::new(EwRidgeCfg {
             n_features: 1,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             ridge: vec![1e-8],
             feature_sets: vec![],
             standardize: false,
-            ridge_decay: false,
+            ridge_scale: false,
             session_shrink: None,
-            long_halflife: None,
+            long_half_life: None,
             coef_prior: None,
-            min_periods: 2.0,
+            min_weight: 2.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -1206,15 +1206,15 @@ mod tests {
     /// The weight the per-target gate reads is the rows the target was
     /// present on, decayed -- hard rule 8's -- whatever the loss does with
     /// them. From N9 to the second review's F1 the quantile fit reported its
-    /// band's weight, which a halflife caps at the band's share of the
-    /// effective sample, so a `min_periods` above that share closed the gate
+    /// band's weight, which a half-life caps at the band's share of the
+    /// effective sample, so a `min_weight` above that share closed the gate
     /// for good.
     #[test]
     fn the_target_weight_is_the_rows_present_whatever_the_band_holds() {
         let hl = 30.0;
         let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.9 });
         c.decay = Decay::Halflife(hl);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Robust::new(c).unwrap();
         let (mut want, mut s, mut out) = (0.0f64, 93u64, Vec::new());
         for i in 0..400 {
@@ -1254,7 +1254,7 @@ mod tests {
         let lam = 0.5f64.powf(1.0 / hl);
         let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
         c.decay = Decay::Halflife(hl);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Robust::new(c).unwrap();
         let mut s = 11u64;
         for i in 0..300 {
@@ -1320,7 +1320,7 @@ mod tests {
                 c.standardize = standardize;
                 c.ridge = 1e-6;
                 c.decay = Decay::Halflife(200.0);
-                c.min_periods = 10.0;
+                c.min_weight = 10.0;
                 let mut m = Robust::new(c).unwrap();
                 let mut s = 29u64;
                 let mut preds = Vec::new();
@@ -1363,7 +1363,7 @@ mod tests {
         let run = |level: f64| {
             let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.75 });
             c.decay = Decay::Halflife(500.0);
-            c.min_periods = 20.0;
+            c.min_weight = 20.0;
             let mut m = Robust::new(c).unwrap();
             let mut s = 37u64;
             let mut preds = Vec::new();
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn a_quantile_row_outside_the_band_nudges_and_weighs_nothing() {
         let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.9 });
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Robust::new(c).unwrap();
         let mut s = 90u64;
         for i in 0..200 {
@@ -1460,7 +1460,7 @@ mod tests {
     fn a_quantile_fit_is_the_same_at_a_hundred_times_the_weight() {
         let fit = |scale: f64| {
             let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.8 });
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Robust::new(c).unwrap();
             let mut s = 97u64;
             let mut preds = Vec::new();
@@ -1490,9 +1490,9 @@ mod tests {
     #[test]
     fn a_quantile_fit_warms_up_as_least_squares() {
         let mut qc = cfg(2, 1, RobustLoss::Quantile { tau: 0.7 });
-        qc.min_periods = 0.0;
+        qc.min_weight = 0.0;
         let mut lc = cfg(2, 1, RobustLoss::Huber { delta: 1e9 });
-        lc.min_periods = 0.0;
+        lc.min_weight = 0.0;
         let (mut q, mut l) = (Robust::new(qc).unwrap(), Robust::new(lc).unwrap());
         let mut s = 91u64;
         // `WARM_ROWS` per coefficient is nine rows here, so the tenth is the

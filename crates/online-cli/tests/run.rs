@@ -81,11 +81,11 @@ name = "ridge"
 targets = ["y"]
 features = ["x0", "x1"]
 clock = "t"
-halflife = 50.0
-max_dclock = 10.0
+half_life = 50.0
+gap_cap = 10.0
 weight = "w"
 group = "group"
-min_periods = 5.0
+min_weight = 5.0
 
 [specs.model]
 type = "ew_ridge"
@@ -229,8 +229,8 @@ name = "g"
 targets = ["x0"]
 features = ["x0", "x1"]
 clock = "t"
-halflife = 50.0
-max_dclock = 10.0
+half_life = 50.0
+gap_cap = 10.0
 group = "group"
 
 [specs.model]
@@ -259,7 +259,7 @@ stats = []
     // (docs/WARMUP-AND-CONVERGENCE.md §3); nothing else.
     assert_eq!(
         names,
-        ["n_eff", "settled_frac", "withheld_reason"],
+        ["weight_sum", "settled_frac", "withheld_reason"],
         "an empty `stats` emits n_eff and the readiness fields, nothing else"
     );
     let n_eff = fields[0].f64().unwrap();
@@ -322,7 +322,7 @@ chunk_rows = 5
 name = "m"
 targets = ["y"]
 features = ["x"]
-halflife = 10
+half_life = 10
 [specs.model]
 type = "ew_ridge"
 "#;
@@ -334,7 +334,7 @@ type = "ew_ridge"
         err.contains("line 4") && err.contains("unknown field `chunk_row`, expected one of"),
         "{err}"
     );
-    let err = unknown(good.replace("halflife = 10", "halflfe = 10"));
+    let err = unknown(good.replace("half_life = 10", "halflfe = 10"));
     assert!(err.contains("unknown field `halflfe`"), "{err}");
     let err = unknown(good.replace("type = \"ew_ridge\"", "type = \"ew_ridge\"\nrigde = 0.1"));
     assert!(
@@ -356,7 +356,7 @@ fn resume_rejects_mismatched_specs() {
 
     let mut other = config(&input, &out, 100_000);
     other.load_state = Some(state.clone());
-    other.specs[0].halflife = Some(online_polars::SpanList::One(online_polars::Span::Units(
+    other.specs[0].half_life = Some(online_polars::SpanList::One(online_polars::Span::Units(
         999.0,
     )));
     let err = run_config(&other, |_| Ok(())).unwrap_err().to_string();

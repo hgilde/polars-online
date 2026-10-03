@@ -21,7 +21,7 @@ _NO_SOLVE_SCHEDULE = {"rls", "kalman", "ftrl", "sgd", "pa", "holt"}
 MODELS = [
     ("ewridge", {}),
     ("rls", {}),
-    ("kalman", {"coef_halflife": 100.0}),
+    ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.0]}),
     ("huber", {}),
     ("quantile", {"quantile": 0.5}),
@@ -33,7 +33,7 @@ MODELS = [
 
 
 def _spec(model="ewridge", **kw):
-    d = dict(targets=["y0"], features=["x0"], halflife=1e9, min_periods=1.0)
+    d = dict(targets=["y0"], features=["x0"], half_life=1e9, min_weight=1.0)
     if model not in _NO_SOLVE_SCHEDULE:
         # Solve every row, so each case reads a fit of every row before it.
         d["max_rows_between_solves"] = 1
@@ -52,7 +52,7 @@ def _f(out, field, col="m"):
 class TestWeights:
     """T-E1. A negative weight used to corrupt state silently: EwCov no-ops
     when `lam*W + w <= 0` while the per-target cross moments update anyway, so
-    n_eff claimed the row never happened while r_j was polluted -- in practice
+    weight_sum claimed the row never happened while r_j was polluted -- in practice
     every later prediction went null."""
 
     def test_negative_weight_is_rejected_with_the_row_number(self):
@@ -65,7 +65,7 @@ class TestWeights:
         for model, extra in [
             ("ewridge", {}),
             ("rls", {}),
-            ("kalman", {"coef_halflife": 100.0}),
+            ("kalman", {"coef_half_life": 100.0}),
             ("lasso", {"lasso_path": [0.0]}),
             ("huber", {}),
             ("quantile", {"quantile": 0.5}),
@@ -105,7 +105,7 @@ class TestWeights:
             y0=np.linspace(2.0, 4.0, n),
         )
         spec = _spec(
-            model, weight="w", clock="t", max_dclock=5.0, halflife=50.0, min_periods=2.0, **extra
+            model, weight="w", clock="t", gap_cap=5.0, half_life=50.0, min_weight=2.0, **extra
         )
         lead = _run(pl.DataFrame({**base, "w": [0.0] * 3 + [1.0] * (n - 3)}), spec)
         none = _run(pl.DataFrame({**base, "w": [1.0] * n}), spec)
@@ -119,7 +119,7 @@ class TestWeights:
         # Three rows of warmup are lost to the zero weights, and no more.
         assert len(good) == len(finite(none)) - 3, f"{model}: {len(good)} vs {len(finite(none))}"
 
-    # A fit a thousand halflives stale has no data behind it, which is the
+    # A fit a thousand half-lives stale has no data behind it, which is the
     # point here, and the readiness notice says so.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     @pytest.mark.parametrize("model", ["ewridge", "ew_cov"])
@@ -127,16 +127,16 @@ class TestWeights:
         """docs/PLAN.md task 115 (c), decided 2026-09-28 (§12 found it): a
         zero-weight row advances the clock and learns nothing (hard rule 9), so
         the history ages by the row's gap -- all of it where the decay factor
-        ``2^(-gap/h)`` underflows to exactly 0, from 1075 halflives on. There
+        ``2^(-gap/h)`` underflows to exactly 0, from 1075 half-lives on. There
         the mean-form update is 0/0 (``lam*W + w = 0``), and the guard used to
         refuse it and keep the history un-aged, so the next row saw the old
-        count. Now the row is the decay alone, as one halflife short of it all
+        count. Now the row is the decay alone, as one half-life short of it all
         but is. `crates/online-core/tests/model_contract.rs` holds every model
         to it."""
         n0 = 40
 
         def n_eff_after(gap: float, w: float, cap: float = 1e9) -> tuple[float, float]:
-            """``n_eff`` at the zero-weight (or weighted) row and at the row after it."""
+            """``weight_sum`` at the zero-weight (or weighted) row and at the row after it."""
             t = [*np.arange(float(n0)), n0 - 1 + gap, n0 + gap]
             rng = np.random.default_rng(0)
             x = rng.normal(size=(n0 + 2, 2))
@@ -149,21 +149,21 @@ class TestWeights:
                     "w": [1.0] * n0 + [w, 1.0],
                 }
             )
-            kw = dict(features=["x0", "x1"], clock="t", weight="w", halflife=1.0, max_dclock=cap)
+            kw = dict(features=["x0", "x1"], clock="t", weight="w", half_life=1.0, gap_cap=cap)
             spec = (
                 po.spec.ewridge("m", targets=["y0"], max_error_inflation=float("inf"), **kw)
                 if model == "ewridge"
                 else po.spec.ew_cov("m", **kw)
             )
-            n_eff = _f(_run(df, spec), "n_eff")
-            return n_eff[n0], n_eff[n0 + 1]
+            weight_sum = _f(_run(df, spec), "weight_sum")
+            return weight_sum[n0], weight_sum[n0 + 1]
 
         # Aged to nothing: the factor is positive, however small.
         at, after = n_eff_after(1074.0, 0.0)
         assert 1.9 < at < 2.0 and after < 1e-300, (at, after)
         _, after = n_eff_after(5000.0, 0.0, cap=1000.0)
         assert after < 1e-300, after
-        # Forgotten: the factor is 0, from 1075 halflives on, capped or not.
+        # Forgotten: the factor is 0, from 1075 half-lives on, capped or not.
         for gap, cap in [(1075.0, 1e9), (5000.0, 1e9), (5000.0, 2000.0)]:
             at, after = n_eff_after(gap, 0.0, cap)
             assert 1.9 < at < 2.0 and after == 0.0, (gap, cap, at, after)
@@ -174,7 +174,7 @@ class TestWeights:
     def test_null_weight_skips_the_row(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0], "w": [1.0, None, 1.0]})
         out = _run(df, _spec(weight="w"))
-        assert _f(out, "n_eff")[1] is None
+        assert _f(out, "weight_sum")[1] is None
 
 
 class TestGroupKeys:
@@ -190,15 +190,15 @@ class TestGroupKeys:
             }
         )
         out = _run(df, _spec(group="g"))
-        # Two independent streams: each sees its first row at n_eff 0.
-        assert _f(out, "n_eff") == pytest.approx([0.0, 0.0, 1.0, 1.0])
+        # Two independent streams: each sees its first row at weight_sum 0.
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 0.0, 1.0, 1.0])
 
     def test_null_group_rows_form_one_stream(self):
         df = pl.DataFrame(
             {"g": [None, "a", None, "a"], "x0": [1.0, 2.0, 3.0, 4.0], "y0": [2.0, 4.0, 6.0, 8.0]}
         )
         out = _run(df, _spec(group="g"))
-        assert _f(out, "n_eff") == pytest.approx([0.0, 0.0, 1.0, 1.0])
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 0.0, 1.0, 1.0])
 
     def test_group_keys_survive_save_load(self, tmp_path):
         df = pl.DataFrame({"g": [None, "<null>"], "x0": [1.0, 2.0], "y0": [1.0, 2.0]})
@@ -210,14 +210,14 @@ class TestGroupKeys:
         reloaded = po.ModelBank.load(p, specs=[spec])
         a = bank.fit_predict(df)
         b = reloaded.fit_predict(df)
-        assert _f(a, "n_eff") == pytest.approx(_f(b, "n_eff"))
+        assert _f(a, "weight_sum") == pytest.approx(_f(b, "weight_sum"))
 
     def test_integer_group_column(self):
         df = pl.DataFrame(
             {"g": [1, 2, 1, 2], "x0": [1.0, 2.0, 3.0, 4.0], "y0": [1.0, 2.0, 3.0, 4.0]}
         )
         out = _run(df, _spec(group="g"))
-        assert _f(out, "n_eff") == pytest.approx([0.0, 0.0, 1.0, 1.0])
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 0.0, 1.0, 1.0])
 
 
 class TestNonFinite:
@@ -227,17 +227,17 @@ class TestNonFinite:
     def test_non_finite_feature_skips_the_row(self, bad):
         df = pl.DataFrame({"x0": [1.0, bad, 2.0], "y0": [1.0, 5.0, 2.0]})
         out = _run(df)
-        assert _f(out, "n_eff")[1] is None
+        assert _f(out, "weight_sum")[1] is None
         assert _f(out, "pred_y0")[1] is None
         # the clock still advanced: row 2 sees exactly one observation
-        assert _f(out, "n_eff")[2] == pytest.approx(1.0)
+        assert _f(out, "weight_sum")[2] == pytest.approx(1.0)
 
     @pytest.mark.parametrize("bad", [INF, -INF, np.nan])
     def test_non_finite_target_is_treated_as_null(self, bad):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, bad, 3.0]})
         out = _run(df)
         # predict-only: the row is counted, but contributes no target information
-        assert _f(out, "n_eff")[2] == pytest.approx(2.0)
+        assert _f(out, "weight_sum")[2] == pytest.approx(2.0)
         assert _f(out, "resid_y0")[1] is None
 
     @pytest.mark.parametrize("bad", [INF, -INF, np.nan])
@@ -246,13 +246,13 @@ class TestNonFinite:
         # other non-finite input; only a finite negative weight is an error.
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0], "w": [1.0, bad, 1.0]})
         out = _run(df, _spec(weight="w"))
-        assert _f(out, "n_eff")[1] is None
+        assert _f(out, "weight_sum")[1] is None
 
     @pytest.mark.parametrize("bad", [INF, -INF, np.nan, None])
     def test_non_finite_clock_errors_loudly(self, bad):
         df = pl.DataFrame({"t": [1.0, bad, 3.0], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
         with pytest.raises(Exception, match="clock"):
-            _run(df, _spec(clock="t", max_dclock=10.0))
+            _run(df, _spec(clock="t", gap_cap=10.0))
 
     def test_outputs_are_never_non_finite(self):
         # Whatever comes in, what comes out is finite or null -- never NaN/inf.
@@ -262,8 +262,8 @@ class TestNonFinite:
         x[rng.random(n) < 0.05] = np.inf
         y = rng.standard_normal(n) * 1e6
         df = pl.DataFrame({"x0": x, "y0": y})
-        out = _run(df, _spec(halflife=50.0))
-        for field in ("pred_y0", "resid_y0", "n_eff"):
+        out = _run(df, _spec(half_life=50.0))
+        for field in ("pred_y0", "resid_y0", "weight_sum"):
             vals = np.array([v for v in _f(out, field) if v is not None], dtype=float)
             assert np.isfinite(vals).all(), field
 
@@ -282,7 +282,7 @@ class TestClockOrdering:
         # mis-sorted chunk: the second chunk steps back from the first's last
         # clock (0.5 < 2.0), and the default refuses it, naming the row.
         a, b = self._frames()
-        bank = po.ModelBank([_spec(clock="t", max_dclock=4.0, halflife=1.0)])
+        bank = po.ModelBank([_spec(clock="t", gap_cap=4.0, half_life=1.0)])
         bank.fit_predict(a)
         before = bank.save_bytes()
         with pytest.raises(ValueError, match="goes backwards by 1.5 at row 0"):
@@ -292,20 +292,18 @@ class TestClockOrdering:
     def test_reset_state_variant_restarts_the_stream(self):
         a, b = self._frames()
         # As above: the backwards jump is what `reset_state` is being asked about.
-        spec = _spec(
-            clock="t", max_dclock=4.0, on_clock_reset="reset_state", min_backwards_jump=0.0
-        )
+        spec = _spec(clock="t", gap_cap=4.0, restart_after_step_back=0.0)
         bank = po.ModelBank([spec])
         bank.fit_predict(a)
         out_b = bank.fit_predict(b)
-        assert _f(out_b, "n_eff")[0] == 0.0
+        assert _f(out_b, "weight_sum")[0] == 0.0
 
     def test_chunking_a_correctly_ordered_stream_is_still_invariant(self):
         # The guard rail for the above: ordering matters, chunk boundaries do not.
         df = pl.DataFrame(
             {"t": np.arange(200.0), "x0": np.arange(200.0) % 7, "y0": np.arange(200.0) % 5}
         )
-        spec = _spec(clock="t", max_dclock=10.0, halflife=20.0)
+        spec = _spec(clock="t", gap_cap=10.0, half_life=20.0)
         one = _run(df, spec).unnest("m")
         bank = po.ModelBank([spec])
         many = pl.concat([bank.fit_predict(df.slice(i, 17)) for i in range(0, 200, 17)]).unnest("m")
@@ -333,7 +331,7 @@ class TestDegenerateSolves:
         n = 200
         x = np.arange(float(n))
         df = pl.DataFrame({"x0": x, "x1": x, "y0": x * 2.0})
-        out, failures = self._run_counting(df, features=["x0", "x1"], ridge=0.0, min_periods=2.0)
+        out, failures = self._run_counting(df, features=["x0", "x1"], ridge=0.0, min_weight=2.0)
         assert failures > 0, "a singular system should have needed jitter"
         preds = np.array([v for v in _f(out, "pred_y0") if v is not None], dtype=float)
         assert np.isfinite(preds).all()
@@ -343,7 +341,7 @@ class TestDegenerateSolves:
         rng = np.random.default_rng(3)
         a = rng.standard_normal(n)
         df = pl.DataFrame({"x0": a, "x1": np.full(n, 5.0), "y0": 2.0 * a})
-        out, _ = self._run_counting(df, features=["x0", "x1"], ridge=1e-8, min_periods=3.0)
+        out, _ = self._run_counting(df, features=["x0", "x1"], ridge=1e-8, min_weight=3.0)
         preds = np.array([v for v in _f(out, "pred_y0") if v is not None], dtype=float)
         assert np.isfinite(preds).all()
         # the informative feature is still recovered
@@ -354,45 +352,45 @@ class TestDegenerateSolves:
         n = 200
         x = np.arange(float(n))
         df = pl.DataFrame({"x0": x, "x1": x, "y0": x * 2.0})
-        _, failures = self._run_counting(df, features=["x0", "x1"], ridge=1.0, min_periods=2.0)
+        _, failures = self._run_counting(df, features=["x0", "x1"], ridge=1.0, min_weight=2.0)
         assert failures == 0, "a real ridge should make the system solvable"
 
     def test_non_solving_models_report_zero(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
-        for model, extra in [("rls", {}), ("kalman", {"coef_halflife": 10.0}), ("ftrl", {})]:
+        for model, extra in [("rls", {}), ("kalman", {"coef_half_life": 10.0}), ("ftrl", {})]:
             bank = po.ModelBank([_spec(model, **extra)])
             bank.fit_predict(df)
             assert bank.solve_failures()["m"][""] == 0
 
 
 class TestDegenerateClocks:
-    """T-E6: duplicate clock values, a zero cap, and a halflife far below the
+    """T-E6: duplicate clock values, a zero cap, and a half-life far below the
     typical delta."""
 
     def test_duplicate_clock_values_are_zero_deltas(self):
         df = pl.DataFrame(
             {"t": [0.0, 0.0, 0.0, 0.0], "x0": [1.0, 2.0, 3.0, 4.0], "y0": [1.0, 2.0, 3.0, 4.0]}
         )
-        out = _run(df, _spec(clock="t", max_dclock=10.0, halflife=5.0))
-        # No decay at all: n_eff is just the row count.
-        assert _f(out, "n_eff") == pytest.approx([0.0, 1.0, 2.0, 3.0])
+        out = _run(df, _spec(clock="t", gap_cap=10.0, half_life=5.0))
+        # No decay at all: weight_sum is just the row count.
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 1.0, 2.0, 3.0])
 
     def test_max_dclock_zero_is_refused_and_no_decay_is_an_infinite_halflife(self):
         # A cap of 0 froze the clock, and every positive gap then read as a
-        # break (task 120); no decay is `halflife = "inf"`.
-        with pytest.raises(ValueError, match="max_dclock must be > 0"):
-            _spec(clock="t", max_dclock=0.0, halflife=1.0)
+        # break (task 120); no decay is `half_life = "inf"`.
+        with pytest.raises(ValueError, match="gap_cap must be > 0"):
+            _spec(clock="t", gap_cap=0.0, half_life=1.0)
         df = pl.DataFrame({"t": [0.0, 100.0, 500.0], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
-        out = _run(df, _spec(clock="t", max_dclock=1e9, halflife=float("inf")))
-        assert _f(out, "n_eff") == pytest.approx([0.0, 1.0, 2.0])
+        out = _run(df, _spec(clock="t", gap_cap=1e9, half_life=float("inf")))
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 1.0, 2.0])
 
     def test_halflife_far_below_the_delta_forgets_almost_everything(self):
         df = pl.DataFrame(
             {"t": [0.0, 1000.0, 2000.0], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]}
         )
-        out = _run(df, _spec(clock="t", max_dclock=1e9, halflife=1e-3))
+        out = _run(df, _spec(clock="t", gap_cap=1e9, half_life=1e-3))
         # lambda is ~0, so each row is effectively the first one.
-        neff = _f(out, "n_eff")
+        neff = _f(out, "weight_sum")
         assert neff[1] == pytest.approx(1.0, abs=1e-9)
         assert neff[2] == pytest.approx(1.0, abs=1e-9)
 
@@ -406,8 +404,8 @@ class TestDegenerateClocks:
                 "y0": rng.standard_normal(n),
             }
         )
-        out = _run(df, _spec(clock="t", max_dclock=1e9, halflife=1e-6, min_periods=0.0))
-        for field in ("pred_y0", "resid_y0", "n_eff"):
+        out = _run(df, _spec(clock="t", gap_cap=1e9, half_life=1e-6, min_weight=0.0))
+        for field in ("pred_y0", "resid_y0", "weight_sum"):
             vals = np.array([v for v in _f(out, field) if v is not None], dtype=float)
             assert np.isfinite(vals).all(), field
 
@@ -443,8 +441,8 @@ class TestMinimalShapes:
 
     def test_single_row_groups(self):
         df = pl.DataFrame({"g": ["a", "b", "c"], "x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0]})
-        out = _run(df, _spec(group="g", min_periods=0.0))
-        assert _f(out, "n_eff") == pytest.approx([0.0, 0.0, 0.0])
+        out = _run(df, _spec(group="g", min_weight=0.0))
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 0.0, 0.0])
 
     def test_group_appearing_in_only_one_chunk(self):
         df = pl.DataFrame(
@@ -459,12 +457,12 @@ class TestMinimalShapes:
         first = bank.fit_predict(df.slice(0, 10))
         second = bank.fit_predict(df.slice(10, 10))
         # group b starts fresh in the second chunk
-        assert _f(second, "n_eff")[0] == 0.0
-        assert _f(first, "n_eff")[0] == 0.0
+        assert _f(second, "weight_sum")[0] == 0.0
+        assert _f(first, "weight_sum")[0] == 0.0
 
     def test_smallest_spec_one_feature_one_target(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0, 4.0], "y0": [2.0, 4.0, 6.0, 8.0]})
-        out = _run(df, _spec(min_periods=2.0, add_intercept=False))
+        out = _run(df, _spec(min_weight=2.0, fit_intercept=False))
         assert _f(out, "pred_y0")[-1] == pytest.approx(8.0, rel=1e-6)
 
 
@@ -479,8 +477,8 @@ class TestColumnTypes:
                 "y0": [1.0, 2.0, 3.0, 4.0],
             }
         )
-        out = _run(df, _spec(group="g", min_periods=0.0))
-        assert _f(out, "n_eff") == pytest.approx([0.0, 0.0, 1.0, 1.0])
+        out = _run(df, _spec(group="g", min_weight=0.0))
+        assert _f(out, "weight_sum") == pytest.approx([0.0, 0.0, 1.0, 1.0])
 
     def test_integer_session_column(self):
         df = pl.DataFrame(
@@ -495,13 +493,13 @@ class TestColumnTypes:
             df,
             _spec(
                 clock="t",
-                max_dclock=10.0,
+                gap_cap=10.0,
                 session="session",
                 session_gap="reset",
-                min_periods=0.0,
+                min_weight=0.0,
             ),
         )
-        assert _f(out, "n_eff")[2] == 0.0, "the session change should have reset"
+        assert _f(out, "weight_sum")[2] == 0.0, "the session change should have reset"
 
     def test_a_session_named_like_the_null_sentinel_is_not_null(self):
         """The T-E2 bug one layer down, fixed: null sessions were hashed as the
@@ -521,14 +519,14 @@ class TestColumnTypes:
             df,
             _spec(
                 clock="t",
-                max_dclock=10.0,
+                gap_cap=10.0,
                 session="session",
                 session_gap="reset",
-                min_periods=0.0,
+                min_weight=0.0,
             ),
         )
-        # Every row changes session, so n_eff must reset at every boundary.
-        assert _f(out, "n_eff") == [0.0, 0.0, 0.0, 0.0], _f(out, "n_eff")
+        # Every row changes session, so weight_sum must reset at every boundary.
+        assert _f(out, "weight_sum") == [0.0, 0.0, 0.0, 0.0], _f(out, "weight_sum")
 
     def test_null_session_value_is_its_own_session(self):
         # Pins current behavior: a null session is its own session, distinct
@@ -546,13 +544,13 @@ class TestColumnTypes:
             df,
             _spec(
                 clock="t",
-                max_dclock=10.0,
+                gap_cap=10.0,
                 session="session",
                 session_gap="reset",
-                min_periods=0.0,
+                min_weight=0.0,
             ),
         )
-        neff = _f(out, "n_eff")
+        neff = _f(out, "weight_sum")
         assert neff[1] == 0.0, "a -> null is a session change"
         assert neff[2] == 1.0, "null -> null is not"
         assert neff[3] == 0.0, "null -> a is a session change"
@@ -581,8 +579,8 @@ class TestNumericalScale:
                 features=["x0", "x1"],
                 standardize=True,
                 ridge=1e-10,
-                halflife=float("inf"),
-                min_periods=10.0,
+                half_life=float("inf"),
+                min_weight=10.0,
             ),
         )
         coef = np.array(_f(out, "coef")[-1], dtype=float)
@@ -606,8 +604,8 @@ class TestNumericalScale:
                 _spec(
                     standardize=True,
                     ridge=0.0,
-                    halflife=float("inf"),
-                    min_periods=10.0,
+                    half_life=float("inf"),
+                    min_weight=10.0,
                 ),
             )
             coef = np.array(_f(out, "coef")[-1], dtype=float)
@@ -635,8 +633,8 @@ class TestNumericalScale:
                 features=["x0", "x1"],
                 standardize=True,
                 ridge=1e-10,
-                halflife=float("inf"),
-                min_periods=10.0,
+                half_life=float("inf"),
+                min_weight=10.0,
             ),
         )
         coef = np.array(_f(out, "coef")[-1], dtype=float)
@@ -654,8 +652,8 @@ class TestNumericalScale:
                 features=["x0", "x1"],
                 standardize=True,
                 ridge=1e-10,
-                halflife=float("inf"),
-                min_periods=10.0,
+                half_life=float("inf"),
+                min_weight=10.0,
             ),
         )
         coef = np.array(_f(out, "coef")[-1], dtype=float)
@@ -670,8 +668,8 @@ class TestClockColumnTypes:
     internal representation, so the same 60 seconds becomes 60_000 /
     60_000_000 / 60_000_000_000 clock units depending only on whether the
     column is `Datetime(ms/us/ns)`, and a `Date` becomes 1 unit per day.
-    `halflife`, `max_dclock` and `session_gap` all live in those units, so
-    `halflife=600` on a microsecond column would silently mean 600
+    `half-life`, `gap_cap` and `session_gap` all live in those units, so
+    `half_life=600` on a microsecond column would silently mean 600
     microseconds -- every row decays to nothing and the output is
     plausible-looking garbage with no error.
     """
@@ -685,7 +683,7 @@ class TestClockColumnTypes:
             {"t": ts, "x0": np.arange(float(len(ts))), "y0": np.arange(float(len(ts)))}
         )
         with pytest.raises(Exception, match="temporal clock"):
-            _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+            _run(df, _spec(clock="t", gap_cap=1e12, half_life=600.0))
 
     def test_date_and_duration_clocks_are_rejected(self):
         ts = pl.datetime_range(
@@ -695,7 +693,7 @@ class TestClockColumnTypes:
         for col in (ts.dt.date(), ts - ts[0]):
             df = pl.DataFrame({"t": col, "x0": np.arange(float(n)), "y0": np.arange(float(n))})
             with pytest.raises(Exception, match="temporal clock"):
-                _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+                _run(df, _spec(clock="t", gap_cap=1e12, half_life=600.0))
 
     def test_the_error_names_the_column_dtype_and_the_fix(self):
         ts = pl.datetime_range(
@@ -705,7 +703,7 @@ class TestClockColumnTypes:
             {"t": ts, "x0": np.arange(float(len(ts))), "y0": np.arange(float(len(ts)))}
         )
         with pytest.raises(Exception) as exc:
-            _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+            _run(df, _spec(clock="t", gap_cap=1e12, half_life=600.0))
         msg = str(exc.value)
         assert '"t"' in msg, "the offending column should be named"
         assert "datetime" in msg.lower(), "the dtype should be named"
@@ -719,21 +717,21 @@ class TestClockColumnTypes:
         df = pl.DataFrame(
             {"t": ts, "x0": np.arange(float(n)), "y0": np.arange(float(n))}
         ).with_columns(t_s=pl.col("t").dt.epoch("s").cast(pl.Float64))
-        # halflife 60 now genuinely means 60 seconds, i.e. one bar.
-        out = _run(df, _spec(clock="t_s", max_dclock=1e6, halflife=60.0))
-        assert _f(out, "n_eff")[2] == pytest.approx(0.5 * 1.0 + 1.0, rel=1e-12)
+        # half-life 60 now genuinely means 60 seconds, i.e. one bar.
+        out = _run(df, _spec(clock="t_s", gap_cap=1e6, half_life=60.0))
+        assert _f(out, "weight_sum")[2] == pytest.approx(0.5 * 1.0 + 1.0, rel=1e-12)
 
     def test_integer_clock_column(self):
         df = pl.DataFrame(
             {"t": [0, 10, 20, 30], "x0": [1.0, 2.0, 3.0, 4.0], "y0": [1.0, 2.0, 3.0, 4.0]}
         )
-        out = _run(df, _spec(clock="t", max_dclock=100.0, halflife=10.0, min_periods=0.0))
-        assert _f(out, "n_eff")[2] == pytest.approx(0.5 + 1.0, rel=1e-12)
+        out = _run(df, _spec(clock="t", gap_cap=100.0, half_life=10.0, min_weight=0.0))
+        assert _f(out, "weight_sum")[2] == pytest.approx(0.5 + 1.0, rel=1e-12)
 
     def test_float_and_integer_clocks_agree(self):
         a = pl.DataFrame({"t": [0, 60, 120, 180], "x0": np.arange(4.0), "y0": np.arange(4.0)})
         b = a.with_columns(t=pl.col("t").cast(pl.Float64))
-        spec = _spec(clock="t", max_dclock=1e6, halflife=600.0, min_periods=0.0)
+        spec = _spec(clock="t", gap_cap=1e6, half_life=600.0, min_weight=0.0)
         assert _run(a, spec).drop("t").equals(_run(b, spec).drop("t"), null_equal=True)
 
 
@@ -752,7 +750,7 @@ class TestPendingDeltaAcrossSaveLoad:
                 "y0": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             }
         )
-        spec = _spec(clock="t", max_dclock=10.0, halflife=2.0, min_periods=0.0)
+        spec = _spec(clock="t", gap_cap=10.0, half_life=2.0, min_weight=0.0)
         straight = po.ModelBank([spec]).fit_predict(df)
 
         # Split exactly after the skipped row, so `pending` is nonzero at save.
@@ -786,20 +784,20 @@ class TestPendingDeltaAcrossSaveLoad:
             _spec(
                 group="g",
                 clock="t",
-                max_dclock=10.0,
+                gap_cap=10.0,
                 session="session",
                 session_gap=100.0,
-                halflife=1.0,
-                min_periods=0.0,
+                half_life=1.0,
+                min_weight=0.0,
             ),
         )
-        assert _f(out, "n_eff")[2] == 0.0
-        assert _f(out, "n_eff")[3] == pytest.approx(1.0, rel=1e-12)
+        assert _f(out, "weight_sum")[2] == 0.0
+        assert _f(out, "weight_sum")[3] == pytest.approx(1.0, rel=1e-12)
 
 
 class TestStrictClock:
-    """E3: `on_clock_reset="error"` refuses a backwards clock instead of
-    absorbing it.
+    """E3: a backwards clock is refused instead of absorbed unless
+    `restart_after_step_back` reads it as a new start.
 
     PLAN section 5 says the bank "asserts monotonicity ... and errors loudly";
     until this existed, a mis-sorted chunk was indistinguishable from a genuine
@@ -815,22 +813,20 @@ class TestStrictClock:
             }
         )
 
-    def _spec_for(self, policy, **kw):
-        # Under `"reset_state"` no step back is a late row here.
-        if policy == "reset_state":
-            kw.setdefault("min_backwards_jump", 0.0)
+    def _spec_for(self, restart_after_step_back=None, **kw):
+        # Given as 0, no step back is a late row here.
         return _spec(
             clock="t",
-            max_dclock=10.0,
-            halflife=5.0,
-            on_clock_reset=policy,
-            min_periods=0.0,
+            gap_cap=10.0,
+            half_life=5.0,
+            restart_after_step_back=restart_after_step_back,
+            min_weight=0.0,
             **kw,
         )
 
     def test_error_policy_names_column_row_and_magnitude(self):
         with pytest.raises(Exception) as exc:
-            _run(self._df(), self._spec_for("error"))
+            _run(self._df(), self._spec_for())
         msg = str(exc.value)
         assert '"t"' in msg and "row 3" in msg and "0.5" in msg
         assert "sort" in msg.lower(), "the error should say how to fix it"
@@ -838,28 +834,30 @@ class TestStrictClock:
     def test_reset_state_starts_over_at_it(self):
         # The one policy left that takes a step back: the model starts over.
         # (`"max"` and `"zero"`, which absorbed it, are gone: task 120.)
-        neff = _f(_run(self._df(), self._spec_for("reset_state")), "n_eff")
+        neff = _f(_run(self._df(), self._spec_for(0.0)), "weight_sum")
         assert neff[3] == 0.0 and neff[4] == 1.0
 
     def test_error_policy_accepts_a_monotone_stream(self):
         good = pl.DataFrame(
             {"t": [0.0, 1.0, 2.0, 3.0], "x0": [1.0] * 4, "y0": [1.0, 2.0, 3.0, 4.0]}
         )
-        out = _run(good, self._spec_for("error"))
-        assert _f(out, "n_eff")[0] == 0.0
+        out = _run(good, self._spec_for())
+        assert _f(out, "weight_sum")[0] == 0.0
 
     def test_repeated_clock_values_are_not_an_error(self):
         # A duplicate timestamp is a zero delta, not a backwards one.
         dup = pl.DataFrame({"t": [0.0, 1.0, 1.0, 2.0], "x0": [1.0] * 4, "y0": [1.0, 2.0, 3.0, 4.0]})
-        out = _run(dup, self._spec_for("error"))
-        assert _f(out, "n_eff")[3] == pytest.approx(_f(out, "n_eff")[2] * 0.5 ** (0.0 / 5.0) + 1.0)
+        out = _run(dup, self._spec_for())
+        assert _f(out, "weight_sum")[3] == pytest.approx(
+            _f(out, "weight_sum")[2] * 0.5 ** (0.0 / 5.0) + 1.0
+        )
 
     def test_catches_a_mis_sorted_chunk_boundary(self):
         # The motivating case: chunks fed out of order. The removed "max"
         # absorbed it silently (T-E4); "error", the default, catches it.
         a = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x0": [1.0] * 3, "y0": [1.0, 2.0, 3.0]})
         b = pl.DataFrame({"t": [0.5, 1.5], "x0": [1.0] * 2, "y0": [4.0, 5.0]})
-        spec = self._spec_for("error")
+        spec = self._spec_for()
         bank = po.ModelBank([spec])
         bank.fit_predict(a)
         with pytest.raises(Exception, match="goes backwards"):
@@ -876,5 +874,5 @@ class TestStrictClock:
                 "y0": [1.0, 2.0, 3.0, 4.0],
             }
         )
-        out = _run(df, self._spec_for("error", group="g"))
-        assert _f(out, "n_eff")[2] == pytest.approx(1.0)
+        out = _run(df, self._spec_for(group="g"))
+        assert _f(out, "weight_sum")[2] == pytest.approx(1.0)

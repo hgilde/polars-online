@@ -9,7 +9,7 @@ Not a regression: nothing is predicted, and the outputs (``log_e_pos``,
 Four kinds of check:
 
 - **The oracle.** ``reference.seqtest_ref`` replays the recursion in scalar
-  numpy (nulls, zeros, resets, ``min_periods``) and is held to the bank to
+  numpy (nulls, zeros, resets, ``min_weight``) and is held to the bank to
   ``1e-12``; where the clip never binds the wealth has the closed form
   ``2^n B(n_pos + 1/2, n_neg + 1/2) / pi``, held through ``math.lgamma``;
   and ``po.eval.seqtest`` -- the same computation in polars expressions --
@@ -25,7 +25,7 @@ Four kinds of check:
   by ``a_suffix``, a row either side sits out is no trial, columns come
   back in spec order whichever phase produced them, scoring reads the state
   before the chunk, a refused chunk updates neither phase.
-- **Edge cases and plumbing.** Warmup, per-target ``min_periods``, null and
+- **Edge cases and plumbing.** Warmup, per-target ``min_weight``, null and
   zero and out-of-bound values, a session reset, groups and a null key,
   chunk invariance, save/load and pickle, the lazy path, the
   CLI, the expression path (column mode; a comparison is refused with the
@@ -99,7 +99,7 @@ def as_ref(out, name="m", targets=("d0",)):
         "log_e_neg": stack("log_e_neg"),
         "n_pos": stack("n_pos"),
         "n_neg": stack("n_neg"),
-        "n_eff": u["n_eff"].fill_null(float("nan")).to_numpy(),
+        "weight_sum": u["weight_sum"].fill_null(float("nan")).to_numpy(),
     }
 
 
@@ -132,9 +132,9 @@ def log_e_closed_form(n_pos, n_neg):
 class TestOracle:
     def test_the_replay_holds_with_nulls_zeros_and_three_targets(self):
         df = frame(n=5000, m=3, seed=1, p=0.6, null_every=7, zero_every=11)
-        out = po.ModelBank([spec(targets=["d0", "d1", "d2"], min_periods=4.0)]).fit_predict(df)
+        out = po.ModelBank([spec(targets=["d0", "d1", "d2"], min_weight=4.0)]).fit_predict(df)
         Y = df.select("d0", "d1", "d2").fill_null(float("nan")).to_numpy()
-        want = reference.seqtest_ref(Y, min_periods=4.0)
+        want = reference.seqtest_ref(Y, min_weight=4.0)
         got = as_ref(out, targets=["d0", "d1", "d2"])
         for k in want:
             close(got[k], want[k])
@@ -164,7 +164,7 @@ class TestOracle:
         df = frame(n=n, seed=3, p=0.7).with_columns(
             pl.Series("s", ["a"] * 700 + ["b"] * 500 + ["c"] * 800)
         )
-        s = spec(clock="t", max_dclock=10.0, session="s", session_gap="reset")
+        s = spec(clock="t", gap_cap=10.0, session="s", session_gap="reset")
         out = po.ModelBank([s]).fit_predict(df)
         reset = np.zeros(n, dtype=bool)
         reset[[700, 1200]] = True
@@ -173,8 +173,12 @@ class TestOracle:
         for k in want:
             close(got[k], want[k])
         u = unnested(out)
-        assert u["n_eff"][700] == 0.0 and u["n_pos_d0"][700] == 0 and u["log_e_pos_d0"][700] == 0.0
-        assert u["n_eff"][699] == 699.0
+        assert (
+            u["weight_sum"][700] == 0.0
+            and u["n_pos_d0"][700] == 0
+            and u["log_e_pos_d0"][700] == 0.0
+        )
+        assert u["weight_sum"][699] == 699.0
 
     @pytest.mark.parametrize("side", ["pos", "neg"])
     def test_the_closed_form_where_the_clip_never_binds(self, side):
@@ -222,16 +226,16 @@ class TestOracle:
                 "g": (np.arange(n) % k).astype(np.int64),
             }
         )
-        s = spec(targets=["d0", "d1"], group="g", min_periods=3.0)
+        s = spec(targets=["d0", "d1"], group="g", min_weight=3.0)
         bank = unnested(po.ModelBank([s]).fit_predict(df))
-        twin = po.eval.seqtest(df, targets=["d0", "d1"], by=["g"], min_periods=3.0)
+        twin = po.eval.seqtest(df, targets=["d0", "d1"], by=["g"], min_weight=3.0)
         assert bank.equals(twin["seqtest"].struct.unnest(), null_equal=True)
         assert bank.dtypes == [pl.Float64, pl.Float64, pl.Int64, pl.Int64] * 2 + [pl.Float64]
         # 52% positive (d0) and 48% (d1) over 5000 rows per group: read at
         # the last row, the right side has crossed 1/0.05 in a good share of
         # the groups (0.24 and 0.26 measured) and the wrong side in almost
         # none -- a fixed-time read is dominated by the sup Ville bounds.
-        last = bank.filter(pl.col("n_eff") == n / k - 1)
+        last = bank.filter(pl.col("weight_sum") == n / k - 1)
         assert (last["log_e_pos_d0"] > LN20).mean() > 0.15
         assert (last["log_e_neg_d1"] > LN20).mean() > 0.15
         assert (last["log_e_neg_d0"] > LN20).mean() <= 0.05
@@ -239,10 +243,10 @@ class TestOracle:
 
     def test_the_eval_twin_equals_the_banks_comparison(self):
         df = regression(300_000, seed=5, groups=["p", "q", "r", "s"])
-        common = dict(targets=["y"], features=["x0", "x1"], group="g", min_periods=5.0)
+        common = dict(targets=["y"], features=["x0", "x1"], group="g", min_weight=5.0)
         specs = [
-            po.spec.ewridge("ridge", halflife=[50.0, 500.0], **common),
-            po.spec.kalman("kalman", halflife=100.0, coef_halflife=50.0, **common),
+            po.spec.ewridge("ridge", half_life=[50.0, 500.0], **common),
+            po.spec.kalman("kalman", half_life=100.0, coef_half_life=50.0, **common),
             po.spec.seqtest("c", targets=["y"], a="ridge", a_suffix="@h50", b="kalman", group="g"),
         ]
         out = po.ModelBank(specs).fit_predict(df)
@@ -264,7 +268,7 @@ class TestOracle:
         twin = po.eval.seqtest(df, targets=["d0"])["seqtest"].struct.unnest()
         assert bank.equals(twin, null_equal=True)
         assert bank["n_pos_d0"][-1] == 1 and bank["n_neg_d0"][-1] == 1
-        assert bank["n_eff"][-1] == 9.0  # every row but the last, whatever it held
+        assert bank["weight_sum"][-1] == 9.0  # every row but the last, whatever it held
 
 
 # ------------------------------------------------------------- the guarantee
@@ -357,7 +361,7 @@ class TestTheGuarantee:
         assert low <= rate <= high, rate
         # Reading it at the end instead of at the peak is a weaker test.
         u = po.ModelBank([spec(group="g")]).fit_predict(df)
-        last = u.filter(pl.col("m").struct.field("n_eff") == rows - 1)
+        last = u.filter(pl.col("m").struct.field("weight_sum") == rows - 1)
         assert (last["m"].struct.field("log_e_pos_d0") >= LN20).mean() <= rate
 
     def test_more_rows_more_power(self):
@@ -393,8 +397,8 @@ class TestTheGuarantee:
         keep = (d != 0.0).nonzero()[0]
         for f in ("log_e_pos_d0", "log_e_neg_d0", "n_pos_d0", "n_neg_d0"):
             assert u[f].gather(keep).to_list() == dense[f].to_list(), f
-        # ...while every row counts toward n_eff (a tie is a row seen).
-        assert u["n_eff"][-1] == n - 1
+        # ...while every row counts toward weight_sum (a tie is a row seen).
+        assert u["weight_sum"][-1] == n - 1
 
 
 # ----------------------------------------------------------- the comparison
@@ -421,10 +425,10 @@ def two_sides(halflife_a=20.0, halflife_b=400.0, **kw):
     # `coef_every=1`: by default `coef` is reported on each chunk's last row
     # (README, "Row order and the two guarantees"), so whole frames compare across chunkings
     # only when it is reported on every row.
-    common = dict(targets=["y"], features=["x0", "x1"], min_periods=5.0, coef_every=1, **kw)
+    common = dict(targets=["y"], features=["x0", "x1"], min_weight=5.0, coef_every=1, **kw)
     return [
-        po.spec.ewridge("fast", halflife=halflife_a, **common),
-        po.spec.ewridge("slow", halflife=halflife_b, **common),
+        po.spec.ewridge("fast", half_life=halflife_a, **common),
+        po.spec.ewridge("slow", half_life=halflife_b, **common),
     ]
 
 
@@ -448,11 +452,11 @@ class TestTheComparison:
             ("log_e_b_y", "log_e_neg_d"),
             ("wins_a_y", "n_pos_d"),
             ("wins_b_y", "n_neg_d"),
-            ("n_eff", "n_eff"),
+            ("weight_sum", "weight_sum"),
         ):
             assert got[a].equals(by_hand[b], null_equal=True), a
         # The short memory tracks the drifting slope: it wins.
-        last = got.filter(pl.col("n_eff") == 1999)
+        last = got.filter(pl.col("weight_sum") == 1999)
         assert (last["wins_a_y"] > last["wins_b_y"]).all()
         assert (last["log_e_a_y"] > LN100).all() and (last["log_e_b_y"] <= 0.0).all()
 
@@ -472,12 +476,12 @@ class TestTheComparison:
 
     def test_a_suffix_picks_the_grid_instance(self):
         df = regression(3000, seed=22)
-        common = dict(targets=["y"], features=["x0", "x1"], min_periods=5.0)
-        grid = po.spec.ewridge("grid", halflife=[20.0, 400.0], ridge=[1e-6, 0.5], **common)
-        kalman = po.spec.kalman("kalman", halflife=100.0, coef_halflife=50.0, **common)
+        common = dict(targets=["y"], features=["x0", "x1"], min_weight=5.0)
+        grid = po.spec.ewridge("grid", half_life=[20.0, 400.0], ridge=[1e-6, 0.5], **common)
+        kalman = po.spec.kalman("kalman", half_life=100.0, coef_half_life=50.0, **common)
         picked = po.spec.seqtest("c", targets=["y"], a="grid", a_suffix="__r0.5@h20", b="kalman")
         out = po.ModelBank([grid, kalman, picked]).fit_predict(df)
-        plain = po.spec.ewridge("plain", halflife=20.0, ridge=0.5, **common)
+        plain = po.spec.ewridge("plain", half_life=20.0, ridge=0.5, **common)
         c = po.spec.seqtest("c", targets=["y"], a="plain", b="kalman")
         want = po.ModelBank([plain, kalman, c]).fit_predict(df)
         assert unnested(out, "c").equals(unnested(want, "c"), null_equal=True)
@@ -492,8 +496,8 @@ class TestTheComparison:
         common = dict(targets=["y"], features=["x0", "x1"])
         # Different warmups: rows 5..39 have a fast residual and no slow one.
         sides = [
-            po.spec.ewridge("fast", halflife=20.0, min_periods=5.0, **common),
-            po.spec.ewridge("slow", halflife=400.0, min_periods=40.0, **common),
+            po.spec.ewridge("fast", half_life=20.0, min_weight=5.0, **common),
+            po.spec.ewridge("slow", half_life=400.0, min_weight=40.0, **common),
         ]
         c = po.spec.seqtest("c", targets=["y"], a="fast", b="slow")
         out = po.ModelBank([*sides, c]).fit_predict(df)
@@ -511,14 +515,14 @@ class TestTheComparison:
             u["log_e_a_y"][: first + 1] == 0.0
         ).all()
         # ...while every row is a row seen.
-        assert u["n_eff"].to_list() == list(map(float, range(2000)))
+        assert u["weight_sum"].to_list() == list(map(float, range(2000)))
 
     def test_multiple_targets_and_two_comparisons_in_one_bank(self):
         df = regression(3000, seed=24).with_columns((pl.col("y") * -2.0 + 1.0).alias("z"))
-        common = dict(targets=["y", "z"], features=["x0", "x1"], min_periods=5.0)
+        common = dict(targets=["y", "z"], features=["x0", "x1"], min_weight=5.0)
         sides = [
-            po.spec.ewridge("fast", halflife=20.0, **common),
-            po.spec.ewridge("slow", halflife=400.0, **common),
+            po.spec.ewridge("fast", half_life=20.0, **common),
+            po.spec.ewridge("slow", half_life=400.0, **common),
         ]
         ab = po.spec.seqtest("ab", targets=["y", "z"], a="fast", b="slow")
         ba = po.spec.seqtest("ba", targets=["z"], a="slow", b="fast")
@@ -534,7 +538,7 @@ class TestTheComparison:
             "log_e_b_z",
             "wins_a_z",
             "wins_b_z",
-            "n_eff",
+            "weight_sum",
         ]
         # `z` is an affine image of `y`, so its comparison is the same.
         for f in ("log_e_a", "log_e_b", "wins_a", "wins_b"):
@@ -565,15 +569,14 @@ class TestTheComparison:
 
     def test_a_refused_chunk_updates_neither_phase(self):
         df = regression(1500, seed=26)
-        sides = two_sides(clock="t", max_dclock=5.0, on_clock_reset="error")
+        sides = two_sides(clock="t", gap_cap=5.0)
         c = po.spec.seqtest(
             "c",
             targets=["y"],
             a="fast",
             b="slow",
             clock="t",
-            max_dclock=5.0,
-            on_clock_reset="error",
+            gap_cap=5.0,
         )
         bank = po.ModelBank([*sides, c])
         bank.fit_predict(df.slice(0, 500))
@@ -603,7 +606,7 @@ class TestTheComparison:
         c = po.spec.seqtest("c", targets=["y"], a="fast", b="slow")
         out = po.ModelBank([*sides, c]).fit_predict(df)
         u = unnested(out, "c")
-        assert u["n_eff"][-1] == 2999.0
+        assert u["weight_sum"][-1] == 2999.0
         assert u["wins_a_y"][-1] + u["wins_b_y"][-1] > 2900
         twin = po.eval.seqtest(out, a="fast", b="slow")["seqtest"].struct.unnest()
         assert u.equals(twin, null_equal=True)
@@ -615,11 +618,11 @@ class TestTheComparison:
 class TestEdgeCases:
     def test_outputs_are_null_until_min_periods_and_n_eff_always(self):
         df = frame(n=50, seed=30)
-        u = unnested(po.ModelBank([spec(min_periods=10.0)]).fit_predict(df))
+        u = unnested(po.ModelBank([spec(min_weight=10.0)]).fit_predict(df))
         for f in ("log_e_pos_d0", "log_e_neg_d0", "n_pos_d0", "n_neg_d0"):
             assert u[f][:10].null_count() == 10 and u[f][10:].null_count() == 0, f
-        assert u["n_eff"].to_list() == list(map(float, range(50)))
-        # min_periods defaults to 0: the first row already reports.
+        assert u["weight_sum"].to_list() == list(map(float, range(50)))
+        # min_weight defaults to 0: the first row already reports.
         u0 = unnested(po.ModelBank([spec()]).fit_predict(df))
         assert u0.null_count().sum_horizontal()[0] == 0
         assert u0.row(0) == (0.0, 0.0, 0, 0, 0.0)
@@ -627,7 +630,7 @@ class TestEdgeCases:
     def test_min_periods_per_target(self):
         df = frame(n=40, m=2, seed=31)
         u = unnested(
-            po.ModelBank([spec(targets=["d0", "d1"], min_periods=[0.0, 20.0])]).fit_predict(df)
+            po.ModelBank([spec(targets=["d0", "d1"], min_weight=[0.0, 20.0])]).fit_predict(df)
         )
         assert u["log_e_pos_d0"].null_count() == 0
         assert u["n_pos_d1"][:20].null_count() == 20 and u["n_pos_d1"][20:].null_count() == 0
@@ -636,7 +639,7 @@ class TestEdgeCases:
         vals = [1.0, None, -2.0, 0.0, float("nan"), 3.0, 1e101, -0.0, 5e-324, -5e-324, 1e100]
         df = pl.DataFrame({"d0": pl.Series(vals, dtype=pl.Float64)})
         u = unnested(po.ModelBank([spec()]).fit_predict(df))
-        assert u["n_eff"].to_list() == list(map(float, range(len(vals))))
+        assert u["weight_sum"].to_list() == list(map(float, range(len(vals))))
         # Trials: 1, -2, 3, 5e-324 (a denormal is a sign), -5e-324, 1e100 (at the bound).
         assert u["n_pos_d0"].to_list() == [0, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3]
         assert u["n_neg_d0"].to_list() == [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2]
@@ -662,7 +665,7 @@ class TestEdgeCases:
 
     def test_chunk_invariance(self):
         df = frame(n=1500, m=2, seed=32, p=0.6, null_every=7, zero_every=10, groups=["p", "q", "r"])
-        s = spec(targets=["d0", "d1"], group="g", min_periods=3.0)
+        s = spec(targets=["d0", "d1"], group="g", min_weight=3.0)
         one = po.ModelBank([s]).fit_predict(df)
         for size in (1, 7, 97, 1000):
             bank = po.ModelBank([s])
@@ -703,11 +706,11 @@ class TestEdgeCases:
         # restart, under `reset_state`.
         df = frame(n=800, seed=35, p=0.6)
         plain = unnested(po.ModelBank([spec()]).fit_predict(df))
-        clocked = unnested(po.ModelBank([spec(clock="t", max_dclock=1.0)]).fit_predict(df))
+        clocked = unnested(po.ModelBank([spec(clock="t", gap_cap=1.0)]).fit_predict(df))
         assert plain.equals(clocked, null_equal=True)
         jumpy = df.with_columns((pl.col("t") ** 2).alias("t"))
         assert plain.equals(
-            unnested(po.ModelBank([spec(clock="t", max_dclock=1e6)]).fit_predict(jumpy)),
+            unnested(po.ModelBank([spec(clock="t", gap_cap=1e6)]).fit_predict(jumpy)),
             null_equal=True,
         )
         back = df.with_columns(
@@ -721,24 +724,23 @@ class TestEdgeCases:
                 [
                     spec(
                         clock="t",
-                        max_dclock=10.0,
-                        on_clock_reset="reset_state",
-                        min_backwards_jump=0.0,
+                        gap_cap=10.0,
+                        restart_after_step_back=0.0,
                     )
                 ]
             ).fit_predict(back)
         )
-        assert restarted["n_eff"][400] == 0.0 and restarted["n_eff"][399] == 399.0
+        assert restarted["weight_sum"][400] == 0.0 and restarted["weight_sum"][399] == 399.0
         assert restarted[:400].equals(plain[:400], null_equal=True)
         fresh = unnested(po.ModelBank([spec()]).fit_predict(df[400:]))
         assert restarted[400:].equals(fresh, null_equal=True)
         # The default refuses the step back rather than absorb it (task 120).
         with pytest.raises(ValueError, match="goes backwards by"):
-            po.ModelBank([spec(clock="t", max_dclock=10.0)]).fit_predict(back)
+            po.ModelBank([spec(clock="t", gap_cap=10.0)]).fit_predict(back)
 
     def test_lazy_path_equals_bank(self):
         df = frame(n=2000, m=2, seed=36, null_every=5, groups=["p", "q"])
-        s = spec(targets=["d0", "d1"], group="g", min_periods=2.0)
+        s = spec(targets=["d0", "d1"], group="g", min_weight=2.0)
         bank = po.ModelBank([s]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([s], chunk_rows=128).collect()
         assert bank.equals(lazy, null_equal=True)
@@ -753,18 +755,18 @@ class TestEdgeCases:
         s = spec(targets=["d0", "d1"])
         idx = po.spec.output_index(s)
         assert idx["field"].to_list() == po.spec.output_fields(s)
-        tail = ["n_eff", "settled_frac", "withheld_reason"]
+        tail = ["weight_sum", "settled_frac", "withheld_reason"]
         assert idx["dtype"].to_list() == ["f64", "f64", "i64", "i64"] * 2 + ["f64", "f64", "enum"]
         assert idx["kind"].to_list() == ["log_e_pos", "log_e_neg", "n_pos", "n_neg"] * 2 + tail
         assert idx["target"].to_list() == ["d0"] * 4 + ["d1"] * 4 + [None] * 3
-        assert idx["halflife"].null_count() == idx.height  # nothing decays
+        assert idx["half_life"].null_count() == idx.height  # nothing decays
         c = po.spec.seqtest("c", targets=["y"], a="p", b="q")
         assert po.spec.output_fields(c) == [
             "log_e_a_y",
             "log_e_b_y",
             "wins_a_y",
             "wins_b_y",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
@@ -788,10 +790,10 @@ class TestEdgeCases:
                 "log_e_neg_d1": pl.Float64,
                 "n_pos_d1": pl.Int64,
                 "n_neg_d1": pl.Int64,
-                "n_eff": pl.Float64,
+                "weight_sum": pl.Float64,
                 "settled_frac": pl.Float64,
                 "withheld_reason": pl.Enum(
-                    ["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"]
+                    ["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"]
                 ),
             }
         )
@@ -831,8 +833,8 @@ class TestEdgeCases:
                     'name = "fast"',
                     'targets = ["y"]',
                     'features = ["x0", "x1"]',
-                    "halflife = 20.0",
-                    "min_periods = 5.0",
+                    "half_life = 20.0",
+                    "min_weight = 5.0",
                     "coef_every = 1",
                     'group = "g"',
                     "[specs.model]",
@@ -841,8 +843,8 @@ class TestEdgeCases:
                     'name = "slow"',
                     'targets = ["y"]',
                     'features = ["x0", "x1"]',
-                    "halflife = 400.0",
-                    "min_periods = 5.0",
+                    "half_life = 400.0",
+                    "min_weight = 5.0",
                     "coef_every = 1",
                     'group = "g"',
                     "[specs.model]",
@@ -885,7 +887,7 @@ class TestEdgeCases:
                     'name = "ridge"',
                     'targets = ["y"]',
                     'features = ["x0"]',
-                    "halflife = 20.0",
+                    "half_life = 20.0",
                     "[specs.model]",
                     'type = "ew_ridge"',
                     "ridge = [1e-6, 0.1]",
@@ -939,14 +941,14 @@ class TestRefusals:
             (dict(a="m", b="q"), "seqtest a/b name the spec itself"),
             (dict(a_suffix="@h20"), "seqtest a_suffix/b_suffix pick a side's grid instance"),
             (dict(weight="w"), "weight does not apply to seqtest"),
-            (dict(halflife=20.0), "halflife/lam do not apply to seqtest"),
-            (dict(lam=0.99), "halflife/lam do not apply to seqtest"),
+            (dict(half_life=20.0), "half_life/lam do not apply to seqtest"),
+            (dict(lam=0.99), "half_life/lam do not apply to seqtest"),
             (dict(emit_sigma=True), "emit_sigma does not apply to seqtest"),
-            (dict(emit_resid_z=True), "emit_resid_z does not apply to seqtest"),
+            (dict(emit_zscore=True), "emit_zscore does not apply to seqtest"),
             (dict(conformal=0.9), "conformal does not apply to seqtest"),
             (dict(emit_drift=True), "emit_drift does not apply to seqtest"),
             (dict(emit_metrics=True), "emit_metrics does not apply to seqtest"),
-            (dict(min_periods=-1.0), "min_periods must be >= 0"),
+            (dict(min_weight=-1.0), "min_weight must be >= 0"),
         ],
     )
     def test_the_spec_refuses_by_name(self, kw, msg):
@@ -984,7 +986,7 @@ class TestRefusals:
             ),
         ):
             po.ModelBank([*sides, c])
-        grid = po.spec.ewridge("grid", targets=["y"], features=["x0"], halflife=[20.0, 400.0])
+        grid = po.spec.ewridge("grid", targets=["y"], features=["x0"], half_life=[20.0, 400.0])
         c = po.spec.seqtest("c", targets=["y"], a="grid", b="slow")
         with pytest.raises(ValueError, match=r'\["resid_y@h20", "resid_y@h400"\]'):
             po.ModelBank([grid, sides[1], c])

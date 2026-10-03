@@ -222,9 +222,9 @@ class TestBankToml:
         field = next(f.name for f in first.schema["ridge"].fields if f.name.startswith("pred_y"))
         p1 = first["ridge"].struct.field(field).to_list()
         p2 = second["ridge"].struct.field(field).to_list()
-        neff = first["ridge"].struct.field("n_eff").to_list()
+        neff = first["ridge"].struct.field("weight_sum").to_list()
         # Compare at the first row that was not skipped for a null: the warmed
-        # run predicts there, where the cold run was still inside min_periods.
+        # run predicts there, where the cold run was still inside min_weight.
         i = next(j for j, v in enumerate(neff) if v is not None)
         assert p1[i] is None, "cold run should still be warming up"
         assert p2[i] is not None, "resumed run should predict immediately"

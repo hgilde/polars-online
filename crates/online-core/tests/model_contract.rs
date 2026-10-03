@@ -49,7 +49,7 @@ struct Report {
 /// `n_eff_of` reads the model's own `n_eff()` accessor, which is inherent
 /// rather than part of the trait, so it has to be handed in. The accessor's
 /// value read before a row must equal the `n_eff` that row reports: they are
-/// the same number, and reporting two different ones would make `min_periods`
+/// the same number, and reporting two different ones would make `min_weight`
 /// mean something different from what a caller inspecting the model sees.
 fn probe_with<M: OnlineModel>(
     mut m: M,
@@ -194,7 +194,7 @@ fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
 
     // `n_eff` is the weight *before* the row's update and before its decay, so
     // it starts at zero and lags the row count by one. Every model reports it
-    // the same way; that uniformity is what makes `min_periods` portable.
+    // the same way; that uniformity is what makes `min_weight` portable.
     assert_eq!(r.n_eff[0], 0.0, "{kind}: nothing seen before the first row");
     assert_eq!(r.n_eff[1], 1.0, "{kind}: one row of weight 1");
     let two = 0.5f64.powf(1.0 / HALFLIFE) + 1.0;
@@ -211,7 +211,7 @@ fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
         r.n_eff[3]
     );
 
-    // A ten-halflife gap must decay it by 2^-10, not reset or ignore it.
+    // A ten-half-life gap must decay it by 2^-10, not reset or ignore it.
     let want = r.before_gap * 0.5f64.powi(10) + 1.0;
     assert!(
         (r.after_gap - want).abs() < 1e-9,
@@ -230,16 +230,16 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         ridge: vec![1e-6, 0.1],
         feature_sets: vec![],
         standardize: false,
-        ridge_decay: false,
+        ridge_scale: false,
         session_shrink: None,
-        long_halflife: None,
+        long_half_life: None,
         coef_prior: None,
-        min_periods: 3.0,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -261,11 +261,11 @@ fn rls_cfg() -> RlsCfg {
     RlsCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         ridge: 1.0,
         coef_prior: None,
-        min_periods: 3.0,
+        min_weight: 3.0,
     }
 }
 
@@ -280,19 +280,19 @@ fn lasso_cfg() -> LassoCfg {
     LassoCfg {
         n_features: K,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         lasso_path: vec![0.1, 0.0],
         l1_ratio: 1.0,
-        select_halflife: None,
-        min_periods: 3.0,
+        select_half_life: None,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
         window: None,
         window_every: None,
-        max_cd_iters: 100,
-        cd_tol: 1e-10,
+        max_iter: 100,
+        tol: 1e-10,
         target_gaps: online_core::TargetGaps::OwnRows,
     }
 }
@@ -308,15 +308,15 @@ fn kalman_cfg() -> KalmanCfg {
     KalmanCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
-        halflife: vec![100.0],
+        half_life: vec![100.0],
         q: None,
         obs_var: None,
         p0: 1.0,
         share_p: false,
-        min_periods: 3.0,
-        revert_halflife: vec![f64::INFINITY],
+        min_weight: 3.0,
+        revert_half_life: vec![f64::INFINITY],
         standardize: true,
     }
 }
@@ -331,7 +331,7 @@ fn kalman() {
 /// E41: a reverting filter is held to the same contract as the random walk.
 fn kalman_revert_cfg() -> KalmanCfg {
     KalmanCfg {
-        revert_halflife: vec![f64::INFINITY, 25.0, 6.0],
+        revert_half_life: vec![f64::INFINITY, 25.0, 6.0],
         ..kalman_cfg()
     }
 }
@@ -350,12 +350,12 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
     RobustCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         loss,
         ridge: 1e-6,
         standardize: false,
-        min_periods: 3.0,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -381,13 +381,13 @@ fn ftrl_cfg() -> FtrlCfg {
     FtrlCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         alpha: 0.1,
         beta: 1.0,
         l1: 0.0,
         l2: 1.0,
-        min_periods: 3.0,
+        min_weight: 3.0,
         strict_binary: false,
         loss: FtrlLoss::Squared,
     }
@@ -404,7 +404,7 @@ fn sgd_cfg() -> SgdCfg {
     SgdCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         loss: SgdLoss::Squared,
         learning_rate: 0.01,
@@ -412,8 +412,8 @@ fn sgd_cfg() -> SgdCfg {
         l2: 0.0,
         clip_gradient: 1e3,
         constraint: None,
-        scale_features: false,
-        min_periods: 3.0,
+        standardize: false,
+        min_weight: 3.0,
     }
 }
 
@@ -428,12 +428,12 @@ fn pa_cfg() -> PaCfg {
     PaCfg {
         n_features: K,
         n_targets: 2,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         mode: PaMode::Pa1,
         c: 1.0,
         eps: 0.1,
-        min_periods: 3.0,
+        min_weight: 3.0,
         constraint: None,
     }
 }
@@ -448,9 +448,9 @@ fn pa() {
 fn holt_cfg() -> HoltCfg {
     HoltCfg {
         n_targets: 2,
-        level_halflife: HALFLIFE,
-        trend_halflife: 4.0 * HALFLIFE,
-        min_periods: 3.0,
+        level_half_life: HALFLIFE,
+        trend_half_life: 4.0 * HALFLIFE,
+        min_weight: 3.0,
         trend: true,
     }
 }
@@ -482,7 +482,7 @@ fn ew_cov_model_cfg() -> EwCovCfg {
             EwCovStat::Corr,
             EwCovStat::LagCorr,
         ],
-        min_periods: 3.0,
+        min_weight: 3.0,
         precision_prior: None,
         mahal_quantiles: Vec::new(),
         pca: 0,
@@ -520,7 +520,7 @@ fn kmeans_cfg() -> KMeansCfg {
         n_features: K,
         k: 3,
         decay: decay(),
-        min_periods: 3.0,
+        min_weight: 3.0,
         warm_rows: 10,
         seed_rule: SeedRule::Lloyd,
         seed: 0,
@@ -552,12 +552,12 @@ fn kmeans() {
 }
 
 fn micro_cfg() -> MicroCfg {
-    // eps and beta_mu sized for a 20-halflife window over the harness's
+    // eps and beta_mu sized for a 20-half-life window over the harness's
     // uniform rows: a summary must reach beta_mu before it decays back.
     MicroCfg {
         n_features: K,
         decay: decay(),
-        min_periods: 3.0,
+        min_weight: 3.0,
         eps: 0.6,
         beta_mu: 2.0,
         max_clusters: 50,
@@ -691,7 +691,7 @@ fn ew_class_cfg() -> EwClassCfg {
         n_features: K,
         n_classes: 2,
         decay: decay(),
-        min_periods: 3.0,
+        min_weight: 3.0,
         covariance: Covariance::Full,
         precision_prior: 0.1,
         window: None,
@@ -713,7 +713,7 @@ fn ew_class() {
         assert_eq!(m.n_features(), K);
         assert_eq!(m.n_outputs(), 3, "class, p_0, p_1");
         // Probed without labels: n_eff counts every accepted row, so
-        // `min_periods` means the same number of rows as everywhere else.
+        // `min_weight` means the same number of rows as everywhere else.
         let r = probe_with(m, 0, Some(&EwClass::n_eff));
         assert_eq!(r.kind, "ew_class");
         assert_eq!(r.pred_len, r.n_outputs);
@@ -728,7 +728,7 @@ fn ew_class() {
 fn seqtest_cfg() -> SeqTestCfg {
     SeqTestCfg {
         n_targets: 2,
-        min_periods: 3.0,
+        min_weight: 3.0,
     }
 }
 
@@ -755,7 +755,7 @@ fn marginal_cfg() -> MarginalCfg {
         n_features: K,
         n_targets: 2,
         decay: decay(),
-        min_periods: vec![3.0; 2],
+        min_weight: vec![3.0; 2],
         // A lag, so the contract exercises marginal's `clear_lags` arm (it
         // keeps a lag ring; review 2026-09-18, T2) -- which is why marginal is
         // in KEEPS_LAGS above.
@@ -791,7 +791,7 @@ fn deco_cfg() -> DecoCfg {
         alpha: None,
         beta: None,
         blocks: Vec::new(),
-        min_periods: 3.0,
+        min_weight: 3.0,
     }
 }
 
@@ -855,7 +855,7 @@ fn hmm_cfg() -> HmmCfg {
         decay: decay(),
         covariance: Covariance::Full,
         precision_prior: 1e-2,
-        min_periods: 0.0,
+        min_weight: 0.0,
         learn: true,
         transition_prior: 1.0,
         transition: None,
@@ -954,7 +954,7 @@ fn bocpd_cfg() -> BocpdCfg {
         robust_beta: 0.0,
         prune_below: 1e-6,
         max_run: 200,
-        min_periods: 0.0,
+        min_weight: 0.0,
     }
 }
 
@@ -1022,9 +1022,9 @@ fn every_model_state_variant_is_probed_here() {
 fn restoring_the_wrong_model_is_an_error_that_names_both() {
     let holt = Holt::new(HoltCfg {
         n_targets: 1,
-        level_halflife: 10.0,
-        trend_halflife: 40.0,
-        min_periods: 0.0,
+        level_half_life: 10.0,
+        trend_half_life: 40.0,
+        min_weight: 0.0,
         trend: true,
     })
     .unwrap();
@@ -1124,10 +1124,10 @@ fn bounded_script(targets: usize) -> Vec<Row> {
     extreme(&mut rows, &mut s, targets, |r| {
         r.y.iter_mut().for_each(|y| *y = Some(BOUND))
     });
-    // 1500 halflives. A row at the bound with weight at the bound leaves a
-    // moment of 1e300 on the sum scale, which needs 1000 halflives to fall
+    // 1500 half-lives. A row at the bound with weight at the bound leaves a
+    // moment of 1e300 on the sum scale, which needs 1000 half-lives to fall
     // below 1e-6; the rest is margin (measured: ew_ridge agrees with its twin
-    // to 3e-5 after 1000 halflives and to rounding after 1100).
+    // to 3e-5 after 1000 half-lives and to rounding after 1100).
     for _ in 0..30_000 {
         rows.push(nice(&mut s, targets, 1.0));
     }
@@ -1339,9 +1339,9 @@ fn ftrl_recovers_from_bounded_extremes() {
 
 #[test]
 fn sgd_recovers_from_bounded_extremes() {
-    for scale_features in [false, true] {
+    for standardize in [false, true] {
         let mut cfg = sgd_cfg();
-        cfg.scale_features = scale_features;
+        cfg.standardize = standardize;
         recovers_from_bounded_extremes(
             move || Sgd::new(cfg.clone()).unwrap(),
             2,
@@ -1359,15 +1359,15 @@ fn pa_recovers_from_bounded_extremes() {
 
 #[test]
 fn holt_recovers_from_bounded_extremes() {
-    // The tail is 1500 halflives of HALFLIFE: what a row at the bound with
+    // The tail is 1500 half-lives of HALFLIFE: what a row at the bound with
     // weight at the bound needs to wash out of a mean-form accumulator. Since
     // the code review's S29 `holt`'s level and trend are weighted means, so a
     // row's weight counts, and the trend forgets such a row on its own
-    // halflife -- four times the level's by default, which would want a tail
+    // half-life -- four times the level's by default, which would want a tail
     // four times as long. So the probe runs both at HALFLIFE. (The textbook
     // form it replaced ignored the weight, and recovered on the level's rate.)
     let cfg = HoltCfg {
-        trend_halflife: HALFLIFE,
+        trend_half_life: HALFLIFE,
         ..holt_cfg()
     };
     recovers_from_bounded_extremes(|| Holt::new(cfg.clone()).unwrap(), 2, Recovery::Twin(1e-9));
@@ -1453,7 +1453,7 @@ fn ew_class_recovers_from_bounded_extremes() {
 #[test]
 fn micro_recovers_from_bounded_extremes() {
     // A row of weight 1e100 makes a summary nothing moves until it has
-    // decayed below `beta_mu` (332 halflives) and is pruned; a row at the
+    // decayed below `beta_mu` (332 half-lives) and is pruned; a row at the
     // bound opens a summary there that the xi rule prunes at the next
     // checkpoint. By the tail both histories tile the unit square afresh,
     // and two tilings agree on the mean squared distance to the nearest
@@ -1536,7 +1536,7 @@ fn marginal_recovers_from_bounded_extremes() {
             for j in 0..K {
                 let (pa, pb) = (model.pair(t, j), twin.pair(t, j));
                 for (what, va, vb) in [
-                    ("n_eff", pa.n_eff, pb.n_eff),
+                    ("weight_sum", pa.n_eff, pb.n_eff),
                     ("n_kish", pa.n_kish, pb.n_kish),
                     ("mean_x", pa.mean_x, pb.mean_x),
                     ("var_x", pa.var_x, pb.var_x),
@@ -1660,24 +1660,24 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
 }
 
 /// Task 115 (c), decided 2026-09-28: a zero-weight row whose decay
-/// underflows to exactly 0 -- `2^-1075` rounds to 0, so from 1075 halflives
+/// underflows to exactly 0 -- `2^-1075` rounds to 0, so from 1075 half-lives
 /// on -- forgets the history, as the decay does. It used to keep it: the
 /// mean-form update is `0/0` there, the guard skipped the row whole, and the
 /// next row saw the old count (PLAN §12). "As the decay does" is the same row
-/// one halflife short, whose factor `2^-1074` is the smallest double: it
+/// one half-life short, whose factor `2^-1074` is the smallest double: it
 /// ages the history to nothing, and the two streams must agree from there
 /// on. The row after the one that forgot reports no weight, unless the
 /// model's weight does not decay at all.
 ///
 /// Predictions are compared too, except where the reference is not "the
 /// history aged to nothing": `kalman` adds `Q·d` to its covariance and
-/// `holt` carries its level along its trend, so a halflife more of gap is a
+/// `holt` carries its level along its trend, so a half-life more of gap is a
 /// different state for both; `ew_class` counts a class of subnormal weight
 /// as present and one of weight 0 as absent, a threshold rather than an age;
-/// and `hmm` one halflife short is not a sane state -- a subnormal history
+/// and `hmm` one half-life short is not a sane state -- a subnormal history
 /// share leaves its co-moments and precision prior a few bits, and its
 /// densities NaN for 39 of the next 40 rows, which do not count towards its
-/// `n_eff` either (from about 1025 halflives; PLAN task 115 (c), measured
+/// `n_eff` either (from about 1025 half-lives; PLAN task 115 (c), measured
 /// 2026-09-28 and raised, not fixed). `hmm` keeps the first check alone.
 fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     build: &impl Fn() -> M,
@@ -1718,7 +1718,7 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     let aged = run(1074.0 * HALFLIFE);
     assert!(
         forgot[0].n_eff == 0.0 || forgot[0].n_eff == aged[0].n_eff,
-        "{kind}: the row after a zero-weight row 1075 halflives on reports n_eff {}, a \
+        "{kind}: the row after a zero-weight row 1075 half_lives on reports n_eff {}, a \
          history the decay forgot",
         forgot[0].n_eff
     );
@@ -1735,7 +1735,7 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
         assert!(
             close(a.n_eff, b.n_eff) && preds,
             "{kind}: row {i} after the zero-weight row: n_eff {} and {:?} where its decay \
-             underflowed, n_eff {} and {:?} one halflife short of that",
+             underflowed, n_eff {} and {:?} one half_life short of that",
             a.n_eff,
             a.pred,
             b.n_eff,
@@ -1749,7 +1749,7 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
 /// reports after one must equal the `n_eff` of the same stream with that row
 /// *left out* and its clock delta carried into the next row. For an
 /// exponential decay `lam(a)·lam(b) = lam(a + b)`, so the two agree exactly
-/// whatever the halflife -- and a model that forgets to decay `n_eff` on the
+/// whatever the half-life -- and a model that forgets to decay `n_eff` on the
 /// row it learns nothing from does not (docs/REVIEW-E54-E64.md H3/C2).
 fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
     build: &impl Fn() -> M,
@@ -1830,7 +1830,7 @@ fn ew_ridge_predict_is_the_step() {
     let mut cfg = ew_ridge_cfg();
     cfg.standardize = true;
     cfg.session_shrink = Some(0.5);
-    cfg.long_halflife = Some(4.0 * HALFLIFE);
+    cfg.long_half_life = Some(4.0 * HALFLIFE);
     predict_is_the_step_without_the_step(move || EwRidge::new(cfg.clone()).unwrap(), 2, false);
     // A lazily refreshed solve: both read the cached coefficients.
     let mut cfg = ew_ridge_cfg();
@@ -1847,10 +1847,10 @@ fn rls_predict_is_the_step() {
 #[test]
 fn lasso_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Lasso::new(lasso_cfg()).unwrap(), 1, false);
-    // With a selection halflife `lam_selected` moves; `extra` must match too.
+    // With a selection half-life `lam_selected` moves; `extra` must match too.
     let mut cfg = lasso_cfg();
     cfg.lasso_path = vec![1.0, 0.1, 0.01, 0.0];
-    cfg.select_halflife = Some(HALFLIFE);
+    cfg.select_half_life = Some(HALFLIFE);
     predict_is_the_step_without_the_step(move || Lasso::new(cfg.clone()).unwrap(), 1, false);
 }
 
@@ -1903,9 +1903,9 @@ fn ftrl_predict_is_the_step() {
 
 #[test]
 fn sgd_predict_is_the_step() {
-    for scale_features in [false, true] {
+    for standardize in [false, true] {
         let mut cfg = sgd_cfg();
-        cfg.scale_features = scale_features;
+        cfg.standardize = standardize;
         predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
     }
     let mut cfg = sgd_cfg();

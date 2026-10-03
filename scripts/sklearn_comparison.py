@@ -17,9 +17,9 @@ its own settings and reported at its best, so the comparison is between
 designs rather than between defaults. The grids are printed with the results,
 and so is each stream's noise ceiling -- the R^2 of the generating signal
 itself -- because "0.99" means nothing until you know what the best possible
-number was. The first version of `accuracy` swept `ewridge` over halflives no
+number was. The first version of `accuracy` swept `ewridge` over half-lives no
 shorter than 500 rows and reported it 0.003 behind `sgd` on the drifting
-stream; at `halflife=100` the two tie. A sweep whose best point is at its
+stream; at `half_life=100` the two tie. A sweep whose best point is at its
 edge is not a result, it is a grid.
 
 docs/PERFORMANCE.md section 19 is this script's output, read.
@@ -113,12 +113,12 @@ def accuracy():
     """Out-of-sample R^2 and rows/sec, each contender at its best setting."""
     print(
         "Sweeps: SGDRegressor over learning_rate x eta0 x average; sgd over "
-        "learning_rate x halflife; ewridge over halflife.\n"
+        "learning_rate x half_life; ewridge over half_life.\n"
     )
     for drift, label in ((0.0, "stationary"), (0.004, "drifting coefficients")):
         x, y, signal = stream(ROWS, K, drift)
         df, feats = frame(x, y), [f"x{j}" for j in range(K)]
-        common = dict(targets=["y"], features=feats, min_periods=50.0)
+        common = dict(targets=["y"], features=feats, min_weight=50.0)
         ok = np.zeros(ROWS, dtype=bool)
         ok[BATCH:] = True  # every contender has an opinion from here on
 
@@ -145,18 +145,18 @@ def accuracy():
         for rate, hl in itertools.product(
             [0.001, 0.003, 0.01, 0.03], [5e2, 2e3, 2e4, float("inf")]
         ):
-            spec = po.spec.sgd("m", halflife=hl, learning_rate=rate, scale_features=True, **common)
+            spec = po.spec.sgd("m", half_life=hl, learning_rate=rate, standardize=True, **common)
             pred, dt, _ = run_bank(spec, df)
             runs.setdefault("po.spec.sgd", []).append(
-                (r2(pred, y, ok), f"learning_rate={rate}, halflife={hl:g}", dt)
+                (r2(pred, y, ok), f"learning_rate={rate}, half_life={hl:g}", dt)
             )
         for hl in [50.0, 100.0, 200.0, 500.0, 2e3, 2e4, float("inf")]:
             spec = po.spec.ewridge(
-                "m", halflife=hl, ridge=1e-6, max_rows_between_solves=1, **common
+                "m", half_life=hl, ridge=1e-6, max_rows_between_solves=1, **common
             )
             pred, dt, _ = run_bank(spec, df)
             runs.setdefault("po.spec.ewridge, refit every row", []).append(
-                (r2(pred, y, ok), f"halflife={hl:g}", dt)
+                (r2(pred, y, ok), f"half_life={hl:g}", dt)
             )
 
         print(f"--- {label}: {ROWS:,} rows, k={K}, noise ceiling R2 = {r2(signal, y, ok):.4f}")
@@ -208,9 +208,9 @@ def short():
     for lr, eta in [("invscaling", 0.01), ("constant", 0.01), ("constant", 0.03)]:
         pred, dt = sklearn_groups(learning_rate=lr, eta0=eta)
         rows.append((f"SGDRegressor per group, {lr}, eta0={eta}", pred, dt))
-    common = dict(targets=["y"], features=feats, group="g", halflife=float("inf"), min_periods=25.0)
+    common = dict(targets=["y"], features=feats, group="g", half_life=float("inf"), min_weight=25.0)
     for rate in (0.01, 0.03):
-        spec = po.spec.sgd("m", learning_rate=rate, scale_features=True, **common)
+        spec = po.spec.sgd("m", learning_rate=rate, standardize=True, **common)
         pred, dt, _ = run_bank(spec, df)
         rows.append((f"po.spec.sgd, learning_rate={rate}", pred, dt))
     spec = po.spec.ewridge("m", ridge=1e-6, max_rows_between_solves=1, **common)
@@ -245,7 +245,7 @@ def wide():
     for k, n in ((1_000, 20_000), (10_000, 2_000)):
         x, y, _ = stream(n, k, 0.0)
         df, feats = frame(x, y), [f"x{j}" for j in range(k)]
-        common = dict(targets=["y"], features=feats, halflife=float("inf"), min_periods=50.0)
+        common = dict(targets=["y"], features=feats, half_life=float("inf"), min_weight=50.0)
         eta = 0.2 / k
         scored = np.arange(n) >= 50
         rows = []
@@ -263,12 +263,12 @@ def wide():
         ew = dict(ridge=1e-6, solve_every=1e9, max_rows_between_solves=1000)
         for name, spec in (
             (
-                "po.spec.sgd, scale_features=False",
-                po.spec.sgd("m", learning_rate=eta, scale_features=False, **common),
+                "po.spec.sgd, standardize=False",
+                po.spec.sgd("m", learning_rate=eta, standardize=False, **common),
             ),
             (
-                "po.spec.sgd, scale_features=True",
-                po.spec.sgd("m", learning_rate=eta, scale_features=True, **common),
+                "po.spec.sgd, standardize=True",
+                po.spec.sgd("m", learning_rate=eta, standardize=True, **common),
             ),
             ("po.spec.ewridge, solve every 1000 rows", po.spec.ewridge("m", **ew, **common)),
             (
@@ -319,11 +319,11 @@ def grid():
             "m",
             targets=["y"],
             features=feats,
-            halflife=float("inf"),
+            half_life=float("inf"),
             ridge=ridges if len(ridges) > 1 else ridges[0],
             solve_every=1e9,
             max_rows_between_solves=100,
-            min_periods=50.0,
+            min_weight=50.0,
         )
         return run_bank(spec, df)[1]
 

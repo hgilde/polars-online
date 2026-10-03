@@ -1,10 +1,10 @@
 """The gradient models and ``holt`` on the paths their oracles leave out, held
-row by row -- ``pred``, ``resid``, ``n_eff`` and ``coef`` -- to references
+row by row -- ``pred``, ``resid``, ``weight_sum`` and ``coef`` -- to references
 written from each builder's docstring:
 
 - ``ftrl``: ``tests/reference.py::ftrl_ref`` already takes several targets,
   zero weights and labels to clamp, and no test gave it any; nor the L1
-  under a halflife.
+  under a half-life.
 - ``pa``: ``tests/reference_paths.py::pa_ref``. Its oracles were river's
   (no intercept, unit weights, no decay) and a constrained replay; here the
   intercept is inside the norm, a weight below 1 scales the step and one
@@ -35,7 +35,7 @@ FEATURES = ["x0", "x1", "x2"]
 TARGETS = ["ya", "yb"]
 
 # Measured over the cases below as |got - expected| / (1 + |expected|): pred
-# 8.2e-16, resid 1.2e-15, n_eff exact, coef 4.1e-16. The tolerance is 100x
+# 8.2e-16, resid 1.2e-15, weight_sum exact, coef 4.1e-16. The tolerance is 100x
 # the largest, rounded up to a power of ten.
 #
 # Seeded into copies of the references, each of these fails a case here by
@@ -44,19 +44,19 @@ TARGETS = ["ya", "yb"]
 # weight learned 8.5e-2 to 0.19; a null target taken as 0, 0.37-1.2; a label
 # not clamped 4.7e-2. pa: the intercept outside the norm (river's) 0.23-2.1;
 # no cap on a weight above 1, 0.23-0.35; pa2 damped by 1 / c, 0.14. sgd: the
-# weight dropped 2.8e-2 to 0.32; inv_scaling on n_eff after the row 3.5e-3
+# weight dropped 2.8e-2 to 0.32; inv_scaling on weight_sum after the row 3.5e-3
 # to 7.4e-2; AdaGrad's G after the step 0.97-1.0 (or diverged), or not
 # decayed 8.7e-2 to 0.26; huber unclipped 0.25-0.51; quantile's sign flipped
 # 1.4-1.5; the insensitive loss's gradient linear 0.29-0.37. holt: a zero
 # step counted toward the trend 1.9e-3; the first observation weighting the
-# trend 4.1e-2 to 0.15; the default trend halflife 1x 0.14; extrapolating by
+# trend 4.1e-2 to 0.15; the default trend half-life 1x 0.14; extrapolating by
 # the row's step 0.14.
 TOL = 1e-12
 
 
 def _stream(seed: int, kind: str = "linear", dup: bool = False, n: int = 400) -> pl.DataFrame:
     """Three features and two targets on an irregular clock with two gaps
-    past ``max_dclock``: one target with scattered nulls, one with a block;
+    past ``gap_cap``: one target with scattered nulls, one with a block;
     weights between 0.5 and 1.5 and a twentieth of them 0, the first row
     among them; three rows skipped for a null feature. ``dup`` puts 25 rows
     on the clock of the row before them."""
@@ -122,13 +122,13 @@ def _held(out, ref, y, coef=True, coef_where=None):
         resid = out.struct.field(f"resid_{t}").to_numpy().astype(float)
         _close(resid, y[:, j] - ref["pred"][:, j], f"resid_{t}")
         assert np.isfinite(ref["pred"][:, j]).sum() > 250, f"{t} is scored too little"
-    _close(out.struct.field("n_eff").to_numpy().astype(float), ref["n_eff"], "n_eff")
+    _close(out.struct.field("weight_sum").to_numpy().astype(float), ref["weight_sum"], "weight_sum")
     if not coef:
         return
     rows = out.struct.field("coef").to_list()
     empty = [np.nan] * ref["coef"][0].size
     got = np.array([empty if r is None else r for r in rows], float).reshape(ref["coef"].shape)
-    where = ~np.isnan(ref["n_eff"]) if coef_where is None else coef_where
+    where = ~np.isnan(ref["weight_sum"]) if coef_where is None else coef_where
     _close(got[where], ref["coef"][where], "coef")
 
 
@@ -138,11 +138,17 @@ class TestFtrl:
     @pytest.mark.parametrize(
         "kw",
         [
-            {"halflife": 150.0, "l1": 0.5, "alpha": 0.3, "beta": 0.5, "l2": 0.5},
-            {"halflife": 100.0, "l1": 0.2, "alpha": 0.2, "loss": "squared", "add_intercept": False},
-            {"halflife": float("inf"), "l1": 1.0},
+            {"half_life": 150.0, "l1": 0.5, "alpha": 0.3, "beta": 0.5, "l2": 0.5},
+            {
+                "half_life": 100.0,
+                "l1": 0.2,
+                "alpha": 0.2,
+                "loss": "squared",
+                "fit_intercept": False,
+            },
+            {"half_life": float("inf"), "l1": 1.0},
         ],
-        ids=["logistic-l1-under-a-halflife", "squared-no-intercept", "logistic-no-decay"],
+        ids=["logistic-l1-under-a-half_life", "squared-no-intercept", "logistic-no-decay"],
     )
     def test_every_row(self, kw):
         df = _stream(1, kind="linear" if kw.get("loss") == "squared" else "logistic")
@@ -152,13 +158,13 @@ class TestFtrl:
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
-            min_periods=8.0,
+            min_weight=8.0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        ref = ftrl_ref(x, y, dc, w, min_periods=8.0, max_dclock=MAX_DCLOCK, **kw)
+        ref = ftrl_ref(x, y, dc, w, min_weight=8.0, gap_cap=MAX_DCLOCK, **kw)
         # ftrl_ref reports the weights a row was scored with, the bank's
         # `coef` those after it; they meet only without decay (below).
         _held(out, ref, y, coef=False)
@@ -173,15 +179,15 @@ class TestFtrl:
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
-            halflife=float("inf"),
+            half_life=float("inf"),
             l1=1.0,
             coef_every=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        ref = ftrl_ref(x, y, dc, w, max_dclock=MAX_DCLOCK, l1=1.0)
-        accepted = np.flatnonzero(~np.isnan(ref["n_eff"]))
+        ref = ftrl_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, l1=1.0)
+        accepted = np.flatnonzero(~np.isnan(ref["weight_sum"]))
         rows = out.struct.field("coef").to_list()
         got = np.array([rows[i] for i in accepted[:-1]], float).reshape(-1, 2, 4)
         _close(got, ref["coef"][accepted[1:]], "coef")
@@ -193,38 +199,38 @@ class TestPassiveAggressive:
     def test_every_mode(self, mode):
         df = _stream(1)
         x, y, dc, w = _inputs(df)
-        kw = {"mode": mode, "c": 0.3, "eps": 0.1, "halflife": 50.0, "min_periods": 5.0}
+        kw = {"mode": mode, "c": 0.3, "eps": 0.1, "half_life": 50.0, "min_weight": 5.0}
         spec = po.spec.pa(
             "m",
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=1,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        _held(out, pa_ref(x, y, dc, w, max_dclock=MAX_DCLOCK, **kw), y)
+        _held(out, pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
         assert (w > 1.0).any() and ((w > 0.0) & (w < 1.0)).any()
 
     def test_without_an_intercept(self):
         df = _stream(2)
         x, y, dc, w = _inputs(df)
-        kw = {"mode": "pa1", "c": 0.5, "eps": 0.05, "halflife": 50.0, "min_periods": 5.0}
+        kw = {"mode": "pa1", "c": 0.5, "eps": 0.05, "half_life": 50.0, "min_weight": 5.0}
         spec = po.spec.pa(
             "m",
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=1,
-            add_intercept=False,
+            fit_intercept=False,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        _held(out, pa_ref(x, y, dc, w, max_dclock=MAX_DCLOCK, add_intercept=False, **kw), y)
+        _held(out, pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=False, **kw), y)
 
 
 LOSSES = [
@@ -248,52 +254,52 @@ class TestSgd:
     def test_every_loss_under_every_schedule(self, loss, kind, extra, schedule, rate):
         df = _stream(3, kind=kind)
         x, y, dc, w = _inputs(df)
-        kw = {"loss": loss, "schedule": schedule, "halflife": 50.0, "min_periods": 5.0}
+        kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0}
         kw |= extra | rate
         spec = po.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=1,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        _held(out, sgd_ref(x, y, dc, w, max_dclock=MAX_DCLOCK, **kw), y)
+        _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
 
     def test_without_an_intercept(self):
         df = _stream(4)
         x, y, dc, w = _inputs(df)
-        kw = {"learning_rate": 0.05, "halflife": 50.0, "min_periods": 5.0}
+        kw = {"learning_rate": 0.05, "half_life": 50.0, "min_weight": 5.0}
         spec = po.spec.sgd(
             "m",
             targets=TARGETS,
             features=FEATURES,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=1,
-            add_intercept=False,
+            fit_intercept=False,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        _held(out, sgd_ref(x, y, dc, w, max_dclock=MAX_DCLOCK, add_intercept=False, **kw), y)
+        _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=False, **kw), y)
 
 
 class TestHolt:
     @pytest.mark.parametrize(
         ("kw", "dup"),
         [
-            ({"level_halflife": 20.0, "min_periods": 2.0}, False),
-            ({"level_halflife": 20.0, "trend_halflife": 60.0, "min_periods": 12.0}, True),
+            ({"level_half_life": 20.0, "min_weight": 2.0}, False),
+            ({"level_half_life": 20.0, "trend_half_life": 60.0, "min_weight": 12.0}, True),
         ],
-        ids=["default-trend-halflife", "zero-steps-and-the-gate"],
+        ids=["default-trend-half_life", "zero-steps-and-the-gate"],
     )
     def test_every_row(self, kw, dup):
         """The second case puts 25 rows at the clock of the row before, and
-        a ``min_periods`` the gappy target's own weight falls under after
+        a ``min_weight`` the gappy target's own weight falls under after
         its block of nulls."""
         df = _stream(5 if not dup else 6, kind="holt", dup=dup)
         y = df.select(TARGETS).to_numpy().astype(float)
@@ -301,13 +307,13 @@ class TestHolt:
             "m",
             targets=TARGETS,
             clock="t",
-            max_dclock=MAX_DCLOCK,
+            gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=1,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
-        ref = holt_ref(y, df["t"].to_numpy(), df["w"].to_numpy(), max_dclock=MAX_DCLOCK, **kw)
+        ref = holt_ref(y, df["t"].to_numpy(), df["w"].to_numpy(), gap_cap=MAX_DCLOCK, **kw)
         # On every row: before a target's first observation there is no
         # level, and the core's coef is null there, as docs/OUTPUTS.md says
         # (it was [0, 0]; docs/PLAN.md task 97).

@@ -20,14 +20,14 @@ fn cfg(k: usize, scale: bool, schedule: LearningRate, l2: f64) -> SgdCfg {
     SgdCfg {
         n_features: k,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(f64::INFINITY),
         loss: SgdLoss::Squared,
         learning_rate: 0.2 / k as f64,
         schedule,
         l2,
-        min_periods: 50.0,
-        scale_features: scale,
+        min_weight: 50.0,
+        standardize: scale,
         clip_gradient: 1e3,
         constraint: None,
     }
@@ -81,7 +81,7 @@ fn main() {
             cfg(k, false, LearningRate::Constant, 1e-4),
         );
         bench(
-            "constant, scale_features",
+            "constant, standardize",
             k,
             n,
             cfg(k, true, LearningRate::Constant, 0.0),

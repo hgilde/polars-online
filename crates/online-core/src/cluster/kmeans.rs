@@ -22,7 +22,7 @@
 //!             and rows(F_l) ≥ FAR_ROWS: C_i ← merge_welford(C_j), F_i ← merge_welford(F_j)
 //!             else j = argmin n_j if n_j < dead_frac · n_eff / k, l = argmax_l n(F_l) if any
 //!             then n_l /= 2, C_j ← (c(F_l), n_l, R̃);  every F ← ∅, V ← 0
-//! decay       n_j *= lam, W *= lam, V *= lam, buffered w *= lam   lam = 0.5^(d/halflife)
+//! decay       n_j *= lam, W *= lam, V *= lam, buffered w *= lam   lam = 0.5^(d/half_life)
 //! ```
 //!
 //! A row is *far* when its squared distance to its centre exceeds what a
@@ -48,7 +48,7 @@
 //! that jumped among `k ≥ 2` stays far (its cluster's widening radius is
 //! the largest, which `R̃` leaves out) until the dead rule re-places its
 //! centre, on its own far rows if they are the heaviest,
-//! `log2(1/dead_frac)` halflives after the jump — 4.3 at the default,
+//! `log2(1/dead_frac)` half-lives after the jump — 4.3 at the default,
 //! 2 at `dead_frac = 0.25`. (A cluster wider than the typical learns the
 //! rows within the cut and offers the rest: where a centre comes free,
 //! that is where it goes.) Far rows are summarised per cluster, not kept.
@@ -112,8 +112,8 @@ pub struct KMeansCfg {
     /// Number of clusters, `>= 1`.
     pub k: usize,
     pub decay: Decay,
-    /// Outputs are null while `n_eff < min_periods`.
-    pub min_periods: f64,
+    /// Outputs are null while `n_eff < min_weight`.
+    pub min_weight: f64,
     /// Learned rows buffered before seeding (at least `k` are used).
     pub warm_rows: usize,
     pub seed_rule: SeedRule,
@@ -128,7 +128,7 @@ pub struct KMeansCfg {
     pub split_merge_every: u32,
     /// A cluster lighter than `dead_frac · n_eff / k` at a check is dead
     /// and re-placed on the far rows; `0` disables the rule. A centre
-    /// whose blob vanished gets there `log2(1/dead_frac)` halflives later
+    /// whose blob vanished gets there `log2(1/dead_frac)` half-lives later
     /// (4.3 at 0.05, 2 at 0.25); a blob lighter than `dead_frac / k` of
     /// the stream loses its centre whenever any row is far.
     pub dead_frac: f64,
@@ -136,7 +136,7 @@ pub struct KMeansCfg {
     pub standardize: bool,
     /// Floor the metric's variance at this fraction of the feature's
     /// long-run variance (`FeatureMoments`' reference), so that a feature
-    /// quiet for `Q` halflives comes to count `2^(Q/8) / scale_floor` times
+    /// quiet for `Q` half-lives comes to count `2^(Q/8) / scale_floor` times
     /// what its history says, where `1 / var` alone gave `2^Q`; `0` is the
     /// EW variance alone, and what a state written before the floor loads
     /// with (docs/PLAN.md task 102).
@@ -152,8 +152,8 @@ impl KMeansCfg {
         if self.k == 0 {
             return Err("kmeans: k must be >= 1".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("kmeans: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("kmeans: min_weight must be >= 0".into());
         }
         if self.update_every == 0 {
             return Err("kmeans: update_every must be >= 1".into());
@@ -357,7 +357,7 @@ impl KMeans {
 
     fn score(&self, x: &[f64], valid: bool, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 3];
-        if valid && self.seeded() && n_eff >= self.cfg.min_periods {
+        if valid && self.seeded() && n_eff >= self.cfg.min_weight {
             let (j, d2, d2_second, second_j) = self.nearest2(x);
             pred[0] = j as f64;
             pred[1] = self.reported(d2, j, x);
@@ -1019,7 +1019,7 @@ mod tests {
             n_features: 2,
             k,
             decay: Decay::Halflife(f64::INFINITY),
-            min_periods: 0.0,
+            min_weight: 0.0,
             warm_rows: 6,
             seed_rule: SeedRule::First,
             seed: 0,
@@ -1158,7 +1158,7 @@ mod tests {
             // Read before learning.
             let mut out = [f64::NAN; 3];
             if let Some(cl) = &seeds {
-                if n_before >= c.min_periods {
+                if n_before >= c.min_weight {
                     let dd: Vec<f64> = cl.iter().map(|s| d2(&s.1, row, &mw)).collect();
                     let mut j = 0;
                     for i in 1..dd.len() {
@@ -1308,7 +1308,7 @@ mod tests {
                 n_features: 2,
                 k: 3,
                 decay: Decay::Halflife(30.0),
-                min_periods: 4.0,
+                min_weight: 4.0,
                 warm_rows: 9,
                 standardize,
                 ..cfg(3)
@@ -1350,7 +1350,7 @@ mod tests {
         assert_eq!(m.buffered(), 0);
         assert!(m.n_eff() == 0.0 && m.moments().mean == vec![0.0, 0.0]);
         // Once seeded, a zero-weight row halves every weight over a
-        // halflife and moves no centre.
+        // half-life and moves no centre.
         let rows = blobs(4, 1);
         for (i, r) in rows.iter().enumerate() {
             m.step(r, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
@@ -1387,7 +1387,7 @@ mod tests {
     fn outputs_are_null_until_seeded_and_until_min_periods() {
         let c = KMeansCfg {
             warm_rows: 6,
-            min_periods: 8.0,
+            min_weight: 8.0,
             ..cfg(3)
         };
         let mut m = KMeans::new(c).unwrap();
@@ -1796,7 +1796,7 @@ mod tests {
         }
     }
 
-    /// The reference decays at `LONG_HALFLIVES` times the halflife: over a
+    /// The reference decays at `LONG_HALFLIVES` times the half-life: over a
     /// clock of 2 a row, the model's moments carry the weights and variances
     /// a `FeatureMoments` given `decay.factor(2 / 8)` carries, to the bit.
     #[test]
@@ -1990,7 +1990,7 @@ mod tests {
                 ..cfg(1)
             },
             KMeansCfg {
-                min_periods: -1.0,
+                min_weight: -1.0,
                 ..cfg(1)
             },
         ];

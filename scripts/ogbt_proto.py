@@ -6,9 +6,9 @@ guarantees hold -- not to be fast; ``scripts/ogbt_experiments.py`` runs the
 experiments the document quotes.
 
 Semantics match polars-online's models: per row a decay
-``lam = 0.5**(d_clock/halflife)``, a weight ``w`` that scales the row
+``lam = 0.5**(d_clock/half_life)``, a weight ``w`` that scales the row
 (``w = 0`` advances the clock and learns nothing), ``pred`` computed before
-the update, and ``n_eff`` = the EW weight sum before the row.
+the update, and ``weight_sum`` = the EW weight sum before the row.
 
 The ensemble (tree structure, leaf values, base score) changes only at
 *checkpoints*, every ``grow_every`` learned rows (``grow_every = 1`` is fully
@@ -43,13 +43,13 @@ class Cfg:
     max_depth: int = 4
     n_bins: int = 32
     bin_rows: int = 500  # warm-up rows buffered to place the bin edges
-    halflife: float = math.inf  # clock units; inf = no decay
+    half_life: float = math.inf  # clock units; inf = no decay
     eta: float = 0.3
     reg_lambda: float = 1.0
     gamma: float = 0.0
     min_child_weight: float = 1.0
     grace: int = 50  # rows through a node between split / collapse evaluations
-    min_periods: float = 0.0
+    min_weight: float = 0.0
     grow_every: int = 1
     prune: bool = True  # collapse a split whose gain has decayed below zero
     colsample: float = 1.0  # fraction of features a tree may split on (seeded, per tree)
@@ -319,7 +319,7 @@ class OnlineGBT:
         self.cfg = cfg
         self.p = n_features
         self.L = 0.0  # cumulative log-decay
-        self.n_eff = 0.0
+        self.weight_sum = 0.0
         self.n_learned = 0  # learned rows so far (checkpoint schedule)
         self.edges: list[np.ndarray] | None = None
         self.buf: list[tuple[np.ndarray, float, float, float]] = []  # warm-up rows (x, y, w, L)
@@ -412,24 +412,24 @@ class OnlineGBT:
 
     # ---------------------------------------------------------------------------
     def fit_chunk(self, X, y, d_clock, w=None):
-        """Predict-then-learn each row of the chunk; returns (pred, n_eff) per row."""
+        """Predict-then-learn each row of the chunk; returns (pred, weight_sum) per row."""
         n = len(X)
         w = np.ones(n) if w is None else np.asarray(w, dtype=float)
         pred = np.full(n, np.nan)
-        n_eff = np.empty(n)
+        weight_sum = np.empty(n)
         for i in range(n):
-            pred[i], n_eff[i] = self.step(X[i], y[i], d_clock[i], w[i])
-        return pred, n_eff
+            pred[i], weight_sum[i] = self.step(X[i], y[i], d_clock[i], w[i])
+        return pred, weight_sum
 
     def step(self, x, y, d_clock, w=1.0):
         cfg = self.cfg
-        lam = 1.0 if math.isinf(cfg.halflife) else 0.5 ** (d_clock / cfg.halflife)
+        lam = 1.0 if math.isinf(cfg.half_life) else 0.5 ** (d_clock / cfg.half_life)
         self.L += math.log(lam)
-        n_eff_before = self.n_eff
-        self.n_eff = lam * self.n_eff + w
+        n_eff_before = self.weight_sum
+        self.weight_sum = lam * self.weight_sum + w
         learn = (y is not None) and not (isinstance(y, float) and math.isnan(y)) and w > 0.0
         # prediction, before the update, with the frozen ensemble
-        if self.edges is None or n_eff_before < cfg.min_periods:
+        if self.edges is None or n_eff_before < cfg.min_weight:
             pred = math.nan
         else:
             pred = float(self._predict_frozen(self._bin(np.asarray(x)[None, :]))[0][0])
@@ -622,16 +622,16 @@ class LeafRefresh:
         n_trees: int,
         eta: float,
         reg_lambda: float,
-        halflife: float,
+        half_life: float,
         grow_every: int = 1,
         base: float = 0.0,
     ):
         self.leaf_ids = leaf_ids
         self.M = n_trees
-        self.eta, self.lam, self.halflife = eta, reg_lambda, halflife
+        self.eta, self.lam, self.half_life = eta, reg_lambda, half_life
         self.grow_every = grow_every
         self.L = 0.0
-        self.n_eff = 0.0
+        self.weight_sum = 0.0
         self.n_learned = 0
         self.base = base
         # per tree: dict leaf -> [G, H, stamp, value]
@@ -647,10 +647,10 @@ class LeafRefresh:
         return out
 
     def step(self, x, y, d_clock, w=1.0):
-        lam = 1.0 if math.isinf(self.halflife) else 0.5 ** (d_clock / self.halflife)
+        lam = 1.0 if math.isinf(self.half_life) else 0.5 ** (d_clock / self.half_life)
         self.L += math.log(lam)
-        n_eff_before = self.n_eff
-        self.n_eff = lam * self.n_eff + w
+        n_eff_before = self.weight_sum
+        self.weight_sum = lam * self.weight_sum + w
         ids = self.leaf_ids(np.asarray(x, dtype=float)[None, :])
         vals = self._values(ids)[0]
         pred = self.base + self.eta * float(vals.sum())

@@ -22,29 +22,28 @@
   thread_pool_size
   unnest
   window
-  schema_version = 21
+  schema_version = 22
 
 [common parameters]  # every constructor accepts these via **common
   targets
   features
-  add_intercept = True
+  fit_intercept = True
   clock = None
-  halflife = None
+  half_life = None
   lam = None
-  max_dclock = None
-  on_clock_reset = 'error'
-  min_backwards_jump = None
+  gap_cap = None
+  restart_after_step_back = None
   session = None
   session_gap = None
   weight = None
-  min_periods = None
+  min_weight = None
   min_settled_frac = None
   max_error_inflation = None
   emit_error_inflation = False
   emit_clocks = False
   coef_every = 0
   emit_sigma = False
-  emit_resid_z = False
+  emit_zscore = False
   emit_selected = False
   emit_averaged = False
   average_eta = None
@@ -58,7 +57,7 @@
   drift_delta = None
   drift_threshold = None
   drift_action = 'flag'
-  label_delay = None
+  embargo = None
   group = None
   group_close = None
 
@@ -96,7 +95,7 @@
     perm_block = None
     norm = 'l1'
     seed = None
-    reset = False
+    reset_on_flag = False
     monitor_rows = None
     boundary_gamma = None
     common
@@ -115,7 +114,7 @@
     classes
     covariance = None
     precision_prior
-    window = None
+    window_size = None
     window_every = None
     window_budget = None
     common
@@ -128,7 +127,7 @@
     pca = None
     pca_every = None
     lags = None
-    window = None
+    window_size = None
     window_every = None
     window_budget = None
     common
@@ -139,15 +138,15 @@
     ridge = None
     feature_sets = None
     standardize = False
-    ridge_decay = False
+    ridge_scale = 'mean'
     coef_prior = None
     session_shrink = None
-    long_halflife = None
+    long_half_life = None
     solve_every = None
     max_rows_between_solves = None
     gram_block_rows = None
     target_gaps = 'own_rows'
-    window = None
+    window_size = None
     window_every = None
     window_budget = None
     common
@@ -182,8 +181,8 @@
   holt:
     name
     targets
-    level_halflife = None
-    trend_halflife = None
+    level_half_life = None
+    trend_half_life = None
     trend = True
     features = None
     common
@@ -201,12 +200,12 @@
     name
     targets
     features
-    coef_halflife
+    coef_half_life
     q = None
     obs_var = None
     p0 = None
     share_p = False
-    revert_halflife = None
+    revert_half_life = None
     standardize = True
     common
   kmeans:
@@ -229,14 +228,14 @@
     features
     lasso_path
     l1_ratio = None
-    select_halflife = None
+    select_half_life = None
     solve_every = None
     max_rows_between_solves = None
-    window = None
+    window_size = None
     window_every = None
     window_budget = None
-    max_cd_iters = None
-    cd_tol = None
+    max_iter = None
+    tol = None
     target_gaps = 'own_rows'
     common
   marginal:
@@ -252,7 +251,7 @@
     bin_edges = None
     bin_budget = None
     shards = None
-    window = None
+    window_size = None
     window_every = None
     window_budget = None
     window_lags = False
@@ -339,7 +338,7 @@
     power = None
     l2 = None
     clip_gradient = None
-    scale_features = False
+    standardize = False
     coef_min = None
     coef_max = None
     coef_sum = None
@@ -378,11 +377,11 @@
   LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame'
-  LazyFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, max_dclock: 'float | Duration | None' = None, on_clock_reset: 'str | None' = None, min_backwards_jump: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame'
   DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None) -> 'pl.DataFrame'
   DataFrame.online.predict(bank: 'ModelBank | State') -> 'pl.DataFrame'
   DataFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.DataFrame'
-  DataFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, max_dclock: 'float | Duration | None' = None, on_clock_reset: 'str | None' = None, min_backwards_jump: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.with_windows(windows: 'Sequence[Window]', *, clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.DataFrame'
 
 [helper modules]  # po.<module>.<function>, the numpy-side arithmetic
   corr:
@@ -440,7 +439,7 @@
   ewridge minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -470,14 +469,14 @@
     sigma_z__a_r0.5@h100
     sigma_z__b_r0.000001@h100
     sigma_z__b_r0.5@h100
-    resid_z_y__a_r0.000001@h100
-    resid_z_y__a_r0.5@h100
-    resid_z_y__b_r0.000001@h100
-    resid_z_y__b_r0.5@h100
-    resid_z_z__a_r0.000001@h100
-    resid_z_z__a_r0.5@h100
-    resid_z_z__b_r0.000001@h100
-    resid_z_z__b_r0.5@h100
+    zscore_y__a_r0.000001@h100
+    zscore_y__a_r0.5@h100
+    zscore_y__b_r0.000001@h100
+    zscore_y__b_r0.5@h100
+    zscore_z__a_r0.000001@h100
+    zscore_z__a_r0.5@h100
+    zscore_z__b_r0.000001@h100
+    zscore_z__b_r0.5@h100
     lo_y__a_r0.000001@h100
     lo_y__a_r0.5@h100
     lo_y__b_r0.000001@h100
@@ -526,22 +525,22 @@
     hit_rate_z__a_r0.5@h100
     hit_rate_z__b_r0.000001@h100
     hit_rate_z__b_r0.5@h100
-    absresid_q0.05_y__a_r0.000001@h100
-    absresid_q0.05_y__a_r0.5@h100
-    absresid_q0.05_y__b_r0.000001@h100
-    absresid_q0.05_y__b_r0.5@h100
-    absresid_q0.05_z__a_r0.000001@h100
-    absresid_q0.05_z__a_r0.5@h100
-    absresid_q0.05_z__b_r0.000001@h100
-    absresid_q0.05_z__b_r0.5@h100
-    absresid_q0.95_y__a_r0.000001@h100
-    absresid_q0.95_y__a_r0.5@h100
-    absresid_q0.95_y__b_r0.000001@h100
-    absresid_q0.95_y__b_r0.5@h100
-    absresid_q0.95_z__a_r0.000001@h100
-    absresid_q0.95_z__a_r0.5@h100
-    absresid_q0.95_z__b_r0.000001@h100
-    absresid_q0.95_z__b_r0.5@h100
+    abs_resid_q0.05_y__a_r0.000001@h100
+    abs_resid_q0.05_y__a_r0.5@h100
+    abs_resid_q0.05_y__b_r0.000001@h100
+    abs_resid_q0.05_y__b_r0.5@h100
+    abs_resid_q0.05_z__a_r0.000001@h100
+    abs_resid_q0.05_z__a_r0.5@h100
+    abs_resid_q0.05_z__b_r0.000001@h100
+    abs_resid_q0.05_z__b_r0.5@h100
+    abs_resid_q0.95_y__a_r0.000001@h100
+    abs_resid_q0.95_y__a_r0.5@h100
+    abs_resid_q0.95_y__b_r0.000001@h100
+    abs_resid_q0.95_y__b_r0.5@h100
+    abs_resid_q0.95_z__a_r0.000001@h100
+    abs_resid_q0.95_z__a_r0.5@h100
+    abs_resid_q0.95_z__b_r0.000001@h100
+    abs_resid_q0.95_z__b_r0.5@h100
     autocorr_y__a_r0.000001@h100
     autocorr_y__a_r0.5@h100
     autocorr_y__b_r0.000001@h100
@@ -558,7 +557,7 @@
     drift_z__a_r0.5@h100
     drift_z__b_r0.000001@h100
     drift_z__b_r0.5@h100
-    n_eff@h100
+    weight_sum@h100
     settled_frac@h100
     withheld_reason@h100
     coef@h100
@@ -587,14 +586,14 @@
     sigma_z__a_r0.5@h500
     sigma_z__b_r0.000001@h500
     sigma_z__b_r0.5@h500
-    resid_z_y__a_r0.000001@h500
-    resid_z_y__a_r0.5@h500
-    resid_z_y__b_r0.000001@h500
-    resid_z_y__b_r0.5@h500
-    resid_z_z__a_r0.000001@h500
-    resid_z_z__a_r0.5@h500
-    resid_z_z__b_r0.000001@h500
-    resid_z_z__b_r0.5@h500
+    zscore_y__a_r0.000001@h500
+    zscore_y__a_r0.5@h500
+    zscore_y__b_r0.000001@h500
+    zscore_y__b_r0.5@h500
+    zscore_z__a_r0.000001@h500
+    zscore_z__a_r0.5@h500
+    zscore_z__b_r0.000001@h500
+    zscore_z__b_r0.5@h500
     lo_y__a_r0.000001@h500
     lo_y__a_r0.5@h500
     lo_y__b_r0.000001@h500
@@ -643,22 +642,22 @@
     hit_rate_z__a_r0.5@h500
     hit_rate_z__b_r0.000001@h500
     hit_rate_z__b_r0.5@h500
-    absresid_q0.05_y__a_r0.000001@h500
-    absresid_q0.05_y__a_r0.5@h500
-    absresid_q0.05_y__b_r0.000001@h500
-    absresid_q0.05_y__b_r0.5@h500
-    absresid_q0.05_z__a_r0.000001@h500
-    absresid_q0.05_z__a_r0.5@h500
-    absresid_q0.05_z__b_r0.000001@h500
-    absresid_q0.05_z__b_r0.5@h500
-    absresid_q0.95_y__a_r0.000001@h500
-    absresid_q0.95_y__a_r0.5@h500
-    absresid_q0.95_y__b_r0.000001@h500
-    absresid_q0.95_y__b_r0.5@h500
-    absresid_q0.95_z__a_r0.000001@h500
-    absresid_q0.95_z__a_r0.5@h500
-    absresid_q0.95_z__b_r0.000001@h500
-    absresid_q0.95_z__b_r0.5@h500
+    abs_resid_q0.05_y__a_r0.000001@h500
+    abs_resid_q0.05_y__a_r0.5@h500
+    abs_resid_q0.05_y__b_r0.000001@h500
+    abs_resid_q0.05_y__b_r0.5@h500
+    abs_resid_q0.05_z__a_r0.000001@h500
+    abs_resid_q0.05_z__a_r0.5@h500
+    abs_resid_q0.05_z__b_r0.000001@h500
+    abs_resid_q0.05_z__b_r0.5@h500
+    abs_resid_q0.95_y__a_r0.000001@h500
+    abs_resid_q0.95_y__a_r0.5@h500
+    abs_resid_q0.95_y__b_r0.000001@h500
+    abs_resid_q0.95_y__b_r0.5@h500
+    abs_resid_q0.95_z__a_r0.000001@h500
+    abs_resid_q0.95_z__a_r0.5@h500
+    abs_resid_q0.95_z__b_r0.000001@h500
+    abs_resid_q0.95_z__b_r0.5@h500
     autocorr_y__a_r0.000001@h500
     autocorr_y__a_r0.5@h500
     autocorr_y__b_r0.000001@h500
@@ -675,7 +674,7 @@
     drift_z__a_r0.5@h500
     drift_z__b_r0.000001@h500
     drift_z__b_r0.5@h500
-    n_eff@h500
+    weight_sum@h500
     settled_frac@h500
     withheld_reason@h500
     coef@h500
@@ -691,7 +690,7 @@
     resid_y__r1e-300@h100
     pred_y__r0.5@h100
     resid_y__r0.5@h100
-    n_eff@h100
+    weight_sum@h100
     settled_frac@h100
     withheld_reason@h100
     coef@h100
@@ -700,7 +699,7 @@
     resid_y__r1e-300@h1e9
     pred_y__r0.5@h1e9
     resid_y__r0.5@h1e9
-    n_eff@h1e9
+    weight_sum@h1e9
     settled_frac@h1e9
     withheld_reason@h1e9
     coef@h1e9
@@ -710,15 +709,15 @@
     resid_y__l0.1
     pred_y__l0
     resid_y__l0
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
-    lam_selected_y
+    penalty_selected_y
   rls minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -727,57 +726,57 @@
     resid_y__l0.1
     pred_y__l0
     resid_y__l0
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
-    lam_selected_y
+    penalty_selected_y
   kalman minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   huber minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   quantile minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   sgd minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   pa minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   ftrl minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   holt minimal:
     pred_y
     resid_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -790,43 +789,43 @@
     std_x1
     cov_x0_x1
     corr_x0_x1
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   ew_cov every score:
-    pcorr_x0_x1
+    partial_corr_x0_x1
     mahal
     mahal_q0.5
     mahal_q0.99
     pc0_var
     pc0_share
-    pc0_x0
-    pc0_x1
+    pc0_loading_x0
+    pc0_loading_x1
     pc0_score
     pc1_var
     pc1_share
-    pc1_x0
-    pc1_x1
+    pc1_loading_x0
+    pc1_loading_x1
     pc1_score
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   kmeans minimal:
     cluster
     dist
     dist2
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   micro minimal:
     cluster
     dist
-    micro
+    micro_id
     outlier
     n_clusters
     n_micro
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -834,7 +833,7 @@
     class
     p_a
     p_b
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -847,7 +846,7 @@
     log_e_neg_z
     n_pos_z
     n_neg_z
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   seqtest comparing two specs:
@@ -855,11 +854,11 @@
     log_e_b_y
     wins_a_y
     wins_b_y
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   marginal minimal:
-    n_eff
+    weight_sum
   ew_cov with lags:
     corr_x0_x1
     lagcorr_x0_x0_l1
@@ -870,7 +869,7 @@
     lagcorr_x0_x1_l5
     lagcorr_x1_x0_l5
     lagcorr_x1_x1_l5
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   bocpd minimal:
@@ -879,8 +878,8 @@
     run_mean
     pred_x0
     pred_x1
-    logscore
-    n_eff
+    loglik
+    weight_sum
     settled_frac
     withheld_reason
   corrchange minimal:
@@ -889,29 +888,29 @@
     flag
     since_flag
     since_change
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
   hmm minimal:
-    p_0
-    p_1
-    p_2
-    p1_0
-    p1_1
-    p1_2
+    filtered_0
+    filtered_1
+    filtered_2
+    predicted_0
+    predicted_1
+    predicted_2
     state
     loglik
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
   rcov minimal:
-    n_eff
+    weight_sum
   deco minimal:
     u
     rho
     loglik
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -923,7 +922,7 @@
     rho_b
     rho_a_b
     loglik
-    n_eff
+    weight_sum
     settled_frac
     withheld_reason
     coef
@@ -934,7 +933,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -950,7 +949,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -973,7 +972,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1002,7 +1001,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1025,7 +1024,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1034,7 +1033,7 @@
     coef
     pair_feature
     pair_target
-    pair_n_eff
+    pair_weight_sum
     pair_n_kish
     pair_mean_x
     pair_var_x
@@ -1052,7 +1051,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1076,7 +1075,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1101,7 +1100,7 @@
     group
     instance
     session
-    n_eff
+    weight_sum
     n_kish
     rows_fed
     rows_learned
@@ -1110,7 +1109,7 @@
     coef
     pair_feature
     pair_target
-    pair_n_eff
+    pair_weight_sum
     pair_n_kish
     pair_mean_x
     pair_var_x

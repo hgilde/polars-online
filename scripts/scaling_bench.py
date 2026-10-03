@@ -24,8 +24,8 @@ d["y"] = rng.standard_normal(rows)
 d["g"] = np.arange(rows) % groups
 df = pl.DataFrame(d)
 spec = po.spec.ewridge("m", targets=["y"], features=[f"x{{i}}" for i in range(k)],
-                       clock="t", max_dclock=10.0, halflife=1000.0,
-                       min_periods=25.0, group="g")
+                       clock="t", gap_cap=10.0, half_life=1000.0,
+                       min_weight=25.0, group="g")
 po.ModelBank([spec]).fit_predict(df)
 b = po.ModelBank([spec])
 t = time.perf_counter(); b.fit_predict(df); dt = time.perf_counter() - t

@@ -70,14 +70,14 @@ pub enum LearningRate {
 pub struct SgdCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     pub loss: SgdLoss,
     pub learning_rate: f64,
     pub schedule: LearningRate,
     /// Ridge penalty added to the gradient. The intercept is never penalized.
     pub l2: f64,
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// Standardize features against their own running moments before the
     /// gradient step (ENHANCEMENTS E24), unscaling the coefficients on the way
     /// out so they stay in the caller's units.
@@ -120,7 +120,7 @@ pub struct SgdCfg {
     /// was taken in and the ones the projection and the coefficients use a
     /// moment later differ by that weight (review 2026-09-12, D5).
     #[serde(default)]
-    pub scale_features: bool,
+    pub standardize: bool,
     /// Cap on `|gradient|` before the step. **Finite by default** (`1e3` via the
     /// spec layer), not because ordinary losses need it but because a log-link
     /// loss does: with `Poisson`, `p = exp(eta)`, so one row that pushes `eta`
@@ -136,7 +136,7 @@ pub struct SgdCfg {
     /// projection after each update (ENHANCEMENTS E40); the intercept is
     /// free. The projection is taken in the space the step is taken in: the
     /// caller's units, or the standardized coordinates under
-    /// `scale_features`, where a caller bound `lo_i` on `c_i` is the bound
+    /// `standardize`, where a caller bound `lo_i` on `c_i` is the bound
     /// `lo_i * scale_i` on `b_i` and the sum is `sum(b_i / scale_i)`.
     /// The reported coefficients satisfy the constraint after every learned
     /// row, and the initial `0` is projected too, so a simplex starts uniform.
@@ -146,7 +146,7 @@ pub struct SgdCfg {
 
 impl SgdCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -198,7 +198,7 @@ impl SgdCfg {
 #[serde(try_from = "SgdV3")]
 pub struct Sgd {
     cfg: SgdCfg,
-    /// Running feature means and variances, when `scale_features` is on.
+    /// Running feature means and variances, when `standardize` is on.
     #[serde(default)]
     scaler: Option<EwDiag>,
     /// Coefficients per target.
@@ -207,9 +207,9 @@ pub struct Sgd {
     g2: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows that carried it, decayed: what its
-    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
-    /// `min_periods = 10` with every coefficient at zero.
+    /// `min_weight = 10` with every coefficient at zero.
     #[serde(default)]
     w_target: Vec<f64>,
     /// The standardized row `[1, z]` under a scaler; unused without one,
@@ -255,13 +255,13 @@ impl TryFrom<SgdV3> for Sgd {
         let k = cfg.k_total();
         let m = cfg.n_targets;
         // What the cfg asks for, the state carries, and nothing else: a
-        // scaler exactly when `scale_features` is on, and AdaGrad's sums, one
+        // scaler exactly when `standardize` is on, and AdaGrad's sums, one
         // per target, exactly under AdaGrad. A file that lost its scaler
         // loaded as a model reading raw inputs with coefficients learned on
         // standardized ones, and one that lost its sums panicked on the first
         // step (review 2026-09-12, S16).
-        if cfg.scale_features != scaler.is_some() {
-            return Err("sgd: the state's scaler does not match its cfg's scale_features".into());
+        if cfg.standardize != scaler.is_some() {
+            return Err("sgd: the state's scaler does not match its cfg's standardize".into());
         }
         let sums = if matches!(cfg.schedule, LearningRate::AdaGrad) {
             m
@@ -306,10 +306,10 @@ impl Sgd {
         } else {
             Vec::new()
         };
-        let scaler = cfg.scale_features.then(|| EwDiag::new(k));
+        let scaler = cfg.standardize.then(|| EwDiag::new(k));
         let mut beta = vec![vec![0.0; k]; m];
         if let Some(c) = &cfg.constraint {
-            let off = usize::from(cfg.add_intercept);
+            let off = usize::from(cfg.fit_intercept);
             let mut scratch = crate::constraint::Scratch::default();
             for b in beta.iter_mut() {
                 c.project(&mut b[off..], None, &mut scratch);
@@ -333,7 +333,7 @@ impl Sgd {
         &self.cfg
     }
 
-    /// Coefficients in the caller's units. With `scale_features` the model
+    /// Coefficients in the caller's units. With `standardize` the model
     /// fits on standardized inputs, so they are unscaled here and the intercept
     /// absorbs the shift.
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
@@ -341,7 +341,7 @@ impl Sgd {
             return self.beta.clone();
         };
         let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let scales = self.scales();
         self.beta
             .iter()
@@ -350,7 +350,7 @@ impl Sgd {
                 for i in off..k {
                     c[i] = b[i] / scales[i];
                 }
-                if self.cfg.add_intercept {
+                if self.cfg.fit_intercept {
                     let mut b0 = b[0];
                     for (i, ci) in c.iter().enumerate().skip(off) {
                         b0 -= ci * sc.mean(i);
@@ -366,7 +366,7 @@ impl Sgd {
     /// a feature with no spread yet.
     fn scales(&self) -> Vec<f64> {
         let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         match &self.scaler {
             None => vec![1.0; k],
             Some(sc) => (0..k)
@@ -396,7 +396,7 @@ impl Sgd {
     }
 
     /// Per target, the weight of the rows that carried it: what its
-    /// `min_periods` is checked against.
+    /// `min_weight` is checked against.
     pub fn target_weights(&self) -> &[f64] {
         &self.w_target
     }
@@ -452,7 +452,7 @@ thread_local! {
 
 /// `x` standardized against the moments of `sc` with the row itself
 /// admitted at unit weight after a decay of `lam` ([`EwDiag::including`];
-/// `SgdCfg::scale_features` says why the row is in): feature `i` sits in
+/// `SgdCfg::standardize` says why the row is in): feature `i` sits in
 /// slot `off + i` of the scaler, and is divided by that sd, or by 1 while
 /// it has no spread (the per-slot scale of [`Sgd::scales`]). Lazy: `step`
 /// writes it into the model's buffer and `predict` into the thread's, with
@@ -519,7 +519,7 @@ fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
 impl OnlineModel for Sgd {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let lam = self.cfg.decay.factor(d_clock);
 
         // The row the model sees. Without a scaler it is `x` itself, the
@@ -528,7 +528,7 @@ impl OnlineModel for Sgd {
         // (docs/PERFORMANCE.md §20). With one, `[1, z]` is standardized
         // against the moments with this row admitted -- read off the scaler
         // as it stands, the way `predict` reads them (E24, and
-        // `SgdCfg::scale_features` for the order); the raw `[1, x]` is kept
+        // `SgdCfg::standardize` for the order); the raw `[1, x]` is kept
         // to update the scaler afterwards, at the row's actual weight.
         if self.scaler.is_some() {
             self.ensure_buffers();
@@ -559,11 +559,11 @@ impl OnlineModel for Sgd {
         }
         // `n_eff` is the weight *before* this row's update and *before* its
         // decay, which is the convention every other model reports and gates
-        // on (see `EwRidgeCfg::min_periods`). Decaying it here would make
-        // `min_periods` mean a slightly different number of rows for `sgd`
+        // on (see `EwRidgeCfg::min_weight`). Decaying it here would make
+        // `min_weight` mean a slightly different number of rows for `sgd`
         // than for `ewridge`, which is exactly the kind of quiet divergence
         // the cross-model semantics suite exists to catch. Each target's
-        // `min_periods` reads its own weight, the rows that carried it.
+        // `min_weight` reads its own weight, the rows that carried it.
         let n_eff = self.w_sum;
 
         let mut pred = vec![f64::NAN; m];
@@ -591,7 +591,7 @@ impl OnlineModel for Sgd {
         for j in 0..m {
             let eta = dot(&self.beta[j], off, z);
             let p = self.link(eta);
-            if self.w_target[j] >= self.cfg.min_periods {
+            if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -675,12 +675,12 @@ impl OnlineModel for Sgd {
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if self.w_target.iter().any(|w| *w >= self.cfg.min_periods) {
-            let off = usize::from(self.cfg.add_intercept);
+        if self.w_target.iter().any(|w| *w >= self.cfg.min_weight) {
+            let off = usize::from(self.cfg.fit_intercept);
             let lam = self.cfg.decay.factor(d_clock);
             let predict_with = |z: &[f64], pred: &mut [f64]| {
                 for (j, p) in pred.iter_mut().enumerate() {
-                    if self.w_target[j] >= self.cfg.min_periods {
+                    if self.w_target[j] >= self.cfg.min_weight {
                         *p = self.link(dot(&self.beta[j], off, z));
                     }
                 }
@@ -747,16 +747,16 @@ mod tests {
         SgdCfg {
             n_features: k,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             loss,
             learning_rate: 0.05,
             schedule: LearningRate::Constant,
             l2: 0.0,
-            min_periods: 5.0,
+            min_weight: 5.0,
             clip_gradient: 1e12,
             constraint: None,
-            scale_features: false,
+            standardize: false,
         }
     }
 
@@ -881,9 +881,9 @@ mod tests {
     fn scaling_rescues_badly_scaled_features() {
         let run = |scale: bool| {
             let mut c = cfg(2, SgdLoss::Squared);
-            c.scale_features = scale;
+            c.standardize = scale;
             c.learning_rate = 0.01;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Sgd::new(c).unwrap();
             let mut s = 61u64;
             for i in 0..20000 {
@@ -906,9 +906,9 @@ mod tests {
     #[test]
     fn scaling_reports_coefficients_in_the_callers_units() {
         let mut c = cfg(1, SgdLoss::Squared);
-        c.scale_features = true;
+        c.standardize = true;
         c.learning_rate = 0.1;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         let mut s = 63u64;
         for i in 0..20000 {
@@ -936,8 +936,8 @@ mod tests {
         // feature standardizes to 0, so only the intercept learns from it, and
         // an enormous first row cannot throw the slope.
         let mut c = cfg(1, SgdLoss::Squared);
-        c.scale_features = true;
-        c.min_periods = 0.0;
+        c.standardize = true;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c.clone()).unwrap();
         let step = m.step(&[1e6], &[Some(1.0)], 0.0, 1.0);
         assert_eq!(step.pred[0], 0.0, "an empty fit predicts 0");
@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn poisson_predictions_are_non_negative() {
         let mut c = cfg(1, SgdLoss::Poisson);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         let mut s = 12u64;
         for i in 0..2000 {
@@ -1168,7 +1168,7 @@ mod tests {
             let mut c = cfg(1, SgdLoss::Poisson);
             c.learning_rate = 0.02;
             c.clip_gradient = clip;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Sgd::new(c).unwrap();
             for i in 0..5 {
                 m.step(&[1.0], &[Some(1e6)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
@@ -1191,7 +1191,7 @@ mod tests {
     fn clip_gradient_bounds_the_step() {
         let mut c = cfg(1, SgdLoss::Squared);
         c.clip_gradient = 1.0;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         // one absurd row: with lr 0.05 and the clip at 1, |db| <= 0.05
         m.step(&[1.0], &[Some(1e9)], 0.0, 1.0);
@@ -1201,7 +1201,7 @@ mod tests {
     #[test]
     fn null_target_is_predict_only() {
         let mut c = cfg(1, SgdLoss::Squared);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         let mut s = 31u64;
         for i in 0..50 {
@@ -1297,8 +1297,8 @@ mod tests {
         // The bound is on c_i = b_i / scale_i; the projection is taken with
         // the scales the coefficients are reported with, after every row.
         let mut c = constrained(2, 0.0, 0.01, Some(0.01));
-        c.scale_features = true;
-        c.min_periods = 0.0;
+        c.standardize = true;
+        c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         let mut s = 17u64;
         for i in 0..5000 {
@@ -1394,16 +1394,16 @@ mod tests {
         assert!(Sgd::new(cfg(1, SgdLoss::Huber { delta: -1.0 })).is_err());
     }
 
-    /// A target's `min_periods` counts only the rows that carried it, and
+    /// A target's `min_weight` counts only the rows that carried it, and
     /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
-    /// ten rows with no target met `min_periods = 3` with every coefficient
+    /// ten rows with no target met `min_weight = 3` with every coefficient
     /// at zero. A zero-weight row with the target (row 12) only ages it; the
     /// scaler, which a null target does not stop, is on.
     #[test]
     fn min_periods_counts_only_the_rows_that_carried_the_target() {
         let mut c = cfg(2, SgdLoss::Squared);
-        c.min_periods = 3.0;
-        c.scale_features = true;
+        c.min_weight = 3.0;
+        c.standardize = true;
         let mut m = Sgd::new(c).unwrap();
         let mut s = 7u64;
         for i in 0..16usize {
@@ -1436,7 +1436,7 @@ mod tests {
         assert_eq!(back.target_weights(), &[m.n_eff()]);
     }
 
-    /// Without `scale_features` there is no scaler in either schema, and a
+    /// Without `standardize` there is no scaler in either schema, and a
     /// file written before the field existed (no `scaler` key at all) still
     /// loads as one without.
     #[test]
@@ -1453,7 +1453,7 @@ mod tests {
         assert!(back.scaler.is_none());
     }
 
-    /// A state whose cfg says `scale_features` carries its scaler, and one
+    /// A state whose cfg says `standardize` carries its scaler, and one
     /// on AdaGrad its sums, one per target -- and neither carries what its
     /// cfg does not ask for. A file that lost the scaler loaded as a model
     /// reading raw inputs with coefficients learned on standardized ones;
@@ -1467,12 +1467,12 @@ mod tests {
         plain.decay = Decay::Halflife(50.0); // JSON has no `inf`
 
         let mut scaled = plain.clone();
-        scaled.scale_features = true;
+        scaled.standardize = true;
         let with = json(&scaled);
         assert!(loads(&with), "the control");
         let mut lost = with.clone();
         lost.as_object_mut().unwrap().remove("scaler");
-        assert!(!loads(&lost), "scale_features without its scaler");
+        assert!(!loads(&lost), "standardize without its scaler");
         let mut stray = json(&plain);
         stray["scaler"] = with["scaler"].clone();
         assert!(!loads(&stray), "a scaler the cfg does not ask for");

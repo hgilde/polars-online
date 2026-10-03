@@ -23,7 +23,7 @@ GRID = po.spec.ewridge(
     "ols",
     targets=["y"],
     features=["x1", "x2"],
-    halflife=[20, 80],
+    half_life=[20, 80],
     ridge=0.0,
     group="g",
     coef_every=1,
@@ -39,12 +39,12 @@ def test_coef_is_the_output_s_last_coef_per_group_and_instance():
         "spec",
         "group",
         "instance",
-        "n_eff",
+        "weight_sum",
         "position",
         "target",
         "ridge",
         "feature_set",
-        "lambda",
+        "penalty",
         "term",
         "coef",
     ]
@@ -60,8 +60,8 @@ def test_coef_is_the_output_s_last_coef_per_group_and_instance():
             rows = c.filter((pl.col("group") == grp) & (pl.col("instance") == inst))
             assert rows["term"].to_list() == ["intercept", "x1", "x2"]
             assert rows["coef"].to_list() == last[f"coef{inst}"][0].to_list()
-            # n_eff is the next row's: the weight after the last update.
-            assert rows["n_eff"][0] > last[f"n_eff{inst}"][0]
+            # weight_sum is the next row's: the weight after the last update.
+            assert rows["weight_sum"][0] > last[f"weight_sum{inst}"][0]
     # The betas are the truth, per group, and pivot into the usual shape.
     wide = c.pivot("term", index=["group", "instance"], values="coef")
     a = wide.filter(pl.col("group") == "a").row(0, named=True)
@@ -78,21 +78,23 @@ def test_a_loaded_state_file_answers_without_data(tmp_path):
 
 
 def test_coef_does_not_wait_for_min_periods_but_says_so():
-    """`pred` waits for `min_periods`; `coef` holds the last solve, whenever
-    the schedule ran it, and `n_eff` says how much is behind it."""
+    """`pred` waits for `min_weight`; `coef` holds the last solve, whenever
+    the schedule ran it, and `weight_sum` says how much is behind it."""
     df = _grouped().drop("g")
     early = po.spec.ewridge(
-        "m", targets=["y"], features=["x1", "x2"], halflife=30, min_periods=5, solve_every=0
+        "m", targets=["y"], features=["x1", "x2"], half_life=30, min_weight=5, solve_every=0
     )
     bank = po.ModelBank([early])
     out = bank.fit_predict(df.head(2))["m"].struct.unnest()
     assert out["pred_y"].is_null().all() and out["coef"][-1] is not None
     c = bank.coef("m")
-    assert c["coef"].null_count() == 0 and c["n_eff"][0] < 5
+    assert c["coef"].null_count() == 0 and c["weight_sum"][0] < 5
     # Before its first solve there is no fit, and the row is null. Under a
     # clock schedule the first row of a stream has not solved; the default
     # schedule solves it, since all of the row's weight is new (task 115 (b)).
-    lazy = po.spec.ewridge("m", targets=["y"], features=["x1", "x2"], halflife=30, solve_every=10.0)
+    lazy = po.spec.ewridge(
+        "m", targets=["y"], features=["x1", "x2"], half_life=30, solve_every=10.0
+    )
     bank = po.ModelBank([lazy])
     bank.fit_predict(df.head(1))
     c = bank.coef("m")
@@ -108,7 +110,7 @@ def test_mistakes_and_edges_are_named():
         bank.coef("nope")
     with pytest.raises(IndexError, match="spec index 3 out of range"):
         bank.coef(3)
-    cov = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], halflife=20)])
+    cov = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
     with pytest.raises(ValueError, match="ew_cov emits statistics, not coefficients"):
         cov.coef("c")
 
@@ -119,33 +121,33 @@ COEF_SPECS = [
         "m",
         targets=["y", "y2"],
         features=["x1", "x2"],
-        halflife=30,
+        half_life=30,
         feature_sets={"one": ["x1"], "all": ["x1", "x2"]},
         ridge=[0.0, 1.0],
     ),
-    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], halflife=30, lasso_path=[0.1, 0.0]),
-    po.spec.rls("m", targets=["y"], features=["x1", "x2"], halflife=30),
-    po.spec.kalman("m", targets=["y"], features=["x1", "x2"], halflife=30, coef_halflife=100),
-    po.spec.huber("m", targets=["y"], features=["x1", "x2"], halflife=30),
-    po.spec.ftrl("m", targets=["b"], features=["x1", "x2"], halflife=30),
-    po.spec.sgd("m", targets=["y"], features=["x1", "x2"], halflife=30),
-    po.spec.pa("m", targets=["y"], features=["x1", "x2"], halflife=30),
-    po.spec.holt("m", targets=["y"], halflife=30),
+    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], half_life=30, lasso_path=[0.1, 0.0]),
+    po.spec.rls("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    po.spec.kalman("m", targets=["y"], features=["x1", "x2"], half_life=30, coef_half_life=100),
+    po.spec.huber("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    po.spec.ftrl("m", targets=["b"], features=["x1", "x2"], half_life=30),
+    po.spec.sgd("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    po.spec.pa("m", targets=["y"], features=["x1", "x2"], half_life=30),
+    po.spec.holt("m", targets=["y"], half_life=30),
     # The five it missed until task 111; the test below holds the list
     # to every kind `coef_index` lays out.
-    po.spec.quantile("m", targets=["y"], features=["x1", "x2"], halflife=30, quantile=0.5),
+    po.spec.quantile("m", targets=["y"], features=["x1", "x2"], half_life=30, quantile=0.5),
     # Seeded well inside the 200 rows, so there are centres to lay out.
-    po.spec.kmeans("m", features=["x1", "x2"], halflife=30, k=2, warm_rows=50),
+    po.spec.kmeans("m", features=["x1", "x2"], half_life=30, k=2, warm_rows=50),
     po.spec.ew_class(
         "m",
         label="c",
         classes=["a", "b"],
         features=["x1", "x2"],
-        halflife=30,
+        half_life=30,
         precision_prior=1.0,
     ),
-    po.spec.hmm("m", features=["x1", "x2"], halflife=30, k=2, precision_prior=0.1),
-    po.spec.deco("m", features=["x1", "x2"], halflife=30),
+    po.spec.hmm("m", features=["x1", "x2"], half_life=30, k=2, precision_prior=0.1),
+    po.spec.deco("m", features=["x1", "x2"], half_life=30),
 ]
 
 
@@ -175,14 +177,14 @@ def test_every_model_lays_out_as_coef_index(spec):
     out = bank.fit_predict(df)["m"].struct.unnest()
     c = bank.coef("m")
     layout = po.spec.coef_index(spec)
-    assert c.drop("spec", "group", "instance", "n_eff", "coef").equals(layout)
+    assert c.drop("spec", "group", "instance", "weight_sum", "coef").equals(layout)
     assert c["coef"].to_list() == out["coef"][-1].to_list()
 
 
 def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
     """The use case in one statement: an EW-OLS (`ridge=0`, solved every
     row) predicts row t from the weighted least-squares fit of rows < t,
-    weight 0.5**((t-1-i)/halflife) -- a one-sided local regression -- and
+    weight 0.5**((t-1-i)/half-life) -- a one-sided local regression -- and
     `coef[t]` is the same fit over rows <= t. `bank.coef()` is the last one."""
     rng = np.random.default_rng(0)
     n, h = 200, 20
@@ -194,7 +196,7 @@ def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
         "ols",
         targets=["y"],
         features=["x1", "x2"],
-        halflife=h,
+        half_life=h,
         ridge=0.0,
         solve_every=0,
         coef_every=1,
@@ -226,8 +228,8 @@ def test_coef_takes_every_spec_by_default_and_skips_the_ones_without_any():
     """
     specs = [
         GRID,
-        po.spec.holt("h", targets=["y"], halflife=10.0),
-        po.spec.ew_cov("c", features=["x1", "x2"], halflife=20),
+        po.spec.holt("h", targets=["y"], half_life=10.0),
+        po.spec.ew_cov("c", features=["x1", "x2"], half_life=20),
         po.spec.seqtest("s", targets=["y"]),
     ]
     bank = po.ModelBank(specs)
@@ -243,7 +245,7 @@ def test_coef_takes_every_spec_by_default_and_skips_the_ones_without_any():
 
 
 def test_coef_of_a_bank_with_no_coefficients_is_an_empty_frame():
-    bank = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], halflife=20)])
+    bank = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
     bank.fit_predict(_grouped())
     got = bank.coef()
     assert got.height == 0 and got.columns[0] == "spec" and "coef" in got.columns

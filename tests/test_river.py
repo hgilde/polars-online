@@ -57,13 +57,13 @@ class TestFtrlRecursion:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            add_intercept=False,
-            halflife=float("inf"),  # no decay: river has none to compare against
+            fit_intercept=False,
+            half_life=float("inf"),  # no decay: river has none to compare against
             alpha=self.ALPHA,
             beta=self.BETA,
             l1=self.L1,
             l2=self.L2,
-            min_periods=0.0,
+            min_weight=0.0,
             coef_every=1,
             **kw,
         )
@@ -169,7 +169,7 @@ class TestFtrlRecursion:
 class TestEwStatistics:
     """T-R4: our exponentially weighted moments vs `river.stats.EWMean`/`EWVar`.
 
-    The mapping is `fading_factor = 1 - 0.5 ** (1 / halflife)` on a row-count
+    The mapping is `fading_factor = 1 - 0.5 ** (1 / half-life)` on a row-count
     clock. **Warmup differs by construction**: ours is an exact weighted mean
     from the first row (the accumulator is a mean, not a sum), while river's
     seeds from its first observations, so the two sequences agree only after
@@ -191,9 +191,9 @@ class TestEwStatistics:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=self.HALFLIFE,
+            half_life=self.HALFLIFE,
             standardize=True,
-            min_periods=1.0,
+            min_weight=1.0,
             # The noise gate would withhold one observation's mean -- its
             # estimation variance is the noise, exactly sqrt(2) -- and the
             # convention pinned here is the mean from the first row.
@@ -288,9 +288,9 @@ class TestQuantile:
             targets=["y0"],
             features=["x0"],
             quantile=tau,
-            halflife=1e9,
+            half_life=1e9,
             standardize=True,
-            min_periods=10.0,
+            min_weight=10.0,
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -321,8 +321,8 @@ class TestHuber:
         common = dict(
             targets=["y0"],
             features=["x0"],
-            halflife=1e9,
-            min_periods=10.0,
+            half_life=1e9,
+            min_weight=10.0,
             max_rows_between_solves=1,
         )
         ours = po.ModelBank([po.spec.huber("m", **common)]).fit_predict(df)
@@ -364,7 +364,7 @@ class TestEwCovAgainstRiver:
     def _ours(self, a, b, stats):
         df = pl.DataFrame({"x0": a, "x1": b})
         spec = po.spec.ew_cov(
-            "c", features=["x0", "x1"], stats=stats, halflife=self.NO_DECAY, min_periods=2.0
+            "c", features=["x0", "x1"], stats=stats, half_life=self.NO_DECAY, min_weight=2.0
         )
         out = po.ModelBank([spec]).fit_predict(df)
         return {f.name: out["c"].struct.field(f.name).to_list()[-1] for f in out.schema["c"].fields}
@@ -423,7 +423,7 @@ class TestKalmanIsBayesianLinearRegression:
 
     The mapping: river's `alpha` is the prior precision, so `p0 = 1/alpha`;
     river's `beta` is the observation precision, so `obs_var = 1/beta`. river
-    has no intercept, hence `add_intercept=False`.
+    has no intercept, hence `fit_intercept=False`.
 
     Unblocked by ENHANCEMENTS E19 (the `standardize` switch); before it, the
     filter always standardized internally and the correspondence was only
@@ -442,14 +442,14 @@ class TestKalmanIsBayesianLinearRegression:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            add_intercept=False,
-            coef_halflife=float("inf"),
+            fit_intercept=False,
+            coef_half_life=float("inf"),
             q=[0.0, 0.0],
             obs_var=1.0 / beta,
             p0=1.0 / alpha,
             standardize=False,
-            halflife=float("inf"),
-            min_periods=0.0,
+            half_life=float("inf"),
+            min_weight=0.0,
         )
         df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
         ours = (
@@ -482,14 +482,14 @@ class TestKalmanIsBayesianLinearRegression:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            add_intercept=False,
-            coef_halflife=float("inf"),
+            fit_intercept=False,
+            coef_half_life=float("inf"),
             q=[0.0, 0.0],
             obs_var=0.25,
             p0=0.5,
             standardize=True,
-            halflife=float("inf"),
-            min_periods=0.0,
+            half_life=float("inf"),
+            min_weight=0.0,
         )
         df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
         std_on = (

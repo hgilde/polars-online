@@ -32,7 +32,7 @@ from polars.io.plugins import register_io_source
 import polars_online as po
 
 SPEC = po.spec.ewridge(
-    "m", targets=["y"], features=["x0"], clock="t", halflife=10.0, max_dclock=5.0, min_periods=1.0
+    "m", targets=["y"], features=["x0"], clock="t", half_life=10.0, gap_cap=5.0, min_weight=1.0
 )
 
 

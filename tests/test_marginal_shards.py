@@ -7,7 +7,7 @@ each stepped through a batch of held rows on a thread of its own
 numbers must be the unsplit model's to the bit, whatever the count, the
 chunking, the save and load, and whatever the stream does to the model
 between rows: zero weights, null targets, a skipped row, a session change,
-a clock gap past `max_dclock`, groups, lags, bins and a window.
+a clock gap past `gap_cap`, groups, lags, bins and a window.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def frame(n: int = 1500, seed: int = 5, p: int = P) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     x = np.cumsum(rng.standard_normal((n, p)), axis=0) * 0.1 + rng.standard_normal((n, p))
     t = np.arange(n, dtype=float)
-    t[n * 7 // 15 :] += 5e3  # a gap past max_dclock: the lags' ring empties
+    t[n * 7 // 15 :] += 5e3  # a gap past gap_cap: the lags' ring empties
     w = rng.uniform(0.3, 2.0, n)
     w[::11] = 0.0
     cols = {f"x{j}": x[:, j] for j in range(p)}
@@ -70,13 +70,13 @@ SHAPES = {
     "moments": {},
     "lags": {"lags": [1, 3, 7], "cross_lags": [1], "serial_rule": "geometric"},
     "bins": {"bins": 6, "bin_warm_rows": 50},
-    "window": {"window": 40.0, "window_every": 4},
+    "window": {"window_size": 40.0, "window_every": 4},
 }
 
 #: The shapes for the ``"auto"`` legs: a window flushes before every snapshot,
 #: so its cadence is what "auto" sizes by, and a snapshot every four rows is
 #: never worth a split (review 2026-09-26, A1); every 128 rows is.
-AUTO_SHAPES = {**SHAPES, "window": {"window": 400.0, "window_every": 128}}
+AUTO_SHAPES = {**SHAPES, "window": {"window_size": 400.0, "window_every": 128}}
 
 
 def spec(shape: str, shards, p: int = P, shapes=SHAPES, **kw):
@@ -84,8 +84,8 @@ def spec(shape: str, shards, p: int = P, shapes=SHAPES, **kw):
         targets=["y0", "y1", "y2"],
         features=features(p),
         clock="t",
-        max_dclock=50.0,
-        halflife=60.0,
+        gap_cap=50.0,
+        half_life=60.0,
         weight="w",
         group="g",
         session="s",
@@ -137,17 +137,17 @@ def test_auto_splits_at_a_width_that_keeps_the_pool_busy(shape):
 
 
 EXTRAS = {
-    "label_delay": ("lags", dict(label_delay=7.0)),
-    "grid": ("lags", dict(halflife=[40.0, 80.0])),
+    "embargo": ("lags", dict(embargo=7.0)),
+    "grid": ("lags", dict(half_life=[40.0, 80.0])),
     # A window keeps no lags, so the reset under one is on the moments.
-    "reset_window": ("moments", dict(session_gap=10.0, window=40.0, window_every=4)),
+    "reset_window": ("moments", dict(session_gap=10.0, window_size=40.0, window_every=4)),
 }
 
 
 @pytest.mark.parametrize("extra", list(EXTRAS))
 def test_what_the_stream_does_between_rows_leaves_the_pairs_unsplit(extra):
-    """A label delay (rows released later, in the stream's order), a halflife
-    grid (one model per halflife, each holding its own rows) and a session
+    """A label delay (rows released later, in the stream's order), a half-life
+    grid (one model per half-life, each holding its own rows) and a session
     reset under a window: the unsplit numbers, to the bit (review 2026-09-26,
     E missing 1, F missing 6)."""
     df = frame()
@@ -234,7 +234,7 @@ def test_a_large_window_every_flushes_on_the_batch_alone():
     with a snapshot's flush now and then between (review 2026-09-26, E
     missing 7)."""
     df = frame()
-    kw = dict(window=40.0, window_every=300)
+    kw = dict(window_size=40.0, window_every=300)
     out, pairs = run("moments", None, df, **kw)
     got_out, got_pairs = run("moments", 4, df, 2, **kw)
     assert got_out.equals(out, null_equal=True)
@@ -263,7 +263,7 @@ def test_more_groups_than_threads_under_auto(tmp_path):
         "out = []\n"
         "for shards in [None, 'auto']:\n"
         "    spec = po.spec.marginal('m', targets=['y0', 'y1', 'y2'], features=features,\n"
-        "        clock='t', max_dclock=50.0, halflife=60.0, weight='w', group='g',\n"
+        "        clock='t', gap_cap=50.0, half_life=60.0, weight='w', group='g',\n"
         "        lags=[1, 3, 7], cross_lags=[1], shards=shards)\n"
         "    bank = po.ModelBank([spec])\n"
         "    frames = [bank.fit_predict(df[:500]), bank.fit_predict(df[500:])]\n"
@@ -349,7 +349,7 @@ def test_a_count_that_means_nothing_is_refused(shards, error, message):
 @pytest.mark.parametrize("shards", ['"auto"', "4"])
 def test_the_cli_reads_shards(tmp_path, online_cli, shards):
     """``shards`` in the CLI's TOML: the unsplit output, and -- since the
-    output struct is ``n_eff`` alone, which no shard computes -- the pairs of
+    output struct is ``weight_sum`` alone, which no shard computes -- the pairs of
     the state it saves, to the bit (review 2026-09-26, E1)."""
     df = frame(600)
     src, dst, cfg = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "bank.toml"
@@ -367,8 +367,8 @@ def test_the_cli_reads_shards(tmp_path, online_cli, shards):
                 f"features = [{features_toml}]",
                 'targets = ["y0", "y1", "y2"]',
                 'clock = "t"',
-                "max_dclock = 50.0",
-                "halflife = 60.0",
+                "gap_cap = 50.0",
+                "half_life = 60.0",
                 'weight = "w"',
                 'group = "g"',
                 "[specs.model]",
@@ -386,8 +386,8 @@ def test_the_cli_reads_shards(tmp_path, online_cli, shards):
                 targets=["y0", "y1", "y2"],
                 features=FEATURES,
                 clock="t",
-                max_dclock=50.0,
-                halflife=60.0,
+                gap_cap=50.0,
+                half_life=60.0,
                 weight="w",
                 group="g",
                 lags=[1, 2],

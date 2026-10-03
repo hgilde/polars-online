@@ -234,7 +234,7 @@ class OrderNotGuaranteedWarning(UserWarning):
     model whose update does not commute, which is every other one -- ``sgd``,
     ``pa``, ``ftrl``, ``quantile`` and a reweighting ``huber`` all differ
     materially with no decay at all, and ``lasso`` selects its penalty by an
-    out-of-sample error, so "no halflife" is not by itself a reason to expect
+    out-of-sample error, so "no half-life" is not by itself a reason to expect
     order not to matter. A spec option the check does not recognise counts as unsafe, so a
     key added later cannot quietly become exempt.
     """
@@ -257,7 +257,7 @@ class ReadinessWarning(UserWarning):
     - **The noise gate cannot be met**: the stream has all but settled and
       ``error_inflation`` is still above ``max_error_inflation``, so every
       prediction is withheld for good. The message says how far, and the way
-      out -- a longer halflife, or a looser ratio.
+      out -- a longer half-life, or a looser ratio.
 
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec
@@ -471,7 +471,7 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 #: Measured over 200 rows with no decay: ``ewridge`` 3.3e-16, ``rls`` 8.9e-16.
 #: Every other model moves materially even with no decay at all, because its
 #: update is not commutative -- ``sgd`` 5.9e-03, ``pa`` 5.1e-02, ``ftrl``
-#: 3.3e-02, ``quantile`` 2.8e-03 -- so "no halflife" is not on its own a
+#: 3.3e-02, ``quantile`` 2.8e-03 -- so "no half-life" is not on its own a
 #: reason to expect order not to matter. ``huber`` and ``lasso`` were listed
 #: here until 2026-09-29 (docs/PLAN.md task 139). ``huber`` read 6.7e-16 on
 #: rows no residual reached ``delta * sigma``, where every weight is 1; once
@@ -486,39 +486,39 @@ _ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls"})
 #: Spec keys that change the *path* a fit takes, with the only values that
 #: leave it order-free. Measured on the same rows: ``window`` 8.3e-03,
 #: ``gram_block_rows`` 6.3e-04 (which row sits in the pending block when a
-#: solve fires depends on arrival order), ``label_delay`` 4.3e-04, and
+#: solve fires depends on arrival order), ``embargo`` 4.3e-04, and
 #: ``drift_action="reset"`` **8.9e-01** -- the largest of all, and the one that
 #: read as harmless until the fixture actually made drift fire. The rest are
 #: denied as *unproven* rather than refuted: their code path never ran in the
 #: probe, and a green result from a path that did not execute is not evidence.
 _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "lam": (1.0,),
-    "halflife": (None,),
-    "window": (None,),
+    "half_life": (None,),
+    "window_size": (None,),
     "window_budget": (None,),
     "window_every": (None,),
-    "label_delay": (None,),
+    "embargo": (None,),
     "gram_block_rows": (None,),
     "drift_action": ("flag",),
     "session": (None,),
     "session_gap": (None,),
     "session_shrink": (None,),
-    "long_halflife": (None,),
-    "ridge_decay": (False,),
+    "long_half_life": (None,),
+    "ridge_scale": ("mean",),
     "conformal": (None,),
     "conformal_rate": (None,),
     "average_eta": (None,),
     "emit_averaged": (False,),
     "group_close": (None,),
     "weight": (None,),
-    # The default refuses a step back, loudly; `"reset_state"` starts over at
-    # one, which is order itself.
-    "on_clock_reset": ("error",),
+    # Unset, a step back is refused, loudly; given, a step back that large
+    # starts over, which is order itself.
+    "restart_after_step_back": (None,),
     "target_gaps": ("own_rows",),
     "coef_every": (0,),
     "emit_autocorr": (False,),
     "emit_metrics": (False,),
-    "emit_resid_z": (False,),
+    "emit_zscore": (False,),
     "emit_selected": (False,),
     "emit_sigma": (False,),
     "resid_autocorr_lag": (None,),
@@ -529,7 +529,7 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
 #: reads, how it solves, and (for ``emit_drift``, measured at 3.3e-16 with
 #: ``drift_action`` left at ``"flag"``) what it reports. ``group`` is here
 #: because each group accumulates independently, and ``standardize`` and
-#: ``select_halflife`` because both measured at rounding.
+#: ``select_half_life`` because both measured at rounding.
 _ORDER_FREE_ANY = frozenset(
     {
         "name",
@@ -537,7 +537,7 @@ _ORDER_FREE_ANY = frozenset(
         "targets",
         "features",
         "feature_sets",
-        "min_periods",
+        "min_weight",
         # The readiness gates withhold output and change no number a fit
         # produces, and the per-row field is read from the state; order-free
         # where the fit is (docs/WARMUP-AND-CONVERGENCE.md).
@@ -549,11 +549,8 @@ _ORDER_FREE_ANY = frozenset(
         "emit_clocks",
         "group",
         "clock",
-        "max_dclock",
-        # Taken only with `on_clock_reset = "reset_state"`, which is order
-        # itself and is denied above; it decides nothing more here.
-        "min_backwards_jump",
-        "add_intercept",
+        "gap_cap",
+        "fit_intercept",
         "standardize",
         "ridge",
         "coef_prior",
@@ -1022,7 +1019,7 @@ class LazyFrameOnlineNamespace:
         """The plan with each spec's struct column taken apart into columns.
 
         ``lf.unnest(names)`` with the ``coef`` lists taken apart too: every scalar
-        field becomes a column of its own name (``pred_y``, ``n_eff@h500``), and each
+        field becomes a column of its own name (``pred_y``, ``weight_sum@h500``), and each
         ``coef`` list becomes one column per coefficient, named
         ``coef_{target}_{term}{combo}{instance}`` (``coef_y_intercept``,
         ``coef_y_x1__r0.5@h500``) as :func:`polars_online.spec.coef_fields` lists
@@ -1058,9 +1055,8 @@ class LazyFrameOnlineNamespace:
         windows: Sequence[Window],
         *,
         clock: str | None = None,
-        max_dclock: float | Duration | None = None,
-        on_clock_reset: str | None = None,
-        min_backwards_jump: float | Duration | None = None,
+        gap_cap: float | Duration | None = None,
+        restart_after_step_back: float | Duration | None = None,
         session: str | None = None,
         session_gap: float | Duration | None = None,
         group: str | None = None,
@@ -1077,8 +1073,8 @@ class LazyFrameOnlineNamespace:
 
             fitted = (
                 trades.lazy()
-                .online.with_windows([po.window.ewm("mid", halflife="5s", horizon="1m")],
-                                     clock="ts", max_dclock="5m", group="symbol")
+                .online.with_windows([po.window.ewm("mid", half_life="5s", horizon="1m")],
+                                     clock="ts", gap_cap="5m", group="symbol")
                 .collect()
             )
 
@@ -1091,9 +1087,8 @@ class LazyFrameOnlineNamespace:
             self._lf,
             windows,
             clock=clock,
-            max_dclock=max_dclock,
-            on_clock_reset=on_clock_reset,
-            min_backwards_jump=min_backwards_jump,
+            gap_cap=gap_cap,
+            restart_after_step_back=restart_after_step_back,
             session=session,
             session_gap=session_gap,
             group=group,
@@ -1176,9 +1171,8 @@ class DataFrameOnlineNamespace:
         windows: Sequence[Window],
         *,
         clock: str | None = None,
-        max_dclock: float | Duration | None = None,
-        on_clock_reset: str | None = None,
-        min_backwards_jump: float | Duration | None = None,
+        gap_cap: float | Duration | None = None,
+        restart_after_step_back: float | Duration | None = None,
         session: str | None = None,
         session_gap: float | Duration | None = None,
         group: str | None = None,
@@ -1197,9 +1191,8 @@ class DataFrameOnlineNamespace:
             self._df,
             windows,
             clock=clock,
-            max_dclock=max_dclock,
-            on_clock_reset=on_clock_reset,
-            min_backwards_jump=min_backwards_jump,
+            gap_cap=gap_cap,
+            restart_after_step_back=restart_after_step_back,
             session=session,
             session_gap=session_gap,
             group=group,

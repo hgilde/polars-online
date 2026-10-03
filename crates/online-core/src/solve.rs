@@ -216,12 +216,12 @@ pub fn quad_forms_logdet(a: &[f64], d: &[f64], k: usize, m: usize) -> Option<(Ve
     Some((f.quad_forms(d, k, m), f.log_det(), f.attempts))
 }
 
-/// `beta · [1, x]` when `add_intercept`, else `beta · x`, summed left to
+/// `beta · [1, x]` when `fit_intercept`, else `beta · x`, summed left to
 /// right from zero -- the order every model's `step` uses on its augmented
 /// row buffer, so a `predict` built on this is bit-for-bit the step's own
 /// prediction.
-pub(crate) fn dot_aug(beta: &[f64], x: &[f64], add_intercept: bool) -> f64 {
-    let (mut acc, slopes) = if add_intercept {
+pub(crate) fn dot_aug(beta: &[f64], x: &[f64], fit_intercept: bool) -> f64 {
+    let (mut acc, slopes) = if fit_intercept {
         (beta[0], &beta[1..])
     } else {
         (0.0, beta)

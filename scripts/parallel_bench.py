@@ -9,10 +9,10 @@ fixed at their first use:
    and without `standardize`) over 2.56M rows in 64 groups, through
    `lf.online.fit_predict(chunk_rows=200_000, save_state=...)` into
    `sink_parquet`, at `POLARS_ONLINE_MAX_THREADS` 1 and 14;
-2. eight single-group specs, k=20 over 300k rows, `halflife=1000*j`,
-   `max_dclock=10`: one bank, against one bank per spec in turn;
+2. eight single-group specs, k=20 over 300k rows, `half_life=1000*j`,
+   `gap_cap=10`: one bank, against one bank per spec in turn;
 3. the two knobs: 12M rows over 64 groups, one spec of four features and two
-   halflives, 200k chunks, at (`POLARS_MAX_THREADS`,
+   half-lives, 200k chunks, at (`POLARS_MAX_THREADS`,
    `POLARS_ONLINE_MAX_THREADS`) of (14, 14) and (4, 14): wall time, and the
    peak memory footprint `/usr/bin/time -l` reports (macOS).
 
@@ -37,8 +37,8 @@ from itertools import product
 factors = {{"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2"]}}
 def spec(name, features, standardize):
     return po.spec.ewridge(f"{{name}}-std{{standardize:d}}", targets=["y"], features=features,
-                           clock="t", max_dclock=300.0, group="stock_id", session="session",
-                           session_gap=60.0, halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],
+                           clock="t", gap_cap=300.0, group="stock_id", session="session",
+                           session_gap=60.0, half_life=[100.0, 1000.0], ridge=[1e-3, 0.1],
                            standardize=standardize)
 specs = [spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
 t0 = time.perf_counter()
@@ -57,7 +57,7 @@ for i in range(k):
 d["y"] = rng.standard_normal(rows)
 df = pl.DataFrame(d)
 specs = [po.spec.ewridge(f"m{j}", targets=["y"], features=[f"x{i}" for i in range(k)],
-                         clock="t", max_dclock=10.0, halflife=1000.0 * j) for j in range(1, 9)]
+                         clock="t", gap_cap=10.0, half_life=1000.0 * j) for j in range(1, 9)]
 po.ModelBank(specs).fit_predict(df)   # the pool is built, and the pages are warm
 best_one, best_each = 1e9, 1e9
 for _ in range(3):
@@ -73,7 +73,7 @@ print(best_one, best_each)
 KNOBS = """
 import time, polars as pl, polars_online as po
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2", "x3"], clock="t",
-                       max_dclock=10.0, halflife=[1000.0, 5000.0], group="stock_id")
+                       gap_cap=10.0, half_life=[1000.0, 5000.0], group="stock_id")
 t0 = time.perf_counter()
 pl.scan_parquet("{src}").online.fit_predict([spec], chunk_rows=200_000).sink_parquet("{dst}")
 print(time.perf_counter() - t0)
@@ -137,7 +137,7 @@ def main() -> None:
     one, each = (float(v) for v in timed(EIGHT, {})[0].split())
     print(f"one bank {one * 1000:.0f} ms, one at a time {each * 1000:.0f} ms")
 
-    print("## two knobs: 12M rows, 64 groups, k=4, two halflives, 200k chunks (best of 2)")
+    print("## two knobs: 12M rows, 64 groups, k=4, two half_lives, 200k chunks (best of 2)")
     for polars_threads, bank_threads in ((14, 14), (4, 14)):
         env = {
             "POLARS_MAX_THREADS": str(polars_threads),

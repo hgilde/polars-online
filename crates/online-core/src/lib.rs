@@ -7,20 +7,20 @@
 //! ```
 //! use online_core::{Decay, EwRidge, EwRidgeCfg, OnlineModel};
 //!
-//! // y = 1 + 2x, fitted by exponentially weighted ridge with a 50-row halflife.
+//! // y = 1 + 2x, fitted by exponentially weighted ridge with a 50-row half_life.
 //! let mut model = EwRidge::new(EwRidgeCfg {
 //!     n_features: 1,
 //!     n_targets: 1,
-//!     add_intercept: true,
+//!     fit_intercept: true,
 //!     decay: Decay::Halflife(50.0),
 //!     ridge: vec![1e-8],
 //!     feature_sets: vec![],
 //!     standardize: false,
-//!     ridge_decay: false,
+//!     ridge_scale: false,
 //!     coef_prior: None,
 //!     session_shrink: None,
-//!     long_halflife: None,
-//!     min_periods: 5.0,
+//!     long_half_life: None,
+//!     min_weight: 5.0,
 //!     solve_every: 0.0,
 //!     solve_share: None,
 //!     max_rows_between_solves: 1,
@@ -37,7 +37,7 @@
 //!     let step = model.step(&[x], &[Some(1.0 + 2.0 * x)], 1.0, 1.0);
 //!     // `pred` comes from the state *before* this row's target is learned
 //!     // (out of sample by construction), and is NaN until `n_eff` -- the
-//!     // accumulated weight before the row -- reaches `min_periods`.
+//!     // accumulated weight before the row -- reaches `min_weight`.
 //!     assert_eq!(step.pred[0].is_nan(), step.n_eff < 5.0);
 //!     pred = step.pred[0];
 //! }
@@ -169,7 +169,7 @@ pub use window::{
 ///   the diagonal of (docs/PERFORMANCE.md §13). Schema-2 states of both are
 ///   converted on load by taking that diagonal, which is the same numbers;
 ///   every other model is unchanged.
-/// - 4: the spec every bank file carries gained `label_delay`
+/// - 4: the spec every bank file carries gained `embargo`
 ///   (docs/ENHANCEMENTS.md E47), and a stream carries the rows it has
 ///   accepted but not yet learned from. Both are additive with defaults, so
 ///   a schema-3 file loads, continues to the bit and re-saves in the new
@@ -197,7 +197,7 @@ pub use window::{
 ///
 ///   The code review of 2026-09-12 added one field and rides on 6 without a
 ///   bump, as task 38's rode on 3: a stream's record of the prediction each
-///   row waiting under `label_delay` was scored with (C21), skipped when
+///   row waiting under `embargo` was scored with (C21), skipped when
 ///   empty, so no file without a delay moves. An older build reading a file
 ///   that has it ignores the record and folds the replay's prediction,
 ///   which is what it always did.
@@ -226,9 +226,9 @@ pub use window::{
 ///   loader for 8: see [`MIN_SCHEMA_VERSION`].
 /// - 10: `robust` keeps each target's observation weight beside its Gram's
 ///   (the second review of 2026-09-15, F1): the rows the target was present
-///   on, which the per-target `min_periods` gate and the quantile fit's
+///   on, which the per-target `min_weight` gate and the quantile fit's
 ///   warm-up read, where both read the Gram's weight -- for the quantile the
-///   band's, which a halflife caps. No loader for 9: see
+///   band's, which a half-life caps. No loader for 9: see
 ///   [`MIN_SCHEMA_VERSION`].
 ///
 ///   The ring a stream cuts a windowed spread with (the code review's S1)
@@ -246,7 +246,7 @@ pub use window::{
 /// - 12: the clock state drops the three fields the two 0.8.x disorder rules
 ///   kept -- the inferred session's start and the typical-step estimate with
 ///   its weight -- now that one rule, `min_backwards_jump` against
-///   `max_dclock`, needs no state (2026-09-20). A field removed from a
+///   `gap_cap`, needs no state (2026-09-20). A field removed from a
 ///   positional layout is a layout change; no loader for 11.
 /// - 13: the readiness statistics (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21).
 ///   `ew_ridge` keeps what its last solve left for them -- the effective
@@ -264,7 +264,7 @@ pub use window::{
 ///   streams, which resolved 2^-52 of the time since it; the origin is gone
 ///   with it. No loader for 13.
 /// - 15: each stream keeps, per model instance, the clock its rows held under
-///   `label_delay` have covered (`StreamState::pending_clock` in
+///   `embargo` have covered (`StreamState::pending_clock` in
 ///   online-polars), where 14 rebuilt it at every chunk as a fresh sum. The
 ///   two round differently, so `settled_frac` depended on where a chunk
 ///   ended, against hard rule 3 (a property test found it, 2026-09-24). A
@@ -295,7 +295,7 @@ pub use window::{
 ///   schema-14, 15 or 16 file loads: the offsets are turned into means
 ///   once, at the precision they had, in the live accumulators and in
 ///   every window snapshot.
-/// - 18: a stream under `label_delay` with a conformal interval keeps, beside
+/// - 18: a stream under `embargo` with a conformal interval keeps, beside
 ///   each held row's score-time prediction, the radius every slot's interval
 ///   was shown with, and the release scores the row against it (docs/PLAN.md
 ///   task 112, C21's other half). The file's types do not change, what a
@@ -313,9 +313,9 @@ pub use window::{
 /// - 20: `ewridge`, `lasso`, `huber` and `quantile` keep the weight learned
 ///   since their last solve, and their configuration the share of the fit's
 ///   weight that makes a solve due, the default cadence under a finite
-///   halflife (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
+///   half-life (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
 ///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
-///   `min_periods` reads, and `ftrl` each target's penalty scale, its weight
+///   `min_weight` reads, and `ftrl` each target's penalty scale, its weight
 ///   on the clock of the rows that teach it and the decay it is owed (task
 ///   115 (d)), a 19 file loading with the scale at 1; `corrchange` keeps a `sequential`
 ///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
@@ -341,12 +341,15 @@ pub use window::{
 ///   `MIN_BANK_SCHEMA_VERSION`); of the models' own states only an `ew_cov`
 ///   with `mahal_quantiles` changed, and it refuses one older than 21 by
 ///   name. Every other model's state from 14 on still loads.
-pub const SCHEMA_VERSION: u32 = 21;
+/// - 22 (2026-10-02, task 144): the public names changed, and a bank file
+///   stores its specs under them, so the bank refuses one older than 22;
+///   the models' own states are unchanged, and still load from 14.
+pub const SCHEMA_VERSION: u32 = 22;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
 /// reaches `ln 2 / 50` of the weight the fit holds, which is the share that
-/// `halflife / 50` of clock brings in steady state.
+/// `half_life / 50` of clock brings in steady state.
 pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 
 /// Oldest state layout this build still loads.

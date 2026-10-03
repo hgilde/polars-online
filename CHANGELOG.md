@@ -9,6 +9,42 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **The public names follow Polars, and say what they do** (task 144; the
+  user, 2026-10-02: "Add all", and no backward compatibility for outputs).
+  No aliases: an old parameter is refused naming the new one, from a spec
+  builder, a spec dict, `with_windows` and a TOML file; an old output name
+  is simply gone. A bank file saved before this (schema 21) is refused, as
+  the specs it stores carry the old names.
+  - Parameters: `halflife` is `half_life` everywhere it is spelled
+    (`long_half_life`, `coef_half_life`, `revert_half_life`,
+    `select_half_life`, `level_half_life`, `trend_half_life`); `label_delay`
+    is `embargo`; `max_dclock` is `gap_cap`; a model's `window` is
+    `window_size`, and so is `po.eval.rolling_metrics`'s; `min_periods` is
+    `min_weight`; `emit_resid_z` is `emit_zscore`; `sgd`'s `scale_features`
+    is `standardize`; `add_intercept` is `fit_intercept`; `lasso`'s
+    `max_cd_iters` and `cd_tol` are `max_iter` and `tol`; `corrchange`'s
+    `reset` is `reset_on_flag`; `ridge_decay` (a bool) is `ridge_scale =
+    "mean"` (the default) or `"sum"`.
+  - **One clock rule in place of two**: `on_clock_reset` and
+    `min_backwards_jump` are `restart_after_step_back`. Unset, every step
+    back is refused (what `"error"` did); given a clock amount, a step back
+    at least that large starts the model over and a smaller one is still
+    refused as a late row (what `"reset_state"` with `min_backwards_jump`
+    did). In the specs and in `with_windows`.
+  - Outputs: `n_eff` is `weight_sum` in every field (`weight_sum@h10`),
+    `closed_groups` (`pair_weight_sum`), `coef()`, `last_row()`,
+    `marginal()`, `gram()` and `po.eval`'s sums -- `summary()` already
+    called it that; `withheld_reason` says `below_min_weight`; `coef()`'s
+    `lambda` column is `penalty`; `resid_z_<t>` is `zscore_<t>` (a target
+    named `z_y` collided with `resid_z_y`); `lam_selected_<t>` is
+    `penalty_selected_<t>`; `pcorr_<a>_<b>` is `partial_corr_<a>_<b>`;
+    `absresid_q<p>` is `abs_resid_q<p>`; PCA loadings `pc<j>_<feature>`
+    are `pc<j>_loading_<feature>` (a feature named `var`, `share` or `score`
+    collided with the component's fields); `bocpd`'s `logscore` is
+    `loglik`; `hmm`'s `p_<k>` and `p1_<k>` are `filtered_<k>` and
+    `predicted_<k>`; `micro`'s field `micro` is `micro_id`.
+  - The spec builders refuse two outputs that would render to one field
+    name, naming the inputs that collided.
 - **`session_shrink` is the long run's share of the data, as documented**
   (task 145). At a session boundary `ewridge` mixed its fit with the slow
   twin by accumulated weight, and the twin's weight is many times the fast

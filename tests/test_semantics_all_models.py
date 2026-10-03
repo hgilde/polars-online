@@ -23,7 +23,7 @@ import polars_online as po
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"ridge": 1.0}),
-    ("kalman", {"coef_halflife": 100.0}),
+    ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
@@ -50,7 +50,7 @@ SHARED_STATE_MODELS = {"rls"}
 
 
 def build(model, extra, **kw):
-    opts = dict(targets=["y0"], features=["x0", "x1"], halflife=200.0, min_periods=2.0)
+    opts = dict(targets=["y0"], features=["x0", "x1"], half_life=200.0, min_weight=2.0)
     opts.update(extra)
     opts.update(kw)
     return getattr(po.spec, model)("m", **opts)
@@ -87,10 +87,10 @@ def test_feature_null_skips_the_row_entirely(model, extra):
     x[10] = None
     df = df.with_columns(x0=pl.Series(x, dtype=pl.Float64))
     out = run(model, extra, df)
-    assert slot(out, "n_eff", model)[10] is None
+    assert slot(out, "weight_sum", model)[10] is None
     assert slot(out, "pred_", model)[10] is None
     # ...and the clock still advanced: the next row is not treated as first
-    assert slot(out, "n_eff", model)[11] is not None
+    assert slot(out, "weight_sum", model)[11] is not None
 
 
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
@@ -112,7 +112,7 @@ class TestNullPolicy:
         w[15] = None
         df = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
         out = run(model, extra, df, weight="w")
-        assert slot(out, "n_eff", model)[15] is None
+        assert slot(out, "weight_sum", model)[15] is None
 
     def test_negative_weight_is_rejected(self, model, extra):
         df = frame(binary=model == "ftrl")
@@ -127,20 +127,20 @@ class TestNullPolicy:
 class TestWarmup:
     def test_outputs_are_null_until_min_periods(self, model, extra):
         df = frame(binary=model == "ftrl")
-        out = run(model, extra, df, min_periods=5.0)
+        out = run(model, extra, df, min_weight=5.0)
         preds = slot(out, "pred_", model)
-        neff = slot(out, "n_eff", model)
+        neff = slot(out, "weight_sum", model)
         first = next((i for i, p in enumerate(preds) if p is not None), None)
         assert first is not None, f"{model}: never emitted a prediction"
-        assert neff[first] >= 5.0, f"{model}: predicted at n_eff {neff[first]} < 5"
+        assert neff[first] >= 5.0, f"{model}: predicted at weight_sum {neff[first]} < 5"
         assert all(p is None for p in preds[:first])
 
     def test_a_target_counts_toward_min_periods_only_on_rows_that_carry_it(self, model, extra):
-        """Hard rule 8 (docs/PLAN.md task 115 (d)): `n_eff` is the weight of
-        every row, and a target's `min_periods` is checked against the
+        """Hard rule 8 (docs/PLAN.md task 115 (d)): `weight_sum` is the weight of
+        every row, and a target's `min_weight` is checked against the
         weight of the rows that carried it. Ten rows with a null target,
-        then the target: under a halflife of 200 its own weight is 1.997
-        before row 12 and 2.990 before row 13, so at `min_periods = 2.5`
+        then the target: under a half-life of 200 its own weight is 1.997
+        before row 12 and 2.990 before row 13, so at `min_weight = 2.5`
         every model first predicts on row 13. `pa`, `sgd` and `ftrl` did
         from row 3, on coefficients no target had moved, and `rls` from
         row 11, after one. `ewridge`'s noise gate is off here: three rows
@@ -151,12 +151,12 @@ class TestWarmup:
         y[:10] = [None] * 10
         df = df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
         gate = {"max_error_inflation": float("inf")} if model == "ewridge" else {}
-        out = run(model, extra, df, min_periods=2.5, **gate)
+        out = run(model, extra, df, min_weight=2.5, **gate)
         preds = slot(out, "pred_", model)
-        neff = slot(out, "n_eff", model)
+        neff = slot(out, "weight_sum", model)
         first = next((i for i, p in enumerate(preds) if p is not None), None)
         assert first == 13, f"{model}: first prediction on row {first}"
-        assert neff[first] > 12.0, "n_eff counts every row, the null-target ones too"
+        assert neff[first] > 12.0, "weight_sum counts every row, the null-target ones too"
 
     def test_coef_is_null_or_complete_never_empty(self, model, extra):
         """A model that has not solved yet has nothing to report, and every
@@ -173,7 +173,7 @@ class TestWarmup:
             if model in ("ewridge", "lasso", "huber", "quantile")
             else {}
         )
-        out = run(model, extra, df, min_periods=5.0, coef_every=1, **delay)
+        out = run(model, extra, df, min_weight=5.0, coef_every=1, **delay)
         fields = [f.name for f in out.schema["m"].fields if f.name.startswith("coef")]
         assert fields, f"{model}: no coef field"
         for name in fields:
@@ -188,8 +188,8 @@ class TestWarmup:
 
     def test_n_eff_is_reported_before_the_update(self, model, extra):
         df = frame(binary=model == "ftrl")
-        out = run(model, extra, df, min_periods=0.0)
-        assert slot(out, "n_eff", model)[0] == 0.0
+        out = run(model, extra, df, min_weight=0.0)
+        assert slot(out, "weight_sum", model)[0] == 0.0
 
 
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
@@ -199,23 +199,19 @@ class TestClockSemantics:
         rng = np.random.default_rng(1)
         y = (rng.random(n) < 0.5).astype(float) if model == "ftrl" else np.arange(float(n))
         df = pl.DataFrame({"t": t, "x0": np.arange(float(n)), "x1": np.ones(n), "y0": y})
-        # A step back under `"reset_state"` starts over whatever its size
-        # here: no step back is a late row.
-        if kw.get("on_clock_reset") == "reset_state":
-            kw.setdefault("min_backwards_jump", 0.0)
         return run(
             model,
             extra,
             df,
             clock="t",
-            max_dclock=4.0,
-            min_periods=0.0,
+            gap_cap=4.0,
+            min_weight=0.0,
             **kw,
         )
 
     def test_gap_is_capped_at_max_dclock(self, model, extra):
         out = self._clocked(model, extra, [0.0, 1.0, 1e9, 1e9 + 1])
-        neff = slot(out, "n_eff", model)
+        neff = slot(out, "weight_sum", model)
         # after two rows W = 0.5**(1/200) + 1; the huge gap decays it by
         # 0.5**(4/200), not to nothing
         w2 = neff[2]
@@ -226,8 +222,9 @@ class TestClockSemantics:
             self._clocked(model, extra, [0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state_restarts_the_stream(self, model, extra):
-        out = self._clocked(model, extra, [0.0, 10.0, 5.0, 6.0], on_clock_reset="reset_state")
-        assert slot(out, "n_eff", model)[2] == 0.0
+        # A step back of any size starts over here: none is a late row.
+        out = self._clocked(model, extra, [0.0, 10.0, 5.0, 6.0], restart_after_step_back=0.0)
+        assert slot(out, "weight_sum", model)[2] == 0.0
 
     def test_session_reset(self, model, extra):
         n = 4
@@ -247,12 +244,12 @@ class TestClockSemantics:
             extra,
             df,
             clock="t",
-            max_dclock=4.0,
+            gap_cap=4.0,
             session="session",
             session_gap="reset",
-            min_periods=0.0,
+            min_weight=0.0,
         )
-        assert slot(out, "n_eff", model)[2] == 0.0
+        assert slot(out, "weight_sum", model)[2] == 0.0
 
 
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)

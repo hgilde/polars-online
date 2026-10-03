@@ -2,7 +2,7 @@
 //! (QR) form.
 //!
 //! The model is decayed ridge least squares solved exactly every row -- the
-//! `ridge_decay` mode of [`crate::EwRidge`], which the agreement test exploits:
+//! `ridge_scale` mode of [`crate::EwRidge`], which the agreement test exploits:
 //!
 //! ```text
 //! A   <- lam A   + w z z^T          A_0 = ridge I
@@ -27,7 +27,7 @@
 //! recursion is unfit for unbounded streams (docs/IMPROVEMENTS.md C5): the
 //! one-ulp asymmetry between `g_i (Pz)_j` and `g_j (Pz)_i` is never touched
 //! by the rank-1 downdate and is multiplied by `1/lam` every row, so `P` is
-//! garbage after ~60 halflives on any data; and a row whose information
+//! garbage after ~60 half-lives on any data; and a row whose information
 //! exceeds the prior's by `1/ulp` in some direction (a feature ~1e8 times its
 //! usual scale) cancels that direction of `P` to zero or to rounding noise,
 //! and a zero never regrows because the only growth `P` has is
@@ -52,18 +52,18 @@ use crate::solve::dot_aug;
 pub struct RlsCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     /// Prior strength: `P0 = I / ridge`.
     pub ridge: f64,
     /// Initial coefficients per target (length `k_total`), default zeros.
     pub coef_prior: Option<Vec<Vec<f64>>>,
-    pub min_periods: f64,
+    pub min_weight: f64,
 }
 
 impl RlsCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -100,7 +100,7 @@ pub struct Rls {
     beta: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows the fit learned from, decayed:
-    /// what its `min_periods` is checked against (hard rule 8, docs/PLAN.md
+    /// what its `min_weight` is checked against (hard rule 8, docs/PLAN.md
     /// task 115 (d)). The fit learns from a row only when every target is
     /// present, so the entries move together. `w_sum` stood in for it, so
     /// rows with a null target counted toward a fit they never reached.
@@ -153,7 +153,7 @@ impl Rls {
     }
 
     /// Per target, the weight of the rows the fit learned from: what its
-    /// `min_periods` is checked against.
+    /// `min_weight` is checked against.
     pub fn target_weights(&self) -> &[f64] {
         &self.w_target
     }
@@ -170,7 +170,7 @@ impl Rls {
 
     /// `beta_j = R^-1 u_j` by back-substitution. A zero pivot is a direction
     /// no row has ever excited after the prior has decayed away entirely
-    /// (`sqrt(ridge) lam_acc^(1/2)` underflows after ~2000 halflives without
+    /// (`sqrt(ridge) lam_acc^(1/2)` underflows after ~2000 half-lives without
     /// data): the coefficient there is set to zero rather than to `0/0`.
     fn solve(&mut self) {
         let k = self.cfg.k_total();
@@ -202,7 +202,7 @@ impl OnlineModel for Rls {
         let k = self.cfg.k_total();
         let lam = self.cfg.decay.factor(d_clock);
 
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -289,8 +289,8 @@ impl OnlineModel for Rls {
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if self.seen {
             for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
-                if *w >= self.cfg.min_periods {
-                    *p = dot_aug(beta, x, self.cfg.add_intercept);
+                if *w >= self.cfg.min_weight {
+                    *p = dot_aug(beta, x, self.cfg.fit_intercept);
                 }
             }
         }
@@ -366,7 +366,7 @@ mod tests {
     }
     use crate::{EwRidge, EwRidgeCfg};
 
-    /// A target's `min_periods` counts only the rows the fit learned from,
+    /// A target's `min_weight` counts only the rows the fit learned from,
     /// and `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115
     /// (d)): with ten rows of no target it predicted from the one row after.
     /// The fit learns only when every target is present, so the second
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn min_periods_counts_only_the_rows_the_fit_learned_from() {
         let mut c = rls_cfg(2, 2, f64::INFINITY, 1.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Rls::new(c).unwrap();
         let mut s = 7u64;
         for i in 0..17usize {
@@ -420,11 +420,11 @@ mod tests {
         RlsCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(hl),
             ridge,
             coef_prior: None,
-            min_periods: 0.0,
+            min_weight: 0.0,
         }
     }
 
@@ -500,16 +500,16 @@ mod tests {
         let mut ew = EwRidge::new(EwRidgeCfg {
             n_features: k,
             n_targets: 2,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(hl),
             ridge: vec![ridge],
             feature_sets: vec![],
             standardize: false,
-            ridge_decay: true,
+            ridge_scale: true,
             session_shrink: None,
-            long_halflife: None,
+            long_half_life: None,
             coef_prior: None,
-            min_periods: 0.0,
+            min_weight: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -552,16 +552,16 @@ mod tests {
         let cfg = EwRidgeCfg {
             n_features: k,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(hl),
             ridge: vec![ridge],
             feature_sets: vec![],
             standardize: false,
-            ridge_decay: true,
+            ridge_scale: true,
             session_shrink: None,
-            long_halflife: None,
+            long_half_life: None,
             coef_prior: None,
-            min_periods: 0.0,
+            min_weight: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -606,7 +606,7 @@ mod tests {
     }
 
     /// `agrees_with_ewridge_solved_every_row` with a `coef_prior` and
-    /// `min_periods = 0` on both sides, compared from the first row. The
+    /// `min_weight = 0` on both sides, compared from the first row. The
     /// review (2026-09-12, S10) read EW-ridge as predicting `x · prior` on
     /// row 0 while RLS waits for its first learned row; EW-ridge waits too
     /// -- it has no fit before its first solve, and gates each target on
@@ -622,16 +622,16 @@ mod tests {
         let mut ew = EwRidge::new(EwRidgeCfg {
             n_features: k,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(hl),
             ridge: vec![ridge],
             feature_sets: vec![],
             standardize: false,
-            ridge_decay: true,
+            ridge_scale: true,
             session_shrink: None,
-            long_halflife: None,
+            long_half_life: None,
             coef_prior: Some(prior),
-            min_periods: 0.0,
+            min_weight: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,

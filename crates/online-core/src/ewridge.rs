@@ -29,11 +29,11 @@
 //! - plain:        `(S + ridge D) beta = r_j`, D = I minus the intercept slot;
 //! - standardized: the same system scaled to correlation form, solved,
 //!   unscaled; ~zero-variance features dropped;
-//! - ridge_decay:  `(W_S S + prior_scale * ridge I) beta = W_S r_j` — a
+//! - ridge_scale:  `(W_S S + prior_scale * ridge I) beta = W_S r_j` — a
 //!   decaying prior on the sum scale, penalizing the intercept: exactly
 //!   classic RLS regularization (used by the RLS agreement test, task 9).
 //!
-//! With an intercept, and without `ridge_decay`, the unpenalized intercept is
+//! With an intercept, and without `ridge_scale`, the unpenalized intercept is
 //! eliminated and the slopes are solved on the centred system
 //!
 //! ```text
@@ -45,7 +45,7 @@
 //! normal equations, or a right-hand side formed as `E[z y] − m ȳ`, lose
 //! `level²·ε`, which at `1e8` is the whole fit. Under `pairwise` it is the
 //! same formula on the Gram of every row. Through the origin, and under
-//! `ridge_decay`, there is no intercept to eliminate and the raw system is
+//! `ridge_scale`, there is no intercept to eliminate and the raw system is
 //! solved: the Gram's `E[z zᵀ]` against the target's `E[z·y_j]`.
 //!
 //! Predictions use the last solved coefficients (out-of-sample by construction:
@@ -65,7 +65,7 @@ use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 pub struct EwRidgeCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     /// Ridge grid, expanded at solve time; length >= 1.
     pub ridge: Vec<f64>,
@@ -75,19 +75,19 @@ pub struct EwRidgeCfg {
     pub standardize: bool,
     /// Decaying sum-scale prior (classic RLS regularization). Incompatible with
     /// `standardize` and with grids; the intercept is penalized.
-    pub ridge_decay: bool,
+    pub ridge_scale: bool,
     /// Shrink toward these coefficients instead of toward zero
     /// (ENHANCEMENTS E15): the solve becomes `(S + ridge·D)β = r + ridge·D·β₀`.
     /// One vector per target, each `k_total` long, in the features' original
-    /// units. The intercept slot is read only under `ridge_decay`, the one
+    /// units. The intercept slot is read only under `ridge_scale`, the one
     /// solve that penalizes the intercept; elsewhere it is unpenalized and
     /// the slot is ignored.
     ///
-    /// **Whether the prior fades depends on `ridge_decay`, and the difference
+    /// **Whether the prior fades depends on `ridge_scale`, and the difference
     /// matters.** `S` here is a weighted *mean*, not a sum, so it does not grow
     /// with the sample: a plain `ridge` is a fixed per-observation penalty and
     /// its pull toward `coef_prior` is **permanent** — "always stay near this
-    /// belief". With `ridge_decay` the prior sits on the sum scale and its
+    /// belief". With `ridge_scale` the prior sits on the sum scale and its
     /// weight decays with the data, which is the usual warm start: "begin at
     /// yesterday's fit and let evidence take over".
     #[serde(default)]
@@ -96,7 +96,7 @@ pub struct EwRidgeCfg {
     /// all-or-nothing choice between `session_gap` and a full reset
     /// (ENHANCEMENTS E6, PLAN §12 open question 1).
     ///
-    /// A second accumulator runs alongside the main one with `long_halflife`,
+    /// A second accumulator runs alongside the main one with `long_half_life`,
     /// representing the long-run relationship. On a session boundary the main
     /// accumulators' moments become a mixture of the two data sets, `1 − f` of
     /// today's and `f` of the long run's, with `f = session_shrink`:
@@ -107,7 +107,7 @@ pub struct EwRidgeCfg {
     /// ```
     ///
     /// for the means and the centred moments, the cross-moments with the
-    /// targets alike. The weight, the Kish sums and the `ridge_decay` prior
+    /// targets alike. The weight, the Kish sums and the `ridge_scale` prior
     /// scale stay today's, so `n_eff`, the warm-up gates and the solve
     /// schedule do not move: `0` keeps today's fit, `1` takes the long run's
     /// moments at today's weight, and `f` between fits on that share of the
@@ -115,11 +115,11 @@ pub struct EwRidgeCfg {
     /// *what the model believes*, not how confident it is.
     #[serde(default)]
     pub session_shrink: Option<f64>,
-    /// Halflife of the slow twin. Required by `session_shrink`.
+    /// Half-life of the slow twin. Required by `session_shrink`.
     #[serde(default)]
-    pub long_halflife: Option<f64>,
+    pub long_half_life: Option<f64>,
     /// Outputs are null until `n_eff` (before the row's update) reaches this.
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// Solve cadence in clock units; <= 0 solves every row.
     pub solve_every: f64,
     /// Row cap between solves; 1 solves every row.
@@ -127,8 +127,8 @@ pub struct EwRidgeCfg {
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
     /// holds, in place of `solve_every`'s clock. In steady state that is the
-    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
-    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// clock's own `half_life / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a half-life far longer than the stream -- it
     /// keeps the fit that close to its data, where the clock solved once and
     /// never again. `None` keeps the clock.
     #[serde(default)]
@@ -139,7 +139,7 @@ pub struct EwRidgeCfg {
     /// buffered and the matrix is brought up to date once per `B` rows by a
     /// `k×B` times `B×k` product, `6.6×` faster than the rank-one updates at
     /// `k = 1,000` with `B = 256`; the four scalars still run per row, so
-    /// `n_eff` and `min_periods` are unchanged to the bit.
+    /// `n_eff` and `min_weight` are unchanged to the bit.
     ///
     /// The matrix is also brought up to date before every solve, so the
     /// effective block is `min(B, rows between solves)` and the option pays
@@ -163,9 +163,9 @@ pub struct EwRidgeCfg {
     pub target_gaps: TargetGaps,
     /// Clock units of history the fit is computed from, with a *hard* cutoff:
     /// a row older than this contributes nothing to the Gram, where the
-    /// exponential weight alone would leave `0.5^(age/halflife)` of it
+    /// exponential weight alone would leave `0.5^(age/half_life)` of it
     /// (docs/PLAN.md §13). Inside the window the weights are still
-    /// exponential. A halflife grid is one model instance per entry, so each
+    /// exponential. A half-life grid is one model instance per entry, so each
     /// carries its own ring.
     ///
     /// **Last, with `window_every`, and they must stay last.** The compact
@@ -190,7 +190,7 @@ const GRAM_BLOCK_BUDGET: usize = 256 << 20;
 
 impl EwRidgeCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     /// (feature-set index, ridge index) pairs in output order.
@@ -220,16 +220,16 @@ impl EwRidgeCfg {
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
                 return Err(format!(
-                    "ewridge: window must be finite and > 0 (got {w}); it is clock units of \
+                    "ewridge: window_size must be finite and > 0 (got {w}); it is clock units of \
                      history to keep"
                 ));
             }
             if self.window_every.is_some_and(|e| e == 0) {
                 return Err("ewridge: window_every must be >= 1".into());
             }
-            if self.ridge_decay {
+            if self.ridge_scale {
                 return Err(
-                    "ewridge: window and ridge_decay do not combine; the decaying prior's scale \
+                    "ewridge: window_size and ridge_scale do not combine; the decaying prior's scale \
                      is the product of every decay factor the stream has applied, which a \
                      window truncates the data of but not the prior"
                         .into(),
@@ -237,14 +237,14 @@ impl EwRidgeCfg {
             }
             if self.session_shrink.is_some() {
                 return Err(
-                    "ewridge: window and session_shrink do not combine; the slow twin is a \
-                     second accumulator under a longer halflife, and truncating one and not \
+                    "ewridge: window_size and session_shrink do not combine; the slow twin is a \
+                     second accumulator under a longer half_life, and truncating one and not \
                      the other would blend two different histories"
                         .into(),
                 );
             }
         } else if self.window_every.is_some() {
-            return Err("ewridge: window_every needs `window`".into());
+            return Err("ewridge: window_every needs `window_size`".into());
         }
         if self.gram_block_rows > 0 {
             if self.window.is_some() {
@@ -260,7 +260,7 @@ impl EwRidgeCfg {
                      date before every solve, and with solve_every = {} and \
                      max_rows_between_solves = {} that is every row, so a block would never \
                      hold more than one. Set solve_every > 0 (the default is by weight under a \
-                     finite halflife, and 0 for `lam` and an infinite halflife) and \
+                     finite half_life, and 0 for `lam` and an infinite half_life) and \
                      max_rows_between_solves > 1",
                     self.solve_every, self.max_rows_between_solves
                 ));
@@ -289,21 +289,21 @@ impl EwRidgeCfg {
                 ));
             }
         }
-        if self.ridge_decay && (self.standardize || self.n_combos() > 1) {
-            return Err("ridge_decay is incompatible with standardize and grids".into());
+        if self.ridge_scale && (self.standardize || self.n_combos() > 1) {
+            return Err("ridge_scale is incompatible with standardize and grids".into());
         }
-        match (self.session_shrink, self.long_halflife) {
+        match (self.session_shrink, self.long_half_life) {
             (Some(f), _) if !(0.0..=1.0).contains(&f) => {
                 return Err("session_shrink must be in [0, 1]".into());
             }
             (Some(_), None) => {
-                return Err("session_shrink needs long_halflife (the slow twin's decay)".into());
+                return Err("session_shrink needs long_half_life (the slow twin's decay)".into());
             }
             (None, Some(_)) => {
-                return Err("long_halflife has no effect without session_shrink".into());
+                return Err("long_half_life has no effect without session_shrink".into());
             }
             (Some(_), Some(h)) if h <= 0.0 || h.is_nan() => {
-                return Err("long_halflife must be > 0".into());
+                return Err("long_half_life must be > 0".into());
             }
             _ => {}
         }
@@ -347,7 +347,7 @@ pub struct EwRidge {
     /// each of length `k_total` (zeros outside a combo's feature set).
     beta: Option<Vec<Vec<f64>>>,
     /// Slow-moving twin for `session_shrink`: the same accumulators under
-    /// `long_halflife`, representing the long-run relationship.
+    /// `long_half_life`, representing the long-run relationship.
     #[serde(default)]
     slow: Option<Box<Acc>>,
     clock_since_solve: f64,
@@ -397,7 +397,7 @@ struct Windowed {
 
 /// Every accumulator a fit is read from, as it stood before a row and decayed
 /// to that row's clock. The Grams and the per-target cross-moments are what
-/// the solve reads; the residual variance is what `sigma` and `resid_z` read,
+/// the solve reads; the residual variance is what `sigma` and `zscore` read,
 /// and truncating one without the other would report a windowed fit beside an
 /// unwindowed spread.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,7 +467,7 @@ impl EwRidge {
     }
 
     /// Per-target EW residual variance of the first slot's prediction; under
-    /// a `window`, the variance *inside* it. The bank's `sigma` and `resid_z`
+    /// a `window`, the variance *inside* it. The bank's `sigma` and `zscore`
     /// are not this: they are the stream's spread per slot, cut at the same
     /// boundary by a ring of its own (`online-polars`' `resid_window`; review
     /// 2026-09-12, S1).
@@ -507,7 +507,7 @@ impl EwRidge {
 
     /// The accumulated weight over every row, whatever the targets (hard rule
     /// 8): under a `window`, the weight *inside* it, which stops growing once
-    /// the window fills. That is what `min_periods` then gates on.
+    /// the window fills. That is what `min_weight` then gates on.
     pub fn n_eff(&self) -> f64 {
         self.window_weights().map_or(self.acc.cross.w, |(w, _)| w)
     }
@@ -592,7 +592,7 @@ impl EwRidge {
     }
 
     fn z(&mut self, x: &[f64]) {
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -602,7 +602,7 @@ impl EwRidge {
 
     /// Indices into z for a combo's feature set (intercept first if configured).
     fn combo_z_indices(&self, fs_idx: usize) -> Vec<usize> {
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         let mut idx: Vec<usize> = if self.cfg.feature_sets.is_empty() {
             (0..self.cfg.n_features).map(|i| i + off).collect()
         } else {
@@ -612,7 +612,7 @@ impl EwRidge {
                 .map(|&i| i + off)
                 .collect()
         };
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             idx.insert(0, 0);
         }
         idx
@@ -718,10 +718,10 @@ impl EwRidge {
         factors.resize(n_systems, None);
         // With an intercept the slopes are solved on the centred system (see
         // the module docs). The rest read the raw normal equations and need
-        // the uncentred cross-moments: `ridge_decay`, whose intercept is
+        // the uncentred cross-moments: `ridge_scale`, whose intercept is
         // penalized and so part of the system rather than eliminated from it,
         // and the two solves through the origin, which centre nothing.
-        let centred = self.cfg.add_intercept && !self.cfg.ridge_decay;
+        let centred = self.cfg.fit_intercept && !self.cfg.ridge_scale;
 
         // One system per Gram, for the targets that read it.
         for (g, cov) in grams.iter().enumerate() {
@@ -762,7 +762,7 @@ impl EwRidge {
                             b[jj * kc + ai] = rj[zi];
                         }
                     }
-                    if self.cfg.ridge_decay {
+                    if self.cfg.ridge_scale {
                         // (W S + prior_scale * ridge I) beta = W r  — intercept
                         // penalized, `W` the Gram's weight: under `own_rows`
                         // the target's own, so both sides are sums over its
@@ -842,7 +842,7 @@ impl EwRidge {
                     // noise gate where its bound does not decide, `summary`,
                     // a save, or the end of the run (`Pending`; docs/PLAN.md
                     // task 140).
-                    let is_intercept = |pos: usize| self.cfg.add_intercept && pos == 0;
+                    let is_intercept = |pos: usize| self.cfg.fit_intercept && pos == 0;
                     let mut sup0 = vec![f64::NAN; k_total];
                     for (pos, &zi) in zidx.iter().enumerate() {
                         if !is_intercept(pos) {
@@ -1226,7 +1226,7 @@ impl EwRidge {
         // ratio is infinite there, as `predict` withholds there.
         if self.beta.is_none()
             || self.ready.edf.len() != m * nc
-            || self.n_eff() < self.cfg.min_periods
+            || self.n_eff() < self.cfg.min_weight
         {
             return true;
         }
@@ -1275,7 +1275,7 @@ impl EwRidge {
     /// the intercept's constant 1, else the feature.
     #[inline]
     fn z_at(&self, x: &[f64], zi: usize) -> f64 {
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             if zi == 0 { 1.0 } else { x[zi - 1] }
         } else {
             x[zi]
@@ -1306,7 +1306,7 @@ struct Solved {
     /// The penalty on the system's diagonal, before jitter.
     shift: f64,
     /// What a row form against `a` is scaled by to be in the mean-form
-    /// Gram's units: the Gram's weight under `ridge_decay`, else 1.
+    /// Gram's units: the Gram's weight under `ridge_scale`, else 1.
     scale: f64,
 }
 
@@ -1611,7 +1611,7 @@ impl OnlineModel for EwRidge {
     /// factor its fit came from over Kish's sample size: for a centred
     /// system the mean's own `1` plus the centred, scaled row's quadratic
     /// form; for a raw one the row's form alone, scaled back to the
-    /// mean-form Gram's units under `ridge_decay`. Infinite before the first
+    /// mean-form Gram's units under `ridge_scale`. Infinite before the first
     /// solve, and where no system was kept ([`EwRidge::set_keep_factor`]).
     fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
@@ -1619,7 +1619,7 @@ impl OnlineModel for EwRidge {
         out.resize(m * nc, f64::INFINITY);
         if self.beta.is_none()
             || self.ready.system_of.len() != m * nc
-            || self.n_eff() < self.cfg.min_periods
+            || self.n_eff() < self.cfg.min_weight
         {
             return true;
         }
@@ -1685,8 +1685,8 @@ impl OnlineModel for EwRidge {
         let pred = &out.pred;
 
         // ---- update ----
-        // The slow twin sees the same rows under its own, longer halflife.
-        if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_halflife) {
+        // The slow twin sees the same rows under its own, longer half-life.
+        if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_half_life) {
             let slow_lam = Decay::Halflife(h).factor(d_clock);
             slow.learn(&self.zbuf, y, slow_lam, weight, gaps);
         }
@@ -1712,7 +1712,7 @@ impl OnlineModel for EwRidge {
         // EW residual variance from the primary (first-combo) pred. Its
         // weight ages on every row, and a row with a target, a weight and a
         // prediction adds its squared residual. A row with a target and no
-        // prediction -- `min_periods` unmet after a clock gap, say -- ages it
+        // prediction -- `min_weight` unmet after a clock gap, say -- ages it
         // as a null row does; it aged nothing, so `σ²` forgot less across
         // such rows than the clock says (N6).
         for j in 0..m {
@@ -1741,7 +1741,7 @@ impl OnlineModel for EwRidge {
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight);
         if due {
             self.solve();
         }
@@ -1761,11 +1761,11 @@ impl OnlineModel for EwRidge {
             None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
         let mut pred = vec![f64::NAN; m * nc];
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
             for j in 0..m {
                 if wj[j] > 0.0 {
                     for c in 0..nc {
-                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.add_intercept);
+                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.fit_intercept);
                     }
                 }
             }
@@ -1860,16 +1860,16 @@ mod tests {
         EwRidgeCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             ridge: vec![1e-8],
             feature_sets: vec![],
             standardize: false,
-            ridge_decay: false,
+            ridge_scale: false,
             coef_prior: None,
             session_shrink: None,
-            long_halflife: None,
-            min_periods: (k + 1) as f64,
+            long_half_life: None,
+            min_weight: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -1880,16 +1880,16 @@ mod tests {
         }
     }
 
-    /// With `ridge_decay` the prior sits on the sum scale, so it starts the
+    /// With `ridge_scale` the prior sits on the sum scale, so it starts the
     /// fit and then fades: the usual warm start.
     #[test]
     fn coef0_with_ridge_decay_warms_the_start_then_fades() {
         let mut c = cfg(2, 1);
         c.ridge = vec![10.0];
-        c.ridge_decay = true;
+        c.ridge_scale = true;
         c.standardize = false;
         c.coef_prior = Some(vec![vec![0.0, 5.0, -5.0]]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
 
         // With no target seen yet the fit is essentially the prior. (Not
@@ -1918,7 +1918,7 @@ mod tests {
         assert!((late[2] + 0.5).abs() < 0.05);
     }
 
-    /// Without `ridge_decay` the pull is permanent, because `S` is a weighted
+    /// Without `ridge_scale` the pull is permanent, because `S` is a weighted
     /// mean and never outgrows a fixed `ridge`. Worth pinning: it is the
     /// opposite of the usual "the prior washes out" intuition.
     #[test]
@@ -1926,7 +1926,7 @@ mod tests {
         let mut c = cfg(1, 1);
         c.ridge = vec![10.0];
         c.coef_prior = Some(vec![vec![0.0, 5.0]]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 72u64;
         for i in 0..50000 {
@@ -1948,7 +1948,7 @@ mod tests {
             let mut c = cfg(1, 1);
             c.ridge = vec![50.0];
             c.coef_prior = prior;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = EwRidge::new(c).unwrap();
             let mut s = 73u64;
             for i in 0..200 {
@@ -1977,7 +1977,7 @@ mod tests {
         c.ridge = vec![1e6];
         c.standardize = true;
         c.coef_prior = Some(vec![vec![0.0, 0.02]]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 79u64;
         for i in 0..500 {
@@ -2003,8 +2003,8 @@ mod tests {
             let mut c = cfg(1, 1);
             c.decay = Decay::Halflife(50.0);
             c.session_shrink = f;
-            c.long_halflife = f.map(|_| 100_000.0);
-            c.min_periods = 0.0;
+            c.long_half_life = f.map(|_| 100_000.0);
+            c.min_weight = 0.0;
             EwRidge::new(c).unwrap()
         };
         let run = |m: &mut EwRidge| {
@@ -2059,8 +2059,8 @@ mod tests {
             c.decay = Decay::Halflife(h_fast);
             c.ridge = vec![ridge];
             c.session_shrink = Some(f);
-            c.long_halflife = Some(h_slow);
-            c.min_periods = 0.0;
+            c.long_half_life = Some(h_slow);
+            c.min_weight = 0.0;
             let mut m = EwRidge::new(c).unwrap();
             let mut s = 11u64;
             let mut rows = Vec::with_capacity(n);
@@ -2123,8 +2123,8 @@ mod tests {
             let mut c = cfg(1, 1);
             c.decay = Decay::Halflife(50.0);
             c.session_shrink = Some(f);
-            c.long_halflife = Some(50.0); // the same halflife: an identical twin
-            c.min_periods = 0.0;
+            c.long_half_life = Some(50.0); // the same half_life: an identical twin
+            c.min_weight = 0.0;
             EwRidge::new(c).unwrap()
         };
         let run = |m: &mut EwRidge| {
@@ -2162,8 +2162,8 @@ mod tests {
             let mut c = cfg(1, 1);
             c.decay = Decay::Halflife(20.0);
             c.session_shrink = Some(0.9);
-            c.long_halflife = Some(5000.0);
-            c.min_periods = 0.0;
+            c.long_half_life = Some(5000.0);
+            c.min_weight = 0.0;
             EwRidge::new(c).unwrap()
         };
         let mut s = 11u64;
@@ -2198,13 +2198,13 @@ mod tests {
     fn session_shrink_config_is_validated() {
         let mut c = cfg(1, 1);
         c.session_shrink = Some(0.5);
-        assert!(EwRidge::new(c).is_err(), "shrink without long_halflife");
+        assert!(EwRidge::new(c).is_err(), "shrink without long_half_life");
         let mut c = cfg(1, 1);
-        c.long_halflife = Some(1000.0);
-        assert!(EwRidge::new(c).is_err(), "long_halflife without shrink");
+        c.long_half_life = Some(1000.0);
+        assert!(EwRidge::new(c).is_err(), "long_half_life without shrink");
         let mut c = cfg(1, 1);
         c.session_shrink = Some(1.5);
-        c.long_halflife = Some(1000.0);
+        c.long_half_life = Some(1000.0);
         assert!(EwRidge::new(c).is_err(), "shrink out of range");
     }
 
@@ -2216,10 +2216,10 @@ mod tests {
         let mut c = cfg(2, 1);
         c.coef_prior = Some(vec![vec![0.0, 1.0, f64::NAN]]);
         assert!(EwRidge::new(c).is_err());
-        // coef_prior *is* allowed with ridge_decay -- that combination is the
+        // coef_prior *is* allowed with ridge_scale -- that combination is the
         // fading warm start -- so only the shape rules above are enforced.
         let mut c = cfg(2, 1);
-        c.ridge_decay = true;
+        c.ridge_scale = true;
         c.standardize = false;
         c.coef_prior = Some(vec![vec![0.0, 1.0, 2.0]]);
         assert!(EwRidge::new(c).is_ok());
@@ -2393,9 +2393,9 @@ mod tests {
     fn blended_pair_at(shrink: f64, level: f64) -> EwRidge {
         let mut c = cfg(2, 1);
         c.session_shrink = Some(shrink);
-        c.long_halflife = Some(400.0);
+        c.long_half_life = Some(400.0);
         c.decay = Decay::Halflife(20.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 23u64;
         for i in 0..200 {
@@ -2420,7 +2420,7 @@ mod tests {
         let mut cfg_ = cfg(2, 1);
         cfg_.ridge = vec![r];
         cfg_.coef_prior = Some(c0.clone());
-        cfg_.min_periods = 3.0;
+        cfg_.min_weight = 3.0;
         let mut m = EwRidge::new(cfg_).unwrap();
         let mut s = 127u64;
         for i in 0..200 {
@@ -2464,7 +2464,7 @@ mod tests {
         let mut cfg_ = cfg(2, 1);
         cfg_.ridge = vec![1e12];
         cfg_.coef_prior = Some(c0.clone());
-        cfg_.min_periods = 3.0;
+        cfg_.min_weight = 3.0;
         let mut m = EwRidge::new(cfg_).unwrap();
         let mut s = 131u64;
         for i in 0..100 {
@@ -2492,7 +2492,7 @@ mod tests {
         // that something went wrong.
         let mut c = cfg(2, 1);
         c.ridge = vec![0.0];
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 137u64;
         for i in 0..40 {
@@ -2510,7 +2510,7 @@ mod tests {
 
         // A well-conditioned stream records nothing.
         let mut c = cfg(2, 1);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut ok = EwRidge::new(c).unwrap();
         let mut s = 139u64;
         for i in 0..40 {
@@ -2529,17 +2529,17 @@ mod tests {
     fn the_slow_twin_is_the_same_model_at_the_long_halflife() {
         // The twin's accumulators are updated by a second copy of the update
         // block inside `step`, which nothing else reaches. The oracle is the
-        // obvious one: a standalone model configured at `long_halflife` and
+        // obvious one: a standalone model configured at `long_half_life` and
         // fed the same rows must end up with identical statistics.
         let mut c = cfg(2, 1);
         c.session_shrink = Some(0.4);
-        c.long_halflife = Some(300.0);
+        c.long_half_life = Some(300.0);
         c.decay = Decay::Halflife(15.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
 
         let mut twin_cfg = cfg(2, 1);
         twin_cfg.decay = Decay::Halflife(300.0);
-        twin_cfg.min_periods = 3.0;
+        twin_cfg.min_weight = 3.0;
 
         let mut m = EwRidge::new(c).unwrap();
         let mut reference = EwRidge::new(twin_cfg).unwrap();
@@ -2593,7 +2593,7 @@ mod tests {
         // prediction contribute nothing.
         let mut c = cfg(1, 1);
         c.decay = Decay::Halflife(25.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwRidge::new(c).unwrap();
 
         let (mut want, mut wsig) = (0.0, 0.0);
@@ -2616,7 +2616,7 @@ mod tests {
                 m.sigma2()[0]
             );
         }
-        // The weight saturates at 1/(1 - lam) ~ 36.6 for this halflife.
+        // The weight saturates at 1/(1 - lam) ~ 36.6 for this half-life.
         assert!(
             wsig > 30.0,
             "the recursion should have run, not been skipped"
@@ -2633,7 +2633,7 @@ mod tests {
         // in -- otherwise a gap in the target inflates or freezes sigma.
         let mut c = cfg(1, 1);
         c.decay = Decay::Halflife(10.0);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 53u64;
         for i in 0..60 {
@@ -2659,7 +2659,7 @@ mod tests {
     /// ages its weight by the row's `lam`, and a row with a target, a
     /// weight and a prediction adds `w·r²`. A row with a target and no
     /// prediction -- here the rows after a clock gap has taken `n_eff` under
-    /// `min_periods` -- rightly added nothing, and aged nothing either, so
+    /// `min_weight` -- rightly added nothing, and aged nothing either, so
     /// `σ²` forgot less across them than the clock says (N6, found beside
     /// review 2026-09-12 S13).
     #[test]
@@ -2667,7 +2667,7 @@ mod tests {
         let hl = 10.0;
         let mut c = cfg(1, 1);
         c.decay = Decay::Halflife(hl);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwRidge::new(c).unwrap();
         let (mut want, mut wsig, mut unpredicted) = (0.0f64, 0.0f64, 0);
         let mut s = 61u64;
@@ -2708,7 +2708,7 @@ mod tests {
         );
     }
 
-    /// Under `ridge_decay` the penalty is a pseudo-observation of the
+    /// Under `ridge_scale` the penalty is a pseudo-observation of the
     /// history, `prior_scale · ridge · I` on the sum scale, and it decays
     /// with the history. A blend keeps today's weight `W`, so it keeps
     /// today's prior with it: the penalty stays the same share of the data
@@ -2724,11 +2724,11 @@ mod tests {
         let build = |f: f64| {
             let mut c = cfg(2, 1);
             c.ridge = vec![ridge];
-            c.ridge_decay = true;
+            c.ridge_scale = true;
             c.decay = Decay::Halflife(hl);
-            c.long_halflife = Some(long);
+            c.long_half_life = Some(long);
             c.session_shrink = Some(f);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             EwRidge::new(c).unwrap()
         };
         let (mut part, mut full) = (build(0.3), build(1.0));
@@ -2797,7 +2797,7 @@ mod tests {
             let mut c = cfg(1, 1);
             c.window = Some(20.0);
             c.window_every = Some(every);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = EwRidge::new(c).unwrap();
             let mut s = 67u64;
             for i in 0..101 {
@@ -2826,7 +2826,7 @@ mod tests {
         c.decay = Decay::Halflife(15.0);
         c.window = Some(12.0);
         c.window_every = Some(3);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 71u64;
         for i in 0..120 {
@@ -2870,7 +2870,7 @@ mod tests {
         // the rest of the condition, so the row cap is only visible with a
         // clock schedule that will not fire.
         let mut c = cfg(1, 1);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         c.solve_every = 1e9;
         c.max_rows_between_solves = 5;
         let by_rows = coefs(c, &ones);
@@ -2880,21 +2880,21 @@ mod tests {
             .filter(|(_, w)| w[0] != w[1])
             .map(|(i, _)| i + 1)
             .collect();
-        // First solve as soon as min_periods is met, then strictly every 5
+        // First solve as soon as min_weight is met, then strictly every 5
         // accepted rows: nothing in between, and it does not stop.
         assert_eq!(changes, vec![1, 6, 11, 16, 21], "24 rows, cap of 5");
 
         // Clock-counted: the same stream on a clock that advances 2 per row
         // must solve half as often when `solve_every` is 4.
         let mut c = cfg(1, 1);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         c.max_rows_between_solves = u32::MAX;
         c.solve_every = 4.0;
         let slow = coefs(c, &[2.0; 24]);
         let n_slow = slow.windows(2).filter(|w| w[0] != w[1]).count();
 
         let mut c = cfg(1, 1);
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         c.max_rows_between_solves = u32::MAX;
         c.solve_every = 0.0; // 0 means "every row"
         let every = coefs(c, &ones);
@@ -2904,10 +2904,10 @@ mod tests {
             "solve_every should throttle: {n_slow} vs {n_every}"
         );
 
-        // The first solve is not throttled: it happens as soon as min_periods
+        // The first solve is not throttled: it happens as soon as min_weight
         // is met, however long the schedule says to wait.
         let mut c = cfg(1, 1);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         c.max_rows_between_solves = u32::MAX;
         c.solve_every = 1e9;
         let first = coefs(c, &ones);
@@ -2941,18 +2941,18 @@ mod tests {
         bad(&|c| c.n_targets = 0, "must be >= 1");
         bad(&|c| c.ridge = vec![], "at least one value");
 
-        // ridge_decay alone is fine; it is the combination that is refused.
-        good(&|c| c.ridge_decay = true);
+        // ridge_scale alone is fine; it is the combination that is refused.
+        good(&|c| c.ridge_scale = true);
         bad(
             &|c| {
-                c.ridge_decay = true;
+                c.ridge_scale = true;
                 c.standardize = true;
             },
             "incompatible",
         );
         bad(
             &|c| {
-                c.ridge_decay = true;
+                c.ridge_scale = true;
                 c.ridge = vec![1e-6, 1.0];
             },
             "incompatible",
@@ -2960,29 +2960,29 @@ mod tests {
 
         bad(&|c| c.session_shrink = Some(-0.1), "in [0, 1]");
         bad(&|c| c.session_shrink = Some(1.5), "in [0, 1]");
-        bad(&|c| c.session_shrink = Some(0.5), "needs long_halflife");
-        bad(&|c| c.long_halflife = Some(100.0), "no effect without");
+        bad(&|c| c.session_shrink = Some(0.5), "needs long_half_life");
+        bad(&|c| c.long_half_life = Some(100.0), "no effect without");
         bad(
             &|c| {
                 c.session_shrink = Some(0.5);
-                c.long_halflife = Some(0.0);
+                c.long_half_life = Some(0.0);
             },
             "must be > 0",
         );
         bad(
             &|c| {
                 c.session_shrink = Some(0.5);
-                c.long_halflife = Some(f64::NAN);
+                c.long_half_life = Some(f64::NAN);
             },
             "must be > 0",
         );
         good(&|c| {
             c.session_shrink = Some(0.0);
-            c.long_halflife = Some(100.0);
+            c.long_half_life = Some(100.0);
         });
         good(&|c| {
             c.session_shrink = Some(1.0);
-            c.long_halflife = Some(100.0);
+            c.long_half_life = Some(100.0);
         });
 
         // coef_prior is one vector per target, each of length k_total (2 + intercept).
@@ -3138,7 +3138,7 @@ mod tests {
         c.window = Some(30.0);
         c.standardize = false;
         c.ridge = vec![0.0];
-        c.min_periods = 5.0;
+        c.min_weight = 5.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 3u64;
         for i in 0..200 {
@@ -3171,7 +3171,7 @@ mod tests {
     fn a_row_of_no_weight_leaves_every_mean_as_it_was() {
         let mut c = cfg(1, 1);
         c.decay = Decay::Halflife(f64::INFINITY);
-        c.min_periods = 1.0;
+        c.min_weight = 1.0;
         let mut m = EwRidge::new(c).unwrap();
         for v in [0.7, 5.292162135665459] {
             m.step(&[v], &[Some(v)], 1.0, 1.0);
@@ -3217,7 +3217,7 @@ mod tests {
         // to catch that rather than divide.
         let mut c = cfg(2, 1);
         c.session_shrink = Some(0.5);
-        c.long_halflife = Some(200.0);
+        c.long_half_life = Some(200.0);
         let mut m = EwRidge::new(c).unwrap();
         assert!(m.slow.is_some());
         let before = m.clone();
@@ -3242,7 +3242,7 @@ mod tests {
         // No `session_shrink` at all: there is no twin to blend with, and the
         // method must return before touching anything.
         let mut c = cfg(2, 1);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 29u64;
         for i in 0..50 {
@@ -3280,7 +3280,7 @@ mod tests {
     #[test]
     fn standardize_without_intercept_matches_plain_when_ridge_tiny() {
         // `solve_standardized` has a second, quite different branch for
-        // `add_intercept = false`: it scales by the *raw* second-moment
+        // `fit_intercept = false`: it scales by the *raw* second-moment
         // diagonals rather than centering first. The invariance is the same --
         // a diagonal rescale of the normal equations cannot move the solution
         // when the penalty is negligible -- so a scaling applied in the wrong
@@ -3288,8 +3288,8 @@ mod tests {
         // here. Features are deliberately on very different scales (~4 and
         // ~0.003) so the scaling matrix is far from the identity.
         let mut ca = cfg(2, 1);
-        ca.add_intercept = false;
-        ca.min_periods = 2.0;
+        ca.fit_intercept = false;
+        ca.min_weight = 2.0;
         // The invariance is exact only at ridge = 0: a penalty applies on the
         // raw scale in one path and the standardized scale in the other, and
         // the two feature scales here differ by ~1e3, so 1e-8 is enough to
@@ -3309,7 +3309,7 @@ mod tests {
         }
         let a = &ma.coefficients().unwrap()[0];
         let b = &mb.coefficients().unwrap()[0];
-        assert_eq!(a.len(), 2, "no intercept slot when add_intercept is false");
+        assert_eq!(a.len(), 2, "no intercept slot when fit_intercept is false");
         for i in 0..2 {
             assert!(
                 (a[i] - b[i]).abs() < 1e-6 * (1.0 + a[i].abs()),
@@ -3330,9 +3330,9 @@ mod tests {
         // identically zero has zero raw second moment, so it cannot be scaled
         // and must come out with a zero coefficient rather than a NaN.
         let mut c = cfg(2, 1);
-        c.add_intercept = false;
+        c.fit_intercept = false;
         c.standardize = true;
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 19u64;
         for i in 0..100 {
@@ -3373,7 +3373,7 @@ mod tests {
         xs: &[[f64; 1]],
         ys: &[f64],
         t: &[f64],
-        halflife: f64,
+        half_life: f64,
         window: f64,
         ridge: f64,
         upto: usize,
@@ -3386,7 +3386,7 @@ mod tests {
             if now - t[i] > window {
                 continue;
             }
-            let w = 0.5_f64.powf((now - t[i]) / halflife);
+            let w = 0.5_f64.powf((now - t[i]) / half_life);
             let x = xs[i][0];
             wsum += w;
             s11 += w;
@@ -3407,11 +3407,11 @@ mod tests {
     /// the window, and nothing older reaches the coefficients.
     #[test]
     fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
-        let (halflife, window, ridge) = (30.0, 80.0, 1e-8);
+        let (half_life, window, ridge) = (30.0, 80.0, 1e-8);
         let mut c = cfg(1, 1);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.ridge = vec![ridge];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         c.solve_every = 0.0;
         c.max_rows_between_solves = 1; // solve every row, so beta is never stale
         c.window = Some(window);
@@ -3450,7 +3450,7 @@ mod tests {
                 let now = t[i];
                 let wsum: f64 = (0..=i)
                     .filter(|&j| now - t[j] <= window)
-                    .map(|j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .map(|j| 0.5_f64.powf((now - t[j]) / half_life))
                     .sum();
                 on_the_boundary += (0..=i).filter(|&j| now - t[j] == window).count();
                 assert!(
@@ -3458,11 +3458,11 @@ mod tests {
                     "row {i}: n_eff {} vs {wsum} -- the window holds different rows",
                     m.n_eff()
                 );
-                let want = direct_window_fit(&xs, &ys, &t, halflife, window, ridge, i + 1);
+                let want = direct_window_fit(&xs, &ys, &t, half_life, window, ridge, i + 1);
                 let got = m.coefficients().unwrap();
                 for (slot, wanted) in want.iter().enumerate() {
                     // To rounding: the window is a subtraction, but at 2.7
-                    // halflives it discards a sixth of the weight and loses
+                    // half-lives it discards a sixth of the weight and loses
                     // next to nothing (1.2e-14 measured). The "eight
                     // significant figures" this once allowed was the oracle's
                     // own ridge on the intercept, which the model leaves free
@@ -3495,7 +3495,7 @@ mod tests {
         let mut c = cfg(2, 1);
         c.decay = Decay::Halflife(20.0);
         c.ridge = vec![1e-8];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         c.window = Some(10.0);
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 5u64;
@@ -3526,7 +3526,7 @@ mod tests {
             let mut c = cfg(1, 1);
             c.decay = Decay::Halflife(25.0);
             c.ridge = vec![1e-8];
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             c.max_rows_between_solves = 1;
             c.window = Some(60.0);
             let mut m = EwRidge::new(c).unwrap();
@@ -3568,7 +3568,7 @@ mod tests {
         let mk = |window: Option<f64>| {
             let mut c = cfg(2, 1);
             c.decay = Decay::Halflife(40.0);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             c.max_rows_between_solves = 1;
             c.window = window;
             EwRidge::new(c).unwrap()
@@ -3653,7 +3653,7 @@ mod tests {
                 c.standardize = standardize;
                 c.ridge = vec![1e-6];
                 c.decay = Decay::Halflife(200.0);
-                c.min_periods = 10.0;
+                c.min_weight = 10.0;
                 if block > 0 {
                     c.gram_block_rows = block;
                     c.solve_every = 5.0;
@@ -3731,7 +3731,7 @@ mod tests {
 
     // ---- gram_block_rows (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71) ----
 
-    /// A halflife, a solve cadence in both clock and rows, and a small ridge:
+    /// A half-life, a solve cadence in both clock and rows, and a small ridge:
     /// the setting the option is for. `block` is the only difference between
     /// the two sides of every comparison below.
     fn blocked_cfg(k: usize, block: usize) -> EwRidgeCfg {
@@ -3745,7 +3745,7 @@ mod tests {
     }
 
     /// `(x, y, d_clock, weight)`: a missing target every 17th row, a zero
-    /// weight every 23rd, a clock gap of 5 halflives every 41st and one
+    /// weight every 23rd, a clock gap of 5 half-lives every 41st and one
     /// infinite gap (`lam == 0`, the history discarded) -- everything a held
     /// row has to carry into the merge.
     fn ridge_rows(n: usize, k: usize, seed: u64) -> Vec<(Vec<f64>, Option<f64>, f64, f64)> {
@@ -3848,7 +3848,7 @@ mod tests {
         let shrink = |block: usize| {
             let mut c = blocked_cfg(2, block);
             c.session_shrink = Some(0.5);
-            c.long_halflife = Some(1e4);
+            c.long_half_life = Some(1e4);
             EwRidge::new(c).unwrap()
         };
         let (mut plain, mut blocked) = (shrink(0), shrink(16));
@@ -3942,7 +3942,7 @@ mod tests {
         // 2^30 rows of 4 floats is 32 GiB; the twin doubles it.
         let mut c = blocked_cfg(3, 1 << 30);
         c.session_shrink = Some(0.5);
-        c.long_halflife = Some(1e4);
+        c.long_half_life = Some(1e4);
         let e = err(c);
         assert!(
             e.contains("over the 256 MiB budget") && e.contains("64.0 GiB") && e.contains("twin"),
@@ -4121,8 +4121,8 @@ mod tests {
         let mut c = cfg(2, 3);
         c.decay = Decay::Halflife(15.0);
         c.session_shrink = Some(0.4);
-        c.long_halflife = Some(200.0);
-        c.min_periods = 3.0;
+        c.long_half_life = Some(200.0);
+        c.min_weight = 3.0;
         let mut bank = EwRidge::new(c.clone()).unwrap();
         let one = EwRidgeCfg {
             n_targets: 1,
@@ -4242,7 +4242,7 @@ mod tests {
     fn a_target_not_seen_yet_costs_no_solve_failure() {
         let mut c = cfg(2, 2);
         c.ridge = vec![0.0];
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 73u64;
         let mut row = |m: &mut EwRidge, i: usize| {
@@ -4423,7 +4423,7 @@ mod tests {
 
     /// Every solve against its closed form, from weighted sums written out
     /// here (mutation baseline, docs/PLAN.md task 113): two targets and a
-    /// ridge grid of two (one under `ridge_decay`, which refuses a grid), so
+    /// ridge grid of two (one under `ridge_scale`, which refuses a grid), so
     /// each system's slot `j * nc + c` is its own; a
     /// `coef_prior` that is not zero and a ridge that is not small, so the
     /// penalty's centre moves every coefficient; under both target-gap
@@ -4432,7 +4432,7 @@ mod tests {
     ///
     /// - through the origin, raw: `(E[zz'] + λI) β = E[zy] + λ c0`;
     /// - through the origin, standardized: the penalty per slot is `λ E[z_i²]`;
-    /// - `ridge_decay`: `(W E[zz'] + λI) β = W E[zy] + λ c0`, `W` the weight;
+    /// - `ridge_scale`: `(W E[zz'] + λI) β = W E[zy] + λ c0`, `W` the weight;
     /// - with an intercept: the slopes from the weighted covariance, with
     ///   `λ` (plain) or `λ Var(x_i)` (standardized), and `β_0 = ȳ − m·β`.
     #[test]
@@ -4455,7 +4455,7 @@ mod tests {
         let mean = |f: &dyn Fn(&OracleRow) -> f64| -> f64 {
             rows.iter().map(|r| r.2 * f(r)).sum::<f64>() / wsum
         };
-        for (intercept, standardize, ridge_decay) in [
+        for (intercept, standardize, ridge_scale) in [
             (false, false, false),
             (false, true, false),
             (true, false, true),
@@ -4464,18 +4464,18 @@ mod tests {
         ] {
             for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
                 let mut c = cfg(k, m);
-                c.add_intercept = intercept;
+                c.fit_intercept = intercept;
                 c.standardize = standardize;
-                c.ridge_decay = ridge_decay;
-                // `ridge_decay` takes one ridge, never a grid.
-                let grid: Vec<f64> = if ridge_decay {
+                c.ridge_scale = ridge_scale;
+                // `ridge_scale` takes one ridge, never a grid.
+                let grid: Vec<f64> = if ridge_scale {
                     vec![ridges[1]]
                 } else {
                     ridges.to_vec()
                 };
                 c.ridge = grid.clone();
                 c.target_gaps = gaps;
-                c.min_periods = 0.0;
+                c.min_weight = 0.0;
                 let off = usize::from(intercept);
                 c.coef_prior = Some(prior.iter().map(|p| p[1 - off..].to_vec()).collect());
                 let mut model = EwRidge::new(c).unwrap();
@@ -4501,7 +4501,7 @@ mod tests {
                 for j in 0..m {
                     let c0 = &prior[j][1 - off..];
                     for (ci, &lam) in grid.iter().enumerate() {
-                        let want: Vec<f64> = if intercept && !ridge_decay {
+                        let want: Vec<f64> = if intercept && !ridge_scale {
                             let mx: Vec<f64> = (0..k).map(|i| mean(&|r| r.0[i])).collect();
                             let my = mean(&|r| r.1[j]);
                             let cov =
@@ -4523,7 +4523,7 @@ mod tests {
                             let b0 = my - (0..k).map(|i| mx[i] * slopes[i]).sum::<f64>();
                             std::iter::once(b0).chain(slopes).collect()
                         } else {
-                            let scale = if ridge_decay { wsum } else { 1.0 };
+                            let scale = if ridge_scale { wsum } else { 1.0 };
                             let pen = |i: usize| {
                                 if standardize {
                                     lam * mean(&|r| z(r, i) * z(r, i))
@@ -4561,7 +4561,7 @@ mod tests {
                         for (i, (g, w)) in got.iter().zip(&want).enumerate() {
                             assert!(
                                 (g - w).abs() <= 1e-9 * (1.0 + w.abs()),
-                                "{intercept} {standardize} {ridge_decay} {gaps:?}: target {j}, \
+                                "{intercept} {standardize} {ridge_scale} {gaps:?}: target {j}, \
                                  ridge {lam}, slot {i}: {g} against the closed form {w}"
                             );
                         }
@@ -4610,7 +4610,7 @@ mod tests {
         assert!(!same_bits(&[1.0], &[2.0]));
         assert!(!same_bits(&[1.0], &[1.0, 2.0]), "the lengths");
         let mut c = cfg(2, 1);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (mut m, _) = fitted(c, 30, 3);
         m.set_keep_factor(true);
         m.solve();
@@ -4652,7 +4652,7 @@ mod tests {
     }
 
     /// One configuration per solve path -- centred plain and standardized,
-    /// raw and scaled through the origin, `ridge_decay`, a window, a grid
+    /// raw and scaled through the origin, `ridge_scale`, a window, a grid
     /// over feature sets -- each solving every third row, so a solve waits
     /// unread across rows, beside one solving every row. `fitted`'s second
     /// target is absent on every third row, so it keeps a Gram of its own.
@@ -4660,7 +4660,7 @@ mod tests {
         let base = || {
             let mut c = cfg(3, 2);
             c.decay = Decay::Halflife(25.0);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             c.solve_every = 3.0;
             c.max_rows_between_solves = 100;
             c
@@ -4675,17 +4675,17 @@ mod tests {
         c.feature_sets = vec![("a".into(), vec![0, 1]), ("b".into(), vec![1, 2])];
         out.push(("centred standardized, a grid over feature sets", c));
         let mut c = base();
-        c.add_intercept = false;
+        c.fit_intercept = false;
         c.ridge = vec![0.2];
         out.push(("raw through the origin", c));
         let mut c = base();
-        c.add_intercept = false;
+        c.fit_intercept = false;
         c.standardize = true;
         out.push(("scaled through the origin", c));
         let mut c = base();
-        c.ridge_decay = true;
+        c.ridge_scale = true;
         c.ridge = vec![3.0];
-        out.push(("ridge_decay", c));
+        out.push(("ridge_scale", c));
         let mut c = base();
         c.standardize = true;
         c.window = Some(12.0);
@@ -4818,9 +4818,9 @@ mod tests {
     #[test]
     fn a_share_that_is_not_a_number_withholds_whichever_way_the_gate_reads() {
         let mut c = cfg(3, 1);
-        c.add_intercept = false;
+        c.fit_intercept = false;
         c.ridge = vec![0.0];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let limit = std::f64::consts::SQRT_2;
         let (mut gate, mut exact) = (Vec::new(), Vec::new());
@@ -4849,7 +4849,7 @@ mod tests {
     #[test]
     fn the_kept_factors_follow_the_setting_and_survive_a_load() {
         let mut c = cfg(3, 1);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (mut m, _) = fitted(c, 40, 5);
         m.set_keep_factor(true);
         m.solve();
@@ -4875,15 +4875,15 @@ mod tests {
     /// `sqrt(1 + h)`, `h` the row's leverage over Kish's sample size, from
     /// the definition: centred and standardized, `h = (1 + v'(R + λI)⁻¹v)/n`
     /// with `v` the row centred and scaled and `R` the correlation; under
-    /// `ridge_decay`, `h = W z'(W E[zz'] + λI)⁻¹z / n`.
+    /// `ridge_scale`, `h = W z'(W E[zz'] + λI)⁻¹z / n`.
     #[test]
     fn the_row_error_inflation_is_the_leverage_of_its_definition() {
-        for ridge_decay in [false, true] {
+        for ridge_scale in [false, true] {
             let mut c = cfg(3, 1);
-            c.min_periods = 0.0;
-            c.standardize = !ridge_decay;
-            c.ridge_decay = ridge_decay;
-            c.ridge = vec![if ridge_decay { 3.0 } else { 0.5 }];
+            c.min_weight = 0.0;
+            c.standardize = !ridge_scale;
+            c.ridge_scale = ridge_scale;
+            c.ridge = vec![if ridge_scale { 3.0 } else { 0.5 }];
             let lam = c.ridge[0];
             let mut m = EwRidge::new(c.clone()).unwrap();
             m.set_keep_factor(true);
@@ -4900,7 +4900,7 @@ mod tests {
             let n = ws * ws / wq;
             let mean =
                 |f: &dyn Fn(&[f64]) -> f64| rows.iter().map(|r| r.2 * f(&r.0)).sum::<f64>() / ws;
-            let want = if ridge_decay {
+            let want = if ridge_scale {
                 let z = |r: &[f64], i: usize| if i == 0 { 1.0 } else { r[i - 1] };
                 let a: Vec<Vec<f64>> = (0..4)
                     .map(|i| {
@@ -4933,7 +4933,7 @@ mod tests {
             };
             assert!(
                 (got[0] - want).abs() <= 1e-10 * want,
-                "ridge_decay {ridge_decay}: {} against {want}",
+                "ridge_scale {ridge_scale}: {} against {want}",
                 got[0]
             );
         }
@@ -4944,7 +4944,7 @@ mod tests {
         // Two targets and three ridges: `m * nc` = 6 where `m + nc` = 5.
         let mut c = cfg(2, 2);
         c.ridge = vec![1e-6, 0.1, 1.0];
-        c.min_periods = 6.0;
+        c.min_weight = 6.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 13u64;
         let mut out = Vec::new();
@@ -4980,7 +4980,7 @@ mod tests {
     #[test]
     fn each_target_reports_its_own_weight() {
         let mut c = cfg(2, 2);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (m, rows) = fitted(c, 30, 17);
         let mut out = vec![-1.0];
         assert!(m.target_n_eff_into(&mut out));
@@ -5000,7 +5000,7 @@ mod tests {
         c.decay = Decay::Halflife(30.0);
         c.window = Some(40.0);
         c.window_every = Some(2);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (mut m, _) = fitted(c, 100, 21);
         assert_eq!(m.window_over_budget(), None, "no budget, no overrun");
         m.set_window_budget(Some(crate::WindowBudget::Refuse(1e-6)));
@@ -5018,7 +5018,7 @@ mod tests {
     #[test]
     fn the_gram_parts_are_the_fits_and_carry_the_target_moments() {
         let mut c = cfg(2, 2);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (m, rows) = fitted(c, 30, 23);
         let (parts, moments) = m.gram_parts();
         assert_eq!(parts.len(), 2, "one Gram per target under own_rows");
@@ -5037,10 +5037,10 @@ mod tests {
     #[test]
     fn a_blend_before_the_first_fit_solves_nothing() {
         let mut c = cfg(2, 1);
-        c.long_halflife = Some(500.0);
+        c.long_half_life = Some(500.0);
         c.session_shrink = Some(0.5);
-        // The first fit waits for `min_periods` whatever the schedule.
-        c.min_periods = 100.0;
+        // The first fit waits for `min_weight` whatever the schedule.
+        c.min_weight = 100.0;
         c.solve_every = 1e9;
         c.max_rows_between_solves = 100_000;
         let mut m = EwRidge::new(c).unwrap();
@@ -5059,14 +5059,14 @@ mod tests {
 
     /// Kish's sample size and the residual spread under a window are those
     /// of the rows inside it, from the definition: the rows at most one
-    /// window old, weighted `2^(-age / halflife)`.
+    /// window old, weighted `2^(-age / half_life)`.
     #[test]
     fn the_window_kish_and_spread_are_the_rows_inside_it() {
-        let (halflife, window) = (30.0, 80.0);
+        let (half_life, window) = (30.0, 80.0);
         let mut c = cfg(1, 1);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.window = Some(window);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 31u64;
         let (mut t, mut resid, mut clock) = (vec![], vec![], 0.0);
@@ -5087,7 +5087,7 @@ mod tests {
             }
             let kept: Vec<(f64, Option<f64>)> = (0..=i)
                 .filter(|&r| clock - t[r] <= window)
-                .map(|r| (0.5_f64.powf((clock - t[r]) / halflife), resid[r]))
+                .map(|r| (0.5_f64.powf((clock - t[r]) / half_life), resid[r]))
                 .collect();
             let (ws, wq) = kept
                 .iter()
@@ -5114,15 +5114,15 @@ mod tests {
     /// The target moments under a window are those of the rows inside it,
     /// each target over the rows it was present on (docs/PLAN.md task 136):
     /// its weight, mean, variance about the mean and `Q = Σw²`, weighted
-    /// `2^(-age / halflife)`. They were `None` under a window, since the
+    /// `2^(-age / half_life)`. They were `None` under a window, since the
     /// snapshots held none; the second target is missing on every third row.
     #[test]
     fn the_windowed_target_moments_are_the_rows_inside_it() {
-        let (halflife, window) = (30.0, 80.0);
+        let (half_life, window) = (30.0, 80.0);
         let mut c = cfg(1, 2);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.window = Some(window);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 37u64;
         let (mut t, mut ys, mut clock, mut checked) = (vec![], vec![], 0.0, 0);
@@ -5147,7 +5147,7 @@ mod tests {
             for j in [0usize, 1] {
                 let kept: Vec<(f64, f64)> = (0..=i)
                     .filter(|&r| clock - t[r] <= window)
-                    .filter_map(|r| ys[r][j].map(|y| (0.5f64.powf((clock - t[r]) / halflife), y)))
+                    .filter_map(|r| ys[r][j].map(|y| (0.5f64.powf((clock - t[r]) / half_life), y)))
                     .collect();
                 let w: f64 = kept.iter().map(|k| k.0).sum();
                 let q: f64 = kept.iter().map(|k| k.0 * k.0).sum();
@@ -5186,7 +5186,7 @@ mod tests {
         ] {
             let mut c = cfg(k, targets);
             c.window = Some(1e9);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             c.target_gaps = crate::TargetGaps::Pairwise;
             let mut m = EwRidge::new(c).unwrap();
             let mut s = 5u64;
@@ -5264,7 +5264,7 @@ mod tests {
     fn a_schema_17_state_is_read_as_it_is_and_a_mismatched_twin_is_refused() {
         let mut c = cfg(2, 2);
         c.target_gaps = TargetGaps::Pairwise;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (m, _) = fitted(c, 60, 41);
         let mut s17 = m.state();
         s17.schema_version = 17;
@@ -5287,9 +5287,9 @@ mod tests {
         }
         let twin = |k: usize| {
             let mut c = cfg(k, 1);
-            c.long_halflife = Some(200.0);
+            c.long_half_life = Some(200.0);
             c.session_shrink = Some(0.5);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             fitted(c, 20, 47).0
         };
         let (mut two, three) = (twin(2), twin(3));
@@ -5307,7 +5307,7 @@ mod tests {
             c.window = Some(bad);
             let err = EwRidge::new(c).expect_err("refused");
             assert!(
-                err.contains("window must be finite and > 0"),
+                err.contains("window_size must be finite and > 0"),
                 "{bad}: {err}"
             );
         }
@@ -5321,7 +5321,7 @@ mod tests {
     fn with_no_feature_moving_the_fit_is_the_mean_and_keeps_no_system() {
         let mut c = cfg(2, 1);
         c.standardize = true;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         m.set_keep_factor(true);
         let mut s = 53u64;
@@ -5348,7 +5348,7 @@ mod tests {
     fn a_pairwise_intercept_is_centred_on_the_targets_own_rows() {
         let mut c = cfg(2, 2);
         c.target_gaps = TargetGaps::Pairwise;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (m, rows) = fitted(c, 60, 59);
         let beta = &m.coefficients().unwrap()[1];
         let own: Vec<_> = rows.iter().filter(|r| r.1[1].is_some()).collect();
@@ -5380,7 +5380,7 @@ mod tests {
             let mut c = cfg(2, 2);
             c.target_gaps = gaps;
             c.decay = Decay::Halflife(15.0);
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let (mut plain, mut doubled) =
                 (EwRidge::new(c.clone()).unwrap(), EwRidge::new(c).unwrap());
             let mut s = 61u64;
@@ -5415,7 +5415,7 @@ mod tests {
         let mut c = cfg(2, 1);
         c.standardize = true;
         c.ridge = vec![0.0];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 67u64;
         for i in 0..40 {
@@ -5442,7 +5442,7 @@ mod tests {
         let ridges = [1e-6, 0.3, 2.0];
         let mut c = cfg(2, 2);
         c.ridge = ridges.to_vec();
-        c.min_periods = 12.0;
+        c.min_weight = 12.0;
         let mut m = EwRidge::new(c).unwrap();
         m.set_keep_factor(true);
         let mut s = 71u64;
@@ -5507,7 +5507,7 @@ mod tests {
         assert!(out.iter().all(|v| *v == f64::INFINITY), "{out:?}");
     }
 
-    /// Under `ridge_decay` the system is on the sum scale, `W E[zz'] + λI`,
+    /// Under `ridge_scale` the system is on the sum scale, `W E[zz'] + λI`,
     /// and a slope's share of its coefficient is `1 − λ [(W E[zz'] +
     /// λI)⁻¹]_ii`: the penalty the readiness reads is `λ`, as solved.
     #[test]
@@ -5515,8 +5515,8 @@ mod tests {
         let lam = 5.0;
         let mut c = cfg(2, 1);
         c.ridge = vec![lam];
-        c.ridge_decay = true;
-        c.min_periods = 0.0;
+        c.ridge_scale = true;
+        c.min_weight = 0.0;
         let (m, rows) = fitted(c, 25, 73);
         let z = |x: &[f64], i: usize| if i == 0 { 1.0 } else { x[i - 1] };
         let a: Vec<Vec<f64>> = (0..3)
@@ -5549,7 +5549,7 @@ mod tests {
     fn a_solve_that_fails_keeps_the_last_fit_or_says_nan() {
         let mut c = cfg(2, 2);
         c.ridge = vec![1e-6, 0.5];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let (mut m, _) = fitted(c.clone(), 30, 79);
         let before = m.coefficients().unwrap().to_vec();
         let failed = m.solve_failures;
@@ -5580,7 +5580,7 @@ mod tests {
         c.ridge = vec![1e-6, 0.5];
         c.decay = Decay::Halflife(20.0);
         c.window = Some(10.0);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 97u64;
         for i in 0..40 {
@@ -5608,7 +5608,7 @@ mod tests {
         // With a ridge, a Gram with no weight is solved to the prior and
         // has a statistic; with none, it is skipped and has none.
         c.ridge = vec![0.0];
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         c.solve_every = 1e9;
         c.max_rows_between_solves = 5;
         let mut m = EwRidge::new(c).unwrap();

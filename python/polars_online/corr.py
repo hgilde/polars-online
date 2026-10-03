@@ -558,7 +558,7 @@ def signal_share(z_blocks: Any, n_kish_blocks: Any) -> Any:
     Per pair over ``B`` blocks, with ``z_b`` the Fisher-z of that block's
     correlation and ``n_b`` its sample size -- Kish's ``(Σw)² / Σw²``, as
     ``gram()``'s ``n_kish`` reads it, or a plain block's row count. Not
-    ``n_eff``, which is a weight, about half the Kish size in steady state:
+    ``weight_sum``, which is a weight, about half the Kish size in steady state:
 
     .. code-block:: text
 

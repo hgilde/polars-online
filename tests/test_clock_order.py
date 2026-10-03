@@ -4,10 +4,10 @@ user on 2026-09-28).
 It is easy to feed rows out of order by accident, and the policies that
 absorbed a step back -- ``"max"``, which took the cap as the step, and
 ``"zero"`` -- turned it into plausible, wrong output. Both are gone.
-``on_clock_reset = "error"``, the default, refuses every step back.
-``"reset_state"`` starts the model over at a step back larger than
-``min_backwards_jump``, which it requires, and refuses one no larger (a late
-row: the comparison is inclusive). A refusal is chunk-level, so the bank is
+With ``restart_after_step_back`` unset, the default, every step back is
+refused. Given, it starts the model over at a step back larger than it, and
+refuses one no larger (a late row: the comparison is inclusive). A refusal is
+chunk-level, so the bank is
 untouched, and the error names the step, the row and the way out. Scoring
 learns nothing, so ``predict`` scores a row before the last learned clock
 against the state as it stands, under either policy.
@@ -45,21 +45,21 @@ def ticks(n=1000, seed=0, start=0.0):
 
 def spec(**kw):
     """Ten-unit steps under a cap of 100."""
-    d = dict(targets=["y"], features=["x0"], halflife=10.0, clock="t", max_dclock=100.0)
+    d = dict(targets=["y"], features=["x0"], half_life=10.0, clock="t", gap_cap=100.0)
     d.update(kw)
     return po.spec.ewridge("m", **d)
 
 
 def spec1(**kw):
     """One-unit ticks under a cap of 300: five minutes of seconds."""
-    d = dict(targets=["y"], features=["x0"], halflife=5000.0, clock="t", max_dclock=300.0)
+    d = dict(targets=["y"], features=["x0"], half_life=5000.0, clock="t", gap_cap=300.0)
     d.update(kw)
     return po.spec.ewridge("m", **d)
 
 
 def restart(minimum, **kw):
     """`spec1` under `"reset_state"`: a step back past `minimum` starts over."""
-    return spec1(on_clock_reset="reset_state", min_backwards_jump=minimum, **kw)
+    return spec1(restart_after_step_back=minimum, **kw)
 
 
 def swapped(df, i):
@@ -85,8 +85,8 @@ def test_a_transposed_pair_is_refused_by_default_and_names_the_row():
     with pytest.raises(ValueError, match="goes backwards by 10 at row 21") as e:
         po.ModelBank([spec()]).fit_predict(swapped(frame(), 20))
     msg = str(e.value)
-    assert 'on_clock_reset = "error", the default' in msg and "not updated" in msg
-    assert "skip_learned" in msg and '"reset_state"' in msg
+    assert "restart_after_step_back is unset" in msg and "not updated" in msg
+    assert "skip_learned" in msg and "set restart_after_step_back" in msg
 
 
 def test_the_default_refuses_every_step_back_however_large():
@@ -107,8 +107,8 @@ def test_reset_state_starts_over_past_the_minimum_and_refuses_a_late_row():
     out = bank.fit_predict(day)
     assert out.height == 2000 and resets(bank) == 1
     # The model starts over at the new day: the row after it has no weight.
-    assert out["m"].struct.field("n_eff")[1000] == 0.0
-    with pytest.raises(ValueError, match="no more than min_backwards_jump = 300") as e:
+    assert out["m"].struct.field("weight_sum")[1000] == 0.0
+    with pytest.raises(ValueError, match="no more than restart_after_step_back = 300") as e:
         po.ModelBank([restart(300.0)]).fit_predict(late_by(ticks(), 500, 30))
     assert "a late row" in str(e.value) and "row 530" in str(e.value)
 
@@ -117,18 +117,16 @@ def test_the_minimum_is_inclusive():
     """A step back as large as the minimum is a late row (task 120: a `Date`
     clock's one-day step back passed a one-day minimum, `<` being strict)."""
     exact = pl.concat([frame(20, 0, 0.0), frame(20, 1, 90.0)])  # 190 -> 90: back by 100
-    with pytest.raises(ValueError, match="no more than min_backwards_jump = 100"):
-        po.ModelBank([spec(on_clock_reset="reset_state", min_backwards_jump=100.0)]).fit_predict(
-            exact
-        )
-    below = po.ModelBank([spec(on_clock_reset="reset_state", min_backwards_jump=99.5)])
+    with pytest.raises(ValueError, match="no more than restart_after_step_back = 100"):
+        po.ModelBank([spec(restart_after_step_back=100.0)]).fit_predict(exact)
+    below = po.ModelBank([spec(restart_after_step_back=99.5)])
     assert below.fit_predict(exact).height == 40 and resets(below) == 1
 
 
 def test_the_first_backwards_jump_is_judged_like_any_other():
     """No warmup and no first-jump exemption."""
-    m = dict(on_clock_reset="reset_state", min_backwards_jump=100.0)
-    with pytest.raises(ValueError, match="min_backwards_jump"):
+    m = dict(restart_after_step_back=100.0)
+    with pytest.raises(ValueError, match="restart_after_step_back"):
         po.ModelBank([spec(**m)]).fit_predict(pl.concat([frame(1, 0, 5.0), frame(10, 1, 0.0)]))
     df = pl.concat([frame(1, 0, 150.0), frame(10, 1, 0.0)])
     bank = po.ModelBank([spec(**m)])
@@ -136,7 +134,7 @@ def test_the_first_backwards_jump_is_judged_like_any_other():
 
 
 def test_zero_starts_over_at_every_step_back():
-    bank = po.ModelBank([spec(on_clock_reset="reset_state", min_backwards_jump=0.0)])
+    bank = po.ModelBank([spec(restart_after_step_back=0.0)])
     assert bank.fit_predict(swapped(frame(), 20)).height == 50 and resets(bank) == 1
 
 
@@ -162,42 +160,38 @@ def test_the_refused_chunk_leaves_the_bank_untouched():
 
 
 def test_the_minimum_is_the_callers_to_give():
-    """Required with `"reset_state"`, refused with `"error"`, and no default
-    from the cap: what a late row is, only the caller knows."""
-    with pytest.raises(ValueError, match="min_backwards_jump is required"):
-        spec(on_clock_reset="reset_state")
-    with pytest.raises(ValueError, match='applies only under on_clock_reset = "reset_state"'):
-        spec(min_backwards_jump=5.0)
+    """No default from the cap: what a late row is, only the caller knows;
+    and it is read off a clock."""
     with pytest.raises(ValueError, match="needs clock"):
         po.spec.ewridge(
             "m",
             targets=["y"],
             features=["x0"],
-            halflife=10.0,
-            on_clock_reset="reset_state",
-            min_backwards_jump=5.0,
+            half_life=10.0,
+            restart_after_step_back=5.0,
         )
     for bad in (-1.0, float("inf")):
-        with pytest.raises(ValueError, match="min_backwards_jump must be finite"):
-            spec(on_clock_reset="reset_state", min_backwards_jump=bad)
-    with pytest.raises(ValueError, match="min_backwards_jump must not be NaN"):
-        spec(on_clock_reset="reset_state", min_backwards_jump=float("nan"))
+        with pytest.raises(ValueError, match="restart_after_step_back must be finite"):
+            spec(restart_after_step_back=bad)
+    with pytest.raises(ValueError, match="restart_after_step_back must not be NaN"):
+        spec(restart_after_step_back=float("nan"))
 
 
 def test_the_removed_settings_are_refused():
     for key in ("min_session_clock", "backwards_jitter_ratio"):
         with pytest.raises(TypeError):
             spec(**{key: 0.0})
-    for policy in ("max", "zero"):
-        with pytest.raises(ValueError, match="unknown variant"):
-            spec(on_clock_reset=policy)
+    # Task 144 folded the policy and its minimum into one name.
+    for key, value in (("on_clock_reset", "reset_state"), ("min_backwards_jump", 0.0)):
+        with pytest.raises(TypeError, match="restart_after_step_back"):
+            spec(**{key: value})
 
 
 def test_max_dclock_is_finite_and_above_zero():
-    with pytest.raises(ValueError, match="max_dclock must be finite"):
-        spec(max_dclock=float("inf"))
-    with pytest.raises(ValueError, match='max_dclock must be > 0.*halflife = "inf"'):
-        spec(max_dclock=0.0)
+    with pytest.raises(ValueError, match="gap_cap must be finite"):
+        spec(gap_cap=float("inf"))
+    with pytest.raises(ValueError, match='gap_cap must be > 0.*half_life = "inf"'):
+        spec(gap_cap=0.0)
 
 
 def test_session_gap_is_finite_or_reset():
@@ -213,12 +207,10 @@ def test_the_audits_stream_never_hands_a_model_an_infinite_step():
     t = [0.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 4.0] * 4
     t = [v + 10.0 * (i // 8) for i, v in enumerate(t)]
     df = pl.DataFrame({"t": t, "y": np.sin(np.arange(len(t)))})
-    holt = dict(targets=["y"], clock="t", max_dclock=5.0, level_halflife=3.0, min_periods=1.0)
+    holt = dict(targets=["y"], clock="t", gap_cap=5.0, level_half_life=3.0, min_weight=1.0)
     with pytest.raises(ValueError, match="goes backwards by 2 at row 4"):
         po.ModelBank([po.spec.holt("h", **holt)]).fit_predict(df)
-    bank = po.ModelBank(
-        [po.spec.holt("h", on_clock_reset="reset_state", min_backwards_jump=0.0, **holt)]
-    )
+    bank = po.ModelBank([po.spec.holt("h", restart_after_step_back=0.0, **holt)])
     pred = bank.fit_predict(df)["h"].struct.field("pred_y").to_numpy()
     assert np.isfinite(pred[-3:]).all(), pred
     assert resets(bank) == 4
@@ -246,7 +238,7 @@ def test_a_step_back_at_a_session_change_with_no_session_gap():
     bank = po.ModelBank([spec(session="s", group="g", group_close="session")])
     out = bank.fit_predict(df)
     assert out.height == 60
-    assert out["m"].struct.field("n_eff")[30] == 0.0
+    assert out["m"].struct.field("weight_sum")[30] == 0.0
     assert bank.summary()["clock_backwards"].sum() == 0
 
 
@@ -260,7 +252,7 @@ def test_a_skipped_row_with_an_out_of_order_clock_is_still_refused():
 
 @pytest.mark.parametrize(
     "policy",
-    [{}, dict(on_clock_reset="reset_state", min_backwards_jump=0.0)],
+    [{}, dict(restart_after_step_back=0.0)],
     ids=["error", "reset_state"],
 )
 def test_predict_scores_rows_before_the_last_learned_clock_as_they_stand(policy):
@@ -269,14 +261,14 @@ def test_predict_scores_rows_before_the_last_learned_clock_as_they_stand(policy)
     never refused and never a fresh stream. `holt` extrapolates over the step,
     so its score of an early row is its score at the last clock."""
     df = pl.DataFrame({"t": np.arange(60.0), "y": 0.5 * np.arange(60.0)})
-    holt = dict(targets=["y"], clock="t", max_dclock=5.0, level_halflife=10.0, **policy)
+    holt = dict(targets=["y"], clock="t", gap_cap=5.0, level_half_life=10.0, **policy)
     bank = po.ModelBank([po.spec.holt("h", **holt)])
     bank.fit_predict(df)
     early = bank.predict(df.slice(10, 20))["h"].struct
     at_last = bank.predict(df.slice(59, 1).with_columns(t=pl.lit(59.0)))["h"].struct
     assert early.field("pred_y").is_finite().all()
     assert (early.field("pred_y") == at_last.field("pred_y")[0]).all()
-    assert (early.field("n_eff") == at_last.field("n_eff")[0]).all()
+    assert (early.field("weight_sum") == at_last.field("weight_sum")[0]).all()
 
 
 def test_a_group_column_is_the_remedy_for_interleaved_streams():
@@ -299,11 +291,11 @@ def test_a_long_temporal_step_back_is_named_to_the_nanosecond():
     df = pl.DataFrame(
         {"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": [0.0, 1.0, 2.0], "y": [0.0, 1.0, 2.0]}
     )
-    temporal = dict(targets=["y"], features=["x0"], clock="t", halflife="1d", max_dclock="1d")
+    temporal = dict(targets=["y"], features=["x0"], clock="t", half_life="1d", gap_cap="1d")
     with pytest.raises(ValueError, match="goes backwards by 200d1ns at row 2"):
         po.ModelBank([po.spec.ewridge("m", **temporal)]).fit_predict(df)
-    late = po.spec.ewridge("m", on_clock_reset="reset_state", min_backwards_jump="300d", **temporal)
+    late = po.spec.ewridge("m", restart_after_step_back="300d", **temporal)
     with pytest.raises(
-        ValueError, match="200d1ns at row 2, no more than min_backwards_jump = 300d"
+        ValueError, match="200d1ns at row 2, no more than restart_after_step_back = 300d"
     ):
         po.ModelBank([late]).fit_predict(df)

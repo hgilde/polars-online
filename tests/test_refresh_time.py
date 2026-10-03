@@ -269,9 +269,9 @@ def test_the_output_feeds_a_bank_of_the_wide_frame():
     spec = po.spec.ew_cov(
         "c",
         features=[f"{s}_value" for s in NAMES],
-        halflife=100.0,
+        half_life=100.0,
         stats=["corr"],
-        min_periods=5.0,
+        min_weight=5.0,
     )
     out = po.ModelBank([spec]).fit_predict(grid)
     assert out["c"].struct.field("corr_a_value_b_value").drop_nulls().len() > 0

@@ -35,11 +35,11 @@ def cols(k):
     return [f"x{i}" for i in range(k)]
 
 
-def standardised(df, halflife=HALFLIFE):
+def standardised(df, half_life=HALFLIFE):
     """The rows as the model's `EwDiag` sees them: each value against the
     means and variances *before* it. The oracle everything else is built on."""
     x = df.to_numpy()
-    lam = 2.0 ** (-1.0 / halflife)
+    lam = 2.0 ** (-1.0 / half_life)
     m = np.zeros(x.shape[1])
     c = np.zeros(x.shape[1])
     w = 0.0
@@ -66,7 +66,7 @@ def run(spec, df):
 def test_u_is_the_longhand_pair_sum():
     """Lemma 2.3: the mean off-diagonal product over the mean squared entry."""
     df = frame()
-    out = run(po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0), df)
+    out = run(po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0), df)
     r = standardised(df)
     n = r.shape[1]
     off = np.einsum("ti,tj->t", r, r) - (r * r).sum(1)
@@ -82,7 +82,7 @@ def test_u_is_the_longhand_pair_sum():
 
 def test_u_stays_inside_its_bounds():
     k = 5
-    out = run(po.spec.deco("d", features=cols(k), halflife=HALFLIFE, min_periods=0.0), frame(k=k))
+    out = run(po.spec.deco("d", features=cols(k), half_life=HALFLIFE, min_weight=0.0), frame(k=k))
     u = out["u"].drop_nulls().to_numpy()
     assert u.size > 700
     assert (u > -1.0 / (k - 1) - 1e-12).all() and (u < 1.0).all()
@@ -94,20 +94,20 @@ def test_u_stays_inside_its_bounds():
 def test_rho_is_ew_covs_mean_of_u_to_the_bit():
     """The recursion is `EwCov::update`'s mean form -- `rho + b*(u - rho)`,
     not the algebraically equal `a*rho + b*u` -- so feeding the `u` sequence
-    to an `ew_cov(stats=["mean"])` at the same halflife reproduces `rho`
+    to an `ew_cov(stats=["mean"])` at the same half-life reproduces `rho`
     exactly, not nearly."""
     df = frame()
-    out = run(po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0), df)
+    out = run(po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0), df)
     u = out["u"].to_numpy()
     rho = out["rho"].to_numpy()
     live = np.isfinite(u)
     mean = run(
-        po.spec.ew_cov("m", features=["u"], halflife=HALFLIFE, stats=["mean"], min_periods=0.0),
+        po.spec.ew_cov("m", features=["u"], half_life=HALFLIFE, stats=["mean"], min_weight=0.0),
         pl.DataFrame({"u": u[live]}),
     )["mean_u"].to_numpy()
     a, b = rho[live], mean
     # The two warm up differently -- `deco`'s level exists one row after its
-    # first finite `u`, `ew_cov`'s mean after its own `min_periods` -- so the
+    # first finite `u`, `ew_cov`'s mean after its own `min_weight` -- so the
     # comparison starts where both are live.
     both = np.isfinite(a) & np.isfinite(b)
     assert both.sum() > 700
@@ -126,12 +126,12 @@ def test_rho_is_not_the_correlation_of_the_columns():
     The test is here so nobody "fixes" the model to close a gap that is the
     estimator's definition."""
     df = frame(n=4000, k=2, rho=0.6, seed=1)
-    rho = run(po.spec.deco("d", features=cols(2), halflife=200.0, min_periods=0.0), df)[
+    rho = run(po.spec.deco("d", features=cols(2), half_life=200.0, min_weight=0.0), df)[
         "rho"
     ].to_numpy()
     r = standardised(df, 200.0)
     corr = run(
-        po.spec.ew_cov("c", features=["r0", "r1"], halflife=200.0, stats=["corr"], min_periods=0.0),
+        po.spec.ew_cov("c", features=["r0", "r1"], half_life=200.0, stats=["corr"], min_weight=0.0),
         pl.DataFrame({"r0": r[:, 0], "r1": r[:, 1]}),
     )["corr_r0_r1"].to_numpy()
     assert rho[-1] == pytest.approx(0.32, abs=0.05)
@@ -148,8 +148,8 @@ def test_the_linear_dynamics_targets_the_ew_level():
         po.spec.deco(
             "d",
             features=cols(4),
-            halflife=HALFLIFE,
-            min_periods=0.0,
+            half_life=HALFLIFE,
+            min_weight=0.0,
             dynamics="linear",
             alpha=alpha,
             beta=beta,
@@ -203,7 +203,7 @@ def dense_loglik(r, rho, blocks):
 
 def test_loglik_is_the_dense_gaussian_density():
     df = frame(k=4)
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0)
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0)
     out = run(spec, df)
     r = standardised(df)
     rho = out["rho"].to_numpy()
@@ -225,8 +225,8 @@ def test_the_blocked_loglik_is_the_dense_gaussian_density():
     spec = po.spec.deco(
         "d",
         features=cols(5),
-        halflife=HALFLIFE,
-        min_periods=0.0,
+        half_life=HALFLIFE,
+        min_weight=0.0,
         blocks={"a": ["x0", "x1", "x2"], "b": ["x3", "x4"]},
     )
     out = run(spec, df)
@@ -251,13 +251,13 @@ def test_the_blocked_loglik_is_the_dense_gaussian_density():
 
 def test_one_block_of_everything_reproduces_the_unblocked_model():
     df = frame(k=4)
-    plain = run(po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0), df)
+    plain = run(po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0), df)
     blocked = run(
         po.spec.deco(
             "d",
             features=cols(4),
-            halflife=HALFLIFE,
-            min_periods=0.0,
+            half_life=HALFLIFE,
+            min_weight=0.0,
             blocks={"all": cols(4)},
         ),
         df,
@@ -272,8 +272,8 @@ def test_the_blocked_within_and_between_values_are_their_closed_forms():
     spec = po.spec.deco(
         "d",
         features=cols(5),
-        halflife=HALFLIFE,
-        min_periods=0.0,
+        half_life=HALFLIFE,
+        min_weight=0.0,
         blocks={"a": ["x0", "x1", "x2"], "b": ["x3", "x4"]},
     )
     out = run(spec, df)
@@ -299,7 +299,7 @@ def test_the_blocked_within_and_between_values_are_their_closed_forms():
 @pytest.mark.parametrize("size", [1, 7, 250, 800])
 def test_chunk_invariance(size):
     df = frame()
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0)
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0)
     want = run(spec, df)
     bank = po.ModelBank([spec])
     parts = [bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)]
@@ -314,7 +314,7 @@ def test_chunk_invariance(size):
 
 def test_save_load_mid_stream():
     df = frame()
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0)
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0)
     want = run(spec, df)
     bank = po.ModelBank([spec])
     bank.fit_predict(df[:400])
@@ -325,14 +325,14 @@ def test_save_load_mid_stream():
 
 def test_a_null_feature_skips_the_row_and_a_zero_weight_learns_nothing():
     df = frame(n=200).with_columns(w=pl.lit(1.0))
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0, weight="w")
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0, weight="w")
     want = run(spec, df)
     # A null feature on row 100: that row is skipped, and so is every output.
     nulled = df.with_columns(
         pl.when(pl.int_range(pl.len()) == 100).then(None).otherwise(pl.col("x0")).alias("x0")
     )
     out = run(spec, nulled)
-    assert out["u"][100] is None and out["rho"][100] is None and out["n_eff"][100] is None
+    assert out["u"][100] is None and out["rho"][100] is None and out["weight_sum"][100] is None
     # A zero weight on the same row: the row is scored but teaches nothing,
     # so every later `rho` matches the stream with that row's weight at zero.
     zeroed = df.with_columns(
@@ -351,7 +351,7 @@ def test_a_constant_column_is_left_out_and_every_other_value_learns():
     does, to the bit; the pair learns from ``x2``; block ``b``, left with one
     column that has a spread, has no ``rho``; and ``loglik``, which needs
     every column, is null. Until the decision no value learned on such a
-    row. What held before holds still: ``n_eff`` advances, nothing NaN
+    row. What held before holds still: ``weight_sum`` advances, nothing NaN
     reaches the state, and once the column moves every value learns (task
     112)."""
     df = frame(n=900)
@@ -360,14 +360,14 @@ def test_a_constant_column_is_left_out_and_every_other_value_learns():
     spec = po.spec.deco(
         "d",
         features=cols(4),
-        halflife=HALFLIFE,
-        min_periods=0.0,
+        half_life=HALFLIFE,
+        min_weight=0.0,
         blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]},
     )
     out = run(spec, df)
-    n_eff = out["n_eff"].to_numpy()
-    assert (np.diff(n_eff) > 0).all(), "the clock and the weight move on"
-    alone = run(po.spec.deco("d", features=["x0", "x1"], halflife=HALFLIFE, min_periods=0.0), df)
+    weight_sum = out["weight_sum"].to_numpy()
+    assert (np.diff(weight_sum) > 0).all(), "the clock and the weight move on"
+    alone = run(po.spec.deco("d", features=["x0", "x1"], half_life=HALFLIFE, min_weight=0.0), df)
     np.testing.assert_array_equal(out["rho_a"].to_numpy(), alone["rho"].to_numpy())
     flat = out[10:300]
     assert flat["rho_b"].null_count() == flat.height, "b has one column with a spread"
@@ -383,29 +383,29 @@ def test_a_constant_column_is_left_out_and_every_other_value_learns():
 
 def test_a_zero_weight_first_row_is_legal():
     df = frame(n=100).with_columns(w=pl.when(pl.int_range(pl.len()) == 0).then(0.0).otherwise(1.0))
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0, weight="w")
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, min_weight=0.0, weight="w")
     out = run(spec, df)
-    assert out["n_eff"][0] == 0.0
+    assert out["weight_sum"][0] == 0.0
     assert out["rho"].drop_nulls().len() > 90, "and it keeps learning after"
     assert out["rho"].drop_nulls().is_finite().all()
 
 
 @pytest.mark.parametrize("c", [2.0, 8.0, 3.0])
 def test_the_clock_is_a_number(c):
-    """Scaling the clock column and the halflife by the same factor leaves
-    `d_clock / halflife` -- and so every output -- where it was; bit for bit
+    """Scaling the clock column and the half-life by the same factor leaves
+    `d_clock / half-life` -- and so every output -- where it was; bit for bit
     at a power of two, where `exp2` is exact."""
     df = frame(n=300).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
     base = po.spec.deco(
-        "d", features=cols(4), halflife=HALFLIFE, min_periods=0.0, clock="t", max_dclock=1e12
+        "d", features=cols(4), half_life=HALFLIFE, min_weight=0.0, clock="t", gap_cap=1e12
     )
     scaled = po.spec.deco(
         "d",
         features=cols(4),
-        halflife=HALFLIFE * c,
-        min_periods=0.0,
+        half_life=HALFLIFE * c,
+        min_weight=0.0,
         clock="t",
-        max_dclock=1e12,
+        gap_cap=1e12,
     )
     want = run(base, df)
     got = run(scaled, df.with_columns(t=pl.col("t") * c))
@@ -439,7 +439,7 @@ def test_the_clock_is_a_number(c):
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):
-    opts = {"features": cols(4), "halflife": HALFLIFE}
+    opts = {"features": cols(4), "half_life": HALFLIFE}
     opts.update(kw)
     with pytest.raises(ValueError, match=message):
         po.spec.deco("d", **opts)
@@ -451,7 +451,7 @@ def test_a_block_list_written_by_hand_is_checked_too():
     array of pairs and can. Both are refused where the block list is read,
     saying what is wrong with the list (docs/REVIEW-E54-E64.md D1)."""
     base = po.spec.deco(
-        "d", features=cols(4), halflife=HALFLIFE, blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]}
+        "d", features=cols(4), half_life=HALFLIFE, blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]}
     )
     for blocks, message in (
         ([["a", ["x0", "x1"]], ["a", ["x2", "x3"]]], "named twice"),
@@ -465,18 +465,18 @@ def test_a_block_list_written_by_hand_is_checked_too():
 
 def test_label_delay_is_accepted_as_ew_cov_accepts_it():
     """`docs/PLAN.md` §11a said the new no-target models should refuse
-    `label_delay`, "nothing to hold back". `ew_cov` -- whose shape `deco`
+    `embargo`, "nothing to hold back". `ew_cov` -- whose shape `deco`
     copies -- accepts it today, and it does hold something back: the
     accumulator update. Refusing it here and not there would be a surprise,
     so it is accepted, and §11a records the departure."""
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, label_delay=5.0)
-    assert spec["label_delay"] == 5.0
+    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, embargo=5.0)
+    assert spec["embargo"] == 5.0
     out = run(spec, frame(n=100))
-    assert out["n_eff"].drop_nulls().max() > 0
+    assert out["weight_sum"].drop_nulls().max() > 0
 
 
 def test_a_decay_is_required():
-    with pytest.raises(ValueError, match="halflife/lam"):
+    with pytest.raises(ValueError, match="half_life/lam"):
         po.spec.deco("d", features=cols(4))
 
 
@@ -489,13 +489,13 @@ def test_a_wide_block_matches_ew_covs_mean_of_u_to_the_bit():
     still reproduces `ew_cov`'s mean of the `u` sequence exactly (review
     2026-09-18, phase 4)."""
     df = frame(n=1200, k=24, rho=0.4, seed=7)
-    out = run(po.spec.deco("d", features=cols(24), halflife=HALFLIFE, min_periods=0.0), df)
+    out = run(po.spec.deco("d", features=cols(24), half_life=HALFLIFE, min_weight=0.0), df)
     u = out["u"].to_numpy()
     rho = out["rho"].to_numpy()
     live = np.isfinite(u)
     assert live.sum() > 1000
     mean = run(
-        po.spec.ew_cov("m", features=["u"], halflife=HALFLIFE, stats=["mean"], min_periods=0.0),
+        po.spec.ew_cov("m", features=["u"], half_life=HALFLIFE, stats=["mean"], min_weight=0.0),
         pl.DataFrame({"u": u[live]}),
     )["mean_u"].to_numpy()
     both = np.isfinite(rho[live]) & np.isfinite(mean)

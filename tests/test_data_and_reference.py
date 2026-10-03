@@ -45,7 +45,7 @@ def test_ewridge_oracle_recovers_static_beta():
     y = (x @ beta + 0.01 * rng.standard_normal(n)).reshape(-1, 1)
     dc = np.ones(n)
     dc[0] = 0.0
-    out = ewridge_ref(x, y, dc, np.ones(n), halflife=1e6, ridge=1e-8)
+    out = ewridge_ref(x, y, dc, np.ones(n), half_life=1e6, ridge=1e-8)
     np.testing.assert_allclose(out["coef"][-1, 0, 1:], beta, atol=1e-3)
     assert abs(out["coef"][-1, 0, 0]) < 1e-2  # intercept ~ 0
 
@@ -58,7 +58,7 @@ def test_ewridge_pred_is_out_of_sample():
     y = rng.standard_normal((n, 1))
     dc = np.ones(n)
     dc[0] = 0.0
-    out = ewridge_ref(x, y, dc, np.ones(n), halflife=200.0)
+    out = ewridge_ref(x, y, dc, np.ones(n), half_life=200.0)
     m = ~np.isnan(out["pred"][:, 0])
     ic = np.corrcoef(out["pred"][m, 0], y[m, 0])[0, 1]
     assert abs(ic) < 0.08
@@ -67,9 +67,9 @@ def test_ewridge_pred_is_out_of_sample():
 def test_ridge_decay_matches_rls_exactly():
     df, _ = synthetic(n_groups=1, n_rows=300, k=3, null_frac=0.0)
     x, y, t, s, w = _arrays(df)
-    dc, rs = compute_dclock(t, s, len(df), max_dclock=50.0, session_gap=25.0)
-    a = ewridge_ref(x, y, dc, w, rs, halflife=300.0, ridge=1.0, ridge_decay=True)
-    b = rls_ref(x, y, dc, w, rs, halflife=300.0, ridge=1.0)
+    dc, rs = compute_dclock(t, s, len(df), gap_cap=50.0, session_gap=25.0)
+    a = ewridge_ref(x, y, dc, w, rs, half_life=300.0, ridge=1.0, ridge_scale=True)
+    b = rls_ref(x, y, dc, w, rs, half_life=300.0, ridge=1.0)
     m = ~(np.isnan(a["pred"][:, 0]) | np.isnan(b["pred"][:, 0]))
     assert m.sum() > 250
     np.testing.assert_allclose(a["pred"][m, 0], b["pred"][m, 0], atol=1e-12)
@@ -79,21 +79,17 @@ def test_compute_dclock_semantics():
     """Mirrors `caps_and_negative_deltas` in crates/online-core/src/clock.rs."""
     t = np.array([0.0, 10.0, 5.0, 6.0, 200.0])
     with pytest.raises(ValueError, match="row 2: the clock goes backwards by 5"):
-        compute_dclock(t, None, 5, max_dclock=50.0)
-    d, r = compute_dclock(
-        t, None, 5, max_dclock=50.0, on_clock_reset="reset_state", min_backwards_jump=2.0
-    )
+        compute_dclock(t, None, 5, gap_cap=50.0)
+    d, r = compute_dclock(t, None, 5, gap_cap=50.0, restart_after_step_back=2.0)
     assert r[2] and d[2] == 0.0
     np.testing.assert_allclose(d, [0.0, 10.0, 0.0, 1.0, 50.0])
     # Inclusive: a step back as large as the minimum is a late row.
     with pytest.raises(ValueError, match="row 2: a late row"):
-        compute_dclock(
-            t, None, 5, max_dclock=50.0, on_clock_reset="reset_state", min_backwards_jump=5.0
-        )
+        compute_dclock(t, None, 5, gap_cap=50.0, restart_after_step_back=5.0)
     ses = np.array([0, 0, 1, 1, 1])
-    d, r = compute_dclock(t, ses, 5, max_dclock=50.0, session_gap=7.5)
+    d, r = compute_dclock(t, ses, 5, gap_cap=50.0, session_gap=7.5)
     assert d[2] == 7.5  # session change overrides the negative delta
-    d, r = compute_dclock(t, ses, 5, max_dclock=50.0, session_gap="reset")
+    d, r = compute_dclock(t, ses, 5, gap_cap=50.0, session_gap="reset")
     assert r[2]
 
 
@@ -108,8 +104,8 @@ def test_null_policy_in_oracle():
     x_null[50, 0] = np.nan  # feature null: row skipped
     y_null = y.copy()
     y_null[60, 0] = np.nan  # target null: predict-only
-    out = ewridge_ref(x_null, y_null, dc, np.ones(n), halflife=100.0)
-    assert np.isnan(out["pred"][50, 0]) and np.isnan(out["n_eff"][50])
+    out = ewridge_ref(x_null, y_null, dc, np.ones(n), half_life=100.0)
+    assert np.isnan(out["pred"][50, 0]) and np.isnan(out["weight_sum"][50])
     assert np.isfinite(out["pred"][60, 0]) and np.isnan(out["resid"][60, 0])
 
 

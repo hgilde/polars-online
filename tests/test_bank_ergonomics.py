@@ -19,7 +19,7 @@ import pytest
 import polars_online as po
 
 INF = float("inf")
-BASE = dict(targets=["y"], features=["x0"], halflife=10.0)
+BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 
 
 def _df(n: int = 60, groups: tuple[str, ...] = ("a", "b", "c")) -> pl.DataFrame:
@@ -36,7 +36,7 @@ def _df(n: int = 60, groups: tuple[str, ...] = ("a", "b", "c")) -> pl.DataFrame:
 def _grouped_bank() -> po.ModelBank:
     return po.ModelBank(
         [
-            po.spec.ewridge("m", group="g", clock="t", max_dclock=1e9, **BASE),
+            po.spec.ewridge("m", group="g", clock="t", gap_cap=1e9, **BASE),
             po.spec.rls("r", **BASE),
         ]
     )
@@ -154,19 +154,19 @@ ROUNDTRIP_SPECS = [
         "m",
         targets=["y"],
         features=["x0"],
-        halflife=[INF, 10.0],
+        half_life=[INF, 10.0],
         ridge=[1e-6, 0.1],
         feature_sets={"a": ["x0"]},
         group="g",
         clock="t",
         # Finite, as a cap and a session gap must be since task 120.
-        max_dclock=1e9,
+        gap_cap=1e9,
         session="g",
         session_gap=1e9,
     ),
-    po.spec.ewridge("reset", clock="t", max_dclock=5.0, session="g", session_gap="reset", **BASE),
-    po.spec.kalman("k", coef_halflife=[INF, 10.0], q=[0.0, 1.0], **BASE),
-    po.spec.holt("h", targets=["y"], halflife=10.0, trend_halflife=INF),
+    po.spec.ewridge("reset", clock="t", gap_cap=5.0, session="g", session_gap="reset", **BASE),
+    po.spec.kalman("k", coef_half_life=[INF, 10.0], q=[0.0, 1.0], **BASE),
+    po.spec.holt("h", targets=["y"], half_life=10.0, trend_half_life=INF),
     po.spec.sgd("s", clip_gradient=INF, **BASE),
     po.spec.lasso("l", lasso_path=[0.1, 0.01], **BASE),
 ]
@@ -192,7 +192,7 @@ def test_specs_survive_save_to_a_path(tmp_path):
 
 def test_a_column_literally_named_inf_is_still_a_name():
     df = _df(30).rename({"x0": "inf", "y": "-inf"})
-    spec = po.spec.ewridge("m", targets=["-inf"], features=["inf"], halflife=10.0)
+    spec = po.spec.ewridge("m", targets=["-inf"], features=["inf"], half_life=10.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
     loaded = po.ModelBank.load_bytes(bank.save_bytes())
@@ -226,7 +226,7 @@ def _stream(n=40, seed=0):
 
 def _one(**kw):
     return po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], halflife=float("inf"), min_periods=2.0, **kw
+        "m", targets=["y"], features=["x0"], half_life=float("inf"), min_weight=2.0, **kw
     )
 
 
@@ -349,7 +349,7 @@ def _closing_batches():
     """Twelve groups of five rows, in key order, as six batches of ten: under
     ``monotone`` a group closes when the next key arrives."""
     spec = po.spec.ew_cov(
-        "c", features=["x0", "y"], halflife=40.0, group="g", group_close="monotone"
+        "c", features=["x0", "y"], half_life=40.0, group="g", group_close="monotone"
     )
     keys = [f"k{i:02d}" for i in range(12)]
     df = pl.DataFrame(
@@ -423,8 +423,8 @@ def test_a_state_file_describes_itself(tmp_path):
     dicts the builders made, and every accessor agrees with them.
     """
     specs = [
-        po.spec.ewridge("ridge", targets=["y"], features=["x0"], halflife=50.0, group="g"),
-        po.spec.ew_cov("cov", features=["x0", "y"], stats=["corr"], halflife=INF, group="g"),
+        po.spec.ewridge("ridge", targets=["y"], features=["x0"], half_life=50.0, group="g"),
+        po.spec.ew_cov("cov", features=["x0", "y"], stats=["corr"], half_life=INF, group="g"),
     ]
     bank = po.ModelBank(specs)
     bank.fit_predict(_df(60).with_columns(g=pl.Series(["a"] * 30 + ["b"] * 30)))

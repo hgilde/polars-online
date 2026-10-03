@@ -25,19 +25,18 @@ import pytest
 import polars_online as po
 
 # The joins and group-bys below reorder `left()`'s rows, so its clock runs
-# backwards again and again, which the default `on_clock_reset = "error"`
-# refuses. These tests are about the *plan* warning, which must fire before
+# backwards again and again, which is refused unless `restart_after_step_back`
+# reads it as a new start. These tests are about the *plan* warning, which must fire before
 # any row is read, so the spec starts over at every step back instead.
 SPEC = po.spec.ewridge(
     "m",
     targets=["y"],
     features=["x0"],
     clock="t",
-    halflife=10.0,
-    max_dclock=5.0,
-    min_periods=1.0,
-    on_clock_reset="reset_state",
-    min_backwards_jump=0.0,
+    half_life=10.0,
+    gap_cap=5.0,
+    min_weight=1.0,
+    restart_after_step_back=0.0,
 )
 
 
@@ -189,9 +188,9 @@ def test_a_plan_already_holding_a_bank_is_not_readable_and_still_runs():
         targets=["y"],
         features=["x0"],
         clock="t",
-        halflife=10.0,
-        max_dclock=5.0,
-        min_periods=1.0,
+        half_life=10.0,
+        gap_cap=5.0,
+        min_weight=1.0,
     )
     bank = po.ModelBank([outer])
     quiet(lambda: bank.fit(inner))
@@ -357,9 +356,9 @@ def test_the_warning_points_at_the_caller_not_the_library():
 # ------------------------------------ change what it leaves behind
 
 #: No decay, no window, nothing that reads a sequence: an accumulation, whose
-#: sums commute. `SPEC` above has a `halflife`, so every test before this one
+#: sums commute. `SPEC` above has a `half_life`, so every test before this one
 #: is disqualified and warns exactly as it did.
-FREE = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+FREE = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
 
 
 def _rows(n: int = 200) -> pl.DataFrame:
@@ -399,19 +398,19 @@ def test_an_accumulator_with_no_decay_is_recognised_as_order_free():
 @pytest.mark.parametrize(
     "spec",
     [
-        pytest.param(SPEC, id="halflife"),
+        pytest.param(SPEC, id="half_life"),
         pytest.param(
             po.spec.ewridge(
-                "m", targets=["y"], features=["x0"], lam=1.0, window=50, min_periods=1.0
+                "m", targets=["y"], features=["x0"], lam=1.0, window_size=50, min_weight=1.0
             ),
             id="window",
         ),
         pytest.param(
-            po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0),
+            po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
             id="gradient-model",
         ),
         pytest.param(
-            po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0),
+            po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0),
             id="reweighting-model",
         ),
         pytest.param(
@@ -424,7 +423,7 @@ def test_an_accumulator_with_no_decay_is_recognised_as_order_free():
                 targets=["y"],
                 features=["x0"],
                 lam=1.0,
-                min_periods=1.0,
+                min_weight=1.0,
                 drift_action="reset",
                 drift_threshold=0.5,
                 drift_delta=0.01,
@@ -454,7 +453,7 @@ def test_an_unrecognised_spec_key_is_not_order_free():
 def test_one_disqualifying_spec_disqualifies_the_bank():
     from polars_online._frame import _order_free
 
-    grad = po.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    grad = po.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert not _order_free([FREE, grad])
     assert not _order_free([])
 
@@ -492,9 +491,9 @@ def test_an_accumulators_coefficients_commute():
 
 
 def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():
-    """Why "no halflife" is not on its own a reason to expect order not to
+    """Why "no half-life" is not on its own a reason to expect order not to
     matter: this update is not commutative, and no decay does not change that."""
-    grad = po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    grad = po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert _spread(grad, _rows()) > 1e-6
 
 
@@ -515,13 +514,13 @@ def test_a_robust_fits_coefficients_do_not_commute_once_it_reweights():
     checked first: here the down-weighting fires, on dozens of rows."""
     frame = _rows_with_outliers()
     seen = po.spec.huber(
-        "m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0, emit_sigma=True
+        "m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0, emit_sigma=True
     )
     out = po.ModelBank([seen]).fit_predict(frame)["m"]
     resid, sigma = out.struct.field("resid_y"), out.struct.field("sigma_y")
     reweighted = int(((resid.abs() > 1.5 * sigma) & sigma.is_not_null()).sum())
     assert reweighted > 20, f"only {reweighted} rows beyond delta * sigma: nothing was reweighted"
-    rob = po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    rob = po.spec.huber("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert _spread(rob, frame) > 1e-6
 
 
@@ -538,7 +537,7 @@ def test_a_lasso_selects_by_the_order_where_its_path_commutes():
     def fitted(f: pl.DataFrame) -> tuple[list[float], float]:
         bank = po.ModelBank([spec])
         bank.fit(f.lazy())
-        return bank.coef("m")["coef"].to_list(), bank.last_row("m")["lam_selected_y"].item()
+        return bank.coef("m")["coef"].to_list(), bank.last_row("m")["penalty_selected_y"].item()
 
     coefs, chosen = fitted(frame)
     moved = 0

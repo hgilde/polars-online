@@ -19,7 +19,7 @@ against the summaries *as they stood before the row*. Three kinds of check:
   and every place the model touches the bank: warmup, nulls, zero weights,
   heavy weights and the radius cap, ids, the cap, pruning, promotion, the
   link rule, standardization, chunk invariance across checkpoints,
-  save/load, groups, the halflife grid, the ragged ``coef``, the expression
+  save/load, groups, the half-life grid, the ragged ``coef``, the expression
   and lazy paths, the CLI, and the refusals.
 """
 
@@ -36,7 +36,7 @@ import reference_cluster as ref
 from test_kmeans import ari, blobs, frame, stranded
 
 SHAPES = ["moons", "rings", "varied", "highdim20"]
-FIELDS = ("cluster", "dist", "micro", "outlier", "n_clusters", "n_micro", "n_eff")
+FIELDS = ("cluster", "dist", "micro_id", "outlier", "n_clusters", "n_micro", "weight_sum")
 
 
 def shapes(name, seed=1, n=6000):
@@ -78,7 +78,7 @@ def shapes(name, seed=1, n=6000):
 
 
 def spec(features=("x0", "x1"), eps=0.1, **kw):
-    d = dict(features=list(features), eps=eps, halflife=1000.0, min_periods=5.0)
+    d = dict(features=list(features), eps=eps, half_life=1000.0, min_weight=5.0)
     d.update(kw)
     return po.spec.micro("m", **d)
 
@@ -148,7 +148,7 @@ class TestOracle:
         eps = 0.3 if name == "highdim20" else 0.1
         if not standardize:
             eps *= float(X.std())  # the same eps, in the features' own units
-        params = dict(eps=eps, halflife=800.0, min_periods=3.0, standardize=standardize)
+        params = dict(eps=eps, half_life=800.0, min_weight=3.0, standardize=standardize)
         features = [f"x{i}" for i in range(X.shape[1])]
         out = unnested(po.ModelBank([spec(features=features, **params)]).fit_predict(frame(X)))
         want = ref.micro_ref(X.tolist(), **params)
@@ -160,19 +160,19 @@ class TestOracle:
     @pytest.mark.parametrize(
         "params",
         [
-            dict(beta_mu=1.0, min_periods=0.0),
+            dict(beta_mu=1.0, min_weight=0.0),
             dict(beta_mu=6.0, prune_every=1),
             dict(beta_mu=2.0, prune_every=7, max_clusters=6),
             dict(macro_link=0.0),
             dict(macro_link=8.0),
-            dict(halflife=float("inf"), max_clusters=12),
-            dict(halflife=30.0, prune_every=10),
+            dict(half_life=float("inf"), max_clusters=12),
+            dict(half_life=30.0, prune_every=10),
         ],
         ids=["beta1", "beta6/every1", "cap6", "link0", "link8", "inf", "fast"],
     )
     def test_every_knob_bit_for_bit(self, params):
         X, _ = blobs(n=2000, k=5, seed=2, scale=0.8, spread=6.0)
-        p = dict(eps=0.1, halflife=300.0, min_periods=3.0)
+        p = dict(eps=0.1, half_life=300.0, min_weight=3.0)
         p.update(params)
         out = unnested(po.ModelBank([spec(**p)]).fit_predict(frame(X)))
         want = ref.micro_ref(X.tolist(), **p)
@@ -184,7 +184,7 @@ class TestOracle:
             # Every summary is potential from birth: a row is an outlier
             # exactly when it opens one (no established summary took it).
             seen: set[int] = set()
-            for mid, outlier in zip(out["micro"], out["outlier"], strict=True):
+            for mid, outlier in zip(out["micro_id"], out["outlier"], strict=True):
                 if mid is not None:
                     assert outlier == (mid not in seen)
                     seen.add(mid)
@@ -214,13 +214,13 @@ class TestOracle:
                 "t": t,
             }
         )
-        params = dict(eps=0.12, halflife=120.0, min_periods=4.0, beta_mu=3.0, prune_every=25)
-        s = spec(**params, clock="t", max_dclock=10.0, weight="w")
+        params = dict(eps=0.12, half_life=120.0, min_weight=4.0, beta_mu=3.0, prune_every=25)
+        s = spec(**params, clock="t", gap_cap=10.0, weight="w")
         out = unnested(po.ModelBank([s]).fit_predict(df))
-        want = ref.micro_ref(rows, clock=t.tolist(), weight=w, max_dclock=10.0, **params)
+        want = ref.micro_ref(rows, clock=t.tolist(), weight=w, gap_cap=10.0, **params)
         _same(out, want, "nulls/weights/clock")
         assert out["cluster"].null_count() > 40, "the fixture skipped fewer rows than it claims"
-        assert out["n_eff"][1] == 0.0, "a zero-weight first row learned something"
+        assert out["weight_sum"][1] == 0.0, "a zero-weight first row learned something"
         assert want["model"][0].n_pruned > 0
 
     def test_predict_matches_the_oracle_without_learning(self):
@@ -229,29 +229,29 @@ class TestOracle:
         t = np.cumsum(rng.random(900) + 0.5)
         t[600:] += 30.0  # the probe rows are a gap away: admission decays
         df = frame(X).with_columns(t=pl.Series(t))
-        params = dict(eps=0.15, halflife=60.0, min_periods=3.0)
-        s = spec(**params, clock="t", max_dclock=50.0)
+        params = dict(eps=0.15, half_life=60.0, min_weight=3.0)
+        s = spec(**params, clock="t", gap_cap=50.0)
         bank = po.ModelBank([s])
         bank.fit_predict(df.slice(0, 600))
-        want = ref.micro_ref(X[:600].tolist(), clock=t[:600].tolist(), max_dclock=50.0, **params)
+        want = ref.micro_ref(X[:600].tolist(), clock=t[:600].tolist(), gap_cap=50.0, **params)
         model = want["model"][0]
         probe = df.slice(600, 300)
         got = unnested(bank.predict(probe))
         for i, row in enumerate(X[600:].tolist()):
             d = min(t[600 + i] - t[599], 50.0)
-            pred, n_eff = model.predict(row, d)
+            pred, weight_sum = model.predict(row, d)
             assert got["cluster"][i] == int(pred[0])
             assert got["dist"][i] == pred[1]
-            assert got["micro"][i] == int(pred[2])
+            assert got["micro_id"][i] == int(pred[2])
             assert got["outlier"][i] == (pred[3] == 1.0)
-            assert got["n_eff"][i] == n_eff
+            assert got["weight_sum"][i] == weight_sum
         # Without the gap's decay some probe rows would be admitted by
         # summaries that no longer admit them: predict is the step's answer.
         stale = [model.predict(row, 0.0)[0][2] for row in X[600:].tolist()]
-        assert stale != got["micro"].to_list()
+        assert stale != got["micro_id"].to_list()
         # ... and predicting changed nothing.
         after = unnested(bank.fit_predict(probe))
-        oracle_after = ref.micro_ref(X.tolist(), clock=t.tolist(), max_dclock=50.0, **params)
+        oracle_after = ref.micro_ref(X.tolist(), clock=t.tolist(), gap_cap=50.0, **params)
         for key in FIELDS:
             assert after[key].to_list() == oracle_after[key][600:], key
 
@@ -271,7 +271,7 @@ class TestLargeData:
         # DBSCAN reaches on a sample -- the same family, all the data at once.
         X, lab = shapes(name, seed=1, n=20_000)
         n = len(X)  # a multiple of the number of shapes
-        s = spec(features=[f"x{i}" for i in range(X.shape[1])], eps=eps, halflife=3000.0)
+        s = spec(features=[f"x{i}" for i in range(X.shape[1])], eps=eps, half_life=3000.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         got = out["cluster"].fill_null(-1).to_numpy()
         half = np.arange(n) >= n // 2
@@ -298,7 +298,7 @@ class TestLargeData:
         assert 4.0 < min(gaps) < 4.5, "the fixture drifted"
         df = frame(X)
         for eps in (0.2, 0.25):
-            s = spec(features=[f"x{i}" for i in range(p)], eps=eps, halflife=20_000.0)
+            s = spec(features=[f"x{i}" for i in range(p)], eps=eps, half_life=20_000.0)
             out = unnested(po.ModelBank([s]).fit_predict(df))
             got = out["cluster"].fill_null(-1).to_numpy()
             half = np.arange(n) >= n // 2
@@ -310,11 +310,11 @@ class TestLargeData:
         # Four blobs; at n/2 blob 3 stops and a fifth is born far from every
         # summary. The newborn is a cluster of its own as soon as one summary
         # there reaches beta_mu rows; the dead blob's summaries stay until
-        # their weight decays below beta_mu -- log2(n0 / beta_mu) halflives,
+        # their weight decays below beta_mu -- log2(n0 / beta_mu) half-lives,
         # about five here -- and the count is back to four.
-        n, halflife = 20_000, 1000.0
+        n, half_life = 20_000, 1000.0
         X, lab = stranded(seed=1, n=n)
-        s = spec(eps=0.1, halflife=halflife, min_periods=10.0)
+        s = spec(eps=0.1, half_life=half_life, min_weight=10.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         nc = out["n_clusters"].fill_null(0).to_numpy()
         got = out["cluster"].fill_null(-1).to_numpy()
@@ -324,7 +324,7 @@ class TestLargeData:
         assert ari(got[before], lab[before]) > 0.99
         five = np.flatnonzero((rows >= n // 2) & (nc == 5))
         assert five[0] - n // 2 < 200, five[0]
-        lingered = (five[-1] - n // 2) / halflife
+        lingered = (five[-1] - n // 2) / half_life
         assert 3.0 < lingered < 8.0, lingered
         tail = rows >= n - 3000
         assert (nc[tail] == 4).all()
@@ -345,7 +345,7 @@ class TestLargeData:
         lo, hi = X.min(axis=0), X.max(axis=0)
         X[noise] = rng.uniform(lo - (hi - lo), hi + (hi - lo), (int(noise.sum()), 2))
         lab[noise] = -1
-        s = spec(eps=0.07, halflife=2000.0, min_periods=10.0)
+        s = spec(eps=0.07, half_life=2000.0, min_weight=10.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         flagged = out["outlier"].fill_null(False).to_numpy()
         got = out["cluster"].fill_null(-1).to_numpy()
@@ -362,20 +362,20 @@ class TestLargeData:
 class TestEdgeCases:
     def test_outputs_are_null_until_min_periods_and_cluster_until_a_summary_stands(self):
         X, _ = blobs(n=200, k=1, seed=20, scale=0.3)
-        s = spec(eps=0.5, min_periods=20.0, halflife=float("inf"), beta_mu=3.0)
+        s = spec(eps=0.5, min_weight=20.0, half_life=float("inf"), beta_mu=3.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         for key in FIELDS[:-1]:
             assert out[key][:20].null_count() == 20, key
             assert out[key][20:].null_count() == 0, key
-        # n_eff is the weight before the row: the row count with no decay.
-        assert out["n_eff"][0] == 0.0 and out["n_eff"][19] == 19.0
+        # weight_sum is the weight before the row: the row count with no decay.
+        assert out["weight_sum"][0] == 0.0 and out["weight_sum"][19] == 19.0
         # No potential summary yet: `cluster` and `dist` are null while the
         # rest of the struct is not.
-        s2 = spec(eps=0.5, min_periods=0.0, halflife=float("inf"), beta_mu=3.0)
+        s2 = spec(eps=0.5, min_weight=0.0, half_life=float("inf"), beta_mu=3.0)
         out2 = unnested(po.ModelBank([s2]).fit_predict(frame(X)))
         assert out2["n_clusters"][0] == 0 and out2["n_micro"][0] == 0
         assert out2["cluster"][0] is None and out2["dist"][0] is None
-        assert out2["micro"][0] == 0 and out2["outlier"][0]
+        assert out2["micro_id"][0] == 0 and out2["outlier"][0]
         first = out2["cluster"].is_not_null().arg_max()
         assert out2["n_clusters"][first - 1] == 0 and out2["n_clusters"][first] == 1
 
@@ -384,13 +384,13 @@ class TestEdgeCases:
         # (every row) lists them all: the row's `micro` is an id that stands
         # after the row, and a row that opens a summary gets the next id.
         X, _ = blobs(n=400, k=3, seed=21, scale=0.5)
-        s = spec(eps=0.2, min_periods=0.0, beta_mu=1.0, coef_every=1, halflife=float("inf"))
+        s = spec(eps=0.2, min_weight=0.0, beta_mu=1.0, coef_every=1, half_life=float("inf"))
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         ids_after = [set(np.array(c).reshape(-1, 6)[:, 0].astype(int)) for c in out["coef"]]
         seen: set[int] = set()
         opened = 0
         for i in range(400):
-            mid = out["micro"][i]
+            mid = out["micro_id"][i]
             assert mid in ids_after[i]
             assert out["n_micro"][i] == len(seen), "n_micro counts the summaries before the row"
             if mid not in seen:
@@ -407,11 +407,11 @@ class TestEdgeCases:
     def test_a_zero_weight_row_advances_the_clock_and_learns_nothing(self):
         X, _ = blobs(n=300, k=1, seed=22, scale=0.5)
         df = frame(X).with_columns(w=pl.Series([0.0 if i in (0, 150) else 1.0 for i in range(300)]))
-        s = spec(eps=0.5, halflife=50.0, min_periods=1.0, weight="w", coef_every=1)
+        s = spec(eps=0.5, half_life=50.0, min_weight=1.0, weight="w", coef_every=1)
         out = unnested(po.ModelBank([s]).fit_predict(df))
-        assert out["n_eff"][1] == 0.0
+        assert out["weight_sum"][1] == 0.0
         lam = 0.5 ** (1 / 50)
-        assert out["n_eff"][151] == pytest.approx(out["n_eff"][150] * lam, rel=1e-12)
+        assert out["weight_sum"][151] == pytest.approx(out["weight_sum"][150] * lam, rel=1e-12)
         # The summaries after row 150 are those after row 149, decayed once.
         before = np.array(out["coef"][149]).reshape(-1, 6)
         after = np.array(out["coef"][150]).reshape(-1, 6)
@@ -425,12 +425,16 @@ class TestEdgeCases:
         rows = X.tolist()
         rows[150][0] = None
         df = pl.DataFrame({"x0": [r[0] for r in rows], "x1": [r[1] for r in rows]})
-        out = unnested(po.ModelBank([spec(halflife=20.0, min_periods=1.0)]).fit_predict(df))
-        assert out["cluster"][150] is None and out["n_eff"][150] is None
-        assert out["micro"][150] is None and out["outlier"][150] is None
+        out = unnested(po.ModelBank([spec(half_life=20.0, min_weight=1.0)]).fit_predict(df))
+        assert out["cluster"][150] is None and out["weight_sum"][150] is None
+        assert out["micro_id"][150] is None and out["outlier"][150] is None
         lam = 0.5 ** (1 / 20)
-        assert out["n_eff"][151] == pytest.approx(out["n_eff"][149] * lam + 1.0, rel=1e-12)
-        assert out["n_eff"][152] == pytest.approx(out["n_eff"][151] * lam**2 + 1.0, rel=1e-12)
+        assert out["weight_sum"][151] == pytest.approx(
+            out["weight_sum"][149] * lam + 1.0, rel=1e-12
+        )
+        assert out["weight_sum"][152] == pytest.approx(
+            out["weight_sum"][151] * lam**2 + 1.0, rel=1e-12
+        )
 
     def test_a_heavy_row_is_admitted_as_a_unit_row_and_the_radius_is_capped(self):
         # Five unit rows at the origin, then one row of weight five a little
@@ -445,15 +449,15 @@ class TestEdgeCases:
         df = pl.DataFrame({"x0": [r[0] for r in rows], "x1": [r[1] for r in rows], "w": w})
         s = spec(
             eps=eps,
-            halflife=float("inf"),
-            min_periods=0.0,
+            half_life=float("inf"),
+            min_weight=0.0,
             standardize=False,
             weight="w",
             coef_every=1,
             beta_mu=3.0,
         )
         out = unnested(po.ModelBank([s]).fit_predict(df))
-        assert out["micro"].to_list() == [0] * 7
+        assert out["micro_id"].to_list() == [0] * 7
         assert out["outlier"].to_list() == [True, True, True, False, False, False, False]
         c = np.array(out["coef"][5]).reshape(-1, 6)
         assert c.shape == (1, 6)
@@ -471,31 +475,31 @@ class TestEdgeCases:
         rng = np.random.default_rng(23)
         lab = rng.integers(0, 10, n)
         X = np.array([[20.0 * j, 0.0] for j in range(10)])[lab] + 0.3 * rng.standard_normal((n, 2))
-        s = spec(eps=0.1, halflife=float("inf"), min_periods=1.0, max_clusters=4)
+        s = spec(eps=0.1, half_life=float("inf"), min_weight=1.0, max_clusters=4)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         assert out["n_micro"].max() == 4
         assert out["n_clusters"].max() <= 4
-        assert out["micro"].max() > 100, "ids keep counting past the evictions"
-        m = ref.MicroRef(p=2, eps=0.1, halflife=math.inf, min_periods=1.0, max_clusters=4)
+        assert out["micro_id"].max() > 100, "ids keep counting past the evictions"
+        m = ref.MicroRef(p=2, eps=0.1, half_life=math.inf, min_weight=1.0, max_clusters=4)
         for x in X[:500]:
             m.step(list(x), 1.0, 1.0)
         assert m.n_evicted > 0 and len(m.mc) == 4
 
     def test_promotion_at_beta_mu_and_pruning_below_it(self):
-        # One blob at the origin; halflife 50 and beta_mu 3. A summary is an
+        # One blob at the origin; half-life 50 and beta_mu 3. A summary is an
         # outlier until its weight reaches 3, a cluster from then on. An
         # outlier summary is pruned at a checkpoint once its weight is below
         # xi(age) = (lam^age lam^T_p - 1) / (lam^T_p - 1), which is 1 at
         # birth and rises toward beta_mu: a lone row is pruned at the first
         # checkpoint after the one it was born on. A potential summary is
         # pruned once its weight has decayed below beta_mu.
-        halflife, beta_mu = 50.0, 3.0
-        lam = 0.5 ** (1 / halflife)
+        half_life, beta_mu = 50.0, 3.0
+        lam = 0.5 ** (1 / half_life)
         rows = [[0.0, 0.0]] * 3 + [[50.0, 50.0]] + [[0.0, 0.0]] * 60
         s = spec(
             eps=0.5,
-            halflife=halflife,
-            min_periods=0.0,
+            half_life=half_life,
+            min_weight=0.0,
             beta_mu=beta_mu,
             prune_every=10,
             standardize=False,
@@ -508,7 +512,7 @@ class TestEdgeCases:
         assert lam**2 + lam + 1 < beta_mu < lam**4 + lam**3 + lam**2 + 1
         assert out["outlier"][:5].to_list() == [True] * 5
         assert out["n_clusters"][:5].to_list() == [0] * 5
-        assert out["micro"][:5].to_list() == [0, 0, 0, 1, 0]
+        assert out["micro_id"][:5].to_list() == [0, 0, 0, 1, 0]
         assert out["n_clusters"][5:].to_list() == [1] * (len(rows) - 5)
         assert out["outlier"][5:].to_list() == [False] * (len(rows) - 5)
         assert out["cluster"][5:].to_list() == [0] * (len(rows) - 5)
@@ -526,9 +530,9 @@ class TestEdgeCases:
         assert out2["n_micro"][20:].to_list() == [1] * 10
         # Through the oracle: abandon the potential summary (rows far away
         # keep the checkpoints coming) and count the rows until it is gone:
-        # halflife · log2(n0 / beta_mu), to the checkpoint.
+        # half-life · log2(n0 / beta_mu), to the checkpoint.
         m = ref.MicroRef(
-            p=2, eps=0.5, halflife=halflife, beta_mu=beta_mu, prune_every=10, standardize=False
+            p=2, eps=0.5, half_life=half_life, beta_mu=beta_mu, prune_every=10, standardize=False
         )
         for r in rows:
             m.step(list(r), 1.0, 1.0)
@@ -538,16 +542,16 @@ class TestEdgeCases:
         while any(c.id == 0 for c in m.mc):
             m.step([50.0, 50.0], 1.0, 1.0)
             gone += 1
-        assert 0 <= gone - halflife * math.log2(n0 / beta_mu) < 10, (gone, n0)
+        assert 0 <= gone - half_life * math.log2(n0 / beta_mu) < 10, (gone, n0)
 
     def test_halflife_inf_never_prunes(self):
         X, _ = blobs(n=500, k=3, seed=24)
-        s = spec(eps=0.05, halflife=float("inf"), min_periods=1.0, beta_mu=3.0)
+        s = spec(eps=0.05, half_life=float("inf"), min_weight=1.0, beta_mu=3.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         n_micro = out["n_micro"].drop_nulls().to_list()
         assert all(a <= b for a, b in zip(n_micro, n_micro[1:], strict=False))
         assert n_micro[-1] > 20
-        m = ref.MicroRef(p=2, eps=0.05, halflife=math.inf, beta_mu=3.0)
+        m = ref.MicroRef(p=2, eps=0.05, half_life=math.inf, beta_mu=3.0)
         assert m.prune_horizon() is None
 
     def test_the_link_threshold_derived_or_overridden(self):
@@ -558,7 +562,7 @@ class TestEdgeCases:
         df = frame(X)
 
         def run(**kw):
-            out = unnested(po.ModelBank([spec(eps=0.1, min_periods=10.0, **kw)]).fit_predict(df))
+            out = unnested(po.ModelBank([spec(eps=0.1, min_weight=10.0, **kw)]).fit_predict(df))
             got = out["cluster"].fill_null(-1).to_numpy()
             half = np.arange(3000) >= 1500
             return out, ari(got[half], lab[half])
@@ -584,7 +588,7 @@ class TestEdgeCases:
             [np.array([-6.0, 0.0, 6.0])[lab] + 0.5 * rng.standard_normal(1500), np.full(1500, 7.0)],
             1,
         )
-        out = unnested(po.ModelBank([spec(eps=0.05, min_periods=10.0)]).fit_predict(frame(X)))
+        out = unnested(po.ModelBank([spec(eps=0.05, min_weight=10.0)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
         got = out["cluster"].fill_null(-1).to_numpy()
         half = np.arange(1500) >= 750
@@ -601,7 +605,7 @@ class TestEdgeCases:
         df = frame(X)
 
         def score(standardize):
-            s = spec(eps=0.15, min_periods=10.0, standardize=standardize)
+            s = spec(eps=0.15, min_weight=10.0, standardize=standardize)
             out = unnested(po.ModelBank([s]).fit_predict(df))
             got = out["cluster"].fill_null(-1).to_numpy()
             half = np.arange(n) >= n // 2
@@ -614,7 +618,7 @@ class TestEdgeCases:
     def test_chunk_invariance_across_checkpoints_and_evictions(self):
         X, _ = blobs(n=900, k=6, seed=30, scale=0.7)
         df = frame(X)
-        s = spec(eps=0.08, prune_every=13, max_clusters=25, halflife=150.0, min_periods=1.0)
+        s = spec(eps=0.08, prune_every=13, max_clusters=25, half_life=150.0, min_weight=1.0)
         one = unnested(po.ModelBank([s]).fit_predict(df))
         assert one["n_micro"].max() == 25
         for size in (1, 7, 97, 450):
@@ -631,7 +635,7 @@ class TestEdgeCases:
     def test_save_load_mid_stream(self, tmp_path):
         X, _ = blobs(n=600, k=4, seed=31)
         df = frame(X)
-        s = spec(eps=0.1, prune_every=30, max_clusters=20, halflife=100.0, min_periods=1.0)
+        s = spec(eps=0.1, prune_every=30, max_clusters=20, half_life=100.0, min_weight=1.0)
         for cut in (1, 50, 250, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -651,25 +655,25 @@ class TestEdgeCases:
 
     def test_halflife_grid(self):
         X, _ = blobs(n=400, seed=33)
-        s = spec(halflife=[50.0, 500.0])
+        s = spec(half_life=[50.0, 500.0])
         assert po.spec.output_fields(s) == [
             "cluster@h50",
             "dist@h50",
-            "micro@h50",
+            "micro_id@h50",
             "outlier@h50",
             "n_clusters@h50",
             "n_micro@h50",
-            "n_eff@h50",
+            "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "coef@h50",
             "cluster@h500",
             "dist@h500",
-            "micro@h500",
+            "micro_id@h500",
             "outlier@h500",
             "n_clusters@h500",
             "n_micro@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
             "coef@h500",
@@ -678,13 +682,13 @@ class TestEdgeCases:
         assert out["cluster@h50"].dtype == pl.Int64
         assert out["outlier@h50"].dtype == pl.Boolean
         assert out["n_micro@h50"].dtype == pl.Int32
-        assert out["n_eff@h50"][-1] < out["n_eff@h500"][-1]
+        assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
 
     def test_coef_is_the_potential_summaries_ragged(self):
         # One [id, label, n, radius, c_1, ..., c_p] block per potential
         # summary, as many as stand: the list length varies row to row.
         X, _ = blobs(n=600, k=3, seed=34, scale=0.6, spread=6.0)
-        s = spec(features=("x0", "x1"), eps=0.1, coef_every=1, min_periods=0.0)
+        s = spec(features=("x0", "x1"), eps=0.1, coef_every=1, min_weight=0.0)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         coef = out["coef"]
         assert coef[0] is None, "no potential summary yet: null, not an empty list"
@@ -693,7 +697,7 @@ class TestEdgeCases:
         last = np.array(coef[-1]).reshape(-1, 6)
         # (The old `... or True` line here asserted nothing; the oracle check
         # below is the real one -- review 2026-09-18, minor.)
-        m = ref.micro_ref(X.tolist(), eps=0.1, halflife=1000.0, min_periods=0.0)["model"][0]
+        m = ref.micro_ref(X.tolist(), eps=0.1, half_life=1000.0, min_weight=0.0)["model"][0]
         assert len(set(last[:, 1])) == m.n_clusters
         assert (last[:, 2] >= 3.0).all(), "a potential summary weighs at least beta_mu"
         assert (last[:, 3] <= 0.1 * math.sqrt(2) * (1 + 1e-12)).all()
@@ -710,11 +714,11 @@ class TestEdgeCases:
         assert idx["kind"].to_list() == [
             "cluster",
             "dist",
-            "micro",
+            "micro_id",
             "outlier",
             "n_clusters",
             "n_micro",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",
@@ -745,15 +749,15 @@ class TestEdgeCases:
         X, _ = blobs(n=300, seed=37)
         X[120] = [1e100, -1e100]
         X[121] = [1e-300, 1e-300]
-        s = spec(eps=0.1, min_periods=1.0, coef_every=1)
+        s = spec(eps=0.1, min_weight=1.0, coef_every=1)
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
-        assert out["n_eff"].is_finite().all()
+        assert out["weight_sum"].is_finite().all()
         assert out["dist"].drop_nulls().is_finite().all()
         assert out["cluster"][122:].null_count() == 0
         for c in out["coef"].drop_nulls():
             assert np.isfinite(np.array(c)).all()
         # The extreme row opened a summary of its own and is nobody's neighbour.
-        assert out["micro"][120] == out["micro"][119] + 1 or out["outlier"][120]
+        assert out["micro_id"][120] == out["micro_id"][119] + 1 or out["outlier"][120]
 
 
 class TestRefusals:
@@ -761,7 +765,7 @@ class TestRefusals:
         "flag",
         [
             {"emit_sigma": True},
-            {"emit_resid_z": True},
+            {"emit_zscore": True},
             {"emit_metrics": True},
             {"resid_quantiles": [0.5]},
             {"conformal": 0.9},
@@ -798,7 +802,7 @@ class TestRefusals:
 
     def test_no_targets_and_no_intercept_leak(self):
         with pytest.raises(TypeError, match=r"micro\(\) takes no targets"):
-            po.spec.micro("m", features=["x0"], targets=["x0"], eps=0.1, halflife=10.0)
+            po.spec.micro("m", features=["x0"], targets=["x0"], eps=0.1, half_life=10.0)
         # A feature named like the plumbing target is not a leak.
         assert spec(features=("x0",))["targets"] == ["x0"]
 
@@ -825,8 +829,8 @@ class TestRefusals:
                     'name = "m"',
                     'features = ["x0", "x1"]',
                     'targets = ["x0"]',
-                    "halflife = 1000.0",
-                    "min_periods = 5.0",
+                    "half_life = 1000.0",
+                    "min_weight = 5.0",
                     "[specs.model]",
                     'type = "micro"',
                     "eps = 0.1",
@@ -838,4 +842,4 @@ class TestRefusals:
         got = unnested(pl.read_parquet(dst))
         want = unnested(po.ModelBank([spec(prune_every=50)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)
-        assert got["outlier"].dtype == pl.Boolean and got["micro"].dtype == pl.Int64
+        assert got["outlier"].dtype == pl.Boolean and got["micro_id"].dtype == pl.Int64

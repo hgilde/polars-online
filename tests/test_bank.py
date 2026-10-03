@@ -1,5 +1,5 @@
 """Task 7: the bank's own semantics -- chunk invariance, out-of-sample
-predictions, the null policy and warmup, the clock, per-target `min_periods`
+predictions, the null policy and warmup, the clock, per-target `min_weight`
 (docs/PLAN.md section 9, classes 2-5). Exercised through `ewridge`; the
 oracle agreement of each model is in its own `test_<model>.py`."""
 
@@ -11,7 +11,7 @@ import polars_online as po
 from data import synthetic
 from test_model_registry import REGRESSIONS
 
-#: The regression models that check each target's ``min_periods`` against
+#: The regression models that check each target's ``min_weight`` against
 #: that target's own weight (review 2026-09-12, S2); the rest check it against
 #: the shared weight. Held to the code by the test below, which runs every
 #: regression model: one listed here that waits on the shared weight, or one
@@ -26,15 +26,15 @@ def _spec(k=3, targets=("y0",), **kw):
         targets=list(targets),
         features=[f"x{j}" for j in range(k)],
         clock="t",
-        halflife=HL,
-        max_dclock=MAXD,
+        half_life=HL,
+        gap_cap=MAXD,
         session="session",
         session_gap=GAP,
         weight="w",
         group="group",
         ridge=1e-6,
         max_rows_between_solves=1,
-        min_periods=5.0,
+        min_weight=5.0,
     )
     defaults.update(kw)
     return po.spec.ewridge("m", **defaults)
@@ -120,9 +120,9 @@ class TestOutOfSample:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=200.0,
+            half_life=200.0,
             max_rows_between_solves=1,
-            min_periods=10.0,
+            min_weight=10.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         pred = _np(out, "pred_y0")
@@ -141,14 +141,14 @@ class TestNullPolicyAndWarmup:
             }
         )
 
-    def _out(self, min_periods=3.0):
+    def _out(self, min_weight=3.0):
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=100.0,
+            half_life=100.0,
             max_rows_between_solves=1,
-            min_periods=min_periods,
+            min_weight=min_weight,
         )
         return po.ModelBank([spec]).fit_predict(self._df())
 
@@ -157,23 +157,23 @@ class TestNullPolicyAndWarmup:
         row = out.row(2, named=True)["m"]
         assert row["pred_y0"] is None
         assert row["resid_y0"] is None
-        assert row["n_eff"] is None
+        assert row["weight_sum"] is None
 
     def test_target_null_pred_only(self):
-        out = self._out(min_periods=2.0)
+        out = self._out(min_weight=2.0)
         row = out.row(4, named=True)["m"]
         assert row["pred_y0"] is not None
         assert row["resid_y0"] is None
 
     def test_warmup_nulls_until_min_periods(self):
-        out = self._out(min_periods=3.0)
+        out = self._out(min_weight=3.0)
         s = out["m"].struct
         preds = s.field("pred_y0").to_list()
-        neff = s.field("n_eff").to_list()
-        # rows 0-2: n_eff before update < 3 (row 2 skipped); row 3: n_eff ~ 2 -> null
+        neff = s.field("weight_sum").to_list()
+        # rows 0-2: weight_sum before update < 3 (row 2 skipped); row 3: weight_sum ~ 2 -> null
         assert preds[0] is None and preds[1] is None
         assert neff[0] == 0.0
-        # first non-null pred appears once n_eff >= 3
+        # first non-null pred appears once weight_sum >= 3
         first = next(i for i, p in enumerate(preds) if p is not None)
         assert neff[first] >= 3.0
 
@@ -183,16 +183,16 @@ class TestNullPolicyAndWarmup:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=100.0,
+            half_life=100.0,
             weight="w",
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
-        assert out.row(3, named=True)["m"]["n_eff"] is None
+        assert out.row(3, named=True)["m"]["weight_sum"] is None
 
 
 class TestClockSemantics:
-    def _run(self, t, on_clock_reset="error", session=None, session_gap=None, **kw):
+    def _run(self, t, restart_after_step_back=None, session=None, session_gap=None, **kw):
         n = len(t)
         data = {
             "t": t,
@@ -202,34 +202,30 @@ class TestClockSemantics:
         if session is not None:
             data["session"] = session
         df = pl.DataFrame(data)
-        # A step back under `"reset_state"` starts over whatever its size
-        # here: no step back is a late row.
-        if on_clock_reset == "reset_state":
-            kw.setdefault("min_backwards_jump", 0.0)
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
             features=["x0"],
             clock="t",
-            halflife=10.0,
-            max_dclock=50.0,
-            on_clock_reset=on_clock_reset,
+            half_life=10.0,
+            gap_cap=50.0,
+            restart_after_step_back=restart_after_step_back,
             session="session" if session is not None else None,
             session_gap=session_gap,
             max_rows_between_solves=1,
-            min_periods=1.0,
+            min_weight=1.0,
             **kw,
         )
         return po.ModelBank([spec]).fit_predict(df)
 
     @staticmethod
     def _neff(out):
-        return out["m"].struct.field("n_eff").to_numpy()
+        return out["m"].struct.field("weight_sum").to_numpy()
 
     def test_gap_cap(self):
         # Delta of 1e6 capped at 50 => decay 0.5^(50/10) = 1/32, not ~0.
-        # n_eff is reported BEFORE the row's update, so the effect of row 1's
-        # decay shows in row 2's n_eff.
+        # weight_sum is reported BEFORE the row's update, so the effect of row 1's
+        # decay shows in row 2's weight_sum.
         out = self._run([0.0, 1e6, 1e6 + 10])
         n = self._neff(out)
         assert abs(n[2] - (0.5 ** (50.0 / 10.0) + 1.0)) < 1e-12
@@ -241,7 +237,8 @@ class TestClockSemantics:
             self._run([0.0, 100.0, 50.0, 51.0])
 
     def test_reset_state(self):
-        out = self._run([0.0, 10.0, 5.0], on_clock_reset="reset_state")
+        # A step back of any size starts over here: none is a late row.
+        out = self._run([0.0, 10.0, 5.0], restart_after_step_back=0.0)
         n = self._neff(out)
         assert n[2] == 0.0  # state was reset before row 2
 
@@ -262,7 +259,7 @@ class TestClockSemantics:
         )
         n = self._neff(out)
         # row 2's update uses the 20-unit session gap, not the raw 0.5 delta;
-        # visible in row 3's (before-update) n_eff.
+        # visible in row 3's (before-update) weight_sum.
         w1 = 0.5 ** (10.0 / 10.0) * 1.0 + 1.0
         w2 = w1 * 0.5 ** (20.0 / 10.0) + 1.0
         assert abs(n[3] - w2) < 1e-12
@@ -271,8 +268,8 @@ class TestClockSemantics:
         """A row the model skips -- a null feature -- still moves the clock,
         and its capped delta is carried to the next accepted row; that total
         is capped too. Ten skipped rows 100 apart under a cap of 50 handed the
-        next row 550, eleven times what ``max_dclock`` promises a model sees
-        (review 2026-09-12, S3). ``n_eff`` is the weight before the row, so
+        next row 550, eleven times what ``gap_cap`` promises a model sees
+        (review 2026-09-12, S3). ``weight_sum`` is the weight before the row, so
         the accepted row's decay shows on the row after it."""
         t = [0.0] + [100.0 * i for i in range(1, 11)] + [1100.0, 1110.0]
         x0 = [1.0] + [None] * 10 + [1.0, 1.0]
@@ -285,23 +282,23 @@ class TestClockSemantics:
             targets=["y0"],
             features=["x0"],
             clock="t",
-            halflife=10.0,
-            max_dclock=50.0,
+            half_life=10.0,
+            gap_cap=50.0,
             max_rows_between_solves=1,
-            min_periods=1.0,
+            min_weight=1.0,
         )
         n = self._neff(po.ModelBank([spec]).fit_predict(df))
         assert n[12] == pytest.approx(0.5 ** (50.0 / 10.0) + 1.0, abs=1e-12)
 
 
 class TestPerTargetMinPeriods:
-    """E7: `min_periods` accepts one threshold per target.
+    """E7: `min_weight` accepts one threshold per target.
 
     A 5-minute-ahead target and a 1-day-ahead target rarely deserve the same
     warmup. Warmup gates *output*, not learning.
     """
 
-    def _out(self, min_periods, n=120):
+    def _out(self, min_weight, n=120):
         rng = np.random.default_rng(0)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x})
@@ -309,8 +306,8 @@ class TestPerTargetMinPeriods:
             "m",
             targets=["y0", "y1"],
             features=["x0"],
-            halflife=1e9,
-            min_periods=min_periods,
+            half_life=1e9,
+            min_weight=min_weight,
             max_rows_between_solves=1,
         )
         return po.ModelBank([spec]).fit_predict(df)
@@ -333,13 +330,13 @@ class TestPerTargetMinPeriods:
     def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
         """Each target's threshold is checked against that target's own weight
         -- the rows it was present on -- and it was checked against the shared
-        ``n_eff``, the feature side's, the same for every target (review
+        ``weight_sum``, the feature side's, the same for every target (review
         2026-09-12, S2; in ``pa``, ``sgd``, ``ftrl`` and ``rls`` until task 115
-        (d)). ``y1`` is present on every tenth row, so under ``min_periods=[5,
+        (d)). ``y1`` is present on every tenth row, so under ``min_weight=[5,
         5]`` its first prediction is the row after its fifth observation, row
         41, not row 5. ``y0``, present on every row, first predicts on row 5,
         except in ``rls``, which learns a row only when every target is present
-        and so waits for the same five rows. The emitted ``n_eff`` stays the
+        and so waits for the same five rows. The emitted ``weight_sum`` stays the
         shared weight."""
         n = 120
         x = np.random.default_rng(2).standard_normal(n)
@@ -347,13 +344,13 @@ class TestPerTargetMinPeriods:
             {"x0": x, "y0": 2 * x, "y1": [-x[i] if i % 10 == 0 else None for i in range(n)]},
             schema={"x0": pl.Float64, "y0": pl.Float64, "y1": pl.Float64},
         )
-        common = dict(targets=["y0", "y1"], halflife=float("inf"), min_periods=[5.0, 5.0])
+        common = dict(targets=["y0", "y1"], half_life=float("inf"), min_weight=[5.0, 5.0])
         solves = dict(features=["x0"], max_rows_between_solves=1)
         spec = {
             "ewridge": lambda: po.spec.ewridge("m", **solves, **common),
             "lasso": lambda: po.spec.lasso("m", lasso_path=[1e-6], **solves, **common),
             "kalman": lambda: po.spec.kalman(
-                "m", features=["x0"], coef_halflife=float("inf"), **common
+                "m", features=["x0"], coef_half_life=float("inf"), **common
             ),
             "huber": lambda: po.spec.huber("m", **solves, **common),
             "quantile": lambda: po.spec.quantile("m", quantile=0.5, **solves, **common),
@@ -373,7 +370,7 @@ class TestPerTargetMinPeriods:
         }
         assert self._first(out, pred["y0"]) == (41 if kind == "rls" else 5)
         assert self._first(out, pred["y1"]) == 41
-        assert out["m"].struct.field("n_eff").to_list()[41] == pytest.approx(41.0)
+        assert out["m"].struct.field("weight_sum").to_list()[41] == pytest.approx(41.0)
 
     def test_a_late_target_has_no_residual_or_sigma_either(self):
         rng = np.random.default_rng(1)
@@ -384,8 +381,8 @@ class TestPerTargetMinPeriods:
             "m",
             targets=["y0", "y1"],
             features=["x0"],
-            halflife=1e9,
-            min_periods=[5.0, 60.0],
+            half_life=1e9,
+            min_weight=[5.0, 60.0],
             max_rows_between_solves=1,
             emit_sigma=True,
         )
@@ -404,15 +401,15 @@ class TestPerTargetMinPeriods:
         )
 
     def test_wrong_length_is_rejected(self):
-        with pytest.raises(ValueError, match="min_periods list has 3 entries"):
+        with pytest.raises(ValueError, match="min_weight list has 3 entries"):
             po.spec.ewridge(
                 "m",
                 targets=["y0", "y1"],
                 features=["x0"],
-                halflife=100.0,
-                min_periods=[1.0, 2.0, 3.0],
+                half_life=100.0,
+                min_weight=[1.0, 2.0, 3.0],
             )
 
     def test_negative_is_rejected(self):
-        with pytest.raises(ValueError, match="min_periods must be >= 0"):
-            po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=-1.0)
+        with pytest.raises(ValueError, match="min_weight must be >= 0"):
+            po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=-1.0)

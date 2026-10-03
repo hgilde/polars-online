@@ -177,7 +177,7 @@ pub struct BocpdCfg {
     /// well as the length of the vector, and `run_mode` saturates one
     /// below it.
     pub max_run: usize,
-    pub min_periods: f64,
+    pub min_weight: f64,
 }
 
 impl BocpdCfg {
@@ -311,8 +311,8 @@ impl BocpdCfg {
         if self.max_run < 2 {
             return Err("bocpd: max_run must be >= 2".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("bocpd: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("bocpd: min_weight must be >= 0".into());
         }
         Ok(())
     }
@@ -528,7 +528,7 @@ impl Bocpd {
     pub fn labels(names: &[String]) -> Vec<String> {
         let mut out = vec!["p_change".into(), "run_mode".into(), "run_mean".into()];
         out.extend(names.iter().map(|n| format!("pred_{n}")));
-        out.push("logscore".into());
+        out.push("loglik".into());
         out
     }
 
@@ -718,7 +718,7 @@ impl Bocpd {
         out.push(run_mean);
         out.extend_from_slice(&pred);
         out.push(logscore);
-        // `min_periods` gates what is *reported*, never what is learned: a
+        // `min_weight` gates what is *reported*, never what is learned: a
         // gated row still moves the posterior, as it does in every other
         // model here.
         let update = if rel == 1.0 {
@@ -727,7 +727,7 @@ impl Bocpd {
             let scaled: Vec<f64> = weights.iter().map(|w| rel * w).collect();
             (joint(&scaled), scaled)
         };
-        if self.n_eff < self.cfg.min_periods {
+        if self.n_eff < self.cfg.min_weight {
             return (nan, Some(update));
         }
         (out, Some(update))
@@ -975,7 +975,7 @@ mod tests {
             robust_beta: 0.0,
             prune_below: 0.0,
             max_run: 100_000,
-            min_periods: 0.0,
+            min_weight: 0.0,
         }
     }
 
@@ -1602,7 +1602,7 @@ mod tests {
         assert_eq!(
             Bocpd::labels(&names),
             [
-                "p_change", "run_mode", "run_mean", "pred_a", "pred_b", "logscore"
+                "p_change", "run_mode", "run_mean", "pred_a", "pred_b", "loglik"
             ]
         );
         assert_eq!(Bocpd::n_outputs_for(2), 6);

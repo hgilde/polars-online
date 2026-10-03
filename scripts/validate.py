@@ -96,8 +96,8 @@ def main() -> None:
     common = dict(
         targets=[target],
         features=feats,
-        halflife=500.0,
-        min_periods=50.0,
+        half_life=500.0,
+        min_weight=50.0,
         standardize=True,
     )
 
@@ -113,10 +113,10 @@ def main() -> None:
     print(f"- Rows: {df.height}, features: {feats}, targets: {targets}")
     print(f"- Polars {pl.__version__}, polars-online {po.__version__}")
 
-    # ---- 1. solve schedule: is halflife/50 the right cadence? ----
+    # ---- 1. solve schedule: is half-life/50 the right cadence? ----
     # The default is by weight (docs/PLAN.md task 115 (b)): a solve once the
     # weight learned since the last reaches ln 2 / 50 of the weight the fit
-    # holds, which on evenly spaced rows is every halflife/50 of clock. The
+    # holds, which on evenly spaced rows is every half-life/50 of clock. The
     # divisors measure the clock cadences; the default is measured beside.
     hl = 500.0
     divisors = [1, 5, 10, 50, 200, 1000]
@@ -134,9 +134,9 @@ def main() -> None:
     )
     best = res.sort("mse").row(0, named=True)
     section(
-        "1. Solve schedule (`solve_every` default = by weight, halflife/50 in steady state) "
+        "1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) "
         "[validate]",
-        f"Solving every `halflife/d` clock units, halflife = {hl}. "
+        f"Solving every `half_life/d` clock units, half_life = {hl}. "
         f"All schedules share one accumulator, so this is a free experiment "
         f"({elapsed:.2f}s for {len(divisors) + 1} schedules).\n\n"
         + table(res, ["divisor", "n", "r2", "ic", "hit_rate", "mse"])
@@ -168,8 +168,8 @@ def main() -> None:
             l1_ratio=r,
             targets=[target],
             features=feats,
-            halflife=hl,
-            min_periods=50.0,
+            half_life=hl,
+            min_weight=50.0,
         )
         for r in (1.0, 0.5, 0.1)
     ]
@@ -187,9 +187,9 @@ def main() -> None:
     kal = dict(
         targets=[target],
         features=feats,
-        coef_halflife=200.0,
-        halflife=hl,
-        min_periods=50.0,
+        coef_half_life=200.0,
+        half_life=hl,
+        min_weight=50.0,
     )
     kal_multi = {**kal, "targets": targets}
     specs = [
@@ -211,7 +211,7 @@ def main() -> None:
     specs = [
         po.spec.ewridge("ewridge", ridge=1e-4, **common),
         po.spec.rls(
-            "rls", ridge=1e-4, targets=[target], features=feats, halflife=hl, min_periods=50.0
+            "rls", ridge=1e-4, targets=[target], features=feats, half_life=hl, min_weight=50.0
         ),
         po.spec.kalman("kalman", **kal),
         po.spec.lasso(
@@ -219,8 +219,8 @@ def main() -> None:
             lasso_path=[1e-3, 1e-4, 0.0],
             targets=[target],
             features=feats,
-            halflife=hl,
-            min_periods=50.0,
+            half_life=hl,
+            min_weight=50.0,
         ),
     ]
     res = run(df, specs, [target])

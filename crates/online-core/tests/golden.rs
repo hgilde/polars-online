@@ -98,16 +98,16 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         ridge: vec![ridge],
         feature_sets: vec![],
         standardize,
-        ridge_decay: false,
+        ridge_scale: false,
         session_shrink: None,
-        long_halflife: None,
+        long_half_life: None,
         coef_prior: None,
-        min_periods: 3.0,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -122,12 +122,12 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
     RobustCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         loss,
         ridge: 1e-4,
         standardize,
-        min_periods: 3.0,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -173,7 +173,7 @@ fn ew_ridge_windowed_golden() {
 #[test]
 fn ew_ridge_origin_standardized_golden() {
     let mut c = ewridge_cfg(true, 0.05);
-    c.add_intercept = false;
+    c.fit_intercept = false;
     c.coef_prior = Some(vec![vec![1.0, -0.5]]);
     let mut m = EwRidge::new(c).unwrap();
     check(
@@ -186,7 +186,7 @@ fn ew_ridge_origin_standardized_golden() {
 #[test]
 fn huber_origin_standardized_golden() {
     let mut c = robust_cfg(RobustLoss::Huber { delta: 1.5 }, true);
-    c.add_intercept = false;
+    c.fit_intercept = false;
     let mut m = Robust::new(c).unwrap();
     check(
         "huber_origin_std",
@@ -200,15 +200,15 @@ fn kalman_plain_golden() {
     let mut m = Kalman::new(KalmanCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(50.0),
-        halflife: vec![f64::INFINITY, 30.0, 100.0],
+        half_life: vec![f64::INFINITY, 30.0, 100.0],
         q: None,
         obs_var: None,
         p0: 1.0,
         share_p: false,
-        min_periods: 3.0,
-        revert_halflife: vec![f64::INFINITY],
+        min_weight: 3.0,
+        revert_half_life: vec![f64::INFINITY],
         standardize: false,
     })
     .unwrap();
@@ -220,11 +220,11 @@ fn rls_golden() {
     let mut m = Rls::new(RlsCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         ridge: 0.5,
         coef_prior: None,
-        min_periods: 3.0,
+        min_weight: 3.0,
     })
     .unwrap();
     check("rls", &signature(&mut m, 0), GOLDEN_RLS);
@@ -235,15 +235,15 @@ fn kalman_golden() {
     let mut m = Kalman::new(KalmanCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(50.0),
-        halflife: vec![f64::INFINITY, 30.0, 100.0],
+        half_life: vec![f64::INFINITY, 30.0, 100.0],
         q: None,
         obs_var: None,
         p0: 1.0,
         share_p: false,
-        min_periods: 3.0,
-        revert_halflife: vec![f64::INFINITY],
+        min_weight: 3.0,
+        revert_half_life: vec![f64::INFINITY],
         standardize: true,
     })
     .unwrap();
@@ -257,15 +257,15 @@ fn kalman_revert_golden() {
     let mut m = Kalman::new(KalmanCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(50.0),
-        halflife: vec![f64::INFINITY, 30.0, 100.0],
+        half_life: vec![f64::INFINITY, 30.0, 100.0],
         q: None,
         obs_var: None,
         p0: 1.0,
         share_p: false,
-        min_periods: 3.0,
-        revert_halflife: vec![f64::INFINITY, 40.0, 8.0],
+        min_weight: 3.0,
+        revert_half_life: vec![f64::INFINITY, 40.0, 8.0],
         standardize: true,
     })
     .unwrap();
@@ -277,19 +277,19 @@ fn lasso_golden() {
     let mut m = Lasso::new(LassoCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         lasso_path: vec![0.2, 0.02, 0.0],
         l1_ratio: 1.0,
-        select_halflife: None,
-        min_periods: 3.0,
+        select_half_life: None,
+        min_weight: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
         window: None,
         window_every: None,
-        max_cd_iters: 200,
-        cd_tol: 1e-12,
+        max_iter: 200,
+        tol: 1e-12,
         target_gaps: online_core::TargetGaps::OwnRows,
     })
     .unwrap();
@@ -313,13 +313,13 @@ fn ftrl_golden() {
     let mut m = Ftrl::new(FtrlCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(40.0),
         alpha: 0.1,
         beta: 1.0,
         l1: 0.05,
         l2: 1.0,
-        min_periods: 3.0,
+        min_weight: 3.0,
         strict_binary: false,
         loss: FtrlLoss::Logistic,
     })
@@ -332,13 +332,13 @@ fn ftrl_squared_golden() {
     let mut m = Ftrl::new(FtrlCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(40.0),
         alpha: 0.5,
         beta: 1.0,
         l1: 0.05,
         l2: 0.01,
-        min_periods: 3.0,
+        min_weight: 3.0,
         strict_binary: false,
         loss: FtrlLoss::Squared,
     })
@@ -353,7 +353,7 @@ fn sgd_golden() {
     let mut m = Sgd::new(SgdCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         loss: SgdLoss::Huber { delta: 0.5 },
         learning_rate: 0.05,
@@ -361,8 +361,8 @@ fn sgd_golden() {
         l2: 0.01,
         clip_gradient: 1e3,
         constraint: None,
-        scale_features: true,
-        min_periods: 3.0,
+        standardize: true,
+        min_weight: 3.0,
     })
     .unwrap();
     check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
@@ -374,7 +374,7 @@ fn sgd_squared_golden() {
     let mut m = Sgd::new(SgdCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         loss: SgdLoss::Squared,
         learning_rate: 0.05,
@@ -382,8 +382,8 @@ fn sgd_squared_golden() {
         l2: 0.0,
         clip_gradient: 1e3,
         constraint: None,
-        scale_features: false,
-        min_periods: 3.0,
+        standardize: false,
+        min_weight: 3.0,
     })
     .unwrap();
     check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
@@ -394,12 +394,12 @@ fn pa_golden() {
     let mut m = Pa::new(PaCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         mode: PaMode::Pa2,
         c: 0.5,
         eps: 0.05,
-        min_periods: 3.0,
+        min_weight: 3.0,
         constraint: None,
     })
     .unwrap();
@@ -414,7 +414,7 @@ fn sgd_simplex_golden() {
     let mut m = Sgd::new(SgdCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         loss: SgdLoss::Squared,
         learning_rate: 0.05,
@@ -426,8 +426,8 @@ fn sgd_simplex_golden() {
             hi: vec![f64::INFINITY, f64::INFINITY],
             sum: Some(1.0),
         }),
-        scale_features: false,
-        min_periods: 3.0,
+        standardize: false,
+        min_weight: 3.0,
     })
     .unwrap();
     check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);
@@ -440,12 +440,12 @@ fn pa_box_golden() {
     let mut m = Pa::new(PaCfg {
         n_features: 2,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(20.0),
         mode: PaMode::Pa1,
         c: 0.5,
         eps: 0.05,
-        min_periods: 3.0,
+        min_weight: 3.0,
         constraint: Some(Constraint {
             lo: vec![-1.0, -1.0],
             hi: vec![1.0, 0.0],
@@ -460,9 +460,9 @@ fn pa_box_golden() {
 fn holt_golden() {
     let mut m = Holt::new(HoltCfg {
         n_targets: 1,
-        level_halflife: 10.0,
-        trend_halflife: 40.0,
-        min_periods: 3.0,
+        level_half_life: 10.0,
+        trend_half_life: 40.0,
+        min_weight: 3.0,
         trend: true,
     })
     .unwrap();
@@ -476,13 +476,13 @@ fn seqtest_golden() {
     // counts (a wrong count moves the next stake).
     let mut m = SeqTest::new(SeqTestCfg {
         n_targets: 1,
-        min_periods: 0.0,
+        min_weight: 0.0,
     })
     .unwrap();
     check("seqtest", &signature_of(&mut m, 0, false), GOLDEN_SEQTEST);
     let mut m = SeqTest::new(SeqTestCfg {
         n_targets: 1,
-        min_periods: 0.0,
+        min_weight: 0.0,
     })
     .unwrap();
     check(
@@ -508,7 +508,7 @@ fn bocpd_golden() {
         robust_beta: 0.0,
         prune_below: 1e-8,
         max_run: 100,
-        min_periods: 0.0,
+        min_weight: 0.0,
     })
     .unwrap();
     check("bocpd", &signature(&mut m, 0), GOLDEN_BOCPD);
@@ -558,7 +558,7 @@ fn hmm_golden() {
         decay: Decay::Halflife(20.0),
         covariance: Covariance::Full,
         precision_prior: 1e-2,
-        min_periods: 3.0,
+        min_weight: 3.0,
         learn: true,
         transition_prior: 1.0,
         transition: Some(vec![0.9, 0.1, 0.2, 0.8]),
@@ -637,7 +637,7 @@ fn deco_golden() {
         alpha: Some(0.05),
         beta: Some(0.9),
         blocks: Vec::new(),
-        min_periods: 3.0,
+        min_weight: 3.0,
     })
     .unwrap();
     check("deco", &signature(&mut m, 1), GOLDEN_DECO);
@@ -653,7 +653,7 @@ fn deco_loglik_golden() {
         alpha: None,
         beta: None,
         blocks: Vec::new(),
-        min_periods: 3.0,
+        min_weight: 3.0,
     })
     .unwrap();
     check("deco_loglik", &signature(&mut m, 2), GOLDEN_DECO_LOGLIK);
@@ -667,7 +667,7 @@ fn ew_cov_golden() {
         n_features: 2,
         decay: Decay::Halflife(20.0),
         stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
-        min_periods: 3.0,
+        min_weight: 3.0,
         precision_prior: None,
         mahal_quantiles: Vec::new(),
         pca: 0,
@@ -703,7 +703,7 @@ fn marginal_golden() {
         n_features: 2,
         n_targets: 1,
         decay: Decay::Halflife(20.0),
-        min_periods: vec![3.0],
+        min_weight: vec![3.0],
         lags: Vec::new(),
         serial_rule: None,
         cross_lags: None,
@@ -721,7 +721,7 @@ fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
         n_features: 2,
         k: 3,
         decay: Decay::Halflife(20.0),
-        min_periods: 3.0,
+        min_weight: 3.0,
         warm_rows: 12,
         seed_rule: rule,
         seed: 0,
@@ -760,7 +760,7 @@ fn micro_cfg() -> MicroCfg {
     MicroCfg {
         n_features: 2,
         decay: Decay::Halflife(20.0),
-        min_periods: 3.0,
+        min_weight: 3.0,
         eps: 0.35,
         beta_mu: 2.0,
         max_clusters: 8,
@@ -796,7 +796,7 @@ fn ew_class_cfg(covariance: Covariance) -> EwClassCfg {
         n_features: 2,
         n_classes: 2,
         decay: Decay::Halflife(20.0),
-        min_periods: 3.0,
+        min_weight: 3.0,
         covariance,
         precision_prior: 0.1,
         window: None,
@@ -859,9 +859,9 @@ const GOLDEN_BOCPD: &[f64] = &[
 // kernel is WKD's `1 − l/γ`, where it was Newey–West's `1 − l/(γ+1)`
 // (0.8418929529846794, 0.7933802263147072, 0.787701333637405).
 const GOLDEN_CORRCHANGE: &[f64] = &[0.8103851544234802, 0.764942538158755, 0.6621041576121629];
-// Re-frozen 2026-09-06: `hmm`'s `min_periods` used to withhold a row from
+// Re-frozen 2026-09-06: `hmm`'s `min_weight` used to withhold a row from
 // the *update* as well as from the report, so the first rows of this stream
-// (`min_periods = 3`) never reached the filter. It now gates the report
+// (`min_weight = 3`) never reached the filter. It now gates the report
 // alone, as it does in every other model (docs/REVIEW-E54-E64.md H1).
 const GOLDEN_HMM: &[f64] = &[-1.1511065244639265, -2.6218190023816343, -0.875789289803333];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
@@ -926,9 +926,9 @@ const GOLDEN_HUBER: &[f64] = &[
 // in `robust.rs` hold.
 const GOLDEN_QUANTILE: &[f64] = &[0.2569722435129411, 2.225768960188687, -0.02107823181906003];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
-// under a halflife the proximal term is a decayed sum of its own, where `n`
+// under a half-life the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.
-// Both moved on 2026-09-29 (docs/PLAN.md task 115 (d)): under a halflife the
+// Both moved on 2026-09-29 (docs/PLAN.md task 115 (d)): under a half-life the
 // penalties now age with the sums, so the fit no longer shrinks between rows.
 const GOLDEN_FTRL_SQUARED: &[f64] = &[
     0.31755217793601365,
@@ -936,7 +936,7 @@ const GOLDEN_FTRL_SQUARED: &[f64] = &[
     -0.05909108310584128,
 ];
 const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5899321334553916, 0.45251642778855805];
-// Regenerated for docs/PLAN.md task 74 (2026-09-08): `scale_features`
+// Regenerated for docs/PLAN.md task 74 (2026-09-08): `standardize`
 // standardises against the moments with the row admitted, so every
 // prediction of this scaled fit moved.
 const GOLDEN_SGD: &[f64] = &[

@@ -6,7 +6,7 @@
 //! `-0.4121514880508847`. The crate ships a `float_roundtrip` feature that
 //! parses exactly; this crate and the two around it enable it.
 //!
-//! One ulp is nothing for a halflife, and everything for a bin edge. The
+//! One ulp is nothing for a half-life, and everything for a bin edge. The
 //! edges a caller passes to `marginal(bin_edges=)` are usually quantiles read
 //! back from an earlier run, which means they are *data values* -- so a row
 //! sitting exactly on an edge is the common case, not a coincidence, and a
@@ -31,7 +31,7 @@ fn a_spec_float_crosses_into_rust_unchanged() {
     for v in AWKWARD {
         let json = format!(
             r#"[{{"name":"m","model":{{"type":"marginal","bin_edges":[[{v:?}]]}},
-                 "targets":["y"],"features":["x"],"halflife":{v:?}}}]"#
+                 "targets":["y"],"features":["x"],"half_life":{v:?}}}]"#
         );
         let specs: Vec<Spec> =
             serde_json::from_str(&json).unwrap_or_else(|e| panic!("{v:?} did not parse: {e}"));

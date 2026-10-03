@@ -2,13 +2,13 @@
 `ewridge`, `lasso`, `huber`, `quantile` -- is by weight (docs/PLAN.md task
 115 (b)).
 
-The default was `halflife / 50` of clock, so a halflife much longer than the
-stream solved once, at warm-up, and never again: under `halflife=1e6` the fit
+The default was `half-life / 50` of clock, so a half-life much longer than the
+stream solved once, at warm-up, and never again: under `half_life=1e6` the fit
 after 4,000 rows was the first 20 rows' slope, 0.99, where the stream said
 2.95. The default is now a solve once the weight learned since the last
 reaches `ln 2 / 50` of the weight the fit holds, which in steady state is the
-same `halflife / 50` of clock at any row spacing. An explicit `solve_every`
-keeps its clock, and `halflife=inf` or `lam` still solve every row.
+same `half-life / 50` of clock at any row spacing. An explicit `solve_every`
+keeps its clock, and `half_life=inf` or `lam` still solve every row.
 """
 
 import math
@@ -38,7 +38,7 @@ def stream(n=4000, seed=0):
 
 def slope(model, extra, df, **kw):
     spec = getattr(po.spec, model)(
-        "m", targets=["y"], features=["x0"], min_periods=20.0, **extra, **kw
+        "m", targets=["y"], features=["x0"], min_weight=20.0, **extra, **kw
     )
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
@@ -46,12 +46,12 @@ def slope(model, extra, df, **kw):
 
 
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
-@pytest.mark.parametrize("halflife", [1e6, 1e12])
-def test_a_halflife_far_longer_than_the_stream_keeps_solving(model, extra, halflife):
+@pytest.mark.parametrize("half_life", [1e6, 1e12])
+def test_a_halflife_far_longer_than_the_stream_keeps_solving(model, extra, half_life):
     df = stream()
-    every_row = slope(model, extra, df, halflife=float("inf"))
+    every_row = slope(model, extra, df, half_life=float("inf"))
     assert every_row > 2.5  # the stream's slope, fitted every row
-    got = slope(model, extra, df, halflife=halflife)
+    got = slope(model, extra, df, half_life=half_life)
     assert abs(got - every_row) < 0.05, (got, every_row)
 
 
@@ -59,19 +59,19 @@ def test_a_halflife_far_longer_than_the_stream_keeps_solving(model, extra, halfl
 def test_an_explicit_solve_every_keeps_its_clock(model, extra):
     """The rule replaces only the default: a caller who names `solve_every`
     gets that clock, the stale fit included."""
-    got = slope(model, extra, stream(), halflife=1e12, solve_every=1e9)
+    got = slope(model, extra, stream(), half_life=1e12, solve_every=1e9)
     assert abs(got - 1.0) < 0.05, got
 
 
 def test_in_steady_state_the_rule_is_the_clocks_cadence():
-    """Evenly spaced rows under a halflife of 500: the fit holds
+    """Evenly spaced rows under a half-life of 500: the fit holds
     `1 / (1 - 2**(-1/500))`, about 721.8, and `ln 2 / 50` of that is 10.007
     rows -- the clock's `500 / 50 = 10`, one row later at most. So after
     warm-up the two cadences give fits a row apart, and the outputs agree
     closely."""
     df = stream(n=6000, seed=3)
     by_weight = po.ModelBank(
-        [po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=500.0, min_periods=20.0)]
+        [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
     ).fit_predict(df)
     by_clock = po.ModelBank(
         [
@@ -79,8 +79,8 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
                 "m",
                 targets=["y"],
                 features=["x0"],
-                halflife=500.0,
-                min_periods=20.0,
+                half_life=500.0,
+                min_weight=20.0,
                 solve_every=10.0,
             )
         ]

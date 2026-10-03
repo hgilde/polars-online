@@ -27,8 +27,8 @@
 //! target's rows.
 //!
 //! Lambda selection is free: predictions for every path point are computed
-//! anyway, so `lam_selected_j` is the argmin over the path of an EW mean of
-//! squared out-of-sample error with halflife `select_halflife`.
+//! anyway, so `penalty_selected_j` is the argmin over the path of an EW mean of
+//! squared out-of-sample error with half-life `select_half_life`.
 
 use serde::{Deserialize, Serialize};
 
@@ -41,29 +41,29 @@ use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 pub struct LassoCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     /// Decreasing penalties. Applied to standardized (correlation-form) stats.
     pub lasso_path: Vec<f64>,
     /// 1.0 = lasso, < 1.0 = elastic net (docs/PLAN.md §4.3, [`Self::validate`]).
     pub l1_ratio: f64,
-    /// Halflife of the EW squared-error used to pick lambda; defaults to the
-    /// model halflife when None.
-    pub select_halflife: Option<f64>,
-    pub min_periods: f64,
+    /// Half-life of the EW squared-error used to pick lambda; defaults to the
+    /// model half-life when None.
+    pub select_half_life: Option<f64>,
+    pub min_weight: f64,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
     /// holds, in place of `solve_every`'s clock. In steady state that is the
-    /// clock's own `halflife / 50` at a share of `ln 2 / 50`; where they part
-    /// -- warm-up, after a gap, a halflife far longer than the stream -- it
+    /// clock's own `half_life / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a half-life far longer than the stream -- it
     /// keeps the fit that close to its data, where the clock solved once and
     /// never again. `None` keeps the clock.
     #[serde(default)]
     pub solve_share: Option<f64>,
-    pub max_cd_iters: u32,
-    pub cd_tol: f64,
+    pub max_iter: u32,
+    pub tol: f64,
     /// Which rows a target's Gram is taken over where the target is null on
     /// some (docs/PLAN.md task 81; [`TargetGaps`]): its own, the default, or
     /// every row.
@@ -88,7 +88,7 @@ pub struct LassoCfg {
 
 impl LassoCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn n_lambdas(&self) -> usize {
@@ -118,7 +118,7 @@ impl LassoCfg {
             return Err("l1_ratio must be in [0, 1]".into());
         }
         if self.window.is_none() && self.window_every.is_some() {
-            return Err("lasso: window_every needs `window`".into());
+            return Err("lasso: window_every needs `window_size`".into());
         }
         Ok(())
     }
@@ -142,8 +142,8 @@ pub struct Lasso {
     /// Weight learned since the last solve, for `solve_share`.
     #[serde(default)]
     weight_since_solve: f64,
-    /// Coordinate descents that ran out of sweeps (`max_cd_iters`) before
-    /// meeting `cd_tol`, one per target and path point; such a fit is where
+    /// Coordinate descents that ran out of sweeps (`max_iter`) before
+    /// meeting `tol`, one per target and path point; such a fit is where
     /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
     pub solve_failures: u64,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
@@ -277,11 +277,11 @@ impl Lasso {
         Some(&self.acc.tm)
     }
 
-    /// The decay the selection error ages by: `select_halflife`'s, or the
+    /// The decay the selection error ages by: `select_half_life`'s, or the
     /// model's where it is not set.
     fn select_decay(&self) -> Decay {
         self.cfg
-            .select_halflife
+            .select_half_life
             .map_or(self.cfg.decay, Decay::Halflife)
     }
 
@@ -356,7 +356,7 @@ impl Lasso {
     /// selection loop built the whole view once per target per row (review
     /// 2026-09-12, P1).
     ///
-    /// The truncation ages the snapshot by `select_halflife`, the decay the
+    /// The truncation ages the snapshot by `select_half_life`, the decay the
     /// errors age by, where it used the model's (PLAN task 95). Whether the
     /// window is empty is the errors' own question: it used to be the
     /// Gram's, which the choice now reads before this row is learned. An
@@ -394,13 +394,13 @@ impl Lasso {
     /// is recovered from.
     fn standardized(&self, acc: &EwCov, cross: &Cross, readers: &[usize]) -> Standardized {
         let k = self.cfg.n_features;
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         if off == 0 {
             // No intercept: nothing to centre on. Scale by the raw second
             // moment and keep the raw cross-moments -- `E[x x']` and `E[x y]`,
             // whose zero-penalty solution is least squares through the origin
             // -- as `EwRidge`'s no-intercept branch does. This centred the Gram
-            // whatever `add_intercept` said, so without one it solved a hybrid
+            // whatever `fit_intercept` said, so without one it solved a hybrid
             // of the centred and the raw problem, least squares only when
             // every feature has mean zero (review 2026-09-12, C8).
             let s: Vec<f64> = (0..k).map(|i| acc.raw(i, i).max(0.0).sqrt()).collect();
@@ -494,7 +494,7 @@ impl Lasso {
     fn solve(&mut self) {
         let k = self.cfg.n_features;
         let k_total = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         // With a `window`, the path is fitted from the truncated
         // accumulators: no row older than the window is in a Gram, the
         // right-hand side, or the selection error. The selection error is
@@ -543,7 +543,7 @@ impl Lasso {
                     let l1 = lam * self.cfg.l1_ratio;
                     let l2 = lam * (1.0 - self.cfg.l1_ratio);
                     let mut converged = false;
-                    for _ in 0..self.cfg.max_cd_iters {
+                    for _ in 0..self.cfg.max_iter {
                         let mut max_delta: f64 = 0.0;
                         for i in 0..k {
                             if s[i] <= 0.0 {
@@ -567,12 +567,12 @@ impl Lasso {
                             max_delta = max_delta.max((newb - b[i]).abs());
                             b[i] = newb;
                         }
-                        if max_delta < self.cfg.cd_tol {
+                        if max_delta < self.cfg.tol {
                             converged = true;
                             break;
                         }
                     }
-                    // Out of sweeps before `cd_tol`: the fit is where the
+                    // Out of sweeps before `tol`: the fit is where the
                     // descent stopped, and it is counted (review 2026-09-12,
                     // S11: nothing wrote `solve_failures`).
                     unconverged += u64::from(!converged);
@@ -582,7 +582,7 @@ impl Lasso {
                     for i in 0..k {
                         coefs[i + off] = if s[i] > 0.0 { b[i] / s[i] } else { 0.0 };
                     }
-                    if self.cfg.add_intercept {
+                    if self.cfg.fit_intercept {
                         let mut b0 = cross.my[j];
                         for i in 0..k {
                             b0 -= means[jj][i] * coefs[i + off];
@@ -647,7 +647,7 @@ impl OnlineModel for Lasso {
         if self.zbuf.len() != self.cfg.k_total() {
             self.zbuf = vec![0.0; self.cfg.k_total()];
         }
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -743,7 +743,7 @@ impl OnlineModel for Lasso {
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight);
         if due {
             self.solve();
         }
@@ -762,11 +762,11 @@ impl OnlineModel for Lasso {
             None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
         let mut pred = vec![f64::NAN; m * np];
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
             for j in 0..m {
                 if wj[j] > 0.0 {
                     for li in 0..np {
-                        pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.add_intercept);
+                        pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.fit_intercept);
                     }
                 }
             }
@@ -894,9 +894,9 @@ mod tests {
         for window in [Some(7.0), None] {
             let mut c = cfg(2, 1, vec![0.1, 0.0]);
             c.decay = Decay::Halflife(20.0);
-            c.min_periods = 3.0;
-            c.max_cd_iters = 100;
-            c.cd_tol = 1e-10;
+            c.min_weight = 3.0;
+            c.max_iter = 100;
+            c.tol = 1e-10;
             c.window = window;
             let mut m = Lasso::new(c).unwrap();
             let rows: Vec<([f64; 2], Option<f64>, f64)> = vec![
@@ -933,20 +933,20 @@ mod tests {
         LassoCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             lasso_path: path,
             l1_ratio: 1.0,
-            select_halflife: None,
-            min_periods: (k + 1) as f64,
+            select_half_life: None,
+            min_weight: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
             window: None,
             window_every: None,
             target_gaps: TargetGaps::OwnRows,
-            max_cd_iters: 200,
-            cd_tol: 1e-12,
+            max_iter: 200,
+            tol: 1e-12,
         }
     }
 
@@ -977,13 +977,13 @@ mod tests {
         for l1_ratio in [1.0, 0.5] {
             let mut c = cfg(4, 1, vec![0.5, 0.1, 0.01]);
             c.l1_ratio = l1_ratio;
-            c.cd_tol = 1e-14;
-            c.max_cd_iters = 2000;
+            c.tol = 1e-14;
+            c.max_iter = 2000;
             let (m, _) = fit(c.clone(), 500, 11);
 
             // Rebuild the standardized normal equations the solver works in.
             let k = c.n_features;
-            let off = usize::from(c.add_intercept);
+            let off = usize::from(c.fit_intercept);
             let s: Vec<f64> = (0..k)
                 .map(|i| m.acc.grams.grams[0].cov(i + off, i + off).sqrt())
                 .collect();
@@ -1052,7 +1052,7 @@ mod tests {
         // The features are centered before the solve, so the intercept is
         // reconstructed as mean(y) - sum(b_i mean(x_i)) rather than fitted.
         let mut c = cfg(2, 1, vec![0.0]);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let (m, rows) = fit(c, 500, 17);
         let b = &m.coefficients().unwrap()[0][0];
         let n = rows.len() as f64;
@@ -1071,8 +1071,8 @@ mod tests {
         // predictions the model itself emitted, so a selection reading the
         // wrong slot, or the wrong direction of the comparison, is caught.
         let mut c = cfg(3, 1, vec![1.0, 0.05, 0.0]);
-        c.min_periods = 4.0;
-        c.select_halflife = Some(f64::INFINITY);
+        c.min_weight = 4.0;
+        c.select_half_life = Some(f64::INFINITY);
         let np = c.n_lambdas();
         let mut m = Lasso::new(c).unwrap();
 
@@ -1091,7 +1091,7 @@ mod tests {
             }
         }
         assert!(count > 100.0);
-        // An infinite select_halflife makes the EW mean a plain mean.
+        // An infinite select_half_life makes the EW mean a plain mean.
         for (li, sum) in sums.iter().enumerate() {
             assert!(
                 (m.sel_err[0][li] - sum / count).abs() < 1e-9,
@@ -1116,7 +1116,7 @@ mod tests {
     fn a_null_target_and_a_zero_weight_row_only_decay() {
         let mut c = cfg(2, 1, vec![0.0]);
         c.decay = Decay::Halflife(10.0);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let (mut m, _) = fit(c, 60, 23);
         let (wj, c, my, sel_w) = (
             m.acc.wj[0],
@@ -1143,8 +1143,8 @@ mod tests {
     #[test]
     fn a_zero_weight_row_on_the_first_prediction_leaves_the_selection_alone() {
         let mut c = cfg(3, 1, vec![1.0, 0.05, 0.0]);
-        c.min_periods = 1.0;
-        c.select_halflife = Some(f64::INFINITY);
+        c.min_weight = 1.0;
+        c.select_half_life = Some(f64::INFINITY);
         let np = c.n_lambdas();
         let mut m = Lasso::new(c).unwrap();
         let (mut sums, mut count, mut met) = (vec![0.0; np], 0.0, false);
@@ -1192,21 +1192,21 @@ mod tests {
         assert_eq!(m.lam_selected(), vec![m.cfg.lasso_path[best]]);
     }
 
-    /// Coordinate descent that runs out of sweeps before it meets `cd_tol`
+    /// Coordinate descent that runs out of sweeps before it meets `tol`
     /// is the failure this model has, and `solve_failures` counts it: one
     /// per target and path point left unconverged (review 2026-09-12, S11:
     /// the field was reported and never written).
     #[test]
     fn a_descent_that_runs_out_of_sweeps_is_a_solve_failure() {
         let mut c = cfg(4, 1, vec![0.5, 0.1, 0.01]);
-        c.cd_tol = 1e-14;
-        c.max_cd_iters = 1;
+        c.tol = 1e-14;
+        c.max_iter = 1;
         let (short, _) = fit(c.clone(), 200, 11);
         assert!(
             short.solve_failures > 0,
             "one sweep cannot converge every point"
         );
-        c.max_cd_iters = 2000;
+        c.max_iter = 2000;
         let (long, _) = fit(c, 200, 11);
         assert_eq!(
             long.solve_failures, 0,
@@ -1221,7 +1221,7 @@ mod tests {
     /// PLAN task 95. Under a `window`, `lam_selected` is the path point with
     /// the least EW squared out-of-sample error over the rows inside the
     /// window (the builder's docstring): each scored row at `w *
-    /// 0.5^(age / select_halflife)`, its age counted from the last row
+    /// 0.5^(age / select_half_life)`, its age counted from the last row
     /// learned, and the rows inside the window those at most `window`
     /// older. Recomputed here from each row's own predictions, which `step`
     /// reports, it is held on every row where it is decided: not a tie,
@@ -1229,9 +1229,9 @@ mod tests {
     /// of 277 in `tests/test_oracles_lasso_paths.py`: the snapshot took the
     /// selection after the row's own error, with its weight aged twice; the
     /// choice read the window as it stood a row earlier; and the truncation
-    /// aged by the model's halflife where `select_halflife` differs.
+    /// aged by the model's half-life where `select_half_life` differs.
     #[test]
-    fn lam_selected_under_a_window_is_the_argmin_inside_it() {
+    fn penalty_selected_under_a_window_is_the_argmin_inside_it() {
         let path = vec![0.4, 0.1, 0.02, 0.0];
         let np = path.len();
         for (select, window) in [(Some(6.0), 12.0), (None, 12.0), (Some(40.0), 7.5)] {
@@ -1239,10 +1239,10 @@ mod tests {
             // its own rows after, so each target's errors are its own.
             let mut c = cfg(2, 2, path.clone());
             c.decay = Decay::Halflife(20.0);
-            c.select_halflife = select;
+            c.select_half_life = select;
             c.window = Some(window);
             c.window_every = Some(1);
-            c.min_periods = 2.0;
+            c.min_weight = 2.0;
             let sel_h = select.unwrap_or(20.0);
             let mut m = Lasso::new(c).unwrap();
             let mut s = 11u64;
@@ -1328,7 +1328,7 @@ mod tests {
         c.decay = Decay::Halflife(15.0);
         c.window = Some(12.0);
         c.window_every = Some(3);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Lasso::new(c).unwrap();
         let mut s = 73u64;
         for i in 0..120 {
@@ -1365,14 +1365,14 @@ mod tests {
     /// last chose: the whole-history errors the choice used to fall back on
     /// are the rows the window has dropped (review 2026-09-25, tasks 94-97,
     /// finding 2). Scored to clock 50, then absent for 60 units of a
-    /// 24-unit window at halflife 40.
+    /// 24-unit window at half-life 40.
     #[test]
     fn an_empty_selection_window_keeps_the_choice() {
         let mut c = cfg(2, 1, vec![0.3, 0.03, 0.003]);
         c.decay = Decay::Halflife(40.0);
         c.window = Some(24.0);
         c.window_every = Some(1);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Lasso::new(c).unwrap();
         let mut s = 11u64;
         let mut chosen = None;
@@ -1437,7 +1437,7 @@ mod tests {
         // lambda = 0 on out-of-sample error, so selection must not pick 0.
         let mut c = cfg(4, 1, vec![0.5, 0.2, 0.05, 0.0]);
         c.decay = Decay::Halflife(500.0);
-        c.min_periods = 20.0;
+        c.min_weight = 20.0;
         let mut m = Lasso::new(c).unwrap();
         let mut s = 7u64;
         for i in 0..1500 {
@@ -1503,7 +1503,7 @@ mod tests {
         let run = |level: f64| {
             let mut c = cfg(2, 1, vec![0.05, 0.0]);
             c.decay = Decay::Halflife(200.0);
-            c.min_periods = 10.0;
+            c.min_weight = 10.0;
             let mut m = Lasso::new(c).unwrap();
             let mut s = 29u64;
             let mut preds = Vec::new();
@@ -1626,7 +1626,7 @@ mod tests {
     #[test]
     fn a_tie_in_the_selection_error_keeps_the_first_of_the_path() {
         let mut c = cfg(2, 1, vec![100.0, 50.0, 0.0]);
-        c.select_halflife = Some(f64::INFINITY);
+        c.select_half_life = Some(f64::INFINITY);
         let mut m = Lasso::new(c).unwrap();
         let mut s = 9u64;
         for i in 0..100 {
@@ -1742,10 +1742,10 @@ mod tests {
     #[test]
     fn without_an_intercept_and_no_penalty_it_is_least_squares_through_the_origin() {
         let mut c = cfg(3, 1, vec![0.0]);
-        c.add_intercept = false;
-        c.min_periods = 0.0;
-        c.max_cd_iters = 100_000;
-        c.cd_tol = 1e-15;
+        c.fit_intercept = false;
+        c.min_weight = 0.0;
+        c.max_iter = 100_000;
+        c.tol = 1e-15;
         let rows = weighted_rows(3, 80, 3);
         let m = run(c, &rows);
         let ws: f64 = rows.iter().map(|r| r.2).sum();
@@ -1770,7 +1770,7 @@ mod tests {
     #[test]
     fn a_held_feature_gets_no_slope_and_moves_nothing_else() {
         let mut c = cfg(2, 1, vec![0.0]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut rows = weighted_rows(2, 60, 7);
         for r in &mut rows {
             r.0[1] = 7.25;
@@ -1798,7 +1798,7 @@ mod tests {
     fn a_pairwise_intercept_is_centred_on_the_targets_own_rows() {
         let mut c = cfg(2, 2, vec![0.05]);
         c.target_gaps = TargetGaps::Pairwise;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let rows = weighted_rows(2, 60, 11);
         let m = run(c, &rows);
         let beta = &m.coefficients().unwrap()[1][0];
@@ -1821,12 +1821,12 @@ mod tests {
     #[test]
     fn a_re_solve_starts_where_the_last_one_ended() {
         let mut c = cfg(4, 1, vec![0.01]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let rows = weighted_rows(4, 80, 13);
         let mut m = run(c, &rows);
         let before = m.solve_failures;
-        m.cfg.max_cd_iters = 1;
-        m.cfg.cd_tol = 1e-9;
+        m.cfg.max_iter = 1;
+        m.cfg.tol = 1e-9;
         m.solve();
         assert_eq!(m.solve_failures, before, "the warm start was not used");
     }
@@ -1839,7 +1839,7 @@ mod tests {
         let mut c = cfg(2, 1, vec![0.01]);
         c.window = Some(10.0);
         c.decay = Decay::Halflife(20.0);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Lasso::new(c).unwrap();
         let rows = weighted_rows(2, 60, 17);
         for (i, (x, y, w)) in rows.iter().take(30).enumerate() {
@@ -1867,7 +1867,7 @@ mod tests {
         c.window = Some(40.0);
         c.window_every = Some(2);
         c.decay = Decay::Halflife(30.0);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let rows = weighted_rows(2, 100, 19);
         let mut m = run(c, &rows);
         assert_eq!(m.window_over_budget(), None);
@@ -1889,7 +1889,7 @@ mod tests {
     fn a_fit_of_the_wrong_inner_shape_is_refused() {
         use crate::{ModelState, OnlineModel};
         let mut c = cfg(2, 1, vec![0.1, 0.01]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let m = run(c, &weighted_rows(2, 20, 23));
         let mut s = m.state();
         let ModelState::Lasso(inner) = &mut s.model else {
@@ -1905,10 +1905,10 @@ mod tests {
     #[test]
     fn without_an_intercept_an_all_zero_feature_moves_nothing() {
         let mut c = cfg(3, 1, vec![0.0]);
-        c.add_intercept = false;
-        c.min_periods = 0.0;
-        c.max_cd_iters = 100_000;
-        c.cd_tol = 1e-15;
+        c.fit_intercept = false;
+        c.min_weight = 0.0;
+        c.max_iter = 100_000;
+        c.tol = 1e-15;
         let mut rows = weighted_rows(3, 80, 29);
         for r in &mut rows {
             r.0[1] = 0.0;
@@ -1943,7 +1943,7 @@ mod tests {
     fn the_exported_moments_are_each_targets_own() {
         use crate::OnlineModel;
         let mut c = cfg(2, 2, vec![0.01]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let rows = weighted_rows(2, 40, 31);
         let m = run(c, &rows);
         assert_eq!(m.n_targets(), 2);
@@ -1975,14 +1975,14 @@ mod tests {
     }
 
     /// The schedule: every `max_rows_between_solves` rows, every
-    /// `solve_every` of clock, and the first fit as soon as `min_periods` is
+    /// `solve_every` of clock, and the first fit as soon as `min_weight` is
     /// met -- counted as the rows on which the fit changed.
     #[test]
     fn the_solve_schedule_counts_rows_and_clock() {
         use crate::OnlineModel;
         let changes = |solve_every: f64, max_rows: u32| {
             let mut c = cfg(2, 1, vec![0.01]);
-            c.min_periods = 3.0;
+            c.min_weight = 3.0;
             c.solve_every = solve_every;
             c.max_rows_between_solves = max_rows;
             let mut m = Lasso::new(c).unwrap();
@@ -2018,7 +2018,7 @@ mod tests {
         use crate::OnlineModel;
         let mut c = cfg(2, 2, vec![0.05, 0.01]);
         c.target_gaps = TargetGaps::Pairwise;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let rows = weighted_rows(2, 60, 41);
         let m = run(c, &rows[..40]);
         let bytes = rmp_serde::to_vec_named(&m.state()).unwrap();
@@ -2045,7 +2045,7 @@ mod tests {
         let mut c = cfg(3, 1, vec![0.01]);
         c.window = Some(10.0);
         c.decay = Decay::Halflife(20.0);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Lasso::new(c).unwrap();
         let rows = weighted_rows(3, 60, 43);
         for (i, (x, y, w)) in rows.iter().take(30).enumerate() {
@@ -2055,7 +2055,7 @@ mod tests {
         for (x, y, w) in rows.iter().skip(31).take(5) {
             m.step(x, &y[..1], 1.0, *w);
         }
-        m.cfg.max_cd_iters = 1;
+        m.cfg.max_iter = 1;
         m.beta.as_mut().unwrap()[0][0].fill(f64::NAN);
         let mut cold = m.clone();
         cold.beta = None;
@@ -2073,7 +2073,7 @@ mod tests {
     fn a_target_with_no_rows_predicts_nothing() {
         use crate::OnlineModel;
         let mut c = cfg(2, 2, vec![0.1, 0.01]);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Lasso::new(c).unwrap();
         for (i, (x, y, w)) in weighted_rows(2, 20, 47).iter().enumerate() {
             m.step(x, &[y[0], None], if i == 0 { 0.0 } else { 1.0 }, *w);

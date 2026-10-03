@@ -58,7 +58,7 @@
 //! below `1e-150` it is folded into `W` and `M2` and reset to 1:
 //! deterministic in the clock, so it happens at the same row however the
 //! stream is chunked, and chunk invariance holds across it. A factor of
-//! zero -- a clock gap past `max_dclock` under the default `+inf` cap --
+//! zero -- a clock gap past `gap_cap` under the default `+inf` cap --
 //! folds in the same way and leaves every bin empty, which is what the pair
 //! moments do on that row.
 
@@ -304,7 +304,7 @@ impl MarginalBins {
     /// Whatever factor the pair moments are aged by, this is aged by too --
     /// no clamp of its own, so the two cannot drift apart. That includes a
     /// factor of **zero**, which the clock does produce (a gap past
-    /// `max_dclock` under the default `+inf` cap): the pair moments forget
+    /// `gap_cap` under the default `+inf` cap): the pair moments forget
     /// everything on that row, and so does this. Only a factor that is not a
     /// number in `[0, ∞)` is refused, since it would poison every bin at
     /// once.
@@ -313,7 +313,7 @@ impl MarginalBins {
     /// scale it picked up while empty would still divide every later row's
     /// weight and multiply every later read, moving each by a rounding.
     /// The pair moments carry no trace of a zero-weight prefix (their mix
-    /// on such a row is `a = 1, b = 0`), and `label_delay`'s doubled stream
+    /// on such a row is `a = 1, b = 0`), and `embargo`'s doubled stream
     /// begins with one -- so neither does this.
     pub fn decay(&mut self, lam: f64) {
         if self.empty || !lam.is_finite() || lam < 0.0 {
@@ -714,7 +714,7 @@ pub struct BinCfg {
 /// an error that names the number.
 ///
 /// Each is held to it on its own, and per model: every group keeps its own
-/// hold and histogram, as does every halflife of a grid. At the warm-up's
+/// hold and histogram, as does every half-life of a grid. At the warm-up's
 /// last row the two exist at once, while the held rows are replayed into
 /// the new histogram, so that row's peak is their sum. A check on the sum
 /// was considered and not taken: it would refuse a spec of 10,000 features,
@@ -996,7 +996,7 @@ mod tests {
     }
 
     /// Decay leaves no trace on an empty histogram. The doubled stream
-    /// `label_delay` is checked against opens with `delay` zero-weight rows,
+    /// `embargo` is checked against opens with `delay` zero-weight rows,
     /// and the native path with none; a scale picked up there would round
     /// every later weight differently, and the two stopped agreeing in the
     /// last bit until this held. Also the reason the flag is a field:

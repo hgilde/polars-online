@@ -100,7 +100,7 @@ fn main() {
         n_features: p,
         n_targets: t,
         decay: Decay::Halflife(500.0),
-        min_periods: vec![3.0; t],
+        min_weight: vec![3.0; t],
         lags: lags.clone(),
         serial_rule: None,
         cross_lags,

@@ -16,15 +16,15 @@ use online_polars::{Bank, GroupKey, PAR_MIN_ROWS, Spec};
 use polars::prelude::*;
 
 /// A spec over the fixture's columns: `group` names the key column (none for
-/// an ungrouped spec), `halflife` is the JSON value, `extra` more
+/// an ungrouped spec), `half_life` is the JSON value, `extra` more
 /// `"key": value,` pairs -- `session_gap` among them, since the fixture has
 /// a session column.
-fn spec(name: &str, group: Option<&str>, halflife: &str, extra: &str) -> Spec {
-    spec_on("t", name, group, halflife, extra)
+fn spec(name: &str, group: Option<&str>, half_life: &str, extra: &str) -> Spec {
+    spec_on("t", name, group, half_life, extra)
 }
 
 /// [`spec`] on another clock column.
-fn spec_on(clock: &str, name: &str, group: Option<&str>, halflife: &str, extra: &str) -> Spec {
+fn spec_on(clock: &str, name: &str, group: Option<&str>, half_life: &str, extra: &str) -> Spec {
     let g = group.map_or(String::new(), |g| format!(r#""group": "{g}","#));
     serde_json::from_str(&format!(
         r#"{{
@@ -33,13 +33,13 @@ fn spec_on(clock: &str, name: &str, group: Option<&str>, halflife: &str, extra: 
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "{clock}",
-            "halflife": {halflife},
-            "max_dclock": 30.0,
+            "half_life": {half_life},
+            "gap_cap": 30.0,
             "weight": "w",
             "session": "sess",
             {g}
             {extra}
-            "min_periods": 5.0
+            "min_weight": 5.0
         }}"#
     ))
     .unwrap()
@@ -47,7 +47,7 @@ fn spec_on(clock: &str, name: &str, group: Option<&str>, halflife: &str, extra: 
 
 /// The grouped specs every test runs, keyed on `group`: a plain one, whose
 /// `coef` lands on each chunk's last row per group and so depends on the
-/// chunking; one with every optional output on, two halflives (instances run
+/// chunking; one with every optional output on, two half-lives (instances run
 /// in parallel) and `coef_every = 1`, so that every one of its fields is
 /// chunk-invariant; and the coupled drift path, where a break in either
 /// instance resets both and the rows go one at a time, with a session
@@ -60,7 +60,7 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
             Some(group),
             "[30.0, 120.0]",
             r#""session_gap": 10.0, "coef_every": 1, "emit_sigma": true,
-               "emit_resid_z": true, "emit_metrics": true,
+               "emit_zscore": true, "emit_metrics": true,
                "resid_quantiles": [0.5, 0.9], "emit_autocorr": true, "conformal": 0.9,
                "emit_drift": true, "emit_selected": true, "emit_averaged": true,"#,
         ),
@@ -89,7 +89,7 @@ fn all_specs(group: &str) -> Vec<Spec> {
         None,
         "60.0",
         r#""session_gap": 10.0, "coef_every": 1,
-           "on_clock_reset": "reset_state", "min_backwards_jump": 0,"#,
+           "restart_after_step_back": 0,"#,
     ));
     specs
 }
@@ -150,7 +150,7 @@ fn interleaved(n: usize, n_groups: usize, seed: u64) -> DataFrame {
         id.push(i as i64);
         g.push(label);
         gi.push(key);
-        // Occasionally a jump past `max_dclock`, so the cap is exercised.
+        // Occasionally a jump past `gap_cap`, so the cap is exercised.
         clocks[slot] += 1.0 + 5.0 * unit() + if i % 331 == 100 { 200.0 } else { 0.0 };
         t.push(clocks[slot]);
         let a = 2.0 * unit() - 1.0;
@@ -600,7 +600,7 @@ fn rows_of_the_group(df: &DataFrame, row: usize) -> Vec<usize> {
 /// value's position in what is checked is not its row in the frame. The
 /// error must name the frame's row, and always the same one, whichever
 /// thread found it first: a null clock, a negative weight, and a backwards
-/// clock under `on_clock_reset = "error"`, whether the earlier row of the
+/// clock with `restart_after_step_back` unset, whether the earlier row of the
 /// group is in the same chunk or in the bank's state. And when a clock and a
 /// weight are both bad, the clock is what is reported, every time -- the
 /// column checks run in parallel, the errors surface in a fixed order.
@@ -625,13 +625,8 @@ fn errors_name_the_frame_row_under_any_layout() {
                 && previous_in_group(&df, i).is_some_and(|p| sess.get(p) == sess.get(i))
         })
         .unwrap();
-    let strict = || {
-        let mut specs = grouped_specs("g");
-        for s in &mut specs {
-            s.on_clock_reset = online_core::OnClockReset::Error;
-        }
-        specs
-    };
+    // A step back is refused by default (`restart_after_step_back` unset).
+    let strict = || grouped_specs("g");
     let names = |err: PolarsError, what: &str| {
         let msg = err.to_string();
         assert!(
@@ -818,7 +813,7 @@ fn predict_skips_unseen_groups_in_any_layout() {
             let fa = sa.struct_().unwrap().fields_as_series();
             let fb = sb.struct_().unwrap().fields_as_series();
             for (x, y) in fa.iter().zip(&fb) {
-                if x.name().starts_with("pred_") || x.name() == "n_eff" {
+                if x.name().starts_with("pred_") || x.name() == "weight_sum" {
                     assert_series(
                         x,
                         y,

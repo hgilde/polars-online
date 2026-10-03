@@ -113,7 +113,7 @@ impl ModelState {
 }
 
 /// Age each target's own weight by this row's decay and add the row's weight
-/// to the targets it carried: the weight a target's `min_periods` is checked
+/// to the targets it carried: the weight a target's `min_weight` is checked
 /// against (hard rule 8, docs/PLAN.md task 115 (d)), where the emitted
 /// `n_eff` is every row's. For the update-form models, `pa`, `sgd`, `ftrl`
 /// and `rls`, whose coefficients a row with a null target does not move; a
@@ -189,9 +189,9 @@ pub const INPUT_BOUND: f64 = 1e100;
 /// // Holt's linear trend has no features, so `x` is empty.
 /// let mut model = Holt::new(HoltCfg {
 ///     n_targets: 1,
-///     level_halflife: 2.0,
-///     trend_halflife: 4.0,
-///     min_periods: 2.0,
+///     level_half_life: 2.0,
+///     trend_half_life: 4.0,
+///     min_weight: 2.0,
 ///     trend: true,
 /// })?;
 /// for t in 0..60 {
@@ -299,7 +299,7 @@ pub trait OnlineModel: Sized {
 
     /// Each target's own accumulated weight, with `n_eff`'s meaning --
     /// before this row's update and before its own decay, and inside the
-    /// window under one -- for the per-target `min_periods` gate: the stream
+    /// window under one -- for the per-target `min_weight` gate: the stream
     /// checks each target's threshold against its own weight, where the
     /// shared `n_eff` is the feature side's, the same for every target
     /// (review 2026-09-12, S2). Clears and fills `out`, an entry a target,

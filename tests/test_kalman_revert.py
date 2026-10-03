@@ -1,6 +1,6 @@
 """Task 29 / ENHANCEMENTS E41: coefficient reversion on ``kalman``.
 
-``revert_halflife`` gives each slot a reversion halflife ``r_i``. Before a row
+``revert_half_life`` gives each slot a reversion half-life ``r_i``. Before a row
 predicts, the filter propagates its state over the clock gap ``d`` since the
 last row: ``b <- Phi b``, ``P <- Phi P Phi`` with ``Phi = diag(2^(-d/r_i))``,
 then adds the process noise ``Q d`` as before. ``inf`` (the default) is
@@ -8,9 +8,9 @@ then adds the process noise ``Q d`` as before. ``inf`` (the default) is
 
 Three kinds of check:
 
-- an oracle (``tests/reference.py::kalman_ref`` with ``revert_halflife``)
+- an oracle (``tests/reference.py::kalman_ref`` with ``revert_half_life``)
   over streams with clock gaps, weights, null targets, skipped rows and
-  ``max_dclock``;
+  ``gap_cap``;
 - large data: a slope that mean-reverts is tracked better by a reverting
   filter, a slope that random-walks is tracked better by the random walk,
   so the parameter is not a free improvement in either direction;
@@ -41,9 +41,9 @@ def _spec(name="m", **kw):
     defaults = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        coef_halflife=100.0,
-        halflife=500.0,
-        min_periods=20.0,
+        coef_half_life=100.0,
+        half_life=500.0,
+        min_weight=20.0,
     )
     defaults.update(kw)
     return po.spec.kalman(name, **defaults)
@@ -89,39 +89,39 @@ class TestOracle:
     def _compare(self, df, k=3, targets=("y0",), **kw):
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
-        ref = kalman_ref(x, y, dc, w, max_dclock=MAXD, **kw)
+        ref = kalman_ref(x, y, dc, w, gap_cap=MAXD, **kw)
         spec = po.spec.kalman(
             "m",
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
             clock="t",
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             weight="w",
-            halflife=kw.get("halflife", 500.0),
-            coef_halflife=kw.get("coef_halflife", 100.0),
+            half_life=kw.get("half_life", 500.0),
+            coef_half_life=kw.get("coef_half_life", 100.0),
             q=kw.get("q"),
             obs_var=kw.get("obs_var"),
             p0=kw.get("p0"),
             share_p=kw.get("share_p", False),
-            min_periods=kw.get("min_periods", 10.0),
-            revert_halflife=kw.get("revert_halflife"),
-            add_intercept=kw.get("add_intercept", True),
+            min_weight=kw.get("min_weight", 10.0),
+            revert_half_life=kw.get("revert_half_life"),
+            fit_intercept=kw.get("fit_intercept", True),
             standardize=kw.get("standardize", True),
         )
         out = po.ModelBank([spec]).fit_predict(df)
         for j, t in enumerate(targets):
             for field, key in (("pred_", "pred"), ("resid_", "resid")):
                 _close(_field(out, f"{field}{t}"), ref[key][:, j], what=f"{field}{t}")
-        _close(_field(out, "n_eff"), ref["n_eff"], what="n_eff")
+        _close(_field(out, "weight_sum"), ref["weight_sum"], what="weight_sum")
         return out, ref
 
     def test_scalar_revert_halflife(self):
         df, _ = synthetic(seed=91, n_groups=1, n_rows=800, k=3, null_frac=0.0)
-        self._compare(df, revert_halflife=60.0)
+        self._compare(df, revert_half_life=60.0)
 
     def test_per_slot_with_the_intercept_left_alone(self):
         df, _ = synthetic(seed=92, n_groups=1, n_rows=800, k=3, null_frac=0.0)
-        self._compare(df, revert_halflife=[INF, 200.0, 25.0, 5.0])
+        self._compare(df, revert_half_life=[INF, 200.0, 25.0, 5.0])
 
     def test_reversion_with_per_factor_process_noise_and_a_pin(self):
         df, _ = synthetic(seed=93, n_groups=1, n_rows=800, k=3, null_frac=0.0)
@@ -129,39 +129,39 @@ class TestOracle:
         # stays there: the transition is independent of the process noise.
         self._compare(
             df,
-            coef_halflife=[INF, 500.0, 30.0, INF],
-            revert_halflife=[INF, 80.0, 80.0, 40.0],
+            coef_half_life=[INF, 500.0, 30.0, INF],
+            revert_half_life=[INF, 80.0, 80.0, 40.0],
         )
 
     def test_explicit_q_fixed_obs_var_and_p0(self):
         df, _ = synthetic(seed=94, n_groups=1, n_rows=600, k=3, null_frac=0.0)
-        self._compare(df, q=[0.0, 0.01, 0.02, 0.0], obs_var=0.25, p0=4.0, revert_halflife=30.0)
+        self._compare(df, q=[0.0, 0.01, 0.02, 0.0], obs_var=0.25, p0=4.0, revert_half_life=30.0)
 
     def test_multi_target_per_target_p(self):
         df, _ = synthetic(seed=95, n_groups=1, n_rows=600, k=3, n_targets=2, null_frac=0.0)
-        self._compare(df, targets=("y0", "y1"), revert_halflife=[INF, 40.0, 40.0, 10.0])
+        self._compare(df, targets=("y0", "y1"), revert_half_life=[INF, 40.0, 40.0, 10.0])
 
     def test_multi_target_shared_p(self):
         # The shared P is propagated once per row, not once per target.
         df, _ = synthetic(seed=96, n_groups=1, n_rows=600, k=3, n_targets=2, null_frac=0.0)
         self._compare(
-            df, targets=("y0", "y1"), share_p=True, revert_halflife=[INF, 40.0, 40.0, 10.0]
+            df, targets=("y0", "y1"), share_p=True, revert_half_life=[INF, 40.0, 40.0, 10.0]
         )
 
     def test_null_targets_and_skipped_features(self):
         # A null target advances the transition without a measurement; a
         # null feature skips the row and folds its clock into the next one.
         df, _ = synthetic(seed=97, n_groups=1, n_rows=800, k=3, null_frac=0.08)
-        self._compare(df, revert_halflife=[INF, 30.0, 30.0, 30.0])
+        self._compare(df, revert_half_life=[INF, 30.0, 30.0, 30.0])
 
     def test_zero_weight_rows(self):
         df, _ = synthetic(seed=98, n_groups=1, n_rows=600, k=3, null_frac=0.0)
         df = df.with_columns(w=pl.when(pl.arange(0, df.height) % 7 == 3).then(0.0).otherwise("w"))
-        self._compare(df, revert_halflife=20.0)
+        self._compare(df, revert_half_life=20.0)
 
     def test_unstandardized(self):
         df, _ = synthetic(seed=99, n_groups=1, n_rows=600, k=3, null_frac=0.0)
-        out, ref = self._compare(df, standardize=False, revert_halflife=[INF, 50.0, 50.0, 50.0])
+        out, ref = self._compare(df, standardize=False, revert_half_life=[INF, 50.0, 50.0, 50.0])
         # Without standardization the state is the coefficient: the oracle's
         # coefficients are checked too, on every row the bank emitted them.
         got = _coef(out)
@@ -171,7 +171,7 @@ class TestOracle:
 
     def test_no_intercept(self):
         df, _ = synthetic(seed=100, n_groups=1, n_rows=500, k=2, null_frac=0.0)
-        self._compare(df, k=2, add_intercept=False, revert_halflife=[15.0, 60.0])
+        self._compare(df, k=2, fit_intercept=False, revert_half_life=[15.0, 60.0])
 
     def test_a_long_gap_is_capped_by_max_dclock(self):
         # The transition sees the same capped delta the decay does.
@@ -179,19 +179,19 @@ class TestOracle:
         t = df["t"].to_numpy().copy()
         t[250:] += 1000.0
         df = df.with_columns(t=pl.Series(t))
-        self._compare(df, revert_halflife=25.0)
+        self._compare(df, revert_half_life=25.0)
 
 
 # --- large data -----------------------------------------------------------------
 
 
-def _ou_stream(n, seed, *, revert_halflife, noise, density=1.0, walk_sigma=0.002):
+def _ou_stream(n, seed, *, revert_half_life, noise, density=1.0, walk_sigma=0.002):
     """``y = 0.3 + b1(t) x1 + b2(t) x2 + e``: ``b1`` a stationary AR(1)
-    around zero with the given halflife and sd 1, ``b2`` a slow random walk.
+    around zero with the given half-life and sd 1, ``b2`` a slow random walk.
     ``density < 1`` makes ``x1`` sparse -- zero most rows -- so its slope
     goes unobserved for long stretches, during which the truth reverts."""
     rng = np.random.default_rng(seed)
-    phi = 0.5 ** (1.0 / revert_halflife)
+    phi = 0.5 ** (1.0 / revert_half_life)
     eta = rng.normal(0.0, math.sqrt(1.0 - phi * phi), n)
     b1 = np.empty(n)
     b1[0] = rng.normal()
@@ -226,16 +226,16 @@ class TestLargeData:
         common = dict(
             targets=["y0"],
             features=["x0", "x1"],
-            coef_halflife=INF,
+            coef_half_life=INF,
             q=q,
             obs_var=noise * noise,
-            halflife=2000.0,
-            min_periods=50.0,
+            half_life=2000.0,
+            min_weight=50.0,
             standardize=False,
             coef_every=1,
         )
         walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
-        rev = po.ModelBank([po.spec.kalman("m", revert_halflife=revert, **common)]).fit_predict(df)
+        rev = po.ModelBank([po.spec.kalman("m", revert_half_life=revert, **common)]).fit_predict(df)
         return walk, rev
 
     def _pred_mse(self, out, df):
@@ -248,7 +248,7 @@ class TestLargeData:
         # reverting filter lets it decay as the truth does. Half the
         # tracking error, and better predictions, over the last 250k rows;
         # the always-on random-walk slope is tracked the same either way.
-        df, truth, q = _ou_stream(self.N, 7, revert_halflife=40.0, noise=1.0, density=0.02)
+        df, truth, q = _ou_stream(self.N, 7, revert_half_life=40.0, noise=1.0, density=0.02)
         walk, rev = self._pair(df, q, 1.0, [INF, 40.0, INF])
         mse_walk = _track_mse(walk, truth, self.TAIL)
         mse_rev = _track_mse(rev, truth, self.TAIL)
@@ -260,7 +260,7 @@ class TestLargeData:
         # Always observed, the gain from knowing the transition is smaller
         # but still there: the reverting filter is the Bayes filter for
         # this truth, the random walk a misspecified one.
-        df, truth, q = _ou_stream(self.N, 8, revert_halflife=20.0, noise=2.0)
+        df, truth, q = _ou_stream(self.N, 8, revert_half_life=20.0, noise=2.0)
         walk, rev = self._pair(df, q, 2.0, [INF, 20.0, INF])
         mse_walk = _track_mse(walk, truth, self.TAIL)
         mse_rev = _track_mse(rev, truth, self.TAIL)
@@ -281,17 +281,17 @@ class TestLargeData:
         common = dict(
             targets=["y0"],
             features=["x0"],
-            coef_halflife=INF,
+            coef_half_life=INF,
             q=[0.0, 1e-4],
             obs_var=1.0,
-            halflife=2000.0,
-            min_periods=50.0,
+            half_life=2000.0,
+            min_weight=50.0,
             standardize=False,
             coef_every=1,
         )
         walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
         rev = po.ModelBank(
-            [po.spec.kalman("m", revert_halflife=[INF, 30.0], **common)]
+            [po.spec.kalman("m", revert_half_life=[INF, 30.0], **common)]
         ).fit_predict(df)
         mse_walk = _track_mse(walk, truth, self.TAIL)
         mse_rev = _track_mse(rev, truth, self.TAIL)
@@ -317,18 +317,18 @@ class TestLargeData:
         common = dict(
             targets=["y0"],
             features=["x0", "x1"],
-            add_intercept=False,
-            coef_halflife=INF,
+            fit_intercept=False,
+            coef_half_life=INF,
             q=[q, q],
             obs_var=r_obs,
-            halflife=INF,
-            min_periods=10.0,
+            half_life=INF,
+            min_weight=10.0,
             standardize=False,
             coef_every=1,
         )
         got = {}
         for rh in (INF, 100.0):
-            bank = po.ModelBank([po.spec.kalman("m", revert_halflife=rh, **common)])
+            bank = po.ModelBank([po.spec.kalman("m", revert_half_life=rh, **common)])
             bank.fit_predict(head)
             before = _coef(bank.fit_predict(tail))[-1]
             after = _coef(bank.fit_predict(probe))[-1]
@@ -352,24 +352,24 @@ class TestLargeData:
 class TestExactness:
     def test_inf_is_bit_identical_to_the_default(self):
         df, _ = synthetic(seed=102, n_groups=2, n_rows=600, k=3, null_frac=0.03)
-        base = _spec(group="group", clock="t", max_dclock=MAXD, weight="w", coef_every=1)
+        base = _spec(group="group", clock="t", gap_cap=MAXD, weight="w", coef_every=1)
         want = po.ModelBank([base]).fit_predict(df)
         for r in (INF, [INF], [INF, INF, INF, INF]):
             spec = _spec(
                 group="group",
                 clock="t",
-                max_dclock=MAXD,
+                gap_cap=MAXD,
                 weight="w",
                 coef_every=1,
-                revert_halflife=r,
+                revert_half_life=r,
             )
             got = po.ModelBank([spec]).fit_predict(df)
             assert got.equals(want, null_equal=True), r
 
     def test_scalar_equals_the_list_that_spells_it(self):
         df, _ = synthetic(seed=103, n_groups=1, n_rows=400, k=3, null_frac=0.0)
-        a = po.ModelBank([_spec(revert_halflife=33.0, coef_every=1)]).fit_predict(df)
-        b = po.ModelBank([_spec(revert_halflife=[33.0] * 4, coef_every=1)]).fit_predict(df)
+        a = po.ModelBank([_spec(revert_half_life=33.0, coef_every=1)]).fit_predict(df)
+        b = po.ModelBank([_spec(revert_half_life=[33.0] * 4, coef_every=1)]).fit_predict(df)
         assert a.equals(b, null_equal=True)
 
     def test_shrinks_exactly_over_a_run_of_null_targets_on_an_irregular_clock(self):
@@ -377,13 +377,13 @@ class TestExactness:
         # after rows with deltas `d_1 .. d_n` the coefficient is
         # `2^(-sum(d)/r)` of what it was, per slot, whatever the spacing --
         # including deltas folded from skipped rows and capped by
-        # `max_dclock`. Unstandardized, so `coef` is the state itself.
+        # `gap_cap`. Unstandardized, so `coef` is the state itself.
         rng = np.random.default_rng(104)
         n_fit, n_null = 300, 200
         n = n_fit + n_null
         dt = rng.exponential(2.0, n)
         dt[0] = 0.0
-        dt[n_fit + 10] = 500.0  # capped at max_dclock
+        dt[n_fit + 10] = 500.0  # capped at gap_cap
         t = np.cumsum(dt)
         x = rng.normal(size=(n, 3))
         y = 0.5 + x @ np.array([1.0, -2.0, 0.7]) + rng.normal(0.0, 0.1, n)
@@ -393,8 +393,8 @@ class TestExactness:
         r = [INF, 20.0, 7.0, 3.0]
         spec = _spec(
             clock="t",
-            max_dclock=MAXD,
-            revert_halflife=r,
+            gap_cap=MAXD,
+            revert_half_life=r,
             standardize=False,
             q=[0.0] * 4,
             coef_every=1,
@@ -403,7 +403,7 @@ class TestExactness:
         c = _coef(out)
         c_fit = c[n_fit - 1]
         assert np.isfinite(c_fit).all()
-        dc, _ = compute_dclock(t, None, n, max_dclock=MAXD)
+        dc, _ = compute_dclock(t, None, n, gap_cap=MAXD)
         accepted = np.isfinite(x).all(axis=1)
         for i in range(n_fit, n):
             if not accepted[i]:
@@ -429,7 +429,7 @@ class TestExactness:
         spec = _spec(
             features=["x0", "x1"],
             weight="w",
-            revert_halflife=[INF, 4.0, 4.0],
+            revert_half_life=[INF, 4.0, 4.0],
             standardize=False,
             q=[0.0] * 3,
             coef_every=1,
@@ -441,7 +441,7 @@ class TestExactness:
     def test_predict_propagates_over_the_clock_distance(self):
         # `predict(df)` scores each row as the next row of the stream: the
         # coefficients are propagated by `2^(-d/r)` for the row's clock
-        # distance from the last learned row (capped by `max_dclock`, and 0
+        # distance from the last learned row (capped by `gap_cap`, and 0
         # for a row before it, which is scored against the state as it
         # stands: task 120), while the emitted `coef` is the frozen state.
         rng = np.random.default_rng(106)
@@ -454,10 +454,10 @@ class TestExactness:
         spec = _spec(
             features=["x0", "x1"],
             clock="t",
-            max_dclock=20.0,
-            revert_halflife=r,
+            gap_cap=20.0,
+            revert_half_life=r,
             standardize=False,
-            min_periods=10.0,
+            min_weight=10.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -493,7 +493,7 @@ class TestExactness:
         # The general E31 contract, row by row, under reversion with a clock.
         df, _ = synthetic(seed=107, n_groups=2, n_rows=120, k=3, null_frac=0.0)
         spec = _spec(
-            group="group", clock="t", max_dclock=MAXD, revert_halflife=[INF, 30.0, 30.0, 8.0]
+            group="group", clock="t", gap_cap=MAXD, revert_half_life=[INF, 30.0, 30.0, 8.0]
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df.head(160))
@@ -504,7 +504,7 @@ class TestExactness:
             fresh = po.ModelBank.load_bytes(snap, [spec])
             want = fresh.fit_predict(later.slice(i, 1))
             a, b = got["m"][i], want["m"][0]
-            for key in ("pred_y0", "resid_y0", "n_eff"):
+            for key in ("pred_y0", "resid_y0", "weight_sum"):
                 assert (
                     a[key] == b[key]
                     or (a[key] is None and b[key] is None)
@@ -520,9 +520,9 @@ class TestPlumbing:
         return _spec(
             group="group",
             clock="t",
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             weight="w",
-            revert_halflife=[INF, 40.0, 40.0, 10.0],
+            revert_half_life=[INF, 40.0, 40.0, 10.0],
             **kw,
         )
 
@@ -592,15 +592,15 @@ targets = ["y0"]
 features = ["x0", "x1", "x2"]
 group = "group"
 clock = "t"
-max_dclock = {MAXD}
+gap_cap = {MAXD}
 weight = "w"
-halflife = 500.0
-min_periods = 20.0
+half_life = 500.0
+min_weight = 20.0
 
 [specs.model]
 type = "kalman"
-coef_halflife = 100.0
-revert_halflife = ["inf", 40.0, 40.0, 10.0]
+coef_half_life = 100.0
+revert_half_life = ["inf", 40.0, 40.0, 10.0]
 """,
             encoding="utf-8",
         )
@@ -622,33 +622,33 @@ class TestRefusals:
             (
                 "10",
                 ValueError,
-                'revert_halflife "10" is not a duration: 10 has no unit',
+                'revert_half_life "10" is not a duration: 10 has no unit',
             ),
-            (float("nan"), ValueError, "revert_halflife must not be NaN"),
-            ([INF, float("nan"), 1.0, 1.0], ValueError, "revert_halflife must not be NaN"),
-            (0.0, ValueError, 'revert_halflife must be > 0 ("inf" is the random walk)'),
-            (-5.0, ValueError, 'revert_halflife must be > 0 ("inf" is the random walk)'),
+            (float("nan"), ValueError, "revert_half_life must not be NaN"),
+            ([INF, float("nan"), 1.0, 1.0], ValueError, "revert_half_life must not be NaN"),
+            (0.0, ValueError, 'revert_half_life must be > 0 ("inf" is the random walk)'),
+            (-5.0, ValueError, 'revert_half_life must be > 0 ("inf" is the random walk)'),
             (
                 [INF, 10.0, -1.0, 10.0],
                 ValueError,
-                'revert_halflife must be > 0 ("inf" is the random walk)',
+                'revert_half_life must be > 0 ("inf" is the random walk)',
             ),
-            ([10.0, 10.0], ValueError, "revert_halflife must be scalar or length 4"),
-            ([], ValueError, "revert_halflife must be scalar or length 4"),
+            ([10.0, 10.0], ValueError, "revert_half_life must be scalar or length 4"),
+            ([], ValueError, "revert_half_life must be scalar or length 4"),
         ],
     )
     def test_named_refusals(self, value, exc, msg):
         import re
 
         with pytest.raises(exc, match=re.escape(msg)):
-            po.ModelBank([_spec(revert_halflife=value)])
+            po.ModelBank([_spec(revert_half_life=value)])
 
     def test_inf_is_allowed_in_every_position(self):
-        po.ModelBank([_spec(revert_halflife=INF)])
-        po.ModelBank([_spec(revert_halflife=[INF, INF, 5.0, INF])])
+        po.ModelBank([_spec(revert_half_life=INF)])
+        po.ModelBank([_spec(revert_half_life=[INF, INF, 5.0, INF])])
 
     def test_other_models_reject_it(self):
-        with pytest.raises(TypeError, match="revert_halflife"):
-            po.spec.rls("r", targets=["y0"], features=["x0"], revert_halflife=10.0)
-        with pytest.raises(TypeError, match="revert_halflife"):
-            po.spec.ewridge("e", targets=["y0"], features=["x0"], revert_halflife=10.0)
+        with pytest.raises(TypeError, match="revert_half_life"):
+            po.spec.rls("r", targets=["y0"], features=["x0"], revert_half_life=10.0)
+        with pytest.raises(TypeError, match="revert_half_life"):
+            po.spec.ewridge("e", targets=["y0"], features=["x0"], revert_half_life=10.0)

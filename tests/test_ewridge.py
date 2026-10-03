@@ -26,27 +26,27 @@ def _spec(k=3, targets=("y0",), **kw):
         targets=list(targets),
         features=[f"x{j}" for j in range(k)],
         clock="t",
-        halflife=HL,
-        max_dclock=MAXD,
+        half_life=HL,
+        gap_cap=MAXD,
         session="session",
         session_gap=GAP,
         weight="w",
         group="group",
         ridge=1e-6,
         max_rows_between_solves=1,
-        min_periods=5.0,
+        min_weight=5.0,
     )
     defaults.update(kw)
     return po.spec.ewridge("m", **defaults)
 
 
 def _oracle_frame(df: pl.DataFrame, k=3, n_targets=1, **ref_kw):
-    """Run ewridge_ref per group and return pred/resid/n_eff arrays row-aligned."""
-    ref_defaults = dict(halflife=HL, ridge=1e-6, min_periods=5.0)
+    """Run ewridge_ref per group and return pred/resid/weight_sum arrays row-aligned."""
+    ref_defaults = dict(half_life=HL, ridge=1e-6, min_weight=5.0)
     ref_defaults.update(ref_kw)
     pred = np.full((df.height, n_targets), np.nan)
     resid = np.full((df.height, n_targets), np.nan)
-    n_eff = np.full(df.height, np.nan)
+    weight_sum = np.full(df.height, np.nan)
     df = df.with_row_index("_i")
     for _, g in df.group_by("group", maintain_order=True):
         idx = g["_i"].to_numpy()
@@ -57,14 +57,14 @@ def _oracle_frame(df: pl.DataFrame, k=3, n_targets=1, **ref_kw):
             g["t"].to_numpy(),
             g["session"].to_numpy(),
             len(g),
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             session_gap=GAP,
         )
-        out = ewridge_ref(x, y, dc, w, rs, max_dclock=MAXD, **ref_defaults)
+        out = ewridge_ref(x, y, dc, w, rs, gap_cap=MAXD, **ref_defaults)
         pred[idx] = out["pred"]
         resid[idx] = out["resid"]
-        n_eff[idx] = out["n_eff"]
-    return pred, resid, n_eff
+        weight_sum[idx] = out["weight_sum"]
+    return pred, resid, weight_sum
 
 
 def _close(a: np.ndarray, b: np.ndarray, tol=1e-9):
@@ -82,10 +82,10 @@ class TestOracle:
         df, _ = synthetic(seed=3, n_groups=2, n_rows=350, k=3)
         bank = po.ModelBank([_spec()])
         out = bank.fit_predict(df)
-        pred, resid, n_eff = _oracle_frame(df)
+        pred, resid, weight_sum = _oracle_frame(df)
         _close(_np(out, "pred_y0"), pred[:, 0])
         _close(_np(out, "resid_y0"), resid[:, 0])
-        _close(_np(out, "n_eff"), n_eff)
+        _close(_np(out, "weight_sum"), weight_sum)
 
     def test_multi_target(self):
         df, _ = synthetic(seed=4, n_groups=1, n_rows=250, k=3, n_targets=2)
@@ -111,9 +111,9 @@ class TestOracle:
                 _spec(
                     k=2,
                     clock=None,
-                    halflife=None,
+                    half_life=None,
                     lam=lam,
-                    max_dclock=None,
+                    gap_cap=None,
                     session=None,
                     session_gap=None,
                 )
@@ -127,7 +127,7 @@ class TestOracle:
         dc[0] = 0.0
         halflife_equiv = -np.log(2.0) / np.log(lam)
         ref = ewridge_ref(
-            x, y, dc, df["w"].to_numpy(), halflife=halflife_equiv, ridge=1e-6, min_periods=5.0
+            x, y, dc, df["w"].to_numpy(), half_life=halflife_equiv, ridge=1e-6, min_weight=5.0
         )
         _close(_np(out, "pred_y0"), ref["pred"][:, 0])
 
@@ -135,7 +135,7 @@ class TestOracle:
 class TestWarmPriors:
     """E15: `coef_prior` shrinks toward a stated belief instead of toward zero.
 
-    Whether the prior fades depends on `ridge_decay`, and the distinction is
+    Whether the prior fades depends on `ridge_scale`, and the distinction is
     the point: `S` is a weighted *mean*, so a plain `ridge` is a fixed
     per-observation penalty whose pull never washes out.
     """
@@ -150,8 +150,8 @@ class TestWarmPriors:
             targets=["y0"],
             features=["x0"],
             ridge=10.0,
-            halflife=1e9,
-            min_periods=0.0,
+            half_life=1e9,
+            min_weight=0.0,
             max_rows_between_solves=1,
             coef_every=1,
             **kw,
@@ -172,7 +172,7 @@ class TestWarmPriors:
         assert late > 3.0, f"a fixed ridge keeps pulling toward the prior forever, got {late}"
 
     def test_ridge_decay_makes_it_a_fading_warm_start(self):
-        early, late = self._slopes(coef_prior=[[0.0, 5.0]], ridge_decay=True)
+        early, late = self._slopes(coef_prior=[[0.0, 5.0]], ridge_scale="sum")
         assert early > 2.5, f"should start warm near the prior, got {early}"
         assert abs(late - 1.5) < 0.1, f"the prior should fade to the truth, got {late}"
 
@@ -188,8 +188,8 @@ class TestWarmPriors:
             ridge=1e6,
             standardize=True,
             coef_prior=[[0.0, 0.02]],
-            halflife=1e9,
-            min_periods=0.0,
+            half_life=1e9,
+            min_weight=0.0,
             max_rows_between_solves=1,
             coef_every=1,
         )
@@ -205,7 +205,7 @@ class TestWarmPriors:
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
-                halflife=100.0,
+                half_life=100.0,
                 coef_prior=[[0.0, 1.0]],  # too short for 2 features + intercept
             )
 
@@ -240,12 +240,12 @@ class TestSessionShrink:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=50.0,
+            half_life=50.0,
             clock="t",
-            max_dclock=5.0,
+            gap_cap=5.0,
             session="s",
             session_gap=0.0,
-            min_periods=0.0,
+            min_weight=0.0,
             max_rows_between_solves=1,
             coef_every=1,
             **kw,
@@ -262,20 +262,20 @@ class TestSessionShrink:
         return abs(c[i] - c[i - 1]), typical
 
     def test_zero_shrink_carries_the_recent_fit_through(self):
-        jump, typical = self._jump(session_shrink=0.0, long_halflife=1e5)
+        jump, typical = self._jump(session_shrink=0.0, long_half_life=1e5)
         assert jump < 10 * typical, (
             f"boundary move {jump} should look like an ordinary row ({typical})"
         )
 
     def test_shrink_reverts_toward_the_long_run(self):
-        c = self._coefs(session_shrink=0.9, long_halflife=1e5)
+        c = self._coefs(session_shrink=0.9, long_half_life=1e5)
         before, after = c[self.N1 + self.N2 - 1][1], c[self.N1 + self.N2][1]
         assert before < -0.5, "the recent regime should have taken over first"
         assert after > 0.5, f"the break should revert toward +1, got {after}"
 
     def test_shrink_is_monotone(self):
         after = {
-            f: self._coefs(session_shrink=f, long_halflife=1e5)[self.N1 + self.N2][1]
+            f: self._coefs(session_shrink=f, long_half_life=1e5)[self.N1 + self.N2][1]
             for f in (0.0, 0.3, 0.6, 0.9)
         }
         vals = [after[f] for f in (0.0, 0.3, 0.6, 0.9)]
@@ -286,15 +286,15 @@ class TestSessionShrink:
         run's fit -- exactly, if both had the same feature moments; here the
         features are drawn alike in both regimes."""
         i = self.N1 + self.N2
-        today = self._coefs(session_shrink=0.0, long_halflife=1e5)[i][1]
-        long_run = self._coefs(session_shrink=1.0, long_halflife=1e5)[i][1]
+        today = self._coefs(session_shrink=0.0, long_half_life=1e5)[i][1]
+        long_run = self._coefs(session_shrink=1.0, long_half_life=1e5)[i][1]
         assert today < -0.5 < 0.5 < long_run
         for f in (0.25, 0.5):
-            after = self._coefs(session_shrink=f, long_halflife=1e5)[i][1]
+            after = self._coefs(session_shrink=f, long_half_life=1e5)[i][1]
             assert after == pytest.approx((1 - f) * today + f * long_run, abs=0.05), f
 
     def test_the_blend_keeps_the_weight_and_the_solve_schedule(self):
-        """Task 145: ``n_eff`` and the Kish size are the same with and without
+        """Task 145: ``weight_sum`` and the Kish size are the same with and without
         the blend, and the next solve after the open comes when it would
         without it: under a weight-mixed blend the slow twin's weight made
         both jump and the schedule wait (32 rows against 3, measured)."""
@@ -305,22 +305,22 @@ class TestSessionShrink:
                 "m",
                 targets=["y0"],
                 features=["x0"],
-                halflife=50.0,
+                half_life=50.0,
                 clock="t",
-                max_dclock=5.0,
+                gap_cap=5.0,
                 session="s",
                 session_gap=0.0,
-                min_periods=0.0,
+                min_weight=0.0,
                 coef_every=1,
                 session_shrink=f,
-                long_halflife=1e5,
+                long_half_life=1e5,
             )
             bank = po.ModelBank([spec])
             res = bank.fit_predict(df).unnest("m")
             coef = np.array(res["coef"].to_list(), dtype=float)[:, 1]
             open_ = self.N1 + self.N2
             changes = np.flatnonzero(np.diff(coef[open_:]) != 0)
-            out[f] = (res["n_eff"].to_numpy(), int(changes[0]), bank.gram("m")[0]["n_kish"])
+            out[f] = (res["weight_sum"].to_numpy(), int(changes[0]), bank.gram("m")[0]["n_kish"])
         np.testing.assert_array_equal(out[0.25][0], out[0.0][0])
         assert out[0.25][1] == out[0.0][1]
         assert out[0.25][2] == out[0.0][2]
@@ -330,7 +330,7 @@ class TestSessionShrink:
         assert jump < 10 * typical, "no shrink configured should mean no jump"
 
     def test_shrink_produces_a_visible_jump(self):
-        jump, typical = self._jump(session_shrink=0.9, long_halflife=1e5)
+        jump, typical = self._jump(session_shrink=0.9, long_half_life=1e5)
         assert jump > 100 * typical, (
             f"a 0.9 shrink should move the fit far more than a row does ({jump} vs {typical})"
         )
@@ -340,14 +340,14 @@ class TestSessionShrink:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=50.0,
+            half_life=50.0,
             clock="t",
-            max_dclock=5.0,
+            gap_cap=5.0,
             session="s",
             session_gap=0.0,
             session_shrink=0.5,
-            long_halflife=1e5,
-            min_periods=0.0,
+            long_half_life=1e5,
+            min_weight=0.0,
             max_rows_between_solves=1,
         )
         df = self._df().slice(0, 800)
@@ -370,26 +370,26 @@ class TestSessionShrink:
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
     def test_config_is_validated(self):
-        base = dict(targets=["y0"], features=["x0"], halflife=50.0, session="s", session_gap=0.0)
-        with pytest.raises(ValueError, match="needs long_halflife"):
+        base = dict(targets=["y0"], features=["x0"], half_life=50.0, session="s", session_gap=0.0)
+        with pytest.raises(ValueError, match="needs long_half_life"):
             po.spec.ewridge("m", session_shrink=0.5, **base)
         with pytest.raises(ValueError, match="must be in .0, 1."):
-            po.spec.ewridge("m", session_shrink=1.5, long_halflife=1e5, **base)
+            po.spec.ewridge("m", session_shrink=1.5, long_half_life=1e5, **base)
         with pytest.raises(ValueError, match="needs a .session. column"):
             po.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0"],
-                halflife=50.0,
+                half_life=50.0,
                 session_shrink=0.5,
-                long_halflife=1e5,
+                long_half_life=1e5,
             )
 
 
-def _batch_local_linear(x, y, halflife, ridge, min_periods):
+def _batch_local_linear(x, y, half_life, ridge, min_weight):
     """A one-sided exponential-kernel local linear regression, computed from
     scratch at every row: for row `i`, the weighted least squares of `y` on
-    `[1, x]` over the rows before it under weight `0.5 ** (dx / halflife)`,
+    `[1, x]` over the rows before it under weight `0.5 ** (dx / half-life)`,
     read at that row's own `x`. The ridge is on the mean scale with the
     intercept unpenalised, which is the solve `ewridge` does."""
     n = len(x)
@@ -397,8 +397,8 @@ def _batch_local_linear(x, y, halflife, ridge, min_periods):
     pen = np.eye(2)
     pen[0, 0] = 0.0
     for i in range(1, n):
-        w = 0.5 ** ((x[i - 1] - x[:i]) / halflife)
-        if w.sum() < min_periods:
+        w = 0.5 ** ((x[i - 1] - x[:i]) / half_life)
+        if w.sum() < min_weight:
             continue
         xi = np.column_stack([np.ones(i), x[:i]])
         moments = (xi.T * w) @ xi / w.sum()
@@ -408,8 +408,8 @@ def _batch_local_linear(x, y, halflife, ridge, min_periods):
     return out
 
 
-@pytest.mark.parametrize(("halflife", "ridge"), [(0.25, 1e-9), (0.3, 1e-4), (1.0, 1e-2)])
-def test_a_feature_as_the_clock_is_a_local_linear_regression(halflife, ridge):
+@pytest.mark.parametrize(("half_life", "ridge"), [(0.25, 1e-9), (0.3, 1e-4), (1.0, 1e-2)])
+def test_a_feature_as_the_clock_is_a_local_linear_regression(half_life, ridge):
     """The README's "A local fit along any feature": sorted by a feature and
     clocked on it, the decay is a kernel in that feature and the fit is a
     local linear regression -- LOESS with a one-sided exponential kernel,
@@ -425,11 +425,11 @@ def test_a_feature_as_the_clock_is_a_local_linear_regression(halflife, ridge):
         targets=["y"],
         features=["x"],
         clock="x",
-        halflife=halflife,
-        max_dclock=1.0,
+        half_life=half_life,
+        gap_cap=1.0,
         ridge=ridge,
         max_rows_between_solves=1,
-        min_periods=20.0,
+        min_weight=20.0,
     )
     got = (
         po.ModelBank([spec])
@@ -437,7 +437,7 @@ def test_a_feature_as_the_clock_is_a_local_linear_regression(halflife, ridge):
         .unnest("loc")["pred_y"]
         .to_numpy()
     )
-    want = _batch_local_linear(x, y, halflife, ridge, 20.0)
+    want = _batch_local_linear(x, y, half_life, ridge, 20.0)
 
     assert np.array_equal(np.isnan(got), np.isnan(want)), "a different set of rows warmed up"
     fit = ~np.isnan(want)
@@ -451,7 +451,7 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     the truth against a straight line's 0.39 -- but the kernel looks only
     backwards, because a row is scored before it is learned from, so a curve
     is followed with the lag that implies. A wider bandwidth is a flatter
-    fit: at `halflife=1.0` the same stream gives 0.29, most of the way back
+    fit: at `half_life=1.0` the same stream gives 0.29, most of the way back
     to the line."""
     rng = np.random.default_rng(1)
     n = 1200
@@ -459,16 +459,16 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     y = np.sin(x) + 0.1 * rng.standard_normal(n)
     df = pl.DataFrame({"x": x, "y": y})
 
-    def local(halflife):
+    def local(half_life):
         spec = po.spec.ewridge(
             "loc",
             targets=["y"],
             features=["x"],
             clock="x",
-            halflife=halflife,
-            max_dclock=1.0,
+            half_life=half_life,
+            gap_cap=1.0,
             max_rows_between_solves=1,
-            min_periods=20.0,
+            min_weight=20.0,
         )
         return po.ModelBank([spec]).fit_predict(df).unnest("loc")["pred_y"].to_numpy()
 
@@ -501,11 +501,11 @@ class TestWarmPriorsThroughTheOrigin:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            halflife=float("inf"),
-            min_periods=5.0,
+            half_life=float("inf"),
+            min_weight=5.0,
             max_rows_between_solves=1,
             coef_every=1,
-            add_intercept=False,
+            fit_intercept=False,
             standardize=True,
             **kw,
         )
@@ -530,7 +530,7 @@ class TestWarmPriorsThroughTheOrigin:
 
 
 class TestRidgeDecayPenalisesTheIntercept:
-    """Task 148: ``ridge_decay``'s system is RLS's, ``(W S + prior_scale *
+    """Task 148: ``ridge_scale``'s system is RLS's, ``(W S + prior_scale *
     ridge * I) b = W r``, so its penalty reaches the intercept, where a plain
     ``ridge`` never does; and a ``coef_prior`` intercept is what it shrinks
     toward. A constant target of 5 shows both."""
@@ -543,9 +543,9 @@ class TestRidgeDecayPenalisesTheIntercept:
             "m",
             targets=["y"],
             features=["x"],
-            halflife=50.0,
+            half_life=50.0,
             ridge=10.0,
-            min_periods=0.0,
+            min_weight=0.0,
             coef_every=1,
             max_rows_between_solves=1,
             **kw,
@@ -559,11 +559,11 @@ class TestRidgeDecayPenalisesTheIntercept:
         assert self._intercepts() == pytest.approx(5.0, abs=1e-9)
 
     def test_ridge_decay_shrinks_it_until_the_prior_fades(self):
-        got = self._intercepts(ridge_decay=True)
+        got = self._intercepts(ridge_scale="sum")
         assert got[20] == pytest.approx(3.504, abs=1e-3)
         assert got[199] == pytest.approx(4.954, abs=1e-3)
         assert np.all(np.diff(got[1:]) > 0.0)
 
     def test_it_shrinks_toward_the_prior_intercept(self):
-        got = self._intercepts(ridge_decay=True, coef_prior=[[5.0, 0.0]])
+        got = self._intercepts(ridge_scale="sum", coef_prior=[[5.0, 0.0]])
         assert got == pytest.approx(5.0, abs=1e-9)

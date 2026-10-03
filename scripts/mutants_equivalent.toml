@@ -145,7 +145,7 @@ denom` is +0 divided by a positive denominator: the 0 the original gives"""
 file = "crates/online-core/src/lasso.rs"
 function = "Lasso::solve"
 mutation = "replace < with <="
-line_has = "if max_delta < self.cfg.cd_tol {"
+line_has = "if max_delta < self.cfg.tol {"
 why = """they differ only when a sweep's largest step equals the tolerance \
 exactly, a floating-point coincidence no input can be built to reach"""
 

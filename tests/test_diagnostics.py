@@ -1,7 +1,7 @@
-"""E21 / E12: `emit_sigma` and `emit_resid_z`.
+"""E21 / E12: `emit_sigma` and `emit_zscore`.
 
 `sigma_<slot>` is the EW standard deviation of that slot's out-of-sample
-residuals, read from the state *before* each row; `resid_z_<slot>` is
+residuals, read from the state *before* each row; `zscore_<slot>` is
 `resid / sigma`. Both are computed in the stream layer rather than per model,
 so every model gets the same definition (the models' own internal `sigma2`
 fields serve different purposes and are not all present or comparable).
@@ -18,7 +18,7 @@ import polars_online as po
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"ridge": 1.0}),
-    ("kalman", {"coef_halflife": 100.0}),
+    ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
@@ -51,10 +51,10 @@ def _spec(model="ewridge", extra=None, **kw):
     d = dict(
         targets=["y0"],
         features=["x0"],
-        halflife=100.0,
-        min_periods=10.0,
+        half_life=100.0,
+        min_weight=10.0,
         emit_sigma=True,
-        emit_resid_z=True,
+        emit_zscore=True,
     )
     # `extra is None`, not `extra or ...`: ftrl's entry is an empty dict, and
     # `{} or default` would silently substitute the default.
@@ -75,17 +75,17 @@ def _f(out, name):
 
 class TestFieldsAreOptional:
     def test_absent_by_default(self):
-        spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        spec = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         fields = po.spec.output_fields(spec)
-        assert not any(f.startswith(("sigma_", "resid_z_")) for f in fields)
+        assert not any(f.startswith(("sigma_", "zscore_")) for f in fields)
 
     def test_present_when_requested(self):
         assert po.spec.output_fields(_spec()) == [
             "pred_y0",
             "resid_y0",
             "sigma_y0",
-            "resid_z_y0",
-            "n_eff",
+            "zscore_y0",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",
@@ -93,11 +93,11 @@ class TestFieldsAreOptional:
         ]
 
     def test_each_flag_is_independent(self):
-        only_sigma = _spec(emit_resid_z=False)
+        only_sigma = _spec(emit_zscore=False)
         only_z = _spec(emit_sigma=False)
         assert "sigma_y0" in po.spec.output_fields(only_sigma)
-        assert "resid_z_y0" not in po.spec.output_fields(only_sigma)
-        assert "resid_z_y0" in po.spec.output_fields(only_z)
+        assert "zscore_y0" not in po.spec.output_fields(only_sigma)
+        assert "zscore_y0" in po.spec.output_fields(only_z)
         assert "sigma_y0" not in po.spec.output_fields(only_z)
 
     def test_one_field_per_slot_in_a_grid(self):
@@ -106,9 +106,9 @@ class TestFieldsAreOptional:
             targets=["y0", "y1"],
             features=["x0"],
             ridge=[1e-6, 1.0],
-            halflife=100.0,
+            half_life=100.0,
             emit_sigma=True,
-            emit_resid_z=True,
+            emit_zscore=True,
         )
         fields = po.spec.output_fields(spec)
         assert [f for f in fields if f.startswith("sigma_")] == [
@@ -127,14 +127,14 @@ class TestValues:
 
     def test_resid_z_flags_a_shock(self):
         out = po.ModelBank([_spec()]).fit_predict(_df(shock_at=300))
-        z = _f(out, "resid_z_y0")
+        z = _f(out, "zscore_y0")
         assert np.nanmedian(np.abs(z)) < 1.5
         assert abs(z[300]) > 10.0
         assert int(np.nanargmax(np.abs(z))) == 300
 
     def test_resid_z_equals_resid_over_sigma(self):
         out = po.ModelBank([_spec()]).fit_predict(_df())
-        r, s, z = (_f(out, f"{k}_y0") for k in ("resid", "sigma", "resid_z"))
+        r, s, z = (_f(out, f"{k}_y0") for k in ("resid", "sigma", "zscore"))
         m = np.isfinite(r) & np.isfinite(s) & (s > 0)
         np.testing.assert_allclose(z[m], r[m] / s[m], rtol=1e-12)
 
@@ -149,7 +149,7 @@ class TestValues:
         assert s[301] > s[300] * 2, "the shock should raise sigma from the next row on"
 
     def test_sigma_is_null_before_the_first_residual(self):
-        out = po.ModelBank([_spec(min_periods=20.0)]).fit_predict(_df())
+        out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_df())
         s = out["m"].struct.field("sigma_y0").to_list()
         first_pred = next(
             i for i, v in enumerate(out["m"].struct.field("pred_y0").to_list()) if v is not None
@@ -163,7 +163,7 @@ class TestAllModels:
     def test_fields_are_emitted_and_consistent(self, model, extra):
         df = _df(binary=model == "ftrl")
         out = po.ModelBank([_spec(model, extra)]).fit_predict(df)
-        r, s, z = (_slot(out, f"{k}_y0") for k in ("resid", "sigma", "resid_z"))
+        r, s, z = (_slot(out, f"{k}_y0") for k in ("resid", "sigma", "zscore"))
         m = np.isfinite(r) & np.isfinite(s) & (s > 0)
         assert m.sum() > 50, f"{model}: almost nothing was emitted"
         np.testing.assert_allclose(z[m], r[m] / s[m], rtol=1e-12)
@@ -197,7 +197,7 @@ class TestOnlineSelection:
     """E13: `emit_selected` — online model selection across grid slots.
 
     Generalizes the lasso's `lam_selected` to ridge values, feature sets and
-    halflives: for each target, pick the slot with the lowest EW out-of-sample
+    half-lives: for each target, pick the slot with the lowest EW out-of-sample
     error so far (the `sigma` already tracked for E12) and emit that slot's
     prediction plus its label.
     """
@@ -207,8 +207,8 @@ class TestOnlineSelection:
             targets=["y0"],
             features=["x0"],
             ridge=[1e-8, 1.0, 1000.0],
-            halflife=300.0,
-            min_periods=20.0,
+            half_life=300.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_selected=True,
         )
@@ -262,7 +262,7 @@ class TestOnlineSelection:
         rng = np.random.default_rng(3)
         n = 2000
         x = rng.standard_normal(n)
-        spec = self._grid_spec(ridge=1e-6, halflife=[20.0, 2000.0])
+        spec = self._grid_spec(ridge=1e-6, half_life=[20.0, 2000.0])
         out = po.ModelBank([spec]).fit_predict(
             pl.DataFrame({"x0": x, "y0": 2 * x + 0.2 * rng.standard_normal(n)})
         )
@@ -272,14 +272,14 @@ class TestOnlineSelection:
 
     def test_a_halflife_grid_ranks_each_slot_at_its_own_halflife(self):
         """Task 148: each slot's error is the EW mean of its own squared
-        residuals at its own instance's halflife, so across a halflife grid
+        residuals at its own instance's half-life, so across a half-life grid
         the slots are ranked over windows of different lengths, as the docs
         now say. Held against that recursion from the residuals."""
         rng = np.random.default_rng(5)
         n = 600
         x = rng.standard_normal(n)
         hs = (20.0, 2000.0)
-        spec = self._grid_spec(ridge=1e-6, halflife=list(hs), emit_sigma=True)
+        spec = self._grid_spec(ridge=1e-6, half_life=list(hs), emit_sigma=True)
         out = po.ModelBank([spec]).fit_predict(
             pl.DataFrame({"x0": x, "y0": 2 * x + 0.5 * rng.standard_normal(n)})
         )
@@ -309,12 +309,12 @@ class TestOnlineSelection:
     def test_requires_more_than_one_slot(self):
         with pytest.raises(ValueError, match="more than one slot"):
             po.spec.ewridge(
-                "m", targets=["y0"], features=["x0"], halflife=100.0, emit_selected=True
+                "m", targets=["y0"], features=["x0"], half_life=100.0, emit_selected=True
             )
 
     def test_rejected_for_ew_cov(self):
         with pytest.raises(ValueError, match="does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], halflife=100.0, emit_selected=True)
+            po.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_selected=True)
 
     def test_chunk_invariance(self):
         rng = np.random.default_rng(4)
@@ -337,7 +337,7 @@ class TestDriftDetection:
     """E20: `emit_drift` — Page-Hinkley on each slot's absolute out-of-sample
     residual, scaled by that slot's own EW residual std.
 
-    Decay and drift detection answer different questions: a halflife forgets
+    Decay and drift detection answer different questions: a half-life forgets
     smoothly and always, a detector notices a *break* and says so.
     """
 
@@ -351,8 +351,8 @@ class TestDriftDetection:
         d = dict(
             targets=["y0"],
             features=["x0"],
-            halflife=1e5,
-            min_periods=20.0,
+            half_life=1e5,
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_drift=True,
         )
@@ -365,7 +365,7 @@ class TestDriftDetection:
         return np.array([bool(v) for v in vals]), out
 
     def test_field_is_opt_in(self):
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         assert not any(f.startswith("drift_") for f in po.spec.output_fields(plain))
         assert "drift_y0" in po.spec.output_fields(self._spec())
 
@@ -390,7 +390,7 @@ class TestDriftDetection:
         30-unit burst of error is flagged at the same clock whether the rows
         during it are one or four to a unit; counting rows flagged it about
         four times sooner at four. The noise's size is fixed and only its
-        sign drawn, so both densities see the same error, and the halflife
+        sign drawn, so both densities see the same error, and the half-life
         is long, so ``sigma`` -- which each row reads from before it, and
         which lags further behind a moving scale where rows are sparser --
         barely moves inside the burst. Measured: 211.0 at both; 0.12.0's
@@ -403,7 +403,7 @@ class TestDriftDetection:
             size = np.where((t >= 200.0) & (t < 230.0), 0.8, 0.2)
             noise = size * rng.choice([-1.0, 1.0], t.size)
             df = pl.DataFrame({"t": t, "x0": x, "y0": 2 * x + noise})
-            flags, _ = self._flags(df, clock="t", max_dclock=5.0, halflife=1000.0)
+            flags, _ = self._flags(df, clock="t", gap_cap=5.0, half_life=1000.0)
             hits = t[flags]
             first[per_unit] = float(hits[0]) if hits.size else None
         assert first[1] is not None and 205.0 <= first[1] < 230.0, first
@@ -425,17 +425,17 @@ class TestDriftDetection:
         flags, out = self._flags(df, drift_action="reset")
         hits = np.flatnonzero(flags)
         assert len(hits) >= 1
-        n_eff = out["m"].struct.field("n_eff").to_numpy().astype(float)
-        # n_eff climbs monotonically unless something resets it
-        assert n_eff[hits[0] + 1] < n_eff[hits[0]], "the reset did not take effect"
+        weight_sum = out["m"].struct.field("weight_sum").to_numpy().astype(float)
+        # weight_sum climbs monotonically unless something resets it
+        assert weight_sum[hits[0] + 1] < weight_sum[hits[0]], "the reset did not take effect"
 
     def test_flag_action_leaves_the_model_running(self):
         df = self._df(flip_at=3000)
         flags, out = self._flags(df, drift_action="flag")
-        n_eff = out["m"].struct.field("n_eff").to_numpy().astype(float)
+        weight_sum = out["m"].struct.field("weight_sum").to_numpy().astype(float)
         hits = np.flatnonzero(flags)
         assert len(hits) >= 1
-        assert n_eff[hits[0] + 1] > n_eff[hits[0]], "flag-only should not reset"
+        assert weight_sum[hits[0] + 1] > weight_sum[hits[0]], "flag-only should not reset"
 
     def test_chunk_invariance(self):
         df = self._df(n=600, flip_at=300)
@@ -488,8 +488,8 @@ class TestModelAveraging:
             targets=["y0"],
             features=["x0"],
             ridge=[1e-8, 1.0, 100.0],
-            halflife=500.0,
-            min_periods=20.0,
+            half_life=500.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_selected=True,
             emit_averaged=True,
@@ -504,7 +504,7 @@ class TestModelAveraging:
 
     def test_field_is_opt_in(self):
         plain = po.spec.ewridge(
-            "m", targets=["y0"], features=["x0"], ridge=[1e-6, 1.0], halflife=100.0
+            "m", targets=["y0"], features=["x0"], ridge=[1e-6, 1.0], half_life=100.0
         )
         assert "pred_y0__averaged" not in po.spec.output_fields(plain)
 
@@ -609,8 +609,8 @@ class TestModelAveraging:
             targets=["y0"],
             features=["x0"],
             ridge=[1e-8, 100.0],
-            halflife=300.0,
-            min_periods=20.0,
+            half_life=300.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_averaged=True,
         )
@@ -626,7 +626,7 @@ class TestModelAveraging:
 
     def test_rejected_for_ew_cov(self):
         with pytest.raises(ValueError, match="does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], halflife=100.0, emit_averaged=True)
+            po.spec.ew_cov("c", features=["x0", "x1"], half_life=100.0, emit_averaged=True)
 
     def test_bad_eta_rejected(self):
         with pytest.raises(ValueError, match="average_eta"):
@@ -635,7 +635,7 @@ class TestModelAveraging:
                 targets=["y0"],
                 features=["x0"],
                 ridge=[1e-6, 1.0],
-                halflife=100.0,
+                half_life=100.0,
                 emit_averaged=True,
                 average_eta=0.0,
             )
@@ -647,8 +647,8 @@ class TestModelAveraging:
             targets=["y0"],
             features=["x0"],
             ridge=[1e-8, 1.0, 100.0],
-            halflife=500.0,
-            min_periods=20.0,
+            half_life=500.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_averaged=True,
         )
@@ -674,8 +674,8 @@ class TestResidualDistribution:
         d = dict(
             targets=["y0"],
             features=["x0"],
-            halflife=500.0,
-            min_periods=20.0,
+            half_life=500.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
         )
         d.update(kw)
@@ -698,15 +698,15 @@ class TestResidualDistribution:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=100.0,
+            half_life=100.0,
             resid_quantiles=[0.5, 0.99],
             emit_autocorr=True,
         )
         fields = po.spec.output_fields(spec)
-        assert "absresid_q0.5_y0" in fields
-        assert "absresid_q0.99_y0" in fields
+        assert "abs_resid_q0.5_y0" in fields
+        assert "abs_resid_q0.99_y0" in fields
         assert "autocorr_y0" in fields
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         assert not any(
             f.startswith(("absresid_", "autocorr_")) for f in po.spec.output_fields(plain)
         )
@@ -714,14 +714,14 @@ class TestResidualDistribution:
     def test_quantiles_describe_the_bulk_where_sigma_cannot(self):
         out = self._fit(self._fat_tailed(), emit_sigma=True, resid_quantiles=[0.5, 0.99])
         sigma = self._last(out, "sigma_y0")
-        med = self._last(out, "absresid_q0.5_y0")
+        med = self._last(out, "abs_resid_q0.5_y0")
         # 1% gross outliers inflate sigma far above a typical residual, which is
         # exactly why a quantile is worth tracking separately.
         assert med < sigma / 3, f"median |resid| {med} vs sigma {sigma}"
 
     def test_quantiles_are_ordered(self):
         out = self._fit(self._fat_tailed(), resid_quantiles=[0.25, 0.5, 0.9])
-        vals = [self._last(out, f"absresid_q{q}_y0") for q in (0.25, 0.5, 0.9)]
+        vals = [self._last(out, f"abs_resid_q{q}_y0") for q in (0.25, 0.5, 0.9)]
         assert vals == sorted(vals), vals
 
     def test_quantile_matches_the_empirical_one(self):
@@ -729,16 +729,16 @@ class TestResidualDistribution:
         n = 20000
         x = rng.standard_normal(n)
         df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n)})
-        out = self._fit(df, halflife=1e9, resid_quantiles=[0.9])
+        out = self._fit(df, half_life=1e9, resid_quantiles=[0.9])
         r = np.abs(np.array(out["m"].struct.field("resid_y0").to_list(), dtype=float))
         truth = np.nanquantile(r[np.isfinite(r)], 0.9)
-        assert self._last(out, "absresid_q0.9_y0") == pytest.approx(truth, rel=0.15)
+        assert self._last(out, "abs_resid_q0.9_y0") == pytest.approx(truth, rel=0.15)
 
     def test_the_quantile_forgets_on_the_clock(self):
         """Task 146: each level is the exponentially weighted quantile of
-        the residuals so far, at the model's halflife, to the sketch's
+        the residuals so far, at the model's half-life, to the sketch's
         relative accuracy ``tanh(1/128)``. P² never forgot: 3,000 rows after
-        the noise fell tenfold at a halflife of 10, its 0.9 quantile read
+        the noise fell tenfold at a half-life of 10, its 0.9 quantile read
         1.55 where the recent one is 0.166."""
         rng = np.random.default_rng(8)
         n, h = 4000, 10.0
@@ -746,8 +746,8 @@ class TestResidualDistribution:
         noise = np.where(np.arange(n) < 1000, 1.0, 0.1)
         df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
         levels = [0.1, 0.5, 0.9, 0.99]
-        # `min_periods` under the weight's ceiling at this halflife, ~14.9.
-        out = self._fit(df, halflife=h, min_periods=5.0, resid_quantiles=levels)
+        # `min_weight` under the weight's ceiling at this half-life, ~14.9.
+        out = self._fit(df, half_life=h, min_weight=5.0, resid_quantiles=levels)
         r = np.abs(np.array(out["m"].struct.field("resid_y0").to_list(), dtype=float))
         lam = 0.5 ** (1 / h)
         for i in (300, 1100, 1500, 3999):
@@ -756,12 +756,12 @@ class TestResidualDistribution:
             w = lam ** (i - 1 - seen.astype(float))
             for p in levels:
                 want = _ew_quantile(r[seen], w, p)
-                got = out["m"].struct.field(f"absresid_q{p}_y0").to_list()[i]
+                got = out["m"].struct.field(f"abs_resid_q{p}_y0").to_list()[i]
                 assert abs(got - want) <= ALPHA * want * (1 + 1e-9), (i, p, got, want)
 
     def test_autocorr_pairs_nothing_across_a_break(self):
         """Task 146: a residual pairs only with the one ``lag`` back inside
-        the same run of adjacent rows. A gap capped by ``max_dclock`` and a
+        the same run of adjacent rows. A gap capped by ``gap_cap`` and a
         session change both end the run, as they clear the models' rings, so
         with a break before every row nothing ever pairs."""
         rng = np.random.default_rng(9)
@@ -769,7 +769,7 @@ class TestResidualDistribution:
         x = rng.standard_normal(n)
         y = 2 * x + rng.standard_normal(n)
         for kw, extra in (
-            (dict(clock="t", max_dclock=5.0), {"t": 10.0 * np.arange(n)}),
+            (dict(clock="t", gap_cap=5.0), {"t": 10.0 * np.arange(n)}),
             (dict(session="s", session_gap=1.0), {"s": np.arange(n) % 2}),
         ):
             df = pl.DataFrame({"x0": x, "y0": y} | extra)
@@ -793,7 +793,7 @@ class TestResidualDistribution:
         x = rng.standard_normal(n)
         omitted = np.cumsum(rng.standard_normal(n)) * 0.05
         df = pl.DataFrame({"x0": x, "y0": 2 * x + omitted + 0.1 * rng.standard_normal(n)})
-        out = self._fit(df, emit_autocorr=True, halflife=2000.0)
+        out = self._fit(df, emit_autocorr=True, half_life=2000.0)
         assert self._last(out, "autocorr_y0") > 0.3, "an omitted driver should show up"
 
     def test_chunk_invariance_and_save_load(self, tmp_path):
@@ -802,8 +802,8 @@ class TestResidualDistribution:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=500.0,
-            min_periods=20.0,
+            half_life=500.0,
+            min_weight=20.0,
             max_rows_between_solves=1,
             resid_quantiles=[0.5, 0.9],
             emit_autocorr=True,
@@ -827,7 +827,7 @@ class TestResidualDistribution:
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
     def test_bad_config_rejected(self):
-        base = dict(targets=["y0"], features=["x0"], halflife=100.0)
+        base = dict(targets=["y0"], features=["x0"], half_life=100.0)
         with pytest.raises(ValueError, match="strictly between 0 and 1"):
             po.spec.ewridge("m", resid_quantiles=[0.0], **base)
         with pytest.raises(ValueError, match="non-empty"):
@@ -848,8 +848,8 @@ class TestStreamingMetrics:
         d = dict(
             targets=["y0"],
             features=["x0"],
-            halflife=float("inf"),
-            min_periods=20.0,
+            half_life=float("inf"),
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_metrics=True,
         )
@@ -866,12 +866,12 @@ class TestStreamingMetrics:
         return pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
 
     def test_fields_are_opt_in(self):
-        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], half_life=100.0)
         assert not any(
             f.startswith(("ic_", "r2_", "hit_rate_")) for f in po.spec.output_fields(plain)
         )
         spec = po.spec.ewridge(
-            "m", targets=["y0"], features=["x0"], halflife=100.0, emit_metrics=True
+            "m", targets=["y0"], features=["x0"], half_life=100.0, emit_metrics=True
         )
         for f in ("ic_y0", "r2_y0", "hit_rate_y0"):
             assert f in po.spec.output_fields(spec)
@@ -916,7 +916,7 @@ class TestStreamingMetrics:
         x = rng.standard_normal(n)
         sign = np.where(np.arange(n) < n // 2, 1.0, -1.0)
         df = pl.DataFrame({"x0": x, "y0": sign * 2 * x + 0.1 * rng.standard_normal(n)})
-        out = self._out(df, halflife=300.0)
+        out = self._out(df, half_life=300.0)
         ic = out["m"].struct.field("ic_y0").to_list()
         assert ic[n // 2 - 10] > 0.9, "should be good before the flip"
         assert ic[n // 2 + 200] < ic[n // 2 - 10], "should degrade after it"
@@ -927,8 +927,8 @@ class TestStreamingMetrics:
             "m",
             targets=["y0"],
             features=["x0"],
-            halflife=float("inf"),
-            min_periods=20.0,
+            half_life=float("inf"),
+            min_weight=20.0,
             max_rows_between_solves=1,
             emit_metrics=True,
         )
@@ -956,15 +956,15 @@ def test_quantiles_are_null_until_a_residual_and_span_extreme_levels():
     is that residual's bucket from the next row on (task 146: P² needed
     five); and it accepts levels out at 0.001 / 0.999, ordered (review
     2026-09-18, phase 4)."""
-    out = po.ModelBank([_spec(min_periods=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=8))
+    out = po.ModelBank([_spec(min_weight=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=8))
     st = out["m"].struct
-    name = next(f.name for f in out.schema["m"].fields if f.name.startswith("absresid_q"))
+    name = next(f.name for f in out.schema["m"].fields if f.name.startswith("abs_resid_q"))
     got, r = st.field(name).to_list(), st.field("resid_y0").to_list()
     first = next(i for i, v in enumerate(r) if v is not None)
     assert got[: first + 1] == [None] * (first + 1)
     assert got[first + 1] == pytest.approx(abs(r[first]), rel=ALPHA)
     out2 = po.ModelBank([_spec(resid_quantiles=[0.001, 0.5, 0.999])]).fit_predict(_df(n=500))
-    names = [f.name for f in out2.schema["m"].fields if f.name.startswith("absresid_q")]
+    names = [f.name for f in out2.schema["m"].fields if f.name.startswith("abs_resid_q")]
     last = [out2["m"].struct.field(nm).to_list()[-1] for nm in names]
     assert all(np.isfinite(last)), last
     assert last[0] <= last[1] <= last[2], last

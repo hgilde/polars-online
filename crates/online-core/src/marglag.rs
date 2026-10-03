@@ -79,7 +79,7 @@
 //! by a factor of `lam` per missing row, and nothing ever puts it back: on a
 //! stream where a target is absent one row in `k`, every lagged
 //! autocorrelation was low by about `1/k`, and after a hundred missing rows
-//! at a halflife of twenty, by `2⁻⁵`. The pair moments held all along
+//! at a half-life of twenty, by `2⁻⁵`. The pair moments held all along
 //! (`W_t·lam`, `Q_t·lam²`, and the means and centred moments untouched), and
 //! `n_serial` divides one by the other, so the two families must age the
 //! same way. `tests/test_marginal_lags.py` holds a lag autocorrelation
@@ -347,7 +347,7 @@ impl MarginalLags {
     }
 
     /// Empty the ring, keeping the moments: a session change or a clock gap
-    /// beyond `max_dclock` means the next row is not `1` after the last one.
+    /// beyond `gap_cap` means the next row is not `1` after the last one.
     pub fn clear(&mut self) {
         self.ring_x.clear();
         self.ring_y.clear();

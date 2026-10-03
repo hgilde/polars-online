@@ -796,9 +796,9 @@ impl EwCov {
             self.runs.track(x, self.rows_learned);
         }
         // A zero-weight row the decay took the whole history from -- `lam·W`
-        // is 0 with `W > 0`, from 1075 halflives on -- is the decay alone:
+        // is 0 with `W > 0`, from 1075 half-lives on -- is the decay alone:
         // the weight goes to 0 and the next row starts over, as it all but
-        // does one halflife short of that. The update below is `0/0` there,
+        // does one half-life short of that. The update below is `0/0` there,
         // and refusing it kept the history whole (task 115 (c), PLAN §12).
         if w == 0.0 && self.w_sum > 0.0 && lam * self.w_sum == 0.0 {
             return self.decay(lam);
@@ -1165,7 +1165,7 @@ pub struct EwCovCfg {
     /// — the Gram read back through [`EwCovModel::cov`], or the PCA and
     /// Mahalanobis slots below, which do not need a statistic in this list.
     pub stats: Vec<EwCovStat>,
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// Prior for the precision matrix `(C + s·prior·I)⁻¹`. Required by
     /// [`EwCovStat::PartialCorr`] and [`EwCovStat::Mahal`], its consumers.
     #[serde(default)]
@@ -1195,7 +1195,7 @@ pub struct EwCovCfg {
     pub lags: Vec<usize>,
     /// Clock units of history the statistics are computed from, with a *hard*
     /// cutoff: a row older than this contributes nothing at all, where the
-    /// exponential weight alone would leave `0.5^(age/halflife)` of it
+    /// exponential weight alone would leave `0.5^(age/half_life)` of it
     /// (docs/PLAN.md §13). Inside the window the weights are still
     /// exponential -- this is not a flat window. Absent for the ordinary
     /// accumulator, which is what every state written before task 63 has.
@@ -1241,7 +1241,7 @@ impl EwCovCfg {
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
                 return Err(format!(
-                    "ew_cov: window must be finite and > 0 (got {w}); it is clock units of \
+                    "ew_cov: window_size must be finite and > 0 (got {w}); it is clock units of \
                      history to keep, and `None` is the ordinary accumulator that keeps all of it"
                 ));
             }
@@ -1250,7 +1250,7 @@ impl EwCovCfg {
             }
             if !self.lags.is_empty() {
                 return Err(
-                    "ew_cov: window and lags do not combine yet; the lagged co-moments are a \
+                    "ew_cov: window_size and lags do not combine yet; the lagged co-moments are a \
                      second accumulator with its own ring, and truncating one and not the \
                      other would report a windowed corr beside an unwindowed lagcorr"
                         .into(),
@@ -1258,7 +1258,7 @@ impl EwCovCfg {
             }
             if !self.mahal_quantiles.is_empty() {
                 return Err(
-                    "ew_cov: window and mahal_quantiles do not combine; the quantiles decay \
+                    "ew_cov: window_size and mahal_quantiles do not combine; the quantiles decay \
                      over every score the stream has produced, with no window, so \
                      thresholding a windowed distance against them compares two different \
                      histories"
@@ -1266,7 +1266,7 @@ impl EwCovCfg {
                 );
             }
         } else if self.window_every.is_some() {
-            return Err("ew_cov: window_every needs `window`".into());
+            return Err("ew_cov: window_every needs `window_size`".into());
         }
         if self.stats.contains(&EwCovStat::LagCorr) && self.lags.is_empty() {
             return Err(
@@ -1534,7 +1534,7 @@ impl EwCovModel {
     /// precision prior fades with the whole stream's decay rather than the
     /// window's, and the subtraction is a difference of positives, so its
     /// precision falls with the fraction discarded (negligible at
-    /// `window = 3·halflife`, where the correction is an eighth).
+    /// `window = 3·half_life`, where the correction is an eighth).
     fn view(&self) -> std::borrow::Cow<'_, EwCov> {
         use std::borrow::Cow;
         let Some(win) = self.win.as_ref() else {
@@ -1650,7 +1650,7 @@ impl EwCovModel {
 
     /// The accumulated weight the statistics are read from: under a `window`,
     /// the weight inside it -- the number `predict` emits and gates
-    /// `min_periods` on. This returned the live weight while the emitted field
+    /// `min_weight` on. This returned the live weight while the emitted field
     /// was windowed, so the bank's readers of the accessor (`Bank::coef`, a
     /// closed row) disagreed with the struct (review 2026-09-12, S15).
     pub fn n_eff(&self) -> f64 {
@@ -1721,7 +1721,7 @@ impl EwCovModel {
                 EwCovStat::PartialCorr => {
                     for i in 0..names.len() {
                         for j in (i + 1)..names.len() {
-                            out.push(format!("pcorr_{}_{}", names[i], names[j]));
+                            out.push(format!("partial_corr_{}_{}", names[i], names[j]));
                         }
                     }
                 }
@@ -1743,7 +1743,7 @@ impl EwCovModel {
         for j in 0..pca {
             out.push(format!("pc{j}_var"));
             out.push(format!("pc{j}_share"));
-            out.extend(names.iter().map(|n| format!("pc{j}_{n}")));
+            out.extend(names.iter().map(|n| format!("pc{j}_loading_{n}")));
             out.push(format!("pc{j}_score"));
         }
         out
@@ -1940,7 +1940,7 @@ impl crate::OnlineModel for EwCovModel {
             // components a row is scored on never depend on the chunking and
             // `predict` sees the same frozen ones `step` does.
             self.since_pca += 1;
-            if self.n_eff() >= self.cfg.min_periods
+            if self.n_eff() >= self.cfg.min_weight
                 && (self.pca.is_none() || self.since_pca >= self.cfg.pca_every)
             {
                 self.refresh_pca();
@@ -1951,7 +1951,7 @@ impl crate::OnlineModel for EwCovModel {
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         // With a `window`, every statistic -- and `n_eff` with them -- comes
-        // from the truncated accumulator, so `min_periods` gates on the
+        // from the truncated accumulator, so `min_weight` gates on the
         // weight *inside* the window, which stops growing once the window is
         // full rather than rising for the life of the stream.
         // The weight gates, and the view is built only when there is a
@@ -1961,7 +1961,7 @@ impl crate::OnlineModel for EwCovModel {
         let n_eff = self.window_n_eff();
         let pred = if self.cfg.n_outputs() == 0 {
             Vec::new()
-        } else if n_eff >= self.cfg.min_periods {
+        } else if n_eff >= self.cfg.min_weight {
             self.read(&self.view(), x)
         } else {
             vec![f64::NAN; self.cfg.n_outputs()]
@@ -2128,7 +2128,7 @@ mod tests {
             n_features: k,
             decay: crate::Decay::Halflife(f64::INFINITY),
             stats,
-            min_periods: 2.0,
+            min_weight: 2.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -2147,7 +2147,7 @@ mod tests {
     fn direct_window(
         xs: &[Vec<f64>],
         t: &[f64],
-        halflife: f64,
+        half_life: f64,
         window: f64,
         upto: usize,
     ) -> (f64, Vec<f64>, Vec<f64>) {
@@ -2160,7 +2160,7 @@ mod tests {
             if now - t[i] > window {
                 continue;
             }
-            let w = 0.5_f64.powf((now - t[i]) / halflife);
+            let w = 0.5_f64.powf((now - t[i]) / half_life);
             w_sum += w;
             for a in 0..k {
                 m[a] += w * xs[i][a];
@@ -2184,11 +2184,11 @@ mod tests {
     /// PLAN §13.4 (1): the truncated view against a direct windowed sum.
     #[test]
     fn a_window_reports_exactly_the_rows_inside_it() {
-        let halflife = 40.0;
+        let half_life = 40.0;
         for &window in &[15.0, 60.0, 150.0] {
             let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Cov]);
-            cfg.decay = crate::Decay::Halflife(halflife);
-            cfg.min_periods = 0.0;
+            cfg.decay = crate::Decay::Halflife(half_life);
+            cfg.min_weight = 0.0;
             cfg.window = Some(window);
             let mut m = EwCovModel::new(cfg).unwrap();
 
@@ -2212,7 +2212,7 @@ mod tests {
                 if i > 0 {
                     // The report is referenced at the previous row's clock.
                     let got = crate::OnlineModel::predict(&m, &x, d);
-                    let (w, mean, cen) = direct_window(&xs, &t, halflife, window, i);
+                    let (w, mean, cen) = direct_window(&xs, &t, half_life, window, i);
                     on_the_boundary += t.iter().filter(|&&tj| t[i - 1] - tj == window).count();
                     assert!(
                         (got.n_eff - w).abs() < 1e-9 * w.max(1.0),
@@ -2263,11 +2263,11 @@ mod tests {
     /// window.
     #[test]
     fn a_window_keeps_its_precision_at_a_large_offset() {
-        let halflife = 40.0;
+        let half_life = 40.0;
         for &window in &[15.0, 60.0, 150.0] {
             let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Cov]);
-            cfg.decay = crate::Decay::Halflife(halflife);
-            cfg.min_periods = 0.0;
+            cfg.decay = crate::Decay::Halflife(half_life);
+            cfg.min_weight = 0.0;
             cfg.window = Some(window);
             let mut m = EwCovModel::new(cfg).unwrap();
 
@@ -2304,7 +2304,7 @@ mod tests {
                     on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                     let w: Vec<f64> = keep
                         .iter()
-                        .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                        .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
                         .collect();
                     let wsum: f64 = w.iter().sum();
                     let mean: Vec<f64> = (0..2)
@@ -2372,7 +2372,7 @@ mod tests {
         let run = |poison: bool| {
             let mut cfg = model_cfg(1, vec![EwCovStat::Mean, EwCovStat::Var]);
             cfg.decay = crate::Decay::Halflife(20.0);
-            cfg.min_periods = 0.0;
+            cfg.min_weight = 0.0;
             cfg.window = Some(60.0);
             let mut m = EwCovModel::new(cfg).unwrap();
             let mut last = crate::Step {
@@ -2421,7 +2421,7 @@ mod tests {
         let mk = |window: Option<f64>| {
             let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr]);
             cfg.decay = crate::Decay::Halflife(25.0);
-            cfg.min_periods = 0.0;
+            cfg.min_weight = 0.0;
             cfg.window = window;
             EwCovModel::new(cfg).unwrap()
         };
@@ -2448,7 +2448,7 @@ mod tests {
         let mk = |every: usize| {
             let mut cfg = model_cfg(1, vec![EwCovStat::Mean]);
             cfg.decay = crate::Decay::Halflife(30.0);
-            cfg.min_periods = 0.0;
+            cfg.min_weight = 0.0;
             cfg.window = Some(50.0);
             cfg.window_every = Some(every);
             EwCovModel::new(cfg).unwrap()
@@ -2750,7 +2750,7 @@ mod tests {
         let q = crate::OnlineModel::predict(&m, &[0.0, 0.0], 1.0).pred[1];
         assert_eq!(q.to_bits(), oracle.get(0).unwrap().to_bits());
         assert!((q - median).abs() <= crate::EW_QUANTILE_ALPHA * median * (1.0 + 1e-9));
-        // NaN scores (before min_periods) never enter the sketch.
+        // NaN scores (before min_weight) never enter the sketch.
         let mut fresh = EwCovModel::new(m.cfg().clone()).unwrap();
         let out = step(&mut fresh, &[1.0, 2.0], true);
         assert!(out[0].is_nan() && out[1].is_nan());
@@ -3138,7 +3138,7 @@ mod tests {
     #[test]
     fn pca_stays_nan_before_min_periods_and_on_a_degenerate_matrix() {
         let mut c = pca_cfg(2, 1, 1);
-        c.min_periods = 5.0;
+        c.min_weight = 5.0;
         let mut m = EwCovModel::new(c).unwrap();
         for i in 0..4 {
             let out = step(&mut m, &[i as f64, 1.0], i == 0);
@@ -3235,7 +3235,7 @@ mod tests {
         );
         assert_eq!(
             EwCovModel::labels(&names, &[PartialCorr], &[], 0, &[]),
-            ["pcorr_x_y", "pcorr_x_z", "pcorr_y_z"]
+            ["partial_corr_x_y", "partial_corr_x_z", "partial_corr_y_z"]
         );
         // Stats concatenate in the order given, not a canonical order.
         assert_eq!(
@@ -3270,7 +3270,7 @@ mod tests {
         let cov01 = v[6];
         let corr01 = v[7];
 
-        // Against an unweighted recomputation (halflife is infinite here).
+        // Against an unweighted recomputation (half-life is infinite here).
         let n = xs.len() as f64;
         let m0: f64 = xs.iter().map(|x| x[0]).sum::<f64>() / n;
         let m1: f64 = xs.iter().map(|x| x[1]).sum::<f64>() / n;
@@ -3471,7 +3471,7 @@ mod tests {
     fn the_model_withholds_statistics_until_min_periods() {
         use crate::OnlineModel;
         let mut c = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Corr]);
-        c.min_periods = 5.0;
+        c.min_weight = 5.0;
         let mut m = EwCovModel::new(c).unwrap();
         let mut s = 113u64;
         for i in 0..10 {
@@ -3486,7 +3486,7 @@ mod tests {
             assert_eq!(
                 step.pred.iter().all(|v| v.is_finite()),
                 want_ready,
-                "row {i}: n_eff = {}, min_periods = 5",
+                "row {i}: n_eff = {}, min_weight = 5",
                 step.n_eff
             );
             assert_eq!(m.n_eff(), step.n_eff + 1.0, "row {i}: n_eff accessor");
@@ -4029,7 +4029,7 @@ mod tests {
             n_features: 2,
             decay: crate::Decay::Halflife(10.0),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -4076,7 +4076,7 @@ mod tests {
             n_features: 2,
             decay: crate::Decay::Halflife(20.0),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -4628,7 +4628,7 @@ mod block_tests {
         }
     }
 
-    /// A clock gap past `max_dclock` is capped there, and with the documented
+    /// A clock gap past `gap_cap` is capped there, and with the documented
     /// defaults that cap is a `lam` of `2^-10000` -- **exactly zero**
     /// (CLAUDE.md rule 9 and docs/PLAN.md task 67). It is reachable from any
     /// stream with one long pause, and it lands *inside* a block, so the

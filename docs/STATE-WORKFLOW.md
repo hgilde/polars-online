@@ -65,7 +65,7 @@ import polars as pl
 import polars_online as po
 
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                       clock="t", halflife=600.0, max_dclock=300.0)
+                       clock="t", half_life=600.0, gap_cap=300.0)
 
 (pl.scan_parquet("2025.parquet")                           # a query over the file; nothing is read yet
    .online.fit_predict([spec], save_state="ridge.state")   # the bank learns a chunk at a time, and saves at the last row
@@ -88,7 +88,7 @@ later step (F5), so the bank reaches its last row and writes. A full disk
 under `sink_parquet`, or a bad cast, then leaves `save_state` written with
 the whole stream's state, while the query's own output is missing. With
 `load_state=p, save_state=p`, a rerun of the same input then steps every
-group's clock back, which the default `on_clock_reset` refuses; feeding it
+group's clock back, which is refused (`restart_after_step_back` unset); feeding it
 through [`skip_learned`](#resuming-on-input-that-overlaps-the-state) learns
 nothing twice, and so writes no output for those rows either.
 
@@ -107,11 +107,11 @@ top).
 
 **A bank resumes at the next row.** Input that starts before the save,
 such as a rerun of the day or a file that overlaps the last one, steps
-every group's clock back to rows the state has learned. The default
-`on_clock_reset="error"` refuses that chunk, naming the row, and the bank
-is untouched. Under `"reset_state"`, a step back larger than
-`min_backwards_jump` starts the group over, so the overlap is learned again
-from nothing (docs/PLAN.md task 120).
+every group's clock back to rows the state has learned. With
+`restart_after_step_back` unset, the default, that chunk is refused, naming
+the row, and the bank is untouched. Given, a step back larger than it starts
+the group over, so the overlap is learned again from nothing (docs/PLAN.md
+task 120).
 
 **`ModelBank.skip_learned(frame)` drops what the state has learned.** It
 keeps each row whose clock is after its group's last clock, in every spec
@@ -240,7 +240,7 @@ that to compare states.
 gained five optional fields, each skipped when it is empty. They are
 `closed`, the rows of closed groups that nobody has drained yet (E54),
 `high_water`, `pca_prev`, `pca_prev_by_group` and `key_integer`. A stream
-state holds more too, such as `pending`, the rows a `label_delay` has
+state holds more too, such as `pending`, the rows a `embargo` has
 accepted and not yet learned from.
 
 ### 2. How polars executes a Python IO source — measured
@@ -298,7 +298,7 @@ import polars as pl
 import polars_online as po
 
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                       clock="t", halflife=600.0, max_dclock=300.0)
+                       clock="t", half_life=600.0, gap_cap=300.0)
 
 # (1) + (2): fit online in O(chunk); the state is written when the stream ends
 (pl.scan_parquet("2025.parquet")
@@ -457,7 +457,7 @@ py-polars 2.0.0rc1 does stop a long enough stream, as the note at the top
 records.
 
 **Rules kept.** Hard rules 2 and 3 are untouched (C1, C8), and so are
-`n_eff` and zero weight. There is no new Rust surface unless the
+`weight_sum` and zero weight. There is no new Rust surface unless the
 temporary's name changes (R2). That would be a
 `crates/online-polars/src/atomic.rs` change, with no linkage and no
 `SCHEMA_VERSION` bump, since the file format does not change.

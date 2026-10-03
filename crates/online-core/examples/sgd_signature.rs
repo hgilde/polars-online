@@ -39,7 +39,7 @@ fn main() {
             (x, y, d_clock, w)
         })
         .collect();
-    for add_intercept in [true, false] {
+    for fit_intercept in [true, false] {
         for scale in [false, true] {
             for (sname, schedule) in [
                 ("const", LearningRate::Constant),
@@ -54,14 +54,14 @@ fn main() {
                         let cfg = SgdCfg {
                             n_features: k,
                             n_targets: m,
-                            add_intercept,
+                            fit_intercept,
                             decay: Decay::Halflife(50.0),
                             loss,
                             learning_rate: 0.02,
                             schedule,
                             l2,
-                            min_periods: 5.0,
-                            scale_features: scale,
+                            min_weight: 5.0,
+                            standardize: scale,
                             clip_gradient: 5.0,
                             constraint: None,
                         };
@@ -78,7 +78,7 @@ fn main() {
                         }
                         let coefs = model.coefficients();
                         println!(
-                            "int={add_intercept} scale={scale} {sname} {lname} l2={l2}: hash={acc:016x} last={last:?} coef0={:?}",
+                            "int={fit_intercept} scale={scale} {sname} {lname} l2={l2}: hash={acc:016x} last={last:?} coef0={:?}",
                             coefs[0]
                         );
                     }

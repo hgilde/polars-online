@@ -63,20 +63,21 @@ cargo run -p online-cli -- --config examples/bank.toml
    not load, so raise `MIN_SCHEMA_VERSION` instead of writing a loader (`lib.rs`).
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
-8. **`n_eff` means the same thing in every model**: the accumulated weight *before* this
-   row's update and *before* its own decay. That is what makes `min_periods` portable
-   across a bank. `sgd` and `pa` once applied the row's decay first, so `min_periods`
+8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
+   every model**: the accumulated weight *before* this
+   row's update and *before* its own decay. That is what makes `min_weight` portable
+   across a bank. `sgd` and `pa` once applied the row's decay first, so `min_weight`
    quietly meant a different number of rows for them; `crates/online-core/tests/model_contract.rs`
-   now checks every model against the same recursion. **Under a `window`, `n_eff` is the
-   weight inside the window** -- in the field a model emits, in its `min_periods` gate,
+   now checks every model against the same recursion. **Under a `window_size`, `n_eff` is the
+   weight inside the window** -- in the field a model emits, in its `min_weight` gate,
    and in its accessor -- because that is what the fit is read from (review 2026-09-12,
    pattern D; `lasso`, `ew_class`, `marginal` and `ew_cov`'s accessor each said otherwise
    in one of those three places). A model whose coefficients do not decay (`pa`, `sgd`)
-   still decays `n_eff`, so after a gap `min_periods` can withhold a fit exactly as good as
+   still decays `n_eff`, so after a gap `min_weight` can withhold a fit exactly as good as
    before it; `ewridge`'s mean-form fit does not move on a gap either, so this is the
    library's convention, not one model's quirk (review 2026-09-12, D10). Each target's
-   `min_periods` is checked against that target's own weight where the model keeps one
-   (S2); the emitted `n_eff` is the shared weight either way.
+   `min_weight` is checked against that target's own weight where the model keeps one
+   (S2); the emitted `weight_sum` is the shared weight either way.
 9. **A zero-weight row is legal** and means "advance the clock, learn nothing" — including
    as the *first* row of a stream, where `lam*w_sum + w` is 0 and the mean-form update's
    `a` and `b` are both 0/0. Guard every such division; an unguarded one poisons the state

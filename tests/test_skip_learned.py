@@ -3,8 +3,8 @@
 a helper").
 
 A bank resumes at the next row. Input that starts before the save steps every
-group's clock back to rows the state has learned, which the default
-`on_clock_reset = "error"` refuses. The helper keeps each row after its
+group's clock back to rows the state has learned, which is refused unless
+`restart_after_step_back` reads it as a new start. The helper keeps each row after its
 group's last clock, in every spec with a clock, and every row of a group the
 bank has not seen, so the rerun learns each row once.
 """
@@ -32,7 +32,7 @@ def frame(n=400, seed=0, groups=("a", "b", "c")):
 
 
 def spec(name="m", **kw):
-    d = dict(targets=["y"], features=["x0"], clock="t", halflife=50.0, max_dclock=10.0)
+    d = dict(targets=["y"], features=["x0"], clock="t", half_life=50.0, gap_cap=10.0)
     d.update(kw)
     return po.spec.ewridge(name, **d)
 
@@ -106,7 +106,7 @@ def test_a_temporal_clock_is_compared_in_exact_nanoseconds(tz):
     if tz is not None:
         t = t.dt.convert_time_zone(tz)
     df = pl.DataFrame({"t": t, "x0": np.arange(6.0), "y": np.arange(6.0)})
-    bank = po.ModelBank([spec(halflife="1s", max_dclock="1s")])
+    bank = po.ModelBank([spec(half_life="1s", gap_cap="1s")])
     bank.fit_predict(df.head(3))
     assert bank.skip_learned(df).equals(df.slice(3))
 
@@ -114,7 +114,7 @@ def test_a_temporal_clock_is_compared_in_exact_nanoseconds(tz):
 def test_a_date_clock():
     days = pl.date_range(datetime(2024, 1, 1), datetime(2024, 1, 20), eager=True)
     df = pl.DataFrame({"d": days, "x0": np.arange(20.0), "y": np.arange(20.0)})
-    bank = po.ModelBank([spec(clock="d", halflife="5d", max_dclock="3d")])
+    bank = po.ModelBank([spec(clock="d", half_life="5d", gap_cap="3d")])
     bank.fit_predict(df.head(12))
     assert bank.skip_learned(df.slice(5)).equals(df.slice(12))
     shifted = df.with_columns(d=pl.col("d") - timedelta(days=1))
@@ -134,7 +134,7 @@ def test_a_row_is_kept_only_where_every_spec_has_not_learned_it():
 
 
 def test_what_it_refuses():
-    counted = po.ModelBank([po.spec.ewridge("n", targets=["y"], features=["x0"], halflife=5.0)])
+    counted = po.ModelBank([po.spec.ewridge("n", targets=["y"], features=["x0"], half_life=5.0)])
     with pytest.raises(ValueError, match="no spec reads a clock"):
         counted.skip_learned(frame())
     bank = po.ModelBank([spec(group="g")])
@@ -160,7 +160,7 @@ def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
     by name. The comparison is in the column's own unit now."""
     t = pl.Series("t", [1_700_000_000_000 + i for i in range(4)]).cast(pl.Datetime("ms"))
     df = pl.DataFrame({"t": t, "x0": np.arange(4.0), "y": np.arange(4.0)})
-    bank = po.ModelBank([spec(halflife="1s", max_dclock="1s")])
+    bank = po.ModelBank([spec(half_life="1s", gap_cap="1s")])
     bank.fit_predict(df.head(2))
     far = pl.DataFrame(
         {

@@ -19,14 +19,14 @@
 //! outputs     p_c = softmax(ℓ)_c,   class = argmax_c p_c    (first maximum wins)
 //! learn       C_y ← update(x, lam, w);  every other class decays by lam
 //!             n_eff ← lam · n_eff + w    on every accepted row, labelled or not
-//!             lam = 0.5^(d / halflife)
+//!             lam = 0.5^(d / half_life)
 //! ```
 //!
 //! Every output is read *before* the row is learned, so `class` and the
 //! posteriors are out of sample (CLAUDE.md rule 2), and `n_eff` is the EW
 //! weight before the row and before its own decay (rule 8), counting
 //! unlabelled rows as `ew_ridge` counts rows without a target: they advance
-//! the clock and the feature history, so `min_periods` means the same number
+//! the clock and the feature history, so `min_weight` means the same number
 //! of rows here as everywhere else. The class weights `n_c` count only the
 //! labelled rows and are what the priors `π_c` are read from; a class no row
 //! has carried yet has posterior exactly zero, and until some row has, every
@@ -90,8 +90,8 @@ pub struct EwClassCfg {
     /// Number of classes, `>= 2`; a label is an index below it.
     pub n_classes: usize,
     pub decay: Decay,
-    /// Outputs are null while `n_eff < min_periods`.
-    pub min_periods: f64,
+    /// Outputs are null while `n_eff < min_weight`.
+    pub min_weight: f64,
     pub covariance: Covariance,
     /// Ridge on every class covariance, finite and `> 0`; decays as the
     /// class accumulates data (see the [module docs](self)).
@@ -128,11 +128,11 @@ impl EwClassCfg {
         if !(self.precision_prior.is_finite() && self.precision_prior > 0.0) {
             return Err("ew_class: precision_prior must be finite and > 0".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("ew_class: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("ew_class: min_weight must be >= 0".into());
         }
         if self.window.is_none() && self.window_every.is_some() {
-            return Err("ew_class: window_every needs `window`".into());
+            return Err("ew_class: window_every needs `window_size`".into());
         }
         Ok(())
     }
@@ -293,7 +293,7 @@ impl EwClass {
     /// EW weight of every accepted row so far: the `n_eff` the next row
     /// reports. Under a `window`, the weight *inside* it, as every windowed
     /// model reports it: the class weights, means and covariances a row is
-    /// scored on are windowed, and the `min_periods` gate and the reported
+    /// scored on are windowed, and the `min_weight` gate and the reported
     /// count now are too (review 2026-09-12, S14). The snapshot carries the
     /// weight before its row, so the window's is one subtraction away.
     pub fn n_eff(&self) -> f64 {
@@ -416,7 +416,7 @@ impl EwClass {
     }
 
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state; NaN
-    /// throughout before `min_periods`, before any labelled row, on a
+    /// throughout before `min_weight`, before any labelled row, on a
     /// non-finite `x`, and when a covariance cannot be factorized.
     ///
     /// `factors` is the `full` shape's cache of class factors: `step` hands
@@ -432,7 +432,7 @@ impl EwClass {
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
         let nan = || vec![f64::NAN; 1 + nc];
-        if !valid || self.n_eff() < self.cfg.min_periods {
+        if !valid || self.n_eff() < self.cfg.min_weight {
             return nan();
         }
         // Under a `window`, every class is scored on its truncated moments.
@@ -795,7 +795,7 @@ mod tests {
             n_features: k,
             n_classes: nc,
             decay: Decay::Halflife(30.0),
-            min_periods: 0.0,
+            min_weight: 0.0,
             covariance,
             precision_prior: 0.1,
             window: None,
@@ -886,7 +886,7 @@ mod tests {
         for (r, &lam) in rows[..upto].iter().zip(&lams) {
             n_eff = lam * n_eff + if r.w > 0.0 { r.w } else { 0.0 };
         }
-        if n_eff < cfg.min_periods {
+        if n_eff < cfg.min_weight {
             return None;
         }
         // Per-class moments from the explicit weights.
@@ -1232,7 +1232,7 @@ mod tests {
     #[test]
     fn min_periods_holds_every_output_back() {
         let mut c = cfg(2, 2, Covariance::Full);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = EwClass::new(c).unwrap();
         let mut seen_nan = 0;
         for i in 0..6 {
@@ -1349,7 +1349,7 @@ mod tests {
                 first_right = Some(i);
             }
         }
-        // 30-row halflife: the old mean is outweighed well inside 5 halflives.
+        // 30-row half-life: the old mean is outweighed well inside 5 half-lives.
         let at = first_right.expect("class 0 never relearned");
         assert!(at < 150, "relearned at row {at}");
         let p = m.predict(&[8.0], 1.0).pred;
@@ -1390,10 +1390,10 @@ mod tests {
             ),
             (
                 EwClassCfg {
-                    min_periods: -1.0,
+                    min_weight: -1.0,
                     ..ok.clone()
                 },
-                "min_periods",
+                "min_weight",
             ),
         ] {
             let err = EwClass::new(bad).unwrap_err();

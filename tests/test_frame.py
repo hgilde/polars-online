@@ -38,10 +38,10 @@ def _spec(**kw):
         targets=["y"],
         features=["x0"],
         clock="t",
-        max_dclock=10.0,
-        halflife=500.0,
+        gap_cap=10.0,
+        half_life=500.0,
         group="g",
-        min_periods=20.0,
+        min_weight=20.0,
     )
     d.update(kw)
     return po.spec.ewridge("ridge", **d)
@@ -104,9 +104,9 @@ def test_pushdowns_are_honoured_after_the_model():
     df = _frame()
     ref = _bank_loop(df, 1000)
     plan = df.lazy().online.fit_predict([_spec()], chunk_rows=1000)
-    n_eff = pl.col("ridge").struct.field("n_eff")
+    weight_sum = pl.col("ridge").struct.field("weight_sum")
     cases = {
-        "filter on the model's output": lambda lf: lf.filter(n_eff > 30.0),
+        "filter on the model's output": lambda lf: lf.filter(weight_sum > 30.0),
         "filter on an input column": lambda lf: lf.filter(pl.col("g") == "a"),
         "filter matching nothing": lambda lf: lf.filter(pl.col("t") < 0),
         "select": lambda lf: lf.select("t", "ridge"),
@@ -115,7 +115,7 @@ def test_pushdowns_are_honoured_after_the_model():
         "head across chunks": lambda lf: lf.head(1234),
         "head then filter": lambda lf: lf.head(100).filter(pl.col("g") == "a"),
         "filter then head": lambda lf: lf.filter(pl.col("g") == "a").head(100),
-        "all three": lambda lf: lf.filter(n_eff > 30.0).select("g", "ridge").head(700),
+        "all three": lambda lf: lf.filter(weight_sum > 30.0).select("g", "ridge").head(700),
     }
     for name, q in cases.items():
         want = q(ref.lazy()).collect()
@@ -194,7 +194,7 @@ def test_sink_equals_collect(tmp_path):
     out = (
         pl.scan_parquet(src)
         .online.fit_predict([_spec()], chunk_rows=3000)
-        .filter(pl.col("ridge").struct.field("n_eff") > 30.0)
+        .filter(pl.col("ridge").struct.field("weight_sum") > 30.0)
         .group_by("g")
         .agg(pl.col("ridge").struct.field("resid_y").abs().mean().alias("mae"))
         .sort("g")
@@ -202,7 +202,7 @@ def test_sink_equals_collect(tmp_path):
     )
     want = (
         pl.read_parquet(ran)
-        .filter(pl.col("ridge").struct.field("n_eff") > 30.0)
+        .filter(pl.col("ridge").struct.field("weight_sum") > 30.0)
         .group_by("g")
         .agg(pl.col("ridge").struct.field("resid_y").abs().mean().alias("mae"))
         .sort("g")
@@ -299,7 +299,7 @@ def test_errors_name_the_problem():
         bad.lazy().online.fit_predict([_spec()])
     # An error the rows raise surfaces carrying the bank's message -- here a
     # clock that runs backwards -- wrapped or not, by version (`_REFUSAL`).
-    plan = df.reverse().lazy().online.fit_predict([_spec(on_clock_reset="error")])
+    plan = df.reverse().lazy().online.fit_predict([_spec()])
     with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
 
@@ -311,8 +311,8 @@ def test_chunks_arrive_in_stream_order():
     shuffled = df.sample(fraction=1.0, shuffle=True, seed=1)
     plan = shuffled.lazy().sort("t").online.fit_predict([_spec()], chunk_rows=400)
     assert plan.collect(engine="streaming").equals(_bank_loop(df, 400))
-    n = plan.select(pl.col("ridge").struct.field("n_eff")).collect()["n_eff"]
-    assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("n_eff").max())
+    n = plan.select(pl.col("ridge").struct.field("weight_sum")).collect()["weight_sum"]
+    assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("weight_sum").max())
 
 
 # --- E35: the state out of a streamed plan -- `save_state=` (docs/STATE-WORKFLOW.md).
@@ -407,11 +407,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     del batches, plan  # the engine read a few chunks ahead, out of 80
     time.sleep(0.2)
     assert not state.exists()
-    plan = (
-        df.reverse()
-        .lazy()
-        .online.fit_predict([_spec(on_clock_reset="error")], save_state=state, chunk_rows=500)
-    )
+    plan = df.reverse().lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
     with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
     assert not state.exists()

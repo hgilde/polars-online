@@ -655,9 +655,9 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
         if dtype.is_temporal() {
             if let ClockScale::Numbers(param @ ("lam" | "q")) = scale {
                 let instead = if param == "lam" {
-                    "halflife"
+                    "half_life"
                 } else {
-                    "coef_halflife"
+                    "coef_half_life"
                 };
                 polars_bail!(ComputeError:
                     "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
@@ -709,11 +709,11 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                     continue;
                 }
                 let why = match param {
-                    "max_dclock" => {
+                    "gap_cap" => {
                         "every step would be capped to it, so the clock would count rows \
                          rather than measure time"
                     }
-                    "min_backwards_jump" => {
+                    "restart_after_step_back" => {
                         "no step back could be as small, so every one would start the model \
                          over, which 0 says directly"
                     }

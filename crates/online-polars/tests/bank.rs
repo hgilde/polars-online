@@ -19,11 +19,11 @@ fn spec_json(name: &str, group: bool) -> Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": 60.0,
-            "max_dclock": 30.0,
+            "half_life": 60.0,
+            "gap_cap": 30.0,
             "weight": "w",
             {g}
-            "min_periods": 5.0
+            "min_weight": 5.0
         }}"#
     ))
     .unwrap()
@@ -41,7 +41,7 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
             "name": "u",
             "model": {"type": "ew_ridge", "ridge": 1e-6},
             "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
-            "halflife": 60.0, "max_dclock": 30.0, "weight": "w", "min_periods": 5.0
+            "half_life": 60.0, "gap_cap": 30.0, "weight": "w", "min_weight": 5.0
         }"#,
     )
     .unwrap();
@@ -51,10 +51,7 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("goes backwards by"), "{err}");
-    assert!(
-        err.contains("on_clock_reset = \"error\", the default"),
-        "{err}"
-    );
+    assert!(err.contains("restart_after_step_back is unset"), "{err}");
     assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
 }
 
@@ -364,19 +361,15 @@ fn values_beyond_the_bound_are_missing() {
     }
 }
 
-/// Under `on_clock_reset = "error"` a refused chunk leaves the whole bank as it
+/// With `restart_after_step_back` unset a refused chunk leaves the whole bank as it
 /// was (docs/IMPROVEMENTS.md C3): not just the group whose clock went
 /// backwards, but every other group and spec that shared the chunk. The
 /// corrected chunk then feeds normally and gives the same output as a bank
 /// that never saw the bad one.
 #[test]
 fn a_refused_chunk_updates_nothing() {
-    let strict = |name: &str| {
-        let mut s = spec_json(name, true);
-        s.on_clock_reset = online_core::OnClockReset::Error;
-        s
-    };
-    let specs = || vec![strict("m"), strict("m2")];
+    // A step back is refused by default (`restart_after_step_back` unset).
+    let specs = || vec![spec_json("m", true), spec_json("m2", true)];
     let df = make_df(200);
     let first = df.slice(0, 100);
     let good = df.slice(100, 100);
@@ -466,7 +459,7 @@ fn coef_is_the_output_s_last_coef_per_group() {
     let restored = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
     assert_eq!(restored.coef(0, None).unwrap(), rows);
 
-    // `coef` does not wait for `min_periods` (5 here): the spec solves every
+    // `coef` does not wait for `min_weight` (5 here): the spec solves every
     // row, so after one row per group there is a fit, and `n_eff` is what
     // says how little is behind it. Under a clock schedule the first row of
     // a stream has not solved, and the row is `None`, as `coef` is; the
@@ -514,8 +507,8 @@ fn coef_fields_name_every_slot_of_every_list() {
                       "feature_sets": [["a", ["x0"]], ["b", ["x0", "x1"]]]},
             "targets": ["y", "z"],
             "features": ["x0", "x1"],
-            "halflife": [50.0, 200.0],
-            "min_periods": 5.0
+            "half_life": [50.0, 200.0],
+            "min_weight": 5.0
         }"#,
     )
     .unwrap();
@@ -528,14 +521,14 @@ fn coef_fields_name_every_slot_of_every_list() {
         .collect();
     for (i, f) in fields.iter().enumerate() {
         assert_eq!(f.position, i % per_instance);
-        assert_eq!(f.field, format!("coef@h{}", f.halflife.unwrap() as i64));
+        assert_eq!(f.field, format!("coef@h{}", f.half_life.unwrap() as i64));
         let pred = preds
             .iter()
             .find(|m| {
                 m.target.as_deref() == Some(f.target.as_str())
                     && m.ridge == f.ridge
                     && m.feature_set == f.feature_set
-                    && m.halflife == f.halflife
+                    && m.half_life == f.half_life
             })
             .unwrap_or_else(|| panic!("no pred field for {f:?}"));
         let suffix = pred
@@ -565,7 +558,7 @@ fn coef_fields_name_every_slot_of_every_list() {
     // `holt` names its two terms; `ew_cov` has none.
     let holt: Spec = serde_json::from_str(
         r#"{"name": "h", "model": {"type": "holt"}, "targets": ["y"], "features": [],
-            "halflife": 50.0, "min_periods": 2.0}"#,
+            "half_life": 50.0, "min_weight": 2.0}"#,
     )
     .unwrap();
     let names: Vec<_> = online_polars::coef_fields(&holt)
@@ -575,7 +568,7 @@ fn coef_fields_name_every_slot_of_every_list() {
     assert_eq!(names, ["coef_y_level", "coef_y_trend"]);
     let cov: Spec = serde_json::from_str(
         r#"{"name": "c", "model": {"type": "ew_cov", "stats": ["mean"]}, "targets": [],
-            "features": ["x0"], "halflife": 50.0, "min_periods": 2.0}"#,
+            "features": ["x0"], "half_life": 50.0, "min_weight": 2.0}"#,
     )
     .unwrap();
     assert!(online_polars::coef_fields(&cov).is_empty());
@@ -673,7 +666,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
     let kinds = [
         r#"{"type": "ew_ridge", "ridge": 1e-6}"#,
         r#"{"type": "lasso", "lasso_path": [0.1]}"#,
-        r#"{"type": "kalman", "coef_halflife": 100.0}"#,
+        r#"{"type": "kalman", "coef_half_life": 100.0}"#,
         r#"{"type": "huber"}"#,
         r#"{"type": "quantile", "quantile": 0.5}"#,
         r#"{"type": "ftrl"}"#,
@@ -707,7 +700,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
         };
         let spec: Spec = serde_json::from_str(&format!(
             r#"{{"name": "s", "model": {model}, "targets": ["y"], "features": {features},
-                "halflife": 50.0, "min_periods": 2.0}}"#
+                "half_life": 50.0, "min_weight": 2.0}}"#
         ))
         .unwrap_or_else(|e| panic!("{model}: {e}"));
         let has_resid = online_polars::output_index(&spec)
@@ -775,7 +768,7 @@ fn features_json(k: usize) -> String {
 fn ew_cov_spec(k: usize) -> Spec {
     serde_json::from_str(&format!(
         r#"{{"name": "c", "model": {{"type": "ew_cov"}}, "targets": ["x0"],
-            "features": {}, "halflife": 200.0, "min_periods": 2.0}}"#,
+            "features": {}, "half_life": 200.0, "min_weight": 2.0}}"#,
         features_json(k)
     ))
     .unwrap()
@@ -786,8 +779,8 @@ fn ew_cov_spec(k: usize) -> Spec {
 fn ridge_spec(coef_every: u32) -> Spec {
     serde_json::from_str(&format!(
         r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
-            "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "halflife": 500.0,
-            "min_periods": 5.0, "coef_every": {coef_every}}}"#
+            "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
+            "min_weight": 5.0, "coef_every": {coef_every}}}"#
     ))
     .unwrap()
 }
@@ -933,12 +926,12 @@ fn blocked_ridge_spec(block: usize) -> Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": 60.0,
-            "max_dclock": 30.0,
+            "half_life": 60.0,
+            "gap_cap": 30.0,
             "weight": "w",
             "group": "g",
             "group_close": "monotone",
-            "min_periods": 5.0,
+            "min_weight": 5.0,
             "coef_every": 1
         }}"#
     ))
@@ -1094,7 +1087,7 @@ fn a_sharded_marginal_reads_the_unsplit_pairs() {
             r#"{{"name": "m", "model": {{"type": "marginal", "lags": [1, 4], "cross_lags": [1],
                 "bins": 5, "bin_warm_rows": 60 {shards}}},
                 "targets": ["y0", "y1"], "features": [{}], "clock": "t",
-                "halflife": 80.0, "max_dclock": 20.0, "weight": "w"}}"#,
+                "half_life": 80.0, "gap_cap": 20.0, "weight": "w"}}"#,
             features.join(", ")
         ))
         .unwrap()
@@ -1153,7 +1146,7 @@ fn a_bank_saved_under_one_shard_count_loads_under_another() {
     let spec = |shards: &str| -> Spec {
         serde_json::from_str(&format!(
             r#"{{"name": "m", "model": {{"type": "marginal", "lags": [1, 2]{shards}}},
-                "targets": ["y"], "features": ["x0", "x1", "x2"], "halflife": 20.0}}"#
+                "targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 20.0}}"#
         ))
         .unwrap()
     };
@@ -1218,7 +1211,7 @@ fn the_solve_cadence_is_the_specs_on_restore() {
     let spec = |model: &str| -> Spec {
         serde_json::from_str(&format!(
             r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["x0"],
-                "halflife": 1e6}}"#
+                "half_life": 1e6}}"#
         ))
         .unwrap()
     };

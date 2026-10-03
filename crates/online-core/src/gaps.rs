@@ -501,7 +501,7 @@ impl Grams {
                     c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
             }
-            // The clone keeps this Gram's prior scale under `ridge_decay`, a
+            // The clone keeps this Gram's prior scale under `ridge_scale`, a
             // pseudo-observation on its own sum scale: the blend no more
             // strengthens it than it strengthens the data. (Built from
             // `EwCov::new`, the blend once put the prior back at full strength
@@ -634,7 +634,7 @@ impl Acc {
                 }
                 // Nothing carried and nothing added. At the head of a stream
                 // that leaves everything at 0; after a decay that took the
-                // whole history -- `lam·W_j` is 0 from 1075 halflives on --
+                // whole history -- `lam·W_j` is 0 from 1075 half-lives on --
                 // it is the decay alone, as for an absent target, where the
                 // history used to be kept whole (task 115 (c), PLAN §12).
                 Some(_) | None => {

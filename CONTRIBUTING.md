@@ -80,7 +80,7 @@ know nothing about Polars, Python, or clocks-as-columns. Plumbing lives in
   written out longhand, an equivalent model configured a different way, or
   the optimality conditions of the problem;
 - an entry in `crates/online-core/tests/model_contract.rs`, which checks the
-  shared contract (`n_eff` semantics, slot counts, state round-tripping) for
+  shared contract (`weight_sum` semantics, slot counts, state round-tripping) for
   every model at once;
 - wiring in `online-polars/src/spec.rs` and a `po.spec.<name>()` constructor.
 

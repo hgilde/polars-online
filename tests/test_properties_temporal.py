@@ -25,9 +25,9 @@ Temporal clocks, on every kind of temporal column:
 
 - Chunking never changes the numbers (hard rule 3), nor does a save and
   load at any row.
-- Labels held back by ``label_delay`` across chunk boundaries change no
+- Labels held back by ``embargo`` across chunk boundaries change no
   number either.
-- Gaps are taken in integer nanoseconds, so ``n_eff`` is the exact
+- Gaps are taken in integer nanoseconds, so ``weight_sum`` is the exact
   recursion even centuries after the stream's first instant.
 """
 
@@ -175,11 +175,11 @@ PARTS = [
 
 
 def _halflife(value):
-    """The text a spec stores for ``value`` given as a halflife."""
+    """The text a spec stores for ``value`` given as a half-life."""
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], clock="t", max_dclock="365d", halflife=value
+        "m", targets=["y"], features=["x0"], clock="t", gap_cap="365d", half_life=value
     )
-    return spec["halflife"]
+    return spec["half_life"]
 
 
 class TestDurationText:
@@ -242,7 +242,7 @@ class TestDurationText:
         assert "longer than 292 years, the most a clock can hold" in said or re.search(
             r": \d+ is too large$", said
         ), said
-        with pytest.raises(ValueError, match=re.escape(f'spec "m": halflife "{text}" is not')):
+        with pytest.raises(ValueError, match=re.escape(f'spec "m": half_life "{text}" is not')):
             _halflife(text)
 
     @SPECS
@@ -260,16 +260,16 @@ class TestDurationText:
             targets=["y"],
             features=["x0"],
             clock="t",
-            max_dclock="365d",
-            halflife=[padded, other],
+            gap_cap="365d",
+            half_life=[padded, other],
         )
-        assert spec["halflife"] == [text, other]
+        assert spec["half_life"] == [text, other]
         assert f"pred_y@h{text}" in po.spec.output_fields(spec)
         # ... and the Rust side, which a config or a hand-written dict reaches
         # without it, trims it too; the state keeps the trimmed text.
-        bank = po.ModelBank([{**spec, "halflife": [padded, other]}])
+        bank = po.ModelBank([{**spec, "half_life": [padded, other]}])
         assert f"pred_y@h{text}" in bank.output_fields()["m"]
-        assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["halflife"] == [text, other]
+        assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["half_life"] == [text, other]
 
     @SPECS
     @given(case=fixed_texts(), space=st.sampled_from(WHITESPACE), data=st.data())
@@ -281,7 +281,7 @@ class TestDurationText:
         spaced = text[:at] + space + text[at:]
         with pytest.raises(ValueError, match="has a space in it"):
             parse_duration(spaced)
-        with pytest.raises(ValueError, match='spec "m": halflife .*has a space in it'):
+        with pytest.raises(ValueError, match='spec "m": half_life .*has a space in it'):
             _halflife(spaced)
 
 
@@ -344,13 +344,13 @@ def _polars_offset(text: str) -> int:
 
 
 def _assert_refused_as_too_long(value, exact: int) -> None:
-    """``value``, ``exact`` nanoseconds long, is refused as a halflife by
+    """``value``, ``exact`` nanoseconds long, is refused as a half-life by
     name and for its length, and never stored as some other length."""
     try:
         stored = _halflife(value)
     except ValueError as e:
         said = str(e)
-        assert said.startswith('spec "m": halflife') and "292 years" in said, said
+        assert said.startswith('spec "m": half_life') and "292 years" in said, said
     else:
         raise AssertionError(
             f"{value!r}, {exact} ns long, was stored as {stored!r}, "
@@ -413,7 +413,7 @@ CLOCK_MODELS = [
 @st.composite
 def clock_specs(draw, model: str, step: int, cap: int):
     """One ``model`` spec on clock ``t``, grouped by ``g``, each clock
-    parameter a duration in whole steps of the column, ``max_dclock``
+    parameter a duration in whole steps of the column, ``gap_cap``
     ``cap`` steps, the optional ones drawn in or left out."""
 
     def steps(lo, hi):
@@ -422,12 +422,12 @@ def clock_specs(draw, model: str, step: int, cap: int):
     def maybe(key, lo, hi):
         return {key: steps(lo, hi)} if draw(st.booleans()) else {}
 
-    kw: dict = dict(clock="t", group="g", max_dclock=format_duration(cap * step))
+    kw: dict = dict(clock="t", group="g", gap_cap=format_duration(cap * step))
     if draw(st.booleans()):
         kw["weight"] = "w"
-    xy = dict(targets=["y"], features=["x0", "x1"], halflife=steps(1, 30))
+    xy = dict(targets=["y"], features=["x0", "x1"], half_life=steps(1, 30))
     if model == "ewridge":
-        kw |= xy | maybe("window", 1, 60) | maybe("solve_every", 1, 5) | maybe("label_delay", 1, 5)
+        kw |= xy | maybe("window_size", 1, 60) | maybe("solve_every", 1, 5) | maybe("embargo", 1, 5)
         if draw(st.booleans()):
             gap = draw(
                 st.one_of(
@@ -436,25 +436,25 @@ def clock_specs(draw, model: str, step: int, cap: int):
             )
             kw |= dict(session="s", session_gap=gap)
             # The slow twin is a second history, which a window would cut.
-            if gap != "reset" and "window" not in kw and draw(st.booleans()):
-                kw |= dict(session_shrink=0.5, long_halflife=steps(1, 120))
+            if gap != "reset" and "window_size" not in kw and draw(st.booleans()):
+                kw |= dict(session_shrink=0.5, long_half_life=steps(1, 120))
     elif model == "lasso":
-        kw |= xy | dict(lasso_path=[0.1, 0.0], select_halflife=steps(1, 60))
-        kw |= maybe("window", 1, 60) | maybe("solve_every", 1, 5)
+        kw |= xy | dict(lasso_path=[0.1, 0.0], select_half_life=steps(1, 60))
+        kw |= maybe("window_size", 1, 60) | maybe("solve_every", 1, 5)
     elif model == "kalman":
-        kw |= xy | dict(coef_halflife=steps(1, 60)) | maybe("revert_halflife", 1, 600)
+        kw |= xy | dict(coef_half_life=steps(1, 60)) | maybe("revert_half_life", 1, 600)
     elif model == "holt":
-        kw |= dict(targets=["y"], level_halflife=steps(1, 30), trend_halflife=steps(1, 60))
+        kw |= dict(targets=["y"], level_half_life=steps(1, 30), trend_half_life=steps(1, 60))
     elif model == "ew_cov":
-        kw |= dict(features=["x0", "x1"], halflife=steps(1, 30)) | maybe("window", 1, 60)
+        kw |= dict(features=["x0", "x1"], half_life=steps(1, 30)) | maybe("window_size", 1, 60)
     elif model == "ew_class":
         kw |= dict(label="lab", classes=["a", "b"], precision_prior=1.0, features=["x0", "x1"])
-        kw |= dict(halflife=steps(1, 30)) | maybe("window", 1, 60)
+        kw |= dict(half_life=steps(1, 30)) | maybe("window_size", 1, 60)
     elif model in ("huber", "quantile"):
         kw |= xy | maybe("solve_every", 1, 5) | ({"quantile": 0.5} if model == "quantile" else {})
     else:
         assert model == "rls", model
-        kw |= xy | maybe("label_delay", 1, 5)
+        kw |= xy | maybe("embargo", 1, 5)
     return getattr(po.spec, model)("m", **kw)
 
 
@@ -464,12 +464,12 @@ def temporal_streams(draw, model: str, min_rows=1, max_rows=40):
 
     Each group's clock is non-decreasing (disorder is its own test) in whole
     steps of the column: ties, gaps of a few steps and gaps past
-    ``max_dclock``, from an instant near one of ``ANCHORS``. Features,
+    ``gap_cap``, from an instant near one of ``ANCHORS``. Features,
     targets and weights are seeded, with nulls, and zero weights, which
     advance the clock and teach nothing."""
     dtype = draw(clock_dtypes(), label="dtype")
     step = _step(dtype)
-    cap = draw(st.integers(1, 8), label="max_dclock in steps")
+    cap = draw(st.integers(1, 8), label="gap_cap in steps")
     n = draw(st.integers(min_rows, max_rows), label="rows")
     n_groups = draw(st.integers(1, 3))
     groups = draw(st.lists(st.integers(0, n_groups - 1), min_size=n, max_size=n), label="groups")
@@ -563,7 +563,7 @@ class TestTemporalClockStreams:
 DELAYED_MODELS = {
     "ewridge": {},
     "rls": {},
-    "kalman": {"coef_halflife": "1h"},
+    "kalman": {"coef_half_life": "1h"},
     "huber": {},
     "quantile": {"quantile": 0.5},
 }
@@ -571,14 +571,14 @@ DELAYED_MODELS = {
 
 @st.composite
 def delayed_streams(draw):
-    """A stream whose spec holds each row's label back ``label_delay``, a
+    """A stream whose spec holds each row's label back ``embargo``, a
     few steps, so several labels are in flight across every chunk boundary.
     The column steps in fractions of a second, whose sums a double rounds
     by their order; whole seconds and days sum exactly in any order."""
     unit = draw(st.sampled_from(["ms", "us", "ns"]), label="unit")
     dtype = draw(st.sampled_from([pl.Datetime(unit), pl.Datetime(unit, "UTC"), pl.Duration(unit)]))
     step = UNIT_NS[unit]
-    cap = draw(st.integers(1, 8), label="max_dclock in steps")
+    cap = draw(st.integers(1, 8), label="gap_cap in steps")
     n = draw(st.integers(2, 30), label="rows")
     gaps = draw(st.lists(st.integers(0, cap + 2), min_size=n, max_size=n), label="gaps")
     instants = draw(_instants(step), label="start") + np.cumsum(gaps) * step
@@ -599,9 +599,9 @@ def delayed_streams(draw):
         targets=["y"],
         features=["x0"],
         clock="t",
-        halflife=format_duration(draw(st.integers(1, 30)) * step),
-        max_dclock=format_duration(cap * step),
-        label_delay=format_duration(draw(st.integers(1, 12), label="delay in steps") * step),
+        half_life=format_duration(draw(st.integers(1, 30)) * step),
+        gap_cap=format_duration(cap * step),
+        embargo=format_duration(draw(st.integers(1, 12), label="delay in steps") * step),
         **DELAYED_MODELS[model],
     )
     return df, spec
@@ -626,12 +626,12 @@ class TestADelayedLabel:
         _assert_same_numbers(one, many)
 
 
-#: Every model that emits ``n_eff``, with what each needs besides a halflife.
+#: Every model that emits ``weight_sum``, with what each needs besides a half-life.
 N_EFF_MODELS = {
     "ewridge": {},
     "rls": {},
     "lasso": {"lasso_path": [0.1, 0.0]},
-    "kalman": {"coef_halflife": float("inf")},
+    "kalman": {"coef_half_life": float("inf")},
     "huber": {},
     "quantile": {"quantile": 0.5},
     "ftrl": {},
@@ -646,15 +646,15 @@ N_EFF_MODELS = {
 
 @st.composite
 def late_streams(draw):
-    """A stream's first instant, then ticks a few halflives apart from one
-    to two hundred years later, with the halflife, the gaps and the cap in
+    """A stream's first instant, then ticks a few half-lives apart from one
+    to two hundred years later, with the half-life, the gaps and the cap in
     whole steps of the column. The age is drawn in years: drawn in steps,
     it would sit near the first instant, where a double is still exact."""
     dtype = draw(clock_dtypes(), label="dtype")
     step = _step(dtype)
-    halflife = draw(st.integers(1, 50), label="halflife in steps") * step
-    cap = draw(st.one_of(st.none(), st.integers(1, 200)), label="max_dclock in steps")
-    gaps = draw(st.lists(st.integers(0, 4 * halflife // step), min_size=1, max_size=60))
+    half_life = draw(st.integers(1, 50), label="half_life in steps") * step
+    cap = draw(st.one_of(st.none(), st.integers(1, 200)), label="gap_cap in steps")
+    gaps = draw(st.lists(st.integers(0, 4 * half_life // step), min_size=1, max_size=60))
     gaps = [g * step for g in gaps]
     first = draw(_instants(step), label="first instant")
     # Four years to spare: the extra thousand steps are 2.7 years of days.
@@ -662,7 +662,7 @@ def late_streams(draw):
     age = years * YEAR_NS // step * step + draw(st.integers(0, 1_000)) * step
     instants = [first, *(first + age + np.cumsum(gaps)).tolist()]
     assert instants[-1] <= MAX_NS
-    return dtype, instants, halflife, None if cap is None else cap * step
+    return dtype, instants, half_life, None if cap is None else cap * step
 
 
 class TestNanosecondsAreExact:
@@ -673,11 +673,11 @@ class TestNanosecondsAreExact:
     @given(case=late_streams(), data=st.data())
     def test_n_eff_is_the_exact_recursion_at_any_age(self, model, case, data):
         """``w <- w * 2**(-min(gap, cap) / h) + 1`` on the exact integer gaps,
-        ``n_eff`` being ``w`` before the row's own update (hard rule 8), in
+        ``weight_sum`` being ``w`` before the row's own update (hard rule 8), in
         every model and fed in any chunks. Read as a double of seconds, even
         from the stream's first instant, the gaps would be rounded to the
         double's resolution at that age: 1.4 us two centuries in."""
-        dtype, instants, halflife, cap = case
+        dtype, instants, half_life, cap = case
         n = len(instants)
         rng = np.random.default_rng(0)
         x = rng.normal(size=(n, 2))
@@ -691,23 +691,23 @@ class TestNanosecondsAreExact:
             }
         )
         kw = dict(
-            clock="t", halflife=format_duration(halflife), targets=["y"], features=["x0", "x1"]
+            clock="t", half_life=format_duration(half_life), targets=["y"], features=["x0", "x1"]
         )
         kw |= N_EFF_MODELS[model]
         # No cap is a cap as long as the stream: a finite one no gap reaches
         # (task 120 took `inf` away).
         span = instants[-1] - instants[0]
-        kw["max_dclock"] = format_duration(span if cap is None else cap)
+        kw["gap_cap"] = format_duration(span if cap is None else cap)
         spec = getattr(po.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
         bank = po.ModelBank([spec])
         edges = _edges(data.draw, n)
         got = pl.concat([bank.fit_predict(df.slice(a, b - a))["m"] for a, b in pairwise(edges)])
-        got = got.struct.field("n_eff").to_numpy()
+        got = got.struct.field("weight_sum").to_numpy()
         want, w = [], 0.0
         for i in range(n):
             want.append(w)
             gap = instants[i] - instants[i - 1] if i else 0
-            w = w * 2.0 ** (-(gap if cap is None else min(gap, cap)) / halflife) + 1.0
+            w = w * 2.0 ** (-(gap if cap is None else min(gap, cap)) / half_life) + 1.0
         want = np.array(want)
         assert got[0] == 0.0
         assert np.all(np.abs(got - want) <= 1e-12 * want), np.max(

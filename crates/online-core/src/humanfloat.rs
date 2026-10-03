@@ -1,13 +1,13 @@
 //! Floats that survive a human-readable encoding.
 //!
 //! JSON has no literal for `NaN` or `±inf`, and `serde_json` writes all three
-//! as `null` without saying so. That is not a corner: `halflife = inf` means
+//! as `null` without saying so. That is not a corner: `half_life = inf` means
 //! "no decay" and is a documented setting, so an ordinary state carries an
 //! infinity in every stream's [`crate::Decay`].
 //!
 //! These helpers write the three as the strings `"inf"`, `"-inf"` and
 //! `"nan"` -- the spelling `online-polars`' `Num` already uses for the same
-//! reason, so a spec's `halflife` and a state's `decay` read alike -- and
+//! reason, so a spec's `half_life` and a state's `decay` read alike -- and
 //! read them back. They key on [`serde::Serializer::is_human_readable`],
 //! which **msgpack reports as `false`**, so the state file's bytes are
 //! exactly what they were: `crates/online-core/tests/state_encoding.rs`
@@ -84,7 +84,7 @@ pub mod f64_or_tag {
     }
 }
 
-/// A `Vec<f64>`, element by element (a per-slot halflife, say).
+/// A `Vec<f64>`, element by element (a per-slot half-life, say).
 pub mod vec_f64_or_tag {
     use super::*;
 

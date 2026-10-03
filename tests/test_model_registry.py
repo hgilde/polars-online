@@ -30,14 +30,14 @@ ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 CORE_GOLDEN = ROOT / "crates" / "online-core" / "tests" / "golden.rs"
 
-#: Builder -> the least it needs beyond targets/features/halflife to be
+#: Builder -> the least it needs beyond targets/features/half-life to be
 #: constructible; ``None`` drops that argument. A new builder goes here first,
 #: and then wherever the tests below say.
 MINIMAL: dict[str, dict[str, object]] = {
     "ewridge": {},
     "rls": {},
     "lasso": {"lasso_path": [0.1, 0.0]},
-    "kalman": {"coef_halflife": 50.0},
+    "kalman": {"coef_half_life": 50.0},
     "huber": {},
     "quantile": {"quantile": 0.5},
     "ftrl": {},
@@ -48,16 +48,16 @@ MINIMAL: dict[str, dict[str, object]] = {
     "kmeans": {"targets": None, "features": ["x0", "x1"], "k": 2},
     "micro": {"targets": None, "features": ["x0", "x1"], "eps": 0.3},
     "ew_class": {"targets": None, "label": "y", "classes": ["a", "b"], "precision_prior": 1.0},
-    "seqtest": {"features": None, "halflife": None},
+    "seqtest": {"features": None, "half_life": None},
     "marginal": {},
     "deco": {"targets": None, "features": ["x0", "x1"]},
     "corrchange": {
         "targets": None,
         "features": ["x0", "x1"],
-        "halflife": None,
+        "half_life": None,
         "span_rows": 20,
     },
-    "bocpd": {"targets": None, "features": ["x0", "x1"], "halflife": None},
+    "bocpd": {"targets": None, "features": ["x0", "x1"], "half_life": None},
     "hmm": {
         "targets": None,
         "features": ["x0", "x1"],
@@ -67,7 +67,7 @@ MINIMAL: dict[str, dict[str, object]] = {
     "rcov": {
         "targets": None,
         "features": ["x0", "x1"],
-        "halflife": None,
+        "half_life": None,
         "group": "g",
         "group_close": "monotone",
         "block_rows": 100,
@@ -97,7 +97,7 @@ REGRESSIONS = frozenset(MINIMAL) - {
 
 
 def _build(name: str) -> dict:
-    kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "halflife": 50.0}
+    kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
     kw.update(MINIMAL[name])
     return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
@@ -136,7 +136,7 @@ def test_coef_every_is_taken_exactly_where_there_is_a_coef():
     for name in sorted(MINIMAL):
         spec = _build(name)
         has_coef = any(f.startswith("coef") for f in po.spec.output_fields(spec))
-        kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "halflife": 50.0}
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
         kw.update(MINIMAL[name])
         kw = {k: v for k, v in kw.items() if v is not None}
         builder = getattr(po.spec, name)

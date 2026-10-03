@@ -46,29 +46,29 @@ def test_ten_million_rows_stay_bounded_and_accurate():
         targets=["y0"],
         features=["x0", "x1"],
         clock="t",
-        max_dclock=10.0,
-        halflife=1000.0,
-        min_periods=20.0,
+        gap_cap=10.0,
+        half_life=1000.0,
+        min_weight=20.0,
     )
     bank = po.ModelBank([spec])
     n_eff_seen, last_coef, rows = [], None, 0
     for chunk in _chunks(ROWS, CHUNK):
         out = bank.fit_predict(chunk)
         rows += chunk.height
-        neff = out["m"].struct.field("n_eff").to_numpy().astype(float)
+        neff = out["m"].struct.field("weight_sum").to_numpy().astype(float)
         n_eff_seen.append((np.nanmin(neff), np.nanmax(neff)))
         coefs = [c for c in out["m"].struct.field("coef").to_list() if c is not None]
         if coefs:
             last_coef = np.array(coefs[-1], dtype=float)
 
     assert rows == ROWS
-    # n_eff must settle near the steady state 1/(1 - 2^(-dt/halflife)) and never
+    # weight_sum must settle near the steady state 1/(1 - 2^(-dt/half-life)) and never
     # grow without bound -- that is the whole point of mean-form accumulators.
     highs = [hi for _, hi in n_eff_seen]
     assert np.isfinite(highs).all()
-    assert max(highs) < 5000.0, f"n_eff grew to {max(highs)}"
+    assert max(highs) < 5000.0, f"weight_sum grew to {max(highs)}"
     assert max(highs[-3:]) == pytest.approx(max(highs[3:6]), rel=0.05), (
-        "n_eff drifted between the start and end of the stream"
+        "weight_sum drifted between the start and end of the stream"
     )
     # And the fit is still right after 10M rows.
     assert last_coef is not None
@@ -82,9 +82,9 @@ def test_state_stays_small_and_resumable_after_a_long_run():
         targets=["y0"],
         features=["x0", "x1"],
         clock="t",
-        max_dclock=10.0,
-        halflife=1000.0,
-        min_periods=20.0,
+        gap_cap=10.0,
+        half_life=1000.0,
+        min_weight=20.0,
     )
     bank = po.ModelBank([spec])
     for chunk in _chunks(2_000_000, CHUNK, seed=1):

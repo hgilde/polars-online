@@ -132,8 +132,8 @@ def spec(k, **kw):
         features=[f"x{i}" for i in range(k)],
         stats=["mean", "mahal"],
         precision_prior=1e-6,
-        halflife=NO_DECAY,
-        min_periods=5.0,
+        half_life=NO_DECAY,
+        min_weight=5.0,
     )
     d.update(kw)
     return po.spec.ew_cov("c", **d)
@@ -156,7 +156,7 @@ class TestMahalOracle:
         n, k = 400, 4
         X, _ = gaussian(n, k, 1)
         prior = 1e-3
-        out = po.ModelBank([spec(k, precision_prior=prior, halflife=50.0)]).fit_predict(frame(X))
+        out = po.ModelBank([spec(k, precision_prior=prior, half_life=50.0)]).fit_predict(frame(X))
         got = field(out, "mahal")
         lam = np.full(n, math.exp2(-1.0 / 50.0))
         lam[0] = 1.0
@@ -176,14 +176,14 @@ class TestMahalOracle:
             np.testing.assert_array_equal(theirs[ok], mine[ok])
 
     def test_on_a_messy_stream_with_weights_a_clock_and_skipped_rows(self):
-        # Irregular clock with gaps past max_dclock, weights including zeros
+        # Irregular clock with gaps past gap_cap, weights including zeros
         # and nulls, a null feature every 37th row (skipped: the state is
         # untouched and its clock delta folds into the next accepted row).
         n, k = 600, 3
         rng = np.random.default_rng(2)
         X, _ = gaussian(n, k, 3)
         t = np.cumsum(rng.integers(1, 4, n)).astype(float)
-        t[200:] += 100.0  # one gap far past max_dclock
+        t[200:] += 100.0  # one gap far past gap_cap
         w = rng.choice([0.0, 0.5, 1.0, 2.0], n)
         w_col = [None if i % 97 == 0 else float(w[i]) for i in range(n)]
         x1 = [None if i % 37 == 0 else float(X[i, 1]) for i in range(n)]
@@ -192,15 +192,15 @@ class TestMahalOracle:
             t=pl.Series(t),
             w=pl.Series(w_col, dtype=pl.Float64),
         )
-        prior, halflife, max_dclock = 1e-2, 40.0, 10.0
+        prior, half_life, gap_cap = 1e-2, 40.0, 10.0
         s = spec(
             k,
             precision_prior=prior,
             clock="t",
-            max_dclock=max_dclock,
-            halflife=halflife,
+            gap_cap=gap_cap,
+            half_life=half_life,
             weight="w",
-            min_periods=3.0,
+            min_weight=3.0,
         )
         out = po.ModelBank([s]).fit_predict(df)
         got = field(out, "mahal")
@@ -209,11 +209,11 @@ class TestMahalOracle:
         pending = 0.0
         prev_t = None
         for i in range(n):
-            d = 0.0 if prev_t is None else min(t[i] - prev_t, max_dclock)
+            d = 0.0 if prev_t is None else min(t[i] - prev_t, gap_cap)
             prev_t = t[i]
             pending += d
             if accepted[i]:
-                lam[i] = math.exp2(-(min(pending, max_dclock) / halflife))  # capped (S3)
+                lam[i] = math.exp2(-(min(pending, gap_cap) / half_life))  # capped (S3)
                 pending = 0.0
         ww = np.array([0.0 if v is None else v for v in w_col])
         states = replay(X, lam, ww, prior=prior, accepted=accepted)
@@ -268,16 +268,18 @@ class TestPcaOracle:
     def test_matches_eigh_at_every_refresh(self, every):
         n, k, r = 300, 4, 2
         X, _ = gaussian(n, k, 6)
-        halflife = 60.0
-        s = spec(k, stats=["mean"], precision_prior=None, pca=r, pca_every=every, halflife=halflife)
+        half_life = 60.0
+        s = spec(
+            k, stats=["mean"], precision_prior=None, pca=r, pca_every=every, half_life=half_life
+        )
         out = po.ModelBank([s]).fit_predict(frame(X))
-        lam = np.full(n, math.exp2(-1.0 / halflife))
+        lam = np.full(n, math.exp2(-1.0 / half_life))
         lam[0] = 1.0
         states = replay(X, lam, np.ones(n), prior=1.0)
         # After row i's update the state is states[i + 1]; the refresh after
         # the update on the row that makes `since_pca == every` (counted
-        # from the previous refresh, the first refresh as soon as n_eff
-        # reaches min_periods) is what rows i+1.. are scored on.
+        # from the previous refresh, the first refresh as soon as weight_sum
+        # reaches min_weight) is what rows i+1.. are scored on.
         frozen = None
         since = 0
         checked = 0
@@ -292,7 +294,7 @@ class TestPcaOracle:
                     assert field(out, f"pc{j}_var")[i] == pytest.approx(eig[j], rel=1e-9)
                     assert field(out, f"pc{j}_share")[i] == pytest.approx(eig[j] / trace, rel=1e-9)
                     for col in range(k):
-                        assert field(out, f"pc{j}_x{col}")[i] == pytest.approx(
+                        assert field(out, f"pc{j}_loading_x{col}")[i] == pytest.approx(
                             load[j, col], abs=1e-9
                         ), (i, j, col)
                     score = float(load[j] @ (X[i] - m))
@@ -318,7 +320,7 @@ class TestPcaOracle:
         Q, _ = np.linalg.qr(rng.standard_normal((k, f)))
         F = rng.standard_normal((n, f)) * np.array([3.0, 2.0, 1.0])
         X = F @ Q.T + 0.1 * rng.standard_normal((n, k))
-        s = spec(k, stats=["mean"], precision_prior=None, pca=4, pca_every=1000, halflife=NO_DECAY)
+        s = spec(k, stats=["mean"], precision_prior=None, pca=4, pca_every=1000, half_life=NO_DECAY)
         out = po.ModelBank([s]).fit_predict(frame(X))
         last = out["c"][-1]
         var = np.array([last[f"pc{j}_var"] for j in range(4)])
@@ -326,7 +328,7 @@ class TestPcaOracle:
         assert var[3] < 0.02, "the fourth component is noise"
         share = np.array([last[f"pc{j}_share"] for j in range(4)])
         np.testing.assert_allclose(share[:3], var[:3] / (14.0 + 0.01 * k), rtol=0.03)
-        V = np.array([[last[f"pc{j}_x{c}"] for c in range(k)] for j in range(3)])
+        V = np.array([[last[f"pc{j}_loading_x{c}"] for c in range(k)] for j in range(3)])
         # Each loading lies in the factor subspace: its projection has norm 1.
         proj = V @ Q
         np.testing.assert_allclose(np.linalg.norm(proj, axis=1), 1.0, atol=0.01)
@@ -349,8 +351,8 @@ class TestPcaOracle:
             np.testing.assert_allclose(
                 field(a, f"pc{j}_var"), field(b, f"pc{j}_var"), rtol=1e-8, equal_nan=True
             )
-            va = np.column_stack([field(a, f"pc{j}_x{c}") for c in range(k)])
-            vb = np.column_stack([field(b, f"pc{j}_x{c}") for c in range(k)])
+            va = np.column_stack([field(a, f"pc{j}_loading_x{c}") for c in range(k)])
+            vb = np.column_stack([field(b, f"pc{j}_loading_x{c}") for c in range(k)])
             ok = np.isfinite(va[:, 0])
             rotated = va[ok] @ R.T
             # Same line; the sign convention may pick either direction.
@@ -366,9 +368,9 @@ class TestPcaOracle:
         # of −0.99999 between consecutive refreshes). Continuity does not.
         n, k = 3000, 5
         X, _ = gaussian(n, k, 10)
-        s = spec(k, stats=["mean"], precision_prior=None, pca=2, pca_every=1, halflife=200.0)
+        s = spec(k, stats=["mean"], precision_prior=None, pca=2, pca_every=1, half_life=200.0)
         out = po.ModelBank([s]).fit_predict(frame(X))
-        V1 = np.column_stack([field(out, f"pc1_x{c}") for c in range(k)])[100:]
+        V1 = np.column_stack([field(out, f"pc1_loading_x{c}") for c in range(k)])[100:]
         lead = np.argmax(np.abs(V1), axis=1)
         assert len(set(lead.tolist())) > 1, (
             "the lead entry must actually change for this to test anything"
@@ -376,7 +378,7 @@ class TestPcaOracle:
         flips = np.flatnonzero(lead[1:] != lead[:-1])
         assert flips.size > 0
         for j in range(2):
-            V = np.column_stack([field(out, f"pc{j}_x{c}") for c in range(k)])[100:]
+            V = np.column_stack([field(out, f"pc{j}_loading_x{c}") for c in range(k)])[100:]
             dots = np.sum(V[1:] * V[:-1], axis=1)
             assert dots.min() > 0.9, dots.min()
         # Where the lead traded places, max-abs signing would have flipped.
@@ -392,7 +394,7 @@ class TestCalibration:
         n, k = 200_000, 8
         X, _ = gaussian(n, k, 11)
         s = spec(
-            k, stats=["mahal"], mahal_quantiles=[0.5, 0.99], halflife=20_000.0, min_periods=50.0
+            k, stats=["mahal"], mahal_quantiles=[0.5, 0.99], half_life=20_000.0, min_weight=50.0
         )
         out = po.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal")[10_000:] ** 2
@@ -408,12 +410,12 @@ class TestCalibration:
 
     def test_the_quantiles_are_the_ew_ones_at_the_halflife(self):
         """Task 146: ``mahal_q<p>`` is the exponentially weighted quantile of
-        the past distances at the model's halflife, to ``tanh(1/128)``
+        the past distances at the model's half-life, to ``tanh(1/128)``
         relatively, so it follows a covariance change as the distances do."""
         n, k, h = 3000, 3, 50.0
         X, _ = gaussian(n, k, 21)
         X[1500:] *= 4.0
-        s = spec(k, stats=["mahal"], mahal_quantiles=[0.5, 0.9], halflife=h, min_periods=5.0)
+        s = spec(k, stats=["mahal"], mahal_quantiles=[0.5, 0.9], half_life=h, min_weight=5.0)
         out = po.ModelBank([s]).fit_predict(frame(X))
         d = field(out, "mahal")
         lam = 0.5 ** (1 / h)
@@ -434,7 +436,7 @@ class TestCalibration:
         rng = np.random.default_rng(13)
         bad = rng.choice(np.arange(5_000, n), 500, replace=False)
         X[bad] += rng.standard_normal((500, k)) * 4.0
-        s = spec(k, stats=["mahal"], mahal_quantiles=[0.99], halflife=NO_DECAY, min_periods=50.0)
+        s = spec(k, stats=["mahal"], mahal_quantiles=[0.99], half_life=NO_DECAY, min_weight=50.0)
         out = po.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal") ** 2
         flag = d2 > CHI2_99[k]
@@ -449,7 +451,7 @@ class TestCalibration:
         assert own[bad].mean() > 0.85
 
     def test_decayed_scores_follow_a_covariance_change(self):
-        # Halfway the covariance rotates; a short halflife re-learns it and
+        # Halfway the covariance rotates; a short half-life re-learns it and
         # the score distribution returns to chi-squared.
         n, k = 60_000, 4
         rng = np.random.default_rng(14)
@@ -457,7 +459,7 @@ class TestCalibration:
         R, _ = np.linalg.qr(rng.standard_normal((k, k)))
         B = 2.5 * gaussian(n // 2, k, 16)[0] @ R.T
         X = np.vstack([A, B])
-        s = spec(k, stats=["mahal"], halflife=500.0, min_periods=50.0)
+        s = spec(k, stats=["mahal"], half_life=500.0, min_weight=50.0)
         d2 = field(po.ModelBank([s]).fit_predict(frame(X)), "mahal") ** 2
         assert np.mean(d2[n // 2 : n // 2 + 200]) > 1.5 * k, "the switch is visible"
         assert np.mean(d2[-10_000:]) == pytest.approx(k, rel=0.1)
@@ -478,7 +480,7 @@ class TestStreamContract:
             mahal_quantiles=[0.9],
             pca=2,
             pca_every=7,
-            halflife=100.0,
+            half_life=100.0,
         )
         d.update(kw)
         return spec(4, **d)
@@ -517,7 +519,7 @@ class TestStreamContract:
         for j in range(2):
             assert np.ptp(field(scored, f"pc{j}_var")) == 0.0
             for c in range(4):
-                assert np.ptp(field(scored, f"pc{j}_x{c}")) == 0.0
+                assert np.ptp(field(scored, f"pc{j}_loading_x{c}")) == 0.0
         assert np.ptp(field(scored, "mahal_q0.9")) == 0.0
         assert np.ptp(field(scored, "mean_x0")) == 0.0
         # Scores and distances still vary row by row: they are about the row.
@@ -529,27 +531,27 @@ class TestStreamContract:
 
     def test_halflife_grid_names_every_slot(self):
         s = spec(
-            2, halflife=[50.0, 500.0], stats=["mahal"], mahal_quantiles=[0.5], pca=1, pca_every=1
+            2, half_life=[50.0, 500.0], stats=["mahal"], mahal_quantiles=[0.5], pca=1, pca_every=1
         )
         assert po.spec.output_fields(s) == [
             "mahal@h50",
             "mahal_q0.5@h50",
             "pc0_var@h50",
             "pc0_share@h50",
-            "pc0_x0@h50",
-            "pc0_x1@h50",
+            "pc0_loading_x0@h50",
+            "pc0_loading_x1@h50",
             "pc0_score@h50",
-            "n_eff@h50",
+            "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "mahal@h500",
             "mahal_q0.5@h500",
             "pc0_var@h500",
             "pc0_share@h500",
-            "pc0_x0@h500",
-            "pc0_x1@h500",
+            "pc0_loading_x0@h500",
+            "pc0_loading_x1@h500",
             "pc0_score@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
         ]
@@ -568,8 +570,8 @@ class TestStreamContract:
             'name = "c"\n'
             'targets = ["x0"]\n'
             'features = ["x0", "x1", "x2", "x3"]\n'
-            "halflife = 100.0\n"
-            "min_periods = 5.0\n"
+            "half_life = 100.0\n"
+            "min_weight = 5.0\n"
             "\n[specs.model]\n"
             'type = "ew_cov"\n'
             'stats = ["mean", "mahal"]\n'
@@ -611,11 +613,11 @@ class TestFields:
             "mahal_q0.99",
             "pc0_var",
             "pc0_share",
-            "pc0_x0",
-            "pc0_x1",
-            "pc0_x2",
+            "pc0_loading_x0",
+            "pc0_loading_x1",
+            "pc0_loading_x2",
             "pc0_score",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
@@ -628,8 +630,8 @@ class TestFields:
         assert rows["mahal_q0.5"]["quantile"] == 0.5
         assert rows["pc0_var"]["kind"] == "pc_var"
         assert rows["pc0_share"]["kind"] == "pc_share"
-        assert rows["pc0_x1"]["kind"] == "pc_loading"
-        assert rows["pc0_x1"]["columns"] == ["x1"]
+        assert rows["pc0_loading_x1"]["kind"] == "pc_loading"
+        assert rows["pc0_loading_x1"]["columns"] == ["x1"]
         assert rows["pc0_score"]["kind"] == "pc_score"
         assert rows["pc0_score"]["columns"] == ["x0", "x1", "x2"]
         assert set(idx["dtype"].to_list()) == {"f64", "enum"}
@@ -638,7 +640,7 @@ class TestFields:
         assert po.spec.output_fields(spec(2, stats=["mean"], precision_prior=None)) == [
             "mean_x0",
             "mean_x1",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
@@ -698,7 +700,7 @@ class TestValidation:
         assert po.spec.output_fields(s) == [
             "mean_x0",
             "mean_x1",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
         ]
@@ -729,7 +731,7 @@ class TestEdgeCases:
         out = po.ModelBank([s]).fit_predict(pl.DataFrame({"x0": x}))
         ok = np.isfinite(field(out, "pc0_var"))
         assert ok.sum() > 190
-        np.testing.assert_allclose(field(out, "pc0_x0")[ok], 1.0)
+        np.testing.assert_allclose(field(out, "pc0_loading_x0")[ok], 1.0)
         np.testing.assert_allclose(field(out, "pc0_share")[ok], 1.0)
         # The variance in force was refreshed after the previous row; the
         # `var` field is read live. They agree one row apart.
@@ -744,7 +746,7 @@ class TestEdgeCases:
         out = po.ModelBank([s]).fit_predict(frame(X))
         assert field(out, "pc1_var")[-1] == pytest.approx(0.0, abs=1e-12)
         assert field(out, "pc0_share")[-1] == pytest.approx(1.0)
-        assert abs(field(out, "pc0_x0")[-1]) == pytest.approx(1.0)
+        assert abs(field(out, "pc0_loading_x0")[-1]) == pytest.approx(1.0)
         assert field(out, "pc1_score")[-1] == pytest.approx(0.0, abs=1e-9)
 
     def test_an_all_constant_stream_has_nan_shares_and_a_finite_mahal(self):
@@ -768,7 +770,7 @@ class TestEdgeCases:
         df = frame(X, w=w)
         s = spec(k, weight="w", pca=1, pca_every=1, precision_prior=1e-4)
         out = po.ModelBank([s]).fit_predict(df)
-        for name in ("mean_x0", "pc0_var", "pc0_x0"):
+        for name in ("mean_x0", "pc0_var", "pc0_loading_x0"):
             v = field(out, name)
             assert np.ptp(v[150:171]) == 0.0, name
         assert np.ptp(field(out, "mahal")[150:170]) > 0
@@ -777,7 +779,7 @@ class TestEdgeCases:
     def test_quantiles_lag_the_score_by_one_row(self):
         n, k = 200, 2
         X, _ = gaussian(n, k, 21)
-        s = spec(k, mahal_quantiles=[0.5], min_periods=2.0)
+        s = spec(k, mahal_quantiles=[0.5], min_weight=2.0)
         out = po.ModelBank([s]).fit_predict(frame(X))
         m, q = field(out, "mahal"), field(out, "mahal_q0.5")
         first_score = int(np.argmax(np.isfinite(m)))
@@ -790,7 +792,7 @@ class TestEdgeCases:
     def test_large_k_runs_and_is_calibrated(self):
         n, k = 5_000, 40
         X, _ = gaussian(n, k, 22)
-        s = spec(k, stats=["mahal"], pca=3, pca_every=100, halflife=NO_DECAY, min_periods=200.0)
+        s = spec(k, stats=["mahal"], pca=3, pca_every=100, half_life=NO_DECAY, min_weight=200.0)
         out = po.ModelBank([s]).fit_predict(frame(X))
         d2 = field(out, "mahal")[1000:] ** 2
         assert np.mean(d2) == pytest.approx(k, rel=0.05)
@@ -822,7 +824,7 @@ def test_pca_variance_scales_and_the_shares_are_invariant_at_a_tiny_scale():
     X, _ = gaussian(800, 4, 3)
 
     def pcs(scale):
-        s = spec(4, stats=["mean"], precision_prior=None, pca=4, pca_every=10, halflife=NO_DECAY)
+        s = spec(4, stats=["mean"], precision_prior=None, pca=4, pca_every=10, half_life=NO_DECAY)
         out = po.ModelBank([s]).fit_predict(frame(X * scale))
         var = [field(out, f"pc{j}_var")[-1] for j in range(4)]
         share = [field(out, f"pc{j}_share")[-1] for j in range(4)]

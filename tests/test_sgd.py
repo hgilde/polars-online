@@ -15,8 +15,8 @@ def _spec(**kw):
     d = dict(
         targets=["y0"],
         features=["x0", "x1"],
-        halflife=float("inf"),
-        min_periods=10.0,
+        half_life=float("inf"),
+        min_weight=10.0,
         learning_rate=0.05,
     )
     d.update(kw)
@@ -189,7 +189,7 @@ class TestPlumbing:
                 "y0": rng.standard_normal(n),
             }
         )
-        _, out = _fit(df, halflife=2000.0)
+        _, out = _fit(df, half_life=2000.0)
         p = out["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(p)
         assert abs(np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]) < 0.06
@@ -206,7 +206,7 @@ class TestPlumbing:
 
 
 class TestFeatureScaling:
-    """E24: `scale_features` standardizes inputs against their running moments.
+    """E24: `standardize` standardizes inputs against their running moments.
 
     Gradient methods are the ones that need it: a single learning rate has to
     suit every coordinate, so a feature in thousands and one in thousandths
@@ -224,9 +224,9 @@ class TestFeatureScaling:
             targets=["y0"],
             features=["x0", "x1"],
             learning_rate=0.01,
-            halflife=float("inf"),
-            min_periods=0.0,
-            scale_features=scale,
+            half_life=float("inf"),
+            min_weight=0.0,
+            standardize=scale,
             coef_every=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -247,8 +247,10 @@ class TestFeatureScaling:
         assert c[2] == pytest.approx(900.0, rel=0.15)
 
     def test_off_by_default(self):
-        spec = po.spec.sgd("m", targets=["y0"], features=["x0"], halflife=100.0, learning_rate=0.01)
-        assert spec["model"]["scale_features"] is False
+        spec = po.spec.sgd(
+            "m", targets=["y0"], features=["x0"], half_life=100.0, learning_rate=0.01
+        )
+        assert spec["model"]["standardize"] is False
 
     def test_chunk_invariance(self):
         rng = np.random.default_rng(3)
@@ -260,9 +262,9 @@ class TestFeatureScaling:
             targets=["y0"],
             features=["x0", "x1"],
             learning_rate=0.05,
-            halflife=float("inf"),
-            min_periods=5.0,
-            scale_features=True,
+            half_life=float("inf"),
+            min_weight=5.0,
+            standardize=True,
         )
         one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
         bank = po.ModelBank([spec])
@@ -313,9 +315,9 @@ class TestFeatureScaling:
             features=[f"x{j}" for j in range(k)],
             group="g",
             learning_rate=0.01,
-            halflife=float("inf"),
-            min_periods=25.0,
-            scale_features=True,
+            half_life=float("inf"),
+            min_weight=25.0,
+            standardize=True,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
@@ -347,9 +349,9 @@ class TestFeatureScaling:
             features=[f"x{j}" for j in range(k)],
             group="g",
             learning_rate=0.01,
-            halflife=float("inf"),
-            min_periods=25.0,
-            scale_features=True,
+            half_life=float("inf"),
+            min_weight=25.0,
+            standardize=True,
         )
         ours = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
         theirs = np.full(len(y), np.nan)
@@ -375,7 +377,7 @@ class TestFeatureScaling:
         1e-12 relative on every prediction of a few groups, the way sklearn's
         recipe reads (`scaler.partial_fit(x)`, then `transform(x)`)."""
         n_groups, rows_per, k = 3, 200, 5
-        lr, min_periods = 0.03, 10
+        lr, min_weight = 0.03, 10
         x, y, df = self._groups(n_groups, rows_per, k, seed=1)
         spec = po.spec.sgd(
             "m",
@@ -383,9 +385,9 @@ class TestFeatureScaling:
             features=[f"x{j}" for j in range(k)],
             group="g",
             learning_rate=lr,
-            halflife=float("inf"),
-            min_periods=float(min_periods),
-            scale_features=True,
+            half_life=float("inf"),
+            min_weight=float(min_weight),
+            standardize=True,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
@@ -402,7 +404,7 @@ class TestFeatureScaling:
                 scale = np.where(var > 0.0, np.sqrt(var), 1.0)
                 z = np.concatenate(([1.0], (xi - mean) / scale))
                 p = z @ beta
-                if n - 1 >= min_periods:
+                if n - 1 >= min_weight:
                     want[i] = p
                 beta = beta - lr * np.clip((p - y[i]) * z, -1e3, 1e3)
         ok = np.isfinite(want)
@@ -412,7 +414,7 @@ class TestFeatureScaling:
     def test_wide_row_is_the_same_fit_scaled_or_not(self):
         """A wide fit has few rows per feature on *every* row, which is the
         short-history condition again. At `k = 1,000` over 20,000 rows of
-        unit-variance features, `scale_features=True` and `False` are now
+        unit-variance features, `standardize=True` and `False` are now
         the same fit to within 0.001 R² (0.8512 against 0.8516 in
         `scripts/sklearn_comparison.py wide`); before task 74 the scaled
         fit's predictions correlated 0.978 with sklearn's at this width and
@@ -430,9 +432,9 @@ class TestFeatureScaling:
                 targets=["y0"],
                 features=[f"x{j}" for j in range(k)],
                 learning_rate=0.2 / k,
-                halflife=float("inf"),
-                min_periods=50.0,
-                scale_features=scale,
+                half_life=float("inf"),
+                min_weight=50.0,
+                standardize=scale,
             )
             out = po.ModelBank([spec]).fit_predict(df)
             preds[scale] = out["m"].struct.field("pred_y0").to_numpy().astype(float)

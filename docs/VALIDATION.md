@@ -10,9 +10,9 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 - Rows: 14336, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
 - Polars 1.44.2, polars-online 0.13.0
 
-## 1. Solve schedule (`solve_every` default = by weight, halflife/50 in steady state) [validate]
+## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) [validate]
 
-Solving every `halflife/d` clock units, halflife = 500.0. All schedules share one accumulator, so this is a free experiment (0.04s for 7 schedules).
+Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|

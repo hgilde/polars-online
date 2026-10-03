@@ -35,9 +35,9 @@ def stream(n=4000, k=3, seed=0, collinear=False):
 def fit(df, **kw):
     # `lam=1.0` is no decay at all, so an accumulator is the plain weighted
     # moments of the rows it saw and two shards share a weighting exactly.
-    if "halflife" not in kw:
+    if "half_life" not in kw:
         kw.setdefault("lam", 1.0)
-    kw.setdefault("min_periods", 5.0)
+    kw.setdefault("min_weight", 5.0)
     features = kw.pop("features", [c for c in df.columns if c.startswith("x")])
     targets = kw.pop("targets", ["y"])
     spec = po.spec.ewridge("m", targets=targets, features=features, **kw)
@@ -60,14 +60,14 @@ class TestSolveIsTheModelsSolve:
         assert mine == pytest.approx(model, rel=1e-12), np.max(np.abs(mine - model))
 
     @pytest.mark.parametrize(
-        "kw", [dict(ridge_decay=True), dict(coef_prior=[[0.0, 1.0, 1.0, 1.0]])]
+        "kw", [dict(ridge_scale="sum"), dict(coef_prior=[[0.0, 1.0, 1.0, 1.0]])]
     )
     def test_not_a_ridge_decay_or_coef_prior_fit(self, kw):
         """Task 148: the two penalties ``solve`` does not take, which its
         docs name: a decaying prior on the sum scale, intercept included, and
         a target other than zero. The plain fit beside them is reproduced."""
         df, _ = stream()
-        common = dict(halflife=50.0, ridge=5.0, max_rows_between_solves=1)
+        common = dict(half_life=50.0, ridge=5.0, max_rows_between_solves=1)
         plain = fit(df, **common)
         assert pg.solve(plain.gram("m")[0], ridge=5.0) == pytest.approx(
             plain.coef("m")["coef"].to_numpy(), rel=1e-10
@@ -78,7 +78,7 @@ class TestSolveIsTheModelsSolve:
 
     def test_without_an_intercept_too(self):
         df, _ = stream()
-        bank = fit(df, ridge=0.2, standardize=False, add_intercept=False, max_rows_between_solves=1)
+        bank = fit(df, ridge=0.2, standardize=False, fit_intercept=False, max_rows_between_solves=1)
         g = bank.gram("m")[0]
         assert pg.INTERCEPT not in g["columns"]
         assert pg.solve(g, ridge=0.2) == pytest.approx(bank.coef("m")["coef"].to_numpy(), rel=1e-12)
@@ -91,7 +91,7 @@ class TestSolveIsTheModelsSolve:
         so a feature is moved off zero here."""
         df, _ = stream()
         df = df.with_columns(pl.col("x0") + 2.0)
-        bank = fit(df, ridge=0.2, standardize=True, add_intercept=False, max_rows_between_solves=1)
+        bank = fit(df, ridge=0.2, standardize=True, fit_intercept=False, max_rows_between_solves=1)
         g = bank.gram("m")[0]
         want = bank.coef("m")["coef"].to_numpy()
         got = pg.solve(g, ridge=0.2, standardize=True)
@@ -253,7 +253,7 @@ class TestAGramWithGaps:
             features=["x0", "x1", "x2"],
             lam=1.0,
             ridge=0.3,
-            min_periods=5.0,
+            min_weight=5.0,
             max_rows_between_solves=1,
             group="g",
             group_close="monotone",
@@ -269,7 +269,7 @@ class TestAGramWithGaps:
             want = np.asarray(row["coef"], dtype=float)
             got = pg.solve(g, ridge=0.3, target=t)
             assert got == pytest.approx(want, rel=1e-10), (t, np.max(np.abs(got - want)))
-            assert row["n_eff"] == g["target_weights"][0], "a Gram's weight is its target's"
+            assert row["weight_sum"] == g["target_weights"][0], "a Gram's weight is its target's"
 
     @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
     def test_merged_shards_are_the_fit_of_the_union(self, target_gaps):
@@ -311,8 +311,8 @@ class TestAGramWithGaps:
             targets=["yb"],
             features=["x0", "x1", "x2"],
             lasso_path=lambdas,
-            halflife=1e12,
-            min_periods=5.0,
+            half_life=1e12,
+            min_weight=5.0,
             target_gaps=target_gaps,
             max_rows_between_solves=1,
         )
@@ -320,7 +320,7 @@ class TestAGramWithGaps:
         bank.fit_predict(gappy_stream(n=2000, seed=6))
         want = (
             bank.coef("m")
-            .sort("lambda", descending=True, nulls_last=True)["coef"]
+            .sort("penalty", descending=True, nulls_last=True)["coef"]
             .to_numpy()
             .reshape(len(lambdas), -1)
         )
@@ -337,8 +337,8 @@ class TestLassoPathIsTheModelsPath:
             targets=["y"],
             features=[f"x{i}" for i in range(5)],
             lasso_path=lambdas,
-            halflife=1e12,
-            min_periods=5.0,
+            half_life=1e12,
+            min_weight=5.0,
             max_rows_between_solves=1,
         )
         bank = po.ModelBank([spec])
@@ -346,7 +346,7 @@ class TestLassoPathIsTheModelsPath:
         g = bank.gram("m")[0]
         want = (
             bank.coef("m")
-            .sort("lambda", descending=True, nulls_last=True)["coef"]
+            .sort("penalty", descending=True, nulls_last=True)["coef"]
             .to_numpy()
             .reshape(len(lambdas), -1)
         )
@@ -365,16 +365,16 @@ class TestLassoPathIsTheModelsPath:
             targets=["y"],
             features=["x0", "x1", "x2"],
             lasso_path=lambdas,
-            halflife=1e12,
-            min_periods=5.0,
-            add_intercept=False,
+            half_life=1e12,
+            min_weight=5.0,
+            fit_intercept=False,
             max_rows_between_solves=1,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         want = (
             bank.coef("m")
-            .sort("lambda", descending=True, nulls_last=True)["coef"]
+            .sort("penalty", descending=True, nulls_last=True)["coef"]
             .to_numpy()
             .reshape(len(lambdas), -1)
         )
@@ -425,7 +425,7 @@ class TestMerge:
                 grams.append(bank.gram("m")[0])
             merged = pg.merge(grams)
             for key in (
-                "n_eff",
+                "weight_sum",
                 "means",
                 "comoments",
                 "cross_moments",
@@ -458,31 +458,31 @@ class TestMerge:
 
     def test_two_halves_of_a_decayed_stream_are_not_the_stream(self):
         """The documented caveat, held as a test rather than only as prose:
-        with a finite halflife each part's weights are relative to its own
+        with a finite half-life each part's weights are relative to its own
         last row, so a naive merge over-weights the earlier one -- and the
         rescaling the docstring gives is what fixes it."""
         n, half = 2400, 1200
         df, _ = stream(n=n, k=2, seed=18)
         hl = 400.0
         lam = 0.5 ** (1.0 / hl)
-        whole = fit(df, halflife=hl).gram("m")[0]
-        early = fit(df.head(half), halflife=hl).gram("m")[0]
-        late = fit(df.tail(n - half), halflife=hl).gram("m")[0]
+        whole = fit(df, half_life=hl).gram("m")[0]
+        early = fit(df.head(half), half_life=hl).gram("m")[0]
+        late = fit(df.tail(n - half), half_life=hl).gram("m")[0]
 
         naive = pg.merge([early, late])
         # Both halves sit at their own steady state, so the pool is nearly
         # twice the weight the whole stream carries: the early rows have not
         # been aged by the 1200 clock units that passed after them.
-        assert naive["n_eff"] > 1.7 * whole["n_eff"], "the early half is not yet aged"
+        assert naive["weight_sum"] > 1.7 * whole["weight_sum"], "the early half is not yet aged"
 
         # The recipe: the early part is `half` clock units older, so its
         # weight sum decays by lam**half and its sum of squares by lam**(2*half).
         aged = dict(early)
-        aged["n_eff"] = early["n_eff"] * lam**half
+        aged["weight_sum"] = early["weight_sum"] * lam**half
         aged["n_kish"] = early["n_kish"]  # scale-free: W and Q decay together
         aged["target_weights"] = np.asarray(early["target_weights"]) * lam**half
         fixed = pg.merge([aged, late])
-        assert fixed["n_eff"] == pytest.approx(whole["n_eff"], rel=1e-9)
+        assert fixed["weight_sum"] == pytest.approx(whole["weight_sum"], rel=1e-9)
         assert fixed["means"] == pytest.approx(whole["means"], rel=1e-7)
         assert fixed["comoments"] == pytest.approx(whole["comoments"], rel=1e-6)
 
@@ -492,7 +492,7 @@ class TestMerge:
         df, _ = stream(n=1200, k=2, seed=8)
         df = df.with_columns(gid=pl.Series(["a", "b", "c"] * 400))
         spec = po.spec.ewridge(
-            "g", targets=["y"], features=["x0", "x1"], halflife=1e12, min_periods=3.0, group="gid"
+            "g", targets=["y"], features=["x0", "x1"], half_life=1e12, min_weight=3.0, group="gid"
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -520,7 +520,7 @@ class TestMerge:
         df, _ = stream(n=600, k=2)
         whole = fit(df).gram("m")[0]
         empty = po.ModelBank(
-            [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], halflife=1e12)]
+            [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=1e12)]
         ).gram("m")
         assert empty == []  # nothing fed, no accumulator
         merged = pg.merge([fit(df).gram("m")[0], fit(df.head(0)).gram("m")[0]])
@@ -640,13 +640,13 @@ class TestCoefStats:
 
     def test_weights_are_not_a_sample_size(self):
         """Ten times the weight on every row is the same information, so the
-        standard errors must not shrink -- which they would if `n_eff` were
+        standard errors must not shrink -- which they would if `weight_sum` were
         used where `n_kish` is."""
         df, _ = stream(n=2000, k=2, seed=16)
         plain = fit(df.with_columns(w=pl.lit(1.0)), weight="w", ridge=1e-12, standardize=False)
         heavy = fit(df.with_columns(w=pl.lit(10.0)), weight="w", ridge=1e-12, standardize=False)
         a, b = plain.gram("m")[0], heavy.gram("m")[0]
-        assert b["n_eff"] == pytest.approx(10 * a["n_eff"], rel=1e-9)
+        assert b["weight_sum"] == pytest.approx(10 * a["weight_sum"], rel=1e-9)
         sa = pg.coef_stats(a, pg.solve(a, ridge=1e-12))
         sb = pg.coef_stats(b, pg.solve(b, ridge=1e-12))
         assert sb["n"] == pytest.approx(sa["n"], rel=1e-9)
@@ -691,7 +691,7 @@ class TestCoefStats:
 class TestItWorksOnEveryGramItIsGiven:
     def test_an_ew_cov_gram_has_no_targets(self):
         df, _ = stream(n=900, k=3)
-        spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], stats=[], halflife=1e12)
+        spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], stats=[], half_life=1e12)
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("c")[0]
@@ -701,7 +701,7 @@ class TestItWorksOnEveryGramItIsGiven:
         assert len(pg.vif(g)) == 3
         assert pg.condition(g)["kappa"] > 0
         assert pg.subset(g, ["x1"])["columns"] == ["x1"]
-        assert pg.merge([g, g])["n_eff"] == pytest.approx(2 * g["n_eff"], rel=1e-9)
+        assert pg.merge([g, g])["weight_sum"] == pytest.approx(2 * g["weight_sum"], rel=1e-9)
         with pytest.raises(IndexError, match="target 0 out of range"):
             pg.solve(g)
 
@@ -716,7 +716,7 @@ class TestItWorksOnEveryGramItIsGiven:
         ("label", "kw"),
         [
             ("ridge", {}),
-            ("no intercept", {"add_intercept": False}),
+            ("no intercept", {"fit_intercept": False}),
             ("feature sets", {"feature_sets": {"a": ["x0"], "b": ["x1", "x2"]}}),
         ],
     )
@@ -730,7 +730,7 @@ class TestItWorksOnEveryGramItIsGiven:
         assert len(g["columns"]) == k
         assert g["comoments"].shape == (k, k)
         assert len(g["targets"]) == len(g["cross_moments"]) == len(g["target_weights"])
-        assert (pg.INTERCEPT in g["columns"]) is kw.get("add_intercept", True)
+        assert (pg.INTERCEPT in g["columns"]) is kw.get("fit_intercept", True)
         assert pg.solve(g).shape == (k,)
 
     def test_a_lasso_gram_names_its_axes_too(self):
@@ -741,7 +741,7 @@ class TestItWorksOnEveryGramItIsGiven:
             features=["x0", "x1"],
             lasso_path=[0.1, 0.0],
             lam=1.0,
-            min_periods=3.0,
+            min_weight=3.0,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)

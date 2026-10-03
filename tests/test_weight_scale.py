@@ -4,9 +4,9 @@ Multiplying every row's weight by one constant changes no output -- the EW
 models hold to it by construction, since their sums are means -- unless the
 model's docs say a weight counts on the sum scale. This fits every spec of
 the release probe's workload, every kind the bank builds, at the stream's
-weights and at a hundred times them, ``min_periods`` scaled with them, and
+weights and at a hundred times them, ``min_weight`` scaled with them, and
 holds the set of specs whose outputs move to exactly the exceptions named
-below, each with the reason its docs give. ``n_eff`` is the accumulated
+below, each with the reason its docs give. ``weight_sum`` is the accumulated
 weight, so it scales with the weights where the model counts weight, and
 stays where it counts rows.
 """
@@ -53,7 +53,7 @@ def _fit(c: float) -> pl.DataFrame:
     for name, builder, kw, _ in probe.WORKLOAD:
         kw = dict(kw)
         if builder != "seqtest":
-            kw["min_periods"] = kw.get("min_periods", 4.0) * c
+            kw["min_weight"] = kw.get("min_weight", 4.0) * c
         specs.append(getattr(po.spec, builder)(name, **kw))
     return po.ModelBank(specs).fit_predict(probe.stream().with_columns(pl.col("w") * c))
 
@@ -65,7 +65,7 @@ def _moved(a: pl.DataFrame, b: pl.DataFrame, name: str) -> list[str]:
             continue
         x = a[name].struct.field(f.name).cast(pl.Float64).to_numpy()
         y = b[name].struct.field(f.name).cast(pl.Float64).to_numpy()
-        if f.name.startswith("n_eff") and not np.allclose(x, y, equal_nan=True):
+        if f.name.startswith("weight_sum") and not np.allclose(x, y, equal_nan=True):
             y = y / SCALE
         if (np.isnan(x) != np.isnan(y)).any():
             out.append(f.name)

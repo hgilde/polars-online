@@ -15,7 +15,7 @@ Conventions, shared with the core and the bank (docs/PLAN.md section 3):
 - Every output is read from the state *before* the row is learned.
 - A row with a null / non-finite / out-of-bound feature, or such a weight,
   is skipped: every output null, nothing learned, the clock still advances.
-- ``n_eff`` is the EW weight before the row and before its own decay.
+- ``weight_sum`` is the EW weight before the row and before its own decay.
 - A zero weight advances the clock and learns nothing.
 """
 
@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-#: `FeatureMoments`' reference (docs/PLAN.md task 102): its halflife as a
+#: `FeatureMoments`' reference (docs/PLAN.md task 102): its half-life as a
 #: multiple of the model's, the clip on a squared deviation as a multiple of
 #: its variance, and the rows its medians start from.
 LONG_HALFLIVES = 8.0
@@ -156,7 +156,7 @@ class Summary:
 class Moments:
     """`FeatureMoments`: the EW moments with the means as pairs (task 101),
     and, a feature at a time, the reference the metric's floor is a fraction
-    of (task 102): the same moments at ``LONG_HALFLIVES`` times the halflife,
+    of (task 102): the same moments at ``LONG_HALFLIVES`` times the half-life,
     a row's weight clipped at the reference's own and its deviation at
     ``CLIP`` times the reference's variance, started from the medians of the
     feature's first ``START_ROWS`` rows and started over by a first move from
@@ -380,9 +380,9 @@ class KMeansRef:
 
     p: int
     k: int
-    halflife: float = math.inf
+    half_life: float = math.inf
     lam: float | None = None
-    min_periods: float = 0.0
+    min_weight: float = 0.0
     warm_rows: int = 500
     seed_rule: str = "lloyd"
     seed: int = 0
@@ -419,19 +419,19 @@ class KMeansRef:
     def factor(self, d: float) -> float:
         if self.lam is not None:
             return self.lam**d
-        if math.isinf(self.halflife):
+        if math.isinf(self.half_life):
             return 1.0
         # `exp2(-x)`, as `online_core::Decay::factor` spells it (LLVM
         # compiles `0.5.powf(x)` to exactly this; libm's `pow` can differ
         # from it in the last bit).
-        return math.exp2(-(d / self.halflife))
+        return math.exp2(-(d / self.half_life))
 
     @property
     def seeded(self) -> bool:
         return bool(self.clusters)
 
     @property
-    def n_eff(self) -> float:
+    def weight_sum(self) -> float:
         return self.moments.w
 
     def coefficients(self) -> list[list[float]] | None:
@@ -451,8 +451,8 @@ class KMeansRef:
             second = NAN
         return best, best_d, second
 
-    def score(self, x: list[float], valid: bool, n_eff: float) -> list[float]:
-        if valid and self.seeded and n_eff >= self.min_periods:
+    def score(self, x: list[float], valid: bool, weight_sum: float) -> list[float]:
+        if valid and self.seeded and weight_sum >= self.min_weight:
             j, d2, d2s = self.nearest2(x)
             return [float(j), math.sqrt(d2), math.sqrt(d2s) if not math.isnan(d2s) else NAN]
         return [NAN, NAN, NAN]
@@ -639,7 +639,7 @@ class KMeansRef:
             self.refresh_far_cut()
 
     def step(self, x: list[float], d: float, w: float) -> tuple[list[float], float]:
-        """One accepted row: `(pred, n_eff)`, as `OnlineModel::step`."""
+        """One accepted row: `(pred, weight_sum)`, as `OnlineModel::step`."""
         lam = self.factor(d)
         n_before = self.moments.w
         valid = all(math.isfinite(v) for v in x)
@@ -681,29 +681,29 @@ def kmeans_ref(
     k: int,
     clock: list[float] | None = None,
     weight: list[float | None] | None = None,
-    max_dclock: float = math.inf,
+    gap_cap: float = math.inf,
     **params: object,
 ) -> dict[str, list]:
     """The bank's `kmeans` output over `rows` (one list per row), as lists
-    with ``None`` for null: ``cluster`` (ints), ``dist``, ``dist2``, ``n_eff``
+    with ``None`` for null: ``cluster`` (ints), ``dist``, ``dist2``, ``weight_sum``
     and ``coef`` (the flat centres after the last accepted row, as
     ``coef_every=0`` reports on the final row -- ``None`` before seeding).
 
     The stream plumbing here is the bank's row plan for one group: a skipped
     row (a null or unusable feature or weight) has every output null and its
-    clock delta is folded into the next accepted row's; ``max_dclock`` caps
+    clock delta is folded into the next accepted row's; ``gap_cap`` caps
     each raw delta, as the bank does with a clock column.
     """
     p = len(rows[0])
     model = KMeansRef(p=p, k=k, **params)  # type: ignore[arg-type]
-    out: dict[str, list] = {"cluster": [], "dist": [], "dist2": [], "n_eff": []}
+    out: dict[str, list] = {"cluster": [], "dist": [], "dist2": [], "weight_sum": []}
     pending = 0.0
     for i, row in enumerate(rows):
         w = 1.0 if weight is None else weight[i]
         if clock is None:
             d = 0.0 if i == 0 else 1.0
         else:
-            d = 0.0 if i == 0 else min(clock[i] - clock[i - 1], max_dclock)
+            d = 0.0 if i == 0 else min(clock[i] - clock[i - 1], gap_cap)
         pending += d
         accept = all(_usable(v) for v in row) and _usable(w)
         if not accept:
@@ -711,13 +711,13 @@ def kmeans_ref(
                 out[key].append(None)
             continue
         # The folded total is capped too (review 2026-09-12, S3).
-        d_row = min(pending, max_dclock)
-        pred, n_eff = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
+        d_row = min(pending, gap_cap)
+        pred, weight_sum = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
         pending = 0.0
         out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
         out["dist"].append(None if math.isnan(pred[1]) else pred[1])
         out["dist2"].append(None if math.isnan(pred[2]) else pred[2])
-        out["n_eff"].append(n_eff)
+        out["weight_sum"].append(weight_sum)
     coef = model.coefficients()
     out["coef"] = [None if coef is None else [v for c in coef for v in c]]
     out["model"] = [model]
@@ -761,9 +761,9 @@ class MicroRef:
 
     p: int
     eps: float
-    halflife: float = math.inf
+    half_life: float = math.inf
     lam: float | None = None
-    min_periods: float = 0.0
+    min_weight: float = 0.0
     beta_mu: float = 3.0
     max_clusters: int = 200
     prune_every: int = 100
@@ -798,12 +798,12 @@ class MicroRef:
     def factor(self, d: float) -> float:
         if self.lam is not None:
             return self.lam**d
-        if math.isinf(self.halflife):
+        if math.isinf(self.half_life):
             return 1.0
-        return math.exp2(-(d / self.halflife))
+        return math.exp2(-(d / self.half_life))
 
     @property
-    def n_eff(self) -> float:
+    def weight_sum(self) -> float:
         return self.moments.w
 
     def coefficients(self) -> list[list[float]] | None:
@@ -842,9 +842,9 @@ class MicroRef:
             return near_o[0], near_p, True
         return None, near_p, True
 
-    def score(self, dec: Decision | None, n_eff: float) -> list[float]:
+    def score(self, dec: Decision | None, weight_sum: float) -> list[float]:
         pred = [NAN] * 6
-        if dec is None or n_eff < self.min_periods:
+        if dec is None or weight_sum < self.min_weight:
             return pred
         target, near_p, outlier = dec
         if near_p is not None:
@@ -915,7 +915,7 @@ class MicroRef:
 
     def halflife_units(self) -> float:
         if self.lam is None:
-            return self.halflife
+            return self.half_life
         return math.inf if self.lam >= 1.0 else -math.log(2.0) / math.log(self.lam)
 
     def prune_horizon(self) -> tuple[float, float] | None:
@@ -1007,7 +1007,7 @@ class MicroRef:
         return self.score(dec, self.moments.w), self.moments.w
 
 
-MICRO_FIELDS = ("cluster", "dist", "micro", "outlier", "n_clusters", "n_micro")
+MICRO_FIELDS = ("cluster", "dist", "micro_id", "outlier", "n_clusters", "n_micro")
 
 
 def micro_ref(
@@ -1016,25 +1016,25 @@ def micro_ref(
     eps: float,
     clock: list[float] | None = None,
     weight: list[float | None] | None = None,
-    max_dclock: float = math.inf,
+    gap_cap: float = math.inf,
     **params: object,
 ) -> dict[str, list]:
     """The bank's `micro` output over `rows`, as lists with ``None`` for
     null: ``cluster`` (ints), ``dist``, ``micro`` (ints), ``outlier``
-    (bools), ``n_clusters``, ``n_micro`` (ints), ``n_eff`` and ``coef`` (the
+    (bools), ``n_clusters``, ``n_micro`` (ints), ``weight_sum`` and ``coef`` (the
     flat potential-summary blocks after the last accepted row -- ``None``
     while there is none). Same stream plumbing as `kmeans_ref`.
     """
     p = len(rows[0])
     model = MicroRef(p=p, eps=eps, **params)  # type: ignore[arg-type]
-    out: dict[str, list] = {key: [] for key in (*MICRO_FIELDS, "n_eff")}
+    out: dict[str, list] = {key: [] for key in (*MICRO_FIELDS, "weight_sum")}
     pending = 0.0
     for i, row in enumerate(rows):
         w = 1.0 if weight is None else weight[i]
         if clock is None:
             d = 0.0 if i == 0 else 1.0
         else:
-            d = 0.0 if i == 0 else min(clock[i] - clock[i - 1], max_dclock)
+            d = 0.0 if i == 0 else min(clock[i] - clock[i - 1], gap_cap)
         pending += d
         accept = all(_usable(v) for v in row) and _usable(w)
         if not accept:
@@ -1042,16 +1042,16 @@ def micro_ref(
                 out[key].append(None)
             continue
         # The folded total is capped too (review 2026-09-12, S3).
-        d_row = min(pending, max_dclock)
-        pred, n_eff = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
+        d_row = min(pending, gap_cap)
+        pred, weight_sum = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
         pending = 0.0
         out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
         out["dist"].append(None if math.isnan(pred[1]) else pred[1])
-        out["micro"].append(None if math.isnan(pred[2]) else int(pred[2]))
+        out["micro_id"].append(None if math.isnan(pred[2]) else int(pred[2]))
         out["outlier"].append(None if math.isnan(pred[3]) else pred[3] == 1.0)
         out["n_clusters"].append(None if math.isnan(pred[4]) else int(pred[4]))
         out["n_micro"].append(None if math.isnan(pred[5]) else int(pred[5]))
-        out["n_eff"].append(n_eff)
+        out["weight_sum"].append(weight_sum)
     coef = model.coefficients()
     out["coef"] = [None if coef is None else [v for c in coef for v in c]]
     out["model"] = [model]

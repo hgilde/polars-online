@@ -8,7 +8,7 @@
 //! Per row and target, with `s` the clock since the target was last observed
 //! -- this row's delta included -- `w` the row's weight, and `W`, `V` the
 //! weight the level and the trend have gathered, each decayed on its own
-//! halflife, `λ_l = 0.5^(s/level_halflife)` and `λ_b = 0.5^(s/trend_halflife)`:
+//! half-life, `λ_l = 0.5^(s/level_half_life)` and `λ_b = 0.5^(s/trend_half_life)`:
 //!
 //! ```text
 //! pred  = l + b·s                                (extrapolate s clock units ahead)
@@ -18,16 +18,16 @@
 //!
 //! Level and trend are weighted means, of what the row observes and what the
 //! state forecast, as every accumulator here is: a row at weight `w` counts
-//! `w` times, `halflife = inf` forgets nothing and fits the whole history,
+//! `w` times, `half_life = inf` forgets nothing and fits the whole history,
 //! and the first observation seeds the level at its own value. At `w = 1`
 //! with `W` saturated this is the textbook recursion, `α = 1 − λ_l`,
 //! `β = 1 − λ_b`, and statsmodels' `Holt` agrees with it from there; before
 //! that the gains `w/(λW + w)` are larger than the fixed ones, so a new
 //! series is followed sooner. The textbook form read the weight only as
 //! "learn or not" -- a row at weight 0.5 moved the level as far as one at 1
-//! -- and at an infinite halflife its rate was 0, so the level froze at the
+//! -- and at an infinite half-life its rate was 0, so the level froze at the
 //! first row and a trend never learned (review 2026-09-12, S29/S30). So
-//! `trend_halflife = inf` is the whole history's drift, not a trend pinned at
+//! `trend_half_life = inf` is the whole history's drift, not a trend pinned at
 //! zero; and a row at the last row's clock (`s = 0`) is a second observation
 //! the level takes in, where it had changed nothing -- the trend holds, since
 //! a move over no clock has no slope.
@@ -37,12 +37,12 @@
 //! then the weighted mean of the observations, each at its weight times
 //! `λ_l` per clock unit of its age, `Σ w·λ_l^age·y / Σ w·λ_l^age`, which
 //! pandas' `ewm(adjust=True)` computes for unit weights (docs/PLAN.md task
-//! 115, S30). Since S30 an infinite `trend_halflife` is the whole history's
+//! 115, S30). Since S30 an infinite `trend_half_life` is the whole history's
 //! drift, so this is the only way to ask for no trend.
 //!
 //! On a row that observes every target, `s` is the row's own delta `d`.
-//! Deriving the decays from halflives keeps the parameter meaning the same
-//! as everywhere else in this library: a halflife is in clock units, so an
+//! Deriving the decays from half-lives keeps the parameter meaning the same
+//! as everywhere else in this library: a half-life is in clock units, so an
 //! irregular clock is handled correctly instead of every row counting the
 //! same.
 //!
@@ -62,15 +62,15 @@ use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schem
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HoltCfg {
     pub n_targets: usize,
-    /// Halflife of the level, in clock units. `inf` forgets nothing: the
+    /// Half-life of the level, in clock units. `inf` forgets nothing: the
     /// level is the whole history's.
     #[serde(with = "crate::humanfloat::f64_or_tag")]
-    pub level_halflife: f64,
-    /// Halflife of the trend. `inf` forgets no slope: the trend is the whole
+    pub level_half_life: f64,
+    /// Half-life of the trend. `inf` forgets no slope: the trend is the whole
     /// history's drift (it pinned the trend at zero before review S30).
     #[serde(with = "crate::humanfloat::f64_or_tag")]
-    pub trend_halflife: f64,
-    pub min_periods: f64,
+    pub trend_half_life: f64,
+    pub min_weight: f64,
     /// `false` holds the trend at zero: the level alone, with a flat
     /// forecast (see the module docs). A config written before the switch
     /// has none and loads with the trend on, what it was produced under.
@@ -87,11 +87,11 @@ impl HoltCfg {
         if self.n_targets == 0 {
             return Err("holt: n_targets must be >= 1".into());
         }
-        if self.level_halflife <= 0.0 || self.level_halflife.is_nan() {
-            return Err("holt: level_halflife must be > 0".into());
+        if self.level_half_life <= 0.0 || self.level_half_life.is_nan() {
+            return Err("holt: level_half_life must be > 0".into());
         }
-        if self.trend_halflife <= 0.0 || self.trend_halflife.is_nan() {
-            return Err("holt: trend_halflife must be > 0 (inf forgets no slope)".into());
+        if self.trend_half_life <= 0.0 || self.trend_half_life.is_nan() {
+            return Err("holt: trend_half_life must be > 0 (inf forgets no slope)".into());
         }
         Ok(())
     }
@@ -111,12 +111,12 @@ pub struct Holt {
     #[serde(default)]
     since: Vec<f64>,
     /// Per target, the weight the level has gathered, decayed on the level's
-    /// halflife over the clock since the target was last observed: `W` in
+    /// half-life over the clock since the target was last observed: `W` in
     /// the module docs.
     #[serde(default)]
     w_level: Vec<f64>,
     /// Per target, the weight the trend has gathered, on the trend's
-    /// halflife: `V` in the module docs.
+    /// half-life: `V` in the module docs.
     #[serde(default)]
     w_trend: Vec<f64>,
 }
@@ -138,7 +138,7 @@ impl Holt {
     }
 
     /// `(λ_l, λ_b)`, the level's and the trend's decay over `s` clock units
-    /// since the last observation; an infinite halflife forgets nothing.
+    /// since the last observation; an infinite half-life forgets nothing.
     fn decays(&self, s: f64) -> (f64, f64) {
         let f = |h: f64| {
             if h.is_infinite() {
@@ -147,7 +147,7 @@ impl Holt {
                 (-(s / h)).exp2()
             }
         };
-        (f(self.cfg.level_halflife), f(self.cfg.trend_halflife))
+        (f(self.cfg.level_half_life), f(self.cfg.trend_half_life))
     }
 
     pub fn cfg(&self) -> &HoltCfg {
@@ -205,7 +205,7 @@ impl OnlineModel for Holt {
         let row_decays = self.decays(d_clock);
 
         let n_eff = self.w_sum;
-        let ready = n_eff >= self.cfg.min_periods;
+        let ready = n_eff >= self.cfg.min_weight;
         let mut pred = vec![f64::NAN; m];
         for j in 0..m {
             let yj = y[j].filter(|v| v.is_finite() && weight > 0.0);
@@ -267,7 +267,7 @@ impl OnlineModel for Holt {
     fn predict(&self, _x: &[f64], d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        if n_eff >= self.cfg.min_periods {
+        if n_eff >= self.cfg.min_weight {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.seen[j] {
                     *p = self.level[j] + self.trend[j] * (self.since[j] + d_clock);
@@ -356,9 +356,9 @@ mod tests {
     fn cfg(level: f64, trend: f64) -> HoltCfg {
         HoltCfg {
             n_targets: 1,
-            level_halflife: level,
-            trend_halflife: trend,
-            min_periods: 0.0,
+            level_half_life: level,
+            trend_half_life: trend,
+            min_weight: 0.0,
             trend: true,
         }
     }
@@ -440,18 +440,14 @@ mod tests {
             } else {
                 let s = since + d;
                 let p = level + trend * s;
-                preds.push(if w_sum >= cfg.min_periods {
-                    p
-                } else {
-                    f64::NAN
-                });
+                preds.push(if w_sum >= cfg.min_weight { p } else { f64::NAN });
                 if let Some(y) = y {
-                    let held = decay(s, cfg.level_halflife) * w_level;
+                    let held = decay(s, cfg.level_half_life) * w_level;
                     let prev = level;
                     level = (held * p + w * y) / (held + w);
                     w_level = held + w;
                     if s > 0.0 {
-                        let held = decay(s, cfg.trend_halflife) * w_trend;
+                        let held = decay(s, cfg.trend_half_life) * w_trend;
                         trend = (held * trend + w * (level - prev) / s) / (held + w);
                         w_trend = held + w;
                     }
@@ -460,7 +456,7 @@ mod tests {
                     since = s;
                 }
             }
-            w_sum = w_sum * decay(d, cfg.level_halflife) + w;
+            w_sum = w_sum * decay(d, cfg.level_half_life) + w;
         }
         (preds, level, trend, w_sum)
     }
@@ -480,9 +476,9 @@ mod tests {
         ys[5] = None;
         let c = HoltCfg {
             n_targets: 1,
-            level_halflife: 4.0,
-            trend_halflife: 9.0,
-            min_periods: 2.5,
+            level_half_life: 4.0,
+            trend_half_life: 9.0,
+            min_weight: 2.5,
             trend: true,
         };
         let (want_pred, want_level, want_trend, want_w) = reference(&c, &ys, &ds, &ws);
@@ -510,9 +506,9 @@ mod tests {
     fn n_eff_decays_on_the_clock_and_gates_output() {
         let c = HoltCfg {
             n_targets: 1,
-            level_halflife: 10.0,
-            trend_halflife: 40.0,
-            min_periods: 3.0,
+            level_half_life: 10.0,
+            trend_half_life: 40.0,
+            min_weight: 3.0,
             trend: true,
         };
         let mut m = Holt::new(c).unwrap();
@@ -606,9 +602,9 @@ mod tests {
         // series must not contaminate each other, and both must be reported.
         let c = HoltCfg {
             n_targets: 2,
-            level_halflife: 8.0,
-            trend_halflife: 30.0,
-            min_periods: 0.0,
+            level_half_life: 8.0,
+            trend_half_life: 30.0,
+            min_weight: 0.0,
             trend: true,
         };
         let mut m = Holt::new(c).unwrap();
@@ -708,10 +704,10 @@ mod tests {
         );
     }
 
-    /// An infinite trend halflife forgets no slope: the trend is the mean of
+    /// An infinite trend half-life forgets no slope: the trend is the mean of
     /// every one observed, which is what `inf` means for every other model
     /// here. It pinned the trend at zero once -- the textbook form's rate at
-    /// an infinite halflife is 0, a trend that never learns (S30).
+    /// an infinite half-life is 0, a trend that never learns (S30).
     #[test]
     fn an_infinite_trend_halflife_is_the_whole_history_drift() {
         let ys: Vec<f64> = (0..500).map(|i| 3.0 + 2.0 * i as f64).collect();
@@ -962,10 +958,10 @@ mod tests {
         }
     }
 
-    /// An infinite halflife forgets nothing, so the fit is the whole
+    /// An infinite half-life forgets nothing, so the fit is the whole
     /// history's: on `y = 3 + 2t` level and trend follow the line, the first
     /// rows' slopes damped by the level they are read from. The textbook
-    /// form's rate is 0 at an infinite halflife, so it forecast the first
+    /// form's rate is 0 at an infinite half-life, so it forecast the first
     /// row's 3 on every row for ever while `n_eff` climbed (review
     /// 2026-09-12, S30).
     #[test]
@@ -992,7 +988,7 @@ mod tests {
 
     /// `trend = false` holds the trend at zero (docs/PLAN.md task 115, S30):
     /// the forecast is flat and the level is the weighted mean of the
-    /// observations, each at its weight times `0.5^(age/level_halflife)`,
+    /// observations, each at its weight times `0.5^(age/level_half_life)`,
     /// written here from that definition. The clock is irregular, and a null
     /// and a zero weight are among the rows, which observe nothing.
     #[test]
@@ -1038,7 +1034,7 @@ mod tests {
     /// trend on: what that state was produced under.
     #[test]
     fn a_config_written_before_the_trend_switch_keeps_its_trend() {
-        let json = r#"{"n_targets": 1, "level_halflife": 10.0, "trend_halflife": 40.0, "min_periods": 0.0}"#;
+        let json = r#"{"n_targets": 1, "level_half_life": 10.0, "trend_half_life": 40.0, "min_weight": 0.0}"#;
         let c: HoltCfg = serde_json::from_str(json).expect("loads without the field");
         assert!(c.trend, "the omitted field is the trend on");
     }

@@ -146,7 +146,7 @@ def replay(pred, resid, sigma, lam, w, accepted, *, coverage, rate=0.05):
     return lo, hi, cov_out
 
 
-def row_plan(df, *, clock, max_dclock, halflife, weight, features):
+def row_plan(df, *, clock, gap_cap, half_life, weight, features):
     """The stream's per-row decay factor and weight, and which rows it
     accepts: a null or non-finite feature or weight skips the row, and its
     clock delta is folded into the next accepted row's."""
@@ -159,14 +159,14 @@ def row_plan(df, *, clock, max_dclock, halflife, weight, features):
     accepted = np.zeros(n, dtype=bool)
     pending = 0.0
     for i in range(n):
-        d = 0.0 if i == 0 else min(t[i] - t[i - 1], max_dclock)
+        d = 0.0 if i == 0 else min(t[i] - t[i - 1], gap_cap)
         pending += d
         wi = wcol[i]
         ok = all(math.isfinite(v) for v in feats[i]) and wi is not None and math.isfinite(wi)
         if not ok:
             continue
         accepted[i] = True
-        lam[i] = math.exp2(-(min(pending, max_dclock) / halflife))  # a capped total (S3)
+        lam[i] = math.exp2(-(min(pending, gap_cap) / half_life))  # a capped total (S3)
         w[i] = float(wi)
         pending = 0.0
     return lam, w, accepted
@@ -181,7 +181,7 @@ def field(out, name, col="m"):
 
 def messy(n=3000, seed=0, *, groups=1):
     """A stream with every input path in it: an irregular clock with gaps
-    past `max_dclock`, nulls in a feature and in the target, zero, varying
+    past `gap_cap`, nulls in a feature and in the target, zero, varying
     and null weights, two targets, and a shock."""
     rng = np.random.default_rng(seed)
     x0 = rng.standard_normal(n)
@@ -219,7 +219,7 @@ MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("ewridge", {"ridge": [1e-6, 1.0], "feature_sets": {"a": ["x0"], "b": ["x0", "x1"]}}),
     ("rls", {"ridge": 1.0}),
-    ("kalman", {"coef_halflife": 100.0}),
+    ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
@@ -235,10 +235,10 @@ def build(model, extra, **kw):
     d = dict(
         targets=["y0", "y1"],
         clock="t",
-        max_dclock=10.0,
-        halflife=200.0,
+        gap_cap=10.0,
+        half_life=200.0,
         weight="w",
-        min_periods=5.0,
+        min_weight=5.0,
         emit_sigma=True,
         conformal=0.9,
     )
@@ -265,7 +265,7 @@ class TestOracle:
         out = po.ModelBank([spec]).fit_predict(df)
         features = spec["features"]
         lam, w, accepted = row_plan(
-            df, clock="t", max_dclock=10.0, halflife=200.0, weight="w", features=features
+            df, clock="t", gap_cap=10.0, half_life=200.0, weight="w", features=features
         )
         idx = po.spec.output_index(spec)
         lo_rows = idx.filter(pl.col("kind") == "lo").to_dicts()
@@ -284,7 +284,7 @@ class TestOracle:
         spec = build(model, extra, conformal=0.75, conformal_rate=0.2)
         out = po.ModelBank([spec]).fit_predict(df)
         lam, w, accepted = row_plan(
-            df, clock="t", max_dclock=10.0, halflife=200.0, weight="w", features=spec["features"]
+            df, clock="t", gap_cap=10.0, half_life=200.0, weight="w", features=spec["features"]
         )
         row = slots(spec).to_dicts()[-1]
         slot = row["field"][len("lo_") :]
@@ -306,7 +306,7 @@ class TestOracleOnTheStreamPlumbing:
             mask = (df["g"] == g).to_numpy()
             sub = df.filter(pl.col("g") == g)
             lam, w, accepted = row_plan(
-                sub, clock="t", max_dclock=10.0, halflife=200.0, weight="w", features=["x0", "x1"]
+                sub, clock="t", gap_cap=10.0, half_life=200.0, weight="w", features=["x0", "x1"]
             )
             for tgt in ("y0", "y1"):
                 pred, resid, sigma = (
@@ -324,15 +324,15 @@ class TestOracleOnTheStreamPlumbing:
             targets=["y0"],
             features=["x0", "x1"],
             ridge=1.0,
-            halflife=[50.0, 400.0],
-            min_periods=3.0,
+            half_life=[50.0, 400.0],
+            min_weight=3.0,
             emit_sigma=True,
             conformal=0.95,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         for h in (50.0, 400.0):
             lam, w, accepted = row_plan(
-                df, clock=None, max_dclock=math.inf, halflife=h, weight=None, features=["x0", "x1"]
+                df, clock=None, gap_cap=math.inf, half_life=h, weight=None, features=["x0", "x1"]
             )
             slot = f"y0@h{h:g}"
             pred, resid, sigma = (field(out, f"{k}_{slot}") for k in ("pred", "resid", "sigma"))
@@ -340,7 +340,7 @@ class TestOracleOnTheStreamPlumbing:
             np.testing.assert_array_equal(field(out, f"lo_{slot}"), lo)
             np.testing.assert_array_equal(field(out, f"hi_{slot}"), hi)
             np.testing.assert_array_equal(field(out, f"coverage_{slot}"), cov)
-        # Two halflives, two radii: the slow one has a wider, steadier interval.
+        # Two half-lives, two radii: the slow one has a wider, steadier interval.
         wide = field(out, "hi_y0@h400") - field(out, "lo_y0@h400")
         narrow = field(out, "hi_y0@h50") - field(out, "lo_y0@h50")
         assert not np.allclose(np.nan_to_num(wide), np.nan_to_num(narrow))
@@ -378,13 +378,13 @@ def _stream(kind, n=200_000, seed=0):
     return pl.DataFrame({"x0": x0, "x1": x1, "y": y})
 
 
-def _fit_large(df, coverage=0.9, rate=0.05, halflife=2000.0):
+def _fit_large(df, coverage=0.9, rate=0.05, half_life=2000.0):
     spec = po.spec.ewridge(
         "m",
         targets=["y"],
         features=["x0", "x1"],
-        halflife=halflife,
-        min_periods=20.0,
+        half_life=half_life,
+        min_weight=20.0,
         emit_sigma=True,
         conformal=coverage,
         conformal_rate=rate,
@@ -482,8 +482,8 @@ def _spec(**kw):
     d = dict(
         targets=["y0"],
         features=["x0"],
-        halflife=100.0,
-        min_periods=10.0,
+        half_life=100.0,
+        min_weight=10.0,
         max_rows_between_solves=1,
         conformal=0.9,
     )
@@ -503,7 +503,7 @@ class TestFields:
             "lo_y0",
             "hi_y0",
             "coverage_y0",
-            "n_eff",
+            "weight_sum",
             "settled_frac",
             "withheld_reason",
             "coef",
@@ -517,7 +517,7 @@ class TestFields:
             features=["x0", "x1"],
             ridge=[1e-6, 0.5],
             feature_sets={"a": ["x0"], "b": ["x0", "x1"]},
-            halflife=[100.0, 500.0],
+            half_life=[100.0, 500.0],
             conformal=0.9,
         )
         idx = po.spec.output_index(spec)
@@ -527,7 +527,7 @@ class TestFields:
             assert set(rows["target"]) == {"y0", "y1"}
             assert set(rows["ridge"]) == {1e-6, 0.5}
             assert set(rows["feature_set"]) == {"a", "b"}
-            assert set(rows["halflife"]) == {100.0, 500.0}
+            assert set(rows["half_life"]) == {100.0, 500.0}
             assert set(rows["dtype"]) == {"f64"}
         assert "lo_y1__b_r0.5@h500" in idx["field"].to_list()
 
@@ -579,9 +579,9 @@ class TestValidation:
     @pytest.mark.parametrize(
         ("builder", "kw"),
         [
-            (po.spec.ew_cov, {"features": ["x0"], "halflife": 10.0}),
-            (po.spec.kmeans, {"features": ["x0"], "k": 2, "halflife": 10.0}),
-            (po.spec.micro, {"features": ["x0"], "eps": 0.3, "halflife": 10.0}),
+            (po.spec.ew_cov, {"features": ["x0"], "half_life": 10.0}),
+            (po.spec.kmeans, {"features": ["x0"], "k": 2, "half_life": 10.0}),
+            (po.spec.micro, {"features": ["x0"], "eps": 0.3, "half_life": 10.0}),
         ],
         ids=["ew_cov", "kmeans", "micro"],
     )
@@ -592,10 +592,10 @@ class TestValidation:
 
 class TestRowSemantics:
     def test_null_until_the_radius_exists(self):
-        """Prediction first (`min_periods`), then a residual, then a sigma,
+        """Prediction first (`min_weight`), then a residual, then a sigma,
         then a radius: the interval appears two rows after the first
         residual, and `coverage` one row after that."""
-        out = po.ModelBank([_spec(min_periods=20.0)]).fit_predict(_small())
+        out = po.ModelBank([_spec(min_weight=20.0)]).fit_predict(_small())
         pred, lo, cov = (
             out["m"].struct.field(k).to_list() for k in ("pred_y0", "lo_y0", "coverage_y0")
         )
@@ -661,10 +661,10 @@ class TestRowSemantics:
         x[200] = None
         df = df.with_columns(pl.Series("x0", x, dtype=pl.Float64))
         # On a clock, so dropping the row is the same stream as skipping it.
-        out = po.ModelBank([_spec(clock="t", max_dclock=10.0)]).fit_predict(df)
+        out = po.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(df)
         row = out["m"][200]
-        assert all(v is None for k, v in row.items() if k != "n_eff")
-        ref = po.ModelBank([_spec(clock="t", max_dclock=10.0)]).fit_predict(
+        assert all(v is None for k, v in row.items() if k != "weight_sum")
+        ref = po.ModelBank([_spec(clock="t", gap_cap=10.0)]).fit_predict(
             _small().filter(pl.arange(0, 400) != 200)
         )
         for k in ("lo_y0", "hi_y0", "coverage_y0"):
@@ -682,9 +682,9 @@ class TestRowSemantics:
 
     def test_the_coverage_is_an_ew_mean_on_the_models_clock(self):
         df = _small(n=2000)
-        out = po.ModelBank([_spec(halflife=20.0)]).fit_predict(df)
+        out = po.ModelBank([_spec(half_life=20.0)]).fit_predict(df)
         cov = field(out, "coverage_y0")
-        # With a 20-row halflife the field moves quickly and sits near the
+        # With a 20-row half-life the field moves quickly and sits near the
         # target on average, never exactly on it.
         tail = cov[-500:]
         assert abs(tail.mean() - 0.9) < 0.05
@@ -708,7 +708,7 @@ class TestStreamContract:
 
     def test_survives_save_load(self, tmp_path):
         df = messy(n=1000, seed=7)
-        spec = build("kalman", {"coef_halflife": 100.0})
+        spec = build("kalman", {"coef_half_life": 100.0})
         whole = po.ModelBank([spec]).fit_predict(df)
         bank = po.ModelBank([spec])
         head = bank.fit_predict(df.slice(0, 500))
@@ -756,7 +756,7 @@ class TestStreamContract:
         assert np.isfinite(lo[d]), "the interval on the firing row was read before the reset"
         next_pred = d + 1 + int(np.argmax(np.isfinite(pred[d + 1 :])))
         next_lo = d + 1 + int(np.argmax(np.isfinite(lo[d + 1 :])))
-        assert next_pred > d + 5, "the reset model waits for min_periods again"
+        assert next_pred > d + 5, "the reset model waits for min_weight again"
         assert next_lo == next_pred + 2, "and the radius restarts with it"
 
 

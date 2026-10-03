@@ -31,8 +31,8 @@
 //! there is nothing for the clock to decay: each step fully satisfies the
 //! current row's constraint and older rows survive only through the
 //! coefficients they left behind. `n_eff` is still decayed on the clock so
-//! `min_periods` means the same thing as elsewhere, but the coefficients
-//! themselves have no half-life -- so after a gap `min_periods` can withhold
+//! `min_weight` means the same thing as elsewhere, but the coefficients
+//! themselves have no half-life -- so after a gap `min_weight` can withhold
 //! a fit exactly as good as the one before it, which is `ewridge`'s behaviour
 //! too (a mean-form fit does not move on a gap either): the library's
 //! convention rather than `pa`'s (CLAUDE.md rule 8; D10). Use PA-I/PA-II (a
@@ -62,7 +62,7 @@ pub enum PaMode {
 pub struct PaCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     pub mode: PaMode,
     /// Aggressiveness. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
@@ -70,7 +70,7 @@ pub struct PaCfg {
     pub c: f64,
     /// Width of the insensitive tube: rows already this close are passive.
     pub eps: f64,
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// Box and/or sum constraint on the slopes, imposed by Euclidean
     /// projection right after each update (ENHANCEMENTS E40); the intercept
     /// is free. The initial `0` is projected too. A projected step no longer
@@ -82,7 +82,7 @@ pub struct PaCfg {
 
 impl PaCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -108,9 +108,9 @@ pub struct Pa {
     beta: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows that carried it, decayed: what its
-    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
-    /// `min_periods = 10` with every coefficient at zero.
+    /// `min_weight = 10` with every coefficient at zero.
     #[serde(default)]
     w_target: Vec<f64>,
     #[serde(skip)]
@@ -126,7 +126,7 @@ impl Pa {
         let k = cfg.k_total();
         let mut beta = vec![vec![0.0; k]; cfg.n_targets];
         if let Some(c) = &cfg.constraint {
-            let off = usize::from(cfg.add_intercept);
+            let off = usize::from(cfg.fit_intercept);
             let mut scratch = crate::constraint::Scratch::default();
             for b in beta.iter_mut() {
                 c.project(&mut b[off..], None, &mut scratch);
@@ -155,7 +155,7 @@ impl Pa {
     }
 
     /// Per target, the weight of the rows that carried it: what its
-    /// `min_periods` is checked against.
+    /// `min_weight` is checked against.
     pub fn target_weights(&self) -> &[f64] {
         &self.w_target
     }
@@ -173,7 +173,7 @@ impl OnlineModel for Pa {
         let m = self.cfg.n_targets;
         let lam = self.cfg.decay.factor(d_clock);
 
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -193,7 +193,7 @@ impl OnlineModel for Pa {
                 .zip(&self.beta[j])
                 .map(|(z, b)| z * b)
                 .sum();
-            if self.w_target[j] >= self.cfg.min_periods {
+            if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -225,7 +225,7 @@ impl OnlineModel for Pa {
                 *b += step * z;
             }
             if let Some(c) = &self.cfg.constraint {
-                let off = usize::from(self.cfg.add_intercept);
+                let off = usize::from(self.cfg.fit_intercept);
                 c.project(&mut self.beta[j][off..], None, &mut self.pbuf);
             }
         }
@@ -248,8 +248,8 @@ impl OnlineModel for Pa {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
-            if *w >= self.cfg.min_periods {
-                *p = dot_aug(beta, x, self.cfg.add_intercept);
+            if *w >= self.cfg.min_weight {
+                *p = dot_aug(beta, x, self.cfg.fit_intercept);
             }
         }
         Step {
@@ -305,16 +305,16 @@ impl OnlineModel for Pa {
 mod tests {
     use super::*;
 
-    /// A target's `min_periods` counts only the rows that carried it, and
+    /// A target's `min_weight` counts only the rows that carried it, and
     /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
-    /// ten rows with no target met `min_periods = 3` with every coefficient
+    /// ten rows with no target met `min_weight = 3` with every coefficient
     /// at zero, and `pred` was 0. A zero-weight row with the target (row 12)
     /// only ages it.
     #[test]
     fn min_periods_counts_only_the_rows_that_carried_the_target() {
         use crate::OnlineModel;
         let mut c = cfg(2, PaMode::Pa1);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         let mut m = Pa::new(c).unwrap();
         let mut s = 7u64;
         for i in 0..16usize {
@@ -375,12 +375,12 @@ mod tests {
         PaCfg {
             n_features: k,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             mode,
             c: 1.0,
             eps: 0.01,
-            min_periods: 5.0,
+            min_weight: 5.0,
             constraint: None,
         }
     }
@@ -419,7 +419,7 @@ mod tests {
             let mut cfg = cfg(1, mode);
             cfg.c = c;
             cfg.eps = 0.1;
-            cfg.min_periods = 0.0;
+            cfg.min_weight = 0.0;
             let mut m = Pa::new(cfg).unwrap();
             m.step(&[2.0], &[Some(y)], 0.0, 1.0);
             m.coefficients()[0].clone()
@@ -465,7 +465,7 @@ mod tests {
         // coefficients untouched, which is the "passive" half of the name.
         let mut c = cfg(1, PaMode::Pa);
         c.eps = 1.0;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         m.step(&[1.0], &[Some(5.0)], 0.0, 1.0);
         let moved = m.coefficients()[0].clone();
@@ -511,7 +511,7 @@ mod tests {
         // With a wide tube and a target already inside it, nothing moves.
         let mut c = cfg(1, PaMode::Pa1);
         c.eps = 10.0;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         for _ in 0..100 {
             m.step(&[1.0], &[Some(0.5)], 1.0, 1.0);
@@ -524,7 +524,7 @@ mod tests {
         // One aggressive step must land the prediction on the tube edge.
         let mut c = cfg(1, PaMode::Pa);
         c.eps = 0.0;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         m.step(&[2.0], &[Some(7.0)], 0.0, 1.0);
         let b = &m.coefficients()[0];
@@ -542,7 +542,7 @@ mod tests {
             let mut cf = cfg(1, mode);
             cf.c = c;
             cf.eps = 0.0;
-            cf.min_periods = 0.0;
+            cf.min_weight = 0.0;
             let mut m = Pa::new(cf).unwrap();
             m.step(&[1.0], &[Some(100.0)], 0.0, 1.0);
             m.coefficients()[0][1]
@@ -595,7 +595,7 @@ mod tests {
         let step_for = |w: f64| {
             let mut c = cfg(1, PaMode::Pa);
             c.eps = 0.0;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Pa::new(c).unwrap();
             m.step(&[1.0], &[Some(4.0)], 0.0, w);
             m.coefficients()[0][1]
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn null_target_is_predict_only() {
         let mut c = cfg(1, PaMode::Pa1);
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         let mut s = 7u64;
         for i in 0..50 {
@@ -671,7 +671,7 @@ mod tests {
         // cap `c` the fit sits against the walls the truth is behind.
         let mut c = constrained(2, 0.0, 0.5, None);
         c.c = 0.01;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         let mut s = 3u64;
         let mut bound = 0;

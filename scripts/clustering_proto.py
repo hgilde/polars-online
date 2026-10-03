@@ -6,10 +6,10 @@ guarantees hold -- not to be fast; ``scripts/clustering_experiments.py`` runs
 the experiments the document quotes.
 
 Semantics match polars-online's models (docs/PLAN.md §2-§3): per row a decay
-``lam = 0.5**(d_clock/halflife)``, a weight ``w`` that scales the row (``w = 0``
+``lam = 0.5**(d_clock/half_life)``, a weight ``w`` that scales the row (``w = 0``
 advances the clock and learns nothing, legal as the first row), the output
-computed *before* the update, ``n_eff`` = the EW weight sum before the row and
-before its own decay, ``min_periods`` on that ``n_eff``, and a null feature
+computed *before* the update, ``weight_sum`` = the EW weight sum before the row and
+before its own decay, ``min_weight`` on that ``weight_sum``, and a null feature
 skipping the row. State is O(parameters), never O(rows): a warm-up buffer of a
 fixed size for seeding, then the cluster summaries only.
 
@@ -47,7 +47,7 @@ Models, one class each (the document's §6 explains the choices):
                 as implemented in river): one EW correlation matrix,
                 Hoeffding-bound split / aggregate tests every ``n_min`` rows
 
-Shared: ``Stream`` (clock, n_eff, decay, standardisation from pre-row moments,
+Shared: ``Stream`` (clock, weight_sum, decay, standardisation from pre-row moments,
 warm-up buffer), ``seed_centres`` (first-k / farthest-first / k-means++ /
 Lloyd on the buffer) and the metrics at the bottom.
 """
@@ -59,16 +59,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-NONE = -1  # "no cluster" label (before seeding / min_periods, or a null row)
+NONE = -1  # "no cluster" label (before seeding / min_weight, or a null row)
 
 
-LONG_HALFLIVES = 8.0  # the reference's halflife, as a multiple of the model's (task 102)
+LONG_HALFLIVES = 8.0  # the reference's half-life, as a multiple of the model's (task 102)
 CLIP = 100.0  # the reference clips a squared deviation at this multiple of itself
 START_ROWS = 5  # the reference starts from the medians of this many rows
 
 
-def decay_factor(d_clock: float, halflife: float) -> float:
-    return 1.0 if math.isinf(halflife) else 0.5 ** (d_clock / halflife)
+def decay_factor(d_clock: float, half_life: float) -> float:
+    return 1.0 if math.isinf(half_life) else 0.5 ** (d_clock / half_life)
 
 
 # --------------------------------------------------------------------------- seeding
@@ -144,7 +144,7 @@ def seed_centres(
 
 # --------------------------------------------------------------------------- shared
 class Stream:
-    """Clock, decay, n_eff, EW feature moments (for standardisation) and the warm-up buffer."""
+    """Clock, decay, weight_sum, EW feature moments (for standardisation) and the warm-up buffer."""
 
     #: attributes derived from others -- not part of the state a save/load must carry
     DERIVED = ("mw",)
@@ -164,18 +164,18 @@ class Stream:
     def __init__(
         self,
         p: int,
-        halflife: float,
-        min_periods: float,
+        half_life: float,
+        min_weight: float,
         standardize: bool,
         scale_floor: float = 0.1,
     ):
         self.p = p
-        self.halflife = halflife
-        self.min_periods = min_periods
+        self.half_life = half_life
+        self.min_weight = min_weight
         self.standardize = standardize
         self.scale_floor = scale_floor  # the metric's floor, a fraction of the reference
         # The reference (docs/PLAN.md task 102), a feature at a time: the
-        # moments at LONG_HALFLIVES times the halflife, weight and deviation
+        # moments at LONG_HALFLIVES times the half-life, weight and deviation
         # clipped against it, started from the medians of START_ROWS rows and
         # started over by a first move from no spread.
         self.N_long = np.zeros(p)
@@ -184,7 +184,7 @@ class Stream:
         self.start = np.zeros((START_ROWS, p))
         self.start_w = np.zeros((START_ROWS, p))
         self.n_start = np.zeros(p, dtype=int)
-        self.N = 0.0  # n_eff: EW sum of learned weights
+        self.N = 0.0  # weight_sum: EW sum of learned weights
         self.L = 0.0  # cumulative log-decay
         self.n_rows = 0
         self.n_learned = 0
@@ -211,15 +211,15 @@ class Stream:
             self.mw = np.where(v > 0.0, 1.0 / np.where(v > 0.0, v, 1.0), 1.0)
 
     def _begin(self, x, d_clock: float, w: float) -> tuple[float, np.ndarray, bool, bool, float]:
-        """Per-row bookkeeping shared by every model: decay, moments, n_eff.
+        """Per-row bookkeeping shared by every model: decay, moments, weight_sum.
 
         Returns ``(lam, z, valid, learn, n_eff_before)``; ``z`` is the row scaled
         with the moments *before* the row (E24's rule), ``valid`` is false for a
         null feature (no output, nothing learned), ``learn`` is false for a null
-        feature or a zero weight (output, nothing learned). ``n_eff`` is read
+        feature or a zero weight (output, nothing learned). ``weight_sum`` is read
         before the update and before the row's own decay (CLAUDE.md rule 8)."""
         x = np.asarray(x, dtype=float)
-        lam = decay_factor(d_clock, self.halflife)
+        lam = decay_factor(d_clock, self.half_life)
         self.L += math.log(lam)
         self.n_rows += 1
         n_before = self.N
@@ -227,7 +227,7 @@ class Stream:
         learn = w > 0.0 and valid
         self._set_metric()  # from the moments *before* this row
         z = self._scale(x)
-        self.N_long *= decay_factor(d_clock / LONG_HALFLIVES, self.halflife)
+        self.N_long *= decay_factor(d_clock / LONG_HALFLIVES, self.half_life)
         if learn:
             N_new = lam * self.N + w
             a, b = lam * self.N / N_new, w / N_new
@@ -324,8 +324,8 @@ def _mean_update(
 @dataclass
 class KMeansCfg:
     k: int = 3
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     warm_rows: int = 0  # 0: the first k distinct rows seed; else buffer this many rows
     seed_rule: str = "first"  # first | farthest | kmeanspp | lloyd
     seed: int = 0
@@ -334,7 +334,7 @@ class KMeansCfg:
     spherical: bool = False  # cosine distance on unit vectors (spherical k-means)
     fuzzifier: float = 0.0  # > 1: fuzzy c-means memberships u_j ~ d_j^(-2/(m-1))
     reseed: bool = False  # at a checkpoint, move a dead cluster to the batch's farthest row
-    dead_frac: float = 0.05  # dead: n_j < dead_frac * (n_eff / k)
+    dead_frac: float = 0.05  # dead: n_j < dead_frac * (weight_sum / k)
     reseed_factor: float = 3.0  # ...when that row is farther than this many radii
     split_merge: float = 0.0  # > 0: merge two centres closer than this * (r_i + r_j) and
     # re-place the freed one to split the cluster the batch's farthest row belongs to
@@ -358,7 +358,7 @@ class EWKMeans(Stream):
     """
 
     def __init__(self, cfg: KMeansCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize, cfg.scale_floor)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize, cfg.scale_floor)
         self.cfg = cfg
         k = cfg.k
         self.C: np.ndarray | None = None
@@ -561,12 +561,12 @@ class EWKMeans(Stream):
         self.S *= lam
         self.W *= lam
         self.Q *= lam
-        out = {"cluster": NONE, "dist": math.nan, "second": math.nan, "n_eff": n_before}
+        out = {"cluster": NONE, "dist": math.nan, "second": math.nan, "weight_sum": n_before}
         if self.cfg.fuzzifier > 1.0:
             out["membership"] = np.full(self.cfg.k, math.nan)
         if not valid:
             return out
-        if self.C is not None and n_before >= self.min_periods:
+        if self.C is not None and n_before >= self.min_weight:
             j, d, second, u = self.assign(z)
             out.update(cluster=j, dist=d, second=second)
             if self.cfg.fuzzifier > 1.0:
@@ -592,8 +592,8 @@ class EWKMeans(Stream):
 @dataclass
 class GMMCfg:
     k: int = 3
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     warm_rows: int = 0
     seed_rule: str = "first"
     seed: int = 0
@@ -616,7 +616,7 @@ class OnlineGMM(Stream):
     """
 
     def __init__(self, cfg: GMMCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize)
         self.cfg = cfg
         k = cfg.k
         self.mu: np.ndarray | None = None
@@ -743,7 +743,7 @@ class OnlineGMM(Stream):
             "cluster": NONE,
             "dist": math.nan,
             "loglik": math.nan,
-            "n_eff": n_before,
+            "weight_sum": n_before,
             "membership": np.full(k, math.nan),
         }
         r = None
@@ -752,7 +752,7 @@ class OnlineGMM(Stream):
             return out
         if self.mu is not None:
             r, maha, ll = self.responsibilities(z)
-            if n_before >= self.min_periods:
+            if n_before >= self.min_weight:
                 j = int(np.argmax(r))
                 out.update(cluster=j, dist=math.sqrt(maha[j]), loglik=ll, membership=r)
         if not learn:
@@ -780,8 +780,8 @@ class OnlineGMM(Stream):
 class DPCfg:
     radius: float = 1.0  # new cluster when the nearest centre is farther than this (sqrt(lambda))
     max_clusters: int = 50
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     move: bool = True  # False: the leader algorithm (centres never move)
     prune_weight: float = 0.0  # > 0: at checkpoints drop clusters lighter than this
     prune_every: int = 100  # learned rows between prune checkpoints
@@ -801,7 +801,7 @@ class DPMeans(Stream):
     """
 
     def __init__(self, cfg: DPCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize)
         self.cfg = cfg
         self.ids: list[int] = []
         self.C = np.zeros((0, p))
@@ -847,7 +847,7 @@ class DPMeans(Stream):
             "dist": math.nan,
             "new": False,
             "n_clusters": len(self.ids),
-            "n_eff": n_before,
+            "weight_sum": n_before,
         }
         if not valid:
             return out
@@ -855,7 +855,7 @@ class DPMeans(Stream):
         d = math.inf
         if len(self.ids) > 0:
             j, d = self._nearest(z)
-            if n_before >= self.min_periods:
+            if n_before >= self.min_weight:
                 out.update(cluster=self.ids[j], dist=d, new=d > self.cfg.radius)
         if not learn:
             return out
@@ -887,8 +887,8 @@ class MicroCfg:
     eps: float = 0.5  # maximum micro-cluster radius (RMS distance to its centre)
     beta_mu: float = 3.0  # weight at which an outlier micro-cluster becomes potential
     max_micro: int = 200
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     prune_every: int = 100  # learned rows between prune / macro checkpoints
     macro_link: float = (
         2.0  # p-MCs with centres within macro_link * eps share a macro label (0: none)
@@ -921,7 +921,7 @@ class MicroClusters(Stream):
     """
 
     def __init__(self, cfg: MicroCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize, cfg.scale_floor)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize, cfg.scale_floor)
         self.cfg = cfg
         self.ids: list[int] = []
         self.C = np.zeros((0, p))
@@ -992,10 +992,10 @@ class MicroClusters(Stream):
 
     def _checkpoint(self) -> None:
         cfg = self.cfg
-        # DenStream eq. 4.1 / 4.2 in clock units: lambda = 1 / halflife (fading 2^(-t/halflife))
-        if math.isfinite(cfg.halflife) and cfg.beta_mu > 1.0:
-            Tp = math.ceil(cfg.halflife * math.log2(cfg.beta_mu / (cfg.beta_mu - 1.0)))
-            fTp = 2.0 ** (-Tp / cfg.halflife)
+        # DenStream eq. 4.1 / 4.2 in clock units: lambda = 1 / half-life (fading 2^(-t/half-life))
+        if math.isfinite(cfg.half_life) and cfg.beta_mu > 1.0:
+            Tp = math.ceil(cfg.half_life * math.log2(cfg.beta_mu / (cfg.beta_mu - 1.0)))
+            fTp = 2.0 ** (-Tp / cfg.half_life)
         else:
             Tp, fTp = None, None
         for j in reversed(range(len(self.ids))):
@@ -1041,12 +1041,12 @@ class MicroClusters(Stream):
             "outlier": False,
             "n_micro": len(self.ids),
             "n_potential": int(sum(self.pot)),
-            "n_eff": n_before,
+            "weight_sum": n_before,
         }
         if not valid:
             return out
         target, dp, outlier = self._decide(z, w if learn else 1.0)
-        if n_before >= self.min_periods and len(self.ids) > 0:
+        if n_before >= self.min_weight and len(self.ids) > 0:
             jp, _ = self._nearest(z, True)
             if jp >= 0:
                 out.update(cluster=self.macro.get(self.ids[jp], self.ids[jp]), dist=dp)
@@ -1079,8 +1079,8 @@ class MicroClusters(Stream):
 class SOMCfg:
     rows: int = 4
     cols: int = 4
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     sigma: float = 1.0  # neighbourhood width in grid units (fixed)
     warm_rows: int = 0
     seed_rule: str = "first"
@@ -1101,7 +1101,7 @@ class SOM(Stream):
     """
 
     def __init__(self, cfg: SOMCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize)
         self.cfg = cfg
         K = cfg.rows * cfg.cols
         self.K = K
@@ -1169,11 +1169,11 @@ class SOM(Stream):
 
     def step(self, x, d_clock: float, w: float = 1.0) -> dict:
         lam, z, valid, learn, n_before = self._begin(x, d_clock, w)
-        out = {"cluster": NONE, "dist": math.nan, "second": NONE, "n_eff": n_before}
+        out = {"cluster": NONE, "dist": math.nan, "second": NONE, "weight_sum": n_before}
         if not valid:
             self.n *= lam
             return out
-        if self.C is not None and n_before >= self.min_periods:
+        if self.C is not None and n_before >= self.min_weight:
             b, d, b2 = self._bmu(z)
             out.update(cluster=b, dist=d, second=b2)
         if not learn:
@@ -1203,8 +1203,8 @@ class GNGCfg:
     eps_n: float = 0.005  # step of its neighbours
     a_max: int = 50  # edge age limit
     alpha: float = 0.5  # error discount of the two nodes an insertion splits
-    halflife: float = math.inf  # error decay (Fritzke's d) rides on the clock decay
-    min_periods: float = 0.0
+    half_life: float = math.inf  # error decay (Fritzke's d) rides on the clock decay
+    min_weight: float = 0.0
     standardize: bool = False
 
 
@@ -1224,7 +1224,7 @@ class GNG(Stream):
     """
 
     def __init__(self, cfg: GNGCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.half_life, cfg.min_weight, cfg.standardize)
         self.cfg = cfg
         self.ids: list[int] = []
         self.C = np.zeros((0, p))
@@ -1313,11 +1313,11 @@ class GNG(Stream):
             "node": NONE,
             "dist": math.nan,
             "n_nodes": len(self.ids),
-            "n_eff": n_before,
+            "weight_sum": n_before,
         }
         if not valid:
             return out
-        if len(self.ids) > 0 and n_before >= self.min_periods:
+        if len(self.ids) > 0 and n_before >= self.min_weight:
             s1, _, d2 = self._nearest2(z)
             out.update(
                 cluster=self.comp.get(self.ids[s1], self.ids[s1]),
@@ -1367,8 +1367,8 @@ class GNG(Stream):
 # --------------------------------------------------------------------------- ODAC
 @dataclass
 class ODACCfg:
-    halflife: float = math.inf
-    min_periods: float = 0.0
+    half_life: float = math.inf
+    min_weight: float = 0.0
     n_min: int = 100  # learned rows between structure tests
     confidence: float = 0.9  # Hoeffding bound: e = sqrt(ln(1 / confidence) / (2 n))
     tau: float = 0.1  # split when the Hoeffding bound has shrunk below tau (ties)
@@ -1407,7 +1407,7 @@ class ODAC(Stream):
     """
 
     def __init__(self, cfg: ODACCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, False)
+        super().__init__(p, cfg.half_life, cfg.min_weight, False)
         self.cfg = cfg
         self.Cc = np.zeros((p, p))  # EW centred co-moments of the variables
         self.root = _Leaf(0, list(range(p)), None)
@@ -1486,7 +1486,7 @@ class ODAC(Stream):
         x = np.asarray(x, dtype=float)
         N_old, m_old = self.N, self.m.copy()
         lam, z, valid, learn, n_before = self._begin(x, d_clock, w)
-        out = {"labels": self.labels(), "n_leaves": len(self._leaves()), "n_eff": n_before}
+        out = {"labels": self.labels(), "n_leaves": len(self._leaves()), "weight_sum": n_before}
         if learn:
             N_new = lam * N_old + w
             a, b = lam * N_old / N_new, w / N_new

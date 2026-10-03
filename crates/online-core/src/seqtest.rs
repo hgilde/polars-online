@@ -49,7 +49,7 @@ pub const SLOTS: usize = 4;
 pub struct SeqTestCfg {
     pub n_targets: usize,
     /// Rows (weight) seen before the outputs are emitted.
-    pub min_periods: f64,
+    pub min_weight: f64,
 }
 
 impl SeqTestCfg {
@@ -57,8 +57,8 @@ impl SeqTestCfg {
         if self.n_targets == 0 {
             return Err("seqtest: n_targets must be >= 1".into());
         }
-        if self.min_periods.is_nan() || self.min_periods < 0.0 {
-            return Err("seqtest: min_periods must be >= 0".into());
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err("seqtest: min_weight must be >= 0".into());
         }
         Ok(())
     }
@@ -125,7 +125,7 @@ impl SeqTest {
 
     fn outputs(&self) -> Vec<f64> {
         let m = self.cfg.n_targets;
-        if self.w_sum < self.cfg.min_periods {
+        if self.w_sum < self.cfg.min_weight {
             return vec![f64::NAN; SLOTS * m];
         }
         let mut pred = Vec::with_capacity(SLOTS * m);
@@ -248,7 +248,7 @@ mod tests {
     fn cfg(m: usize) -> SeqTestCfg {
         SeqTestCfg {
             n_targets: m,
-            min_periods: 0.0,
+            min_weight: 0.0,
         }
     }
 
@@ -292,11 +292,11 @@ mod tests {
         for mp in [-1.0, f64::NAN] {
             let bad = SeqTestCfg {
                 n_targets: 1,
-                min_periods: mp,
+                min_weight: mp,
             };
             assert_eq!(
                 SeqTest::new(bad).unwrap_err(),
-                "seqtest: min_periods must be >= 0"
+                "seqtest: min_weight must be >= 0"
             );
         }
         assert!(SeqTest::new(cfg(3)).is_ok());
@@ -487,7 +487,7 @@ mod tests {
     fn min_periods_withholds_the_outputs_and_nothing_else() {
         let mut m = SeqTest::new(SeqTestCfg {
             n_targets: 1,
-            min_periods: 3.0,
+            min_weight: 3.0,
         })
         .unwrap();
         let mut twin = SeqTest::new(cfg(1)).unwrap();
@@ -534,9 +534,9 @@ mod tests {
         assert_eq!(m.state().model.kind(), "seqtest");
         let holt = crate::Holt::new(crate::HoltCfg {
             n_targets: 1,
-            level_halflife: 1.0,
-            trend_halflife: 1.0,
-            min_periods: 0.0,
+            level_half_life: 1.0,
+            trend_half_life: 1.0,
+            min_weight: 0.0,
             trend: true,
         })
         .unwrap();

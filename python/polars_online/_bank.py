@@ -14,7 +14,7 @@ from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
 from polars_online._spec import _from_json, _json, coef_index, target_name
 
-#: What `gram()` calls the constant column a spec's `add_intercept` puts in
+#: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
 _INTERCEPT = "intercept"
 
@@ -171,9 +171,9 @@ class ModelBank:
 
         A loaded bank resumes at the next row. Input that starts before the save, such
         as a rerun of the day or a file that overlaps the last one, steps each group's
-        clock back to rows the state has already learned. The default
-        ``on_clock_reset = "error"`` refuses that chunk, and ``"reset_state"`` may read
-        it as a new start. This method keeps a row whose clock is after its group's
+        clock back to rows the state has already learned. The bank refuses that
+        chunk, unless ``restart_after_step_back`` reads it as a new start. This method
+        keeps a row whose clock is after its group's
         last clock in every spec that reads a clock, and every row of a group the bank
         has not seen, so that each row is learned once:
 
@@ -230,7 +230,7 @@ class ModelBank:
         The struct is named after the spec, and its fields are what
         :mod:`polars_online.spec` describes under *What a spec writes* and the spec's
         builder describes under *Output*. For a regression that is ``pred_<t>``,
-        ``resid_<t>``, ``n_eff`` and ``coef``, plus the diagnostics switched on
+        ``resid_<t>``, ``weight_sum`` and ``coef``, plus the diagnostics switched on
         (:meth:`output_fields` lists them; `docs/OUTPUTS.md
         <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_ has
         every model's). ``pred`` is out-of-sample: computed from the state before the
@@ -258,9 +258,9 @@ class ModelBank:
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would replace;
-        - a group's clock runs backwards under ``on_clock_reset = "error"``, the
-          default, or by no more than ``min_backwards_jump`` under
-          ``"reset_state"``, where that is a late row rather than a new start. A
+        - a group's clock runs backwards with ``restart_after_step_back`` unset,
+          the default, or by no more than it, where that is a late row rather
+          than a new start. A
           chunk that overlaps what a loaded state has learned is refused the same
           way; :meth:`skip_learned` drops the overlap.
 
@@ -311,23 +311,23 @@ class ModelBank:
         optional: present, they give ``resid`` and the standardized residual; absent,
         those are null. The session column is optional and feeds ``session_gap``; a
         weight column is not read. A trend model (``holt``) extrapolates over the
-        clock distance from the row it last learned, capped by ``max_dclock``, and a
-        ``kalman`` with ``revert_halflife`` shrinks its coefficients over that
+        clock distance from the row it last learned, capped by ``gap_cap``, and a
+        ``kalman`` with ``revert_half_life`` shrinks its coefficients over that
         distance exactly as the next ``fit_predict`` row would. The other coefficient
         models predict from their current coefficients regardless of the clock.
 
-        Per field: ``n_eff``, ``lam_selected``, ``sigma``, the residual quantiles,
+        Per field: ``weight_sum``, ``lam_selected``, ``sigma``, the residual quantiles,
         autocorrelation and the metrics are the values the bank holds, frozen.
         ``coef`` is filled on the last accepted row, since the same coefficients score
         every row. ``drift`` never fires. Rows of a group the bank has never seen, or
         without usable features, are null throughout, as a skipped row is in
         ``fit_predict``. Under ``group_close = "session"``, a row from a session other
         than the group's current one is scored as the first row of a fresh stream,
-        null with ``n_eff`` 0, because ``fit_predict`` would restart the stream there.
+        null with ``weight_sum`` 0, because ``fit_predict`` would restart the stream there.
         A row that ``session_gap = "reset"`` would restart on is scored the same way.
         A row before the group's last learned clock is scored against the state as it
-        stands, under either ``on_clock_reset``: scoring learns nothing, so it neither
-        refuses the row nor starts over.
+        stands, whatever ``restart_after_step_back`` says: scoring learns nothing,
+        so it neither refuses the row nor starts over.
 
         .. code-block:: python
 
@@ -587,7 +587,7 @@ class ModelBank:
 
         :meth:`fit_predict_batches` with the output dropped as it comes, so no
         chunk's result is ever held and no frame is assembled from them. An
-        accumulator-only spec emits ``n_eff`` a row and nothing else, which over a
+        accumulator-only spec emits ``weight_sum`` a row and nothing else, which over a
         billion rows is gigabytes written so they can be deleted; a fit whose
         product is its coefficients need not keep its predictions either.
 
@@ -648,14 +648,14 @@ class ModelBank:
         ``spec``, ``group``, ``instance``
             The spec's name; the group key as :meth:`groups` reports it; the decay
             instance's field suffix (``"@h500"``, or ``""`` for a single one).
-        ``n_eff``
-            The accumulated weight behind the fit, what the next row's ``n_eff`` field
+        ``weight_sum``
+            The accumulated weight behind the fit, what the next row's ``weight_sum`` field
             reports. The solve schedule decides when a stream first solves, not
-            ``min_periods``. ``pred`` waits for ``min_periods`` and ``coef`` does not,
-            so a fit with ``n_eff`` below it is over fewer rows than the spec asks
+            ``min_weight``. ``pred`` waits for ``min_weight`` and ``coef`` does not,
+            so a fit with ``weight_sum`` below it is over fewer rows than the spec asks
             for; a solve over fewer rows than terms is a jittered one, counted by
             :meth:`solve_failures`.
-        ``position``, ``target``, ``ridge``, ``feature_set``, ``lambda``, ``term``
+        ``position``, ``target``, ``ridge``, ``feature_set``, ``penalty``, ``term``
             :func:`polars_online.spec.coef_index`'s columns: ``position`` indexes the
             flat ``coef`` list, ``term`` is ``"intercept"``, a feature name, or
             ``"level"`` / ``"trend"`` for ``holt``.
@@ -695,7 +695,7 @@ class ModelBank:
                     "spec": pl.String,
                     "group": pl.String,
                     "instance": pl.String,
-                    "n_eff": pl.Float64,
+                    "weight_sum": pl.Float64,
                     "position": pl.Int64,
                     "term": pl.String,
                     "coef": pl.Float64,
@@ -717,7 +717,7 @@ class ModelBank:
         instances: list[str] = []
         n_effs: list[float] = []
         values: list[float | None] = []
-        for g, instance, n_eff, coef in self._native.coef(idx, group):
+        for g, instance, weight_sum, coef in self._native.coef(idx, group):
             if coef is not None and len(coef) != n:
                 msg = (
                     f"spec {self._specs[idx]['name']!r}: {len(coef)} coefficients for {n} positions"
@@ -725,19 +725,19 @@ class ModelBank:
                 raise AssertionError(msg)
             groups += [g] * n
             instances += [instance] * n
-            n_effs += [n_eff] * n
+            n_effs += [weight_sum] * n
             values += coef if coef is not None else [None] * n
         k = len(instances) // n
         body = pl.concat([layout] * k) if k else layout.clear()
         return body.with_columns(
             pl.Series("group", groups, pl.String),
             pl.Series("instance", instances, pl.String),
-            pl.Series("n_eff", n_effs, pl.Float64),
+            pl.Series("weight_sum", n_effs, pl.Float64),
             # Finite-or-null, as the output's `coef` field is: an `ew_class`
             # class no row has carried yet has NaN means.
             pl.Series("coef", values, pl.Float64).fill_nan(None),
             pl.Series("spec", [name] * len(instances), pl.String),
-        ).select("spec", "group", "instance", "n_eff", *layout.columns, "coef")
+        ).select("spec", "group", "instance", "weight_sum", *layout.columns, "coef")
 
     def last_row(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The output struct as it stood on the last row each stream learned from: one
@@ -745,7 +745,7 @@ class ModelBank:
 
         It is the row :meth:`fit_predict` reported for that row, field for field,
         unnested after ``spec`` and ``group``: ``pred``, ``resid``, ``sigma``, the
-        metrics, the residual quantiles, ``n_eff``, and ``coef`` when the row carried
+        metrics, the residual quantiles, ``weight_sum``, and ``coef`` when the row carried
         it (a chunk's last row does; :meth:`coef` has the coefficients whichever row
         was last). It travels with the state, so a bank loaded from a file says how
         each model was doing without its output frame, and a directory of fits
@@ -815,10 +815,10 @@ class ModelBank:
             Rows whose session differed from the previous row's.
         ``clock_backwards``
             Rows whose clock fell below the previous row's within a session (what
-            ``on_clock_reset`` decided about).
+            ``restart_after_step_back`` decided about).
         ``resets``
-            Rows at which ``session_gap = "reset"`` or ``on_clock_reset =
-            "reset_state"`` restarted the stream.
+            Rows at which ``session_gap = "reset"`` or ``restart_after_step_back``
+            restarted the stream.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the last row
             (docs/WARMUP-AND-CONVERGENCE.md): how full the decay window is, and the
@@ -896,18 +896,18 @@ class ModelBank:
             rows belong to. ``targets`` is empty for ``ew_cov``, which learns from
             none. They are what makes the mapping self-describing, so
             :mod:`polars_online.gram` can take a column or a target by name.
-        ``n_eff``
+        ``weight_sum``
             The accumulated weight behind these moments.
         ``n_kish``
-            Kish's effective sample size, ``n_eff**2 / sum(w**2)``: the number of
+            Kish's effective sample size, ``weight_sum**2 / sum(w**2)``: the number of
             equally weighted rows these moments are worth, and what a standard error
-            computed from them divides by. ``n_eff`` counts weight, not rows, so it is
+            computed from them divides by. ``weight_sum`` counts weight, not rows, so it is
             not a sample size; ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of
             an exponentially weighted window of unit rows ``d`` clock units apart,
-            ``lam = 0.5 ** (1 / halflife)``. It is
-            scale-free: decay divides ``n_eff`` and ``sum(w**2)`` by the same factor,
+            ``lam = 0.5 ** (1 / half_life)``. It is
+            scale-free: decay divides ``weight_sum`` and ``sum(w**2)`` by the same factor,
             so it does not shrink when a stream goes quiet. It says how many rows
-            these moments average, not how old they are; ``n_eff`` and
+            these moments average, not how old they are; ``weight_sum`` and
             ``target_weights`` say that. ``None`` before the first row.
         ``means``
             EW column means, shape ``(k,)``.
@@ -934,7 +934,7 @@ class ModelBank:
             for ``ew_cov``.
         ``target_weights``
             Per-target accumulated weight, shape ``(n_targets,)``. Differs from
-            ``n_eff`` when targets have different null patterns.
+            ``weight_sum`` when targets have different null patterns.
         ``target_means``, ``target_vars``
             Per-target EW mean and centred variance of the target itself, shape
             ``(n_targets,)``, in the same arithmetic as ``comoments``: a target's
@@ -993,7 +993,7 @@ class ModelBank:
 
         Why this exists: the accumulators are the expensive part, and they are already
         exact, centred, decayed on the model's own clock with session and
-        ``max_dclock`` handling, and resumable. Anyone wanting to do something other
+        ``gap_cap`` handling, and resumable. Anyone wanting to do something other
         than the model's solve with them (a custom penalty, an information criterion,
         ``cond(G)``, a scree plot, forward stepwise, orthogonal matching pursuit, or a
         fit checked by hand) would otherwise recompute ``X'X`` from raw data in a
@@ -1026,12 +1026,12 @@ class ModelBank:
         # constant column to regress one on.
         unsupervised = spec_dict["model"]["type"] in _NO_TARGET_GRAM
         columns = list(spec_dict["features"])
-        if spec_dict.get("add_intercept", True) and not unsupervised:
+        if spec_dict.get("fit_intercept", True) and not unsupervised:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out = []
         for row, lag, (tidx, by_target, centred) in self._native.gram(idx, group):
-            g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
+            g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
             lags = None if lag is None else lag[0]
             out.append(
@@ -1040,7 +1040,7 @@ class ModelBank:
                     "instance": instance,
                     "columns": columns,
                     "targets": [names[j] for j in tidx],
-                    "n_eff": n_eff,
+                    "weight_sum": weight_sum,
                     "n_kish": n_kish,
                     "means": np.asarray(means),
                     "comoments": np.asarray(como).reshape(k, k),
@@ -1086,9 +1086,9 @@ class ModelBank:
         ``feature``, ``target``
             The pair's feature column and the target's name (its column, unless
             a ``po.target`` table gave one).
-        ``n_eff``
+        ``weight_sum``
             The target's accumulated weight ``W_t``: rows where the target was
-            present, weighted and decayed. Differs from the struct's ``n_eff`` when
+            present, weighted and decayed. Differs from the struct's ``weight_sum`` when
             targets have different null patterns.
         ``n_kish``
             ``W_t^2 / Q_t`` with ``Q_t`` the accumulated squared weight: the Kish
@@ -1102,7 +1102,7 @@ class ModelBank:
             that feature alone; and ``corr * sqrt((n_kish - 2) / (1 - corr^2))``, the
             t-statistic of that correlation at the Kish sample size. Read ``t`` as a
             scale for comparing pairs, not a p-value: the rows are neither independent
-            nor Gaussian. Null until ``n_eff`` reaches the target's ``min_periods``,
+            nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
             and null where undefined (a constant column, ``n_kish <= 2``).
 
         With ``lags``, four more list columns and four numbers:
@@ -1152,7 +1152,7 @@ class ModelBank:
         .. code-block:: python
 
             pairs = po.spec.marginal(
-                "pairs", targets=["y"], features=["x0", "x1", "x2"], halflife=500.0
+                "pairs", targets=["y"], features=["x0", "x1", "x2"], half_life=500.0
             )
             bank = po.ModelBank([pairs])
             bank.fit_predict(df)
@@ -1185,7 +1185,7 @@ class ModelBank:
         ``spec``, ``group``, ``instance``, ``session``
             Which stream closed. ``session`` is the value of the span that ended under
             ``group_close = "session"``, and null under ``"monotone"``.
-        ``n_eff``, ``n_kish``
+        ``weight_sum``, ``n_kish``
             As :meth:`gram` reports them, at the moment of the close.
         ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
             The span's own :meth:`summary` counts and clock range.
@@ -1253,8 +1253,8 @@ class ModelBank:
             A solve that needed jitter, or failed at every jitter and kept the
             previous fit, the standardized solve included.
         ``lasso``
-            A coordinate descent that ran out of ``max_cd_iters`` sweeps before every
-            coefficient moved less than ``cd_tol``, one per target and path point.
+            A coordinate descent that ran out of ``max_iter`` sweeps before every
+            coefficient moved less than ``tol``, one per target and path point.
         ``ew_class``
             A row on which a class covariance could not be factorized.
         ``hmm``
@@ -1361,7 +1361,7 @@ class ModelBank:
           change is not carried across, and such a state is refit rather than loaded
           (:func:`polars_online.schema_version` is the current schema);
         - a state that contradicts its own spec, such as an ``sgd`` state without the
-          scaler its ``scale_features`` needs;
+          scaler its ``standardize`` needs;
         - ``specs`` that differ from the file's.
         """
         return cls.load_bytes(Path(path).read_bytes(), specs)

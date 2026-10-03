@@ -19,7 +19,7 @@
 //! ```text
 //! decay:   n_i <- lam·n_i ;  zz_i <- lam·zz_i ;  d_i <- lam·d_i   (lam from the clock)
 //! predict: b_i = 0 if |zz_i| <= l1
-//!              = -(zz_i - sign(zz_i) l1) / (beta/alpha + d_i + l2)          under a halflife,
+//!              = -(zz_i - sign(zz_i) l1) / (beta/alpha + d_i + l2)          under a half_life,
 //!                with l1, l2 and beta/alpha times the target's scale m (below)
 //!              = -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i))/alpha + l2)  without one
 //!          p   = sigmoid(z . b)
@@ -27,18 +27,18 @@
 //!          zz_i += g_i - s_i b_i ;  n_i += g_i^2 ;  d_i += s_i
 //! ```
 //!
-//! **What a halflife does here** (review 2026-09-12, C24). The proximal
+//! **What a half-life does here** (review 2026-09-12, C24). The proximal
 //! weight is a closed form in sums, and the sums decay. Without decay `d`
 //! telescopes to `sqrt(n)/alpha`, and the model is river's `FTRLProximal`,
-//! computed as river computes it (T-R1). Under a halflife `d` is the
+//! computed as river computes it (T-R1). Under a half-life `d` is the
 //! discounted sum of the steps themselves; decaying `n` inside the square
 //! root instead shrank every coefficient toward zero on every row, and a
-//! constant target of 5 settled at 2.25 at `halflife = 100`.
+//! constant target of 5 settled at 2.25 at `half_life = 100`.
 //!
-//! **The penalties under a halflife** (docs/PLAN.md task 115 (d)). `beta`,
+//! **The penalties under a half-life** (docs/PLAN.md task 115 (d)). `beta`,
 //! `l1` and `l2` are river's constants on the sums' scale, and the sums
 //! decay; held constant, they shrank the fit toward zero on every row that
-//! taught it nothing, 0.75 of itself over one halflife at 100, where
+//! taught it nothing, 0.75 of itself over one half-life at 100, where
 //! `ewridge` does not move. So each target's penalties take a scale,
 //!
 //! ```text
@@ -50,13 +50,13 @@
 //! A row that teaches the target nothing -- absent, at weight 0, or a label
 //! `strict_binary` refuses -- ages `zz`, `d` and `m` by the same factor, so
 //! the fit does not move; the rows that teach it bring `m` back toward 1.
-//! Without a halflife `W = W*`, `m = 1`, and the model is river's to the
+//! Without a half-life `W = W*`, `m = 1`, and the model is river's to the
 //! bit, and Vowpal Wabbit's to its single precision. The steady state is as
 //! before: the penalties act as a mean-scale ridge of
 //! `(1 − lam)·(beta/alpha + l2)`, and a constant 5 settles at
-//! `5/(1 + (1 − lam)(beta/alpha + l2))`, 4.65 at `halflife = 100` and 4.96
+//! `5/(1 + (1 − lam)(beta/alpha + l2))`, 4.65 at `half_life = 100` and 4.96
 //! at 1000 -- the prior against the
-//! window's worth of evidence, which vanishes as the halflife grows. The
+//! window's worth of evidence, which vanishes as the half-life grows. The
 //! model keeps a target's decay until the next row that teaches it, so the
 //! fit read from the sums as that row left them is the frozen one exactly,
 //! and a gap of any length cannot take the sums into the subnormal range.
@@ -65,9 +65,9 @@
 //! an importance weight as Vowpal Wabbit's, and `l1`, `l2` and `beta` are a
 //! prior of fixed mass against evidence that grows with weight and density:
 //! FTRL minimizes the cumulative loss plus a fixed regularizer, which its
-//! regret bound rests on, so under a halflife the effective penalty is
+//! regret bound rests on, so under a half-life the effective penalty is
 //! `l1 / W` for the weight the window holds. The sum-scale family, beside
-//! `rls`'s ridge, `ridge_decay` and `kalman`'s observation precision; the
+//! `rls`'s ridge, `ridge_scale` and `kalman`'s observation precision; the
 //! mean-scale sparse fit, invariant to both, is `lasso`.
 //!
 //! `pred` is the probability computed from the state *before* the update, so it
@@ -96,7 +96,7 @@ pub enum FtrlLoss {
 pub struct FtrlCfg {
     pub n_features: usize,
     pub n_targets: usize,
-    pub add_intercept: bool,
+    pub fit_intercept: bool,
     pub decay: Decay,
     /// Learning-rate scale.
     pub alpha: f64,
@@ -104,7 +104,7 @@ pub struct FtrlCfg {
     pub beta: f64,
     pub l1: f64,
     pub l2: f64,
-    pub min_periods: f64,
+    pub min_weight: f64,
     /// A target that is not 0 or 1 is not learned from, where the default
     /// clamps it into [0, 1]. Logistic only. The bank never hands the model
     /// such a row: it refuses the chunk, naming the row (review 2026-09-12,
@@ -117,7 +117,7 @@ pub struct FtrlCfg {
 
 impl FtrlCfg {
     pub fn k_total(&self) -> usize {
-        self.n_features + usize::from(self.add_intercept)
+        self.n_features + usize::from(self.fit_intercept)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -161,23 +161,23 @@ pub struct Ftrl {
     n: Vec<Vec<f64>>,
     zz: Vec<Vec<f64>>,
     /// Per target: the discounted sum of the proximal steps `s_i`, the rate's
-    /// term under a halflife, where `sqrt(n)/alpha` is without one (C24).
+    /// term under a half-life, where `sqrt(n)/alpha` is without one (C24).
     #[serde(default)]
     prox: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows that carried it, decayed: what its
-    /// `min_periods` is checked against (hard rule 8, docs/PLAN.md task 115
+    /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
-    /// `min_periods = 10` with every coefficient at zero and `pred = 0.5`
+    /// `min_weight = 10` with every coefficient at zero and `pred = 0.5`
     /// (review 2026-09-12, S31). A label `strict_binary` refuses does not
     /// count.
     #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the scale on the penalties `beta/alpha`, `l1` and `l2`
-    /// under a halflife, as the last row that taught it left it: `W/W*`, its
+    /// under a half-life, as the last row that taught it left it: `W/W*`, its
     /// weight over its weight on a clock that runs only on the rows that
     /// teach it (docs/PLAN.md task 115 (d); the module docs). `1` without a
-    /// halflife, and in a state written before it: the penalties that state
+    /// half-life, and in a state written before it: the penalties that state
     /// was made with.
     #[serde(default)]
     scale: Vec<f64>,
@@ -199,7 +199,7 @@ pub struct Ftrl {
 }
 
 /// A target's penalties as its weights read them ([`Ftrl::penalties`]):
-/// under a halflife `l1`, `beta / alpha` and `l2` each times the target's
+/// under a half-life `l1`, `beta / alpha` and `l2` each times the target's
 /// scale, else river's `l1`, `beta` and `l2`.
 #[derive(Clone, Copy)]
 struct Penalties {
@@ -238,7 +238,7 @@ impl Ftrl {
     }
 
     /// Per target, the weight of the rows that carried it: what its
-    /// `min_periods` is checked against.
+    /// `min_weight` is checked against.
     pub fn target_weights(&self) -> &[f64] {
         &self.w_target
     }
@@ -284,7 +284,7 @@ impl Ftrl {
         }
     }
 
-    /// Whether the sums decay at all. Without a halflife the rate is river's
+    /// Whether the sums decay at all. Without a half-life the rate is river's
     /// `(beta + sqrt(n))/alpha`, computed as river computes it.
     fn forgets(&self) -> bool {
         match self.cfg.decay {
@@ -295,7 +295,7 @@ impl Ftrl {
 
     /// The proximal weight for one coordinate's `(z, n, d)` -- the closed
     /// form of the FTRL-Proximal update, shared by `step` and `predict`.
-    /// Under a halflife the rate's term is `d`, the discounted sum of the
+    /// Under a half-life the rate's term is `d`, the discounted sum of the
     /// proximal steps, and the penalties take the target's `scale`; without
     /// one it is `sqrt(n)/alpha`, which `d` telescopes to, and the penalties
     /// are river's (review 2026-09-12, C24; the module docs).
@@ -342,7 +342,7 @@ impl OnlineModel for Ftrl {
         let m = self.cfg.n_targets;
         let lam = self.cfg.decay.factor(d_clock);
 
-        if self.cfg.add_intercept {
+        if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
         } else {
@@ -358,7 +358,7 @@ impl OnlineModel for Ftrl {
                 *p *= lam;
             }
         }
-        // Each target's `min_periods` reads its own weight.
+        // Each target's `min_weight` reads its own weight.
         let n_eff = self.w_sum;
 
         let mut pred = vec![f64::NAN; m];
@@ -375,7 +375,7 @@ impl OnlineModel for Ftrl {
                 FtrlLoss::Logistic => sigmoid(raw),
                 FtrlLoss::Squared => raw,
             };
-            if self.w_target[j] >= self.cfg.min_periods {
+            if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
@@ -406,7 +406,7 @@ impl OnlineModel for Ftrl {
             self.w_taught[j] = lam * self.w_taught[j] + weight;
             // The penalties' scale `W/W*`, with `W` as the ageing below
             // leaves it: rows that teach bring it back toward 1 after a gap
-            // took it down with the sums. Without a halflife it stays 1.
+            // took it down with the sums. Without a half-life it stays 1.
             if self.forgets() {
                 self.scale[j] = (lam * self.w_target[j] + weight) / self.w_taught[j];
             }
@@ -452,9 +452,9 @@ impl OnlineModel for Ftrl {
         let m = self.cfg.n_targets;
         let mut pred = vec![f64::NAN; m];
         let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
+        let off = usize::from(self.cfg.fit_intercept);
         for (j, p) in pred.iter_mut().enumerate() {
-            if self.w_target[j] < self.cfg.min_periods {
+            if self.w_target[j] < self.cfg.min_weight {
                 continue;
             }
             let pen = self.penalties(j);
@@ -583,16 +583,16 @@ mod tests {
         }
     }
 
-    /// A target's `min_periods` counts only the rows that carried it, and
+    /// A target's `min_weight` counts only the rows that carried it, and
     /// `n_eff` stays every row's (hard rule 8, docs/PLAN.md task 115 (d)):
-    /// S31's ten rows with no target met `min_periods = 3` with every
+    /// S31's ten rows with no target met `min_weight = 3` with every
     /// coefficient at zero, and `pred` was 0.5. A zero-weight row with the
     /// target (row 12) only ages it, and a label `strict_binary` refuses
     /// (the second target's 0.5) never counts.
     #[test]
     fn min_periods_counts_only_the_rows_that_carried_the_target() {
         let mut c = cfg(2, 2);
-        c.min_periods = 3.0;
+        c.min_weight = 3.0;
         c.strict_binary = true;
         let mut m = Ftrl::new(c).unwrap();
         let mut s = 7u64;
@@ -642,7 +642,7 @@ mod tests {
         let fit = |strict: bool, y: f64| {
             let mut c = cfg(2, 1);
             c.strict_binary = strict;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             let mut m = Ftrl::new(c).unwrap();
             for i in 0..20 {
                 m.step(
@@ -685,7 +685,7 @@ mod tests {
         let run = |w: f64, reps: usize| {
             let mut c = cfg(1, 1);
             c.loss = FtrlLoss::Squared;
-            c.min_periods = 0.0;
+            c.min_weight = 0.0;
             c.l1 = 0.0;
             c.l2 = 0.0;
             let mut m = Ftrl::new(c).unwrap();
@@ -776,13 +776,13 @@ mod tests {
         FtrlCfg {
             n_features: k,
             n_targets: m,
-            add_intercept: true,
+            fit_intercept: true,
             decay: Decay::Halflife(f64::INFINITY),
             alpha: 0.1,
             beta: 1.0,
             l1: 0.0,
             l2: 1.0,
-            min_periods: 10.0,
+            min_weight: 10.0,
             strict_binary: false,
             loss: FtrlLoss::Logistic,
         }
@@ -794,7 +794,7 @@ mod tests {
         c.loss = FtrlLoss::Squared;
         c.alpha = 0.5;
         c.l2 = 0.01;
-        c.min_periods = 5.0;
+        c.min_weight = 5.0;
         let mut m = Ftrl::new(c).unwrap();
         let mut s = 97u64;
         let mut last = 0.0;
@@ -823,7 +823,7 @@ mod tests {
         c.loss = FtrlLoss::Squared;
         c.alpha = 0.5;
         c.l2 = 0.01;
-        c.min_periods = 2.0;
+        c.min_weight = 2.0;
         let mut m = Ftrl::new(c).unwrap();
         let mut s = 98u64;
         let mut seen_big = false;
@@ -934,7 +934,7 @@ mod tests {
 
     #[test]
     fn forgets_on_the_clock() {
-        // A regime flip: with a short halflife the model must follow it.
+        // A regime flip: with a short half-life the model must follow it.
         let mut c = cfg(1, 1);
         c.decay = Decay::Halflife(200.0);
         let mut m = Ftrl::new(c).unwrap();
@@ -1033,7 +1033,7 @@ mod tests {
         let mut c = cfg(1, 1);
         c.loss = FtrlLoss::Squared;
         c.decay = decay;
-        c.min_periods = 0.0;
+        c.min_weight = 0.0;
         c
     }
 
@@ -1050,10 +1050,10 @@ mod tests {
         (preds, m)
     }
 
-    /// Under a halflife the proximal term is a decayed sum of its own. The
+    /// Under a half-life the proximal term is a decayed sum of its own. The
     /// fit is the longhand's on every row, and a constant target of 5 settles
     /// where sum-scale penalties put it, `5 / (1 + (1 − λ)(β/α + l2))` -- a
-    /// mean-scale ridge of `(1 − λ)(β/α + l2)` -- 4.65 at `halflife = 100`.
+    /// mean-scale ridge of `(1 − λ)(β/α + l2)` -- 4.65 at `half_life = 100`.
     /// Decaying `n` inside `√n` had put it at 2.25 (review 2026-09-12, C24).
     #[test]
     fn a_decaying_state_keeps_its_proximal_sum() {
@@ -1078,10 +1078,10 @@ mod tests {
     /// A row that teaches the target nothing leaves the fit where it was
     /// (docs/PLAN.md task 115 (d); the user, 2026-09-29: "Build it"): the
     /// penalties age with the sums, so the target absent, a zero weight, a
-    /// clock of 100 or of a million, and a hundred thousand halflives of
+    /// clock of 100 or of a million, and a hundred thousand half-lives of
     /// rows without it all leave every coefficient and every prediction to
     /// the bit. With constant penalties 100 clock units took the
-    /// coefficient to 0.75 of itself at `halflife = 100` (review 2026-09-12,
+    /// coefficient to 0.75 of itself at `half_life = 100` (review 2026-09-12,
     /// C24).
     #[test]
     fn a_row_that_teaches_nothing_leaves_the_fit() {
@@ -1123,7 +1123,7 @@ mod tests {
     /// it again, is the longhand's: the decayed sums over the decayed
     /// penalties, the scale `W/W*` coming back toward 1 as the target's rows
     /// refill the window. Gaps of one clock unit to 2,000 -- `2^-50` of the
-    /// weight at `halflife = 40`, where the longhand's decayed sums are still
+    /// weight at `half_life = 40`, where the longhand's decayed sums are still
     /// normal numbers; a total gap is the test above -- a zero weight and
     /// weights of 0.3 to 2, under both penalties' settings.
     #[test]
@@ -1164,7 +1164,7 @@ mod tests {
 
     /// Without decay the proximal term telescopes to `√n/α`, and the weight
     /// is river's closed form computed as river computes it, so T-R1 holds
-    /// to the bit and the repair of C24 changes nothing at `halflife = inf`.
+    /// to the bit and the repair of C24 changes nothing at `half_life = inf`.
     #[test]
     fn without_decay_the_weights_are_rivers_closed_form() {
         let c = intercept_only(Decay::Halflife(f64::INFINITY));

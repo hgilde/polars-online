@@ -1,13 +1,13 @@
 """The lasso's paths ``tests/test_oracles.py::TestLassoPredPath`` does not
 reach, held to ``tests/reference_paths.py::lasso_paths_ref`` row by row:
-several targets, null targets, ``target_gaps``, ``add_intercept=False``, a
-``window`` and ``lam_selected`` at a ``select_halflife`` of its own.
+several targets, null targets, ``target_gaps``, ``fit_intercept=False``, a
+``window`` and ``lam_selected`` at a ``select_half_life`` of its own.
 
 The reference recomputes every statistic from the raw rows at each solve,
-each row at ``w * 0.5 ** (age / halflife)``, and descends from zero to 1e-14,
+each row at ``w * 0.5 ** (age / half_life)``, and descends from zero to 1e-14,
 so neither the core's mean-form recursion nor its warm start can agree with
 it by construction. Every stream here has an irregular dyadic clock with two
-gaps past ``max_dclock``, zero-weight rows (the first among them), rows
+gaps past ``gap_cap``, zero-weight rows (the first among them), rows
 skipped for a null feature, and three targets: one with a few random nulls,
 one present only where ``x0 > -0.5`` (gaps tied to a feature, so
 ``own_rows`` and ``pairwise`` part), and one with a block of nulls that the
@@ -20,8 +20,8 @@ this file was written:
   selection error against a snapshot taken after the row's own error, with
   its weight aged twice, chose on the window as it stood a row earlier and
   not at all on a row it did not score, and aged the snapshot by the model's
-  halflife where ``select_halflife`` differs;
-- with a ``min_periods`` list (task 96). The model predicts once ``n_eff``
+  half-life where ``select_half_life`` differs;
+- with a ``min_weight`` list (task 96). The model predicts once ``weight_sum``
   reaches the smallest threshold, and a target's selection error folds its
   own predictions from then on, on rows its own larger threshold still
   withholds: a gate on the output, not on the model (review S2). The user
@@ -46,16 +46,16 @@ MAX_DCLOCK = 6.0
 
 # Measured over the cases below as |got - expected| / (1 + |expected|): pred
 # 4.5e-14, resid 2.3e-13 (pred's absolute error over a residual far smaller
-# than a target at a level of 5), n_eff 2.3e-15, coef 1.7e-12. Each
+# than a target at a level of 5), weight_sum 2.3e-15, coef 1.7e-12. Each
 # tolerance is 100x the largest it covers, rounded up to a power of ten.
 #
 # Seeded into a copy of the reference, each of these fails a case here by
 # far more (pred, same measure): own_rows and pairwise swapped 0.23-4.6;
 # pairwise cross-moments centred at every row's means (review N3) 0.04-0.10;
 # centred without an intercept (C8) 4.4; the window's boundary strict (`<`)
-# 0.30-0.39, or no window 0.80-1.1; the decay at twice the halflife
-# 0.04-0.12; each target gated on the shared n_eff (S2) moves the null
-# pattern on 18-162 rows; the selection at the model's halflife instead of
+# 0.30-0.39, or no window 0.80-1.1; the decay at twice the half-life
+# 0.04-0.12; each target gated on the shared weight_sum (S2) moves the null
+# pattern on 18-162 rows; the selection at the model's half-life instead of
 # its own moves lam_selected on 133 rows, and from emitted rows only on
 # 15-39.
 PRED_TOL = 1e-10
@@ -112,11 +112,11 @@ def _fit(df: pl.DataFrame, **kw):
         features=FEATURES,
         lasso_path=PATH,
         clock="t",
-        max_dclock=MAX_DCLOCK,
+        gap_cap=MAX_DCLOCK,
         weight="w",
         coef_every=1,
-        cd_tol=1e-14,
-        max_cd_iters=100_000,
+        tol=1e-14,
+        max_iter=100_000,
         **kw,
     )
     out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -129,14 +129,14 @@ def _fit(df: pl.DataFrame, **kw):
         dc,
         df["w"].to_numpy(),
         PATH,
-        max_dclock=MAX_DCLOCK,
+        gap_cap=MAX_DCLOCK,
         **kw,
     )
     return spec, out, ref
 
 
 def _held_to_the_reference(df, spec, out, ref, lam_selected=True, min_selected=150):
-    """Every path point's ``pred`` and ``resid`` for every target, ``n_eff``,
+    """Every path point's ``pred`` and ``resid`` for every target, ``weight_sum``,
     every held ``coef`` and, where asked, ``lam_selected`` on at least
     ``min_selected`` rows of each target; then two probes that the
     comparison can fail."""
@@ -147,7 +147,9 @@ def _held_to_the_reference(df, spec, out, ref, lam_selected=True, min_selected=1
     for j, t in enumerate(TARGETS):
         for p, lam in enumerate(PATH):
             rows = index.filter(
-                (pl.col("target") == t) & (pl.col("lambda") == lam) & pl.col("kind").is_in(["pred"])
+                (pl.col("target") == t)
+                & (pl.col("penalty") == lam)
+                & pl.col("kind").is_in(["pred"])
             )
             got[:, j, p] = out.struct.field(rows["field"][0]).to_numpy().astype(float)
             _close(got[:, j, p], ref["pred"][:, j, p], PRED_TOL, f"pred_{t} at {lam}")
@@ -156,19 +158,24 @@ def _held_to_the_reference(df, spec, out, ref, lam_selected=True, min_selected=1
             _close(resid, y[:, j] - ref["pred"][:, j, p], PRED_TOL, f"resid_{t} at {lam}")
         assert np.isfinite(ref["pred"][:, j, 0]).sum() > 100, f"{t} is scored too little"
         if lam_selected:
-            sel = out.struct.field(f"lam_selected_{t}").to_numpy().astype(float)
+            sel = out.struct.field(f"penalty_selected_{t}").to_numpy().astype(float)
             held = ~np.isnan(ref["lam_selected"][:, j])
             assert held.sum() > min_selected, f"{t}: too few rows with a clear selection"
             wrong = np.flatnonzero(held & (sel != ref["lam_selected"][:, j]))
-            assert wrong.size == 0, f"lam_selected_{t} differs at rows {wrong[:8]}"
-            assert len(set(sel[held])) > 1, f"lam_selected_{t} never moves"
-    _close(out.struct.field("n_eff").to_numpy().astype(float), ref["n_eff"], PRED_TOL, "n_eff")
+            assert wrong.size == 0, f"penalty_selected_{t} differs at rows {wrong[:8]}"
+            assert len(set(sel[held])) > 1, f"penalty_selected_{t} never moves"
+    _close(
+        out.struct.field("weight_sum").to_numpy().astype(float),
+        ref["weight_sum"],
+        PRED_TOL,
+        "weight_sum",
+    )
 
     rows = out.struct.field("coef").to_list()
     empty = [np.nan] * (len(TARGETS) * len(PATH) * kt)
     coef = np.array([empty if r is None else r for r in rows], float).reshape(ref["coef"].shape)
     first = np.argmax(ref["solved"])
-    expect_null = (np.arange(n) < first) | np.isnan(ref["n_eff"])
+    expect_null = (np.arange(n) < first) | np.isnan(ref["weight_sum"])
     assert (np.array([r is None for r in rows]) == expect_null).all(), "coef null on wrong rows"
     held = ~np.isnan(ref["coef"])
     assert held.sum() > 0.8 * held.size, "most of the problems should be held"
@@ -203,16 +210,16 @@ class TestSeveralTargetsWithGaps:
     def test_each_target_is_the_path_of_its_own_rows(self):
         df = _stream(31)
         spec, out, ref = _fit(
-            df, halflife=40.0, min_periods=[20.0, 12.0, 25.0], solve_every=2.5, l1_ratio=1.0
+            df, half_life=40.0, min_weight=[20.0, 12.0, 25.0], solve_every=2.5, l1_ratio=1.0
         )
         # A list of thresholds: a target's selection folds the model's own
         # predictions for it, whatever its own threshold withholds (task 96).
         _held_to_the_reference(df, spec, out, ref)
         # Each target reports from its own weight, not the shared one: the
         # gappy target waits for its own rows to reach its threshold, after
-        # the shared n_eff has.
+        # the shared weight_sum has.
         first_own = int(np.argmax(np.isfinite(ref["pred"][:, 1, 0])))
-        first_shared = int(np.argmax(ref["n_eff"] >= 12.0))
+        first_shared = int(np.argmax(ref["weight_sum"] >= 12.0))
         assert first_own > first_shared, (first_own, first_shared)
 
     def test_pairwise_reads_the_features_over_every_row(self):
@@ -222,8 +229,8 @@ class TestSeveralTargetsWithGaps:
         df = _stream(32)
         spec, out, ref = _fit(
             df,
-            halflife=40.0,
-            min_periods=20.0,
+            half_life=40.0,
+            min_weight=20.0,
             solve_every=6.0,
             max_rows_between_solves=3,
             l1_ratio=0.5,
@@ -234,33 +241,33 @@ class TestSeveralTargetsWithGaps:
 
 class TestSelection:
     """``lam_selected`` ranks each path point on its own decay: a
-    ``select_halflife`` of 10 against a model halflife of 40."""
+    ``select_half_life`` of 10 against a model half-life of 40."""
 
     def test_the_selection_decays_at_its_own_halflife(self):
         df = _stream(33)
         spec, out, ref = _fit(
-            df, halflife=40.0, select_halflife=10.0, min_periods=15.0, solve_every=2.0
+            df, half_life=40.0, select_half_life=10.0, min_weight=15.0, solve_every=2.0
         )
         _held_to_the_reference(df, spec, out, ref)
 
 
 class TestWithoutAnIntercept:
-    """``add_intercept=False``: nothing centred, each column scaled by its
+    """``fit_intercept=False``: nothing centred, each column scaled by its
     root mean square, and the features at levels a centred fit would have
     absorbed into an intercept it does not have."""
 
     def test_the_path_reads_the_raw_moments(self):
         df = _stream(34, level=3.0)
         spec, out, ref = _fit(
-            df, halflife=60.0, min_periods=15.0, solve_every=2.0, add_intercept=False
+            df, half_life=60.0, min_weight=15.0, solve_every=2.0, fit_intercept=False
         )
         _held_to_the_reference(df, spec, out, ref)
 
 
 class TestWindow:
-    """A ``window`` of 24 clock units under a halflife of 40: the rows whose
+    """A ``window`` of 24 clock units under a half-life of 40: the rows whose
     age on the capped clock is at most 24, each at its decayed weight --
-    ``n_eff``, each target's gate and every fit. The block of nulls in the
+    ``weight_sum``, each target's gate and every fit. The block of nulls in the
     third target outlives the window, so that target empties and comes back
     while the others stay windowed."""
 
@@ -268,19 +275,19 @@ class TestWindow:
         df = _stream(35)
         spec, out, ref = _fit(
             df,
-            halflife=40.0,
-            min_periods=10.0,
+            half_life=40.0,
+            min_weight=10.0,
             solve_every=1.0,
-            window=24.0,
+            window_size=24.0,
             target_gaps=target_gaps,
             **kw,
         )
         # The third target's block of nulls empties its window for a while,
         # so it has fewer rows with a selection than an unwindowed one.
         _held_to_the_reference(df, spec, out, ref, min_selected=100)
-        # The window really cut: n_eff sits below the unwindowed weight.
-        n_eff = out.struct.field("n_eff").to_numpy().astype(float)
-        assert np.nanmax(n_eff) < 0.8 * (1.0 / (1.0 - 0.5 ** (1.0 / 40.0))), n_eff.max()
+        # The window really cut: weight_sum sits below the unwindowed weight.
+        weight_sum = out.struct.field("weight_sum").to_numpy().astype(float)
+        assert np.nanmax(weight_sum) < 0.8 * (1.0 / (1.0 - 0.5 ** (1.0 / 40.0))), weight_sum.max()
         # The emptied target had no fit to report.
         assert np.isnan(ref["pred"][130:140, 2, 0]).all()
 
@@ -292,8 +299,8 @@ class TestWindow:
 
     def test_the_selection_inside_the_window_decays_at_its_own_halflife(self):
         """Task 95's third departure: the window's selection aged its
-        boundary by the model's halflife, not ``select_halflife``."""
-        self._check("own_rows", select_halflife=10.0)
+        boundary by the model's half-life, not ``select_half_life``."""
+        self._check("own_rows", select_half_life=10.0)
 
     def test_a_window_down_to_one_row_of_a_target_fits_its_intercept_alone(self):
         """Task 94. The third target is present on the first row of every
@@ -306,7 +313,7 @@ class TestWindow:
         rows are scored; the others' stay at 10, and a solve on every row
         keeps the reference's first-solve rule out of it."""
         df = _stream(35)
-        # On the model's clock, whose steps ``max_dclock`` caps and a row
+        # On the model's clock, whose steps ``gap_cap`` caps and a row
         # skipped for a null feature folds into the next: 32 units a bucket,
         # so no two of the target's rows are within 24 of each other.
         dt = np.diff(df["t"].to_numpy(), prepend=0.0)
@@ -325,20 +332,27 @@ class TestWindow:
         )
         spec, out, ref = _fit(
             df,
-            halflife=40.0,
-            min_periods=[10.0, 10.0, 0.5],
+            half_life=40.0,
+            min_weight=[10.0, 10.0, 0.5],
             max_rows_between_solves=1,
-            window=24.0,
+            window_size=24.0,
         )
         index = po.spec.output_index(spec)
         for j, t in enumerate(TARGETS):
             for p, lam in enumerate(PATH):
                 rows = index.filter(
-                    (pl.col("target") == t) & (pl.col("lambda") == lam) & (pl.col("kind") == "pred")
+                    (pl.col("target") == t)
+                    & (pl.col("penalty") == lam)
+                    & (pl.col("kind") == "pred")
                 )
                 got = out.struct.field(rows["field"][0]).to_numpy().astype(float)
                 _close(got, ref["pred"][:, j, p], PRED_TOL, f"pred_{t} at {lam}")
-        _close(out.struct.field("n_eff").to_numpy().astype(float), ref["n_eff"], PRED_TOL, "n_eff")
+        _close(
+            out.struct.field("weight_sum").to_numpy().astype(float),
+            ref["weight_sum"],
+            PRED_TOL,
+            "weight_sum",
+        )
         scored = np.isfinite(ref["pred"][:, 2, -1])
         assert scored.sum() >= 20, f"only {scored.sum()} rows scored from a window of one row"
         assert (ref["w_target"][scored, 2] <= 1.5).all(), "one row of the target in the window"

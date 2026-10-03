@@ -8,20 +8,20 @@
 
 use online_core::{Decay, EwRidge, EwRidgeCfg, OnlineModel, TargetGaps};
 
-fn cfg(k: usize, halflife: f64) -> EwRidgeCfg {
+fn cfg(k: usize, half_life: f64) -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: k,
         n_targets: 1,
-        add_intercept: true,
-        decay: Decay::Halflife(halflife),
+        fit_intercept: true,
+        decay: Decay::Halflife(half_life),
         ridge: vec![1e-8],
         feature_sets: vec![],
         standardize: false,
-        ridge_decay: false,
+        ridge_scale: false,
         coef_prior: None,
         session_shrink: None,
-        long_halflife: None,
-        min_periods: 0.0,
+        long_half_life: None,
+        min_weight: 0.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -72,8 +72,8 @@ fn h_mean_of(m: &EwRidge) -> f64 {
     out[0] * out[0] - 1.0
 }
 
-fn steady_n_kish(halflife: f64) -> f64 {
-    let lam = (-(1.0 / halflife)).exp2();
+fn steady_n_kish(half_life: f64) -> f64 {
+    let lam = (-(1.0 / half_life)).exp2();
     (1.0 + lam) / (1.0 - lam)
 }
 
@@ -82,8 +82,8 @@ fn steady_n_kish(halflife: f64) -> f64 {
 /// seen two ways, and `n_kish` reaches `(1 + λ) / (1 − λ)`.
 #[test]
 fn the_mean_of_h_over_a_stationary_design_is_edf_over_n_kish() {
-    let (k, halflife) = (4, 20.0);
-    let mut m = model(cfg(k, halflife));
+    let (k, half_life) = (4, 20.0);
+    let mut m = model(cfg(k, half_life));
     let mut rng = Rng(11);
     let mut hs = Vec::new();
     for i in 0..3000 {
@@ -106,7 +106,7 @@ fn the_mean_of_h_over_a_stationary_design_is_edf_over_n_kish() {
         "mean h {mean_h} vs edf / n_kish {want}"
     );
     // And that average is `(k + 1) / n_kish` at steady state with a tiny ridge.
-    let n_kish = steady_n_kish(halflife);
+    let n_kish = steady_n_kish(half_life);
     let expect = (k + 1) as f64 / n_kish;
     assert!(
         (want - expect).abs() < 0.05 * expect,
@@ -119,8 +119,8 @@ fn the_mean_of_h_over_a_stationary_design_is_edf_over_n_kish() {
 /// says it predicts, and the per-row form errs on the safe side.
 #[test]
 fn observed_error_inflation_matches_the_prediction() {
-    let (k, halflife, sigma) = (4, 4.0, 1.0);
-    let mut m = model(cfg(k, halflife));
+    let (k, half_life, sigma) = (4, 4.0, 1.0);
+    let mut m = model(cfg(k, half_life));
     let mut rng = Rng(23);
     let (mut se, mut hs) = (0.0, Vec::new());
     let n = 6000;
@@ -149,14 +149,14 @@ fn observed_error_inflation_matches_the_prediction() {
         "observed inflation {observed} vs the gate's {gate}"
     );
     // The per-row form is conservative here: it overstates the excess,
-    // by half at this halflife (0.73 against 0.47 observed), never
+    // by half at this half-life (0.73 against 0.47 observed), never
     // understates it. Exactness per row is what `G₂` would buy (§2.1).
     let excess = observed * observed - 1.0;
     assert!(
         mean_h >= excess && mean_h <= 2.0 * excess,
         "per-row mean h {mean_h} vs observed excess {excess}"
     );
-    // Well away from 1: at halflife 4 the fit is visibly noisy.
+    // Well away from 1: at half-life 4 the fit is visibly noisy.
     assert!(gate > 1.1, "{gate}");
 }
 
@@ -166,10 +166,10 @@ fn observed_error_inflation_matches_the_prediction() {
 /// doubles, so `h` halves.
 #[test]
 fn weights_enter_through_kish_n_exactly() {
-    let (k, halflife) = (3, 30.0);
-    let mut whole = model(cfg(k, halflife));
-    let mut scaled = model(cfg(k, halflife));
-    let mut split = model(cfg(k, halflife));
+    let (k, half_life) = (3, 30.0);
+    let mut whole = model(cfg(k, half_life));
+    let mut scaled = model(cfg(k, half_life));
+    let mut split = model(cfg(k, half_life));
     let mut rng = Rng(5);
     let probe = rng.row(k);
     for _ in 0..400 {
@@ -204,8 +204,8 @@ fn weights_enter_through_kish_n_exactly() {
 /// caught per prediction.
 #[test]
 fn a_row_that_breaks_a_collinearity_reads_a_large_h() {
-    let (k, halflife) = (3, 50.0);
-    let mut m = model(cfg(k, halflife));
+    let (k, half_life) = (3, 50.0);
+    let mut m = model(cfg(k, half_life));
     let mut rng = Rng(7);
     let mut in_sample = Vec::new();
     for i in 0..600 {
@@ -301,7 +301,7 @@ fn a_heavy_ridge_reads_low_and_every_solve_path_carries_the_identity() {
     assert!(s[0][1..].iter().all(|v| *v < 0.3), "{:?}", s[0]);
 
     let mut origin = cfg(k, f64::INFINITY);
-    origin.add_intercept = false;
+    origin.fit_intercept = false;
     let s = run(origin).support_coef().unwrap();
     assert_eq!(s[0].len(), k);
     assert!(s[0].iter().all(|v| (v - 1.0).abs() < 1e-3), "{:?}", s[0]);
@@ -326,7 +326,7 @@ fn a_heavy_ridge_reads_low_and_every_solve_path_carries_the_identity() {
 fn before_the_first_solve_the_gate_is_infinite() {
     let k = 2;
     let mut c = cfg(k, 10.0);
-    c.min_periods = (k + 1) as f64;
+    c.min_weight = (k + 1) as f64;
     let m = model(c);
     let mut out = Vec::new();
     assert!(m.error_inflation_into(&mut out));

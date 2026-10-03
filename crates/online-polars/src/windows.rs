@@ -5,7 +5,7 @@
 //! in stream order:
 //!
 //! ```text
-//! y_t = Σ w_j λ^|τ_j − τ_a| v_j / Σ w_j λ^|τ_j − τ_a|,   λ = 2^(−1/halflife)
+//! y_t = Σ w_j λ^|τ_j − τ_a| v_j / Σ w_j λ^|τ_j − τ_a|,   λ = 2^(−1/half_life)
 //! ```
 //!
 //! *Backward* (`ewm`): the rows at or before `t` less than `horizon` older,
@@ -28,9 +28,9 @@
 //! window of contributing rows per group, per output.
 //!
 //! **The clock is the model's.** Each group steps its own [`ClockState`], so
-//! the horizon is measured on the policy clock: after `max_dclock` caps a
+//! the horizon is measured on the policy clock: after `gap_cap` caps a
 //! step and after `session_gap` replaces one. A capped gap and a session
-//! change end every open window, as the `label_delay` buffer releases every
+//! change end every open window, as the `embargo` buffer releases every
 //! waiting row on either (`stream.rs`, `apply_label_delay`): those windows
 //! are partial. A reset discards them. After any of the three a group's
 //! windows start over, and its policy time with them: `τ` is the time since
@@ -42,10 +42,10 @@
 //! row, and a reset, a session change or a capped gap there ends every
 //! group's windows.
 //!
-//! **A silent group holds the output for at most `max_dclock`** of the
+//! **A silent group holds the output for at most `gap_cap`** of the
 //! stream's time. Rows leave in input order, so one group whose forward
 //! windows are open holds back every later row of every group. Once the
-//! stream's clock is more than `max_dclock` past a group's last row, that
+//! stream's clock is more than `gap_cap` past a group's last row, that
 //! group's next row is certain to open with a gap longer than the cap, so
 //! its open windows are cut now rather than at that row. A row-count clock
 //! steps each group only on its own rows, so it has no such bound.
@@ -114,7 +114,7 @@ pub struct SplitDef {
     pub unlisted: Unlisted,
 }
 
-/// One window. A description with several columns, halflives or horizons is
+/// One window. A description with several columns, half-lives or horizons is
 /// several of these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowDef {
@@ -124,7 +124,7 @@ pub struct WindowDef {
     /// Index into a row's weights; `None` weighs every row 1.
     pub weight: Option<usize>,
     /// Policy-clock units, above 0; infinite weighs the window evenly.
-    pub halflife: f64,
+    pub half_life: f64,
     /// Policy-clock units, finite and above 0; `None` is no cutoff, which
     /// only a backward window may have.
     pub horizon: Option<f64>,
@@ -146,12 +146,12 @@ impl WindowDef {
 
     /// # Errors
     ///
-    /// A halflife that is not above 0, a horizon that is not finite and
+    /// A half-life that is not above 0, a horizon that is not finite and
     /// above 0 or that a forward window lacks, and a split that lists
     /// nothing or counts in a total it does not have.
     pub fn check(&self) -> Result<(), String> {
-        if self.halflife.is_nan() || self.halflife <= 0.0 {
-            return Err(format!("halflife must be above 0, got {}", self.halflife));
+        if self.half_life.is_nan() || self.half_life <= 0.0 {
+            return Err(format!("half_life must be above 0, got {}", self.half_life));
         }
         match (self.direction, self.horizon) {
             (Direction::Forward, None) => {
@@ -178,11 +178,11 @@ impl WindowDef {
     /// `λ^d`, the discount across `d` units of policy time.
     #[inline]
     fn discount(&self, d: f64) -> f64 {
-        if self.halflife.is_infinite() {
+        if self.half_life.is_infinite() {
             1.0
         } else {
             // `exp2(-x)`, as `Decay::factor` spells it, for the same reason.
-            (-(d / self.halflife)).exp2()
+            (-(d / self.half_life)).exp2()
         }
     }
 
@@ -519,7 +519,7 @@ mod clock_form {
 
     #[derive(Serialize, Deserialize)]
     struct Form {
-        max_dclock: f64,
+        gap_cap: f64,
         on_clock_reset: OnClockReset,
         session_gap: GapForm,
         min_backwards_jump: f64,
@@ -534,7 +534,7 @@ mod clock_form {
 
     pub fn serialize<S: Serializer>(c: &ClockCfg, s: S) -> Result<S::Ok, S::Error> {
         Form {
-            max_dclock: c.max_dclock,
+            gap_cap: c.gap_cap,
             on_clock_reset: c.on_clock_reset,
             session_gap: match c.session_gap {
                 None => GapForm::Off,
@@ -549,7 +549,7 @@ mod clock_form {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ClockCfg, D::Error> {
         let f = Form::deserialize(d)?;
         Ok(ClockCfg {
-            max_dclock: f.max_dclock,
+            gap_cap: f.gap_cap,
             on_clock_reset: f.on_clock_reset,
             session_gap: match f.session_gap {
                 GapForm::Off => None,
@@ -591,7 +591,7 @@ fn refuse_backwards(
 impl Windows {
     /// # Errors
     ///
-    /// No windows, or a window whose halflife, horizon or split is not one
+    /// No windows, or a window whose half-life, horizon or split is not one
     /// this core runs.
     pub fn new(defs: Vec<WindowDef>, clock_cfg: ClockCfg) -> Result<Self, String> {
         if defs.is_empty() {
@@ -900,10 +900,10 @@ impl Windows {
     }
 
     /// Cut the open windows of every group whose last row is more than
-    /// `max_dclock` behind `now`: the stream's clock has shown that its next
+    /// `gap_cap` behind `now`: the stream's clock has shown that its next
     /// row opens with a longer gap.
     fn end_silent(&mut self, now: ClockValue) {
-        let cap = self.clock_cfg.max_dclock;
+        let cap = self.clock_cfg.gap_cap;
         if !cap.is_finite() {
             return;
         }
@@ -1234,10 +1234,10 @@ mod tests {
             return f64::NAN;
         }
         let lam = |x: f64| {
-            if d.halflife.is_infinite() {
+            if d.half_life.is_infinite() {
                 1.0
             } else {
-                (-(x / d.halflife)).exp2()
+                (-(x / d.half_life)).exp2()
             }
         };
         let (mut s, mut w) = (0.0, 0.0);
@@ -1329,9 +1329,9 @@ mod tests {
                     end(g, how, &mut ends, &mut live);
                 }
             }
-            if let (Some(now), true) = (r.clock, cfg.max_dclock.is_finite() && n_forward > 0) {
+            if let (Some(now), true) = (r.clock, cfg.gap_cap.is_finite() && n_forward > 0) {
                 for g in groups.values_mut() {
-                    if live[g.epoch] && elapsed_bf(now, g.last_raw.unwrap()) > cfg.max_dclock {
+                    if live[g.epoch] && elapsed_bf(now, g.last_raw.unwrap()) > cfg.gap_cap {
                         end(g, End::Cut, &mut ends, &mut live);
                     }
                 }
@@ -1466,12 +1466,12 @@ mod tests {
         }
     }
 
-    fn def(direction: Direction, value: usize, halflife: f64, horizon: Option<f64>) -> WindowDef {
+    fn def(direction: Direction, value: usize, half_life: f64, horizon: Option<f64>) -> WindowDef {
         WindowDef {
             direction,
             value,
             weight: None,
-            halflife,
+            half_life,
             horizon,
             split: None,
             same_clock: SameClock::Include,
@@ -1590,7 +1590,7 @@ mod tests {
 
     fn cfg(clock: Clock, on_clock_reset: OnClockReset, session_gap: SessionGap) -> ClockCfg {
         ClockCfg {
-            max_dclock: match clock {
+            gap_cap: match clock {
                 Clock::Rows => f64::INFINITY,
                 _ => 10.0,
             },
@@ -1740,9 +1740,9 @@ mod tests {
         }
     }
 
-    fn numbers_cfg(max_dclock: f64) -> ClockCfg {
+    fn numbers_cfg(gap_cap: f64) -> ClockCfg {
         ClockCfg {
-            max_dclock,
+            gap_cap,
             ..ClockCfg::default()
         }
     }
@@ -1767,7 +1767,7 @@ mod tests {
             },
         ];
         let reset = ClockCfg {
-            max_dclock: 10.0,
+            gap_cap: 10.0,
             on_clock_reset: OnClockReset::ResetState,
             session_gap: None,
             min_backwards_jump: 3.0,
@@ -1898,7 +1898,7 @@ mod tests {
     /// A constant column gives that constant to rounding -- a weighted mean
     /// of `n` rows is within about `(n + 2) ε` of it, and these windows hold
     /// at most 51 -- whatever the weights; and a
-    /// halflife so short that every later factor underflows to 0 gives the
+    /// half-life so short that every later factor underflows to 0 gives the
     /// near end's value: the anchor there keeps the sum from being empty.
     #[test]
     fn a_constant_and_an_underflow() {
@@ -1975,7 +1975,7 @@ mod tests {
     }
 
     /// A group that falls silent holds the output for no more than
-    /// `max_dclock` of the stream's time, and its windows are cut then, as
+    /// `gap_cap` of the stream's time, and its windows are cut then, as
     /// its next row would cut them.
     #[test]
     fn a_silent_group_holds_output_for_at_most_the_cap() {
@@ -2012,8 +2012,8 @@ mod tests {
     fn a_description_it_cannot_run_is_refused() {
         let cases = [
             (def(Direction::Forward, 0, 1.0, None), "needs a horizon"),
-            (def(Direction::Backward, 0, 0.0, None), "halflife"),
-            (def(Direction::Backward, 0, f64::NAN, None), "halflife"),
+            (def(Direction::Backward, 0, 0.0, None), "half_life"),
+            (def(Direction::Backward, 0, f64::NAN, None), "half_life"),
             (
                 def(Direction::Backward, 0, 1.0, Some(f64::INFINITY)),
                 "horizon",

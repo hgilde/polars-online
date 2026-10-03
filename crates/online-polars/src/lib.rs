@@ -6,14 +6,14 @@
 //! use polars::prelude::*;
 //!
 //! // A spec is what the Python builders and the CLI's TOML produce; JSON here.
-//! // No `clock` column means a row-count clock, so `halflife` is in rows.
+//! // No `clock` column means a row-count clock, so `half_life` is in rows.
 //! let spec: Spec = serde_json::from_str(r#"{
 //!     "name": "ridge",
 //!     "model": {"type": "ew_ridge", "ridge": 1e-6},
 //!     "targets": ["y"],
 //!     "features": ["x"],
-//!     "halflife": 20.0,
-//!     "min_periods": 3.0
+//!     "half_life": 20.0,
+//!     "min_weight": 3.0
 //! }"#)?;
 //! let x: Vec<f64> = (0..40).map(|i| (i % 5) as f64).collect();
 //! let y: Vec<f64> = x.iter().map(|x| 1.0 + 2.0 * x).collect();
@@ -21,7 +21,7 @@
 //!
 //! // One struct column per spec, with a field per target and quantity
 //! // (`pred_y`, `resid_y`, ...). `pred` is out of sample -- computed before
-//! // the row's own target is learned -- and null until `min_periods`.
+//! // the row's own target is learned -- and null until `min_weight`.
 //! let mut bank = Bank::new(vec![spec])?;
 //! let out = bank.fit_predict(&df.slice(0, 20))?;
 //! let pred = out[0].as_materialized_series().struct_()?.field_by_name("pred_y")?;
@@ -84,8 +84,8 @@ pub use runner::{
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
-    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, FloatOrList, ModelKind, Num, SessionGapSpec,
-    ShardSpec, Spec,
+    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, FloatOrList, ModelKind, Num, RENAMED,
+    RidgeScale, SessionGapSpec, ShardSpec, Spec, name_renamed,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

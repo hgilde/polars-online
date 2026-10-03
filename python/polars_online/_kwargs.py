@@ -43,24 +43,23 @@ class ExprKwargs(TypedDict, total=False):
     ``tests/test_kwargs_typing.py`` holds it to the shared parameters.
     """
 
-    add_intercept: bool
+    fit_intercept: bool
     clock: str | None
-    halflife: float | Duration | list[float | Duration] | None
+    half_life: float | Duration | list[float | Duration] | None
     lam: float | None
-    max_dclock: float | Duration | None
-    on_clock_reset: str
-    min_backwards_jump: float | Duration | None
+    gap_cap: float | Duration | None
+    restart_after_step_back: float | Duration | None
     session: str | None
     session_gap: float | Duration | None
     weight: str | None
-    min_periods: float | list[float] | None
+    min_weight: float | list[float] | None
     min_settled_frac: float | None
     max_error_inflation: float | None
     emit_error_inflation: bool
     emit_clocks: bool
     coef_every: int
     emit_sigma: bool
-    emit_resid_z: bool
+    emit_zscore: bool
     emit_selected: bool
     emit_averaged: bool
     average_eta: float | None
@@ -74,7 +73,7 @@ class ExprKwargs(TypedDict, total=False):
     drift_delta: float | None
     drift_threshold: float | None
     drift_action: str
-    label_delay: float | Duration | None
+    embargo: float | Duration | None
 
 
 class CommonKwargs(ExprKwargs, total=False):

@@ -2,10 +2,10 @@
 //! (docs/PLAN.md task 88).
 //!
 //! A numeric clock column has no unit, so a parameter measured against it is
-//! a plain number of the column's units: `halflife = 600` on a clock in
+//! a plain number of the column's units: `half_life = 600` on a clock in
 //! seconds is ten minutes. A temporal column (`Datetime`, `Date`,
 //! `Duration`) does carry a unit, and a parameter measured against it is a
-//! duration: `halflife = "10m"`. Both are read on one internal scale,
+//! duration: `half_life = "10m"`. Both are read on one internal scale,
 //! seconds, so a duration means the same length of time whatever the
 //! column's own unit is.
 //!
@@ -271,8 +271,8 @@ impl<'de> Deserialize<'de> for Span {
     }
 }
 
-/// One clock-unit quantity or a list of them: a `halflife` grid, one model
-/// instance per value (docs/PLAN.md §4.1), or a per-slot `kalman` halflife.
+/// One clock-unit quantity or a list of them: a `half_life` grid, one model
+/// instance per value (docs/PLAN.md §4.1), or a per-slot `kalman` half-life.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SpanList {

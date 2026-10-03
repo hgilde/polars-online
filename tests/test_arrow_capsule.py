@@ -25,11 +25,11 @@ SPEC = {
     "targets": ["y"],
     "features": ["x0", "x1"],
     "clock": "t",
-    "halflife": 60.0,
-    "max_dclock": 30.0,
+    "half_life": 60.0,
+    "gap_cap": 30.0,
     "weight": "w",
     "group": "g",
-    "min_periods": 5.0,
+    "min_weight": 5.0,
 }
 
 
@@ -94,7 +94,7 @@ def test_a_struct_exports_once() -> None:
 
 
 def test_one_struct_per_spec_in_spec_order() -> None:
-    second = {**SPEC, "name": "n", "halflife": 10.0}
+    second = {**SPEC, "name": "n", "half_life": 10.0}
     df = frame(80)
     want = po.ModelBank([SPEC, second]).fit_predict(df)
     outs = po.ModelBank([SPEC, second]).fit_predict_arrow(df)

@@ -8,12 +8,12 @@
 //! that divides one by the other read the ratio of two rounding artefacts.
 //! The feature's level decides when, since the gap is counted in its
 //! rounding steps: measured, a lasso's slope on a feature at 1e8 went from
-//! the 0.5 it had learned to -4.7e3 within 40 halflives of it stopping.
+//! the 0.5 it had learned to -4.7e3 within 40 half-lives of it stopping.
 //!
 //! Every running mean is now a pair, `hi + lo`, whose steps no rounding
 //! drops (`crates/online-core/src/comp.rs`). These hold every
 //! model that centres a feature to what exact arithmetic gives, for 150
-//! halflives after it stops, at levels from 0 to 1e12: the slope learned
+//! half-lives after it stops, at levels from 0 to 1e12: the slope learned
 //! while it moved, a spread that keeps decaying, and fits that do not
 //! depend on the level the feature sits at; and the same of a target that
 //! stops. Each fails with the means plain.
@@ -84,7 +84,7 @@ fn decay() -> Decay {
 }
 
 /// What a fit at each level is held to: its predictions against the same
-/// fit at 0.5, as a share of `1 + |pred|`, from `from` halflives after the
+/// fit at 0.5, as a share of `1 + |pred|`, from `from` half-lives after the
 /// stop, to `tol(level)`.
 struct Invariance {
     from: usize,
@@ -110,9 +110,9 @@ fn steps_of(level: f64) -> f64 {
 /// "Near" is 0.5 ± 0.3. Exact arithmetic moves the slope a little as the
 /// feature's history decays to the scale of its last few rows, by about
 /// `sqrt(b)` of it. Measured over the levels and five seeds, the slope
-/// ranged over 0.41 to 0.61, all of it within 10 halflives of the stop, and
+/// ranged over 0.41 to 0.61, all of it within 10 half-lives of the stop, and
 /// within the same range in blocks of 4 to 64 rows. With the means plain it
-/// went to -79 at 50 halflives, -4.7e3 at 40, 1e10.
+/// went to -79 at 50 half-lives, -4.7e3 at 40, 1e10.
 fn holds<M: OnlineModel>(
     name: &str,
     make: impl Fn() -> M,
@@ -125,7 +125,7 @@ fn holds<M: OnlineModel>(
         for (i, &c) in coef.iter().enumerate().skip(MOVING) {
             assert!(
                 c.is_nan() || (0.2..0.8).contains(&c),
-                "{name} at level {level}: slope {c} on the stopped feature, {:.1} halflives after it stopped",
+                "{name} at level {level}: slope {c} on the stopped feature, {:.1} half_lives after it stopped",
                 (i - MOVING) as f64 / H
             );
         }
@@ -153,17 +153,17 @@ fn the_lasso_keeps_the_slope_it_learned() {
     let cfg = LassoCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         lasso_path: vec![0.05, 0.0],
         l1_ratio: 1.0,
-        select_halflife: None,
-        min_periods: 10.0,
+        select_half_life: None,
+        min_weight: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
-        max_cd_iters: 1000,
-        cd_tol: 1e-12,
+        max_iter: 1000,
+        tol: 1e-12,
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
@@ -180,16 +180,16 @@ fn ridge(standardize: bool) -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         ridge: vec![1e-6],
         feature_sets: vec![],
         standardize,
-        ridge_decay: false,
+        ridge_scale: false,
         coef_prior: None,
         session_shrink: None,
-        long_halflife: None,
-        min_periods: 10.0,
+        long_half_life: None,
+        min_weight: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -271,7 +271,7 @@ fn a_windowed_ridge_keeps_the_slope_while_the_window_has_spread() {
 }
 
 /// A hold that ends (review 2026-09-25): the feature moves again after
-/// fifty halflives, and within five more the slope is back where it was and
+/// fifty half-lives, and within five more the slope is back where it was and
 /// the fit at a level predicts what the fit at 0.5 does.
 #[test]
 fn a_feature_that_moves_again_gets_its_slope_back() {
@@ -351,12 +351,12 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
     let cfg = RobustCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         loss: RobustLoss::Huber { delta: 1.345 },
         ridge: 1e-6,
         standardize: true,
-        min_periods: 10.0,
+        min_weight: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -374,23 +374,23 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
 /// stopped feature's spread, in exact arithmetic too, so its slope is not
 /// held here; what it predicts is. Its scaler starts from a mean of zero, so
 /// its first rows see the level itself and the fit at a level differs from
-/// the fit at 0.5 by a warm-up that decays with the coefficient halflife:
-/// 7.3e-2 at the stop, 4.9e-4 at every level from 100 halflives. The stall
+/// the fit at 0.5 by a warm-up that decays with the coefficient half-life:
+/// 7.3e-2 at the stop, 4.9e-4 at every level from 100 half-lives. The stall
 /// grew it back to 6.9e-2 there.
 #[test]
 fn kalman_predicts_the_same_at_every_level() {
     let cfg = KalmanCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
-        halflife: vec![200.0],
+        half_life: vec![200.0],
         q: None,
         obs_var: None,
         p0: 1.0,
         share_p: false,
-        min_periods: 10.0,
-        revert_halflife: vec![f64::INFINITY],
+        min_weight: 10.0,
+        revert_half_life: vec![f64::INFINITY],
         standardize: true,
     };
     holds(
@@ -408,20 +408,20 @@ fn kalman_predicts_the_same_at_every_level() {
 /// the stopped feature's deviation against a spread that decays with it --
 /// the deviation from the pair, which keeps every bit as it shrinks.
 /// Measured from the stop: 3.7e-15 at 1e3, 1.7e-9 at 1e8, 3.2e-6 at 1e12.
-/// The stall left 6.4e-2 at 40 halflives and 0.12 at 100.
+/// The stall left 6.4e-2 at 40 half-lives and 0.12 at 100.
 #[test]
 fn sgd_predicts_the_same_at_every_level() {
     let cfg = SgdCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         loss: SgdLoss::Squared,
         learning_rate: 0.01,
         schedule: LearningRate::Constant,
         l2: 0.0,
-        min_periods: 10.0,
-        scale_features: true,
+        min_weight: 10.0,
+        standardize: true,
         clip_gradient: f64::INFINITY,
         constraint: None,
     };
@@ -444,7 +444,7 @@ fn ew_cov_reports_a_stopped_feature_as_it_is() {
             n_features: 3,
             decay: decay(),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: vec![],
             pca: 0,
@@ -462,7 +462,7 @@ fn ew_cov_reports_a_stopped_feature_as_it_is() {
             }
         }
         let (var, cov) = (m.cov().var(2), m.cov());
-        // 150 halflives take 2^-150 of it, about 7e-46; rounding may keep a
+        // 150 half-lives take 2^-150 of it, about 7e-46; rounding may keep a
         // little more, never a floor.
         assert!(
             var <= 1e-30 * at_stop,
@@ -485,7 +485,7 @@ fn marginal_reports_a_stopped_feature_as_it_is() {
             n_features: 3,
             n_targets: 1,
             decay: decay(),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: vec![],
             serial_rule: None,
             cross_lags: None,
@@ -538,7 +538,7 @@ fn held_target(level: f64) -> Vec<([f64; 3], f64)> {
 /// A target that stops moving: its mean is a pair as a feature's is, so the
 /// cross-moments with the features that still move decay with the history,
 /// as exact arithmetic has them, and the slopes with them -- to 2^-150 of
-/// the 2 learned on `x0`, 150 halflives on: measured, 1.35e-45 at every
+/// the 2 learned on `x0`, 150 half-lives on: measured, 1.35e-45 at every
 /// level (1.26e-45 for `huber`). A mean stopped short of the target fed each
 /// cross-moment that gap times the features' motion, and the slopes stayed
 /// on it: -1.5e-16 at a level of 0.5, -2e-8 at 1e8, -1.6e-4 at 1e12 (the
@@ -560,7 +560,7 @@ fn slopes_decay<M: OnlineModel>(name: &str, make: impl Fn() -> M, slope: impl Fn
         );
         assert!(
             end.abs() <= 1e-30,
-            "{name} at level {level}: slope {end:e} on x0, 150 halflives after the target stopped"
+            "{name} at level {level}: slope {end:e} on x0, 150 half_lives after the target stopped"
         );
     }
 }
@@ -591,17 +591,17 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
     let lasso = LassoCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         lasso_path: vec![0.0],
         l1_ratio: 1.0,
-        select_halflife: None,
-        min_periods: 10.0,
+        select_half_life: None,
+        min_weight: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
-        max_cd_iters: 1000,
-        cd_tol: 1e-30,
+        max_iter: 1000,
+        tol: 1e-30,
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
@@ -614,12 +614,12 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
     let huber = RobustCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: decay(),
         loss: RobustLoss::Huber { delta: 1.345 },
         ridge: 1e-6,
         standardize: true,
-        min_periods: 10.0,
+        min_weight: 10.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,
@@ -647,7 +647,7 @@ fn a_held_target_is_reported_as_it_is() {
             n_features: 3,
             n_targets: 1,
             decay: decay(),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: vec![],
             serial_rule: None,
             cross_lags: None,
@@ -722,14 +722,14 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
     let cfg = SgdCfg {
         n_features: 3,
         n_targets: 1,
-        add_intercept: true,
+        fit_intercept: true,
         decay: Decay::Halflife(f64::INFINITY),
         loss: SgdLoss::Squared,
         learning_rate: 0.01,
         schedule: LearningRate::Constant,
         l2: 0.0,
-        min_periods: 10.0,
-        scale_features: true,
+        min_weight: 10.0,
+        standardize: true,
         clip_gradient: f64::INFINITY,
         constraint: None,
     };
@@ -752,9 +752,9 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
 
 /// A state saved while a feature holds a value carries its means' low
 /// parts, and the model restored from it goes on as the one that never
-/// stopped, to the bit. Saved every 5 halflives from 10 to 55 after the
+/// stopped, to the bit. Saved every 5 half-lives from 10 to 55 after the
 /// feature stops at a level of 1e8, which spans the row a plain mean would
-/// stall on (near 30 halflives), through named msgpack as the bank writes a
+/// stall on (near 30 half-lives), through named msgpack as the bank writes a
 /// state file. With the low parts left out of the state it fails.
 fn resumes<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
     let rows = stream(1e8);
@@ -781,7 +781,7 @@ fn resumes<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
                     .all(|(a, b)| a.to_bits() == b.to_bits());
             assert!(
                 same,
-                "{name}, saved {hl} halflives in: row {i}, {got:?} against {want:?}"
+                "{name}, saved {hl} half_lives in: row {i}, {got:?} against {want:?}"
             );
         }
     }
@@ -801,17 +801,17 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
         Lasso::new(LassoCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             lasso_path: vec![0.05, 0.0],
             l1_ratio: 1.0,
-            select_halflife: None,
-            min_periods: 10.0,
+            select_half_life: None,
+            min_weight: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
-            max_cd_iters: 1000,
-            cd_tol: 1e-12,
+            max_iter: 1000,
+            tol: 1e-12,
             target_gaps: TargetGaps::OwnRows,
             window: None,
             window_every: None,
@@ -822,12 +822,12 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
         Robust::new(RobustCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             loss: RobustLoss::Huber { delta: 1.345 },
             ridge: 1e-6,
             standardize: true,
-            min_periods: 10.0,
+            min_weight: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -839,15 +839,15 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
         Kalman::new(KalmanCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
-            halflife: vec![200.0],
+            half_life: vec![200.0],
             q: None,
             obs_var: None,
             p0: 1.0,
             share_p: false,
-            min_periods: 10.0,
-            revert_halflife: vec![f64::INFINITY],
+            min_weight: 10.0,
+            revert_half_life: vec![f64::INFINITY],
             standardize: true,
         })
         .unwrap()
@@ -856,14 +856,14 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
         Sgd::new(SgdCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             loss: SgdLoss::Squared,
             learning_rate: 0.01,
             schedule: LearningRate::Constant,
             l2: 0.0,
-            min_periods: 10.0,
-            scale_features: true,
+            min_weight: 10.0,
+            standardize: true,
             clip_gradient: f64::INFINITY,
             constraint: None,
         })
@@ -874,7 +874,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             n_features: 3,
             n_targets: 1,
             decay: decay(),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: vec![],
             serial_rule: None,
             cross_lags: None,
@@ -891,7 +891,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
 /// the pairs' means are, so each bin's variance decays with its history,
 /// and the split gain -- the between-bin share of the target's variance --
 /// goes to zero with it. Measured: a gain of 0.52 at the stop, and 0 at every
-/// level 150 halflives on (3.4e-46 where the target holds zero), with the
+/// level 150 half-lives on (3.4e-46 where the target holds zero), with the
 /// bins' variances at 4.7e-45. A bin's mean that stopped short left its `m2`
 /// fed that gap: the variances settled on 4.9e-32 at 0.5 and 6.0e-8 at
 /// 1e12, and the gain on a ratio of rounding artefacts, 0.45 with a `t` of
@@ -903,7 +903,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
             n_features: 3,
             n_targets: 1,
             decay: decay(),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: vec![],
             serial_rule: None,
             cross_lags: None,
@@ -935,7 +935,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
         );
         assert!(
             p.split_gain <= 1e-10,
-            "level {level}: split gain {:e}, 150 halflives after the target stopped",
+            "level {level}: split gain {:e}, 150 half_lives after the target stopped",
             p.split_gain
         );
         for (b, v) in p.bin_var_y.iter().enumerate() {
@@ -1003,17 +1003,17 @@ fn a_row_of_no_weight_moves_no_mean() {
         Lasso::new(LassoCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             lasso_path: vec![0.05, 0.0],
             l1_ratio: 1.0,
-            select_halflife: None,
-            min_periods: 10.0,
+            select_half_life: None,
+            min_weight: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
-            max_cd_iters: 1000,
-            cd_tol: 1e-12,
+            max_iter: 1000,
+            tol: 1e-12,
             target_gaps: TargetGaps::OwnRows,
             window: None,
             window_every: None,
@@ -1024,12 +1024,12 @@ fn a_row_of_no_weight_moves_no_mean() {
         Robust::new(RobustCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             loss: RobustLoss::Huber { delta: 1.345 },
             ridge: 1e-6,
             standardize: true,
-            min_periods: 10.0,
+            min_weight: 10.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -1041,15 +1041,15 @@ fn a_row_of_no_weight_moves_no_mean() {
         Kalman::new(KalmanCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
-            halflife: vec![200.0],
+            half_life: vec![200.0],
             q: None,
             obs_var: None,
             p0: 1.0,
             share_p: false,
-            min_periods: 10.0,
-            revert_halflife: vec![f64::INFINITY],
+            min_weight: 10.0,
+            revert_half_life: vec![f64::INFINITY],
             standardize: true,
         })
         .unwrap()
@@ -1058,14 +1058,14 @@ fn a_row_of_no_weight_moves_no_mean() {
         Sgd::new(SgdCfg {
             n_features: 3,
             n_targets: 1,
-            add_intercept: true,
+            fit_intercept: true,
             decay: decay(),
             loss: SgdLoss::Squared,
             learning_rate: 0.01,
             schedule: LearningRate::Constant,
             l2: 0.0,
-            min_periods: 10.0,
-            scale_features: true,
+            min_weight: 10.0,
+            standardize: true,
             clip_gradient: f64::INFINITY,
             constraint: None,
         })
@@ -1076,7 +1076,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             n_features: 3,
             n_targets: 1,
             decay: decay(),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: vec![],
             serial_rule: None,
             cross_lags: None,
@@ -1092,7 +1092,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             n_features: 3,
             decay: decay(),
             stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: vec![],
             pca: 0,
@@ -1124,7 +1124,7 @@ fn ew_class_classifies_the_same_at_every_level() {
             n_features: 3,
             n_classes: 2,
             decay: decay(),
-            min_periods: 10.0,
+            min_weight: 10.0,
             covariance: Covariance::Full,
             precision_prior: 1e-3,
             window: None,
@@ -1185,7 +1185,7 @@ fn hmm_filters_the_same_at_every_level() {
             decay: decay(),
             covariance: Covariance::Full,
             precision_prior: 1e-3,
-            min_periods: 10.0,
+            min_weight: 10.0,
             learn: true,
             transition_prior: 1.0,
             transition: None,
@@ -1300,7 +1300,7 @@ fn a_row_of_no_weight_moves_nothing_without_a_target() {
             robust_beta: 0.0,
             prune_below: 1e-6,
             max_run: 200,
-            min_periods: 0.0,
+            min_weight: 0.0,
         })
         .unwrap()
     });
@@ -1312,7 +1312,7 @@ fn a_row_of_no_weight_moves_nothing_without_a_target() {
             alpha: None,
             beta: None,
             blocks: Vec::new(),
-            min_periods: 3.0,
+            min_weight: 3.0,
         })
         .unwrap()
     });
@@ -1323,7 +1323,7 @@ fn a_row_of_no_weight_moves_nothing_without_a_target() {
             decay: decay(),
             covariance: Covariance::Full,
             precision_prior: 1e-3,
-            min_periods: 10.0,
+            min_weight: 10.0,
             learn: true,
             transition_prior: 1.0,
             transition: None,

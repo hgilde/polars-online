@@ -358,10 +358,10 @@ def test_a_noise_spectrum_lies_inside_the_edges():
 
 def test_signal_share_floor_is_the_kish_size():
     """Task 148: the sampling variance of an EW correlation's Fisher-z is
-    ``1 / (n - 3)`` at Kish's ``n``, not at ``n_eff``, which is about half
+    ``1 / (n - 3)`` at Kish's ``n``, not at ``weight_sum``, which is about half
     of it. Weighted correlations of independent noise, by hand: the floor at
     the Kish size explains their spread, and ``signal_share`` reads it as
-    noise; the floor at ``n_eff`` is twice the spread."""
+    noise; the floor at ``weight_sum`` is twice the spread."""
     rng = np.random.default_rng(11)
     blocks, rows, lam = 800, 1500, 0.5 ** (1 / 50.0)
     w = lam ** np.arange(rows)[::-1]
@@ -372,10 +372,10 @@ def test_signal_share_floor_is_the_kish_size():
         cxy = w @ ((x - mx) * (y - my))
         r = cxy / np.sqrt(w @ (x - mx) ** 2 * (w @ (y - my) ** 2))
         z[b] = np.arctanh(r)
-    n_kish, n_eff = w.sum() ** 2 / (w**2).sum(), w.sum()
+    n_kish, weight_sum = w.sum() ** 2 / (w**2).sum(), w.sum()
     spread = z.var(ddof=1)
     assert spread * (n_kish - 3) == pytest.approx(1.0, abs=0.15)
-    assert spread * (n_eff - 3) < 0.6
+    assert spread * (weight_sum - 3) < 0.6
     assert corr.signal_share(z, n_kish_blocks=np.full(blocks, n_kish)) < 0.15
 
 

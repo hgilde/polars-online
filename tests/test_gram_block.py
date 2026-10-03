@@ -1,10 +1,10 @@
 """`gram_block_rows` on `ewridge` (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71).
 
 The block is an implementation of the same model, not a different one: the
-four scalars (`n_eff` among them) run the per-row recursion unchanged, and
+four scalars (`weight_sum` among them) run the per-row recursion unchanged, and
 only the `k x k` matrix waits, to be merged once per block by one matrix
 product. So the claims are that a blocked fit is the per-row fit to rounding
-and `n_eff` to the bit; that chunk invariance, a save mid-block and the JSON
+and `weight_sum` to the bit; that chunk invariance, a save mid-block and the JSON
 export all hold with rows in flight; that `gram()` read mid-block sees the
 held rows without moving the model's block boundary; that a state written
 before the field existed loads with blocking off; and that the settings
@@ -29,7 +29,7 @@ HL = 100.0
 
 
 def stream(n: int = 700, seed: int = 0) -> pl.DataFrame:
-    """Nulls, zero weights, a gap of five halflives and a session change:
+    """Nulls, zero weights, a gap of five half-lives and a session change:
     everything a held row has to carry into the merge."""
     rng = np.random.default_rng(seed)
     X = rng.standard_normal((n, K))
@@ -53,11 +53,11 @@ def spec(block: int | None, **kw):
         targets=["y"],
         features=[f"x{j}" for j in range(K)],
         clock="t",
-        max_dclock=5 * HL,
-        halflife=HL,
+        gap_cap=5 * HL,
+        half_life=HL,
         weight="w",
         ridge=1e-3,
-        min_periods=8.0,
+        min_weight=8.0,
         solve_every=7.0,
         max_rows_between_solves=30,
         coef_every=1,
@@ -86,13 +86,13 @@ def ridge_state(bank: po.ModelBank) -> dict:
 
 
 def assert_same_fit(plain: pl.DataFrame, blocked: pl.DataFrame, rel: float = 1e-9) -> None:
-    """The scalars to the bit, the fit to rounding: every `n_eff` column
+    """The scalars to the bit, the fit to rounding: every `weight_sum` column
     bit-equal, every other float (and list of floats) within `rel`, and
     everything else -- flags, counts -- identical."""
     assert plain.columns == blocked.columns
     for col in plain.columns:
         a, b = plain[col], blocked[col]
-        if col.startswith("n_eff"):
+        if col.startswith("weight_sum"):
             assert a.equals(b), f"{col} is not on the blocked path"
         elif a.dtype.is_float():
             x = a.to_numpy().astype(float)
@@ -126,14 +126,16 @@ def test_a_blocked_fit_is_the_per_row_fit(block):
     "kw",
     [
         pytest.param(dict(standardize=True), id="standardize"),
-        pytest.param(dict(standardize=True, add_intercept=False), id="standardize-no-intercept"),
+        pytest.param(dict(standardize=True, fit_intercept=False), id="standardize-no-intercept"),
         pytest.param(
             dict(ridge=[1e-3, 1e-1], feature_sets={"a": ["x0", "x1"], "b": ["x2", "x3", "x4"]}),
             id="grid",
         ),
-        pytest.param(dict(ridge=0.1, ridge_decay=True, coef_prior=[[0.5] + [0.0] * K]), id="prior"),
-        pytest.param(dict(halflife=[HL, 3 * HL]), id="two-halflives"),
-        pytest.param(dict(label_delay=3.0), id="label-delay"),
+        pytest.param(
+            dict(ridge=0.1, ridge_scale="sum", coef_prior=[[0.5] + [0.0] * K]), id="prior"
+        ),
+        pytest.param(dict(half_life=[HL, 3 * HL]), id="two-half_lives"),
+        pytest.param(dict(embargo=3.0), id="label-delay"),
         pytest.param(
             dict(emit_drift=True, drift_delta=0.005, drift_threshold=5.0, drift_action="reset"),
             id="drift-reset",
@@ -146,8 +148,8 @@ def test_the_blocked_fit_holds_on_every_path_the_solve_and_the_plumbing_take(kw)
     forms (plain, standardized with and without the intercept, the decaying
     prior) and reads a sub-block per grid entry; the plumbing rebuilds the
     model on a drift reset, steps delayed rows late, runs one instance per
-    halflife and one stream per group. Each is the per-row fit to rounding,
-    with `n_eff` to the bit, or a block is being read past its merge."""
+    half-life and one stream per group. Each is the per-row fit to rounding,
+    with `weight_sum` to the bit, or a block is being read past its merge."""
     df = stream()
     plain, _ = run(df, 0, **kw)
     blocked, _ = run(df, 16, **kw)
@@ -375,7 +377,7 @@ def test_gram_mid_block_reads_the_held_rows_and_moves_nothing():
     _, read = run(head, 16)
     _, unread = run(head, 16)
     g0, g1 = plain.gram("m")[0], read.gram("m")[0]
-    assert g0["n_eff"] == g1["n_eff"]
+    assert g0["weight_sum"] == g1["weight_sum"]
     assert np.allclose(g0["means"], g1["means"], rtol=1e-9, atol=1e-12)
     scale = np.abs(g0["comoments"]).max()
     assert np.allclose(g0["comoments"], g1["comoments"], rtol=0, atol=1e-9 * scale)
@@ -386,7 +388,7 @@ def test_gram_mid_block_reads_the_held_rows_and_moves_nothing():
 
 
 def test_scoring_mid_block_is_the_plain_model_s_and_moves_nothing():
-    """`predict()` reads the last solve and `n_eff`, neither of which waits
+    """`predict()` reads the last solve and `weight_sum`, neither of which waits
     for the block, so it scores as the per-row model does -- and, learning
     nothing, it leaves the held rows exactly where they were."""
     df = stream()
@@ -416,7 +418,7 @@ def test_a_group_closed_mid_block_carries_the_merged_rows():
     plain = po.ModelBank([spec(0, group="g")])
     plain.fit_predict(df.slice(0, 341))
     g = plain.gram("m", "a")[0]
-    assert row["n_eff"] == g["n_eff"]
+    assert row["weight_sum"] == g["weight_sum"]
     assert np.allclose(row["means"], g["means"], rtol=1e-9, atol=1e-12)
     scale = np.abs(g["comoments"]).max()
     assert np.allclose(row["comoments"], g["comoments"], rtol=0, atol=1e-9 * scale)
@@ -427,7 +429,7 @@ def test_a_session_change_blends_the_held_block_first():
     """`session_shrink` reads both matrices in full at the boundary, so the
     held rows go in first, and the twin keeps its block afterwards."""
     df = stream()
-    kw = dict(session="s", session_gap=0.0, session_shrink=0.5, long_halflife=1e4)
+    kw = dict(session="s", session_gap=0.0, session_shrink=0.5, long_half_life=1e4)
     plain, _ = run(df, 0, **kw)
     blocked, bank = run(df, 16, **kw)
     assert_same_fit(plain, blocked)
@@ -439,13 +441,13 @@ def test_a_session_change_blends_the_held_block_first():
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        ({"window": 50.0}, "gram_block_rows and window do not combine"),
+        ({"window_size": 50.0}, "gram_block_rows and window do not combine"),
         ({"solve_every": 0.0}, "needs a solve cadence"),
         ({"max_rows_between_solves": 1}, "max_rows_between_solves = 1"),
-        # The default cadence is every row for an infinite halflife and for
+        # The default cadence is every row for an infinite half-life and for
         # `lam`: the option then needs its own.
-        ({"halflife": float("inf"), "solve_every": None}, "solve_every = 0"),
-        ({"halflife": None, "lam": 0.99, "solve_every": None}, "0 for `lam`"),
+        ({"half_life": float("inf"), "solve_every": None}, "solve_every = 0"),
+        ({"half_life": None, "lam": 0.99, "solve_every": None}, "0 for `lam`"),
         ({"gram_block_rows": 1 << 30}, "over the 256 MiB budget"),
     ],
 )
@@ -458,4 +460,4 @@ def test_the_budget_names_the_size():
     with pytest.raises(ValueError, match=r"would hold \d+\.\d GiB of rows \(\d+ × \d+ features\)"):
         spec(1 << 30)
     with pytest.raises(ValueError, match="twice for the slow twin"):
-        spec(1 << 30, session="s", session_gap=0.0, session_shrink=0.5, long_halflife=1e4)
+        spec(1 << 30, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=1e4)

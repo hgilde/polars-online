@@ -50,21 +50,21 @@ class TestKalmanOracle:
     def _compare(self, df, k=3, targets=("y0",), **kw):
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
-        ref = kalman_ref(x, y, dc, w, max_dclock=MAXD, **kw)
+        ref = kalman_ref(x, y, dc, w, gap_cap=MAXD, **kw)
         spec = po.spec.kalman(
             "m",
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
             clock="t",
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             weight="w",
-            halflife=kw.get("halflife", 500.0),
-            coef_halflife=kw.get("coef_halflife", 100.0),
+            half_life=kw.get("half_life", 500.0),
+            coef_half_life=kw.get("coef_half_life", 100.0),
             q=kw.get("q"),
             obs_var=kw.get("obs_var"),
             p0=kw.get("p0"),
             share_p=kw.get("share_p", False),
-            min_periods=kw.get("min_periods", 10.0),
+            min_weight=kw.get("min_weight", 10.0),
         )
         out = po.ModelBank([spec]).fit_predict(df)
         for j, t in enumerate(targets):
@@ -72,9 +72,9 @@ class TestKalmanOracle:
                 got = out["m"].struct.field(f"{field}{t}").to_numpy().astype(float)
                 _close(got, ref[key][:, j], what=f"{field}{t}")
         _close(
-            out["m"].struct.field("n_eff").to_numpy().astype(float),
-            ref["n_eff"],
-            what="n_eff",
+            out["m"].struct.field("weight_sum").to_numpy().astype(float),
+            ref["weight_sum"],
+            what="weight_sum",
         )
 
     def test_scalar_coef_halflife(self):
@@ -84,7 +84,7 @@ class TestKalmanOracle:
     def test_per_factor_halflife_with_pinning(self):
         df, _ = synthetic(seed=72, n_groups=1, n_rows=300, k=3, null_frac=0.0)
         # intercept pinned, x0 slow, x1 fast, x2 pinned
-        self._compare(df, coef_halflife=[float("inf"), 500.0, 30.0, float("inf")])
+        self._compare(df, coef_half_life=[float("inf"), 500.0, 30.0, float("inf")])
 
     def test_explicit_q(self):
         df, _ = synthetic(seed=73, n_groups=1, n_rows=250, k=3, null_frac=0.0)
@@ -112,18 +112,18 @@ class TestKalmanOracle:
         df, _ = synthetic(seed=78, n_groups=1, n_rows=200, k=2, null_frac=0.0)
         x, dc, w = _arrays(df, 2)
         y = df["y0"].to_numpy().reshape(-1, 1)
-        ref = kalman_ref(x, y, dc, w, add_intercept=False, min_periods=10.0, max_dclock=MAXD)
+        ref = kalman_ref(x, y, dc, w, fit_intercept=False, min_weight=10.0, gap_cap=MAXD)
         spec = po.spec.kalman(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            add_intercept=False,
+            fit_intercept=False,
             clock="t",
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             weight="w",
-            halflife=500.0,
-            coef_halflife=100.0,
-            min_periods=10.0,
+            half_life=500.0,
+            coef_half_life=100.0,
+            min_weight=10.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         _close(
@@ -138,7 +138,7 @@ class TestLassoOptimality:
     conditions on the model's own standardized statistics."""
 
     @staticmethod
-    def _ew_stats(x, y, dclock, w, halflife):
+    def _ew_stats(x, y, dclock, w, half_life):
         """EW mean and raw second moments of z = [1, x] through every row,
         matching the core's mean-form recursion (stats updated after the row's
         prediction, so index i includes row i)."""
@@ -152,7 +152,7 @@ class TestLassoOptimality:
         out = []
         for i in range(n):
             z = np.concatenate(([1.0], x[i]))
-            lam = 0.5 ** (dclock[i] / halflife)
+            lam = 0.5 ** (dclock[i] / half_life)
             W_new = lam * W + w[i]
             a, b = lam * W / W_new, w[i] / W_new
             mean = a * mean + b * z
@@ -164,11 +164,11 @@ class TestLassoOptimality:
             out.append((mean.copy(), raw.copy(), ry.copy()))
         return out
 
-    def _kkt_residuals(self, x, y, dclock, w, halflife, coefs, lam_value, l1_ratio):
+    def _kkt_residuals(self, x, y, dclock, w, half_life, coefs, lam_value, l1_ratio):
         """Return (b_std, g, l1) at the final row: g_i is the stationarity
         quantity that must equal l1*sign(b_i) where b_i != 0, and satisfy
         |g_i| <= l1 where b_i == 0."""
-        mean, raw, ry = self._ew_stats(x, y, dclock, w, halflife)[-1]
+        mean, raw, ry = self._ew_stats(x, y, dclock, w, half_life)[-1]
         k = x.shape[1]
         cov = raw[1:, 1:] - np.outer(mean[1:], mean[1:])
         s = np.array(
@@ -205,11 +205,11 @@ class TestLassoOptimality:
             features=[f"x{j}" for j in range(4)],
             lasso_path=path,
             l1_ratio=l1_ratio,
-            halflife=1e9,
-            min_periods=10.0,
+            half_life=1e9,
+            min_weight=10.0,
             max_rows_between_solves=1,
-            max_cd_iters=2000,
-            cd_tol=1e-14,
+            max_iter=2000,
+            tol=1e-14,
         )
         out = po.ModelBank([spec]).fit_predict(df)
 
@@ -247,8 +247,8 @@ class TestLassoOptimality:
             targets=["y0"],
             features=[f"x{j}" for j in range(4)],
             lasso_path=path,
-            halflife=1e9,
-            min_periods=10.0,
+            half_life=1e9,
+            min_weight=10.0,
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -265,11 +265,11 @@ class TestLassoOptimality:
             targets=["y0"],
             features=["x0", "x1", "x2"],
             lasso_path=[0.0],
-            halflife=1e9,
-            min_periods=10.0,
+            half_life=1e9,
+            min_weight=10.0,
             max_rows_between_solves=1,
-            max_cd_iters=5000,
-            cd_tol=1e-15,
+            max_iter=5000,
+            tol=1e-15,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         coefs = out["m"].struct.field("coef").to_list()[-1]
@@ -289,8 +289,8 @@ def test_intercept_matches_the_weighted_means():
         targets=["y0"],
         features=["x0", "x1", "x2"],
         lasso_path=path,
-        halflife=1e9,
-        min_periods=10.0,
+        half_life=1e9,
+        min_weight=10.0,
         max_rows_between_solves=1,
     )
     out = po.ModelBank([spec]).fit_predict(df)
@@ -307,7 +307,7 @@ def test_intercept_matches_the_weighted_means():
 
 class TestLassoPredPath:
     """T-A2, the pred path: every row's ``pred`` and ``resid`` per path point,
-    ``n_eff`` and every emitted ``coef``, against
+    ``weight_sum`` and every emitted ``coef``, against
     ``tests/reference.py::lasso_ref``.
 
     The KKT check above sees one snapshot, the last solve's. This sees every
@@ -325,11 +325,11 @@ class TestLassoPredPath:
     MAX_DCLOCK = 6.0
     # Measured over the cases below as `_close` reads an error,
     # |got - expected| / (1 + |expected|): pred 1.7e-14, resid 3.3e-14, coef
-    # 1.2e-12, n_eff exact. Each tolerance is 100x the largest it covers,
+    # 1.2e-12, weight_sum exact. Each tolerance is 100x the largest it covers,
     # rounded up to a power of ten.
     PRED_TOL = 1e-11
     COEF_TOL = 1e-9
-    # At the library's own `cd_tol` (1e-10) and `max_cd_iters` (100) each
+    # At the library's own `tol` (1e-10) and `max_iter` (100) each
     # descent stops short of the optimum: pred and resid measured 1.7e-10
     # from the reference, and the tolerance is set the same way.
     DEFAULT_DESCENT_TOL = 1e-7
@@ -344,7 +344,7 @@ class TestLassoPredPath:
         The clock steps are dyadic, so the clock since a solve sums exactly,
         and a solve that falls due exactly on ``solve_every`` is decided by
         the schedule's ``>=`` rather than by rounding. Two gaps of 40 exceed
-        ``max_dclock``. A twentieth of the rows weigh 0, the first row among
+        ``gap_cap``. A twentieth of the rows weigh 0, the first row among
         them. Five rows have a null feature and are skipped."""
         rng = np.random.default_rng(seed)
         dt = rng.choice([0.25, 0.5, 0.75, 1.0, 1.5, 2.0], size=n)
@@ -365,15 +365,15 @@ class TestLassoPredPath:
     def _compare(self, df, default_descent=False, **kw):
         """Fit ``df`` with a spec that ``kw`` completes, and hold the output to
         the reference given the same ``kw``. ``default_descent`` leaves
-        ``cd_tol`` and ``max_cd_iters`` at the library's defaults."""
-        descent = {} if default_descent else {"cd_tol": 1e-14, "max_cd_iters": 100_000}
+        ``tol`` and ``max_iter`` at the library's defaults."""
+        descent = {} if default_descent else {"tol": 1e-14, "max_iter": 100_000}
         spec = po.spec.lasso(
             "m",
             targets=["y"],
             features=self.FEATURES,
             lasso_path=self.PATH,
             clock="t",
-            max_dclock=self.MAX_DCLOCK,
+            gap_cap=self.MAX_DCLOCK,
             weight="w",
             coef_every=1,
             **descent,
@@ -385,12 +385,12 @@ class TestLassoPredPath:
         y = df["y"].to_numpy()
         dc = np.zeros(n)
         dc[1:] = np.diff(df["t"].to_numpy())
-        ref = lasso_ref(x, y, dc, df["w"].to_numpy(), self.PATH, max_dclock=self.MAX_DCLOCK, **kw)
+        ref = lasso_ref(x, y, dc, df["w"].to_numpy(), self.PATH, gap_cap=self.MAX_DCLOCK, **kw)
         assert ref["solved"].sum() >= 5, "the stream should span several solves"
 
         # One pred and one resid field per path point, in path order.
         index = po.spec.output_index(spec)
-        assert index.filter(pl.col("kind") == "pred")["lambda"].to_list() == self.PATH
+        assert index.filter(pl.col("kind") == "pred")["penalty"].to_list() == self.PATH
         fields = {
             k: index.filter(pl.col("kind") == k)["field"].to_list() for k in ("pred", "resid")
         }
@@ -402,8 +402,8 @@ class TestLassoPredPath:
             _close(got[:, p], ref["pred"][:, p], tol=tol, what=f"pred at lambda {lam}")
             resid = out.struct.field(fields["resid"][p]).to_numpy().astype(float)
             _close(resid, y - ref["pred"][:, p], tol=tol, what=f"resid at lambda {lam}")
-        n_eff = out.struct.field("n_eff").to_numpy().astype(float)
-        _close(n_eff, ref["n_eff"], tol=self.PRED_TOL, what="n_eff")
+        weight_sum = out.struct.field("weight_sum").to_numpy().astype(float)
+        _close(weight_sum, ref["weight_sum"], tol=self.PRED_TOL, what="weight_sum")
 
         # The comparison can fail. The same reference read in sample (each
         # row scored with its own update, which hard rule 2 forbids), or with
@@ -421,10 +421,10 @@ class TestLassoPredPath:
             # `coef` short of the optimum before any row is scored with it.
             return
         rows = out.struct.field("coef").to_list()
-        # `coef` is each row's last solve, and `min_periods` does not gate it:
+        # `coef` is each row's last solve, and `min_weight` does not gate it:
         # it is null only before the first solve and on a skipped row.
         before_first = np.arange(n) < np.argmax(ref["solved"])
-        expect_null = before_first | np.isnan(ref["n_eff"])
+        expect_null = before_first | np.isnan(ref["weight_sum"])
         wrong = np.flatnonzero(np.array([r is None for r in rows]) != expect_null)
         assert wrong.size == 0, f"coef is null on the wrong rows, first {wrong[0]}"
         empty = [np.nan] * (npath * kt)
@@ -443,11 +443,11 @@ class TestLassoPredPath:
 
     def test_a_solve_falls_due_on_the_clock_and_on_a_capped_gap(self):
         """``solve_every`` in clock units. Some steps land on it exactly, and
-        a solve is then due (``>=``). Each gap past ``max_dclock`` forces a
-        solve with its capped step. The halflife is finite, so the decay and
+        a solve is then due (``>=``). Each gap past ``gap_cap`` forces a
+        solve with its capped step. The half-life is finite, so the decay and
         the cap both reach the fit."""
         self._compare(
-            self._stream(31), l1_ratio=1.0, halflife=40.0, min_periods=20.0, solve_every=2.5
+            self._stream(31), l1_ratio=1.0, half_life=40.0, min_weight=20.0, solve_every=2.5
         )
 
     def test_an_elastic_net_solves_on_a_row_cap_beside_the_clock(self):
@@ -457,8 +457,8 @@ class TestLassoPredPath:
         self._compare(
             self._stream(32),
             l1_ratio=0.5,
-            halflife=40.0,
-            min_periods=20.0,
+            half_life=40.0,
+            min_weight=20.0,
             solve_every=6.0,
             max_rows_between_solves=5,
         )
@@ -466,32 +466,32 @@ class TestLassoPredPath:
     def test_the_default_cadence_is_by_weight(self):
         """No ``solve_every``: a solve once the weight learned since the last
         reaches ``ln 2 / 50`` of the weight the fit holds (task 115 (b)),
-        about every ``halflife / 50`` = 2 clock units in steady state."""
-        self._compare(self._stream(33), l1_ratio=1.0, halflife=100.0, min_periods=20.0)
+        about every ``half_life / 50`` = 2 clock units in steady state."""
+        self._compare(self._stream(33), l1_ratio=1.0, half_life=100.0, min_weight=20.0)
 
     def test_the_first_solve_is_forced_when_min_periods_is_reached(self):
         """The clock cadence is out of reach and the row cap is 40. So the
-        first solve is the forced one at ``min_periods``, and every row up to
+        first solve is the forced one at ``min_weight``, and every row up to
         the next solve is scored with it."""
         self._compare(
             self._stream(34),
             l1_ratio=1.0,
-            halflife=40.0,
-            min_periods=25.0,
+            half_life=40.0,
+            min_weight=25.0,
             solve_every=1e9,
             max_rows_between_solves=40,
         )
 
     def test_an_infinite_halflife_solves_after_every_row(self):
         """The default cadence without decay is a solve after every row."""
-        self._compare(self._stream(35), l1_ratio=0.5, halflife=float("inf"), min_periods=20.0)
+        self._compare(self._stream(35), l1_ratio=0.5, half_life=float("inf"), min_weight=20.0)
 
     def test_the_default_descent_reaches_the_same_predictions(self):
-        """``cd_tol`` and ``max_cd_iters`` left at the library's defaults, the
+        """``tol`` and ``max_iter`` left at the library's defaults, the
         settings a user runs. Every scored row still agrees to within the
         descent's own tolerance."""
         self._compare(
-            self._stream(33), default_descent=True, l1_ratio=1.0, halflife=100.0, min_periods=20.0
+            self._stream(33), default_descent=True, l1_ratio=1.0, half_life=100.0, min_weight=20.0
         )
 
 
@@ -510,10 +510,10 @@ class TestRobustOracles:
             y,
             dc,
             w,
-            halflife=300.0,
+            half_life=300.0,
             loss="huber" if model == "huber" else "quantile",
-            min_periods=5.0,
-            max_dclock=MAXD,
+            min_weight=5.0,
+            gap_cap=MAXD,
             **(ref_kw or {}),
         )
         spec = getattr(po.spec, model)(
@@ -521,10 +521,10 @@ class TestRobustOracles:
             targets=list(targets),
             features=[f"x{j}" for j in range(k)],
             clock="t",
-            max_dclock=MAXD,
+            gap_cap=MAXD,
             weight="w",
-            halflife=300.0,
-            min_periods=5.0,
+            half_life=300.0,
+            min_weight=5.0,
             max_rows_between_solves=1,
             **spec_kw,
         )
@@ -541,9 +541,9 @@ class TestRobustOracles:
                 what=f"resid_{t}",
             )
         _close(
-            out["m"].struct.field("n_eff").to_numpy().astype(float),
-            ref["n_eff"],
-            what="n_eff",
+            out["m"].struct.field("weight_sum").to_numpy().astype(float),
+            ref["weight_sum"],
+            what="weight_sum",
         )
 
     def test_huber(self):
@@ -602,8 +602,8 @@ class TestFtrlOracle:
             df["y0"].to_numpy().reshape(-1, 1),
             dc,
             df["w"].to_numpy(),
-            min_periods=10.0,
-            max_dclock=30.0,
+            min_weight=10.0,
+            gap_cap=30.0,
             **kw,
         )
         spec = po.spec.ftrl(
@@ -611,15 +611,15 @@ class TestFtrlOracle:
             targets=["y0"],
             features=["x0", "x1"],
             clock="t",
-            max_dclock=30.0,
+            gap_cap=30.0,
             weight="w",
-            min_periods=10.0,
-            halflife=kw.get("halflife", float("inf")),
+            min_weight=10.0,
+            half_life=kw.get("half_life", float("inf")),
             alpha=kw.get("alpha"),
             beta=kw.get("beta"),
             l1=kw.get("l1"),
             l2=kw.get("l2"),
-            add_intercept=kw.get("add_intercept", True),
+            fit_intercept=kw.get("fit_intercept", True),
             loss=kw.get("loss", "logistic"),
         )
         out = po.ModelBank([spec]).fit_predict(df)
@@ -640,7 +640,7 @@ class TestFtrlOracle:
         self._compare(self._binary())
 
     def test_with_clock_decay(self):
-        self._compare(self._binary(seed=6), halflife=200.0)
+        self._compare(self._binary(seed=6), half_life=200.0)
 
     @pytest.mark.parametrize("l1", [0.0, 0.5, 5.0])
     def test_l1_values(self, l1):
@@ -650,14 +650,14 @@ class TestFtrlOracle:
         self._compare(self._binary(seed=8), alpha=0.5, beta=0.1, l2=3.0)
 
     def test_no_intercept(self):
-        self._compare(self._binary(seed=9), add_intercept=False)
+        self._compare(self._binary(seed=9), fit_intercept=False)
 
     def test_squared_loss_under_a_halflife(self):
         """The squared loss (E18) had no oracle here (review 2026-09-12,
-        D10), and under a halflife the proximal term is a decayed sum of its
+        D10), and under a half-life the proximal term is a decayed sum of its
         own (C24), which the reference carries."""
         df = self._binary(seed=11).with_columns(y0=1.5 * pl.col("x0") - 0.5 * pl.col("x1"))
-        self._compare(df, halflife=200.0, loss="squared", alpha=0.5, l2=0.01)
+        self._compare(df, half_life=200.0, loss="squared", alpha=0.5, l2=0.01)
 
     def test_null_targets(self):
         df = self._binary(seed=10)
@@ -674,18 +674,18 @@ class TestFtrlOracle:
             df["y0"].to_numpy().astype(float).reshape(-1, 1),
             dc,
             df["w"].to_numpy(),
-            min_periods=10.0,
-            max_dclock=30.0,
+            min_weight=10.0,
+            gap_cap=30.0,
         )
         spec = po.spec.ftrl(
             "m",
             targets=["y0"],
             features=["x0", "x1"],
             clock="t",
-            max_dclock=30.0,
+            gap_cap=30.0,
             weight="w",
-            min_periods=10.0,
-            halflife=float("inf"),
+            min_weight=10.0,
+            half_life=float("inf"),
         )
         out = po.ModelBank([spec]).fit_predict(df)
         _close(

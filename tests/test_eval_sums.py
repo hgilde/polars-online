@@ -34,7 +34,7 @@ def fitted(n=3000, seed=0, offset=0.0, groups=1, weight=False):
     if weight:
         df = df.with_columns(w=pl.Series(0.5 + rng.random(n)))
     spec = po.spec.ewridge(
-        "m", targets=["y"], features=["x0", "x1"], halflife=300.0, min_periods=5.0
+        "m", targets=["y"], features=["x0", "x1"], half_life=300.0, min_weight=5.0
     )
     return po.ModelBank([spec]).fit_predict(df)
 
@@ -84,7 +84,7 @@ class TestItIsTheSameAnswer:
     def test_a_constant_target_has_no_r2_or_ic(self):
         n = 200
         df = pl.DataFrame({"x0": np.arange(float(n)), "y": np.full(n, 3.0)})
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0)
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
         got = po.eval.from_sums(po.eval.sums(out, "m"), min_obs=1)
         assert got["r2"][0] is None, "no variance to explain"
@@ -170,11 +170,11 @@ class TestTheShape:
         df = pl.DataFrame({"x0": rng.standard_normal(n)})
         df = df.with_columns(y=2 * pl.col("x0"), z=-pl.col("x0"))
         spec = po.spec.ewridge(
-            "m", targets=["y", "z"], features=["x0"], halflife=[50.0, 500.0], min_periods=3.0
+            "m", targets=["y", "z"], features=["x0"], half_life=[50.0, 500.0], min_weight=3.0
         )
         out = po.ModelBank([spec]).fit_predict(df)
         s = po.eval.sums(out, "m", spec=spec)
-        assert s.height == 4, "two targets x two halflives"
+        assert s.height == 4, "two targets x two half_lives"
         close(po.eval.from_sums(s).drop("rmse"), po.eval.metrics(out, "m"))
 
     def test_it_raises_where_unpack_does(self):

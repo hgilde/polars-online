@@ -681,11 +681,11 @@ in descending order of how easily a change could break someone.
 **1. Output field names, the largest and least guarded.**
 
 ```
-pred_y__r0.000001@h100    resid_y__r0.5@h100    absresid_q0.95_y0    n_eff@h500
+pred_y__r0.000001@h100    resid_y__r0.5@h100    abs_resid_q0.95_y0    weight_sum@h500
 ```
 
 Users write `out["m"].struct.field("pred_y")`. These strings are generated
-by `format!` over ridge values, halflife suffixes, feature-set labels,
+by `format!` over ridge values, half-life suffixes, feature-set labels,
 quantile levels and target names, and **every one of them is API**. Adding
 an output, renaming a suffix, or changing how a float renders silently
 breaks downstream code, and the failure surfaces as a `StructFieldNotFound`
@@ -705,7 +705,7 @@ names. It pins every helper module the package has (`corr`, `eval`, `gram`,
 (`tests/test_api_surface.py`, since task 109).
 
 **3. Defaults, which are API in the worst way.** They are the solve
-cadence (by weight since 0.13.0, `halflife/50` of clock in steady state),
+cadence (by weight since 0.13.0, `half_life/50` of clock in steady state),
 `standardize` true for lasso and false for ridge, `average_eta = 1.0` and
 `clip_gradient = 1e3`. Changing one of these
 does not raise: it silently changes users' numbers, which is worse than
@@ -818,10 +818,10 @@ was done:
 
 | finding | what was done |
 |---|---|
-| **String construction was the API's worst ergonomic.** Reaching a grid slot meant hand-building `pred_y__r0.5@h500`, that is, mentally reimplementing the float rendering | **Fixed**: `spec.output_index()` returns every field with the machine values its name encodes (kind, target, halflife/lam, ridge, feature_set, lasso λ, quantile level, ew_cov columns). It is produced by the same Rust code that renders the names, and selection becomes a Polars filter |
+| **String construction was the API's worst ergonomic.** Reaching a grid slot meant hand-building `pred_y__r0.5@h500`, that is, mentally reimplementing the float rendering | **Fixed**: `spec.output_index()` returns every field with the machine values its name encodes (kind, target, half-life/lam, ridge, feature_set, lasso λ, quantile level, ew_cov columns). It is produced by the same Rust code that renders the names, and selection becomes a Polars filter |
 | **`coef` was an unmapped flat list** | **Fixed**: `spec.coef_index()` maps each position to (target, combo, term). It is derived from `output_index`, so it cannot drift, and was verified by recovering known coefficients by position |
 | **Our own `eval.unpack` parsed names heuristically** ("longest match wins") | **Fixed**: an optional `spec=` argument resolves slot→target exactly, through the index. The heuristic remains only for callers with a frame but no spec |
-| **`min_periods` defaults sensibly**: the first prediction comes at ~k+2 | verified; nothing to do |
+| **`min_weight` defaults sensibly**: the first prediction comes at ~k+2 | verified; nothing to do |
 
 **Reviewed and deliberately kept:**
 

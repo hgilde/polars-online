@@ -12,9 +12,9 @@ def _spec(**kw):
     defaults = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        coef_halflife=100.0,
-        halflife=500.0,
-        min_periods=20.0,
+        coef_half_life=100.0,
+        half_life=500.0,
+        min_weight=20.0,
     )
     defaults.update(kw)
     return po.spec.kalman("m", **defaults)
@@ -28,8 +28,8 @@ def test_tracks_time_varying_beta_better_than_a_pinned_filter():
     # The synthetic generator's beta is a random walk, which is exactly the
     # Kalman model's assumption; a responsive filter must beat a pinned one.
     df, _ = synthetic(seed=41, n_groups=1, n_rows=1500, k=3, null_frac=0.0, beta_sigma=0.03)
-    fast = po.ModelBank([_spec(coef_halflife=50.0)]).fit_predict(df)
-    pinned = po.ModelBank([_spec(coef_halflife=float("inf"))]).fit_predict(df)
+    fast = po.ModelBank([_spec(coef_half_life=50.0)]).fit_predict(df)
+    pinned = po.ModelBank([_spec(coef_half_life=float("inf"))]).fit_predict(df)
     y = df["y0"].to_numpy()
     for out, name in ((fast, "fast"), (pinned, "pinned")):
         assert np.isfinite(_pred(out)).sum() > 1000, name
@@ -41,7 +41,7 @@ def test_tracks_time_varying_beta_better_than_a_pinned_filter():
 def test_per_factor_halflife_and_pinning():
     df, _ = synthetic(seed=42, n_groups=1, n_rows=400, k=3, null_frac=0.0)
     # intercept pinned, x0 slow, x1 fast, x2 pinned
-    spec = _spec(coef_halflife=[float("inf"), 500.0, 30.0, float("inf")])
+    spec = _spec(coef_half_life=[float("inf"), 500.0, 30.0, float("inf")])
     out = po.ModelBank([spec]).fit_predict(df)
     assert np.isfinite(_pred(out)).any()
 
@@ -75,7 +75,7 @@ def test_out_of_sample_on_noise():
             "y0": rng.standard_normal(n),
         }
     )
-    out = po.ModelBank([_spec(coef_halflife=200.0, halflife=500.0)]).fit_predict(df)
+    out = po.ModelBank([_spec(coef_half_life=200.0, half_life=500.0)]).fit_predict(df)
     p = _pred(out)
     m = np.isfinite(p)
     ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
@@ -84,7 +84,7 @@ def test_out_of_sample_on_noise():
 
 def test_chunk_invariance():
     df, _ = synthetic(seed=45, n_groups=2, n_rows=200, k=3, null_frac=0.0)
-    spec = _spec(group="group", clock="t", max_dclock=50.0, weight="w")
+    spec = _spec(group="group", clock="t", gap_cap=50.0, weight="w")
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
     bank = po.ModelBank([spec])
     many = (
@@ -97,7 +97,7 @@ def test_chunk_invariance():
 
 
 def test_bad_config_rejected():
-    with pytest.raises(ValueError, match="coef_halflife"):
-        _spec(coef_halflife=[1.0, 2.0])  # wrong length for k=3 + intercept
+    with pytest.raises(ValueError, match="coef_half_life"):
+        _spec(coef_half_life=[1.0, 2.0])  # wrong length for k=3 + intercept
     with pytest.raises(ValueError, match="obs_var"):
         _spec(obs_var=0.0)

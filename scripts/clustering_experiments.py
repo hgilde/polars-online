@@ -217,22 +217,22 @@ def sk_minibatch(data: dict, k: int, batch: int = 256) -> np.ndarray | None:
 
 
 # --------------------------------------------------------------------------- model zoo
-def zoo(k: int, p: int, sigma: float, halflife: float = 3000.0, warm: int = 500) -> dict:
+def zoo(k: int, p: int, sigma: float, half_life: float = 3000.0, warm: int = 500) -> dict:
     return {
-        "kmeans first": EWKMeans(KMeansCfg(k=k, halflife=halflife), p),
+        "kmeans first": EWKMeans(KMeansCfg(k=k, half_life=half_life), p),
         "kmeans k++ warm": EWKMeans(
-            KMeansCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="kmeanspp"), p
+            KMeansCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="kmeanspp"), p
         ),
         "kmeans lloyd warm": EWKMeans(
-            KMeansCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd"), p
+            KMeansCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd"), p
         ),
         "kmeans reseed": EWKMeans(
-            KMeansCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd", reseed=True), p
+            KMeansCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd", reseed=True), p
         ),
         "kmeans split-merge": EWKMeans(
             KMeansCfg(
                 k=k,
-                halflife=halflife,
+                half_life=half_life,
                 warm_rows=warm,
                 seed_rule="lloyd",
                 reseed=True,
@@ -242,33 +242,33 @@ def zoo(k: int, p: int, sigma: float, halflife: float = 3000.0, warm: int = 500)
             p,
         ),
         "kmeans huber c=2": EWKMeans(
-            KMeansCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd", huber_c=2.0), p
+            KMeansCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd", huber_c=2.0), p
         ),
         "fuzzy m=2": EWKMeans(
-            KMeansCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd", fuzzifier=2.0), p
+            KMeansCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd", fuzzifier=2.0), p
         ),
         "gmm diag": OnlineGMM(
-            GMMCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd", cov="diag"), p
+            GMMCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd", cov="diag"), p
         ),
         "gmm full": OnlineGMM(
-            GMMCfg(k=k, halflife=halflife, warm_rows=warm, seed_rule="lloyd", cov="full"), p
+            GMMCfg(k=k, half_life=half_life, warm_rows=warm, seed_rule="lloyd", cov="full"), p
         ),
         "dpmeans r=4s": DPMeans(
-            DPCfg(radius=4.0 * sigma, max_clusters=50, halflife=halflife, prune_weight=2.0), p
+            DPCfg(radius=4.0 * sigma, max_clusters=50, half_life=half_life, prune_weight=2.0), p
         ),
         "micro eps=1.5s": MicroClusters(
             MicroCfg(
-                eps=1.5 * sigma, beta_mu=5.0, max_micro=200, halflife=halflife, macro_link=2.0
+                eps=1.5 * sigma, beta_mu=5.0, max_micro=200, half_life=half_life, macro_link=2.0
             ),
             p,
         ),
         "som 3x3": SOM(
             SOMCfg(
-                rows=3, cols=3, halflife=halflife, sigma=0.5, warm_rows=warm, seed_rule="kmeanspp"
+                rows=3, cols=3, half_life=half_life, sigma=0.5, warm_rows=warm, seed_rule="kmeanspp"
             ),
             p,
         ),
-        "gng 30": GNG(GNGCfg(max_nodes=30, insert_every=100, halflife=halflife, a_max=30), p),
+        "gng 30": GNG(GNGCfg(max_nodes=30, insert_every=100, half_life=half_life, a_max=30), p),
     }
 
 
@@ -300,9 +300,9 @@ def exp_guarantees() -> None:
         "             bit-identical (and emits nothing)\n"
         "    drop     w=0 rows vs deleting them and folding the clock gap:\n"
         "             max |diff| over the float outputs, and the share of rows\n"
-        "             given a different label. `n_eff` is excluded: it is read\n"
+        "             given a different label. `weight_sum` is excluded: it is read\n"
         "             before the row's own decay (rule 8), so folding a gap into\n"
-        "             a row moves that row's `n_eff` -- by design, not a defect\n"
+        "             a row moves that row's `weight_sum` -- by design, not a defect\n"
         "    lead     100 leading zero-weight and null rows: no NaN in the state\n"
         "    finite   state finite after outliers, drift, a regime change, w=0 rows"
     )
@@ -311,16 +311,16 @@ def exp_guarantees() -> None:
     data = mixture(1, n=4000, drift=0.01, outlier_frac=0.02, regime_at=2500)
     X, dt, w = data["X"], data["dt"], data["w"]
     n = len(X)
-    models = zoo(K, P, SIGMA, halflife=800.0, warm=200)
-    models["odac"] = ODAC(ODACCfg(halflife=800.0, n_min=100), P)
+    models = zoo(K, P, SIGMA, half_life=800.0, warm=200)
+    models["odac"] = ODAC(ODACCfg(half_life=800.0, n_min=100), P)
     models["kmeans batch 50"] = EWKMeans(
         KMeansCfg(
-            k=K, halflife=800.0, warm_rows=200, seed_rule="lloyd", update_every=50, reseed=True
+            k=K, half_life=800.0, warm_rows=200, seed_rule="lloyd", update_every=50, reseed=True
         ),
         P,
     )
     models["kmeans std"] = EWKMeans(
-        KMeansCfg(k=K, halflife=800.0, warm_rows=200, seed_rule="lloyd", standardize=True), P
+        KMeansCfg(k=K, half_life=800.0, warm_rows=200, seed_rule="lloyd", standardize=True), P
     )
     head = f"{'model':22s} {'chunks':>7s} {'rerun':>6s} {'w=0':>5s} {'null':>5s}"
     print(f"{head} {'drop':>9s} {'relabel':>8s} {'lead':>5s} {'finite':>7s}")
@@ -348,7 +348,7 @@ def exp_guarantees() -> None:
         zero = copy.deepcopy(base)
         oz = zero.fit_chunk(X[1500:1600], np.zeros(100), np.zeros(100))
         emitted = any(
-            np.isfinite(v).any() for k, v in oz.items() if v.dtype.kind == "f" and k != "n_eff"
+            np.isfinite(v).any() for k, v in oz.items() if v.dtype.kind == "f" and k != "weight_sum"
         )
         froze_zero = _same_state(st, _states(zero)) and (emitted or isinstance(base, ODAC))
         Xn = X[1500:1600].copy()
@@ -359,7 +359,7 @@ def exp_guarantees() -> None:
         froze_null = _same_state(st, _states(nul)) and (blank or isinstance(base, ODAC))
 
         # w=0 rows vs deleting them and folding the clock gap forward: equal up to
-        # the floating-point associativity of 0.5**(dt/halflife)
+        # the floating-point associativity of 0.5**(dt/half-life)
         rng = np.random.default_rng(0)
         Z = np.sort(rng.choice(np.arange(1, n), size=n // 20, replace=False))
         keep = np.ones(n, bool)
@@ -379,7 +379,7 @@ def exp_guarantees() -> None:
         diffs = [
             np.nanmax(np.abs(a[key][keep].astype(float) - b[key].astype(float)))
             for key in keys
-            if key != "n_eff"
+            if key != "weight_sum"
             and a[key].dtype.kind == "f"
             and np.isfinite(a[key][keep].astype(float)).any()
         ]
@@ -393,7 +393,9 @@ def exp_guarantees() -> None:
         lead_dt = np.concatenate([dt[:100], dt[:100], dt])
         ml = copy.deepcopy(m0)
         ol = ml.fit_chunk(lead_X, lead_dt, lead_w)
-        lead = all(np.isfinite(v).all() for v in _states(ml)) and not np.isnan(ol["n_eff"]).any()
+        lead = (
+            all(np.isfinite(v).all() for v in _states(ml)) and not np.isnan(ol["weight_sum"]).any()
+        )
 
         mf = copy.deepcopy(m0)
         mf.fit_chunk(X, dt, wz)
@@ -436,7 +438,7 @@ def report(
 
 def exp_baselines() -> None:
     for title, kw in (
-        ("baselines: static mixture (k=5, p=4, sep 6 sigma), halflife 3000", {}),
+        ("baselines: static mixture (k=5, p=4, sep 6 sigma), half_life 3000", {}),
         ("baselines: drifting mixture (random walk 0.02 sigma / row)", {"drift": 0.02}),
         (
             "baselines: unequal mixture (weights 1:2:3:4:5, spreads 0.5-1.5 sigma), drifting",
@@ -489,7 +491,7 @@ def exp_seeding() -> None:
             aris, miss = [], 0
             for seed in range(10):
                 data = mixture(100 + seed, n=8000, **kw)
-                m = EWKMeans(KMeansCfg(k=K, halflife=3000.0, **cfg), P)
+                m = EWKMeans(KMeansCfg(k=K, half_life=3000.0, **cfg), P)
                 out = run(m, data)
                 aris.append(seg_ari(data["lab"], out["cluster"], (6000, 8000)))
                 miss += seg_purity(data["lab"], out["cluster"], (6000, 8000)) < 0.9
@@ -500,7 +502,7 @@ def exp_seeding() -> None:
 
 
 def exp_decay() -> None:
-    print("=== decay: the halflife sweep, mean over 5 data seeds")
+    print("=== decay: the half_life sweep, mean over 5 data seeds")
     print("    ARI  = last quarter, clean rows;  track = mean distance from each live true centre")
     print("    to the nearest model centre at the last row;  miss = seeds with purity < 0.9")
     for title, kw in (
@@ -510,19 +512,19 @@ def exp_decay() -> None:
     ):
         print(f"--- {title}")
         cols = f"{'kmeans':>25s}   {'kmeans split-merge':>25s}   {'gmm diag':>25s}"
-        print(f"{'halflife':>9s}  {cols}")
+        print(f"{'half_life':>9s}  {cols}")
         for hl in (math.inf, 20000.0, 5000.0, 3000.0, 1000.0, 300.0, 100.0):
-            km = KMeansCfg(k=K, halflife=hl, warm_rows=500, seed_rule="lloyd", reseed=True)
+            km = KMeansCfg(k=K, half_life=hl, warm_rows=500, seed_rule="lloyd", reseed=True)
             sm = KMeansCfg(
                 k=K,
-                halflife=hl,
+                half_life=hl,
                 warm_rows=500,
                 seed_rule="lloyd",
                 reseed=True,
                 split_merge=0.5,
                 split_merge_every=100,
             )
-            gm = GMMCfg(k=K, halflife=hl, warm_rows=500, seed_rule="lloyd", cov="diag")
+            gm = GMMCfg(k=K, half_life=hl, warm_rows=500, seed_rule="lloyd", cov="diag")
             cells = []
             for cls, cfg in ((EWKMeans, km), (EWKMeans, sm), (OnlineGMM, gm)):
                 aris, trks, miss = [], [], 0
@@ -611,7 +613,7 @@ def exp_knobs() -> None:
                 m = EWKMeans(
                     KMeansCfg(
                         k=K,
-                        halflife=3000.0,
+                        half_life=3000.0,
                         warm_rows=500,
                         seed_rule="lloyd",
                         reseed=True,
@@ -635,7 +637,12 @@ def exp_knobs() -> None:
     for ue in (1, 10, 100, 1000):
         m = EWKMeans(
             KMeansCfg(
-                k=K, halflife=3000.0, warm_rows=500, seed_rule="lloyd", reseed=True, update_every=ue
+                k=K,
+                half_life=3000.0,
+                warm_rows=500,
+                seed_rule="lloyd",
+                reseed=True,
+                update_every=ue,
             ),
             P,
         )
@@ -643,7 +650,7 @@ def exp_knobs() -> None:
         report(f"update_every {ue}", out["cluster"], data, m)
     print("--- DP-means radius (in sigma): clusters found (true k = 5), ARI last quarter")
     for r in (1.5, 2.0, 3.0, 4.0, 6.0):
-        m = DPMeans(DPCfg(radius=r * SIGMA, max_clusters=50, halflife=3000.0, prune_weight=2.0), P)
+        m = DPMeans(DPCfg(radius=r * SIGMA, max_clusters=50, half_life=3000.0, prune_weight=2.0), P)
         out = run(m, data)
         a = seg_ari(data["lab"], out["cluster"], segments(N)[-1])
         pur = seg_purity(data["lab"], out["cluster"], segments(N)[-1])
@@ -659,7 +666,7 @@ def exp_knobs() -> None:
         for bm in (3.0, 10.0):
             m = MicroClusters(
                 MicroCfg(
-                    eps=eps * SIGMA, beta_mu=bm, max_micro=200, halflife=3000.0, macro_link=2.0
+                    eps=eps * SIGMA, beta_mu=bm, max_micro=200, half_life=3000.0, macro_link=2.0
                 ),
                 P,
             )
@@ -678,7 +685,7 @@ def exp_knobs() -> None:
     data2["X"][:, 0] *= 100.0
     for std in (False, True):
         m = EWKMeans(
-            KMeansCfg(k=K, halflife=3000.0, warm_rows=500, seed_rule="lloyd", standardize=std), P
+            KMeansCfg(k=K, half_life=3000.0, warm_rows=500, seed_rule="lloyd", standardize=std), P
         )
         out = run(m, data2)
         a = seg_ari(data2["lab"], out["cluster"], segments(N)[-1])
@@ -695,7 +702,7 @@ def exp_knobs() -> None:
     Xv[n // 2 :, 7] = f[n // 2 :, 0] + 0.3 * rng.normal(
         size=n - n // 2
     )  # variable 7 switches to block 0
-    m = ODAC(ODACCfg(halflife=1500.0, n_min=200, confidence=0.9, tau=0.1), 8)
+    m = ODAC(ODACCfg(half_life=1500.0, n_min=200, confidence=0.9, tau=0.1), 8)
     out = m.fit_chunk(Xv, np.ones(n))
     for row in (n // 4, n // 2, 3 * n // 4, n - 1):
         print(f"row {row:5d} leaves {out['n_leaves'][row]}  labels {out['labels'][row]}")
@@ -720,8 +727,8 @@ def exp_cost() -> None:
         "gng": "O(M p + E) (E edges)",
         "odac": "O(p^2) moments; tests O(p^2) per checkpoint",
     }
-    models = zoo(K, P, SIGMA, halflife=800.0, warm=200)
-    models["odac"] = ODAC(ODACCfg(halflife=800.0, n_min=100), P)
+    models = zoo(K, P, SIGMA, half_life=800.0, warm=200)
+    models["odac"] = ODAC(ODACCfg(half_life=800.0, n_min=100), P)
     for name, m in models.items():
         t0 = time.time()
         run(m, data)

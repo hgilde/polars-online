@@ -1,7 +1,7 @@
 //! Page-Hinkley drift detection (docs/ENHANCEMENTS.md E20), on the model's
 //! clock (docs/PLAN.md task 146).
 //!
-//! Decay and drift detection answer different questions. A halflife forgets
+//! Decay and drift detection answer different questions. A half-life forgets
 //! *smoothly and always*, which is right when the world moves gradually; it is
 //! slow when the world breaks. A drift detector watches for a break and says so,
 //! which lets a caller react at once — flag the row, or reset the state.
@@ -22,7 +22,7 @@
 //! accumulated excess counts as a break, in error units times clock units.
 //! The excess is integrated over the clock, so the same burst counts the
 //! same whether the rows during it are one or a thousand to a clock unit;
-//! and the mean decays at the model's halflife, so it forgets on the clock
+//! and the mean decays at the model's half-life, so it forgets on the clock
 //! as the model does. At rows one unit apart with no decay this is the
 //! classic test, a running mean and one excess a row. A step with no error
 //! to score ages the mean and adds no excess. This detects error going

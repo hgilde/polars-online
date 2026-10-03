@@ -18,7 +18,7 @@ before the row*. Three kinds of check:
   and every place the model touches the bank: warmup, nulls, zero weights,
   ``k = 1``, duplicate rows under the ``first`` rule, constant features,
   chunk invariance across the seeding boundary, save/load, groups, the
-  halflife grid, ``coef`` and its index, the expression path, the lazy
+  half-life grid, ``coef`` and its index, the expression path, the lazy
   path, and the refusals.
 """
 
@@ -55,7 +55,7 @@ def frame(X, **cols):
 
 
 def spec(features=("x0", "x1"), k=3, **kw):
-    d = dict(features=list(features), k=k, halflife=200.0, min_periods=5.0, warm_rows=30)
+    d = dict(features=list(features), k=k, half_life=200.0, min_weight=5.0, warm_rows=30)
     d.update(kw)
     return po.spec.kmeans("m", **d)
 
@@ -92,7 +92,7 @@ def ari(a, b) -> float:
 
 
 def _same(bank: pl.DataFrame, oracle: dict[str, list], what: str) -> None:
-    for key in ("cluster", "dist", "dist2", "n_eff"):
+    for key in ("cluster", "dist", "dist2", "weight_sum"):
         got = bank[key].to_list()
         want = oracle[key]
         assert len(got) == len(want), what
@@ -115,8 +115,8 @@ class TestOracle:
         df = frame(X)
         params = dict(
             k=3,
-            halflife=150.0,
-            min_periods=3.0,
+            half_life=150.0,
+            min_weight=3.0,
             warm_rows=40,
             seed_rule=rule,
             seed=11,
@@ -140,8 +140,8 @@ class TestOracle:
         df = frame(X)
         params = dict(
             k=4,
-            halflife=300.0,
-            min_periods=3.0,
+            half_life=300.0,
+            min_weight=3.0,
             warm_rows=100,
             update_every=update_every,
             split_merge=split_merge,
@@ -179,13 +179,13 @@ class TestOracle:
                 "t": t,
             }
         )
-        params = dict(k=3, halflife=60.0, min_periods=4.0, warm_rows=25, seed=9)
-        s = spec(**params, clock="t", max_dclock=10.0, weight="w")
+        params = dict(k=3, half_life=60.0, min_weight=4.0, warm_rows=25, seed=9)
+        s = spec(**params, clock="t", gap_cap=10.0, weight="w")
         out = unnested(po.ModelBank([s]).fit_predict(df))
-        want = ref.kmeans_ref(rows, clock=t.tolist(), weight=w, max_dclock=10.0, **params)
+        want = ref.kmeans_ref(rows, clock=t.tolist(), weight=w, gap_cap=10.0, **params)
         _same(out, want, "nulls/weights/clock")
         assert out["cluster"].null_count() > 40, "the fixture skipped fewer rows than it claims"
-        assert out["n_eff"][1] == 0.0, "a zero-weight first row learned something"
+        assert out["weight_sum"][1] == 0.0, "a zero-weight first row learned something"
 
     def test_first_rule_waits_for_distinct_rows_then_gives_up_at_the_cap(self):
         # Only two distinct rows for the first 1100 rows: `first` with k=3
@@ -194,7 +194,7 @@ class TestOracle:
         X, _ = blobs(n=400, seed=6)
         rows += X.tolist()
         df = frame(np.array(rows))
-        params = dict(k=3, halflife=float("inf"), min_periods=1.0, warm_rows=5, seed_rule="first")
+        params = dict(k=3, half_life=float("inf"), min_weight=1.0, warm_rows=5, seed_rule="first")
         out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(rows, **params)
         _same(out, want, "first at the cap")
@@ -204,7 +204,7 @@ class TestOracle:
     def test_predict_matches_the_oracle_without_learning(self):
         X, _ = blobs(n=600, seed=7)
         df = frame(X)
-        params = dict(k=3, halflife=100.0, min_periods=3.0, warm_rows=20)
+        params = dict(k=3, half_life=100.0, min_weight=3.0, warm_rows=20)
         bank = po.ModelBank([spec(**params)])
         bank.fit_predict(df.slice(0, 400))
         want = ref.kmeans_ref(X[:400].tolist(), **params)
@@ -212,14 +212,14 @@ class TestOracle:
         probe = df.slice(400, 200)
         got = unnested(bank.predict(probe))
         for i, row in enumerate(X[400:].tolist()):
-            pred, n_eff = model.predict(row)
+            pred, weight_sum = model.predict(row)
             assert got["cluster"][i] == int(pred[0])
             assert got["dist"][i] == pred[1]
-            assert got["n_eff"][i] == n_eff
+            assert got["weight_sum"][i] == weight_sum
         # ... and predicting changed nothing.
         after = unnested(bank.fit_predict(probe))
         oracle_after = ref.kmeans_ref(X.tolist(), **params)
-        for key in ("cluster", "dist", "n_eff"):
+        for key in ("cluster", "dist", "weight_sum"):
             assert after[key].to_list() == oracle_after[key][400:], key
 
 
@@ -244,8 +244,8 @@ class TestLargeData:
             "m",
             features=[f"x{i}" for i in range(p)],
             k=k,
-            halflife=20_000.0,
-            min_periods=100.0,
+            half_life=20_000.0,
+            min_weight=100.0,
             warm_rows=2000,
         )
         out = unnested(po.ModelBank([s]).fit_predict(df))
@@ -265,7 +265,7 @@ class TestLargeData:
         n, k = 100_000, 6
         X, lab = blobs(n=n, k=k, seed=12, scale=0.9, spread=6.0)
         df = frame(X)
-        s = spec(k=k, halflife=float("inf"), min_periods=50.0, warm_rows=3000, standardize=False)
+        s = spec(k=k, half_life=float("inf"), min_weight=50.0, warm_rows=3000, standardize=False)
         out = unnested(po.ModelBank([s]).fit_predict(df))
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
@@ -289,16 +289,16 @@ class TestLargeData:
         # centre. Its rows are far from the centre they fall nearest to, so
         # that centre does not drift toward them; the dead rule re-places
         # the stranded centre on them once its weight has decayed below
-        # dead_frac of an equal share: log2(1/dead_frac) halflives after
+        # dead_frac of an equal share: log2(1/dead_frac) half-lives after
         # its blob vanished. Without split-merge the stranded centre stays
         # where it was and the new blob shares a centre with its neighbour.
-        n, halflife = 20_000, 1000.0
+        n, half_life = 20_000, 1000.0
         X, lab = stranded(seed=1, n=n)
         df = frame(X)
 
         def run(**kw):
             s = spec(
-                k=4, halflife=halflife, min_periods=1.0, warm_rows=200, split_merge_every=100, **kw
+                k=4, half_life=half_life, min_weight=1.0, warm_rows=200, split_merge_every=100, **kw
             )
             got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             tail = np.arange(n) >= n - n // 4
@@ -314,10 +314,10 @@ class TestLargeData:
 
         tail, rows = run(split_merge=0.5)
         assert tail > 0.95, tail
-        assert rows is not None and abs(rows - math.log2(1 / 0.05) * halflife) < halflife, rows
+        assert rows is not None and abs(rows - math.log2(1 / 0.05) * half_life) < half_life, rows
         tail, rows = run(split_merge=0.5, dead_frac=0.25)
         assert tail > 0.95, tail
-        assert rows is not None and abs(rows - math.log2(1 / 0.25) * halflife) < halflife, rows
+        assert rows is not None and abs(rows - math.log2(1 / 0.25) * half_life) < half_life, rows
         tail, rows = run(split_merge=0.0)
         assert tail < 0.8 and rows is None, (tail, rows)
 
@@ -339,8 +339,8 @@ class TestLargeData:
         for split_merge in (0.5, 0.0):
             s = spec(
                 k=k,
-                halflife=2000.0,
-                min_periods=1.0,
+                half_life=2000.0,
+                min_weight=1.0,
                 warm_rows=500,
                 split_merge=split_merge,
                 split_merge_every=100,
@@ -352,7 +352,7 @@ class TestLargeData:
                 assert ari(lab[m], got[m]) > 0.97, (split_merge, st, ari(lab[m], got[m]))
         # Through the oracle (bit-for-bit with the bank): no move at all.
         m = ref.KMeansRef(
-            p=2, k=k, halflife=2000.0, min_periods=1.0, warm_rows=500, split_merge_every=100
+            p=2, k=k, half_life=2000.0, min_weight=1.0, warm_rows=500, split_merge_every=100
         )
         for x in X[:10_000]:
             m.step(list(x), 1.0, 1.0)
@@ -361,7 +361,7 @@ class TestLargeData:
 
 class TestScaleFloor:
     """``scale_floor`` (docs/PLAN.md task 102): a feature quiet for thirty
-    halflives, then moving again. The bank is the oracle bit for bit at
+    half-lives, then moving again. The bank is the oracle bit for bit at
     every floor, and the floor binds only in the quiet spell."""
 
     @staticmethod
@@ -374,7 +374,7 @@ class TestScaleFloor:
     @staticmethod
     def spec_at(floor):
         return spec(
-            features=("x0", "x1", "x2"), k=3, halflife=100.0, warm_rows=50, scale_floor=floor
+            features=("x0", "x1", "x2"), k=3, half_life=100.0, warm_rows=50, scale_floor=floor
         )
 
     @pytest.mark.parametrize("floor", [0.0, 0.1, 1.0])
@@ -382,7 +382,7 @@ class TestScaleFloor:
         X = self.stream()
         got = unnested(po.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))
         want = ref.kmeans_ref(
-            X.tolist(), k=3, halflife=100.0, min_periods=5.0, warm_rows=50, scale_floor=floor
+            X.tolist(), k=3, half_life=100.0, min_weight=5.0, warm_rows=50, scale_floor=floor
         )
         _same(got, want, f"floor {floor}")
 
@@ -395,7 +395,7 @@ class TestScaleFloor:
             for floor in (0.0, 0.1)
         }
         # The EW variance of the held feature falls below a tenth of its
-        # long-run one some 3.3 halflives into the spell, not before.
+        # long-run one some 3.3 half-lives into the spell, not before.
         assert np.array_equal(dist[0.0][:2200], dist[0.1][:2200])
         assert not np.array_equal(dist[0.0][2500:5000], dist[0.1][2500:5000])
 
@@ -416,19 +416,17 @@ def stranded(seed, n=20_000, sd=0.6, radius=6.0, born=(9.0, 9.0)):
 class TestEdgeCases:
     def test_outputs_are_null_until_seeded_and_until_min_periods(self):
         X, _ = blobs(n=200, seed=20)
-        s = spec(warm_rows=40, min_periods=60.0, halflife=float("inf"))
+        s = spec(warm_rows=40, min_weight=60.0, half_life=float("inf"))
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         cl = out["cluster"]
         assert cl[:60].null_count() == 60
         assert cl[60:].null_count() == 0
-        # n_eff is the weight before the row: the row count with no decay.
-        assert out["n_eff"][0] == 0.0 and out["n_eff"][59] == 59.0
+        # weight_sum is the weight before the row: the row count with no decay.
+        assert out["weight_sum"][0] == 0.0 and out["weight_sum"][59] == 59.0
 
     def test_k_equals_one_has_no_runner_up(self):
         X, _ = blobs(n=100, seed=21)
-        out = unnested(
-            po.ModelBank([spec(k=1, warm_rows=5, min_periods=1.0)]).fit_predict(frame(X))
-        )
+        out = unnested(po.ModelBank([spec(k=1, warm_rows=5, min_weight=1.0)]).fit_predict(frame(X)))
         assert out["dist2"].null_count() == 100
         assert out["dist"].null_count() == 5
         assert set(out["cluster"].drop_nulls().to_list()) == {0}
@@ -436,7 +434,7 @@ class TestEdgeCases:
     def test_k_larger_than_warm_rows_waits_for_k_rows(self):
         X, _ = blobs(n=100, k=3, seed=22)
         out = unnested(
-            po.ModelBank([spec(k=10, warm_rows=1, min_periods=1.0)]).fit_predict(frame(X))
+            po.ModelBank([spec(k=10, warm_rows=1, min_weight=1.0)]).fit_predict(frame(X))
         )
         assert out["cluster"].is_not_null().arg_max() == 10
         assert out["coef"][-1] is not None and len(out["coef"][-1]) == 20
@@ -450,7 +448,7 @@ class TestEdgeCases:
         X = np.stack(
             [np.array([-6.0, 0.0, 6.0])[lab] + 0.7 * rng.standard_normal(800), np.full(800, 7.0)], 1
         )
-        out = unnested(po.ModelBank([spec(warm_rows=50, min_periods=1.0)]).fit_predict(frame(X)))
+        out = unnested(po.ModelBank([spec(warm_rows=50, min_weight=1.0)]).fit_predict(frame(X)))
         assert out["dist"].drop_nulls().is_finite().all()
         got = out["cluster"].to_numpy()
         scored = out["cluster"].is_not_null().to_numpy()
@@ -466,7 +464,7 @@ class TestEdgeCases:
         df = frame(X)
 
         def score(standardize):
-            s = spec(k=2, warm_rows=200, min_periods=1.0, standardize=standardize)
+            s = spec(k=2, warm_rows=200, min_weight=1.0, standardize=standardize)
             out = unnested(po.ModelBank([s]).fit_predict(df))
             m = out["cluster"].is_not_null().to_numpy()
             return ari(out["cluster"].to_numpy()[m], lab[m])
@@ -480,20 +478,24 @@ class TestEdgeCases:
         rows[150][0] = None
         df = pl.DataFrame({"x0": [r[0] for r in rows], "x1": [r[1] for r in rows]})
         out = unnested(
-            po.ModelBank([spec(halflife=20.0, warm_rows=10, min_periods=1.0)]).fit_predict(df)
+            po.ModelBank([spec(half_life=20.0, warm_rows=10, min_weight=1.0)]).fit_predict(df)
         )
-        assert out["cluster"][150] is None and out["n_eff"][150] is None
+        assert out["cluster"][150] is None and out["weight_sum"][150] is None
         # The skipped row's tick is folded into the next one: row 151 reads
-        # the weight row 150 would have (n_eff is the weight *before* the
+        # the weight row 150 would have (weight_sum is the weight *before* the
         # row), and row 152 sees two ticks of decay between them.
         lam = 0.5 ** (1 / 20)
-        assert out["n_eff"][151] == pytest.approx(out["n_eff"][149] * lam + 1.0, rel=1e-12)
-        assert out["n_eff"][152] == pytest.approx(out["n_eff"][151] * lam**2 + 1.0, rel=1e-12)
+        assert out["weight_sum"][151] == pytest.approx(
+            out["weight_sum"][149] * lam + 1.0, rel=1e-12
+        )
+        assert out["weight_sum"][152] == pytest.approx(
+            out["weight_sum"][151] * lam**2 + 1.0, rel=1e-12
+        )
 
     def test_chunk_invariance_across_seeding_and_checkpoints(self):
         X, _ = blobs(n=700, seed=26)
         df = frame(X)
-        s = spec(warm_rows=100, update_every=13, split_merge_every=40, min_periods=1.0)
+        s = spec(warm_rows=100, update_every=13, split_merge_every=40, min_weight=1.0)
         one = unnested(po.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
             bank = po.ModelBank([s])
@@ -509,7 +511,7 @@ class TestEdgeCases:
     def test_save_load_mid_warmup_and_after(self, tmp_path):
         X, _ = blobs(n=600, seed=27)
         df = frame(X)
-        s = spec(warm_rows=200, update_every=5, split_merge_every=30, min_periods=1.0)
+        s = spec(warm_rows=200, update_every=5, split_merge_every=30, min_weight=1.0)
         for cut in (100, 250, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -529,26 +531,26 @@ class TestEdgeCases:
 
     def test_halflife_grid(self):
         X, _ = blobs(n=400, seed=29)
-        s = spec(halflife=[50.0, 500.0], warm_rows=20)
+        s = spec(half_life=[50.0, 500.0], warm_rows=20)
         assert po.spec.output_fields(s) == [
             "cluster@h50",
             "dist@h50",
             "dist2@h50",
-            "n_eff@h50",
+            "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "coef@h50",
             "cluster@h500",
             "dist@h500",
             "dist2@h500",
-            "n_eff@h500",
+            "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         assert out["cluster@h50"].dtype == pl.Int32
-        assert out["n_eff@h50"][-1] < out["n_eff@h500"][-1]
+        assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
 
     def test_coef_is_the_centres_on_the_cadence(self):
         X, _ = blobs(n=300, seed=30)
@@ -564,7 +566,7 @@ class TestEdgeCases:
         assert out2["coef"][49] is None and out2["coef"][199] is not None
 
     def test_coef_index_and_unnest_name_the_centres(self):
-        s = spec(features=("a", "b", "c"), k=2, halflife=[10.0, 20.0])
+        s = spec(features=("a", "b", "c"), k=2, half_life=[10.0, 20.0])
         cf = po.spec.coef_fields(s)
         assert cf["name"].to_list()[:6] == [
             "coef_cluster0_a@h10",
@@ -599,7 +601,7 @@ class TestEdgeCases:
 
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
-        tail = ["n_eff", "settled_frac", "withheld_reason", "coef"]
+        tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["kind"].to_list() == ["cluster", "dist", "dist2", *tail]
         assert idx["dtype"].to_list() == ["i32", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
@@ -622,8 +624,8 @@ class TestEdgeCases:
         Y[300:330] = [40.0, 40.0]
         s = spec(
             k=1,
-            halflife=float("inf"),
-            min_periods=1.0,
+            half_life=float("inf"),
+            min_weight=1.0,
             warm_rows=50,
             split_merge_every=100,
             standardize=False,
@@ -633,17 +635,17 @@ class TestEdgeCases:
         # Same centre before and after the burst (coef on the update cadence).
         assert burst["coef"][299] == plain["coef"][299]
         assert burst["coef"][329] == plain["coef"][299]
-        # The far rows are scored, at their distance, and n_eff counts them
+        # The far rows are scored, at their distance, and weight_sum counts them
         # (it is the model's clock, not the clusters' weight).
         assert burst["cluster"][300:330].to_list() == [0] * 30
         assert burst["dist"][310] > 40.0
-        assert burst["n_eff"][330] == pytest.approx(330.0)
+        assert burst["weight_sum"][330] == pytest.approx(330.0)
         # Through the oracle: the cluster weight excludes them.
         m = ref.KMeansRef(
             p=2,
             k=1,
-            halflife=math.inf,
-            min_periods=1.0,
+            half_life=math.inf,
+            min_weight=1.0,
             warm_rows=50,
             split_merge_every=100,
             standardize=False,
@@ -670,7 +672,7 @@ class TestEdgeCases:
         # k = 2: the other radius sets the cut, which never widens; the
         # stranded centre is re-placed by the dead rule instead, once its
         # weight has decayed to dead_frac of an equal share.
-        n, halflife = 6000, 200.0
+        n, half_life = 6000, 200.0
         rng = np.random.default_rng(36)
         lab = rng.integers(0, k, n)
         centres = np.array([[0.0, 0.0], [12.0, 0.0]])[:k]
@@ -679,8 +681,8 @@ class TestEdgeCases:
         X[jump & (lab == 0)] += [0.0, 20.0]
         s = spec(
             k=k,
-            halflife=halflife,
-            min_periods=1.0,
+            half_life=half_life,
+            min_weight=1.0,
             warm_rows=100,
             split_merge_every=100,
             dead_frac=0.25,
@@ -703,21 +705,21 @@ class TestEdgeCases:
             # covers the jump: log2(20^2 / 0.5) = 11 checks at most.
             assert first_close < 11 * 100, first_close
         else:
-            # log2(1/dead_frac) halflives from an equal share (the stranded
+            # log2(1/dead_frac) half-lives from an equal share (the stranded
             # centre's is a little above it), rounded up to a check.
-            assert 300 < first_close <= math.log2(1 / 0.25) * halflife + 200, first_close
+            assert 300 < first_close <= math.log2(1 / 0.25) * half_life + 200, first_close
 
     def test_a_row_at_the_input_bound_leaves_everything_finite(self):
         X, _ = blobs(n=300, seed=34)
         X[120] = [1e100, -1e100]
         X[121] = [1e-300, 1e-300]
-        out = unnested(po.ModelBank([spec(warm_rows=30, min_periods=1.0)]).fit_predict(frame(X)))
-        assert out["n_eff"].is_finite().all()
+        out = unnested(po.ModelBank([spec(warm_rows=30, min_weight=1.0)]).fit_predict(frame(X)))
+        assert out["weight_sum"].is_finite().all()
         assert out["dist"].drop_nulls().is_finite().all()
         coef = np.array(out["coef"][-1])
         assert np.isfinite(coef).all()
         # The centres recover: after 178 ordinary rows the two extreme rows
-        # are a small part of an EW mean at halflife 200.
+        # are a small part of an EW mean at half-life 200.
         assert np.abs(coef).max() < 1e100 * 0.01
 
 
@@ -726,7 +728,7 @@ class TestRefusals:
         "flag",
         [
             {"emit_sigma": True},
-            {"emit_resid_z": True},
+            {"emit_zscore": True},
             {"emit_metrics": True},
             {"resid_quantiles": [0.5]},
             {"conformal": 0.9},
@@ -742,7 +744,7 @@ class TestRefusals:
         with pytest.raises(ValueError, match=f"{name} does not apply to kmeans"):
             spec(**flag)
         with pytest.raises(ValueError, match=f"{name} does not apply to ew_cov"):
-            po.spec.ew_cov("c", features=["x0", "x1"], halflife=10.0, **flag)
+            po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **flag)
 
     @pytest.mark.parametrize(
         ("kw", "msg"),
@@ -764,7 +766,7 @@ class TestRefusals:
 
     def test_no_targets_and_no_intercept_leak(self):
         with pytest.raises(TypeError, match=r"kmeans\(\) takes no targets"):
-            po.spec.kmeans("m", features=["x0"], targets=["x0"], k=2, halflife=10.0)
+            po.spec.kmeans("m", features=["x0"], targets=["x0"], k=2, half_life=10.0)
         # A feature named like the plumbing target is not a leak.
         assert spec(features=("x0",), k=2)["targets"] == ["x0"]
 
@@ -791,8 +793,8 @@ class TestRefusals:
                     'name = "m"',
                     'features = ["x0", "x1"]',
                     'targets = ["x0"]',
-                    "halflife = 200.0",
-                    "min_periods = 5.0",
+                    "half_life = 200.0",
+                    "min_weight = 5.0",
                     "[specs.model]",
                     'type = "kmeans"',
                     "k = 3",

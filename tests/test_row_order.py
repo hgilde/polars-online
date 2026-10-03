@@ -1,11 +1,11 @@
 """Row order only reaches the fit through decay.
 
-A bank keeps sufficient statistics, so with decay off (``halflife=inf`` or
+A bank keeps sufficient statistics, so with decay off (``half_life=inf`` or
 ``lam=1.0``) an ``ewridge`` with ``ridge=0`` *is* ordinary least squares over
 every row it has seen, in whatever order the rows came -- one stream per
-group, the groups interleaved however the file has them. A finite halflife
+group, the groups interleaved however the file has them. A finite half-life
 without a clock discounts by position in the stream instead; and a huge
-*finite* halflife is not ``inf``, because it solves by weight rather than
+*finite* half-life is not ``inf``, because it solves by weight rather than
 every row, so its fit can be a few rows out of date. The README states all
 three; this file keeps it honest.
 """
@@ -51,12 +51,12 @@ def _orders(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
 
 
 @pytest.mark.parametrize(
-    "decay", [{"halflife": math.inf}, {"lam": 1.0}], ids=["halflife=inf", "lam=1"]
+    "decay", [{"half_life": math.inf}, {"lam": 1.0}], ids=["half_life=inf", "lam=1"]
 )
 def test_no_decay_is_least_squares_in_any_row_order(decay):
     df = _frame()
     spec = po.spec.ewridge(
-        "ols", targets=["y"], features=FEATURES, ridge=0.0, group="g", min_periods=K + 1, **decay
+        "ols", targets=["y"], features=FEATURES, ridge=0.0, group="g", min_weight=K + 1, **decay
     )
     expected = {g: _ols(df.filter(pl.col("g") == g)) for g in (0, 1)}
     for order, frame in _orders(df).items():
@@ -81,14 +81,14 @@ def test_no_decay_is_least_squares_in_any_row_order(decay):
 
 
 def test_a_row_halflife_without_a_clock_discounts_by_position():
-    """No clock: the row count is the clock, so a finite halflife weights row
-    i by ``0.5 ** ((n-1-i) / halflife)`` in whatever order the rows are fed --
+    """No clock: the row count is the clock, so a finite half-life weights row
+    i by ``0.5 ** ((n-1-i) / half_life)`` in whatever order the rows are fed --
     reversing the frame reverses the weights, and both are the weighted least
     squares of that order."""
     df = _frame(n=600).drop("g")
     h = 150.0
     spec = po.spec.ewridge(
-        "ew", targets=["y"], features=FEATURES, ridge=0.0, halflife=h, solve_every=0
+        "ew", targets=["y"], features=FEATURES, ridge=0.0, half_life=h, solve_every=0
     )
     x = np.column_stack([np.ones(df.height), df.select(FEATURES).to_numpy()])
     for frame, xs, ys in (
@@ -105,32 +105,28 @@ def test_a_row_halflife_without_a_clock_discounts_by_position():
 
 
 def test_a_huge_finite_halflife_is_not_inf():
-    """``halflife=inf`` solves every row. A finite halflife, however long,
+    """``half_life=inf`` solves every row. A finite half-life, however long,
     solves by weight: once the rows since the last solve reach ``ln 2 / 50``
     of the weight the fit holds (task 115 (b)), about 1.4% of the rows on a
-    stream this much shorter than the halflife. So ``halflife=1e12`` on a
+    stream this much shorter than the half-life. So ``half_life=1e12`` on a
     2000-row stream keeps solving and ends within about 28 rows of the fit
     of every row, not exactly on it; ``solve_every`` or
     ``max_rows_between_solves`` make it exact. Under the old default,
-    ``halflife/50`` of clock, it solved once, at ``min_periods``, and never
+    ``half_life/50`` of clock, it solved once, at ``min_weight``, and never
     again: that warm-up fit is 0.33 from the fit of every row."""
     df = _frame(n=2000).drop("g")
     ols = _ols(df)
 
     def coef(**kw):
         bank = po.ModelBank(
-            [
-                po.spec.ewridge(
-                    "m", targets=["y"], features=FEATURES, ridge=0.0, min_periods=30, **kw
-                )
-            ]
+            [po.spec.ewridge("m", targets=["y"], features=FEATURES, ridge=0.0, min_weight=30, **kw)]
         )
         bank.fit_predict(df)
         return bank.coef("m").sort("position")["coef"].to_numpy()
 
-    gap = np.abs(coef(halflife=1e12) - ols).max()
+    gap = np.abs(coef(half_life=1e12) - ols).max()
     assert 1e-4 < gap < 0.02, gap  # 0.0097: a few rows out of date
     assert np.abs(_ols(df.head(30)) - ols).max() > 0.3  # what solving once would leave
-    np.testing.assert_allclose(coef(halflife=1e12, solve_every=1.0), ols, atol=1e-6)
-    np.testing.assert_allclose(coef(halflife=1e12, max_rows_between_solves=1), ols, atol=1e-6)
-    np.testing.assert_allclose(coef(halflife=math.inf), ols, atol=1e-10)
+    np.testing.assert_allclose(coef(half_life=1e12, solve_every=1.0), ols, atol=1e-6)
+    np.testing.assert_allclose(coef(half_life=1e12, max_rows_between_solves=1), ols, atol=1e-6)
+    np.testing.assert_allclose(coef(half_life=math.inf), ols, atol=1e-10)

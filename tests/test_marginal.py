@@ -1,10 +1,10 @@
 """E44 (Task 37): `marginal` -- every (feature, target) pair's EW moments,
 kept in the state and read back as a frame.
 
-Not a regression: nothing is emitted per row but `n_eff`. The pairs are the
+Not a regression: nothing is emitted per row but `weight_sum`. The pairs are the
 product, so this file holds `ModelBank.marginal()` to a from-scratch numpy
 oracle, to `ew_cov` (a pair is the two-column `ew_cov`, to the bit) and to the
-shared contract -- chunk invariance, save/load, groups, the halflife grid,
+shared contract -- chunk invariance, save/load, groups, the half-life grid,
 null and zero-weight rows -- on every surface that runs a spec.
 """
 
@@ -17,7 +17,7 @@ import pytest
 import polars_online as po
 
 PAIR_FIELDS = [
-    "n_eff",
+    "weight_sum",
     "n_kish",
     "mean_x",
     "var_x",
@@ -67,7 +67,7 @@ def frame(
 
 
 def spec(name: str = "m", targets=("y0", "y1"), features=("x0", "x1", "x2"), **kw) -> dict:
-    d: dict = dict(targets=list(targets), features=list(features), halflife=60.0)
+    d: dict = dict(targets=list(targets), features=list(features), half_life=60.0)
     d.update(kw)
     return po.spec.marginal(name, **d)
 
@@ -78,10 +78,10 @@ def oracle(
     """Every pair's moments after the rows `[:upto]`, from scratch: the
     effective weight of a row is its weight times the decay of every later
     processed row, over the rows where the target is present; plus the
-    struct's `n_eff` for every row -- the accumulated weight before it."""
+    struct's `weight_sum` for every row -- the accumulated weight before it."""
     rows = df.head(upto) if upto is not None else df
-    lam_of = lambda d: 0.5 ** (d / s["halflife"])  # noqa: E731
-    cap = s["max_dclock"] if s["max_dclock"] is not None else np.inf
+    lam_of = lambda d: 0.5 ** (d / s["half_life"])  # noqa: E731
+    cap = s["gap_cap"] if s["gap_cap"] is not None else np.inf
     features, targets = s["features"], s["targets"]
     processed: list[int] = []
     lam: list[float] = []
@@ -117,7 +117,7 @@ def oracle(
         e = np.where(present, eff, 0.0)
         W = e.sum()
         Q = (e**2).sum()
-        min_periods = s["min_periods"] if s["min_periods"] is not None else 3.0
+        min_weight = s["min_weight"] if s["min_weight"] is not None else 3.0
         for f in features:
             xv = np.array([rows[f][i] for i in processed], dtype=float)
             xv = np.where(present, xv, 0.0)
@@ -131,14 +131,14 @@ def oracle(
                 mx = my = vx = vy = cov = 0.0
             n_kish = W * W / Q if Q > 0 else None
             corr = beta = tstat = None
-            if min_periods <= W:
+            if min_weight <= W:
                 den = np.sqrt(vx) * np.sqrt(vy)
                 corr = float(np.clip(cov / den, -1.0, 1.0)) if den > 0 else None
                 beta = cov / vx if vx > 0 else None
                 if corr is not None and n_kish is not None and n_kish > 2:
                     tstat = corr * np.sqrt((n_kish - 2) / (1 - corr * corr))
             out[(f, t)] = dict(
-                n_eff=W,
+                weight_sum=W,
                 n_kish=n_kish,
                 mean_x=mx,
                 var_x=vx,
@@ -163,10 +163,10 @@ class TestArithmetic:
         df = frame(
             n=500, null_feature_every=23, null_target_every=7, weights=True, clock=True, seed=1
         )
-        s = spec(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+        s = spec(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
         bank = po.ModelBank([s])
         out = bank.fit_predict(df)
-        want, n_eff = oracle(df, s)
+        want, weight_sum = oracle(df, s)
         got = bank.marginal("m")
         assert got.columns == COLUMNS
         assert got.height == 6
@@ -174,17 +174,17 @@ class TestArithmetic:
             pair = want[(row["feature"], row["target"])]
             for field in PAIR_FIELDS:
                 assert close(row[field], pair[field]), (row["feature"], row["target"], field)
-        # The struct's n_eff is the weight before each row, every row.
-        struct = out["m"].struct.field("n_eff").to_list()
-        assert all(close(a, b) for a, b in zip(struct, n_eff, strict=True))
+        # The struct's weight_sum is the weight before each row, every row.
+        struct = out["m"].struct.field("weight_sum").to_list()
+        assert all(close(a, b) for a, b in zip(struct, weight_sum, strict=True))
         # And the target with nulls has less weight behind it than the other.
-        n_eff_by_target = dict(zip(got["target"], got["n_eff"], strict=True))
+        n_eff_by_target = dict(zip(got["target"], got["weight_sum"], strict=True))
         assert n_eff_by_target["y1"] < n_eff_by_target["y0"]
         assert got.select(pl.col(PAIR_FIELDS).is_nan().any()).sum_horizontal().item() == 0
 
     def test_a_pair_is_the_ew_cov_of_its_two_columns_to_the_bit(self):
         df = frame(n=600, weights=True, clock=True, seed=2)
-        common = dict(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+        common = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
         # `ew_cov` reports before each row; the pair is read after the last
         # row, so it is compared with `ew_cov`'s last-row value over one row more.
         bank = po.ModelBank([spec(**common)])
@@ -208,53 +208,53 @@ class TestArithmetic:
 
     def test_kish_size_of_unit_weights_tends_to_the_closed_form(self):
         df = frame(n=3000, seed=3)
-        bank = po.ModelBank([spec(halflife=20.0)])
+        bank = po.ModelBank([spec(half_life=20.0)])
         bank.fit_predict(df)
         lam = 0.5 ** (1.0 / 20.0)
         got = bank.marginal("m")
         assert got["n_kish"].to_numpy() == pytest.approx((1 + lam) / (1 - lam), rel=1e-9)
-        assert got["n_eff"].to_numpy() == pytest.approx(1 / (1 - lam), rel=1e-9)
+        assert got["weight_sum"].to_numpy() == pytest.approx(1 / (1 - lam), rel=1e-9)
 
     def test_min_periods_gates_each_targets_derived_values_by_its_own_weight(self):
-        # y1 is present on three rows only: below a min_periods of 5, its
+        # y1 is present on three rows only: below a min_weight of 5, its
         # correlation, slope and t are null while y0's are numbers, and the
         # moments it has are reported all the same.
         y1 = [None] * 40
         y1[10], y1[20], y1[30] = 1.0, 2.0, 3.0
         df = frame(n=40, seed=4).with_columns(y1=pl.Series(y1))
-        bank = po.ModelBank([spec(halflife=float("inf"), min_periods=5.0)])
+        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=5.0)])
         bank.fit_predict(df)
         got = bank.marginal("m")
         y0 = got.filter(pl.col("target") == "y0")
         y1_ = got.filter(pl.col("target") == "y1")
         assert y0["corr"].null_count() == 0 and y0["t"].null_count() == 0
-        assert y1_["n_eff"].to_list() == [3.0] * 3 and y1_["n_kish"].to_list() == [3.0] * 3
+        assert y1_["weight_sum"].to_list() == [3.0] * 3 and y1_["n_kish"].to_list() == [3.0] * 3
         assert y1_["mean_y"].to_list() == [2.0] * 3
         assert y1_.select("corr", "beta", "t").null_count().sum_horizontal().item() == 9
         # A per-target list applies per target.
-        bank = po.ModelBank([spec(halflife=float("inf"), min_periods=[5.0, 3.0])])
+        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=[5.0, 3.0])])
         bank.fit_predict(df)
         y1_ = bank.marginal("m").filter(pl.col("target") == "y1")
         assert y1_["corr"].null_count() == 0
 
     def test_a_constant_feature_has_null_corr_and_beta_and_a_two_row_target_no_t(self):
         df = frame(n=50, seed=5).with_columns(x2=pl.lit(1.0))
-        bank = po.ModelBank([spec(halflife=float("inf"))])
+        bank = po.ModelBank([spec(half_life=float("inf"))])
         bank.fit_predict(df)
         got = bank.marginal("m").filter(pl.col("feature") == "x2")
         assert got["var_x"].to_list() == [0.0, 0.0]
         assert got["cov"].to_list() == [0.0, 0.0]
         assert got.select("corr", "beta", "t").null_count().sum_horizontal().item() == 6
         # Two rows: n_kish = 2, so the t-statistic is undefined, and the
-        # correlation is +-1 by construction -- which is why min_periods
+        # correlation is +-1 by construction -- which is why min_weight
         # defaults to 3.
-        bank = po.ModelBank([spec(halflife=float("inf"), min_periods=2.0)])
+        bank = po.ModelBank([spec(half_life=float("inf"), min_weight=2.0)])
         bank.fit_predict(df.head(2))
         two = bank.marginal("m").filter(pl.col("feature") == "x0")
         assert [abs(c) for c in two["corr"].to_list()] == pytest.approx([1.0, 1.0])
         assert two["t"].null_count() == 2
         for rows, nulls in ((2, 2), (3, 0)):
-            bank = po.ModelBank([spec(halflife=float("inf"))])
+            bank = po.ModelBank([spec(half_life=float("inf"))])
             bank.fit_predict(df.head(rows))
             x0 = bank.marginal("m").filter(pl.col("feature") == "x0")
             assert x0["corr"].null_count() == nulls, rows
@@ -263,7 +263,7 @@ class TestArithmetic:
 class TestPlumbing:
     def test_every_surface_runs_it(self, tmp_path, online_cli):
         df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)
-        s = spec(weight="w", clock="t", max_dclock=10.0, halflife=40.0)
+        s = spec(weight="w", clock="t", gap_cap=10.0, half_life=40.0)
         ref = po.ModelBank([s])
         one = ref.fit_predict(df).select("m").unnest("m")
         pairs = ref.marginal("m")
@@ -290,8 +290,8 @@ class TestPlumbing:
                     'targets = ["y0", "y1"]',
                     'features = ["x0", "x1", "x2"]',
                     'clock = "t"',
-                    "max_dclock = 10.0",
-                    "halflife = 40.0",
+                    "gap_cap = 10.0",
+                    "half_life = 40.0",
                     'weight = "w"',
                     "[specs.model]",
                     'type = "marginal"',
@@ -304,16 +304,16 @@ class TestPlumbing:
 
     def test_the_struct_holds_n_eff_alone(self):
         s = spec()
-        assert po.spec.output_fields(s) == ["n_eff"]
+        assert po.spec.output_fields(s) == ["weight_sum"]
         idx = po.spec.output_index(s)
-        assert idx["kind"].to_list() == ["n_eff"] and idx["dtype"].to_list() == ["f64"]
+        assert idx["kind"].to_list() == ["weight_sum"] and idx["dtype"].to_list() == ["f64"]
         assert po.spec.coef_fields(s).height == 0
         out = po.ModelBank([s]).fit_predict(frame(n=20))
-        assert out.schema["m"] == pl.Struct({"n_eff": pl.Float64})
+        assert out.schema["m"] == pl.Struct({"weight_sum": pl.Float64})
 
     def test_chunk_invariance_to_the_bit(self):
         df = frame(n=700, null_feature_every=23, null_target_every=7, weights=True, clock=True)
-        s = spec(weight="w", clock="t", max_dclock=10.0)
+        s = spec(weight="w", clock="t", gap_cap=10.0)
         ref = po.ModelBank([s])
         one = ref.fit_predict(df).select("m").unnest("m")
         for size in (1, 31, 250):
@@ -325,7 +325,7 @@ class TestPlumbing:
 
     def test_save_load_continues_and_reports_the_same_pairs(self, tmp_path):
         df = frame(n=600, null_target_every=7, weights=True, clock=True)
-        s = spec(weight="w", clock="t", max_dclock=10.0)
+        s = spec(weight="w", clock="t", gap_cap=10.0)
         a = po.ModelBank([s])
         a.fit_predict(df.slice(0, 300))
         path = tmp_path / "m.state"
@@ -341,8 +341,8 @@ class TestPlumbing:
 
     def test_groups_and_the_halflife_grid(self):
         df = frame(n=600, groups=["q", "p"], seed=6)
-        s = spec(group="g", halflife=[20.0, 200.0], features=["x0", "x1"])
-        assert po.spec.output_fields(s) == ["n_eff@h20", "n_eff@h200"]
+        s = spec(group="g", half_life=[20.0, 200.0], features=["x0", "x1"])
+        assert po.spec.output_fields(s) == ["weight_sum@h20", "weight_sum@h200"]
         bank = po.ModelBank([s])
         bank.fit_predict(df)
         got = bank.marginal("m")
@@ -358,18 +358,18 @@ class TestPlumbing:
             assert bank.marginal("m", group=g).equals(solo.marginal("m"), null_equal=True)
         assert bank.marginal("m", group="never").height == 0
         assert bank.marginal("m", group="never").columns == COLUMNS
-        # The short halflife remembers less.
-        short = got.filter(pl.col("instance") == "@h20")["n_eff"].to_list()
-        long = got.filter(pl.col("instance") == "@h200")["n_eff"].to_list()
+        # The short half-life remembers less.
+        short = got.filter(pl.col("instance") == "@h20")["weight_sum"].to_list()
+        long = got.filter(pl.col("instance") == "@h200")["weight_sum"].to_list()
         assert all(a < b for a, b in zip(short, long, strict=True))
 
     def test_zero_weight_rows_learn_nothing_and_keep_the_state_finite(self):
         df = frame(n=30, seed=7).with_columns(w=pl.lit(0.0))
         bank = po.ModelBank([spec(weight="w")])
         out = bank.fit_predict(df)
-        assert out["m"].struct.field("n_eff").to_list() == [0.0] * 30
+        assert out["m"].struct.field("weight_sum").to_list() == [0.0] * 30
         got = bank.marginal("m")
-        assert got["n_eff"].to_list() == [0.0] * 6
+        assert got["weight_sum"].to_list() == [0.0] * 6
         assert got.select(pl.col(PAIR_FIELDS).is_nan().any()).sum_horizontal().item() == 0
         assert got.select("n_kish", "corr", "beta", "t").null_count().sum_horizontal().item() == 24
         # A zero-weight first row, then real rows: the zero row left no trace.
@@ -386,7 +386,7 @@ class TestPlumbing:
         bank.fit_predict(df.head(100))
         before = bank.marginal("m")
         scored = bank.predict(df.tail(100))
-        assert scored["m"].struct.field("n_eff").n_unique() == 1
+        assert scored["m"].struct.field("weight_sum").n_unique() == 1
         assert bank.marginal("m").equals(before, null_equal=True)
 
     def test_describe_and_summary_see_the_pairs_columns(self):
@@ -402,7 +402,7 @@ class TestPlumbing:
     def test_refusals(self):
         for flag, value in [
             ("emit_sigma", True),
-            ("emit_resid_z", True),
+            ("emit_zscore", True),
             ("emit_metrics", True),
             ("conformal", 0.9),
             ("resid_quantiles", [0.5]),
@@ -419,7 +419,7 @@ class TestPlumbing:
             spec(targets=[])
         with pytest.raises(TypeError):
             spec(stats=["corr"])  # ew_cov's keyword, not this model's
-        ridge = po.spec.ewridge("r", targets=["y0"], features=["x0"], halflife=10.0)
+        ridge = po.spec.ewridge("r", targets=["y0"], features=["x0"], half_life=10.0)
         bank = po.ModelBank([ridge, spec()])
         with pytest.raises(ValueError, match=r'spec "r" has model type "ew_ridge", not "marginal"'):
             bank.marginal("r")
@@ -443,7 +443,7 @@ def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
     indexed t * p + j -- against `ew_cov` on a sample of pairs (review
     2026-09-18, phase 4)."""
     df = frame(n=600, p=12, m=3, weights=True, clock=True, seed=2)
-    common = dict(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+    common = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
     feats = [f"x{j}" for j in range(12)]
     targs = [f"y{t}" for t in range(3)]
     bank = po.ModelBank([spec(features=feats, targets=targs, **common)])
@@ -463,7 +463,7 @@ class TestSharedFeatureMoments:
     mean and variance per feature, over every learned row, where the default
     keeps them per pair; each pair keeps its covariance."""
 
-    COMMON = dict(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+    COMMON = dict(weight="w", clock="t", gap_cap=10.0, half_life=40.0, min_weight=5.0)
 
     def test_every_pair_is_per_targets_to_the_bit_where_every_target_is_present(self):
         """Zero-weight rows and clock gaps included: each target's mix is then
@@ -501,10 +501,10 @@ class TestSharedFeatureMoments:
 
     def test_it_is_refused_with_a_window_or_another_value(self):
         with pytest.raises(ValueError, match='"shared" takes no window'):
-            spec(feature_moments="shared", window=50.0)
+            spec(feature_moments="shared", window_size=50.0)
         with pytest.raises(ValueError, match='must be "per_target" or "shared"'):
             spec(feature_moments="both")
-        spec(feature_moments="per_target", window=50.0, lags=[1], window_lags=True)
+        spec(feature_moments="per_target", window_size=50.0, lags=[1], window_lags=True)
         spec(feature_moments="shared", lags=[1, 3], serial_rule="bartlett")
 
     def test_with_lags_every_pair_is_per_targets_to_the_bit_where_every_target_is_present(self):

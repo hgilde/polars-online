@@ -37,7 +37,7 @@
 //! moments; and from them `corr = S_xy / √(S_xx·S_yy)`, `beta = S_xy /
 //! S_xx` (the slope of `y` on `x`) and `t = corr·√((n_kish − 2) / (1 −
 //! corr²))`, the t-statistic of the correlation at Kish's `n`. `corr`, `beta`
-//! and `t` are NaN while `W_t < min_periods`; the moments are always
+//! and `t` are NaN while `W_t < min_weight`; the moments are always
 //! reported. The t is descriptive: the rows of a stream are rarely
 //! independent, and nothing here pretends otherwise.
 //!
@@ -92,7 +92,7 @@ pub struct MarginalCfg {
     /// Weight each target must have accumulated before its pairs' `corr`,
     /// `beta` and `t` are reported, one entry per target; the moments never
     /// wait.
-    pub min_periods: Vec<f64>,
+    pub min_weight: Vec<f64>,
     /// Lags to accumulate pair moments at (docs/ENHANCEMENTS.md E66),
     /// strictly increasing and `>= 1`, counted in **learned rows within the
     /// group** — not in rows where a particular target was present, since the
@@ -220,18 +220,18 @@ impl MarginalCfg {
         if self.n_targets == 0 {
             return Err("marginal: at least one target is required".into());
         }
-        if self.min_periods.len() != self.n_targets {
+        if self.min_weight.len() != self.n_targets {
             return Err(format!(
-                "marginal: min_periods has {} entries for {} targets",
-                self.min_periods.len(),
+                "marginal: min_weight has {} entries for {} targets",
+                self.min_weight.len(),
                 self.n_targets
             ));
         }
         // `inf` is a gate that never opens, as for every other model and as
         // the builders document; this model alone refused it (review
         // 2026-09-12, S27).
-        if let Some(bad) = self.min_periods.iter().find(|v| v.is_nan() || **v < 0.0) {
-            return Err(format!("marginal: min_periods must be >= 0, got {bad}"));
+        if let Some(bad) = self.min_weight.iter().find(|v| v.is_nan() || **v < 0.0) {
+            return Err(format!("marginal: min_weight must be >= 0, got {bad}"));
         }
         // `MarginalLags::new` checks the lags themselves; this is the pair of
         // rules that involve `serial_rule`, which it cannot see.
@@ -249,7 +249,7 @@ impl MarginalCfg {
             );
         }
         if self.window.is_none() && self.window_every.is_some() {
-            return Err("marginal: window_every needs `window`".into());
+            return Err("marginal: window_every needs `window_size`".into());
         }
         if self.shared() && self.window.is_some() {
             return Err(
@@ -322,13 +322,13 @@ pub struct Pair {
     pub phi_x: f64,
     pub phi_y: f64,
     /// `cov / √(var_x·var_y)`, clamped to `[-1, 1]`; NaN when either side is
-    /// constant, or below `min_periods`.
+    /// constant, or below `min_weight`.
     pub corr: f64,
     /// The slope of `y` on `x`, `cov / var_x`; NaN when the feature is
-    /// constant, or below `min_periods`.
+    /// constant, or below `min_weight`.
     pub beta: f64,
     /// `corr·√((n_kish − 2) / (1 − corr²))`; NaN when `n_kish <= 2`, or
-    /// below `min_periods`. Enormous or `±inf` for a perfect correlation,
+    /// below `min_weight`. Enormous or `±inf` for a perfect correlation,
     /// which is the honest value.
     pub t: f64,
     /// The feature's bin edges, and the target's weight, mean and variance
@@ -341,7 +341,7 @@ pub struct Pair {
     /// Fraction of the target's variance removed by the best single cut of
     /// this feature -- a regression stump's gain, in `[0, 1]`. This is the
     /// number that sees a threshold, a V or a saturation, all of which can
-    /// sit at `corr = 0`. NaN without `bins`, below `min_periods`, or when
+    /// sit at `corr = 0`. NaN without `bins`, below `min_weight`, or when
     /// the target does not vary.
     pub split_gain: f64,
     /// The edge that achieves it, in the feature's own units.
@@ -871,7 +871,7 @@ impl Marginal {
 
     /// The statistics of feature `j` against target `t`. The moments are
     /// reported at any weight; `corr`, `beta` and `t` wait for
-    /// `min_periods`.
+    /// `min_weight`.
     pub fn pair(&self, t: usize, j: usize) -> Pair {
         // Loud in every build: a pair read over held rows is wrong for good
         // (review 2026-09-26, A3).
@@ -956,7 +956,7 @@ impl Marginal {
                 }
             }
         };
-        let (corr, beta, t_stat) = if n_eff >= self.cfg.min_periods[t] {
+        let (corr, beta, t_stat) = if n_eff >= self.cfg.min_weight[t] {
             // The same product of the same two roots `ew_cov` takes, so the
             // correlations agree to the bit.
             let d = var_x.sqrt() * var_y.sqrt();
@@ -1037,7 +1037,7 @@ impl Marginal {
                 }
             }
         }
-        // The binned view of the same pair. Gated by `min_periods` like the
+        // The binned view of the same pair. Gated by `min_weight` like the
         // linear statistics, since it answers the same question.
         let (mut bin_edges, mut bin_n) = (Vec::new(), Vec::new());
         let (mut bin_mean_y, mut bin_var_y) = (Vec::new(), Vec::new());
@@ -1049,7 +1049,7 @@ impl Marginal {
                 bin_mean_y.push(b.mean_y);
                 bin_var_y.push(b.var_y);
             }
-            if n_eff >= self.cfg.min_periods[t] {
+            if n_eff >= self.cfg.min_weight[t] {
                 if let Some(split) = hist.best_split(t, j) {
                     split_gain = split.gain;
                     split_at = split.at;
@@ -1597,7 +1597,7 @@ impl Marginal {
             // No weight in the history and none on this row: nothing to
             // average, and `a`/`b` would be 0/0 (CLAUDE.md rule 9). The
             // weights still take the row's decay -- `lam = 0` with a
-            // zero-weight row is a clock gap past `max_dclock` on a row that
+            // zero-weight row is a clock gap past `gap_cap` on a row that
             // teaches nothing, and the target's `n_eff` must not outlive the
             // gap while the model's does not.
             self.wt[t] = 0.0;
@@ -2238,7 +2238,7 @@ impl OnlineModel for Marginal {
         }
     }
 
-    /// A session change or a clock gap beyond `max_dclock` means the next
+    /// A session change or a clock gap beyond `gap_cap` means the next
     /// row is not one learned row after the last one, so the ring cannot say
     /// what `l` rows ago was. The moments stay; only the ring empties.
     ///
@@ -2307,7 +2307,7 @@ impl OnlineModel for Marginal {
                 if [&m.wt, &m.qt, &m.my, &m.syy].iter().any(|v| v.len() != t)
                     || [&m.mx, &m.sxx].iter().any(|v| v.len() != fx)
                     || m.sxy.len() != p * t
-                    || m.cfg.min_periods.len() != t
+                    || m.cfg.min_weight.len() != t
                     || !lag_ok
                     || !bins_ok
                     || !snaps_ok
@@ -2375,7 +2375,7 @@ mod tests {
             n_features: p,
             n_targets: t,
             decay: Decay::Halflife(20.0),
-            min_periods: vec![0.0; t],
+            min_weight: vec![0.0; t],
             lags: Vec::new(),
             serial_rule: None,
             cross_lags: None,
@@ -2546,7 +2546,7 @@ mod tests {
         for j in 0..2 {
             let (w, p) = (windowed.pair(0, j), plain.pair(0, j));
             for (what, got, want) in [
-                ("n_eff", w.n_eff, p.n_eff),
+                ("weight_sum", w.n_eff, p.n_eff),
                 ("n_kish", w.n_kish, p.n_kish),
                 ("mean_x", w.mean_x, p.mean_x),
                 ("mean_y", w.mean_y, p.mean_y),
@@ -2668,7 +2668,7 @@ mod tests {
             n_features: 2,
             decay: Decay::Halflife(h),
             stats: vec![EwCovStat::Mean],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -2964,7 +2964,7 @@ mod tests {
             n_features: 2,
             decay: Decay::Halflife(30.0),
             stats: vec![EwCovStat::Mean],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -3029,7 +3029,7 @@ mod tests {
             n_features: p + nt,
             decay: Decay::Halflife(30.0),
             stats: vec![EwCovStat::Mean],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -3259,9 +3259,9 @@ mod tests {
     /// `window.rs` states it: a row exactly `window` old is inside.
     #[test]
     fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
-        let (halflife, window) = (25.0, 70.0);
+        let (half_life, window) = (25.0, 70.0);
         let mut c = cfg(1, 1);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.window = Some(window);
         let mut m = Marginal::new(c).unwrap();
 
@@ -3292,7 +3292,7 @@ mod tests {
                 on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                 let w: Vec<f64> = keep
                     .iter()
-                    .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
                     .collect();
                 let wsum: f64 = w.iter().sum();
                 let mx: f64 = keep.iter().zip(&w).map(|(&j, wi)| wi * xs[j]).sum::<f64>() / wsum;
@@ -3344,9 +3344,9 @@ mod tests {
     /// boundary is inclusive, as `window.rs` states it.
     #[test]
     fn a_windowed_pair_keeps_its_precision_at_a_large_offset() {
-        let (halflife, window) = (25.0, 70.0);
+        let (half_life, window) = (25.0, 70.0);
         let mut c = cfg(1, 1);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.window = Some(window);
         let mut m = Marginal::new(c).unwrap();
 
@@ -3376,7 +3376,7 @@ mod tests {
                 on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                 let w: Vec<f64> = keep
                     .iter()
-                    .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
                     .collect();
                 let wsum: f64 = w.iter().sum();
                 let mean =
@@ -3452,9 +3452,9 @@ mod tests {
     /// subtraction leaves (review 2026-09-18, S4).
     #[test]
     fn a_gap_that_empties_the_window_leaves_n_eff_exactly_zero() {
-        let (halflife, window) = (25.0, 70.0);
+        let (half_life, window) = (25.0, 70.0);
         let mut c = cfg(2, 1);
-        c.decay = Decay::Halflife(halflife);
+        c.decay = Decay::Halflife(half_life);
         c.window = Some(window);
         let mut m = Marginal::new(c).unwrap();
         let mut seed = 7u64;
@@ -3540,16 +3540,16 @@ mod tests {
         err(cfg(0, 1), "at least one feature");
         err(cfg(1, 0), "at least one target");
         let mut c = cfg(1, 1);
-        c.min_periods = vec![-1.0];
-        err(c.clone(), "min_periods");
+        c.min_weight = vec![-1.0];
+        err(c.clone(), "min_weight");
         // A gate that never opens, as for every other model (S27).
-        c.min_periods = vec![f64::INFINITY];
+        c.min_weight = vec![f64::INFINITY];
         assert!(Marginal::new(c.clone()).is_ok());
-        c.min_periods = vec![f64::NAN];
-        err(c.clone(), "min_periods");
-        c.min_periods = vec![1.0, 2.0];
+        c.min_weight = vec![f64::NAN];
+        err(c.clone(), "min_weight");
+        c.min_weight = vec![1.0, 2.0];
         err(c.clone(), "2 entries for 1 targets");
-        c.min_periods = vec![];
+        c.min_weight = vec![];
         err(c, "0 entries for 1 targets");
         // A window with lags is taken since task 137: the snapshots hold the
         // lag moments, and the spec layer asks for `window_lags` by name.
@@ -3573,7 +3573,7 @@ mod tests {
         c.decay = Decay::Halflife(hl);
         c.lags = vec![1, 2];
         c.cross_lags = Some(vec![1]);
-        c.min_periods = vec![0.0];
+        c.min_weight = vec![0.0];
         let mut live = Marginal::new(c.clone()).unwrap();
         c.window = Some(window);
         let mut win = Marginal::new(c).unwrap();
@@ -3768,7 +3768,7 @@ mod tests {
             n_features: 2,
             decay: Decay::Halflife(20.0),
             stats: vec![EwCovStat::Corr],
-            min_periods: 0.0,
+            min_weight: 0.0,
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
@@ -3814,7 +3814,7 @@ mod tests {
     #[test]
     fn n_eff_is_the_weight_before_the_row_and_min_periods_gates_the_derived_values() {
         let mut c = cfg(1, 1);
-        c.min_periods = vec![3.0];
+        c.min_weight = vec![3.0];
         let mut m = Marginal::new(c).unwrap();
         let lam = 0.5f64.powf(1.0 / 20.0);
         let mut expect = 0.0;
@@ -3943,7 +3943,7 @@ mod tests {
                 n_features: 1,
                 decay: Decay::Halflife(1.0),
                 stats: vec![],
-                min_periods: 0.0,
+                min_weight: 0.0,
                 precision_prior: None,
                 mahal_quantiles: vec![],
                 pca: 0,
@@ -3994,7 +3994,7 @@ mod tests {
             n_features: 1,
             n_targets: 1,
             decay: Decay::Halflife(200.0),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
             cross_lags: None,
@@ -4069,7 +4069,7 @@ mod tests {
                 n_features: p,
                 n_targets,
                 decay: Decay::Halflife(200.0),
-                min_periods: vec![0.0; n_targets],
+                min_weight: vec![0.0; n_targets],
                 lags: Vec::new(),
                 serial_rule: None,
                 cross_lags: None,
@@ -4282,7 +4282,7 @@ mod tests {
                 n_features: 1,
                 n_targets: 1,
                 decay: Decay::Halflife(50.0),
-                min_periods: vec![0.0],
+                min_weight: vec![0.0],
                 lags: Vec::new(),
                 serial_rule: None,
                 cross_lags: None,
@@ -4300,7 +4300,7 @@ mod tests {
             n_features: 1,
             n_targets: 1,
             decay: Decay::Halflife(50.0),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
             cross_lags: None,
@@ -4321,7 +4321,7 @@ mod tests {
             n_features: 3,
             n_targets: 1,
             decay: Decay::Halflife(100.0),
-            min_periods: vec![0.0],
+            min_weight: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
             cross_lags: None,
@@ -4612,7 +4612,7 @@ mod tests {
         let base = || {
             let mut c = cfg(p, 3);
             c.decay = Decay::Halflife(15.0);
-            c.min_periods = vec![3.0; 3];
+            c.min_weight = vec![3.0; 3];
             c
         };
         let with = |f: &dyn Fn(&mut MarginalCfg)| {

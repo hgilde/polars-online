@@ -1,4 +1,4 @@
-//! One (spec, group) stream: clock state + model instances (one per halflife
+//! One (spec, group) stream: clock state + model instances (one per half-life
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::ClockValue;
@@ -404,7 +404,7 @@ const DEFAULT_BINS: usize = 16;
 /// not move much -- and hold 8 KB per feature while they wait.
 const DEFAULT_BIN_WARM_ROWS: usize = 1_000;
 
-/// Build the model instances for a spec: one per halflife grid entry.
+/// Build the model instances for a spec: one per half-life grid entry.
 pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
     let decays = spec.decays()?;
     decays
@@ -474,15 +474,15 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             ridge,
             feature_sets,
             standardize,
-            ridge_decay,
+            ridge_scale,
             coef_prior,
             session_shrink,
-            long_halflife,
+            long_half_life,
             solve_every,
             max_rows_between_solves,
             gram_block_rows,
             target_gaps,
-            window,
+            window_size: window,
             window_every,
             window_budget: _,
         } => {
@@ -503,7 +503,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = EwRidgeCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 ridge: ridge
                     .as_ref()
@@ -511,18 +511,18 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .unwrap_or_else(|| vec![1e-6]),
                 feature_sets: fs,
                 standardize: *standardize,
-                ridge_decay: *ridge_decay,
+                ridge_scale: *ridge_scale == crate::spec::RidgeScale::Sum,
                 session_shrink: *session_shrink,
-                long_halflife: long_halflife.as_ref().map(Span::value),
+                long_half_life: long_half_life.as_ref().map(Span::value),
                 coef_prior: coef_prior.clone(),
                 // The spec's default is 0, the noise gate being this model's
                 // (docs/WARMUP-AND-CONVERGENCE.md §2.1); the model's own
                 // floor -- its first solve, and its own gate -- is then a
                 // row per unknown, as the old default was. An explicit value
                 // is the user's, above or below that.
-                min_periods: match spec.min_periods {
+                min_weight: match spec.min_weight {
                     Some(_) => spec.min_periods_or_default(),
-                    None => (spec.k() + usize::from(spec.add_intercept)) as f64,
+                    None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
                 },
                 solve_every: solve_every
                     .as_ref()
@@ -543,36 +543,36 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = RlsCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 ridge: ridge.unwrap_or(1.0),
                 coef_prior: coef_prior.clone(),
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
             };
             Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
         }
         ModelKind::Lasso {
             lasso_path,
             l1_ratio,
-            select_halflife,
+            select_half_life,
             solve_every,
             max_rows_between_solves,
-            max_cd_iters,
-            cd_tol,
+            max_iter,
+            tol,
             target_gaps,
-            window,
+            window_size: window,
             window_every,
             window_budget: _,
         } => {
             let cfg = LassoCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 lasso_path: lasso_path.clone(),
                 l1_ratio: l1_ratio.unwrap_or(1.0),
-                select_halflife: select_halflife.as_ref().map(Span::value),
-                min_periods: spec.min_periods_or_default(),
+                select_half_life: select_half_life.as_ref().map(Span::value),
+                min_weight: spec.min_periods_or_default(),
                 solve_every: solve_every
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
@@ -580,33 +580,33 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),
                 window_every: *window_every,
-                max_cd_iters: max_cd_iters.unwrap_or(100),
-                cd_tol: cd_tol.unwrap_or(1e-10),
+                max_iter: max_iter.unwrap_or(100),
+                tol: tol.unwrap_or(1e-10),
                 target_gaps: *target_gaps,
             };
             Ok(AnyModel::Lasso(Box::new(Lasso::new(cfg)?)))
         }
         ModelKind::Kalman {
-            coef_halflife,
+            coef_half_life,
             q,
             obs_var,
             p0,
             share_p,
-            revert_halflife,
+            revert_half_life,
             standardize,
         } => {
             let cfg = KalmanCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
-                halflife: coef_halflife.to_vec(),
+                half_life: coef_half_life.to_vec(),
                 q: q.as_ref().map(|v| v.iter().map(|n| n.0).collect()),
                 obs_var: *obs_var,
                 p0: p0.unwrap_or(1.0),
                 share_p: *share_p,
-                min_periods: spec.min_periods_or_default(),
-                revert_halflife: revert_halflife
+                min_weight: spec.min_periods_or_default(),
+                revert_half_life: revert_half_life
                     .as_ref()
                     .map_or_else(|| vec![f64::INFINITY], SpanList::to_vec),
                 standardize: *standardize,
@@ -623,14 +623,14 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = RobustCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 loss: RobustLoss::Huber {
                     delta: huber_delta.map_or(1.5, |n| n.0),
                 },
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
                 solve_every: solve_every
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
@@ -651,12 +651,12 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = RobustCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 loss: RobustLoss::Quantile { tau: *quantile },
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
                 solve_every: solve_every
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
@@ -686,13 +686,13 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = FtrlCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 alpha: alpha.unwrap_or(0.1),
                 beta: beta.unwrap_or(1.0),
                 l1: l1.unwrap_or(0.0),
                 l2: l2.unwrap_or(1.0),
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
                 strict_binary: *strict_binary,
                 loss,
             };
@@ -705,7 +705,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             pca,
             pca_every,
             lags,
-            window,
+            window_size: window,
             window_every,
             window_budget: _,
         } => {
@@ -734,7 +734,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // for fewer (including 0) is quietly raised rather than
                 // refused -- a covariance below two rows has nothing to
                 // report (review 2026-09-18, minor).
-                min_periods: spec.min_periods_per_target()[0].max(2.0),
+                min_weight: spec.min_periods_per_target()[0].max(2.0),
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),
@@ -755,7 +755,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             power,
             l2,
             clip_gradient,
-            scale_features,
+            standardize,
             coef_min,
             coef_max,
             coef_sum,
@@ -786,16 +786,16 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = SgdCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 loss,
                 learning_rate: learning_rate.unwrap_or(0.01),
                 schedule: sched,
                 l2: l2.unwrap_or(0.0),
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
                 // Finite by default: see SgdCfg::clip_gradient.
                 clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
-                scale_features: *scale_features,
+                standardize: *standardize,
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
@@ -817,24 +817,24 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = PaCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
-                add_intercept: spec.add_intercept,
+                fit_intercept: spec.fit_intercept,
                 decay,
                 mode,
                 c: c.map_or(1.0, |n| n.0),
                 eps: eps.unwrap_or(0.1),
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
             };
             Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
         }
         ModelKind::Holt {
-            level_halflife,
-            trend_halflife,
+            level_half_life,
+            trend_half_life,
             trend,
         } => {
-            // Default the level to the spec's own halflife, so `halflife` means
+            // Default the level to the spec's own half-life, so `half_life` means
             // the same thing here as it does for every other model.
-            let level = match level_halflife {
+            let level = match level_half_life {
                 Some(n) => n.value(),
                 None => match decay {
                     Decay::Halflife(h) => h,
@@ -847,9 +847,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             let cfg = HoltCfg {
                 n_targets: spec.m(),
-                level_halflife: level,
-                trend_halflife: trend_halflife.as_ref().map_or(level * 4.0, Span::value),
-                min_periods: spec.min_periods_or_default(),
+                level_half_life: level,
+                trend_half_life: trend_half_life.as_ref().map_or(level * 4.0, Span::value),
+                min_weight: spec.min_periods_or_default(),
                 trend: trend.unwrap_or(true),
             };
             Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
@@ -879,9 +879,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 k: *k,
                 decay,
-                // One `min_periods` for the whole model: the spec's first
+                // One `min_weight` for the whole model: the spec's first
                 // (and only) entry, defaulting like the regressions do.
-                min_periods: spec.min_periods_per_target()[0],
+                min_weight: spec.min_periods_per_target()[0],
                 warm_rows: warm_rows.unwrap_or(500),
                 seed_rule,
                 seed: seed.unwrap_or(0),
@@ -906,7 +906,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = MicroCfg {
                 n_features: spec.k(),
                 decay,
-                min_periods: spec.min_periods_per_target()[0],
+                min_weight: spec.min_periods_per_target()[0],
                 eps: *eps,
                 beta_mu: beta_mu.unwrap_or(3.0),
                 max_clusters: max_clusters.unwrap_or(200),
@@ -921,7 +921,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             classes,
             covariance,
             precision_prior,
-            window,
+            window_size: window,
             window_every,
             window_budget: _,
         } => {
@@ -929,7 +929,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 n_classes: classes.len(),
                 decay,
-                min_periods: spec.min_periods_per_target()[0],
+                min_weight: spec.min_periods_per_target()[0],
                 covariance: match covariance {
                     Some(c) => Covariance::parse(c)?,
                     None => Covariance::Full,
@@ -944,12 +944,12 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::SeqTest { .. } => {
             let cfg = SeqTestCfg {
                 n_targets: spec.m(),
-                min_periods: spec.min_periods_or_default(),
+                min_weight: spec.min_periods_or_default(),
             };
             Ok(AnyModel::SeqTest(Box::new(SeqTest::new(cfg)?)))
         }
         ModelKind::Marginal {
-            window,
+            window_size: window,
             window_every,
             window_budget: _,
             // A spec-level acceptance of the price, checked in `validate`.
@@ -973,7 +973,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 n_targets: spec.m(),
                 decay,
-                min_periods: spec.min_periods_per_target(),
+                min_weight: spec.min_periods_per_target(),
                 lags: lags.clone().unwrap_or_default(),
                 cross_lags: cross_lags.clone(),
                 serial_rule: match serial_rule.as_deref() {
@@ -1091,7 +1091,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         }),
         prune_below: prune_below.unwrap_or(1e-6),
         max_run: max_run.unwrap_or(10_000),
-        min_periods: spec.min_periods_or_default(),
+        min_weight: spec.min_periods_or_default(),
     })
 }
 
@@ -1111,7 +1111,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         perm_block,
         norm,
         seed,
-        reset,
+        reset_on_flag: reset,
         monitor_rows,
         boundary_gamma,
     } = &spec.model
@@ -1169,7 +1169,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         )?;
         refuse(
             *reset == Some(true),
-            "reset",
+            "reset_on_flag",
             "\"window\" (a \"monitor\" span and a \"sequential\" cycle end at their flag \
              already)",
         )?;
@@ -1265,7 +1265,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
             None => Covariance::Full,
         },
         precision_prior: *precision_prior,
-        min_periods: spec.min_periods_or_default(),
+        min_weight: spec.min_periods_or_default(),
         learn: learn.unwrap_or(true),
         transition_prior: transition_prior.unwrap_or(1.0),
         transition: transition.clone(),
@@ -1342,7 +1342,7 @@ fn blocks_named(model: &ModelKind) -> Option<&Vec<(String, Vec<String>)>> {
 }
 
 /// A `deco` spec's [`DecoCfg`], with the block *names* resolved to feature
-/// positions. The decay is the caller's (one instance per halflife); every
+/// positions. The decay is the caller's (one instance per half-life); every
 /// other check is `DecoCfg::validate`'s, so `Spec::validate` gets the same
 /// messages the model would give.
 pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
@@ -1406,7 +1406,7 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         alpha: *alpha,
         beta: *beta,
         blocks,
-        min_periods: spec.min_periods_or_default(),
+        min_weight: spec.min_periods_or_default(),
     })
 }
 
@@ -1621,8 +1621,8 @@ impl ClockDtype {
     }
 }
 
-/// A break's events while they wait in the `label_delay` buffer: a session
-/// change, the long-run blend it asks for, and a gap past `max_dclock`
+/// A break's events while they wait in the `embargo` buffer: a session
+/// change, the long-run blend it asks for, and a gap past `gap_cap`
 /// (docs/PLAN.md task 153). A skipped row's wait with the next accepted row,
 /// across a chunk boundary too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -1638,7 +1638,7 @@ impl HeldBreak {
     }
 }
 
-/// One accepted row waiting for its label to mature (`label_delay`,
+/// One accepted row waiting for its label to mature (`embargo`,
 /// docs/ENHANCEMENTS.md E47).
 ///
 /// It carries everything the models need to be stepped with later: the row
@@ -1661,7 +1661,7 @@ pub struct PendingRow {
     /// `None` for a target that was null on the row.
     pub ys: Vec<Option<f64>>,
     /// The break before this row -- a session change (with the long-run
-    /// blend `session_shrink` asks for) or a gap past `max_dclock`, on this
+    /// blend `session_shrink` asks for) or a gap past `gap_cap`, on this
     /// row or on rows skipped since the last accepted one -- applied to the
     /// models when the row is learned, after every row before the break.
     /// Applied when the row arrived, it forced every held row out first.
@@ -1676,7 +1676,7 @@ pub struct PendingRow {
     pub clock: Option<ClockValue>,
 }
 
-/// Serialized per-stream state: the clock plus each halflife's model.
+/// Serialized per-stream state: the clock plus each half-life's model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamState {
     pub clock: ClockState,
@@ -1714,13 +1714,13 @@ pub struct StreamState {
     /// written before it existed.
     #[serde(default)]
     pub decay_time: Vec<f64>,
-    /// Per model instance, the clock the rows held under `label_delay` have
+    /// Per model instance, the clock the rows held under `embargo` have
     /// covered and the model has not decayed by yet, which `settled_frac`
     /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
     /// a running `+=`/`-=` and a fresh sum of the held rows round
     /// differently, so rebuilding it made `settled_frac` depend on where a
     /// chunk ended (hard rule 3; found by a property test, 2026-09-24).
-    /// Written only by a stream with a `label_delay`, so a spec without one
+    /// Written only by a stream with a `embargo`, so a spec without one
     /// writes what it always did. Empty in a schema-14 file, whose loader
     /// rebuilds it the way 0.10.0 did at a chunk boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1729,7 +1729,7 @@ pub struct StreamState {
     /// resumed stream does not raise them again.
     #[serde(default)]
     pub notified: Vec<Notified>,
-    /// Rows accepted but not yet learned from (`label_delay`, E47). Skipped
+    /// Rows accepted but not yet learned from (`embargo`, E47). Skipped
     /// when empty, so a spec without a delay writes the same bytes it always
     /// did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1805,7 +1805,7 @@ pub fn settled_frac(decay: Decay, t: f64) -> f64 {
 /// the output shows. The order is the precedence when several apply.
 pub const WITHHELD_REASONS: [&str; 3] = [
     "below_min_settled_frac",
-    "below_min_periods",
+    "below_min_weight",
     "above_max_error_inflation",
 ];
 const REASON_SETTLED: u8 = 1;
@@ -1851,7 +1851,7 @@ pub struct Stream {
     /// Page-Hinkley detectors per instance and slot, when `emit_drift` is on.
     drift: Vec<Vec<PageHinkley>>,
     /// Warmup threshold per target (ENHANCEMENTS E7).
-    min_periods: Vec<f64>,
+    min_weight: Vec<f64>,
     /// Quantile sketches per instance and slot, every requested level from
     /// one (ENHANCEMENTS E23, docs/PLAN.md task 146).
     resid_q: Vec<Vec<EwQuantile>>,
@@ -1868,7 +1868,7 @@ pub struct Stream {
     scratch: Vec<Scratch>,
     /// Clock units a row waits before the models learn from it (E47);
     /// `None` for the ordinary "learn where it sits".
-    label_delay: Option<f64>,
+    embargo: Option<f64>,
     /// Rows accepted but not yet released into the models, oldest first.
     pending: Vec<PendingRow>,
     /// The break skipped rows raised since the last accepted row, waiting
@@ -1919,7 +1919,7 @@ impl Stream {
             })
     }
 
-    /// Summed over this stream's model instances (one per halflife).
+    /// Summed over this stream's model instances (one per half-life).
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
     }
@@ -1949,7 +1949,7 @@ impl Stream {
             }
             _ => f64::NAN,
         };
-        let k_total = spec.k() + usize::from(spec.add_intercept);
+        let k_total = spec.k() + usize::from(spec.fit_intercept);
         let (mut min_support, mut feature) = (f64::NAN, None);
         if let Some(s) = model.and_then(|m| m.support_coef()) {
             let worst = s
@@ -1961,7 +1961,7 @@ impl Stream {
                 min_support = share;
                 feature = spec
                     .features
-                    .get(i % k_total - usize::from(spec.add_intercept))
+                    .get(i % k_total - usize::from(spec.fit_intercept))
                     .cloned();
             }
         }
@@ -1974,7 +1974,7 @@ impl Stream {
         }
     }
 
-    /// Model instances in this stream (one per halflife).
+    /// Model instances in this stream (one per half-life).
     pub fn n_models(&self) -> usize {
         self.models.len()
     }
@@ -2038,8 +2038,8 @@ pub fn all_usable(row: &[f64]) -> bool {
 
 /// True when this target has not reached its own warmup threshold yet.
 #[inline]
-fn step_n_eff_below(n_eff: f64, min_periods: &[f64], target: usize) -> bool {
-    min_periods.get(target).is_some_and(|t| n_eff < *t)
+fn step_n_eff_below(n_eff: f64, min_weight: &[f64], target: usize) -> bool {
+    min_weight.get(target).is_some_and(|t| n_eff < *t)
 }
 
 /// Flat output buffers for one (stream, chunk) task (docs/PERFORMANCE.md P1).
@@ -2061,7 +2061,7 @@ pub struct ChunkOut {
     pub pred: Vec<f64>,
     pub resid: Vec<f64>,
     pub sigma: Vec<f64>,
-    pub resid_z: Vec<f64>,
+    pub zscore: Vec<f64>,
     pub autocorr: Vec<f64>,
     /// `(ic, r2, hit_rate)`, model-major: `n_models * 3 * n_slots * n_rows`.
     pub metrics: Vec<f64>,
@@ -2119,10 +2119,7 @@ impl Buffers {
             // `emit_averaged` rank slots by (E13/E14 reuse E12's tracked
             // error), so it has to be materialized for them even when it is
             // not itself an output field.
-            extras: spec.emit_sigma
-                || spec.emit_resid_z
-                || spec.emit_selected
-                || spec.emit_averaged,
+            extras: spec.emit_sigma || spec.emit_zscore || spec.emit_selected || spec.emit_averaged,
             n_levels: spec.resid_quantiles.as_ref().map_or(0, Vec::len),
             is_lasso: matches!(spec.model, crate::ModelKind::Lasso { .. }),
         }
@@ -2167,7 +2164,7 @@ impl ChunkOut {
             pred: vec![f64::NAN; per],
             resid: vec![f64::NAN; on(residuals)],
             sigma: vec![f64::NAN; on(extras)],
-            resid_z: vec![f64::NAN; on(extras)],
+            zscore: vec![f64::NAN; on(extras)],
             autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
             metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
             conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
@@ -2277,7 +2274,7 @@ pub struct LastRow {
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub sigma: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
-    pub resid_z: Vec<f64>,
+    pub zscore: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub autocorr: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
@@ -2325,7 +2322,7 @@ impl LastRow {
         take_row(&mut self.pred, &out.pred, n, ri);
         take_row(&mut self.resid, &out.resid, n, ri);
         take_row(&mut self.sigma, &out.sigma, n, ri);
-        take_row(&mut self.resid_z, &out.resid_z, n, ri);
+        take_row(&mut self.zscore, &out.zscore, n, ri);
         take_row(&mut self.autocorr, &out.autocorr, n, ri);
         take_row(&mut self.metrics, &out.metrics, n, ri);
         take_row(&mut self.conformal, &out.conformal, n, ri);
@@ -2361,7 +2358,7 @@ impl LastRow {
             out.pred.len() == self.pred.len(),
             out.resid.len() == self.resid.len(),
             out.sigma.len() == self.sigma.len(),
-            out.resid_z.len() == self.resid_z.len(),
+            out.zscore.len() == self.zscore.len(),
             out.autocorr.len() == self.autocorr.len(),
             out.metrics.len() == self.metrics.len(),
             out.conformal.len() == self.conformal.len(),
@@ -2388,7 +2385,7 @@ impl LastRow {
         out.pred.clone_from(&self.pred);
         out.resid.clone_from(&self.resid);
         out.sigma.clone_from(&self.sigma);
-        out.resid_z.clone_from(&self.resid_z);
+        out.zscore.clone_from(&self.zscore);
         out.autocorr.clone_from(&self.autocorr);
         out.metrics.clone_from(&self.metrics);
         out.conformal.clone_from(&self.conformal);
@@ -2460,7 +2457,7 @@ impl Stream {
                 }
                 None => Vec::new(),
             },
-            min_periods: spec.min_periods_per_target(),
+            min_weight: spec.min_periods_per_target(),
             models,
             decays,
             rows_seen: 0,
@@ -2470,7 +2467,7 @@ impl Stream {
             decay_time: vec![0.0; slots.len()],
             pending_clock: vec![0.0; slots.len()],
             notified: vec![Notified::default(); slots.len()],
-            label_delay: spec.label_delay.as_ref().map(Span::value),
+            embargo: spec.embargo.as_ref().map(Span::value),
             pending: Vec::new(),
             held_break: HeldBreak::default(),
             last_learned: None,
@@ -2501,7 +2498,7 @@ impl Stream {
             decay_time: self.decay_time.clone(),
             // Only a delay ever holds rows; without one this stays empty
             // and is not written.
-            pending_clock: if self.label_delay.is_some() {
+            pending_clock: if self.embargo.is_some() {
                 self.pending_clock.clone()
             } else {
                 Vec::new()
@@ -2653,7 +2650,7 @@ impl Stream {
             &mut stream.conformal,
             |_, _| true,
         )?;
-        // A file written by a spec with a `label_delay` carries the rows it
+        // A file written by a spec with a `embargo` carries the rows it
         // had not learned from yet; one written without a delay has none, and
         // one restored under a spec that has since gained or lost a delay
         // gets whatever the file holds, which is what "resume this stream"
@@ -2868,7 +2865,7 @@ impl Stream {
     ) -> Option<(usize, usize)> {
         let mut live = self.window_shadows();
         // A learned row adds at most one snapshot to a ring, and the rows a
-        // `label_delay` holds are learned in this chunk at the most.
+        // `embargo` holds are learned in this chunk at the most.
         let most = rows.len() + self.pending.len();
         if !live.iter().any(|s| s.could_refuse(most)) {
             return None;
@@ -2884,7 +2881,7 @@ impl Stream {
         let mut pending = self.pending.clone();
         let mut held_break = self.held_break;
         Self::apply_label_delay(
-            self.label_delay,
+            self.embargo,
             &mut pending,
             &mut held_break,
             &mut plans,
@@ -2937,7 +2934,7 @@ impl Stream {
     /// which are accepted -- that depends only on the clock and the input
     /// columns, never on the models. The second runs each model instance over
     /// the whole chunk, and because instances share nothing but that schedule,
-    /// they run **in parallel**: a five-halflife grid on a single stream is
+    /// they run **in parallel**: a five-half-life grid on a single stream is
     /// five independent recursions rather than one serial loop.
     ///
     /// The one exception is `drift_action = "reset"`, where a break detected by
@@ -2997,7 +2994,7 @@ impl Stream {
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
         // nothing; per row in row order, so chunking cannot move a bit; and
-        // before `label_delay` moves a break's events onto the row that
+        // before `embargo` moves a break's events onto the row that
         // learns them, so a break counts where it arrived.
         if let Some(summary) = self.summary.as_mut() {
             for plan in plans.iter().filter(|p| p.direct()) {
@@ -3017,12 +3014,12 @@ impl Stream {
             }
         }
 
-        // ---- label_delay: hold each row back until its label matures ----
+        // ---- embargo: hold each row back until its label matures ----
         // Rewrites the plan list into (release, ..., score this row) order,
         // and hands the released rows' values out beside it. Release depends
         // on the rows alone, so chunking cannot move a single one.
         let released = Self::apply_label_delay(
-            self.label_delay,
+            self.embargo,
             &mut self.pending,
             &mut self.held_break,
             &mut plans,
@@ -3054,9 +3051,9 @@ impl Stream {
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
         let coupled = !self.drift.is_empty() && drift_resets;
-        // `min_periods` is read by every instance; move it out so the split
+        // `min_weight` is read by every instance; move it out so the split
         // below can borrow the rest of `self` mutably.
-        let min_periods = std::mem::take(&mut self.min_periods);
+        let min_weight = std::mem::take(&mut self.min_weight);
         let models = self.models.iter_mut().map(|(_, m)| ModelRef::Learn(m));
         let rings = self
             .resid_win
@@ -3089,7 +3086,7 @@ impl Stream {
                         features,
                         targets,
                         &released,
-                        &min_periods,
+                        &min_weight,
                         false,
                     );
                 }
@@ -3108,7 +3105,7 @@ impl Stream {
                     features,
                     targets,
                     &released,
-                    &min_periods,
+                    &min_weight,
                     false,
                 );
             });
@@ -3121,17 +3118,17 @@ impl Stream {
                 features,
                 targets,
                 &released,
-                &min_periods,
+                &min_weight,
                 drift_resets,
             );
         }
         drop(insts);
-        self.min_periods = min_periods;
+        self.min_weight = min_weight;
         Ok(())
     }
 
     /// Rewrite a chunk's plan list so each accepted row is *scored* where it
-    /// sits and *learned from* only once `label_delay` has passed
+    /// sits and *learned from* only once `embargo` has passed
     /// (docs/ENHANCEMENTS.md E47). A no-op, and one `Option` test, for a
     /// spec without a delay.
     ///
@@ -3141,12 +3138,12 @@ impl Stream {
     /// gaps they would have seen without the delay -- and then the row itself
     /// is scored and buffered. The wait counts the time that passed, the
     /// clock column's own steps ([`online_core::ClockAdvance::elapsed`]), not
-    /// the capped delta: `max_dclock` and `session_gap` say how much a model
+    /// the capped delta: `gap_cap` and `session_gap` say how much a model
     /// forgets across a break, not how long it lasted. Release therefore
     /// depends on the rows alone, which is what makes it chunk-invariant.
     ///
     /// A break releases nothing early (docs/PLAN.md task 153). Its events --
-    /// the lag rings' clear at a gap past `max_dclock` or a session change,
+    /// the lag rings' clear at a gap past `gap_cap` or a session change,
     /// and `session_shrink`'s blend -- wait in the buffer with the row that
     /// raised them, or with the next accepted row when a skipped row raised
     /// them, and run when that row is learned: after every row before the
@@ -3159,14 +3156,14 @@ impl Stream {
     ///
     /// Returns the released rows' values, indexed by `RowPlan::pending`.
     fn apply_label_delay(
-        label_delay: Option<f64>,
+        embargo: Option<f64>,
         pending: &mut Vec<PendingRow>,
         held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
     ) -> Vec<PendingRow> {
-        let Some(delay) = label_delay else {
+        let Some(delay) = embargo else {
             return Vec::new();
         };
         let mut released: Vec<PendingRow> = Vec::new();
@@ -3276,13 +3273,13 @@ impl Stream {
     /// "reset"`) is scored by a fresh one -- null throughout, as it would be
     /// -- and a row that would blend toward the long run (`session_shrink`)
     /// is scored by a blended copy. A row before the last learned clock is
-    /// scored against the state as it stands, a step of 0, under either
-    /// `on_clock_reset`: scoring learns nothing, so it neither refuses nor
+    /// scored against the state as it stands, a step of 0, whatever
+    /// `restart_after_step_back` says: scoring learns nothing, so it neither refuses nor
     /// starts over (task 120). The scoring for each of the three is the one
     /// `run_instance`, with its updates switched off.
     ///
     /// Per field: `pred` and `lam_selected` as the model would report;
-    /// `resid` where the row carries a usable target; `sigma`, `resid_z`,
+    /// `resid` where the row carries a usable target; `sigma`, `zscore`,
     /// the residual quantiles, autocorrelation and metrics from the
     /// diagnostics as they stand; `n_eff` frozen; `coef` on the last
     /// accepted row of the chunk (the same coefficients score every row);
@@ -3478,26 +3475,10 @@ impl Stream {
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
-                run_instance(
-                    inst,
-                    plans,
-                    features,
-                    targets,
-                    &[],
-                    &self.min_periods,
-                    false,
-                );
+                run_instance(inst, plans, features, targets, &[], &self.min_weight, false);
             });
         } else if let Some(inst) = insts.first_mut() {
-            run_instance(
-                inst,
-                plans,
-                features,
-                targets,
-                &[],
-                &self.min_periods,
-                false,
-            );
+            run_instance(inst, plans, features, targets, &[], &self.min_weight, false);
         }
     }
 }
@@ -3600,7 +3581,7 @@ fn build_instances<'a>(
     let mut o_pred = out.pred.chunks_mut(block.max(1));
     let mut o_resid = out.resid.chunks_mut(block.max(1));
     let mut o_sigma = out.sigma.chunks_mut(block.max(1));
-    let mut o_resid_z = out.resid_z.chunks_mut(block.max(1));
+    let mut o_resid_z = out.zscore.chunks_mut(block.max(1));
     let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
     let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
     let mut o_conformal = out.conformal.chunks_mut((3 * block).max(1));
@@ -3701,7 +3682,7 @@ struct RowPlan {
     ri: usize,
     /// Position in the input columns: the run's base plus `ri`, since the
     /// columns are laid out group after group. [`usize::MAX`] for a row
-    /// replayed out of the `label_delay` buffer, whose values are in
+    /// replayed out of the `embargo` buffer, whose values are in
     /// `pending` instead (E47).
     i: usize,
     /// Index into the released-rows slice for a replayed row; [`usize::MAX`]
@@ -3709,7 +3690,7 @@ struct RowPlan {
     pending: usize,
     d_clock: f64,
     /// The time that passed since the previous accepted row, uncapped: what
-    /// counts the `label_delay` buffer down (docs/PLAN.md task 153).
+    /// counts the `embargo` buffer down (docs/PLAN.md task 153).
     elapsed: f64,
     /// The row's clock as the clock fields show it (task 152): the column's
     /// value, or the group's row index with no column.
@@ -3720,7 +3701,7 @@ struct RowPlan {
     session_changed: bool,
     /// The clock fell below the previous row's within a session.
     backwards: bool,
-    /// The clock jumped further than `max_dclock`, so the delta the models
+    /// The clock jumped further than `gap_cap`, so the delta the models
     /// see is the ceiling. Anything lagged by *rows* is stale
     /// (`OnlineModel::clear_lags`, docs/PLAN.md task 47).
     capped: bool,
@@ -3732,7 +3713,7 @@ struct RowPlan {
     /// Step the models and fold the diagnostics. False for a row whose label
     /// has not matured: it is scored here and learned from later.
     learn: bool,
-    /// Pushed into the `label_delay` buffer as it was scored: its prediction
+    /// Pushed into the `embargo` buffer as it was scored: its prediction
     /// is kept for the diagnostics to fold when it matures (C21).
     buffered: bool,
     w: f64,
@@ -3787,7 +3768,7 @@ struct Instance<'a> {
     conformal: Option<&'a mut Vec<Conformal>>,
     scratch: &'a mut Scratch,
     /// This instance's score-time predictions for the rows still waiting
-    /// under `label_delay`, oldest first (C21).
+    /// under `embargo`, oldest first (C21).
     score_pred: &'a mut std::collections::VecDeque<Vec<f64>>,
     n_slots: usize,
     n_rows: usize,
@@ -3815,7 +3796,7 @@ struct Instance<'a> {
     shards: usize,
     /// The readiness notices this instance has raised, and the ones pending.
     notified: &'a mut Notified,
-    /// Clock the rows held under `label_delay` have covered and the models
+    /// Clock the rows held under `embargo` have covered and the models
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
     /// doubled stream (E47's oracle) reads for it, where every held row has
@@ -3882,10 +3863,10 @@ fn run_instance(
     plans: &[RowPlan],
     features: &FeatureRows,
     targets: &[Vec<f64>],
-    // Rows released from the `label_delay` buffer, indexed by
+    // Rows released from the `embargo` buffer, indexed by
     // `RowPlan::pending`; empty for every spec without a delay (E47).
     released: &[PendingRow],
-    min_periods: &[f64],
+    min_weight: &[f64],
     // `drift_action = "reset"` with nothing else to coordinate with: restart
     // *at the row that fired*, not at the end of the chunk, or the rest of the
     // chunk keeps learning from the regime the detector just rejected.
@@ -3957,7 +3938,7 @@ fn run_instance(
                 .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
             features.row(i)
         } else {
-            // A row released from the `label_delay` buffer: the same values,
+            // A row released from the `embargo` buffer: the same values,
             // stepped now instead of where they arrived (E47).
             let row = &released[plan.pending];
             sc.ys.extend_from_slice(&row.ys);
@@ -4006,10 +3987,10 @@ fn run_instance(
 
         // The readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), each
         // withholding a prediction before it can reach the residual, sigma,
-        // resid_z, drift or selection, and each gating output, not learning
+        // zscore, drift or selection, and each gating output, not learning
         // -- the model has already updated from this row. In precedence: the
         // settled fraction, for the whole instance; the per-target
-        // `min_periods` (ENHANCEMENTS E7; the model itself predicts once the
+        // `min_weight` (ENHANCEMENTS E7; the model itself predicts once the
         // *smallest* threshold is met), by each target's own weight where the
         // model keeps one, else the shared `n_eff` (review 2026-09-12, S2),
         // which is the user's explicit floor and so is named before the
@@ -4027,7 +4008,7 @@ fn run_instance(
                 Some(&w) if own_weights => w,
                 _ => step.n_eff,
             };
-            if step_n_eff_below(weight, min_periods, tj) {
+            if step_n_eff_below(weight, min_weight, tj) {
                 group.fill(f64::NAN);
                 if reason == 0 {
                     reason = REASON_MIN_PERIODS;
@@ -4060,19 +4041,19 @@ fn run_instance(
                 "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
                  settled and error_inflation is still {worst:.3}, so every prediction is \
                  withheld for good. Kish's effective sample size tops out near 2.9 \
-                 halflives of rows; raise the halflife so it can carry the {} coefficients, \
+                 half_lives of rows; raise the half_life so it can carry the {} coefficients, \
                  or raise max_error_inflation to at least {worst:.3} to accept this much \
                  estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
                 100.0 * settled,
-                inst.spec.k() + usize::from(inst.spec.add_intercept)
+                inst.spec.k() + usize::from(inst.spec.fit_intercept)
             ));
         }
 
-        // Under `label_delay` the residual diagnostics fold the prediction a
+        // Under `embargo` the residual diagnostics fold the prediction a
         // row was *scored* with, not the one the model gives it at the
         // replay: by then the model has learned every row released before
         // this one, so its prediction has seen the labels the delay says were
-        // not yet available, and `sigma`, `resid_z`, the quantiles, the
+        // not yet available, and `sigma`, `zscore`, the quantiles, the
         // metrics, the conformal interval and the drift detector all
         // described a prediction nobody was shown (review 2026-09-12, C21).
         // The score keeps its prediction; the replay takes it back. The
@@ -4127,7 +4108,7 @@ fn run_instance(
             }
 
             // sigma is read from the state BEFORE this row's residual is
-            // folded in, so `resid_z` is out-of-sample like the prediction it
+            // folded in, so `zscore` is out-of-sample like the prediction it
             // scales -- under a window, inside it, where the model reads its
             // fit (review 2026-09-12, S1).
             let ring = inst.resid_win.as_ref().map(SpreadRef::get);
@@ -4312,7 +4293,7 @@ fn run_instance(
         }
         // The decay time advances with the rows the model learns from, by
         // the delta it decayed by: a capped gap counts as the cap (§8). A
-        // row held under `label_delay` parks its delta until its release
+        // row held under `embargo` parks its delta until its release
         // replays it.
         if learn {
             *inst.decay_time += plan.d_clock;
@@ -4347,7 +4328,7 @@ fn run_instance(
             // stream.
             let support = inst.model.get().support_coef();
             if let (Some(s), false, 0) = (&support, inst.notified.support, reason) {
-                let k_total = inst.spec.k() + usize::from(inst.spec.add_intercept);
+                let k_total = inst.spec.k() + usize::from(inst.spec.fit_intercept);
                 let worst = s
                     .iter()
                     .flat_map(|slot| slot.iter().enumerate())
@@ -4358,7 +4339,7 @@ fn run_instance(
                         let feature = inst
                             .spec
                             .features
-                            .get(i % k_total - usize::from(inst.spec.add_intercept))
+                            .get(i % k_total - usize::from(inst.spec.fit_intercept))
                             .map_or("?", String::as_str);
                         inst.notified.support = true;
                         inst.notified.pending.push(format!(

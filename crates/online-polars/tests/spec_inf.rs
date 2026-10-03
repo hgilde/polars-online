@@ -16,7 +16,7 @@ fn spec(top: &str, model: &str) -> Spec {
     let base = if top.contains("features") {
         ""
     } else {
-        "features = [\"x0\"]\nhalflife = 10.0\n"
+        "features = [\"x0\"]\nhalf_life = 10.0\n"
     };
     let text = format!("name = \"m\"\ntargets = [\"y\"]\n{base}{top}\n[model]\n{model}\n");
     toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"))
@@ -31,13 +31,13 @@ const MEANS_SOMETHING: [(&str, &str); 9] = [
     ("", "type = \"sgd\"\nloss = \"huber\"\nhuber_delta = inf"),
     (
         "session = \"s\"\nsession_gap = 1.0",
-        "type = \"ew_ridge\"\nsession_shrink = 0.5\nlong_halflife = inf",
+        "type = \"ew_ridge\"\nsession_shrink = 0.5\nlong_half_life = inf",
     ),
     (
         "",
-        "type = \"lasso\"\nlasso_path = [0.1]\nselect_halflife = inf",
+        "type = \"lasso\"\nlasso_path = [0.1]\nselect_half_life = inf",
     ),
-    ("features = []", "type = \"holt\"\nlevel_halflife = inf"),
+    ("features = []", "type = \"holt\"\nlevel_half_life = inf"),
     ("", "type = \"pa\"\nc = inf"),
     (
         "emit_averaged = true\naverage_eta = inf",
@@ -55,24 +55,23 @@ const MEANS_NOTHING: [(&str, &str, &str); 15] = [
         "type = \"ew_ridge\"",
         "min_settled_frac",
     ),
-    // A late row's size: `inf` would refuse every step back, which
-    // `on_clock_reset = "error"` says directly.
+    // A late row's size: `inf` would refuse every step back, which leaving
+    // `restart_after_step_back` unset says directly.
     (
-        "clock = \"t\"\nmax_dclock = 10.0\non_clock_reset = \"reset_state\"\n\
-         min_backwards_jump = inf",
+        "clock = \"t\"\ngap_cap = 10.0\nrestart_after_step_back = inf",
         "type = \"ew_ridge\"",
-        "min_backwards_jump",
+        "restart_after_step_back",
     ),
     // The cap is what a gap is a break against, and an infinite one handed a
     // model an infinite step (task 120, decided 2026-09-28).
     (
-        "clock = \"t\"\nmax_dclock = inf",
+        "clock = \"t\"\ngap_cap = inf",
         "type = \"ew_ridge\"",
-        "max_dclock",
+        "gap_cap",
     ),
     // An infinite session gap is a reset, which `"reset"` says.
     (
-        "clock = \"t\"\nmax_dclock = 10.0\nsession = \"s\"\nsession_gap = inf",
+        "clock = \"t\"\ngap_cap = 10.0\nsession = \"s\"\nsession_gap = inf",
         "type = \"ew_ridge\"",
         "session_gap",
     ),
@@ -100,7 +99,7 @@ const MEANS_NOTHING: [(&str, &str, &str); 15] = [
     ("", "type = \"ew_ridge\"\nridge = inf", "ridge"),
     (
         "",
-        "type = \"kalman\"\ncoef_halflife = 10.0\nq = [inf, 0.5]",
+        "type = \"kalman\"\ncoef_half_life = 10.0\nq = [inf, 0.5]",
         "q",
     ),
 ];
@@ -148,20 +147,20 @@ const NAN_IS_NO_SETTING: [(&str, &str, &str); 9] = [
         "type = \"sgd\"\nschedule = \"inv_scaling\"\npower = nan",
         "power",
     ),
-    ("", "type = \"kalman\"\ncoef_halflife = nan", "halflife"),
+    ("", "type = \"kalman\"\ncoef_half_life = nan", "half_life"),
     (
         "",
-        "type = \"kalman\"\ncoef_halflife = 10.0\np0 = nan",
+        "type = \"kalman\"\ncoef_half_life = 10.0\np0 = nan",
         "p0",
     ),
     (
         "",
-        "type = \"kalman\"\ncoef_halflife = 10.0\nq = [nan, 0.5]",
+        "type = \"kalman\"\ncoef_half_life = 10.0\nq = [nan, 0.5]",
         "q",
     ),
     (
         "",
-        "type = \"kalman\"\ncoef_halflife = 10.0\nobs_var = nan",
+        "type = \"kalman\"\ncoef_half_life = 10.0\nobs_var = nan",
         "obs_var",
     ),
     (

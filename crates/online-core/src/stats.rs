@@ -353,7 +353,7 @@ impl EwAutoCorr {
     }
 
     /// The values behind this one are no longer adjacent to it -- a gap
-    /// capped by `max_dclock`, or a session change -- so none of them is a
+    /// capped by `gap_cap`, or a session change -- so none of them is a
     /// partner for the next: the buffer goes, and the moments stay
     /// (docs/PLAN.md task 146, as `OnlineModel::clear_lags` does for a
     /// model's rings).
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(q.get(0), Some(0.0), "the zeros hold the lowest level");
     }
 
-    /// A short halflife folds the decay in every 32 rows and drops the end
+    /// A short half-life folds the decay in every 32 rows and drops the end
     /// buckets nothing reaches; the answer holds through it, and the
     /// buckets stay within the range the recent values span.
     #[test]
@@ -753,10 +753,10 @@ mod tests {
 
     /// A series that stops moving: its mean is a pair ([`crate::comp`];
     /// docs/PLAN.md task 101), so `var` and `cross` decay with their history
-    /// and their ratio stays where the hold's first halflives left it -- the
+    /// and their ratio stays where the hold's first half-lives left it -- the
     /// held value's offset from the mean reads as persistence for those, in
     /// exact arithmetic too. A plain mean stopped short fed both the gap's
-    /// square, and the ratio went to 1. Read at 5 halflives, before the
+    /// square, and the ratio went to 1. Read at 5 half-lives, before the
     /// stall at every level here, and at 150.
     #[test]
     fn a_held_series_keeps_its_autocorrelation() {
@@ -774,7 +774,7 @@ mod tests {
             let end = ac.get().unwrap();
             assert!(
                 (end - early).abs() < 0.01,
-                "level {level}: {early} after 5 halflives, {end} after 150"
+                "level {level}: {early} after 5 half_lives, {end} after 150"
             );
         }
     }
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn autocorr_forgets_an_old_regime() {
-        // phi = +0.9, then -0.9: a halflife of ~69 rows must have forgotten
+        // phi = +0.9, then -0.9: a half-life of ~69 rows must have forgotten
         // the first 3000 rows by the end of the next 3000. A stationary
         // series cannot tell decay from none; this can.
         let mut ac = EwAutoCorr::new(1).unwrap();

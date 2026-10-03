@@ -114,7 +114,7 @@ def recovery(seeds: int = 8) -> None:
                 k=2,
                 precision_prior=prior,
                 learn=learn,
-                halflife=4000.0,
+                half_life=4000.0,
             )
             if start == "true":
                 spec = po.spec.hmm(
@@ -128,7 +128,7 @@ def recovery(seeds: int = 8) -> None:
                 spec = po.spec.hmm("h", transition_prior=200.0, warm_rows=500, seed=seed, **common)
             bank = po.ModelBank([spec])
             got = bank.fit_predict(df)["h"].struct.unnest()
-            hot = np.asarray(got["p_1"].fill_null(0.5).to_list()) > 0.5
+            hot = np.asarray(got["filtered_1"].fill_null(0.5).to_list()) > 0.5
             scores[name].append(
                 float(max((hot == (want == 1)).mean(), (hot == (want == 0)).mean()))
             )
@@ -208,7 +208,7 @@ def switch(seeds: int = 8) -> None:
         for rho in (0.1, 0.8):
             covs += [v[0], rho * sd[0] * sd[1], rho * sd[0] * sd[1], v[1]]
         for name, start, learn in setups:
-            common = dict(features=["x0", "x1"], k=2, learn=learn, halflife=4000.0)
+            common = dict(features=["x0", "x1"], k=2, learn=learn, half_life=4000.0)
             if start == "true":
                 spec = po.spec.hmm(
                     "h",
@@ -228,7 +228,7 @@ def switch(seeds: int = 8) -> None:
                     **common,
                 )
             got = po.ModelBank([spec]).fit_predict(df)["h"].struct.unnest()
-            p1 = np.asarray(got["p_1"].to_list(), dtype=float)
+            p1 = np.asarray(got["filtered_1"].to_list(), dtype=float)
             hot = np.where(np.isnan(p1), -1, (p1 > 0.5).astype(int))
             # The better of the two ways to match the filter's states to the
             # truth; the true start fixes it, the seeded one does not.
@@ -274,7 +274,7 @@ def switch(seeds: int = 8) -> None:
         f"\n{seeds} seeds, 4799 returns each, 0.1 -> 0.8 -> 0.1 -> 0.8 every 1200"
         f" rows; the true start's transition is the per-row hazard 1/1200;"
         f" a switch is followed once the filter holds the new state for {hold} rows"
-        " running; a row with no `p_1` counts as a miss"
+        " running; a row with no `filtered_1` counts as a miss"
     )
 
 
@@ -681,13 +681,13 @@ def _lag_inversion(truth: float, seeds: int = 5) -> None:
 
 def deco_track(seeds: int = 8) -> None:
     """`deco` on five series whose equicorrelation alternates between 0.2 and
-    0.6 every 1200 rows, at three halflives. `rho` is an EW mean of the row's
+    0.6 every 1200 rows, at three half-lives. `rho` is an EW mean of the row's
     estimate `u`, and `u` is biased low (the docstring's warning, after Engle
     & Kelly), so two things are read apart: the level `rho` settles at in
     each state (over each segment's last 200 rows), against the truth; and
     how fast it moves, as the rows after a switch until `rho` passes the
     midpoint of the two settled levels. An EW mean's step response reaches
-    the midpoint in one halflife, which checks the reading."""
+    the midpoint in one half-life, which checks the reading."""
     _rule("Deco: the equicorrelation, followed")
     m = 5
     lo, hi = 0.2, 0.6
@@ -709,11 +709,11 @@ def deco_track(seeds: int = 8) -> None:
         streams.append((df, want))
     rows = []
     u_by_state: dict[int, list[float]] = {0: [], 1: []}
-    for halflife in (25.0, 100.0, 400.0):
+    for half_life in (25.0, 100.0, 400.0):
         runs = []
         settled: dict[int, list[float]] = {0: [], 1: []}
         for df, want in streams:
-            spec = po.spec.deco("d", features=feats, halflife=halflife)
+            spec = po.spec.deco("d", features=feats, half_life=half_life)
             got = po.ModelBank([spec]).fit_predict(df)["d"].struct.unnest()
             rho = np.asarray(got["rho"].to_list(), dtype=float)
             u = np.asarray(got["u"].to_list(), dtype=float)
@@ -721,7 +721,7 @@ def deco_track(seeds: int = 8) -> None:
             for a, b in segs:
                 tail = rho[max(a, b - 200) : b]
                 settled[int(want[a])].extend(tail[~np.isnan(tail)].tolist())
-                if halflife == 100.0:
+                if half_life == 100.0:
                     uu = u[a:b]
                     u_by_state[int(want[a])].extend(uu[~np.isnan(uu)].tolist())
             runs.append((rho, want, segs))
@@ -741,7 +741,7 @@ def deco_track(seeds: int = 8) -> None:
                     missed += 1
         rows.append(
             [
-                f"{halflife:g}",
+                f"{half_life:g}",
                 f"{s0:.3f}",
                 f"{s1:.3f}",
                 f"{np.median(delays):.0f}" if delays else "-",
@@ -751,7 +751,7 @@ def deco_track(seeds: int = 8) -> None:
         )
     _table(
         [
-            "halflife",
+            "half_life",
             f"rho settled, true {lo}",
             f"rho settled, true {hi}",
             "median rows to the midpoint",

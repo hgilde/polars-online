@@ -92,10 +92,10 @@ fn spec_with_coef_every(coef_every: usize) -> online_polars::Spec {
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
-            "halflife": 50.0,
-            "max_dclock": 10.0,
+            "half_life": 50.0,
+            "gap_cap": 10.0,
             "group": "group",
-            "min_periods": 5.0,
+            "min_weight": 5.0,
             "coef_every": {coef_every}
         }}"#
     ))
@@ -128,7 +128,7 @@ fn validate_accepts_a_spec_the_bank_fills() {
     cfg.specs = vec![
         serde_json::from_str(
             r#"{"name": "c", "model": {"type": "ew_cov"}, "features": ["x0", "x1"],
-                "halflife": 10.0}"#,
+                "half_life": 10.0}"#,
         )
         .unwrap(),
     ];
@@ -214,7 +214,7 @@ fn every_output_format_carries_the_banks_columns() {
                         "y",
                         "ridge.pred_y",
                         "ridge.resid_y",
-                        "ridge.n_eff",
+                        "ridge.weight_sum",
                         "ridge.settled_frac",
                         "ridge.withheld_reason",
                         "ridge.coef",
@@ -505,7 +505,7 @@ fn closing_stream() -> DataFrame {
 fn closing_spec() -> online_polars::Spec {
     serde_json::from_str(
         r#"{"name": "c", "model": {"type": "ew_cov"}, "features": ["x0", "y"],
-            "halflife": 40.0, "group": "g", "group_close": "monotone"}"#,
+            "half_life": 40.0, "group": "g", "group_close": "monotone"}"#,
     )
     .unwrap()
 }
