@@ -61,6 +61,15 @@
 //! fit read from the sums as that row left them is the frozen one exactly,
 //! and a gap of any length cannot take the sums into the subnormal range.
 //!
+//! **Row weights** (docs/PLAN.md task 151). The gradient is `(p − y)·z·w`,
+//! an importance weight as Vowpal Wabbit's, and `l1`, `l2` and `beta` are a
+//! prior of fixed mass against evidence that grows with weight and density:
+//! FTRL minimizes the cumulative loss plus a fixed regularizer, which its
+//! regret bound rests on, so under a halflife the effective penalty is
+//! `l1 / W` for the weight the window holds. The sum-scale family, beside
+//! `rls`'s ridge, `ridge_decay` and `kalman`'s observation precision; the
+//! mean-scale sparse fit, invariant to both, is `lasso`.
+//!
 //! `pred` is the probability computed from the state *before* the update, so it
 //! is out-of-sample like every other model; `resid = y - p`.
 //!

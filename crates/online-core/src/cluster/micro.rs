@@ -36,6 +36,10 @@
 //! it, so a constant multiple of every weight moves nothing; at any constant
 //! weight `w̄ = 1`. `ξ(a) = Σ_{i ≤ a/Tp} 2^(−i Tp/h)` is the weight of a
 //! summary that took one such row every `Tp` clock units since it opened.
+//! `beta_mu` is DenStream's point density, DBSCAN's `MinPts`, set against
+//! the arrival rate (docs/PLAN.md task 151): with halflife `h` and `v` rows
+//! per clock unit the stream's steady-state weight is about `1.44·v·h`, so a
+//! summary meant to hold a share `s` of it needs `beta_mu ≈ 1.44·s·v·h`.
 //!
 //! `eps` is the bound on a summary's RMS radius *per standardized
 //! coordinate*: in `p` dimensions the bound on the radius in the metric is

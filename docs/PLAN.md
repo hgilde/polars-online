@@ -6196,8 +6196,8 @@ is not, since the model alone has `0.0` and `3.5` there.
       `micro` and quantile oracles in Python with the same rule. The
       quantile test fails at row 2 when the gate reads raw weight.
 
-- [ ] 151. **`ftrl` and `micro` keep their units: a sum-scale prior and a
-      point density -- decided 2026-10-02, docs not yet written.** Size S.
+- [x] 151. **`ftrl` and `micro` keep their units: a sum-scale prior and a
+      point density -- decided and the docs written 2026-10-02.** Size S.
       Split from task 147. Nothing in the code changes.
 
       - **`ftrl`'s penalties stay in absolute weight.** FTRL-Proximal

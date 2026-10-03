@@ -1683,7 +1683,13 @@ def ftrl(
     bit. A row's weight is an importance weight, as Vowpal Wabbit's: the gradient
     carries it, against penalties in absolute weight, so a heavier stream
     overcomes ``l1`` and ``l2`` sooner (``tests/test_second_opinion.py`` holds
-    the fit to VW's, weighted).
+    the fit to VW's, weighted). ``l1``, ``l2`` and ``beta`` are a prior of fixed
+    mass against evidence that grows with weight and density: FTRL minimizes
+    the cumulative loss plus a fixed regularizer, which its regret bound rests
+    on, so under a halflife the effective penalty is ``l1 / W`` for the weight
+    ``W`` the window holds, and more rows in a halflife, or heavier ones,
+    outweigh it sooner. For a penalty on the mean scale, invariant to both, use
+    :func:`lasso`.
 
     .. rubric:: Parameters
 
@@ -2618,7 +2624,12 @@ def micro(
         clusters, ``eps`` is too coarse for the derived link, which then bridges
         them; lower ``eps``, or set ``macro_link``.
     ``beta_mu``
-        The weight at which a summary is established. Default 3.
+        The weight at which a summary is established, in rows of the stream's
+        mean weight. Default 3. It is DenStream's point density (DBSCAN's
+        ``MinPts``), so it is set against the arrival rate: with halflife ``h``
+        and ``v`` rows in each unit of the clock the stream's steady-state weight
+        is about ``1.44 * v * h``, so a summary meant to hold a share ``s`` of the
+        stream needs ``beta_mu`` of about ``1.44 * s * v * h``.
     ``max_clusters``
         The cap on live summaries. Default 200.
     ``prune_every``

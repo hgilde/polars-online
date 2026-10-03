@@ -14,6 +14,7 @@ stays where it counts rows.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -73,6 +74,18 @@ def _moved(a: pl.DataFrame, b: pl.DataFrame, name: str) -> list[str]:
         if ok.any() and np.max(np.abs(x[ok] - y[ok]) / (1.0 + np.abs(x[ok]))) > 1e-8:
             out.append(f.name)
     return out
+
+
+def test_the_docs_say_what_each_unit_is():
+    """Task 151: ``ftrl``'s penalties are a prior of fixed mass, with
+    ``lasso`` named for the mean scale, and ``micro``'s ``beta_mu`` is a point
+    density with the rule to set it from the arrival rate."""
+    ftrl = inspect.cleandoc(po.spec.ftrl.__doc__ or "")
+    assert "a prior of fixed\nmass against evidence that grows with weight and density" in ftrl
+    assert ":func:`lasso`" in ftrl
+    micro = inspect.cleandoc(po.spec.micro.__doc__ or "")
+    assert "``1.44 * s * v * h``" in micro
+    assert "DBSCAN's\n    ``MinPts``" in micro or "DBSCAN's ``MinPts``" in micro
 
 
 def test_only_the_documented_exceptions_move_with_the_weights_scale():
