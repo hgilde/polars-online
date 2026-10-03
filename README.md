@@ -1751,7 +1751,7 @@ A regression whose coefficients are allowed to drift, tracked by a Kalman
 filter.
 
 ```
-β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock    Φ = diag(2^(−Δclock/r_i))
+β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock²   Φ = diag(2^(−Δclock/r_i))
 s   = zᵀP_j z + R_j/w                   K   = P_j z / s
 β_j ← β_j + K(y_j − zᵀβ_j)              P_j ← P_j − K zᵀP_j
 ```
@@ -1761,9 +1761,10 @@ revert = po.spec.kalman(
     "k", targets=["y"], features=["signal_a", "signal_b"], clock="t", gap_cap=10.0,
     half_life=200.0,                   # the observation-noise estimate (the EW residual variance) and the features'
                                       # standardization forget at this rate
-    coef_half_life=100.0,              # required: how fast a coefficient may drift, on standardized features:
-                                      # q_i = σ²(ln2 / h_i)², matching EW-RLS's steady state; one number, or one per
-                                      # slot; inf pins a coefficient. q= gives the process noise outright instead
+    coef_half_life=100.0,              # required: how fast a coefficient may drift, on standardized features: a row
+                                      # Δ clock units after the last adds σ²(ln2 · Δ / h_i)², matching EW-RLS's steady
+                                      # state at any spacing; one number, or one per slot; inf pins a coefficient.
+                                      # q= gives q_i outright instead, added as q_i · Δ² too
     revert_half_life=[float("inf"), 50.0, 50.0],   # by default a coefficient is a random walk and keeps its last value;
                                       # with this, a slope halves toward zero every 50 clock units while nothing is observed
                                       # -- a mean-reverting (AR(1)) prior; inf in the first slot leaves the intercept alone
@@ -1781,8 +1782,8 @@ effect cannot persist through a run of null targets. Under `standardize`,
 the default, the reversion acts in the standardized coordinates, so zero
 means "no effect" for a slope and "the target averages zero" for the
 intercept. A reverting slot's long-run
-prior variance is `q_i·Δclock/(1−φ_i²)`, where a random walk's grows without
-bound. `predict` moves the coefficients by the same `Φ` over the distance
+prior variance, at rows `Δclock` apart, is `q_i·Δclock²/(1−φ_i²)`, where a
+random walk's grows without bound. `predict` moves the coefficients by the same `Φ` over the distance
 from the last learned row, capped by `gap_cap`, so a prediction far past
 the data is the intercept alone.
 

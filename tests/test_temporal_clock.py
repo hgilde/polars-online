@@ -298,7 +298,9 @@ class TestEachMixtureIsRefused:
     def test_a_rate_per_clock_unit_has_no_duration_form(self):
         with pytest.raises(ValueError, match="lam is a decay per clock unit"):
             po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", lam=0.99, gap_cap="30m")
-        with pytest.raises(ValueError, match="q is a variance per clock unit"):
+        with pytest.raises(
+            ValueError, match="q is the noise a row one clock unit after the last adds"
+        ):
             po.spec.kalman(
                 "m",
                 targets=["y"],
@@ -310,7 +312,7 @@ class TestEachMixtureIsRefused:
                 q=[0.0, 0.1],
             )
         # And on a temporal clock without any duration, lam is the number refused.
-        with pytest.raises(ValueError, match="lam is a rate per clock unit") as e:
+        with pytest.raises(ValueError, match="lam is a number in the clock's own units") as e:
             _fit(
                 _temporal(_frame()),
                 po.spec.ewridge(

@@ -557,7 +557,9 @@ def kalman_ref(
     - features are standardized with the EW stats *before* the row's update,
       using scale 1 for the intercept slot and for near-zero-variance features
       (centered variance <= 1e-10 * raw second moment);
-    - ``P += Q * d_clock`` happens after the transition and before the gain,
+    - ``P += Q * d_clock**2`` happens after the transition and before the gain
+      (docs/PLAN.md task 150: the per-row noise that keeps ``coef_half_life``
+      a clock half-life at any spacing),
       once per shared P;
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
@@ -662,7 +664,7 @@ def kalman_ref(
                     if q is not None
                     else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
                 )
-                st["P"][pi] = st["P"][pi] + np.diag(qv * d)
+                st["P"][pi] = st["P"][pi] + np.diag(qv * d * d)
             if np.isnan(Y[i, j]) or w[i] <= 0.0:
                 # A null target and a zero weight alike: no update, and time
                 # passes for both weights (review 2026-09-12, S9).

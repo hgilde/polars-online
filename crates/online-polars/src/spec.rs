@@ -1914,7 +1914,8 @@ impl Spec {
                 self.name
             )),
             (Some(d), Some("q")) => Err(format!(
-                "spec {:?}: {d} is a duration, and q is a variance per clock unit, which has no \
+                "spec {:?}: {d} is a duration, and q is the noise a row one clock unit after \
+                 the last adds (q times the step squared for a longer one), which has no \
                  duration form; leave q out and give coef_half_life as a duration, which \
                  derives it",
                 self.name

@@ -175,8 +175,9 @@ Elastic net via `l1_ratio` **[validate]** — cheap to add, may not be needed.
 ### 4.4 Kalman / random-walk-β (dynamic linear model)
 State per target: coefficient mean `β_j`, covariance `P_j` (k×k); shared: `σ²_j` EW residual variance.
 - Process noise **derived from a per-factor halflife**: `q_i = σ² · (ln2 / h_i)²` on standardized
-  features (steady-state gain matching with EW-RLS). `halflife` may be scalar or per-factor list;
-  `halflife=inf` pins a coefficient. Explicit `q: list[float]` overrides.
+  features (steady-state gain matching with EW-RLS), added per row as `q_i · d²` for a row `d` clock
+  units after the last, so the match holds at any spacing (task 150). `halflife` may be scalar or
+  per-factor list; `halflife=inf` pins a coefficient. Explicit `q: list[float]` overrides.
 - Observation noise = `σ²_j` (EW residual variance) unless `obs_var` given.
 - Because P is per target (Riccati depends on σ²_j), targets do not share the k×k work here;
   documented, and `share_p: bool` **[validate]** offers the approximation P shared with σ² = mean.
@@ -2736,7 +2737,7 @@ note, not a task.
     | a `Duration` column | a clock, like a `Datetime`: elapsed time is time |
     | a `Time` column | refused: a time of day starts again at midnight |
     | `0` and `inf` | unit-free, so they may stay numbers beside durations |
-    | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
+    | a number in the clock's own units | `lam` (a decay per unit) and `kalman`'s `q` (the noise a row one unit after the last adds) have no duration form, so a temporal clock refuses them and names the half-life to give instead |
     | the internal scale | the column's own integer nanoseconds (`ArrowCol::Nanos`), and the gap between two rows taken in integers before it becomes seconds (`ClockValue`), so one instant in ms, µs or ns is the same value and a nanosecond gap is exact whatever the stream's age; the previous row's instant is the clock state; a value past what nanoseconds in an `i64` hold (the years 1677 to 2262) is refused by row; a zone-aware column is read as its UTC instants |
     | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970 (`ClockValue::seconds`); `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
 
@@ -6436,19 +6437,43 @@ is not, since the model alone has `0.0` and `3.5` there.
       decay; an old `ew_cov` state with P² markers, written in msgpack,
       refused by name.
 
-- [ ] 150. **`kalman`'s `coef_halflife` on the clock -- the user's call.**
-      Size S. Split from task 146. The process noise `q_i = σ² (ln 2 /
-      h)²` is added per clock unit, but a Kalman gain grows with the square
-      root of the noise, so the coefficients' memory is about `h ·
-      sqrt(d)` for rows `d` apart: adapting to a slope step took 74, 38 and
-      13 clock units at rows 1, 0.25 and 0.04 apart with
-      `coef_halflife=50`, where `ewridge` at halflife 50 took 44 to 59
-      (measured on 0.13.0). The documented promise, EW-RLS's steady-state
-      gain, holds at any spacing when the noise added per row is `σ² (ln 2
-      · d / h)²`. Recommended: that, so `coef_halflife` is a clock
-      halflife; the alternative keeps the random walk and documents the
-      `sqrt(d)`. Tests: `coef_halflife` against an `ewridge` fit at
-      several spacings.
+- [x] 150. **`kalman`'s `coef_half_life` on the clock -- built 2026-10-03,
+      the recommended option.** Size S. Split from task 146. The process
+      noise `q_i = σ² (ln 2 / h)²` was added per clock unit, but a Kalman
+      gain grows with the square root of the noise, so the coefficients'
+      memory was about `h · sqrt(d)` for rows `d` apart: adapting to a
+      slope step took 74, 38 and 13 clock units at rows 1, 0.25 and 0.04
+      apart with `coef_half_life=50`, where `ewridge` at half-life 50 took
+      44 to 59 (measured on 0.13.0). The documented promise, EW-RLS's
+      steady-state gain, holds at any spacing when the noise added per row
+      is `σ² (ln 2 · d / h)²`: EW-RLS forgets `2^(-d/h)` over the step, a
+      per-row half-life of `h/d` rows, and the matching is done at that
+      half-life. **Built**: `P += Q · d²` per row (`kalman.rs`, the numpy
+      reference, the README's equations, the builder's docstring); an
+      explicit `q` is added as `q_i d²` too, and a reverting slot's
+      stationary variance is `q_i d² / (1 − φ²)` at rows `d` apart. The
+      match is first order in `d/h` (the exact per-row noise is `σ² g² /
+      (1 − g)`, `g = 1 − 2^(−d/h)`: within 1% for rows closer than half a
+      half-life, 4% at one). Bit-identical at unit spacing (the goldens'
+      rows: the two values there that moved by 1e-15 are the standardizer's
+      drift since the pins of `93ef404`, inside the 1e-12 check, not this
+      task's), and the golden signatures move at the
+      stream's gap row, re-pinned against the numpy reference -- the core's
+      (`golden.rs`), the pipeline's (`tests/test_golden_pipeline.py`:
+      `kalman`, `kalman_revert`, and the `seqtest` that compares the
+      Kalman with the ridge) and the `filterpy` second opinion, whose
+      `predict` now takes `Q d²` too. Tests:
+      `crates/online-core/tests/kalman_clock.rs` -- the clock time to learn
+      a slope step at rows 1, 0.25 and 0.04 apart (165, 176 and 170 clock
+      units at `coef_half_life` 50, within 7% of each other, against
+      `ewridge`'s 120, 113 and 116 at half-life 50; another stream and
+      criterion than the 74/38/13 above, which are not comparable to these
+      -- at unit spacing the two forms are identical) where the old form
+      parted by a factor of five; the Kalman's 1.4 over `ewridge` is `R =
+      σ²` inflating at the step before `P` catches up through `q ∝ σ²`,
+      spacing-free; and a gap row adds exactly `q d²` to `P`, a unit row
+      `q`. Not taken: keeping the random walk and documenting the
+      `sqrt(d)`.
 
 - [x] 147. **A row weight scales evidence, not counts -- built 2026-10-02,
       but for `ftrl` and the density half of `micro`, which are task 151.**

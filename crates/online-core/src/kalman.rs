@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! b_j <- Phi b_j                      (transition; Phi = diag(2^(-d/r_i)))
-//! P_j <- Phi P_j Phi + Q * d          (predict; Q scaled by elapsed clock)
+//! P_j <- Phi P_j Phi + Q * d^2        (predict; Q times the clock step squared)
 //! s    = z' P_j z + R_j / w_row       (innovation variance)
 //! k    = P_j z / s                    (gain)
 //! b_j <- b_j + k (y_j - z' b_j)
@@ -23,14 +23,29 @@
 //! toward zero in the *standardized* coordinates when `standardize` is on:
 //! a slope toward "no effect", the intercept toward "the target averages
 //! zero"; give the intercept `inf` to leave it a random walk. With `Q`
-//! from `coef_half_life` a reverting slot settles at prior variance
-//! `q_i d / (1 - phi_i^2)`, a stationary AR(1) instead of an unbounded walk.
+//! from `coef_half_life` a reverting slot settles, at rows `d` apart, at the
+//! prior variance `q_i d^2 / (1 - phi_i^2)`, a stationary AR(1) instead of an
+//! unbounded walk (for `d` well under `r_i` that is about `q_i d r_i / (2 ln2)`,
+//! which grows with the spacing as the gain matching's own variance does).
 //!
 //! **Process noise from a per-factor half-life.** On standardized features, the
 //! steady-state gain of a random-walk-beta filter matches EW-RLS with half-life
-//! `h_i` when `q_i = sigma^2 * (ln2 / h_i)^2` (docs/PLAN.md §4.4). `half_life`
-//! may be scalar or per factor; `half_life = inf` gives `q_i = 0`, pinning that
-//! coefficient. An explicit `q` overrides the derivation.
+//! `h_i` when the noise added for a row `d` clock units after the last is
+//! `sigma^2 * (ln2 * d / h_i)^2 = q_i d^2` with `q_i = sigma^2 * (ln2 / h_i)^2`
+//! (docs/PLAN.md §4.4, task 150): EW-RLS forgets `2^(-d/h)` over the step, a
+//! per-row half-life of `h/d` rows, and that is the half-life the matching
+//! is done at. Added as `q_i d` -- a random walk whose variance grows with
+//! the clock -- the gain grew with the root of the spacing, and a coefficient
+//! adapted in `h sqrt(d)` clock units rather than `h` (measured on 0.13.0's
+//! stream: 74, 38 and 13 clock units at rows 1, 0.25 and 0.04 apart; the two
+//! forms are identical at unit spacing, so a number from another stream or
+//! criterion is not comparable to these). The match is first order in `d/h`:
+//! the exact per-row noise is `sigma^2 g^2 / (1 - g)` with `g = 1 - 2^(-d/h)`,
+//! which `(ln2 d/h)^2` is within 1% of for rows closer than half a half-life
+//! and 4% at one. `half_life` may be scalar or per factor; `half_life = inf`
+//! gives `q_i = 0`, pinning that coefficient. An explicit `q` overrides the
+//! derivation and is added as `q_i d^2` too: the noise a row one clock unit
+//! after the last adds, not a variance per unit of elapsed clock.
 //!
 //! Features are standardized internally against a shared [`EwDiag`] over `z`
 //! (EW means and variances, O(k) a row; a full `EwCov` until schema 3, of
@@ -299,11 +314,12 @@ impl Kalman {
     /// `P` here is the covariance as it stands, so this is the **filtered**
     /// variance at the last regressor `z`, not the one-step-ahead predictive
     /// variance: that would carry `P` through the transition and add the
-    /// process noise for the next step's gap, `zᵀ(Φ P Φᵀ + Q·Δ)z + R`. The
-    /// two differ by `zᵀ(Φ P Φᵀ − P + Q·Δ)z`, which the default random walk
-    /// (`Φ = I`) reduces to `Q·Δ`: negligible under a half-life-derived `q`
-    /// (about 0.7 % of `R` at half-life 100), not under a large explicit `q`
-    /// (review 2026-09-18, D2).
+    /// process noise for the next step's gap, `zᵀ(Φ P Φᵀ + Q·Δ²)z + R`. The
+    /// two differ by `zᵀ(Φ P Φᵀ − P + Q·Δ²)z`, which the default random walk
+    /// (`Φ = I`) reduces to `Q·Δ²`: negligible under a half-life-derived `q`
+    /// (`q/R = (ln2/h)²`, 0.005 % at half-life 100 and unit spacing, `Δ²`
+    /// times that at spacing `Δ`), not under a large explicit `q` (review
+    /// 2026-09-18, D2).
     ///
     /// This is the piece `sigma` alone cannot give. `sigma` is the spread of
     /// realized errors; this also knows how unsure the filter is about its own
@@ -578,14 +594,17 @@ impl OnlineModel for Kalman {
                 };
                 if s2 > 0.0 { s2 } else { 1.0 }
             });
-            // Process step: P += Q * d_clock, after the transition above
-            // (only for the target that owns P, or once when shared).
+            // Process step: P += Q * d_clock^2, after the transition above
+            // (only for the target that owns P, or once when shared). The
+            // square is what keeps `coef_half_life` a clock half-life at any
+            // row spacing (docs/PLAN.md task 150; the module doc).
             if !self.cfg.share_p || j == 0 {
                 let mut q = std::mem::take(&mut self.qbuf);
                 self.q_into(sigma2, &mut q);
                 let p = &mut self.p[pi];
+                let dd = d_clock * d_clock;
                 for i in 0..k {
-                    p[i * k + i] += q[i] * d_clock;
+                    p[i * k + i] += q[i] * dd;
                 }
                 self.qbuf = q;
             }

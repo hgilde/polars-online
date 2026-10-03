@@ -1365,7 +1365,7 @@ def kalman(
     .. code-block:: text
 
         b_j <- Phi b_j                     Phi = diag(2 ** (-d / r_i))      the reversion
-        P_j <- Phi P_j Phi + Q * d                                          the drift
+        P_j <- Phi P_j Phi + Q * d ** 2                                     the drift
         s    = z' P_j z + R_j / w
         k    = P_j z / s
         b_j <- b_j + k (y_j - z' b_j)
@@ -1380,14 +1380,17 @@ def kalman(
     .. rubric:: Parameters
 
     ``coef_half_life``
-        How fast a coefficient may drift, as a half-life on standardized features:
-        the process noise is ``q_i = sigma^2 * (ln 2 / h_i) ** 2``, which matches
-        EW-RLS's steady-state gain. A scalar, or one value per slot with the
-        intercept first; ``inf`` pins that coefficient. Required. Not the spec's
-        ``half_life``, which drives the standardization and the residual variance.
+        How fast a coefficient may drift, as a half-life on the clock, on
+        standardized features: a row ``d`` clock units after the last adds the
+        process noise ``sigma^2 * (ln 2 * d / h_i) ** 2``, which matches EW-RLS's
+        steady-state gain at that spacing -- the same half-life whether rows come
+        every unit or every hundredth (docs/PLAN.md task 150). A scalar, or one
+        value per slot with the intercept first; ``inf`` pins that coefficient.
+        Required. Not the spec's ``half_life``, which drives the standardization
+        and the residual variance.
     ``q``
-        The process noise given outright, one value per slot, which skips the
-        derivation from ``coef_half_life``.
+        The process noise given outright, ``q_i`` per slot, which skips the
+        derivation from ``coef_half_life``; added as ``q_i * d ** 2`` per row.
     ``obs_var``
         A fixed observation noise, in place of the EW residual variance.
     ``p0``
@@ -1408,8 +1411,9 @@ def kalman(
         and ``[inf, r, r]`` leaves the intercept a random walk. The pull is toward
         zero in the standardized coordinates when ``standardize`` is on: a slope
         toward "no effect", the intercept toward "the target averages zero". A
-        reverting slot settles at the prior variance ``q_i * d / (1 - phi_i **
-        2)``, a stationary AR(1) instead of an unbounded walk. A prediction
+        reverting slot settles, at rows ``d`` apart, at the prior variance
+        ``q_i * d ** 2 / (1 - phi_i ** 2)``, a stationary AR(1) instead of an
+        unbounded walk. A prediction
         propagates the state by the same ``Phi`` over the row's clock gap.
     ``share_p``
         Keep one ``P`` for every target, driven by the mean ``sigma^2`` across

@@ -67,6 +67,17 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **`kalman`'s `coef_half_life` is a clock half-life at any row spacing**
+  (task 150): the process noise a row adds is `sigma^2 (ln 2 * d / h)^2`
+  for a row `d` clock units after the last -- `q_i * d^2`, where it was
+  `q_i * d`, a random walk whose gain grew with the root of the spacing,
+  so a coefficient adapted in `h * sqrt(d)` clock units rather than `h`
+  (74, 38 and 13 clock units at rows 1, 0.25 and 0.04 apart with
+  `coef_half_life=50` on one stream, where `ewridge` took 44 to 59; on the
+  new test's stream the Kalman now takes 165 to 176 at every spacing).
+  Unchanged at unit spacing; every other spacing's numbers move, a
+  `seqtest` that compares a Kalman among them. An explicit `q` is added as
+  `q_i * d^2` too: the noise a row one clock unit after the last adds.
 - The nanosecond clock's conversion to seconds takes a 64-bit road when the
   difference fits one (any two stamps less than 292 years apart): the same
   two Euclidean operations, so the same bits for every clock in the

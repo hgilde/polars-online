@@ -746,7 +746,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                 };
                 polars_bail!(ComputeError:
                     "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
-                     rate per clock unit, which has no duration form; leave it out and give {} \
+                     number in the clock's own units, which has no duration form; leave it out and give {} \
                      as a duration, e.g. pl.duration(minutes=10), timedelta(minutes=10) or \
                      \"10m\"; or cast the clock to the unit you mean, e.g. \
                      pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",

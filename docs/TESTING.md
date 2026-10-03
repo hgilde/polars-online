@@ -760,7 +760,7 @@ explicit `q` and fixed `obs_var`/`p0`. It also covers multi-target with and
 without `share_p`, the null policy and the null-target path, and
 `fit_intercept=False`. Writing it confirmed several subtleties are
 load-bearing: scales come from the stats
-*before* the row, `Q·Δclock` is applied once per shared `P`, and the
+*before* the row, `Q·Δclock²` is applied once per shared `P`, and the
 innovation variance carries `σ²/w`.
 
 **T-A2.** `tests/test_oracles.py::TestLassoOptimality` checks stationarity

@@ -2589,7 +2589,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
             lam = 0.5 ** (d / half_life)
             s2 = sig2 if sig2 > 0.0 else 1.0
             kf.F = np.diag(0.5 ** (d / r))
-            kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
+            kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
             z = np.array([1.0, x[i, 0], x[i, 1]])
             if wj > 0.0:
                 want[i] = z @ kf.x[:, 0]
