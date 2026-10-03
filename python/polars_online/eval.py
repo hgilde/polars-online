@@ -274,22 +274,26 @@ def rolling_metrics(
 ) -> pl.DataFrame:
     """:func:`metrics` in non-overlapping windows of ``window_size`` clock units.
 
-    The columns are :func:`metrics`'s, per window, plus ``window_start``, the left
-    edge of each bucket (``floor(clock / window_size) * window_size``); ``binary`` is
-    :func:`metrics`'s. ``window_size`` is measured the way a spec's clock parameters
-    are: a number for a numeric clock, and a duration for a ``Datetime``, ``Date``
-    or ``Duration`` one, when ``window_start`` is of the clock's own dtype.
+    The columns are :func:`metrics`'s, per window, plus ``window_start``, the
+    left edge of each bucket (``floor(clock / window_size) * window_size``).
+    ``binary`` is :func:`metrics`'s. ``window_size`` is measured the way a
+    spec's clock parameters are: a number for a numeric clock, and a duration
+    for a ``Datetime``, ``Date`` or ``Duration`` one, when ``window_start`` is
+    of the clock's own dtype.
 
     .. code-block:: python
 
         by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window_size=100.0)
         # on a Datetime clock: window_size=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
-    Raises as :func:`unpack` does, ``ValueError`` for a ``window_size`` that is not
-    above 0 or of the wrong kind for the clock, ``TypeError`` for a ``clock``
-    column that is neither numeric nor temporal, and polars'
-    ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the frame has not
-    got.
+    Raises as :func:`unpack` does, and:
+
+    - ``ValueError`` for a ``window_size`` that is not above 0 or of the
+      wrong kind for the clock;
+    - ``TypeError`` for a ``clock`` column that is neither numeric nor
+      temporal;
+    - polars' ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the
+      frame has not got.
     """
     dtype = df.schema.get(clock)
     if dtype is None:
@@ -372,12 +376,13 @@ def seqtest(
     """:func:`polars_online.spec.seqtest` in polars expressions, over a frame in
     memory: the same e-processes, the same fields, row for row.
 
-    Column mode (no ``a`` and ``b``): ``targets`` name the columns whose sign is
-    tested. Compare mode: ``a`` and ``b`` name two output structs of ``df`` (two
-    specs the bank ran), and ``targets`` the residuals both carry: ``t`` for
-    ``resid_<t><a_suffix>`` of ``a`` against ``resid_<t><b_suffix>`` of ``b``,
-    every ``t`` they share when ``None``. The sign tested is that of ``|resid_b| -
-    |resid_a|``, positive when ``a`` was closer.
+    Column mode (no ``a`` and ``b``): ``targets`` name the columns whose sign
+    is tested. Compare mode: ``a`` and ``b`` name two output structs of
+    ``df`` (two specs the bank ran), and ``targets`` the residuals both
+    carry. ``t`` means ``resid_<t><a_suffix>`` of ``a`` against
+    ``resid_<t><b_suffix>`` of ``b``, every ``t`` they share when ``None``.
+    The sign tested is that of ``|resid_b| - |resid_a|``, positive when
+    ``a`` was closer.
 
     Per target, with ``s`` the sign and the counts before the row:
 
@@ -386,32 +391,36 @@ def seqtest(
         lam_pos = max(0, (n_pos - n_neg) / (n_pos + n_neg + 1))
         log_e_pos += log1p(lam_pos * s)         (lam_neg, log_e_neg likewise)
 
-    Returns ``df`` with a struct column ``name`` holding, per target ``t`` and
-    read before the row, as the bank writes them:
+    Returns ``df`` with a struct column ``name`` holding, per target ``t``
+    and read before the row, as the bank writes them:
 
     ``log_e_pos_<t>``, ``log_e_neg_<t>``, ``n_pos_<t>``, ``n_neg_<t>``
         In column mode: the two gamblers' log wealth and the signs counted.
     ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``, ``wins_b_<t>``
-        In compare mode: the same, for "``a`` was closer" and "``b`` was closer".
+        In compare mode: the same, for "``a`` was closer" and "``b`` was
+        closer".
     ``weight_sum``
-        The rows before this one in its ``by`` group; every other field is null
-        until it reaches ``min_weight``.
+        The rows before this one in its ``by`` group; every other field is
+        null until it reaches ``min_weight``.
 
-    ``by`` runs one process per group, in row order (``.over(by)``). A null, zero
-    or NaN value bets nothing and counts nothing, as in the bank; what the bank
-    adds is the clock (``session``, ``restart_after_step_back``), which a frame in memory
-    has not got. The bank's struct is held to this one to the last bit; the
-    difference is that the bank is O(state) over a stream and this is O(rows) over
-    a frame.
+    ``by`` runs one process per group, in row order (``.over(by)``). A null,
+    zero or NaN value bets nothing and counts nothing, as in the bank. What
+    the bank adds is the clock (``session``, ``restart_after_step_back``),
+    which a frame in memory has not got. The bank's struct is held to this
+    one to the last bit; the difference is that the bank is O(state) over a
+    stream and this is O(rows) over a frame.
 
     .. code-block:: python
 
         evidence = po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])
 
-    Raises ``ValueError`` for ``a`` without ``b`` (or the reverse), for column
-    mode without ``targets``, and for a target neither side has a residual for
-    (naming the fields it does have); ``KeyError`` for a spec the frame has not
-    got, ``TypeError`` for one that is not a struct.
+    Raises:
+
+    - ``ValueError`` for ``a`` without ``b`` (or the reverse), for column
+      mode without ``targets``, and for a target neither side has a residual
+      for (naming the fields it does have);
+    - ``KeyError`` for a spec the frame has not got;
+    - ``TypeError`` for one that is not a struct.
     """
     keys = list(by)
     if (a is None) != (b is None):

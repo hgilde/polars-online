@@ -6786,7 +6786,28 @@ code is named.
 | `ops` module | 29, 25.7, 3 | 21, 19.7, 0 | the operators' definitions, the `closed` membership rules and `partial`'s three values became tables |
 | `stream.refresh_time` | 31, 25.8, 2 | 44, 18.1, 0 | the raises became a list |
 | `spec.ew_cov` | 49, 23.2, 2 | 54, 18.2, 0 | the four windowed caveats and the PCA's four fields became tables; "the cost" named as the work |
-| all ten | 501, 23.3, 41 (106 of 35 or more) | 604, 17.5, 2 (24) | |
+| all ten (batch one) | 501, 23.3, 41 (106 of 35 or more) | 604, 17.5, 2 (24) | |
+| `spec.corrchange` | 72, 21.1, 3 | 85, 17.4, 1 | `boundary_gamma`'s three settings became a table; the raises a list |
+| `spec.kmeans` | 37, 19.6, 3 | 40, 17.6, 0 | the four seeding rules became a table |
+| `spec.bocpd` | 45, 22.4, 2 | 45, 18.2, 0 | the three emissions, the four prior parameters and the three breaks' `p_change` became tables; "costs" named as the work |
+| `spec.ew_class` | 29, 22.0, 2 | 29, 19.8, 0 | the three covariance shapes became a table |
+| `spec.deco` | 37, 20.9, 2 | 46, 16.7, 0 | the raises became a list |
+| `spec.ftrl` | 31, 20.5, 2 | 37, 17.3, 0 | the wrap of "a prior of fixed mass" kept as `test_weight_scale.py` pins it |
+| `spec.holt` | 27, 19.7, 1 | 31, 17.5, 0 | -- |
+| `spec.hmm` | 45, 19.4, 1 | 53, 16.2, 0 | the raises became a list |
+| `spec.seqtest` | 34, 19.7, 1 | 38, 17.7, 0 | -- |
+| `ModelBank.fit` | 13, 22.5, 2 | 16, 19.6, 1 (a bold lead merged) | -- |
+| `ModelBank.summary` | 20, 17.9, 2 | 21, 17.1, 1 (a header merged) | -- |
+| `ModelBank.last_row` | 7, 27.0, 1 | 9, 19.1, 0 | -- |
+| `ModelBank.skip_learned` | 10, 23.1, 1 | 13, 16.8, 0 | the raises became a list |
+| `ModelBank.fit_predict` | 20, 19.0, 1 | 21, 18.2, 1 (a lead-in merged) | -- |
+| `ModelBank.closed_groups` | 24, 23.2, 1 | 18, 20.5, 0 | the blocks per kind became a table |
+| `lf.online.unnest` | 8, 25.0, 2 | 14, 14.0, 0 | the errors became a list |
+| `lf.online.predict` | 7, 26.9, 1 | 12, 15.8, 0 | the errors became a list |
+| `eval.rolling_metrics` | 3, 30.7, 1 | 7, 14.6, 0 | the raises became a list |
+| `eval.seqtest` | 13, 21.5, 1 | 18, 15.5, 0 | the raises became a list |
+| `ops.increment` | 3, 37.3, 1 | 5, 22.2, 0 | -- |
+| all twenty (batch two) | 485, 21.1, 31 (87 of 35 or more) | 558, 17.5, 4 (28) | the four are a bold lead sentence and definition-list headers the splitter merges with their bodies |
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

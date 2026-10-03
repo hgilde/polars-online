@@ -293,13 +293,12 @@ def rewm_rate(
 
 def increment(input: str | pl.Expr) -> pl.Expr:
     """``x_i - x_{i-1}`` of ``input`` within the group and session, ``x_{i-1}``
-    the input's last value with a value: a null input makes the row's
+    the input's last value with a value. A null input makes the row's
     increment null and is skipped, as the operators hold a value from the
     last valued row (``[1, null, 3]`` gives ``[null, null, 2]``, where
     ``diff()`` gives three nulls). Null on a session's first row, and after a
-    step back ``restart_after_step_back`` reads as a new start -- in the
-    row's group, or on the stream across groups; seconds on a temporal
-    column. The input of a sum or a rate over a running total, so a day's
-    notional of 1e10 is read as its trades (docs/PLAN.md task 143,
-    *Numerics*)."""
+    step back ``restart_after_step_back`` reads as a new start, in the row's
+    group or on the stream across groups. Seconds on a temporal column. The
+    input of a sum or a rate over a running total, so a day's notional of
+    1e10 is read as its trades (docs/PLAN.md task 143, *Numerics*)."""
     return operator("increment", input)

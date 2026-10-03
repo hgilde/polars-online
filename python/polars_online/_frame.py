@@ -999,24 +999,30 @@ class LazyFrameOnlineNamespace:
     def predict(self, bank: ModelBank | State, *, chunk_rows: int | None = None) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
 
-        Each row gets :meth:`ModelBank.predict`'s struct: what the bank would report
-        for it as the next row of its group's stream, from the current state, which
-        the plan never moves. ``bank`` is a :class:`ModelBank`, scored as it stands
-        each time the plan runs (``predict`` leaves it untouched, so sharing it with a
-        plan is safe), or a path to a saved state, read when the plan is built. Build
-        the plan again to pick up a newer file. Target columns are optional, as for
+        Each row gets :meth:`ModelBank.predict`'s struct: what the bank would
+        report for it as the next row of its group's stream, from the current
+        state, which the plan never moves. ``bank`` is a :class:`ModelBank`,
+        scored as it stands each time the plan runs; ``predict`` leaves it
+        untouched, so sharing it with a plan is safe. Or it is a path to a
+        saved state, read when the plan is built. Build the plan again to
+        pick up a newer file. Target columns are optional, as for
         ``predict``; ``chunk_rows`` is the read chunk.
 
         .. code-block:: python
 
             scored = lf.online.predict("bank.state").collect()    # the saved bank, unmoved
 
-        Reported while the plan is built: ``FileNotFoundError`` for a path that is not
-        there; ``ValueError`` for a file that is not a bank this build loads
-        (:meth:`ModelBank.load`); ``TypeError`` for a ``bank`` that is neither a bank
-        nor a path; ``ValueError`` for ``chunk_rows`` below 1, and for a column the
-        bank reads that the plan has not got or that is not numeric (a missing target
-        is fine). A value the bank refuses (a null clock, a negative weight) is
+        Reported while the plan is built:
+
+        - ``FileNotFoundError`` for a path that is not there;
+        - ``ValueError`` for a file that is not a bank this build loads
+          (:meth:`ModelBank.load`);
+        - ``TypeError`` for a ``bank`` that is neither a bank nor a path;
+        - ``ValueError`` for ``chunk_rows`` below 1, and for a column the
+          bank reads that the plan has not got or that is not numeric (a
+          missing target is fine).
+
+        A value the bank refuses (a null clock, a negative weight) is
         reported when the plan runs, as polars' ``ComputeError`` carrying
         :meth:`ModelBank.predict`'s message.
         """
@@ -1025,17 +1031,19 @@ class LazyFrameOnlineNamespace:
     def unnest(self, specs: Specs | ModelBank | State) -> pl.LazyFrame:
         """The plan with each spec's struct column taken apart into columns.
 
-        ``lf.unnest(names)`` with the ``coef`` lists taken apart too: every scalar
-        field becomes a column of its own name (``pred_y``, ``weight_sum@h500``), and each
-        ``coef`` list becomes one column per coefficient, named
-        ``coef_{target}_{term}{combo}{instance}`` (``coef_y_intercept``,
-        ``coef_y_x1__r0.5@h500``) as :func:`polars_online.spec.coef_fields` lists
-        them, and ``support_coef`` -- one data share per coefficient, on the same
-        rows -- the same way, as ``support_coef_{target}_{term}...``. The columns
-        take the struct's place; the rest of the frame, and any spec
-        column not named, are left as they are. ``specs`` is the spec dicts, a
-        :class:`ModelBank` (its specs), or the path of a saved bank (which carries
-        them). So a scored plan, or a parquet the CLI wrote, comes back flat:
+        ``lf.unnest(names)`` with the ``coef`` lists taken apart too. Every
+        scalar field becomes a column of its own name (``pred_y``,
+        ``weight_sum@h500``). Each ``coef`` list becomes one column per
+        coefficient, named ``coef_{target}_{term}{combo}{instance}``
+        (``coef_y_intercept``, ``coef_y_x1__r0.5@h500``) as
+        :func:`polars_online.spec.coef_fields` lists them. ``support_coef``
+        -- one data share per coefficient, on the same rows -- goes the same
+        way, as ``support_coef_{target}_{term}...``. The columns take the
+        struct's place; the rest of the frame, and any spec column not named,
+        are left as they are. ``specs`` is the spec dicts, a
+        :class:`ModelBank` (its specs), or the path of a saved bank (which
+        carries them). So a scored plan, or a parquet the CLI wrote, comes
+        back flat:
 
         .. code-block:: python
 
@@ -1046,14 +1054,19 @@ class LazyFrameOnlineNamespace:
                 .collect()
             )
 
-        Reported while the plan is built: ``ValueError`` for a spec whose column the
-        plan has not got, is not a struct, or lacks a field the spec produces, for a
-        spec given twice and for a spec that is not valid; ``TypeError`` for ``specs``
-        that are none of the three; ``FileNotFoundError`` and :meth:`ModelBank.load`'s
-        ``ValueError`` for a path. Two specs that produce a field of the same name
-        unnest to the same column name, which polars reports as its
-        ``DuplicateError``: unnest them one at a time, or rename the struct's fields
-        first (``pl.col("m").name.prefix_fields("m_")``).
+        Reported while the plan is built:
+
+        - ``ValueError`` for a spec whose column the plan has not got, is not
+          a struct, or lacks a field the spec produces, for a spec given twice
+          and for a spec that is not valid;
+        - ``TypeError`` for ``specs`` that are none of the three;
+        - ``FileNotFoundError`` and :meth:`ModelBank.load`'s ``ValueError``
+          for a path.
+
+        Two specs that produce a field of the same name unnest to the same
+        column name, which polars reports as its ``DuplicateError``: unnest
+        them one at a time, or rename the struct's fields first
+        (``pl.col("m").name.prefix_fields("m_")``).
         """
         return _unnest_lazy(self._lf, specs)
 
