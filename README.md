@@ -3,14 +3,15 @@
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 
 Online model fitting for [Polars](https://pola.rs): linear models,
-streaming moments, clustering and regime detection, and windowed means
-looking back or ahead, for data too large to hold in memory at once. When the rows have a time order, a fit can also be
+streaming moments, clustering and regime detection, for data too large to
+hold in memory at once. When the rows have a time order, a fit can also be
 local, following the recent rows without refitting a window at every step.
-Rust core, Python API, and a standalone command line.
+Features and targets can be windowed means over the stream, looking back or
+ahead. Rust core, Python API, and a standalone command line.
 
 | section | what it covers |
 |---|---|
-| [Introduction](#introduction) | [the idea](#the-idea) · [four words](#four-words) · [install](#install) · [a first fit](#a-first-fit) · [what you can rely on](#what-you-can-rely-on) |
+| [Introduction](#introduction) | [the idea](#the-idea) · [terminology](#terminology) · [install](#install) · [a first fit](#a-first-fit) · [what you can rely on](#what-you-can-rely-on) |
 | [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [convergence without a decay](#convergence-without-a-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) · [row order](#row-order-and-the-two-guarantees) |
 | [Preparing a stream](#preparing-a-stream) | [series that tick at their own times](#series-that-tick-at-their-own-times) · [windowed means](#windowed-means-looking-back-or-ahead) · [windows as columns](#windows-as-columns) · [windows as a model's inputs and target](#windows-as-a-models-inputs-and-target) · [saving and resuming a window run](#saving-and-resuming-a-window-run) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [outside Python](#outside-a-live-python-process) · [output as Arrow](#output-as-arrow) |
@@ -58,11 +59,11 @@ the models have already learned. So none of them lets a row's own outcome
 into what it is measured against ([Diagnostics, selection and
 evaluation](#diagnostics-selection-and-evaluation)).
 
-### Four words
+### Terminology
 
-This README uses four words of its own:
+This README uses four terms of its own:
 
-| word | meaning |
+| term | meaning |
 |---|---|
 | **spec** | the description of one model: which model, which columns it reads, and how it treats time. `po.spec.ewridge(...)` builds one |
 | **model bank**, or *the bank* | a set of specs fitted together over the same rows, and the Python object that holds them, [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank). *The bank* always means a model bank |
