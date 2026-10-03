@@ -6711,7 +6711,7 @@ is not, since the model alone has `0.0` and `3.5` there.
       of noise explained by `1 / (n_kish − 3)` and twice the floor at
       `n_eff`. The docstring pass under `docs/WRITING.md` is task 149.
 
-- [ ] 149. **A docstring pass under `docs/WRITING.md` -- in progress
+- [x] 149. **A docstring pass under `docs/WRITING.md` -- done
       (2026-10-03).** Size M. Task 148 put the facts right; the pass rewrites
       the docstrings to the README's rules: map first, tables over lists, a
       mechanism named rather than alluded to, sentences near 20 words,
@@ -6808,6 +6808,34 @@ code is named.
 | `eval.seqtest` | 13, 21.5, 1 | 18, 15.5, 0 | the raises became a list |
 | `ops.increment` | 3, 37.3, 1 | 5, 22.2, 0 | -- |
 | all twenty (batch two) | 485, 21.1, 31 (87 of 35 or more) | 558, 17.5, 4 (28) | the four are a bold lead sentence and definition-list headers the splitter merges with their bodies |
+| `spec.kalman` | 35, 18.3, 1 | 36, 17.8, 0 | "costs nothing" named as what is added |
+| `spec.lasso` | 36, 17.8, 1 | 38, 17.0, 0 | "costs nothing" named as the solve it saves |
+| `spec.coef_fields` | 12, 16.3, 1 | 13, 15.3, 0 | -- |
+| `eval.metrics` | 13, 15.8, 1 | 16, 12.8, 0 | -- |
+| `eval.unpack` | 9, 15.6, 1 | 12, 12.0, 0 | the raises became a list |
+| `eval.sums` | 16, 14.8, 1 | 18, 13.6, 0 | "pays for" named as the term it takes |
+| all six (batch three) | 121, 17.0, 6 (13 of 35 or more) | 133, 15.6, 0 (6) | |
+
+**Task 149, steps 6 to 8 (2026-10-03).** Measured again over all 93 public
+docstrings, side by side, with `measure_docstrings.py` dropping headings,
+code blocks and list-tables and splitting each paragraph on its own (the
+first count of 116 sentences of 45 words or more merged text across table
+cells; this count is the fair one at both ends):
+
+| | sentences | mean words | 45 or more | 35 or more |
+|---|---:|---:|---:|---:|
+| before the pass (`aa30f00`) | 1,666 | 20.7 | 78 | 261 |
+| after it | 1,854 | 17.7 | 6 | 113 |
+
+The remaining sentences of 45 or more are the splitter's: a bold lead
+sentence (`**With one exception...**`) and definition-list headers joined
+to their bodies. Thirty-six pages were rewritten (every page with such a
+sentence); the other 57 already measured within the rules and were left as
+they were, each a reference entry near 20 words a sentence. Step 7 (render)
+is Sphinx `-W` over the reference, which the gate runs; step 8 is the gate's
+doc tests (`test_examples`, `test_api_links`, `test_doc_structure`,
+`test_api_surface`), the docstring-pin tests (`test_weight_scale`,
+`test_temporal_clock`) and Sphinx. Done.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

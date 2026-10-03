@@ -1080,9 +1080,10 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
         slope = out["m"].struct.field(row["field"]).list.get(row["position"])
 
     Rendered by the Rust code that names the fields, from the slot order the
-    models lay the list out in: the intercept first when the spec has one, then
-    every feature -- zero for a feature outside a feature set -- per (target,
-    combination) slot, slots in the order the ``pred`` fields declare them.
+    models lay the list out in. That order is the intercept first when the spec
+    has one, then every feature -- zero for a feature outside a feature set --
+    per (target, combination) slot, slots in the order the ``pred`` fields
+    declare them.
     ``ValueError`` for a spec that is not valid, as for :func:`output_fields`.
     """
     rows = json.loads(spec_coef_fields(_json(spec)))
@@ -1269,15 +1270,15 @@ def lasso(
     Coordinate descent on the standardized, centred sums :func:`ewridge` keeps,
     warm-started from the previous solution both along the path of penalties and
     from one solve to the next. Every point of the path is predicted, so choosing
-    among them costs nothing: ``penalty_selected_<t>`` is the point with the lowest
-    exponentially weighted out-of-sample squared error so far.
+    among them takes no extra solve: ``penalty_selected_<t>`` is the point with
+    the lowest exponentially weighted out-of-sample squared error so far.
 
     .. rubric:: The fit
 
     For each penalty ``l`` in ``lasso_path``, with ``C`` the feature correlation
     matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
-    target over the feature's standard deviation, until no coefficient moves by
-    more than ``tol``:
+    target over the feature's standard deviation. The descent runs until no
+    coefficient moves by more than ``tol``:
 
     .. code-block:: text
 
@@ -1325,7 +1326,7 @@ def lasso(
         means either way.
     ``window_size``, ``window_every``, ``window_budget``
         A hard cutoff on the history the path is fitted from, in clock units, as
-        for :func:`ewridge`: a row older than ``window_size`` is not in the sums,
+        for :func:`ewridge`. A row older than ``window_size`` is not in the sums;
         ``window_every`` is the snapshot cadence, and ``window_budget`` bounds
         each ring in MiB and thins or refuses past the bound. The selection error
         is truncated with the sums, so the ``lambda`` chosen is the one that fits
@@ -1438,9 +1439,9 @@ def kalman(
 
     ``coef_half_life``
         How fast a coefficient may drift, as a half-life on the clock, on
-        standardized features: a row ``d`` clock units after the last adds the
+        standardized features. A row ``d`` clock units after the last adds the
         process noise ``sigma^2 * (ln 2 * d / h_i) ** 2``, which matches EW-RLS's
-        steady-state gain at that spacing -- the same half-life whether rows come
+        steady-state gain at that spacing: the same half-life whether rows come
         every unit or every hundredth (docs/PLAN.md task 150). A scalar, or one
         value per slot with the intercept first; ``inf`` pins that coefficient.
         Required. Not the spec's ``half_life``, which drives the standardization
@@ -1463,7 +1464,7 @@ def kalman(
         A reversion half-life ``r_i`` per slot: between observations the
         coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a coefficient
         no row has supported for a while is forgotten rather than carried. Default
-        ``inf``, the random walk, which costs nothing. A scalar applies to every
+        ``inf``, the random walk, which adds nothing. A scalar applies to every
         slot, the intercept included; a list gives one per slot, intercept first,
         and ``[inf, r, r]`` leaves the intercept a random walk. The pull is toward
         zero in the standardized coordinates when ``standardize`` is on: a slope

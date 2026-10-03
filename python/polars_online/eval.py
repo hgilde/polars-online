@@ -107,12 +107,15 @@ def unpack(
 
         long = po.eval.unpack(out, "ridge")       # slot, target, pred, y, and the input columns
 
-    Raises ``KeyError`` for a ``spec_name`` the frame has not got; ``TypeError``
-    for a column that is not a struct, or a struct with no ``pred_*`` fields (an
-    ``ew_cov``, ``kmeans``, ``micro`` or ``ew_class`` output); ``ValueError`` when
-    a slot's target column cannot be found (the frame has not got it, or
-    ``targets`` does not name it) and, with ``spec``, whatever
-    :func:`polars_online.spec.output_index` raises for it.
+    Raises:
+
+    - ``KeyError`` for a ``spec_name`` the frame has not got;
+    - ``TypeError`` for a column that is not a struct, or a struct with no
+      ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro`` or ``ew_class``
+      output);
+    - ``ValueError`` when a slot's target column cannot be found (the frame
+      has not got it, or ``targets`` does not name it) and, with ``spec``,
+      whatever :func:`polars_online.spec.output_index` raises for it.
     """
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
@@ -221,9 +224,9 @@ def metrics(
     """Out-of-sample metrics per ``(slot, target, *by)``, over the whole frame.
 
     Rows where the prediction or the target is null are dropped, so warm-up and
-    skipped rows never enter the numbers; a group with fewer than ``min_obs`` rows
-    left is dropped from the result rather than reported on too little. The
-    columns:
+    skipped rows never enter the numbers. A group with fewer than ``min_obs``
+    rows left is dropped from the result rather than reported on too little.
+    The columns:
 
     ``slot``, ``target``, and the ``by`` columns
         The key.
@@ -241,9 +244,9 @@ def metrics(
 
     ``binary=True`` reads ``pred`` as a probability and ``y`` as a 0/1 label, the
     output of a ``sgd`` or ``ftrl`` fit with ``loss = "logistic"``. ``hit_rate``
-    becomes accuracy at a 0.5 threshold and every row scores; a ``log_loss``
-    column is added, ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged; and ``r2`` and
-    ``ic`` keep their formulas under names that mean something different on a 0/1
+    becomes accuracy at a 0.5 threshold and every row scores. A ``log_loss``
+    column is added, ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged. ``r2`` and ``ic``
+    keep their formulas under names that mean something different on a 0/1
     target, the Brier skill score and the point-biserial correlation. Nothing here
     reads the target's values to decide which reading applies; name it explicitly,
     the way you chose the loss.
@@ -547,16 +550,16 @@ def sums(
         The residual sum of squares.
     ``hits``, ``signed``
         For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
-        with ``y != 0``, or, under ``binary=True`` (:func:`metrics`'s reading),
+        with ``y != 0``. Under ``binary=True`` (:func:`metrics`'s reading),
         ``hits`` counts agreement at a 0.5 threshold and ``signed`` every row,
         since every row scores.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
-    mean is large relative to the spread: a unit-variance target around 1e8 has
-    ``var / E[y**2]`` of about 1e-16, and the subtraction has nothing left.
-    :func:`merge_sums` pays for the centring with a parallel-axis term, which is a
-    multiply, and keeps every digit. Chunks reduced with different ``binary``
+    mean is large relative to the spread. A unit-variance target around 1e8 has
+    ``var / E[y**2]`` of about 1e-16, and the subtraction has nothing left. The
+    centring takes :func:`merge_sums` a parallel-axis term, which is a multiply,
+    and keeps every digit. Chunks reduced with different ``binary``
     settings must not be merged: :func:`merge_sums` sums whatever is in ``hits``
     and ``signed`` without knowing which reading produced it.
 
