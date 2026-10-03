@@ -3551,31 +3551,34 @@ note, not a task.
       #### A target
 
       - **A target may be a task-143 expression** containing at least one
-        forward operator: `targets=[(po.rewma("mid", half_life="10s",
+        forward operator: `targets=[(po.rewm_mean("mid", half_life="10s",
         window_size="1m") - pl.col("mid")).alias("fwd_mid")]`. One with no
         forward operator is known at its own row, so it belongs in
         `with_windows` as a column, and is refused. Several targets in one
         spec share one `X'X` and one embargo; a buy-side, a sell-side and an
         all-trades VWAP are three targets.
-      - **Open, the user's call: a formula target outside Python.** A
-        formula is a Polars expression that py-polars evaluates between
-        chunks, and Polars' expression serialization differs between the
-        py-polars a caller runs and the Polars this wheel embeds, so the
-        command line's TOML cannot carry one and a saved state cannot store
-        one. Polars' SQL expression parser was examined (2026-10-02) as a
-        shared text form: it parses the element-wise part in both languages
-        (arithmetic, `CASE WHEN`, `LN`, a quoted placeholder column), but
-        not the operators. Polars SQL's windows are row frames only (no
-        `RANGE`, no `FOLLOWING`, no exponential weights); Python's
-        `pl.sql_expr` refuses a function of ours and cannot register one;
-        Rust's `polars-sql` registers functions only through a full query
-        (its expression parser with a registry is private); and it would add
-        `polars-sql` and `sqlparser`, statically linked (rule 12).
-        Recommended: TOML and saved states hold operators -- one, or a ratio
-        of two (a VWAP), with `relative_to` -- and anything more is
-        Python-only, re-supplied when resuming through `load(path, specs=)`.
-        The alternatives: the SQL text form with a pre-parse of our
-        operators, or no forward targets on the command line.
+      - **A formula target is Python-only; TOML and saved states hold
+        operators** (decided 2026-10-02, the user: "1a"). A formula is a
+        Polars expression that py-polars evaluates between chunks, and
+        Polars' expression serialization differs between the py-polars a
+        caller runs and the Polars this wheel embeds, so the command line's
+        TOML cannot carry one and a saved state cannot store one. A TOML
+        target, and a target in a saved state, is an operator, or a ratio of
+        two (a VWAP), with task 107's `relative_to`: `targets = [{ rewm_mean
+        = "mid", half_life = "10s", window_size = "1m", relative_to = "mid"
+        }]`. Resuming a fit with a formula target re-supplies it through
+        `load(path, specs=)`, which holds each expression to the state's
+        with `expr.meta.eq`; the command line cannot resume one and says so.
+        Considered and not taken: Polars' SQL expression parser as a shared
+        text form -- it parses the element-wise part in both languages
+        (arithmetic, `CASE WHEN`, `LN`, a quoted placeholder column) but not
+        the operators: Polars SQL's windows are row frames only (no `RANGE`,
+        no `FOLLOWING`, no exponential weights), Python's `pl.sql_expr`
+        refuses a function of ours and cannot register one, Rust's
+        `polars-sql` registers functions only through a full query (its
+        expression parser with a registry is private), and it would add
+        `polars-sql` and `sqlparser`, statically linked (rule 12); and no
+        forward targets on the command line.
       - **Each forward operator states its own `window_size`.** The spec
         states the embargo.
       - **An operator's `partial` applies**: a window cut short by a gap past
@@ -5661,15 +5664,15 @@ is not, since the model alone has `0.0` and `3.5` there.
       dpv, dv = po.increment("cum_notional"), po.increment("cum_volume")
       notional = pl.col("price") * pl.col("quantity")
       lf.online.with_windows(
-          mid_trend=po.ewma("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-          fwd_mid=po.rewma("mid", half_life="10s", window_size="1m") - pl.col("mid"),
+          mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
+          fwd_mid=po.rewm_mean("mid", half_life="10s", window_size="1m") - pl.col("mid"),
           fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size="1m")
                    / po.rewm_sum("quantity", half_life="10s", window_size="1m") - pl.col("mid"),
           buy_vwap=po.ewm_sum(pl.when(pl.col("side") == "buy").then(notional), half_life="10s")
                    / po.ewm_sum(pl.when(pl.col("side") == "buy").then("quantity"), half_life="10s"),
           vwap_from_sums=po.ewm_sum(dpv, half_life="10s") / po.ewm_sum(dv, half_life="10s"),
-          past_cvwap=(pl.col("cum_notional") - po.ewma("cum_notional", half_life="10s", window_size="1m"))
-                     / (pl.col("cum_volume") - po.ewma("cum_volume", half_life="10s", window_size="1m")),
+          past_cvwap=(pl.col("cum_notional") - po.ewm_mean("cum_notional", half_life="10s", window_size="1m"))
+                     / (pl.col("cum_volume") - po.ewm_mean("cum_volume", half_life="10s", window_size="1m")),
           volume_rate=po.ewm_rate(dv, half_life="30s", window_size="5m"),
           clock="ts", max_dclock="5m", session="date", session_gap="5m", group="symbol",
       )
@@ -5681,7 +5684,7 @@ is not, since the model alone has `0.0` and `3.5` there.
 
     | operator | definition | oracle |
     |---|---|---|
-    | `po.ewma` (back), `po.rewma` (forward): time-weighted mean | `y_i = α_i x_i + (1 − α_i) y_{i−1}`, `α_i = 1 − λ^(Δt_i)`: each value weighted by the decayed time of its interval; forward, the mirror, each value held until the next row | Polars `ewm_mean_by` (agrees to 1.3e-14 on irregular times) |
+    | `po.ewm_mean` (back), `po.rewm_mean` (forward): time-weighted mean | `y_i = α_i x_i + (1 − α_i) y_{i−1}`, `α_i = 1 − λ^(Δt_i)`: each value weighted by the decayed time of its interval; forward, the mirror, each value held until the next row | Polars `ewm_mean_by` (agrees to 1.3e-14 on irregular times) |
     | `po.ewm_sum`, `po.rewm_sum`: exponentially weighted sum | `y_i = x_i + λ_i y_{i−1}`, anchored at the row's own time | Polars `ewm_sum_by` |
     | `po.ewm_rate`, `po.rewm_rate`: rate per unit time | the sum over its decayed time mass, `∫ λ^age ds` over the time the window covers | the definition, integrated |
     | `po.increment(col)` | `x_i − x_prev` within the group and session; null on a session's first row; seconds on a temporal column | Polars `diff().over([group, session])`, in memory |
@@ -5699,13 +5702,13 @@ is not, since the model alone has `0.0` and `3.5` there.
         design excludes no recipe. Which recipe a quantity should use is
         settled by measuring them against their definitions and each other,
         not by this plan. The ones known so far:
-      - **A rate from running sums** can be `(C(t) − po.ewma(C)) / (t −
-        po.ewma(t))`, the clock's own running value in the denominator:
+      - **A rate from running sums** can be `(C(t) − po.ewm_mean(C)) / (t −
+        po.ewm_mean(t))`, the clock's own running value in the denominator:
         `Σ K dv / Σ K dt`, the same tail kernel on the flow and on time, so
         the two are attributed in the same steps and the attribution largely
-        cancels. `t − po.ewma(t)` is the window's mean age, near `half_life /
+        cancels. `t − po.ewm_mean(t)` is the window's mean age, near `half_life /
         ln 2` (measured, half-life 10 s: 14.18 s on even rows, 11.19 s on
-        bursty ones, the spread of the order of the gaps). `po.ewma(dt)` is
+        bursty ones, the spread of the order of the gaps). `po.ewm_mean(dt)` is
         no time mass -- under the time-weighted mean each interval counts by
         its own length, 7.1 s on bursty rows with a 0.5 s average gap -- and
         is never a rate's denominator.
@@ -5716,8 +5719,8 @@ is not, since the model alone has `0.0` and `3.5` there.
       - **Running sums** give a VWAP two ways. `po.ewm_sum(dpv) /
         po.ewm_sum(dv)` is the per-trade VWAP, each trade weighted by its
         own decayed time; where the sums step exactly at trades it equals
-        the VWAP from prices and quantities. `(C(t) − po.ewma(C)) /
-        (C_v(t) − po.ewma(C_v))` weighs each trade by the decayed time mass
+        the VWAP from prices and quantities. `(C(t) − po.ewm_mean(C)) /
+        (C_v(t) − po.ewm_mean(C_v))` weighs each trade by the decayed time mass
         on its far side within the window -- before it backward, after it
         forward -- a smooth taper to 0 at the window's edge; the two agree
         as the window grows against the half-life. Either way an increment
@@ -5725,7 +5728,13 @@ is not, since the model alone has `0.0` and `3.5` there.
         an integer volume's increments are exact.
       - **A volume clock is a clock column**: with the running volume as the
         clock, `half_life` and `window_size` are in shares, and weights
-        decay with the volume traded since.
+        decay with the volume traded since. **Today only ungrouped**
+        (measured 2026-10-02): the core keeps a shared clock across groups
+        for the silent-group cut, and a per-symbol running volume steps
+        back at every interleaved row, so `group="sym"` on such a clock is
+        refused at row 1. A clock has to say whether it is shared across
+        groups (time) or each group's own (volume), and a group's own clock
+        skips the shared advance and the silent list.
       - The windowed and forward forms, which no library has, are held to a
         brute-force loop from the same definition and to the time-reversal
         identity: a forward window is a backward one over the reversed
@@ -5750,7 +5759,7 @@ is not, since the model alone has `0.0` and `3.5` there.
         the expression around them.
       - **Names, boundaries and equal timestamps follow Polars**: task 144.
       - **The call's own keywords are not output names** (decided
-        2026-10-02, the user: "3a"). `with_windows(session=po.ewma(...))`
+        2026-10-02, the user: "3a"). `with_windows(session=po.ewm_mean(...))`
         is refused, with a message pointing at `.alias()`: the clock policy
         (`clock`, `gap_cap`, `restart_after_step_back`, `session`,
         `session_gap`, `group`), `like`, `chunk_rows`, `load_state` and
@@ -5759,9 +5768,34 @@ is not, since the model alone has `0.0` and `3.5` there.
         through `like=`.
       - **The clock and its policy** -- `max_dclock`, `on_clock_reset`,
         `min_backwards_jump`, sessions, groups -- are task 78's, shared by
-        every operator in the call. Open: a clock per operator, Polars'
-        `by=`, so that volume-clock and time-clock windows share a call,
-        each clock with its own policy.
+        every operator in the call. **Open, the user's call: a clock per
+        operator**, Polars' `by=`, so that volume-clock and time-clock
+        windows share a call. Analysed 2026-10-02: possible, since every
+        queue item already carries its own policy time and nothing in the
+        core assumes one clock but the clock fields themselves. The core
+        keys each kernel by its clock; the clock state, the policy time, the
+        restart flag and the silent list become one per clock in `Windows`
+        and in each `Group`, a waiting row carries a policy time per clock,
+        a break on one clock cuts the windows on that clock and a session
+        change (one column) cuts every window, emission stays in input
+        order since each clock's closures are monotone, and the window
+        state file bumps its version. The policy goes per clock -- the gap
+        cap, the step-back rule, `session_gap`, and whether the clock is
+        shared across groups -- as `po.clock(...)` objects on the call, the
+        operator naming its clock by `by=` and taking the call's single
+        `clock` by default, and each window's `half_life` and `window_size`
+        checked against its own clock's dtype. About two days on top of
+        143, a second clock advance per row (unmeasured, expected under
+        5%). Two things it does not give: a forward target off the spec's
+        clock, since the embargo cannot be shown to cover a window in
+        another unit (refused), and on a volume clock Polars' equal-stamp
+        rule (task 144) holds every quote row's backward window until the
+        next trade, since the quotes between two trades share one volume.
+        Two calls compose for the column form, a formula over the first
+        call's outputs in the second, at the cost of a second pass and a
+        second state file. Recommended: not until a need appears (task
+        118's rule); if built, inside 143, where the kernel keying is being
+        rewritten anyway.
       - **As a target** (task 104), the same expression in `targets=[...]`,
         evaluated by Polars on the rows the window core resolves in each
         chunk: one evaluator for the column and the target, nothing
@@ -5778,10 +5812,13 @@ is not, since the model alone has `0.0` and `3.5` there.
         1.0 whatever the fit. Recommended: the docs say a ratio target is
         written as a log ratio or a difference; the alternative makes
         `hit_rate` null on every expression target.
-      - Open: the sum and rate operators' names. Polars 1.44 has `ewm_mean`,
-        `ewm_sum` and their `_by` forms (checked 2026-10-02), so matching it
-        would make `po.ewma` `po.ewm_mean` and `po.rewma` `po.rewm_mean`,
-        beside `po.ewm_sum` and `po.rewm_sum`; the rate has no counterpart.
+      - **The operators take Polars' names** (decided 2026-10-02, the user:
+        "4a"). Polars 1.44 has `ewm_mean`, `ewm_sum` and their `_by` forms, so
+        the time-weighted mean is `po.ewm_mean` and the sum `po.ewm_sum`, and
+        their forward mirrors `po.rewm_mean` and `po.rewm_sum`. The rate,
+        which Polars lacks, is `po.ewm_rate` and `po.rewm_rate` on the same
+        pattern, and `po.increment` keeps its name. Considered and not taken:
+        `po.ewma` and `po.rewma`.
 
       #### Memory
 
