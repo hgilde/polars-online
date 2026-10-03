@@ -3811,7 +3811,7 @@ note, not a task.
       - **The state carries the cores**: `BankFile.resolvers`, per spec
         and group, each `WindowsRun::save_bytes`; a loaded bank resumes
         each at its group's first chunk, which says what the columns are.
-        Schema 23.
+        Schema 23 (24 since review R4, which changed the window core's state).
       - **Tests**: `crates/online-polars/tests/formula_targets.rs` (the
         column form fed back, bit for bit, in 1, 7 and 600 chunks; the
         short-embargo refusal and `fit`'s equal predictions; a state saved
@@ -10437,6 +10437,19 @@ committed.
 | A2 | `WINDOWS_VERSION` 2 to 3 changed the bytes a bank file embeds per formula target while `SCHEMA_VERSION` stayed 23, so a 23 bank holding one passed the bank's check and failed at a group's first chunk | `SCHEMA_VERSION` 24, the bank's minimum 24 (23 unreleased, pre-1.0) | `test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number` |
 | A3 | `a_saved_state_resumes_at_any_row` built its fresh core on a grouped stream without `set_grouped`, passing by coincidence | the flag set | the test |
 | A4 | `KernelDef::check` did not tie `window_ns` to `window_size`, so a direct caller could split membership from the far edge and `complete` | refused unless `seconds_of_ns(window_ns) == window_size`; the frame's increments-only kernel carries its window in nanoseconds so a temporal clock converts nothing | `windows.rs::a_kernels_window_ns_must_be_its_window_size` |
+
+### Round five (the same day): one reviewer over round four's changes
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| C1 | the saved skip left out a loaded skip not yet applied: a resumed run that satisfied its slice from held rows while the skip still spanned chunks saved too small a count, so the chain depended on `chunk_rows` (hard rule 3); a run that saw no row dropped the loaded identity | `consumed` = skipped + the skip still pending + fed; a run that saw no row saves the identity it loaded | `test_a_state_saved_under_a_slice_resumes_on_the_same_input` over `chunk_rows` 1, 7 and 100,000; `windows_frame.rs::a_resumed_run_fed_one_row_at_a_time_saves_the_whole_count` |
+| C2 | a sliced run whose input ended before the slice was satisfied saved a skip of 0, so the chain's next run fed the input again | the count is saved whenever a slice was asked for | the chain run to exhaustion in the same test |
+| C3 | the identity by the first clock alone took another input that starts at the same clock (a clock that starts over each day) for the same one, and skipped its rows silently | the state knows its input by the rows it holds -- the unresolved tail of the consumed prefix, the input's own rows -- compared with the rows skipped at those positions when the skip completes; where it holds none, by the last skipped row's clock against the last clock it saw; an input that ends before the skip completes is refused at `finish`, and at `save` when the caller says the input ended (`input_ended`), since a slice satisfied mid-skip is a legitimate save | `test_a_state_saved_under_a_slice_refuses_another_input`, `windows_frame.rs::a_sliced_state_refuses_another_input_and_a_damaged_file_says_so` |
+| C4 | the old `df.slice(n)` contract was silent without a clock column, with tied stamps, or under `restart_after_step_back` | refused by the same identity, with and without a clock column; a stream whose rows can repeat (a daily grid with the same values) is documented as resuming on the same input only | the same tests |
+| C5 | round four changed what `resume_skip` counts and added `resume_first` under `WINDOWS_VERSION` 3 | `WINDOWS_VERSION` 4 | the version tests read 4 |
+| C6 | a state cut short failed in the header read and was reported as "not a state it saved" | a header that cannot be read says "cannot be read: not a state it saved, or damaged"; B4's message stays for a header that read and a body that did not | `test_a_damaged_windows_state_says_so`, the Rust test above |
+| C7 | the plan's task 104 still said schema 23 | amended | -- |
+| C8 | the `with_windows` docstring and the changelog promised the chain under every chunk size and slice | true now; the identity and its one limit stated | -- |
 
 ## Follow-on documents
 

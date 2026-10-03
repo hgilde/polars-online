@@ -1196,19 +1196,22 @@ def test_with_groups_a_session_is_each_groups() -> None:
     assert po.stream.with_windows(one, y=total, **kw)["y"].to_list() == [1, 10, 3, 30]
 
 
-def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any) -> None:
-    """R2-W4, then R4-B1/B2: under ``head(n)`` the run reads past the n-th
-    row (a backward ``"right"`` window waits for the next stamp, a look-ahead
-    for its window to pass). The state records the rows of the input the run
-    consumed, skipped or fed, and the input's first clock; a run resumed with
-    the same input, unsliced, skips them and goes on, so any chain of sliced
-    runs gives one run's output, a ``partial="drop"`` row (consumed, never
-    returned) and rows held from an earlier run (returned, not this input's)
-    included."""
+@pytest.mark.parametrize("rows", [1, 7, 100_000])
+def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any, rows: int) -> None:
+    """R2-W4, then R4-B1/B2 and R5-C1: under ``head(n)`` the run reads past
+    the n-th row (a backward ``"right"`` window waits for the next stamp, a
+    look-ahead for its window to pass). The state records the rows of the
+    input consumed so far, skipped or fed, and the input's first clock; a run
+    resumed with the same input, unsliced, skips them and goes on, so any
+    chain of sliced runs gives one run's output, a ``partial="drop"`` row
+    (consumed, never returned) and rows held from an earlier run (returned,
+    not this input's) included, whatever the chunk size (R5-C1: a loaded
+    skip not yet applied when a resumed run satisfied its slice from held
+    rows was left out of the count, so the chain broke at ``chunk_rows=1``)."""
     df = ticks(60, 19, groups=2)
     dropping = {"e": po.rewm_mean("x", half_life=2.0, window_size=4.0, partial="drop")}
     for exprs, cap in [(mixed(), 20.0), (mixed() | dropping, 4.0)]:
-        kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g"}
+        kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g", "chunk_rows": rows}
         one = po.stream.with_windows(df, **exprs, **kw)
         assert one.height > 20, "the dropping leg keeps enough rows to slice"
         for at in (1, 2, 17):
@@ -1231,6 +1234,20 @@ def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any) ->
         parts.append(df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect())
         assert all(p.height == 3 for p in parts[:6]), [p.height for p in parts]
         assert pl.concat(parts).equals(one), cap
+        # R5-C2: a chain of slices run until one is not satisfied -- the
+        # input ends first -- then the rest. The unsatisfied run consumed
+        # every row and saved that, not zero.
+        state = tmp_path / f"exhaust-{cap}-{rows}.state"
+        parts = [df.lazy().online.with_windows(**exprs, save_state=state, **kw).head(20).collect()]
+        while parts[-1].height == 20:
+            parts.append(
+                df.lazy()
+                .online.with_windows(**exprs, load_state=state, save_state=state, **kw)
+                .head(20)
+                .collect()
+            )
+        parts.append(df.lazy().online.with_windows(**exprs, load_state=state, **kw).collect())
+        assert pl.concat(parts).equals(one), (cap, [p.height for p in parts])
 
 
 def test_rows_held_from_an_earlier_input_are_not_this_inputs(tmp_path: Any) -> None:
@@ -1276,7 +1293,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 3\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 4\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
@@ -1303,3 +1320,64 @@ def test_a_silent_groups_session_reset_after_a_capped_gap_is_a_cut() -> None:
     assert grouped["y"][1] == 20.0, grouped["y"].to_list()
     alone = po.stream.with_windows(df.filter(pl.col("g") == "b"), y=fwd, **kw)
     assert alone["y"][0] is None, alone["y"].to_list()
+
+
+def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> None:
+    """R5-C3/C4: the input a sliced state resumes on is known by the rows it
+    held -- the unresolved tail of the consumed prefix, the input's own rows
+    -- and by its first clock. An input that starts at the same clock but is
+    another file, and the same input sliced by hand (``df.slice(n)``, the old
+    contract), are refused by name, not fed with rows skipped or doubled;
+    without a clock column too."""
+    df = ticks(60, 19, groups=2)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    state = tmp_path / "sliced.state"
+    df.lazy().online.with_windows(**mixed(), save_state=state, **kw).head(5).collect()
+    # The same first clock, every later row another: the next day's file on
+    # a clock that starts over.
+    other = df.with_columns(
+        t=pl.when(pl.int_range(pl.len()) == 0).then(pl.col("t")).otherwise(pl.col("t") + 0.25),
+        x=pl.col("x") * 3,
+    )
+    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+        po.stream.with_windows(other, **mixed(), load_state=state, **kw)
+    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+        po.stream.with_windows(df.slice(5), **mixed(), load_state=state, **kw)
+    # An input shorter than the rows consumed.
+    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+        po.stream.with_windows(df.head(3), **mixed(), load_state=state, **kw)
+    # No clock column: the held rows alone identify the input.
+    bare = df.drop("t")
+    state = tmp_path / "bare.state"
+    bare.lazy().online.with_windows(
+        f=po.rewm_sum("x", half_life=2.0, window_size=3.0), save_state=state
+    ).head(5).collect()
+    one = po.stream.with_windows(bare, f=po.rewm_sum("x", half_life=2.0, window_size=3.0))
+    head = (
+        bare.lazy()
+        .online.with_windows(f=po.rewm_sum("x", half_life=2.0, window_size=3.0), save_state=state)
+        .head(5)
+        .collect()
+    )
+    rest = po.stream.with_windows(
+        bare, f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
+    )
+    assert pl.concat([head, rest]).equals(one)
+    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+        po.stream.with_windows(
+            bare.slice(5), f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
+        )
+
+
+def test_a_damaged_windows_state_says_so(tmp_path: Any) -> None:
+    """R5-C6: a state cut short is reported as damaged, not as a state another
+    call saved; the version is 4 since round five (C5: round four changed
+    what the skip counts and added the identity, and the number did not move)."""
+    df = ticks(30, 3)
+    state = tmp_path / "w.state"
+    po.stream.with_windows(df, y=po.ewm_mean("x", half_life=2.0), save_state=state, **CLOCK)
+    whole = state.read_bytes()
+    cut = tmp_path / "cut.state"
+    cut.write_bytes(whole[: len(whole) // 2])
+    with pytest.raises(ValueError, match="damaged"):
+        po.stream.with_windows(df, y=po.ewm_mean("x", half_life=2.0), load_state=cut, **CLOCK)

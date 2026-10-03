@@ -63,11 +63,14 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 3 since review R2 (W1, W4, W5): a row's raw clock beside its policy time
-/// in the queues, and the rows a resume skips; 2 since task 143: formulas
-/// over operators, where 1 held descriptions. A 2 state written before
-/// round one would load with defaults and misbehave.
-const WINDOWS_VERSION: u32 = 3;
+/// 4 since review R5 (C5): the skip a sliced state carries counts the rows
+/// of its input consumed so far, and the state knows that input by its
+/// first clock (round four changed both under 3); 3 since review R2 (W1,
+/// W4, W5): a row's raw clock beside its policy time in the queues, and the
+/// rows a resume skips; 2 since task 143: formulas over operators, where 1
+/// held descriptions. An older state would load with defaults and
+/// misbehave.
+const WINDOWS_VERSION: u32 = 4;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -510,6 +513,14 @@ pub struct WindowsRun {
     resume_skip: usize,
     resume_first: Option<ClockValue>,
     skipped: u64,
+    /// The identity of the input a sliced state resumes on (review R5, C3):
+    /// the skip as loaded, the rows the state held (the unresolved tail of
+    /// the rows consumed, the input's own rows), the skipped rows at those
+    /// positions as they go by, and the last skipped row's clock.
+    resume_total: usize,
+    resume_held: Option<DataFrame>,
+    resume_rows: Vec<DataFrame>,
+    resume_last: Option<ClockValue>,
     /// The first row's clock of this run's input, and whether a row has
     /// been seen: what a state saved by this run remembers its input by.
     first_clock: Option<ClockValue>,
@@ -637,6 +648,10 @@ impl WindowsRun {
             resume_skip: 0,
             resume_first: None,
             skipped: 0,
+            resume_total: 0,
+            resume_held: None,
+            resume_rows: Vec::new(),
+            resume_last: None,
             first_clock: None,
             started: false,
         })
@@ -733,8 +748,28 @@ impl WindowsRun {
         if !self.started && df.height() > 0 {
             self.started = true;
             self.first_clock = clock.as_ref().map(|c| c[0]);
-            if let (Some(saved), Some(now)) = (self.resume_first, self.first_clock) {
+            if let (true, Some(saved), Some(now)) =
+                (self.resume_skip > 0, self.resume_first, self.first_clock)
+            {
                 if saved != now {
+                    // The next file starts after the last row the state read;
+                    // an input that starts at or before it is the saved input
+                    // sliced by hand, or an overlapping file (review R5, C4).
+                    if let Some(last) = self.core.shared_clock().last_clock() {
+                        let back = match (last, now) {
+                            (ClockValue::Ns(p), ClockValue::Ns(c)) => {
+                                online_core::seconds_of_ns(i128::from(p) - i128::from(c))
+                            }
+                            (p, c) => p.seconds() - c.seconds(),
+                        };
+                        if back >= 0.0 {
+                            polars_bail!(ComputeError:
+                                "{WHO}: the state was saved under a slice of another input: this \
+                                 input starts at or before the last row the state read. A sliced \
+                                 state resumes on the input it was saved from, unsliced"
+                            );
+                        }
+                    }
                     self.resume_skip = 0;
                 }
             }
@@ -744,6 +779,20 @@ impl WindowsRun {
         let mut resolving = resolving;
         let skip = self.resume_skip.min(df.height());
         if skip > 0 {
+            // The skipped rows inside the held window -- the last
+            // `resume_held` of the `resume_total` rows consumed -- are kept
+            // for the identity check once the skip completes (review R5, C3).
+            let before = usize::try_from(self.skipped).expect("rows fit");
+            let held = self.resume_held.as_ref().map_or(0, DataFrame::height);
+            let lo = self.resume_total.saturating_sub(held).max(before);
+            let hi = (before + skip).min(self.resume_total);
+            if hi > lo {
+                self.resume_rows
+                    .push(df.slice((lo - before) as i64, hi - lo));
+            }
+            if let Some(c) = &clock {
+                self.resume_last = Some(c[skip - 1]);
+            }
             self.resume_skip -= skip;
             self.skipped += skip as u64;
             skipped = df.slice(skip as i64, df.height() - skip);
@@ -751,6 +800,9 @@ impl WindowsRun {
             resolving = resolving.map(|r| &r[skip..]);
             if let Some(c) = &mut clock {
                 c.drain(..skip);
+            }
+            if self.resume_skip == 0 {
+                self.check_resumed_input()?;
             }
         }
         let n = df.height();
@@ -917,18 +969,78 @@ impl WindowsRun {
         frame.lazy().with_columns(exprs).select(keep).collect()
     }
 
-    /// Rows of this run's input the run consumed, skipped as already read
-    /// or fed to the core: under a slice, what a run resumed on the same
-    /// input must skip ([`Self::save_bytes_with`]). Rows the state held
-    /// from an earlier run and returned are none of this input's (review
-    /// R4, B1 and B2).
+    /// Rows of this run's input consumed so far: skipped as already read, a
+    /// loaded skip not yet applied (review R5, C1), or fed to the core.
+    /// Under a slice, what a run resumed on the same input must skip
+    /// ([`Self::save_bytes_with`]). Rows the state held from an earlier run
+    /// and returned are none of this input's (review R4, B1 and B2).
     pub fn consumed(&self) -> usize {
-        usize::try_from(self.skipped + (self.core.next_seq() - self.run_base)).expect("rows fit")
+        let fed = usize::try_from(self.core.next_seq() - self.run_base).expect("rows fit");
+        usize::try_from(self.skipped).expect("rows fit") + self.resume_skip + fed
+    }
+
+    /// The identity of the input a sliced state resumes on (review R5, C3
+    /// and C4): the rows skipped where the state was cut must be the rows
+    /// the state held, the input's own rows; where it held none, the last
+    /// skipped row's clock must be the last clock the state saw. Another
+    /// input that starts at the same clock, or the same input sliced by
+    /// hand, is refused by name rather than fed with rows skipped or
+    /// doubled.
+    fn check_resumed_input(&mut self) -> PolarsResult<()> {
+        let rows = std::mem::take(&mut self.resume_rows);
+        let names: Vec<&str> = self.input.iter_names().map(|n| n.as_str()).collect();
+        let stack = |parts: &[DataFrame]| -> PolarsResult<DataFrame> {
+            let mut out = DataFrame::empty_with_schema(&self.input);
+            for part in parts {
+                out.vstack_mut(&part.select(names.iter().copied())?)?;
+            }
+            Ok(out)
+        };
+        if let Some(want) = self.resume_held.take() {
+            // The rows the state held, as loaded: a run may have drained
+            // some of them before the skip completes.
+            let got = stack(&rows)?;
+            if got.height() != want.height() || !got.equals_missing(&want) {
+                polars_bail!(ComputeError:
+                    "{WHO}: the state was saved under a slice of another input: the {} rows it \
+                     holds are not the rows this input has where it was cut. A sliced state \
+                     resumes on the input it was saved from, unsliced",
+                    want.height()
+                );
+            }
+        } else if let (Some(last), Some(saved)) =
+            (self.resume_last, self.core.shared_clock().last_clock())
+        {
+            if last != saved {
+                polars_bail!(ComputeError:
+                    "{WHO}: the state was saved under a slice of another input: the clock of the \
+                     last row it read is not this input's at that row. A sliced state resumes on \
+                     the input it was saved from, unsliced"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows a sliced state still expects to skip: an input that ends
+    /// first is another input (review R5, C3).
+    fn resumed_input_ended_early(&self) -> Option<String> {
+        (self.resume_skip > 0).then(|| {
+            format!(
+                "{WHO}: the state was saved under a slice of another input: {} rows were \
+                 consumed, and this input ended after {}. A sliced state resumes on the input \
+                 it was saved from, unsliced",
+                self.resume_total, self.skipped
+            )
+        })
     }
 
     /// The end of the input: every row still held goes out, each forward
     /// window still open over it null.
     pub fn finish(&mut self) -> PolarsResult<DataFrame> {
+        if let Some(msg) = self.resumed_input_ended_early() {
+            polars_bail!(ComputeError: "{}", msg);
+        }
         let e = self.core.finish();
         self.assemble(e)
     }
@@ -1306,15 +1418,29 @@ impl WindowsRun {
     /// next run emits first, and the increments' state. Versioned msgpack,
     /// one state one file.
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
-        self.save_bytes_with(0)
+        self.save_bytes_with(0, false)
     }
 
     /// [`Self::save_bytes`] for a state saved under a slice: a run resumed
     /// on the same input skips its first `skip_on_resume` rows, the rows
-    /// this run consumed ([`Self::consumed`]); the state remembers the
-    /// input by its first row's clock, and a run on an input that starts
-    /// elsewhere skips nothing (review R2, W4; R4, B1 to B3).
-    pub fn save_bytes_with(&self, skip_on_resume: usize) -> Result<Vec<u8>, String> {
+    /// consumed so far ([`Self::consumed`]); the state knows the input by
+    /// its first row's clock and the rows it holds (review R2, W4; R4, B1
+    /// to B3; R5, C1 to C4). `input_ended` says the input ran out rather
+    /// than a slice being satisfied: a skip still pending is then another
+    /// input, refused.
+    pub fn save_bytes_with(
+        &self,
+        skip_on_resume: usize,
+        input_ended: bool,
+    ) -> Result<Vec<u8>, String> {
+        // Only the caller knows whether the input ended or a slice was
+        // satisfied first; a skip still pending is another input only in
+        // the first case (review R5, C3).
+        if input_ended {
+            if let Some(msg) = self.resumed_input_ended_early() {
+                return Err(msg);
+            }
+        }
         let held_schema = {
             let mut s = self.input.clone();
             for k in self.hidden_names() {
@@ -1339,22 +1465,32 @@ impl WindowsRun {
             increments: &self.incr_state,
             stream_clock: self.stream_clock,
             resume_skip: skip_on_resume,
-            resume_first: self.first_clock,
+            // A run that saw no row keeps the identity it loaded (review R5, C1).
+            resume_first: if self.started {
+                self.first_clock
+            } else {
+                self.resume_first
+            },
         })
         .map_err(|e| e.to_string())
     }
 
     /// [`Self::save_bytes`] to `path`, replacing it whole or not at all.
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        self.save_with(path, 0)
+        self.save_with(path, 0, false)
     }
 
     /// [`Self::save_bytes_with`] to `path`, replacing it whole or not at
     /// all.
-    pub fn save_with(&self, path: &std::path::Path, skip_on_resume: usize) -> std::io::Result<()> {
+    pub fn save_with(
+        &self,
+        path: &std::path::Path,
+        skip_on_resume: usize,
+        input_ended: bool,
+    ) -> std::io::Result<()> {
         let bytes = self
-            .save_bytes_with(skip_on_resume)
-            .map_err(std::io::Error::other)?;
+            .save_bytes_with(skip_on_resume, input_ended)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         crate::atomic::write(path, &bytes)
     }
 
@@ -1368,8 +1504,9 @@ impl WindowsRun {
     /// Bytes that are not a windows state, a version this build does not
     /// read, another call, or held rows whose columns the input has not got.
     pub fn load_bytes(bytes: &[u8], config: WindowsConfig, input: &Schema) -> Result<Self, String> {
-        let header: Header = rmp_serde::from_slice(bytes)
-            .map_err(|e| format!("{WHO}: not a state it saved ({e})"))?;
+        let header: Header = rmp_serde::from_slice(bytes).map_err(|e| {
+            format!("{WHO}: the state cannot be read: not a state it saved, or damaged ({e})")
+        })?;
         if header.magic != WINDOWS_MAGIC {
             return Err(format!("{WHO}: not a state it saved"));
         }
@@ -1443,6 +1580,20 @@ impl WindowsRun {
         run.stream_clock = file.stream_clock;
         run.resume_skip = file.resume_skip;
         run.resume_first = file.resume_first;
+        run.resume_total = file.resume_skip;
+        if file.resume_skip > 0 {
+            let names: Vec<&str> = run.input.iter_names().map(|n| n.as_str()).collect();
+            let mut want = DataFrame::empty_with_schema(&run.input);
+            for part in &run.held {
+                want.vstack_mut(
+                    &part
+                        .select(names.iter().copied())
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            run.resume_held = Some(want);
+        }
         for (i, st) in file.increments.into_iter().enumerate() {
             match &st.key {
                 Some(k) => {
@@ -1682,7 +1833,7 @@ mod tests {
             };
             let part = run.feed(&df, Some(1)).unwrap();
             assert_eq!(part.height(), 1);
-            state = Some(run.save_bytes_with(run.consumed()).unwrap());
+            state = Some(run.save_bytes_with(run.consumed(), false).unwrap());
             match &mut out {
                 None => out = Some(part),
                 Some(o) => {
@@ -1735,7 +1886,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 3)"),
+            err.contains("state version 2 not supported (this build reads 4)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -1747,5 +1898,68 @@ mod tests {
             .err()
             .expect("refused");
         assert!(err.contains("not a state it saved"), "{err}");
+    }
+
+    /// Review R5, C1: a resumed run that satisfies its limit from the rows the
+    /// state held, while a loaded skip still spans the chunks it has fed, saves
+    /// the rows consumed of the input so far -- the loaded skip included.
+    #[test]
+    fn a_resumed_run_fed_one_row_at_a_time_saves_the_whole_count() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        // Run 1: head(2) reads rows 0..5: row 0 closes at t = 3, and row 4 at
+        // t = 10 closes rows 1..3 at once, so rows 2 and 3 stay held, resolved.
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(2)).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Run 2, one row a chunk, head(1): the first chunk is skipped, the
+        // held row 2 satisfies the limit, the skip still spans four chunks.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut i = 0;
+        loop {
+            let part = run.feed(&df.slice(i, 1), Some(1)).unwrap();
+            i += 1;
+            if part.height() == 1 {
+                out.vstack_mut(&part).unwrap();
+                break;
+            }
+        }
+        assert_eq!(run.consumed(), 5, "the loaded skip not yet applied counts");
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Run 3 on the whole input: the rest, as one run would give it.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut rest = run.feed(&df, None).unwrap();
+        rest.vstack_mut(&run.finish().unwrap()).unwrap();
+        out.vstack_mut(&rest).unwrap();
+        assert!(out.equals_missing(&whole), "{out} against {whole}");
+    }
+
+    /// Review R5, C3/C4 and C6: a sliced state knows its input by the rows it
+    /// held and its first clock, and refuses another input by name; a state
+    /// cut short is reported as damaged.
+    #[test]
+    fn a_sliced_state_refuses_another_input_and_a_damaged_file_says_so() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        run.feed(&df, Some(2)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // The same first clock, other rows after it.
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), other.schema()).unwrap();
+        let err = run.feed(&other, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // The input sliced by hand.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let err = run.feed(&df.slice(2, 5), None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // A file cut short.
+        let cut = &state[..state.len() / 2];
+        let err = WindowsRun::load_bytes(cut, config(FORWARD), df.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("damaged"), "{err}");
     }
 }

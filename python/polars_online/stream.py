@@ -658,15 +658,22 @@ def with_windows(
     feeding a stream in two runs gives what one run gives. Without it, a
     row whose window has not passed when the input ends is emitted
     unresolved, null. Under a slice of the output (``.head(n)``) the input
-    is read only up to the row that resolved the *n*-th row. The state then
-    records how many rows of the input the run consumed and the clock of the
-    input's first row. A run resumed with ``load_state`` on the *same
-    input*, unsliced, skips those rows and goes on, so any chain of sliced
-    runs gives what one run gives. A run resumed on an input that starts at
-    another clock, the next file, skips nothing and first returns the rows
-    the state held. Without a clock column the rows are skipped either way,
-    so resume on the same input. A state resumes only the call that saved
-    it, on the same kind of clock.
+    is read only up to the row that resolved the *n*-th row, and the state
+    records how many rows of the input were consumed so far. A run resumed
+    with ``load_state`` on the *same input*, unsliced, skips those rows and
+    goes on, so any chain of sliced runs gives what one run gives, whatever
+    the chunk size. The state knows its input by the input's first clock
+    and by the rows it holds, the unresolved tail of what was consumed, the
+    input's own rows. A run on an input that starts after the last row the
+    state read, the next file, skips nothing and first returns the rows the
+    state held. An input that starts at or before that row (the same input
+    sliced by hand, an overlapping file), one that starts at the same clock
+    but differs where the state was cut, or one shorter than the rows
+    consumed is refused by name. An input whose rows match the state's
+    where it was cut is taken as the same input, so resume a stream whose
+    rows can repeat (a daily grid with the same values) on the same input
+    only. A state resumes only the call that saved it, on the same kind of
+    clock.
 
     ``ValueError`` for a formula, a clock policy or a column that cannot
     run, an output name that collides, a ``load_state`` another call saved,
@@ -801,11 +808,11 @@ def with_windows(
             yield done(out)
         # Reached once the input is fed, or the slice is: not on a run the
         # caller abandons, nor one the windows ended with an error. Under a
-        # slice the run read past the last row returned; the state records
-        # the rows of the input it consumed and the input's first clock, and
-        # a run resumed on that input skips them (review R2, W4; R4, B1).
+        # slice -- asked for, satisfied or not (review R5, C2) -- the state
+        # records the rows of the input consumed so far, and a run resumed
+        # on that input skips them (review R2, W4; R4, B1; R5, C1).
         if save_path is not None:
-            w.save(save_path, w.consumed() if sliced else 0)
+            w.save(save_path, w.consumed() if n_rows is not None else 0, not sliced)
         # As the bank warns (`ConsumedSourceWarning`): no rows at all from a
         # Python scan is the shape of a spent single-use stream.
         if python_scan and read == 0 and n_rows != 0:

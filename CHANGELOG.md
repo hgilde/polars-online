@@ -157,6 +157,16 @@ carries breaking changes, and any change to the numbers a model returns.
   say its session changed, so a `session_gap="reset"` there discards only
   what is still open (recorded with a test; without `group` the reset comes
   first); a kernel's window in nanoseconds must be its window in seconds.
+- **Review round R5** (the same day, one reviewer over round four's
+  changes; docs/PLAN.md §14): the count a sliced state saves includes a
+  loaded skip not yet applied, so a chain of sliced runs gives one run's
+  output whatever `chunk_rows`, and a sliced run that exhausts its input
+  saves its count rather than zero. A sliced state knows its input by the
+  rows it holds, the unresolved tail of what was consumed, and by its first
+  clock: another input that starts at the same clock, the same input
+  sliced by hand, or one that ends early is refused by name (`another
+  input`), with and without a clock column. Windows state version 4; a
+  state file that cannot be read is reported as damaged.
 
 ### Changed
 

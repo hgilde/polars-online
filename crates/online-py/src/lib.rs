@@ -732,12 +732,23 @@ impl PyWindows {
     /// the rows this run consumed (`consumed`); the state remembers the
     /// input by its first row's clock, and a run on an input that starts
     /// elsewhere skips nothing.
-    #[pyo3(signature = (path, skip_on_resume=0))]
-    fn save(slf: &Bound<'_, Self>, path: &str, skip_on_resume: usize) -> PyResult<()> {
+    #[pyo3(signature = (path, skip_on_resume=0, input_ended=false))]
+    fn save(
+        slf: &Bound<'_, Self>,
+        path: &str,
+        skip_on_resume: usize,
+        input_ended: bool,
+    ) -> PyResult<()> {
         let this = slf.try_borrow().map_err(|_| windows_busy("save"))?;
         this.inner
-            .save_with(std::path::Path::new(path), skip_on_resume)
-            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
+            .save_with(std::path::Path::new(path), skip_on_resume, input_ended)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    PyValueError::new_err(e.to_string())
+                } else {
+                    os_err(e.kind(), format!("{path}: {e}"))
+                }
+            })
     }
 
     /// The rows this chunk resolved, in order; with `limit`, rows are fed
