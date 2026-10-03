@@ -557,6 +557,8 @@ spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 #   - rows still waiting when the stream ends are never learned from
 #   - the waiting rows live in the state and are saved with it: one row's values per
 #     row inside the delay, per group
+#   - emit_clocks=True shows the delay row by row: scored_clock is the row's own clock
+#     and learned_clock the newest row the model had learned from when it was scored
 ```
 
 [`po.stream.embargo`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.embargo)

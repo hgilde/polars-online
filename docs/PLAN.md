@@ -3557,19 +3557,15 @@ note, not a task.
         `with_windows` as a column, and is refused. Several targets in one
         spec share one `X'X` and one embargo; a buy-side, a sell-side and an
         all-trades VWAP are three targets.
-      - **A formula target is Python-only; TOML and saved states hold
-        operators** (decided 2026-10-02, the user: "1a"). A formula is a
-        Polars expression that py-polars evaluates between chunks, and
-        Polars' expression serialization differs between the py-polars a
-        caller runs and the Polars this wheel embeds, so the command line's
-        TOML cannot carry one and a saved state cannot store one. A TOML
-        target, and a target in a saved state, is an operator, or a ratio of
-        two (a VWAP), with task 107's `relative_to`: `targets = [{ rewm_mean
-        = "mid", half_life = "10s", window_size = "1m", relative_to = "mid"
-        }]`. Resuming a fit with a formula target re-supplies it through
-        `load(path, specs=)`, which holds each expression to the state's
-        with `expr.meta.eq`; the command line cannot resume one and says so.
-        Considered and not taken: Polars' SQL expression parser as a shared
+      - **A formula target goes everywhere a spec goes** (decided
+        2026-10-02, superseding the same day's "1a"): the spec, the saved
+        state and TOML carry it as task 143's compact tree, and the bank
+        evaluates it with the embedded Polars. "1a" had made formulas
+        Python-only, re-supplied on resume, because Polars' serialized
+        expression is unstable across versions; the tree reads seven
+        stable node kinds at build time and rebuilds through the public
+        builders, so that limit is gone. Considered and not taken: Polars'
+        SQL expression parser as a shared
         text form -- it parses the element-wise part in both languages
         (arithmetic, `CASE WHEN`, `LN`, a quoted placeholder column) but not
         the operators: Polars SQL's windows are row frames only (no `RANGE`,
@@ -3642,9 +3638,10 @@ note, not a task.
         core resolves it.
       - **The bank releases a row when its embargo has passed and the
         window core has resolved it**: the window closes, a gap or session
-        change cuts it, or a reset discards it. The target expression is
-        evaluated by Polars on the rows each chunk resolves, then held until
-        the embargo has passed. With an embargo of at least the window the
+        change cuts it, or a reset discards it. The target expression,
+        rebuilt from its tree (task 143), is evaluated by the embedded
+        Polars on the rows each chunk resolves, then held until the embargo
+        has passed. With an embargo of at least the window the
         embargo is the later of the two: with no break between, the core's
         steps are the clock column's, so elapsed time reaches *t* + w no
         sooner than the core does, and a break cuts the window. A break's
@@ -5749,12 +5746,38 @@ is not, since the model alone has `0.0` and `3.5` there.
         the operators with `meta.root_names()`, computes each distinct one
         once as a hidden column while streaming, evaluates the expressions
         with Polars on each chunk it emits, and drops the hidden columns.
-      - **Element-wise only.** Each chunk is evaluated on its own, so
-        `shift`, `diff`, `cum_sum`, a rolling window, `over` or an
-        aggregation would depend on the chunking (hard rule 3), and is
-        refused while the plan is built. Polars' `meta` has no element-wise
-        test, so the check evaluates each expression on a probe frame whole
-        and row by row and refuses any difference, naming the expression.
+      - **A formula is kept in a compact tree of this library's own**
+        (decided 2026-10-02, the user: "Pl.col definitions can be
+        serialized, see if there is a super compact form that can be stored
+        in the spec"; then "bump up the polars floor if needed"). At spec
+        build time Python reads the expression's own tree
+        (`expr.meta.serialize(format="json")`, with the caller's Polars) and
+        walks it into nested lists: `["-", ["rewm_mean", "mid",
+        {"half_life": "10s", "window_size": "1m"}], ["col", "mid"]]`, about
+        70 bytes for that target, plain JSON. The operators are nodes with
+        their parameters, not placeholder columns, so the tree is
+        self-contained; it goes into the spec dict, the saved state and
+        TOML (`expr = [...]`) as it is. Seven node kinds are read and no
+        other: `Column`, `Literal`, `BinaryExpr` (its named operators),
+        `Function` (log, exp, abs, sqrt, pow, clip, fill_null, is_null,
+        negate), `Ternary` (when/then/otherwise), `Cast` and `Alias`.
+        Measured 2026-10-02: every one of them has the same shape under the
+        floor Polars (1.34.0) and the pin (1.44.2), so the floor stays
+        1.34.0; the serialized tree as a whole is unstable across versions,
+        which is why only these nodes are read, at build time, under the
+        caller's own Polars, and an unknown node is refused by name. Both
+        sides rebuild the formula through Polars' public builders, which
+        are stable where the tree is not: Python's `pl.col`, `pl.lit`,
+        `pl.when` and the operators; Rust's `col()`, `lit()`, `when()`, the
+        `Expr` methods and arithmetic, all in the embedded polars 0.55.2
+        under the `lazy` feature already on, no new crate. A round-trip
+        test covers every node kind in both directions, on the floor
+        Polars too.
+      - **Element-wise only, by node kind.** `shift`, `diff`, `cum_sum`, a
+        rolling window, `over` or an aggregation would depend on the
+        chunking (hard rule 3); each arrives as a `Function`, `Window` or
+        `Agg` node outside the seven, so the build refuses it by name. No
+        probe-frame evaluation.
       - **An operator's input** is a column or an element-wise expression of
         the row, `po.increment` included: the core computes increments as
         hidden columns from each group's previous row, then Polars evaluates
@@ -5800,11 +5823,11 @@ is not, since the model alone has `0.0` and `3.5` there.
         where the kernel keying is being rewritten anyway, if 143 is still
         open.
       - **As a target** (task 104), the same expression in `targets=[...]`,
-        evaluated by Polars on the rows the window core resolves in each
-        chunk: one evaluator for the column and the target, nothing
-        translated into our own code, and no dependence on Polars'
-        expression serialization, which differs between the py-polars a
-        caller runs and the Polars this wheel embeds.
+        carried as the tree above: the bank rebuilds it with the embedded
+        Polars and evaluates it on the rows the window core resolves, so
+        the column form and the target form share one evaluator, the
+        command line takes a formula, a saved state resumes without being
+        handed it again, and `fit_predict_arrow` takes one too.
       - **Against the current quote** is arithmetic: `- pl.col("mid")`,
         `/ pl.col("ask")`, `(op / pl.col("bid")).log()`; task 107's
         `relative_to` stays for plain-column targets.
@@ -6238,8 +6261,8 @@ is not, since the model alone has `0.0` and `3.5` there.
       exceptions; a docstring test holds `ftrl`'s and `micro`'s docstrings
       to the two sentences above.
 
-- [ ] 152. **The clock a row was scored at, and the clock of the last row
-      learned -- planned, not built** (the user, 2026-10-02: "see the clock
+- [x] 152. **The clock a row was scored at, and the clock of the last row
+      learned -- built 2026-10-02** (the user, 2026-10-02: "see the clock
       of the row that was scored and the clock of the last row learned at
       each scoring so we can see the embargo in action"). Size S–M. Works
       with today's `label_delay`; task 104's tests read it.
@@ -6278,9 +6301,16 @@ is not, since the model alone has `0.0` and `3.5` there.
         its own, as a `ClockValue` (`#[serde(default)]`; schema 21 is not
         released yet, so no bump). Chunk-invariant like every field.
 
+      **Measured 2026-10-02** (`ewridge`, k=20, 400k rows, machine load
+      5–6): 3.02M rows/s with `emit_clocks` against 3.01M without, +28
+      bytes of state; with `label_delay=10` 2.00M against 2.06M, and 0.12.0's
+      1.92M on the same rows, so task 153's elapsed-time counting cost
+      nothing either. The clock type is recorded only once a chunk is
+      taken, so a refused chunk changes nothing (`chunk_plan.rs` held it).
+
       Tests: without a delay, `learned_clock` is the previous accepted row
       of positive weight; under `label_delay` the newest row whose delay
-      had elapsed on the capped clock, row by row from the frame; a
+      had passed in elapsed time, row by row from the frame; a
       `Datetime` clock exact to the nanosecond in each unit; a reset and a
       group's first row null; a zero-weight row never shown as learned;
       chunk invariance, save and load, `predict`.

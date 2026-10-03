@@ -89,6 +89,14 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Added
 
+- **`emit_clocks`: the clock a row was scored at, and the clock of the last
+  row learned** (task 152). Two fields on every scored row, `scored_clock`
+  and `learned_clock`, in the clock column's own type (a `Datetime` in its
+  unit and zone, exact to the nanosecond; the row's index in its group with
+  no clock), so a `label_delay` can be seen row by row: the difference is at
+  least the delay everywhere. `learned_clock` is null before the first row
+  learned and after a reset; a zero-weight row is never the learned row.
+  Kept in the state and in `last_row()`.
 - **`po.stream.with_windows`: exponentially weighted means with a hard cutoff,
   looking back and looking ahead** (task 78). `po.window.ewm` describes a
   trailing EWMA over the rows less than `horizon` older, and

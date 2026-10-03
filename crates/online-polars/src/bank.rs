@@ -926,12 +926,16 @@ fn assemble_phase(
     n: usize,
     rows: &[Vec<ChunkOut>],
     out: &mut [Option<StructArray>],
+    clock_dtypes: &[Option<crate::stream::ClockDtype>],
     pick: impl Fn(usize) -> bool + Sync,
 ) -> PolarsResult<()> {
     let built: Vec<(usize, StructArray)> = (0..specs.len())
         .into_par_iter()
         .filter(|si| pick(*si))
-        .map(|si| Ok((si, assemble(&specs[si], &derived[si], n, &rows[si])?)))
+        .map(|si| {
+            let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+            Ok((si, assemble(&specs[si], &derived[si], n, &rows[si], dt)?))
+        })
         .collect::<PolarsResult<_>>()?;
     for (si, c) in built {
         out[si] = Some(c);
@@ -2081,6 +2085,10 @@ struct BankFile {
     /// Skipped when empty, so no other file's bytes move.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pca_prev_by_group: Vec<(usize, GroupKey, String, online_core::Pca)>,
+    /// `(spec index, the clock column's type)`, for the specs that have
+    /// seen a chunk (task 152). Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clock_dtypes: Vec<(usize, crate::stream::ClockDtype)>,
     /// `(spec index, integer keys)` for the `"monotone"` specs that have
     /// seen a chunk, so a resume can tell a mark written under an integer
     /// column from one written under a text column (E54,
@@ -2095,6 +2103,8 @@ pub struct Bank {
     clock_cfgs: Vec<ClockCfg>,
     derived: Vec<SpecDerived>,
     states: Vec<HashMap<GroupKey, Stream>>,
+    /// Per spec, the clock column's type as first seen (task 152).
+    clock_dtypes: Vec<Option<crate::stream::ClockDtype>>,
     /// Rows fed so far. Kept at the bank level because a stream's `rows_seen`
     /// goes with it when its group is dropped.
     rows_fed: u64,
@@ -2315,6 +2325,7 @@ impl Bank {
         let states = specs.iter().map(|_| HashMap::new()).collect();
         let high_water = specs.iter().map(|_| None).collect();
         let key_integer = vec![None; specs.len()];
+        let clock_dtypes = vec![None; specs.len()];
         Ok(Self {
             specs,
             clock_cfgs,
@@ -2325,6 +2336,7 @@ impl Bank {
             high_water,
             pca_prev: HashMap::new(),
             key_integer,
+            clock_dtypes,
             broken: None,
             window_prepass: true,
             notices: Vec::new(),
@@ -2685,7 +2697,8 @@ impl Bank {
                 }
             })
             .collect::<Result<_, String>>()?;
-        let st = assemble(s, d, keys.len(), &chunks).map_err(|e| e.to_string())?;
+        let st = assemble(s, d, keys.len(), &chunks, self.clock_dtypes[spec].as_ref())
+            .map_err(|e| e.to_string())?;
         let col = named_column(s, st).map_err(|e| e.to_string())?;
         Ok((keys.into_iter().cloned().collect(), col))
     }
@@ -2884,13 +2897,38 @@ impl Bank {
     /// [`crate::chunk_from_frame`], where every dtype decision about a frame is
     /// made, and naming each struct after its spec.
     pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        // The clock column's type, as first seen: what the clock fields
+        // come out as, kept in the state for `last_row` (task 152).
+        let seen: Vec<crate::stream::ClockDtype> = self
+            .specs
+            .iter()
+            .map(|s| {
+                crate::stream::ClockDtype::of(
+                    s.clock.is_some(),
+                    s.clock.as_deref().and_then(|c| chunk.clock_dtype(c)),
+                )
+            })
+            .collect();
+        // Kept only once the chunk is taken: a refused chunk changes nothing.
+        let merged: Vec<Option<crate::stream::ClockDtype>> = self
+            .clock_dtypes
+            .iter()
+            .zip(seen)
+            .map(|(slot, dt)| slot.clone().or(Some(dt)))
+            .collect();
         // Everything parallel below -- the `par_iter`s here and the
         // per-instance ones in `Stream` -- runs on the bank's own pool
         // (pool.rs), never on rayon's global one, whichever thread calls.
-        crate::pool::pool()?.install(|| self.fit_predict_on_pool(chunk))
+        let out = crate::pool::pool()?.install(|| self.fit_predict_on_pool(chunk, &merged))?;
+        self.clock_dtypes = merged;
+        Ok(out)
     }
 
-    fn fit_predict_on_pool(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+    fn fit_predict_on_pool(
+        &mut self,
+        chunk: &ArrowChunk,
+        clock_dtypes: &[Option<crate::stream::ClockDtype>],
+    ) -> PolarsResult<Vec<StructArray>> {
         // Section timings to stderr when ONLINE_TIMING is set; costs one env
         // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
@@ -3104,9 +3142,15 @@ impl Bank {
         let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
         // Specs assemble independently (docs/PERFORMANCE.md P4).
-        assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
-            derived[si].compare.is_none()
-        })?;
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &per_spec_rows,
+            &mut out,
+            clock_dtypes,
+            |si| derived[si].compare.is_none(),
+        )?;
         let mut t_assemble = t3.elapsed();
         if !work2.is_empty() {
             let t4 = std::time::Instant::now();
@@ -3130,9 +3174,15 @@ impl Bank {
             }
             t_process += t4.elapsed();
             let t5 = std::time::Instant::now();
-            assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
-                derived[si].compare.is_some()
-            })?;
+            assemble_phase(
+                specs,
+                derived,
+                n,
+                &per_spec_rows,
+                &mut out,
+                clock_dtypes,
+                |si| derived[si].compare.is_some(),
+            )?;
             t_assemble += t5.elapsed();
         }
         // ---- the monotone close batch (E54) ----
@@ -3242,6 +3292,21 @@ impl Bank {
     }
 
     fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        // Scoring changes nothing, so a type the bank has not seen is read
+        // off the chunk and not kept (task 152).
+        let clock_dtypes: Vec<Option<crate::stream::ClockDtype>> = self
+            .specs
+            .iter()
+            .enumerate()
+            .map(|(si, s)| {
+                self.clock_dtypes[si].clone().or_else(|| {
+                    Some(crate::stream::ClockDtype::of(
+                        s.clock.is_some(),
+                        s.clock.as_deref().and_then(|c| chunk.clock_dtype(c)),
+                    ))
+                })
+            })
+            .collect();
         let n = chunk.height();
         self.refuse_if_broken()?;
         self.refuse_name_clash(chunk.names())?;
@@ -3282,9 +3347,15 @@ impl Bank {
         for (si, r) in score(work1, specs, cfgs, &cols) {
             per_spec_rows[si].push(r?);
         }
-        assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
-            derived[si].compare.is_none()
-        })?;
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &per_spec_rows,
+            &mut out,
+            &clock_dtypes,
+            |si| derived[si].compare.is_none(),
+        )?;
         if !work2.is_empty() {
             for (si, d) in derived.iter().enumerate() {
                 if let Some(ab) = d.compare {
@@ -3295,9 +3366,15 @@ impl Bank {
             for (si, r) in score(work2, specs, cfgs, &cols) {
                 per_spec_rows[si].push(r?);
             }
-            assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
-                derived[si].compare.is_some()
-            })?;
+            assemble_phase(
+                specs,
+                derived,
+                n,
+                &per_spec_rows,
+                &mut out,
+                &clock_dtypes,
+                |si| derived[si].compare.is_some(),
+            )?;
         }
         Ok(out
             .into_iter()
@@ -3411,6 +3488,12 @@ impl Bank {
                 .iter()
                 .enumerate()
                 .filter_map(|(si, k)| k.clone().map(|k| (si, k)))
+                .collect(),
+            clock_dtypes: self
+                .clock_dtypes
+                .iter()
+                .enumerate()
+                .filter_map(|(si, d)| d.clone().map(|d| (si, d)))
                 .collect(),
             pca_prev: {
                 let mut v: Vec<(usize, String, online_core::Pca)> = self
@@ -3553,6 +3636,11 @@ impl Bank {
                 *slot = Some(key.clone());
             }
         }
+        for (si, dt) in &file.clock_dtypes {
+            if let Some(slot) = bank.clock_dtypes.get_mut(*si) {
+                *slot = Some(dt.clone());
+            }
+        }
         for (si, inst, pca) in &file.pca_prev {
             bank.pca_prev.insert((*si, None, inst.clone()), pca.clone());
         }
@@ -3676,6 +3764,10 @@ enum Source {
     Inflation(usize),
     /// `support_coef`, per instance, laid out like `Coef`.
     SupportCoef(usize),
+    /// `scored_clock` and `learned_clock`, one pair per spec, in the clock
+    /// column's own type (docs/PLAN.md task 152).
+    ScoredClock,
+    LearnedClock,
     LamSelected(usize),
     SelPred(usize),
     SelName(usize),
@@ -3717,8 +3809,15 @@ impl FieldMeta {
         }
     }
     fn src(mut self, src: Source) -> Self {
+        // The clock fields take the clock column's own type, known only
+        // when a chunk arrives (task 152).
+        let is_clock = matches!(src, Source::ScoredClock | Source::LearnedClock);
         self.src = src;
-        self.dtype = self.dtype().to_string();
+        self.dtype = if is_clock {
+            "clock".to_string()
+        } else {
+            self.dtype().to_string()
+        };
         self
     }
 
@@ -3902,7 +4001,7 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
         spec.model,
         crate::ModelKind::Marginal { .. } | crate::ModelKind::Rcov { .. }
     ) {
-        return base;
+        return with_clocks(spec, base);
     }
     let mut fields = Vec::with_capacity(base.len() + 3 * spec.decays().map_or(1, |d| d.len()));
     for f in base {
@@ -3937,6 +4036,17 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             }
             _ => {}
         }
+    }
+    with_clocks(spec, fields)
+}
+
+/// The clock fields, last, under `emit_clocks` (docs/PLAN.md task 152).
+fn with_clocks(spec: &Spec, mut fields: Vec<FieldMeta>) -> Vec<FieldMeta> {
+    if spec.emit_clocks {
+        fields.push(FieldMeta::new("scored_clock".into(), "scored_clock").src(Source::ScoredClock));
+        fields.push(
+            FieldMeta::new("learned_clock".into(), "learned_clock").src(Source::LearnedClock),
+        );
     }
     fields
 }
@@ -4702,11 +4812,33 @@ fn named_columns(specs: &[Spec], arrays: Vec<StructArray>) -> PolarsResult<Vec<C
         .collect()
 }
 
+/// One clock field over the chunks, in the clock column's own type; a
+/// type the bank has not seen yet is a float's (task 152).
+fn clock_array(
+    n: usize,
+    chunks: &[ChunkOut],
+    dtype: Option<&crate::stream::ClockDtype>,
+    pick: impl Fn(&ChunkOut) -> &[Option<online_core::ClockValue>],
+) -> Box<dyn polars_arrow::array::Array> {
+    let mut values = vec![None; n];
+    for ch in chunks {
+        let v = pick(ch);
+        for (ri, &row) in ch.rows.iter().enumerate() {
+            if ch.processed[ri] {
+                values[row] = v[ri];
+            }
+        }
+    }
+    let numeric = crate::stream::ClockDtype::Numeric;
+    dtype.unwrap_or(&numeric).array(&values)
+}
+
 fn assemble(
     spec: &Spec,
     d: &SpecDerived,
     n: usize,
     chunks: &[ChunkOut],
+    clock_dtype: Option<&crate::stream::ClockDtype>,
 ) -> PolarsResult<StructArray> {
     let SpecDerived {
         schema,
@@ -4987,6 +5119,8 @@ fn assemble(
                     // no row has carried yet has NaN means, and a null says so.
                     coef_list_array(&coef)
                 }
+                Source::ScoredClock => clock_array(n, chunks, clock_dtype, |ch| &ch.scored_clock),
+                Source::LearnedClock => clock_array(n, chunks, clock_dtype, |ch| &ch.learned_clock),
                 Source::Unset => unreachable!("every field is given a source in output_index"),
             })
         })?;

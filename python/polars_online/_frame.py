@@ -544,6 +544,9 @@ _ORDER_FREE_ANY = frozenset(
         "min_settled_frac",
         "max_error_inflation",
         "emit_error_inflation",
+        # The clock fields are read from the state and change no number a
+        # fit produces (task 152).
+        "emit_clocks",
         "group",
         "clock",
         "max_dclock",

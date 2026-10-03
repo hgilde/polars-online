@@ -2001,6 +2001,14 @@ pub struct Spec {
     /// which is why it is opt-in. Needs a model that has it (`ew_ridge`).
     #[serde(default)]
     pub emit_error_inflation: bool,
+    /// Emit `scored_clock` and `learned_clock` on every scored row: the row's
+    /// own clock, and the clock of the newest row the models had learned
+    /// from, at a positive weight, when the row was scored (docs/PLAN.md
+    /// task 152). In the clock column's own type; the group's row index
+    /// with no clock. One pair per spec, since every instance learns the
+    /// same rows at the same time. Default false.
+    #[serde(default)]
+    pub emit_clocks: bool,
     /// 0 = never; coefficients are also emitted on **each group's** last row
     /// within every chunk -- one row per group per chunk, not one per chunk,
     /// so `coef`'s emission schedule follows the chunking while every other

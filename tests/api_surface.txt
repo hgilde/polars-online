@@ -41,6 +41,7 @@
   min_settled_frac = None
   max_error_inflation = None
   emit_error_inflation = False
+  emit_clocks = False
   coef_every = 0
   emit_sigma = False
   emit_resid_z = False

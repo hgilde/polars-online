@@ -1,6 +1,7 @@
 //! One (spec, group) stream: clock state + model instances (one per halflife
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
+use online_core::ClockValue;
 use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
@@ -1513,6 +1514,113 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
     }
 }
 
+/// The clock column's type, kept per spec so that `scored_clock` and
+/// `learned_clock` (docs/PLAN.md task 152) come out as the column came in:
+/// a `Datetime` in its own unit and zone, a `Date`, a `Duration`, a float
+/// for a numeric clock, and the group's row index as an integer with none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClockDtype {
+    Rows,
+    Numeric,
+    Date,
+    Datetime { unit: ClockUnit, tz: Option<String> },
+    Duration { unit: ClockUnit },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ClockUnit {
+    Ms,
+    Us,
+    Ns,
+}
+
+impl ClockDtype {
+    /// From the spec's clock column as the chunk holds it: `dtype` is the
+    /// column's when it is temporal, `None` otherwise.
+    pub fn of(has_clock: bool, dtype: Option<&polars::prelude::DataType>) -> Self {
+        use polars::prelude::{DataType as D, TimeUnit as T};
+        let unit = |u: &T| match u {
+            T::Milliseconds => ClockUnit::Ms,
+            T::Microseconds => ClockUnit::Us,
+            T::Nanoseconds => ClockUnit::Ns,
+        };
+        match (has_clock, dtype) {
+            (false, _) => Self::Rows,
+            (true, Some(D::Date)) => Self::Date,
+            (true, Some(D::Datetime(u, tz))) => Self::Datetime {
+                unit: unit(u),
+                tz: tz.as_ref().map(|z| z.to_string()),
+            },
+            (true, Some(D::Duration(u))) => Self::Duration { unit: unit(u) },
+            (true, _) => Self::Numeric,
+        }
+    }
+
+    /// Nanoseconds in one unit of the column.
+    fn ns_per_unit(&self) -> i64 {
+        match self {
+            Self::Date => 86_400 * 1_000_000_000,
+            Self::Datetime { unit, .. } | Self::Duration { unit } => match unit {
+                ClockUnit::Ms => 1_000_000,
+                ClockUnit::Us => 1_000,
+                ClockUnit::Ns => 1,
+            },
+            Self::Rows | Self::Numeric => 1,
+        }
+    }
+
+    /// The values as an Arrow array of the column's type, null where `None`.
+    pub fn array(&self, values: &[Option<ClockValue>]) -> Box<dyn polars_arrow::array::Array> {
+        use polars_arrow::array::PrimitiveArray;
+        use polars_arrow::datatypes::{ArrowDataType, TimeUnit as AT};
+        let au = |u: &ClockUnit| match u {
+            ClockUnit::Ms => AT::Millisecond,
+            ClockUnit::Us => AT::Microsecond,
+            ClockUnit::Ns => AT::Nanosecond,
+        };
+        let per = self.ns_per_unit();
+        let ns = |c: Option<ClockValue>| match c {
+            Some(ClockValue::Ns(n)) => Some(n / per),
+            _ => None,
+        };
+        match self {
+            Self::Numeric => {
+                let v: Vec<Option<f64>> = values
+                    .iter()
+                    .map(|c| match c {
+                        Some(ClockValue::F64(x)) => Some(*x),
+                        _ => None,
+                    })
+                    .collect();
+                Box::new(PrimitiveArray::<f64>::from(v))
+            }
+            Self::Rows => {
+                let v: Vec<Option<i64>> = values
+                    .iter()
+                    .map(|c| match c {
+                        Some(ClockValue::F64(x)) => Some(*x as i64),
+                        _ => None,
+                    })
+                    .collect();
+                Box::new(PrimitiveArray::<i64>::from(v))
+            }
+            Self::Date => {
+                let v: Vec<Option<i32>> = values.iter().map(|c| ns(*c).map(|d| d as i32)).collect();
+                Box::new(PrimitiveArray::<i32>::from(v).to(ArrowDataType::Date32))
+            }
+            Self::Datetime { unit, tz } => {
+                let v: Vec<Option<i64>> = values.iter().map(|c| ns(*c)).collect();
+                let dt = ArrowDataType::Timestamp(au(unit), tz.clone().map(Into::into));
+                Box::new(PrimitiveArray::<i64>::from(v).to(dt))
+            }
+            Self::Duration { unit } => {
+                let v: Vec<Option<i64>> = values.iter().map(|c| ns(*c)).collect();
+                Box::new(PrimitiveArray::<i64>::from(v).to(ArrowDataType::Duration(au(unit))))
+            }
+        }
+    }
+}
+
 /// A break's events while they wait in the `label_delay` buffer: a session
 /// change, the long-run blend it asks for, and a gap past `max_dclock`
 /// (docs/PLAN.md task 153). A skipped row's wait with the next accepted row,
@@ -1563,6 +1671,9 @@ pub struct PendingRow {
     pub blend: bool,
     #[serde(default)]
     pub capped: bool,
+    /// The row's clock as the fields show it (task 152).
+    #[serde(default)]
+    pub clock: Option<ClockValue>,
 }
 
 /// Serialized per-stream state: the clock plus each halflife's model.
@@ -1627,6 +1738,13 @@ pub struct StreamState {
     /// for the next one (docs/PLAN.md task 153). Skipped when there is none.
     #[serde(default, skip_serializing_if = "HeldBreak::is_none")]
     pub held_break: HeldBreak,
+    /// The clock of the newest row the models have learned from, and the
+    /// rows fed to this group: what `learned_clock` and a clockless
+    /// `scored_clock` show (docs/PLAN.md task 152).
+    #[serde(default)]
+    pub last_learned: Option<ClockValue>,
+    #[serde(default)]
+    pub fed: u64,
     /// Per model instance, the prediction each row in `pending` was *scored*
     /// with, in the same order (review 2026-09-12, C21): the one thing a
     /// replay cannot recompute, and what the residual diagnostics fold when
@@ -1756,6 +1874,13 @@ pub struct Stream {
     /// The break skipped rows raised since the last accepted row, waiting
     /// for the next one ([`HeldBreak`]).
     held_break: HeldBreak,
+    /// The clock of the newest row the models have learned from at a
+    /// positive weight: `None` before the first and after a reset
+    /// (task 152).
+    last_learned: Option<ClockValue>,
+    /// Rows fed to this group, skipped ones included: a clockless row's
+    /// clock is its index here.
+    fed: u64,
     /// Per model instance, the score-time prediction of each row in
     /// `pending`, in the same order (C21); see [`StreamState::score_pred`].
     score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
@@ -1963,6 +2088,10 @@ pub struct ChunkOut {
     pub inflation: Vec<f64>,
     /// Each coefficient's data share, on `coef`'s cadence: `[model][row]`.
     pub support_coef: Vec<Vec<Option<Vec<f64>>>>,
+    /// `n_rows` each under `emit_clocks`, else empty: the row's own clock,
+    /// and the newest learned row's when it was scored (task 152).
+    pub scored_clock: Vec<Option<ClockValue>>,
+    pub learned_clock: Vec<Option<ClockValue>>,
     /// Slot counts this layout was built for.
     pub n_models: usize,
     pub n_slots: usize,
@@ -2058,6 +2187,8 @@ impl ChunkOut {
             reason: vec![0; n_models * n_rows],
             inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
             support_coef: vec![vec![None; n_rows]; n_models],
+            scored_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
+            learned_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
             n_models,
             n_slots,
             n_levels,
@@ -2156,6 +2287,11 @@ pub struct LastRow {
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
+    /// One each under `emit_clocks`, else empty (task 152).
+    #[serde(default)]
+    pub scored_clock: Vec<Option<ClockValue>>,
+    #[serde(default)]
+    pub learned_clock: Vec<Option<ClockValue>>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub n_eff: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
@@ -2196,6 +2332,8 @@ impl LastRow {
         take_row(&mut self.resid_q, &out.resid_q, n, ri);
         take_row(&mut self.drift, &out.drift, n, ri);
         take_row(&mut self.n_eff, &out.n_eff, n, ri);
+        take_row(&mut self.scored_clock, &out.scored_clock, n, ri);
+        take_row(&mut self.learned_clock, &out.learned_clock, n, ri);
         take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
         self.coef.clear();
         self.coef.extend(out.coef.iter().map(|c| c[ri].clone()));
@@ -2236,6 +2374,8 @@ impl LastRow {
             out.reason.len() == self.reason.len(),
             out.inflation.len() == self.inflation.len(),
             out.support_coef.len() == self.support_coef.len(),
+            out.scored_clock.len() == self.scored_clock.len(),
+            out.learned_clock.len() == self.learned_clock.len(),
         ];
         if same.contains(&false) {
             return Err(format!(
@@ -2256,6 +2396,8 @@ impl LastRow {
         out.drift.clone_from(&self.drift);
         out.n_eff.clone_from(&self.n_eff);
         out.lam_selected.clone_from(&self.lam_selected);
+        out.scored_clock.clone_from(&self.scored_clock);
+        out.learned_clock.clone_from(&self.learned_clock);
         for (dst, src) in out.coef.iter_mut().zip(&self.coef) {
             dst[0].clone_from(src);
         }
@@ -2331,6 +2473,8 @@ impl Stream {
             label_delay: spec.label_delay.as_ref().map(Span::value),
             pending: Vec::new(),
             held_break: HeldBreak::default(),
+            last_learned: None,
+            fed: 0,
             score_pred: slots
                 .iter()
                 .map(|_| std::collections::VecDeque::new())
@@ -2365,6 +2509,8 @@ impl Stream {
             notified: self.notified.clone(),
             pending: self.pending.clone(),
             held_break: self.held_break,
+            last_learned: self.last_learned,
+            fed: self.fed,
             score_pred: self
                 .score_pred
                 .iter()
@@ -2524,6 +2670,8 @@ impl Stream {
         }
         stream.pending = saved.pending.clone();
         stream.held_break = saved.held_break;
+        stream.last_learned = saved.last_learned;
+        stream.fed = saved.fed;
         // The held rows' clock per instance. A schema-14 file has none, and
         // its loader rebuilds it as 0.10.0 did at every chunk boundary: the
         // sum over the rows still held.
@@ -2635,10 +2783,11 @@ impl Stream {
         rows: &[usize],
         base: usize,
         last: bool,
-    ) -> Result<(ClockState, u64, Vec<RowPlan>), ClockRefusal> {
+    ) -> Result<(ClockState, u64, u64, Vec<RowPlan>), ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.clock.clone();
         let mut rows_seen = self.rows_seen;
+        let mut fed = self.fed;
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
@@ -2661,6 +2810,10 @@ impl Stream {
             if accept {
                 rows_seen += 1;
             }
+            // The clock the fields show (task 152): the column's value, or
+            // the row's index in the group, every row counted.
+            let shown = c.or(Some(ClockValue::F64(fed as f64)));
+            fed += 1;
             // The chunk's last row reports the coefficients; `last` says
             // whether this run ends the chunk (`ChunkOut::run_rows`).
             let want_coef = accept
@@ -2672,6 +2825,7 @@ impl Stream {
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
                 elapsed: adv.elapsed,
+                clock: shown,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
                 session_changed: adv.session_changed,
@@ -2685,7 +2839,7 @@ impl Stream {
                 w: w.unwrap_or(1.0),
             });
         }
-        Ok((clock_state, rows_seen, plans))
+        Ok((clock_state, rows_seen, fed, plans))
     }
 
     /// The first overrun a chunk's rows would give a window's ring past a
@@ -2722,7 +2876,7 @@ impl Stream {
         if !self.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
-        let (_, _, mut plans) = self
+        let (_, _, _, mut plans) = self
             .schedule(
                 spec, cfg, features, clock, session, weight, rows, base, false,
             )
@@ -2829,7 +2983,7 @@ impl Stream {
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
         // the stream exactly as it was.
-        let (clock_state, rows_seen, mut plans) = self.schedule(
+        let (clock_state, rows_seen, fed, mut plans) = self.schedule(
             spec, cfg, features, clock, session, weight, rows, base, last,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
@@ -2838,6 +2992,7 @@ impl Stream {
 
         self.clock = clock_state;
         self.rows_seen = rows_seen;
+        self.fed = fed;
 
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
@@ -2874,6 +3029,27 @@ impl Stream {
             features,
             targets,
         );
+
+        // ---- the clocks a row shows (docs/PLAN.md task 152) ----
+        // Its own, and the newest row the models had learned from, at a
+        // positive weight, when it was scored; in plan order, so a row
+        // released just before this one counts, and a reset clears it.
+        for plan in &plans {
+            if plan.reset {
+                self.last_learned = None;
+            }
+            if spec.emit_clocks && plan.emit && plan.accept {
+                out.scored_clock[plan.ri] = plan.clock;
+                out.learned_clock[plan.ri] = self.last_learned;
+            }
+            if plan.accept && plan.learn && plan.w > 0.0 {
+                self.last_learned = if plan.direct() {
+                    plan.clock
+                } else {
+                    released[plan.pending].clock
+                };
+            }
+        }
 
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
@@ -3004,6 +3180,7 @@ impl Stream {
             pending: slot,
             d_clock: row.d_clock,
             elapsed: 0.0,
+            clock: row.clock,
             reset: false,
             blend: row.blend,
             session_changed: row.session_changed,
@@ -3071,6 +3248,7 @@ impl Stream {
                 session_changed: held_break.session_changed || plan.session_changed,
                 blend: held_break.blend || plan.blend,
                 capped: held_break.capped || plan.capped,
+                clock: plan.clock,
             });
             *held_break = HeldBreak::default();
             out.push(RowPlan {
@@ -3157,6 +3335,9 @@ impl Stream {
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
                 elapsed: 0.0,
+                clock: clock
+                    .map(|c| c.at(i))
+                    .or(Some(ClockValue::F64(self.fed as f64))),
                 reset: false,
                 blend: false,
                 session_changed: false,
@@ -3174,6 +3355,12 @@ impl Stream {
                 buffered: false,
                 w: 1.0,
             };
+            // Scored against the state as it stands, so the learned clock is
+            // the fit's last learned row on every row (task 152).
+            if spec.emit_clocks && accept {
+                out.scored_clock[ri] = plan.clock;
+                out.learned_clock[ri] = self.last_learned;
+            }
             // A new session's row under `group_close = "session"` is a fresh
             // stream's first row, as `fit_predict` restarts the stream at the
             // change; it was scored by the closed session's fit (review
@@ -3524,6 +3711,9 @@ struct RowPlan {
     /// The time that passed since the previous accepted row, uncapped: what
     /// counts the `label_delay` buffer down (docs/PLAN.md task 153).
     elapsed: f64,
+    /// The row's clock as the clock fields show it (task 152): the column's
+    /// value, or the group's row index with no column.
+    clock: Option<ClockValue>,
     reset: bool,
     blend: bool,
     /// The session id differed from the previous row's.

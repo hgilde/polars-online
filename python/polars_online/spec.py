@@ -129,7 +129,8 @@ the diagnostics
     with ``average_eta``, ``emit_metrics``, ``conformal`` with
     ``conformal_rate``, ``resid_quantiles``, ``emit_autocorr`` with
     ``resid_autocorr_lag``, and ``emit_drift`` with ``drift_delta``,
-    ``drift_threshold`` and ``drift_action``. Each adds fields to the output,
+    ``drift_threshold`` and ``drift_action``, and ``emit_clocks``. Each adds
+    fields to the output,
     listed below; a model with no residual refuses them by name.
 
 .. rubric:: Clock units
@@ -293,6 +294,17 @@ The diagnostics add, per slot:
        never showed. ``ewridge`` only; one triangular solve a row, which is
        why it is opt-in. The gate ``max_error_inflation`` reads the stream
        average, which is free.
+   * - ``emit_clocks``
+     - ``scored_clock``, ``learned_clock``
+     - The row's own clock, and the clock of the newest row the models had
+       learned from, at a positive weight, when the row was scored: without
+       a delay the previous learned row, under ``label_delay`` the newest
+       row whose delay had passed. Both in the clock column's own type, a
+       ``Datetime`` exact to the nanosecond; with no clock column, the row's
+       index in its group, every row counted. Null on a skipped row;
+       ``learned_clock`` null before the first learned row and after a
+       reset. One pair per spec, last in the struct. ``scored_clock`` less
+       ``learned_clock`` is at least the delay on every row.
    * - ``emit_selected``
      - ``selected_<t>``, ``pred_<t>__selected``
      - The grid slot with the lowest EW out-of-sample squared error so

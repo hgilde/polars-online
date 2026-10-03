@@ -130,6 +130,9 @@ pub struct ArrowChunk {
     /// i`, so a surface that feeds an input in chunks names the input's row,
     /// not the chunk's (task 120). 0 unless [`Self::with_row_base`] says.
     row_base: usize,
+    /// Each temporal clock column's dtype as it arrived, for the clock
+    /// fields to echo it (docs/PLAN.md task 152).
+    clock_dtypes: Vec<(PlSmallStr, DataType)>,
 }
 
 impl ArrowChunk {
@@ -191,7 +194,23 @@ impl ArrowChunk {
             index,
             name_set,
             row_base: 0,
+            clock_dtypes: Vec::new(),
         })
+    }
+
+    /// The dtype a temporal clock column arrived with (task 152); `None`
+    /// for a numeric clock, or a column that is not a clock here.
+    pub fn clock_dtype(&self, name: &str) -> Option<&DataType> {
+        self.clock_dtypes
+            .iter()
+            .find(|(n, _)| n.as_str() == name)
+            .map(|(_, d)| d)
+    }
+
+    #[must_use]
+    pub fn with_clock_dtypes(mut self, dtypes: Vec<(PlSmallStr, DataType)>) -> Self {
+        self.clock_dtypes = dtypes;
+        self
     }
 
     /// The chunk, as rows `row_base..` of a longer input: what an error
@@ -522,6 +541,7 @@ pub fn chunk_from_frame_at(
     check_clocks(df, specs)?;
     let readers = first_readers(specs);
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
+    let mut clock_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
     let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -549,6 +569,7 @@ pub fn chunk_from_frame_at(
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
             let col = ArrowCol::Nanos(nanos_array(s, row_base)?);
+            clock_dtypes.push((name.clone(), s.dtype().clone()));
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
             continue;
@@ -568,7 +589,9 @@ pub fn chunk_from_frame_at(
         have.insert((name.clone(), col.form()));
         cols.push((name.clone(), col));
     }
-    Ok(ArrowChunk::new(df.height(), cols, names)?.with_row_base(row_base))
+    Ok(ArrowChunk::new(df.height(), cols, names)?
+        .with_row_base(row_base)
+        .with_clock_dtypes(clock_dtypes))
 }
 
 /// Each column's first reader, for the errors a cast can raise: the first
