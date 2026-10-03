@@ -20,19 +20,15 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, Form, chunk_from_frame_at, f64_values,
-};
+use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame_at, f64_values};
 use crate::column::F64Column;
-use crate::formula::Formula;
+use crate::resolvers::{
+    FormulaBundle, SavedResolvers, TargetWindows, prepare_targets, resolve_targets,
+};
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
-use crate::stream::{
-    AnyModel, ChunkOut, ClockRefusal, FormulaTargets, Resolutions, Stream, StreamState,
-    combo_labels, usable,
-};
+use crate::stream::{AnyModel, ChunkOut, ClockRefusal, Stream, StreamState, combo_labels, usable};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
-use crate::windows_frame::{WindowsConfig, WindowsRun};
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
@@ -221,10 +217,10 @@ fn feature_rows(
 /// order; `Some(perm)` puts row `perm[j]` at position `j`, which the bank uses
 /// to lay a chunk out group after group (docs/PERFORMANCE.md P9). Only ever
 /// a permutation of `0..height`, so every row appears exactly once.
-type Layout<'a> = Option<&'a [usize]>;
+pub(crate) type Layout<'a> = Option<&'a [usize]>;
 
 /// `v` in layout order.
-fn gathered<T: Copy>(v: Vec<T>, layout: Layout<'_>) -> Vec<T> {
+pub(crate) fn gathered<T: Copy>(v: Vec<T>, layout: Layout<'_>) -> Vec<T> {
     match layout {
         None => v,
         Some(perm) => perm.iter().map(|&i| v[i]).collect(),
@@ -1050,260 +1046,6 @@ fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) 
 /// way out is a sort, skipping what a resumed state has learned, or setting
 /// it; given, a step back no larger than it is a late row, and the way out
 /// is a sort or a smaller value. Either way the bank was not updated.
-/// One chunk's formula-target inputs for a spec's streams (docs/PLAN.md
-/// task 104): which targets are formulas, each row's number in the bank's
-/// stream in the laid-out row order, and what each group's core resolved.
-struct FormulaBundle {
-    slots: Vec<usize>,
-    seqs: Vec<u64>,
-    groups: HashMap<GroupKey, Resolutions>,
-}
-
-impl FormulaBundle {
-    fn targets(&self, key: &GroupKey) -> FormulaTargets<'_> {
-        FormulaTargets {
-            slots: &self.slots,
-            seqs: &self.seqs,
-            resolved: self.groups.get(key),
-        }
-    }
-}
-
-/// A spec's formula targets' resolver (docs/PLAN.md task 104): task 143's
-/// window core over the targets' formulas, under the spec's clock policy,
-/// fed every row of every chunk -- rows the spec skips included, since a
-/// target depends on the prices ahead and not on the row's features -- in
-/// chunk order, before the streams run. One core per group, as the bank
-/// keeps one stream per group: a group's rows resolve in their own order on
-/// their own clock, so a resolution is known at the row that made it
-/// whatever the other groups hold open. (One core over every group emits a
-/// row only once every row before it, of any group, has resolved -- a wait
-/// that moved with the chunking.) Each core is built at its group's first
-/// chunk, which says what the columns are.
-#[derive(Clone, Default)]
-struct TargetWindows {
-    runs: HashMap<GroupKey, WindowsRun>,
-    /// A loaded bank's cores, each resumed at its group's first chunk.
-    saved: HashMap<GroupKey, Vec<u8>>,
-}
-
-/// The row-number column a resolver's frame carries: a row's number in the
-/// bank's stream, which a resolution names it by.
-const ROW_NUMBER: &str = "@po:row";
-
-/// The resolvers as a bank file carries them: per spec index, each group's
-/// core as `WindowsRun::save_bytes` writes it.
-type SavedResolvers = Vec<(usize, Vec<(GroupKey, Vec<u8>)>)>;
-
-/// The call a spec's formula targets amount to: the formulas under the
-/// spec's clock policy, over one group, with no `like=` (the core sees
-/// every row).
-fn resolver_config(spec: &Spec) -> WindowsConfig {
-    WindowsConfig {
-        formulas: spec
-            .targets
-            .defs()
-            .iter()
-            .filter_map(|t| {
-                t.formula.as_ref().map(|tree| Formula {
-                    name: t.name.clone(),
-                    tree: tree.clone(),
-                })
-            })
-            .collect(),
-        clock: spec.clock.clone(),
-        gap_cap: spec.gap_cap.clone(),
-        restart_after_step_back: spec.restart_after_step_back.clone(),
-        session: spec.session.clone(),
-        session_gap: spec.session_gap.clone(),
-        group: None,
-        like: None,
-    }
-}
-
-/// The columns a spec's resolver reads, each with the forms it takes them
-/// in: the clock and the session as the chunk holds them, and a formula's
-/// columns as numbers or text. The group is the core's key, not a column.
-fn resolver_columns(spec: &Spec) -> Vec<(String, &'static [Form])> {
-    const CLOCK: &[Form] = &[Form::Clock, Form::Number];
-    const SESSION: &[Form] = &[Form::Text, Form::Key, Form::Number];
-    const VALUE: &[Form] = &[Form::Number, Form::Bool, Form::Text, Form::Key];
-    let mut out: Vec<(String, &'static [Form])> = Vec::new();
-    let mut put = |c: &str, forms: &'static [Form]| {
-        if !out.iter().any(|(n, _)| n == c) {
-            out.push((c.to_string(), forms));
-        }
-    };
-    if let Some(c) = &spec.clock {
-        put(c, CLOCK);
-    }
-    if let Some(c) = &spec.session {
-        put(c, SESSION);
-    }
-    for t in spec.targets.defs().iter().filter(|t| t.is_formula()) {
-        for c in t.columns() {
-            put(&c, VALUE);
-        }
-    }
-    out
-}
-
-/// The frame a spec's resolver is fed: its columns, from the chunk, and
-/// each row's number from `first_row` on.
-fn resolver_frame(
-    chunk: &ArrowChunk,
-    spec: &Spec,
-    columns: &[(String, &'static [Form])],
-    first_row: u64,
-) -> PolarsResult<DataFrame> {
-    let n = chunk.height();
-    let mut cols: Vec<Column> = Vec::with_capacity(columns.len() + 1);
-    for (name, forms) in columns {
-        let Some(s) = chunk.series(name, forms) else {
-            let have: Vec<&str> = chunk.names().iter().map(|n| n.as_str()).collect();
-            polars_bail!(ColumnNotFound:
-                "spec {:?}: formula target column {:?} not found; the input has columns {:?}",
-                spec.name, name, have
-            );
-        };
-        cols.push(s.into_column());
-    }
-    let rows: UInt64Chunked = (0..n as u64).map(|i| Some(first_row + i)).collect();
-    cols.push(rows.with_name(ROW_NUMBER.into()).into_column());
-    DataFrame::new(n, cols)
-}
-
-impl TargetWindows {
-    /// The group's core, built -- or resumed from the loaded state -- at
-    /// its first chunk.
-    fn run(
-        &mut self,
-        key: &GroupKey,
-        spec: &Spec,
-        frame: &DataFrame,
-    ) -> PolarsResult<&mut WindowsRun> {
-        if !self.runs.contains_key(key) {
-            let config = resolver_config(spec);
-            let schema = frame.schema();
-            let run = match self.saved.remove(key) {
-                None => WindowsRun::new(config, schema),
-                Some(bytes) => WindowsRun::load_bytes(&bytes, config, schema),
-            }
-            .map_err(
-                |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
-            )?;
-            self.runs.insert(key.clone(), run);
-        }
-        Ok(self.runs.get_mut(key).expect("inserted above"))
-    }
-
-    /// Every group's core as bytes, by key: the running ones, and the
-    /// loaded ones no chunk has reached yet.
-    fn save(&self) -> Result<Vec<(GroupKey, Vec<u8>)>, String> {
-        let mut out: Vec<(GroupKey, Vec<u8>)> = Vec::with_capacity(self.runs.len());
-        for (key, run) in &self.runs {
-            out.push((key.clone(), run.save_bytes()?));
-        }
-        for (key, bytes) in &self.saved {
-            out.push((key.clone(), bytes.clone()));
-        }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
-    }
-
-    /// The longest `window_size` among the formulas' forward operators,
-    /// which the embargo must cover for a prediction to be out of sample.
-    fn longest_forward_window(spec: &Spec) -> Option<crate::span::Span> {
-        spec.targets
-            .defs()
-            .iter()
-            .filter_map(|t| t.formula.as_ref())
-            .flat_map(|tree| {
-                tree.operators()
-                    .into_iter()
-                    .filter(|op| op.direction() == crate::windows::Direction::Forward)
-                    .filter_map(|op| op.window_size.clone())
-                    .collect::<Vec<_>>()
-            })
-            .max_by(|a, b| a.value().total_cmp(&b.value()))
-    }
-}
-
-/// Feed one chunk to a spec's resolver, group by group in the chunk's row
-/// order, and gather what it resolved: per resolved row, by its number in
-/// the bank's stream, the number of the row that resolved it and each
-/// formula target's value; and each row's number in the laid-out order the
-/// streams read.
-fn resolve_targets(
-    spec: &Spec,
-    resolver: &mut TargetWindows,
-    chunk: &ArrowChunk,
-    groups: &[(GroupKey, Vec<usize>)],
-    layout: Layout<'_>,
-    first_row: u64,
-) -> PolarsResult<FormulaBundle> {
-    let n = chunk.height();
-    let frame = resolver_frame(chunk, spec, &resolver_columns(spec), first_row)?;
-    let names: Vec<&str> = spec
-        .targets
-        .defs()
-        .iter()
-        .filter(|t| t.is_formula())
-        .map(|t| t.name.as_str())
-        .collect();
-    let mut by_group: HashMap<GroupKey, Resolutions> = HashMap::with_capacity(groups.len());
-    for (key, idx) in groups {
-        let rows: Vec<u64> = idx.iter().map(|&i| first_row + i as u64).collect();
-        let sub = if idx.len() == n {
-            frame.clone()
-        } else {
-            let take: IdxCa =
-                IdxCa::from_vec("".into(), idx.iter().map(|&i| i as IdxSize).collect());
-            frame.take(&take)?
-        };
-        let run = resolver.run(key, spec, &sub)?;
-        let out = run.feed_resolving(&sub, &rows).map_err(
-            |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
-        )?;
-        let h = out.height();
-        if h == 0 {
-            continue;
-        }
-        let width = names.len();
-        let mut values: Vec<f64> = vec![f64::NAN; h * width];
-        for (k, name) in names.iter().enumerate() {
-            let s = out.column(name)?.cast(&DataType::Float64)?;
-            for (r, v) in s.f64()?.iter().enumerate() {
-                if let Some(v) = v {
-                    values[r * width + k] = v;
-                }
-            }
-        }
-        let seqs: Vec<u64> = out.column("@po:seq")?.u64()?.iter().flatten().collect();
-        let ats: Vec<u64> = out.column("@po:at")?.u64()?.iter().flatten().collect();
-        debug_assert!(seqs.len() == h && ats.len() == h, "no null row number");
-        debug_assert!(
-            seqs.windows(2).all(|w| w[0] < w[1]),
-            "a group resolves in row order"
-        );
-        by_group.insert(
-            key.clone(),
-            Resolutions {
-                seqs,
-                ats,
-                values,
-                width,
-            },
-        );
-    }
-    let seqs = gathered((0..n).map(|i| first_row + i as u64).collect(), layout);
-    Ok(FormulaBundle {
-        slots: spec.targets.formula_slots(),
-        seqs,
-        groups: by_group,
-    })
-}
-
 fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> PolarsError {
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     let row = row_base + refusal.row;
@@ -2430,13 +2172,10 @@ pub struct Bank {
     /// empty for a spec without one.
     resolvers: Vec<TargetWindows>,
     /// Per spec with a formula target whose longest forward window the
-    /// embargo does not cover: why `fit_predict` refuses to run it. `fit`
-    /// takes any embargo ([`Self::set_learn_only`]).
+    /// embargo does not cover: why `fit_predict` refuses to run it. A run
+    /// that keeps no prediction takes any embargo
+    /// ([`Self::fit_predict_arrow_with`]).
     short_embargo: Vec<Option<String>>,
-    /// Whether the run keeps nothing but the state (`fit`), where a
-    /// prediction need not be out of sample of its own target's window.
-    /// Not state.
-    learn_only: bool,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -2619,7 +2358,8 @@ impl Bank {
                          longest window_size among its formula targets' forward operators \
                          (got {}): a row's target is known only one window later, and a \
                          state that learned it before then would score the rows that window \
-                         covers in sample. Give embargo={longest} or longer; fit takes any \
+                         covers in sample. Give embargo={longest} or longer; a run that keeps no \
+                         prediction (ModelBank.fit, or the command line with --no-output) takes any \
                          embargo, none included, and learns each row once its window closes",
                         s.name,
                         s.embargo
@@ -2632,7 +2372,6 @@ impl Bank {
         Ok(Self {
             resolvers: specs.iter().map(|_| TargetWindows::default()).collect(),
             short_embargo,
-            learn_only: false,
             specs,
             clock_cfgs,
             derived,
@@ -2647,15 +2386,6 @@ impl Bank {
             window_prepass: true,
             notices: Vec::new(),
         })
-    }
-
-    /// Whether the run keeps nothing but the state (`fit`): then a spec
-    /// whose embargo does not cover its formula targets' longest forward
-    /// window runs, learning each row once its window closes, where
-    /// `fit_predict` refuses it (docs/PLAN.md task 104). Off by default,
-    /// and not state.
-    pub fn set_learn_only(&mut self, learn_only: bool) {
-        self.learn_only = learn_only;
     }
 
     pub fn specs(&self) -> &[Spec] {
@@ -3200,12 +2930,29 @@ impl Bank {
         df: &DataFrame,
         row_base: usize,
     ) -> PolarsResult<Vec<Column>> {
+        self.fit_predict_from_with(df, row_base, false)
+    }
+
+    /// [`Self::fit_predict_from`], with `learn_only` saying the run keeps
+    /// no prediction (`ModelBank.fit`, the command line's `--no-output`):
+    /// then a spec whose embargo does not cover its formula targets'
+    /// longest forward window runs, learning each row once its window
+    /// closes, where a run that keeps predictions refuses it (docs/PLAN.md
+    /// task 104). A parameter of the call, never state: a flag on the bank
+    /// could be left set when a concurrent `predict` held the bank (review
+    /// R2, P1).
+    pub fn fit_predict_from_with(
+        &mut self,
+        df: &DataFrame,
+        row_base: usize,
+        learn_only: bool,
+    ) -> PolarsResult<Vec<Column>> {
         // Before the frame is cast: a broken bank refuses the chunk whatever
         // is in it, and a column error would otherwise hide that and the cast
         // would be work thrown away (review 2026-09-17, second pass).
         self.refuse_if_broken()?;
         let chunk = chunk_from_frame_at(df, &self.specs, row_base)?;
-        let arrays = self.fit_predict_arrow(&chunk)?;
+        let arrays = self.fit_predict_arrow_with(&chunk, learn_only)?;
         named_columns(&self.specs, arrays)
     }
 
@@ -3217,7 +2964,17 @@ impl Bank {
     /// [`crate::chunk_from_frame`], where every dtype decision about a frame is
     /// made, and naming each struct after its spec.
     pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
-        if !self.learn_only {
+        self.fit_predict_arrow_with(chunk, false)
+    }
+
+    /// [`Self::fit_predict_arrow`] with `learn_only` as
+    /// [`Self::fit_predict_from_with`] takes it.
+    pub fn fit_predict_arrow_with(
+        &mut self,
+        chunk: &ArrowChunk,
+        learn_only: bool,
+    ) -> PolarsResult<Vec<StructArray>> {
+        if !learn_only {
             if let Some(why) = self.short_embargo.iter().flatten().next() {
                 polars_bail!(ComputeError: "{}", why);
             }
@@ -3390,33 +3147,60 @@ impl Bank {
         // ---- the formula targets (docs/PLAN.md task 104) ----
         // Each spec's window core takes the chunk's rows in chunk order,
         // after the clock check and before anything learns, and says which
-        // held rows it resolved and at which row. On a snapshot: a refusal
-        // below -- the core's own, or the window pre-pass -- puts it back,
-        // so a refused chunk leaves the bank as it was.
+        // held rows it resolved and at which row. What can refuse before a
+        // row goes in -- a column the chunk has not got, a core that cannot
+        // be built or resumed -- is done for every spec first; what can
+        // refuse after -- a formula whose strict cast fails on the resolved
+        // rows, the window pre-pass -- is covered by a snapshot of the cores,
+        // taken only where such a refusal is possible: a formula with a
+        // cast, a second spec with formula targets (its own early refusals
+        // come after the first was fed), or a ring that could refuse (R1 D5,
+        // R2 F1). The clock check has run, so the cores refuse no row.
         let mut formulas: Vec<Option<FormulaBundle>> = specs.iter().map(|_| None).collect();
-        // The clock check has run, so only the window pre-pass can refuse
-        // the chunk after the cores have taken it: the snapshot -- a clone
-        // of every held row -- is taken only when a stream of a spec with a
-        // formula target has a ring that could refuse (review R1, D5).
-        let needs_snapshot = self.window_prepass
-            && specs.iter().any(|s| s.targets.any_formula())
-            && work
-                .iter()
-                .any(|(_, _, idx, _, stream)| stream.could_refuse_window(idx.len()));
+        let formula_specs: Vec<usize> = (0..specs.len())
+            .filter(|&si| specs[si].targets.any_formula())
+            .collect();
+        let mut frames: Vec<Option<DataFrame>> = specs.iter().map(|_| None).collect();
+        for &si in &formula_specs {
+            match prepare_targets(
+                &specs[si],
+                &mut self.resolvers[si],
+                chunk,
+                &groups[si],
+                self.rows_fed,
+            ) {
+                Ok(f) => frames[si] = Some(f),
+                Err(e) => {
+                    drop(work);
+                    forget(&mut self.states, &fresh);
+                    return Err(e);
+                }
+            }
+        }
+        let needs_snapshot = !formula_specs.is_empty()
+            && (formula_specs.len() > 1
+                || formula_specs.iter().any(|&si| {
+                    specs[si]
+                        .targets
+                        .defs()
+                        .iter()
+                        .any(|t| t.formula.as_ref().is_some_and(|f| f.contains_call("cast")))
+                })
+                || (self.window_prepass
+                    && work
+                        .iter()
+                        .any(|(_, _, idx, _, stream)| stream.could_refuse_window(idx.len()))));
         let snapshot: Vec<TargetWindows> = if needs_snapshot {
             self.resolvers.clone()
         } else {
             Vec::new()
         };
         let mut resolved: Result<(), PolarsError> = Ok(());
-        for (si, spec) in specs.iter().enumerate() {
-            if !spec.targets.any_formula() {
-                continue;
-            }
+        for &si in &formula_specs {
             match resolve_targets(
-                spec,
+                &specs[si],
                 &mut self.resolvers[si],
-                chunk,
+                frames[si].as_ref().expect("prepared above"),
                 &groups[si],
                 layouts[si].as_deref(),
                 self.rows_fed,
@@ -3429,9 +3213,6 @@ impl Bank {
             }
         }
         if let Err(e) = resolved {
-            // The core's own refusal: nothing of this chunk is in it (its
-            // feed holds rows only on success), and the increments and the
-            // frame it holds were rewound by the runner.
             drop(work);
             if needs_snapshot {
                 self.resolvers = snapshot;

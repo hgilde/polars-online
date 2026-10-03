@@ -718,3 +718,10 @@ def test_concurrent_fit_predict_says_so(method):
         assert "one ordered stream" in str(e)
     # The bank is intact: the winners' rows are counted, nothing else happened.
     assert bank.fit_predict(df.head(10)).height == 10
+
+
+def test_ridge_scale_is_checked_by_name():
+    """R2-P10: a wrong ``ridge_scale`` was refused by serde as an unknown
+    variant with no parameter name."""
+    with pytest.raises(ValueError, match="ridge_scale must be"):
+        po.spec.ewridge("m", targets=["y"], features=["x"], ridge_scale="foo")

@@ -21,7 +21,7 @@ in the same state.
 ``ModelBank(specs).fit_predict(df)`` in one call. ``online.unnest(specs)``
 takes a bank's output apart: each spec's struct column becomes its fields as
 columns, with the ``coef`` list as one named column per coefficient
-(:func:`polars_online.spec.coef_fields`). ``online.with_windows(windows)``
+(:func:`polars_online.spec.coef_fields`). ``online.with_windows(*exprs, **named)``
 adds windowed means, looking back or ahead, as columns
 (:func:`polars_online.stream.with_windows`), so a query can add them and fit
 on them in one chain. Both namespaces are attached at import, which no type
@@ -223,7 +223,7 @@ class OrderNotGuaranteedWarning(UserWarning):
     ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
     **Not raised by** :meth:`ModelBank.fit` **when every spec is an accumulator
-    with no decay** -- ``ewridge`` or ``rls`` at ``lam=1.0``, no ``window``, no
+    with no decay** -- ``ewridge`` or ``rls`` at ``lam=1.0``, no ``window_size``, no
     session, no drift reset. Those sums commute,
     so the state after that fit is the same whatever the order (to rounding:
     3.3e-16 over 200 rows), and ``fit`` keeps only the state. The exception is
@@ -483,7 +483,7 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 _ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls"})
 
 #: Spec keys that change the *path* a fit takes, with the only values that
-#: leave it order-free. Measured on the same rows: ``window`` 8.3e-03,
+#: leave it order-free. Measured on the same rows: ``window_size`` 8.3e-03,
 #: ``gram_block_rows`` 6.3e-04 (which row sits in the pending block when a
 #: solve fires depends on arrival order), ``embargo`` 4.3e-04, and
 #: ``drift_action="reset"`` **8.9e-01** -- the largest of all, and the one that
@@ -564,7 +564,7 @@ _ORDER_FREE_ANY = frozenset(
 
 def _spec_items(spec: Any) -> Any:
     """Every ``(key, value)`` of a spec, with the nested ``model`` dict walked
-    in place -- ``window`` lives *there* for ``ewridge`` and ``lasso``, not at
+    in place -- ``window_size`` lives *there* for ``ewridge`` and ``lasso``, not at
     the top level, so a top-level-only check would miss a windowed spec, which
     is the worst case after a drift reset."""
     for key, value in spec.items():
@@ -596,6 +596,14 @@ def _order_free(specs: Any) -> bool:
         for key, value in _spec_items(spec):
             if key in _ORDER_FREE_ONLY_WHEN:
                 if not any(value == ok for ok in _ORDER_FREE_ONLY_WHEN[key]):
+                    return False
+            elif key == "targets":
+                # A target that is a window expression reads the rows ahead,
+                # so the order is the target (review R2, P2).
+                if any(
+                    isinstance(t, pl.Expr) or (isinstance(t, dict) and "formula" in t)
+                    for t in (value or ())
+                ):
                     return False
             elif key not in _ORDER_FREE_ANY:
                 return False

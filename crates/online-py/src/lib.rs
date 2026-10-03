@@ -232,18 +232,23 @@ impl PyModelBank {
     ///
     /// `row_base` is the input row the chunk's first row is, for a caller
     /// that feeds an input in chunks: an error names the input's row.
-    #[pyo3(signature = (df, row_base=0))]
+    /// `learn_only` says the run keeps no prediction (`ModelBank.fit`):
+    /// a spec whose embargo does not cover its formula targets' longest
+    /// forward window then runs (docs/PLAN.md task 104). A parameter of the
+    /// call, never a flag on the bank (review R2, P1).
+    #[pyo3(signature = (df, row_base=0, learn_only=false))]
     fn fit_predict(
         slf: &Bound<'_, Self>,
         df: PyDataFrame,
         row_base: usize,
+        learn_only: bool,
     ) -> PyResult<Vec<PySeries>> {
         let mut this = slf.try_borrow_mut().map_err(|_| busy("fit_predict"))?;
         let bank = &mut this.inner;
         let df = df.into();
         let cols = slf
             .py()
-            .detach(|| bank.fit_predict_from(&df, row_base))
+            .detach(|| bank.fit_predict_from_with(&df, row_base, learn_only))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(cols
             .into_iter()
@@ -325,16 +330,6 @@ impl PyModelBank {
     fn save_bytes(slf: &Bound<'_, Self>) -> PyResult<Vec<u8>> {
         let this = slf.try_borrow().map_err(|_| busy("save_bytes"))?;
         this.inner.save_bytes().map_err(PyValueError::new_err)
-    }
-
-    /// Whether the run keeps nothing but the state (`ModelBank.fit`): a
-    /// spec whose embargo does not cover its formula targets' longest
-    /// forward window then runs, where `fit_predict` refuses it
-    /// (docs/PLAN.md task 104).
-    fn set_learn_only(slf: &Bound<'_, Self>, learn_only: bool) -> PyResult<()> {
-        let mut this = slf.try_borrow_mut().map_err(|_| busy("set_learn_only"))?;
-        this.inner.set_learn_only(learn_only);
-        Ok(())
     }
 
     /// The state as JSON, for reading. `ValueError` when the state holds a

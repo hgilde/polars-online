@@ -46,6 +46,7 @@ mod formula;
 mod pool;
 mod refresh;
 mod resid_window;
+mod resolvers;
 mod rows;
 mod runner;
 mod span;

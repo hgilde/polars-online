@@ -292,11 +292,10 @@ def rolling_metrics(
     got.
     """
     dtype = df.schema.get(clock)
-    ns = (
-        None
-        if dtype is None
-        else clock_nanoseconds(window_size, dtype, "rolling_metrics", "window_size", clock)
-    )
+    if dtype is None:
+        # Named before the window is checked against it (review R2, P9).
+        raise pl.exceptions.ColumnNotFoundError(clock)
+    ns = clock_nanoseconds(window_size, dtype, "rolling_metrics", "window_size", clock)
     if ns is None and not window_size > 0:  # type: ignore[operator]
         msg = f"window_size must be > 0, got {window_size}"
         raise ValueError(msg)

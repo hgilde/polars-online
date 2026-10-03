@@ -167,7 +167,7 @@ and ``inf`` mean the same in every unit, so they may stay numbers beside
 durations.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
-``session_gap`` and ``embargo`` above, and in the models ``window``,
+``session_gap`` and ``embargo`` above, and in the models ``window_size``,
 ``solve_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``, ``revert_half_life``,
 ``level_half_life`` and ``trend_half_life``.
@@ -280,7 +280,7 @@ The diagnostics add, per slot:
      - The EW standard deviation of the slot's out-of-sample residuals.
        Its weight ages on every row the model sees, a row with no
        prediction or with weight 0 included, so it forgets across a gap
-       as the clock says. Under a ``window`` it is the window's, as the
+       as the clock says. Under a ``window_size`` it is the window's, as the
        fit is, and so is everything below that reads it.
    * - ``emit_zscore``
      - ``zscore_<slot>``

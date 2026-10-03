@@ -277,7 +277,7 @@ impl RunConfig {
 
     /// Does this run write per-row output at all (docs/ENHANCEMENTS.md E50)?
     ///
-    /// An accumulator-only spec emits `n_eff` a row and nothing else; over a
+    /// An accumulator-only spec emits `weight_sum` a row and nothing else; over a
     /// billion rows that is 8 GB of file written so it can be deleted. When
     /// the product of the run is the state, there is nothing to write.
     pub fn no_output(&self) -> bool {
@@ -372,7 +372,7 @@ pub enum Output<'a> {
     Batches(&'a mut dyn FnMut(DataFrame) -> PolarsResult<()>),
     /// Nowhere: the run's product is the state it saves, and the per-row
     /// output would be I/O nobody reads (docs/ENHANCEMENTS.md E50). An
-    /// accumulator-only spec over a billion rows still emits `n_eff` a row,
+    /// accumulator-only spec over a billion rows still emits `weight_sum` a row,
     /// which is 8 GB of file to write and delete.
     Discard,
 }
@@ -384,6 +384,9 @@ pub struct RunOptions {
     pub chunk_rows: usize,
     /// Score instead of learn. See [`RunConfig::predict`].
     pub predict: bool,
+    /// The run keeps no prediction (`--no-output`): `ModelBank.fit`'s run,
+    /// which takes any embargo under a formula target (review R2, P4).
+    pub learn_only: bool,
 }
 
 impl Default for RunOptions {
@@ -391,6 +394,7 @@ impl Default for RunOptions {
         Self {
             chunk_rows: default_chunk_rows(),
             predict: false,
+            learn_only: false,
         }
     }
 }
@@ -492,6 +496,7 @@ pub fn run_config_on(
     let opts = RunOptions {
         chunk_rows: cfg.chunk_rows,
         predict: cfg.predict,
+        learn_only: cfg.no_output(),
     };
     let out = if cfg.no_output() {
         Output::Discard
@@ -647,7 +652,7 @@ fn run_with(
                 let t = Instant::now();
                 // `stats.rows` is the rows fed before this chunk, so an
                 // error names the input's row (task 120).
-                let out = augment(bank, chunk, opts.predict, stats.rows)?;
+                let out = augment(bank, chunk, opts.predict, opts.learn_only, stats.rows)?;
                 t_bank += t.elapsed();
                 let t = Instant::now();
                 deliver(out)?;
@@ -676,7 +681,7 @@ fn run_with(
                     Empty::Plan(lf) => lf.collect()?,
                     Empty::Frame(df) => df,
                 };
-                deliver(augment(bank, empty, opts.predict, 0)?)?;
+                deliver(augment(bank, empty, opts.predict, opts.learn_only, 0)?)?;
             }
             if closed_writer.is_some() && !closed_sent {
                 // Nothing closed: the empty frame with the schema, as an
@@ -761,12 +766,15 @@ fn augment(
     bank: &mut Bank,
     chunk: DataFrame,
     predict: bool,
+    learn_only: bool,
     row_base: usize,
 ) -> PolarsResult<DataFrame> {
     let cols = if predict {
         bank.predict_from(&chunk, row_base)?
     } else {
-        bank.fit_predict_from(&chunk, row_base)?
+        // A run with no output keeps no prediction: `ModelBank.fit`'s
+        // run, which takes any embargo (review R2, P4).
+        bank.fit_predict_from_with(&chunk, row_base, learn_only)?
     };
     // A readiness notice is a line on stderr, once per (spec, group,
     // instance), as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md

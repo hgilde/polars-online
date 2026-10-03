@@ -242,6 +242,11 @@ impl Node {
                 }
             }
             "lit" => {
+                // `["lit"]` is null, the form TOML can carry; `["lit", null]`
+                // is read too.
+                if args.is_empty() {
+                    return Ok(Node::Lit(Literal::Null));
+                }
                 arity(1)?;
                 Ok(Node::Lit(Literal::from_json(&args[0])?))
             }
@@ -431,6 +436,8 @@ impl Node {
     pub fn to_json(&self) -> Value {
         match self {
             Node::Col(c) => json!(["col", c]),
+            // A null literal is `["lit"]`: TOML has no null (review R2, P3).
+            Node::Lit(Literal::Null) => json!(["lit"]),
             Node::Lit(l) => json!(["lit", l.to_json()]),
             Node::Call(name, args) => {
                 let mut items = vec![json!(name)];
@@ -438,6 +445,12 @@ impl Node {
                     "cast" | "alias" => {
                         items.push(args[0].to_json());
                         if let Node::Lit(Literal::Str(s)) = &args[1] {
+                            items.push(json!(s));
+                        }
+                        // A non-strict cast carries its third argument
+                        // (review R2, F2: it was dropped, and a saved spec
+                        // ran a strict cast).
+                        if let Some(Node::Lit(Literal::Str(s))) = args.get(2) {
                             items.push(json!(s));
                         }
                     }
@@ -499,6 +512,16 @@ impl Node {
             Node::Lit(_) => {}
             Node::Call(_, args) => args.iter().for_each(|a| a.collect_columns(out)),
             Node::Op(op) => op.input.collect_columns(out),
+        }
+    }
+
+    /// Whether the tree holds a call of `name` anywhere (an operator's
+    /// input included).
+    pub fn contains_call(&self, name: &str) -> bool {
+        match self {
+            Node::Col(_) | Node::Lit(_) => false,
+            Node::Call(n, args) => n == name || args.iter().any(|a| a.contains_call(name)),
+            Node::Op(op) => op.input.contains_call(name),
         }
     }
 
@@ -687,7 +710,7 @@ mod tests {
             r#"["lit",2]"#,
             r#"["lit","x"]"#,
             r#"["lit",true]"#,
-            r#"["lit",null]"#,
+            r#"["lit"]"#,
             r#"["+",["col","a"],["col","b"]]"#,
             r#"["/",["col","a"],["lit",2]]"#,
             r#"["**",["col","a"],["lit",2]]"#,
@@ -698,8 +721,10 @@ mod tests {
             r#"["clip",["col","a"],["lit",0],null]"#,
             r#"["clip",["col","a"],null,["lit",1]]"#,
             r#"["fill_null",["col","a"],["lit",0.0]]"#,
-            r#"["when",[">",["col","a"],["lit",0]],["col","b"],["lit",null]]"#,
+            r#"["when",[">",["col","a"],["lit",0]],["col","b"],["lit"]]"#,
             r#"["cast",["col","a"],"Float64"]"#,
+            r#"["cast",["col","a"],"Int8","non_strict"]"#,
+            r#"["fill_null",["col","a"],["lit"]]"#,
             r#"["alias",["col","a"],"z"]"#,
             r#"["ewm_mean",["col","mid"],{"closed":"right","half_life":"10s","min_samples":1,"window_size":"1m"}]"#,
             r#"["rewm_sum",["*",["col","p"],["col","q"]],{"closed":"both","half_life":5.0,"min_samples":3,"partial":"keep","window_size":60.0}]"#,
@@ -710,6 +735,14 @@ mod tests {
             assert_eq!(node.to_json().to_string(), text, "{text}");
             assert_eq!(Node::parse(&node.to_json().to_string()).unwrap(), node);
         }
+        // A null written the old way, `["lit", null]`, still reads, and
+        // writes back as `["lit"]`, the form TOML can carry (review R2, P3).
+        let old = tree(r#"["fill_null",["col","a"],["lit",null]]"#);
+        assert_eq!(old, tree(r#"["fill_null",["col","a"],["lit"]]"#));
+        assert_eq!(
+            old.to_json().to_string(),
+            r#"["fill_null",["col","a"],["lit"]]"#
+        );
     }
 
     /// The rebuilt expression computes what the formula says, on a frame.

@@ -102,13 +102,20 @@ fn run(spec: &Spec, df: &DataFrame, chunks: usize) -> DataFrame {
 }
 
 fn feed(bank: &mut Bank, df: &DataFrame, chunks: usize) -> DataFrame {
+    feed_with(bank, df, chunks, false)
+}
+
+/// [`feed`] with `learn_only` said per call, as `ModelBank.fit` says it.
+fn feed_with(bank: &mut Bank, df: &DataFrame, chunks: usize, learn_only: bool) -> DataFrame {
     let n = df.height();
     let step = n.div_ceil(chunks);
     let mut acc: Option<DataFrame> = None;
     let mut i = 0;
     while i < n {
         let len = step.min(n - i);
-        let cols = bank.fit_predict(&df.slice(i as i64, len)).unwrap();
+        let cols = bank
+            .fit_predict_from_with(&df.slice(i as i64, len), 0, learn_only)
+            .unwrap();
         let st = cols[0].struct_().unwrap().clone().unnest();
         match &mut acc {
             None => acc = Some(st),
@@ -154,7 +161,7 @@ fn a_formula_target_is_the_column_form_fed_back_under_the_embargo() {
 }
 
 /// `fit_predict` refuses an embargo below the longest forward window, none
-/// included, before any row is fed; `fit` -- the bank told it keeps the
+/// included, before any row is fed; `fit` -- the call told it keeps the
 /// state alone -- takes both, and predicts new rows as the embargoed fit
 /// does, since each row is learned once its window has closed either way.
 #[test]
@@ -167,7 +174,7 @@ fn fit_predict_refuses_a_short_embargo_and_fit_takes_it() {
             err.contains("fit_predict needs an embargo of at least 10"),
             "{err}"
         );
-        assert!(err.contains("fit takes any embargo"), "{err}");
+        assert!(err.contains("takes any embargo"), "{err}");
         assert_eq!(bank.rows_seen(), 0);
     }
     let later = df.slice(250, 50);
@@ -176,15 +183,13 @@ fn fit_predict_refuses_a_short_embargo_and_fit_takes_it() {
     let want = covered.predict(&later).unwrap();
     for short in [None, Some(5.0)] {
         let mut bank = Bank::new(vec![native(short)]).unwrap();
-        bank.set_learn_only(true);
-        feed(&mut bank, &df.slice(0, 250), 3);
+        feed_with(&mut bank, &df.slice(0, 250), 3, true);
         let got = bank.predict(&later).unwrap();
         let (g, w) = (
             got[0].struct_().unwrap().clone().unnest(),
             want[0].struct_().unwrap().clone().unnest(),
         );
         assert_eq!(column(&g, "pred_fwd"), column(&w, "pred_fwd"), "{short:?}");
-        bank.set_learn_only(false);
         let err = bank.fit_predict(&later).unwrap_err().to_string();
         assert!(err.contains("fit_predict needs an embargo"), "{err}");
     }

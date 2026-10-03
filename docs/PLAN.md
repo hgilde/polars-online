@@ -10266,6 +10266,29 @@ messages.
 | D8 | a `pl.Expr` in a raw spec dict died in `json.dumps` | normalised in `ModelBank.__init__` | `test_a_raw_spec_dict_takes_a_window_expression` |
 | 150-* | the Kalman reviewer: no code defect; four stale equations fixed inside task 150 | -- | -- |
 
+### Round two (the same day): three reviewers over the fixes and the surfaces
+
+| ID | Finding | Fix | Test |
+|---|---|---|---|
+| P1 | `fit`'s learn-only flag on the bank could be left set when a concurrent `predict` held the bank; `fit_predict` then ran in sample | learn-only is a parameter of each call (`Bank::fit_predict_from_with`, the binding, `ModelBank._feed`); the bank keeps no flag | `test_learn_only_is_the_calls_not_the_banks` |
+| P2 | `_order_free` exempted a formula target from the row-order warning | a target that reads the rows ahead is never order-free | `test_a_formula_target_is_never_order_free` |
+| P3 | TOML has no null, and a `when/then` without `otherwise` carried one | the tree writes a null literal as `["lit"]`; `["lit", null]` still reads | `test_a_null_literal_has_a_form_toml_can_carry`, `formula.rs::every_node_kind_round_trips` |
+| P4 | `--no-output` is the command line's `fit` but ran `fit_predict` | it runs learn-only | `test_no_output_is_the_command_lines_fit` |
+| P5/F5 | a `pl.Expr` in a raw spec dict died in `json.dumps` on every surface but the constructor, and a tuple of targets | `_json` writes it as the builders would | `test_every_surface_takes_a_raw_dict_with_a_window_expression` |
+| P6/P8 | `rows_learned`'s docstring said "counted as handed over"; `n_eff`/`window` leftovers | reworded | -- |
+| P7 | `--predict` kept the config's `closed_groups`, which the scoring run refused | dropped with `save_state` | `test_no_output.py::test_predict_drops_the_closed_groups_sidecar` |
+| P9 | `rolling_metrics` compared a duration window with a missing clock's dtype first | the column is named first | `test_eval.py::test_rolling_metrics_names_a_missing_clock_before_reading_the_window` |
+| P10 | `ridge_scale="foo"` was refused by serde with no parameter name | checked by value in the builder | `test_error_messages.py::test_ridge_scale_is_checked_by_name` |
+| F1 | (D5) with two formula specs, the second's refusal left the first's core fed | every spec's frame and cores are built before any is fed; the snapshot is taken wherever a feed can still fail after rows went in (a cast, a second formula spec, a refusing ring) | `test_a_refused_chunk_leaves_every_specs_core_as_it_was` |
+| F2 | (B2) `to_json` dropped `"non_strict"`, so a saved spec ran a strict cast | the third argument is written | `test_a_non_strict_cast_survives_the_specs_round_trip`, the round-trip list |
+| F3 | (D2) a boolean a feature also read reached the formula as a number (the first form found) | the boolean form is looked up first, and a formula's columns before the clock's and the session's | `test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean` |
+| F4 | a plain target under an embargo counts at arrival and a reset discards the pending rows, so `rows_learned` counts rows no model saw (pre-existing) | not changed; recorded here | -- |
+| W1 | edge decisions subtract two rounded clocks, so a row exactly one window after any row but the stretch's first can land on the wrong side (`[0, 100, 400]` ms, `300ms`, `"left"`: null against Polars' 1) | round three | -- |
+| W2 | under `session_gap="reset"` a session change is a reset, so it discards (ignores `partial`) | decided: that is what `"reset"` asks for; documented | -- |
+| W3 | the stream's clock cut every group at a session change, so groups with sessions of their own restarted at every row | round three: sessions are each group's, the stream's clock keeps only its order and its gaps | -- |
+| W4 | a state saved under a slice holds rows read past the last emitted, which a resume from the emitted count feeds again | round three | -- |
+| W5 | a v2 windows state written before round one loads with defaults and misbehaves | round three: `WINDOWS_VERSION` 3 refuses it | -- |
+
 ## Follow-on documents
 
 Each of §11b–§11h below summarises one document under `docs/` and says what

@@ -250,3 +250,11 @@ def test_target_named_like_an_output_column_does_not_collide():
     assert m["target"][0] == "y"
     long = po.eval.unpack(out, "m", targets=["y"])
     assert long.columns.count("y") == 1
+
+
+def test_rolling_metrics_names_a_missing_clock_before_reading_the_window():
+    """R2-P9: a duration ``window_size`` beside a clock the frame lacks was
+    compared with the missing dtype first and raised a bare ``TypeError``."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "m": [{"pred_y": 1.0, "resid_y": 0.5}] * 2})
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        po.eval.rolling_metrics(df, "m", clock="nope", window_size="1h")

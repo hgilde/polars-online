@@ -124,7 +124,9 @@ def _walk(node: Any) -> Any:
                 ) from None
         return ["col", body]
     if kind == "Literal":
-        return ["lit", _literal(body)]
+        value = _literal(body)
+        # A null literal is `["lit"]`: TOML has no null (review R2, P3).
+        return ["lit"] if value is None else ["lit", value]
     if kind == "BinaryExpr":
         op = body.get("op")
         if op not in _BINARY:
@@ -169,8 +171,8 @@ def _walk(node: Any) -> Any:
                 return ["is_null" if detail == "IsNull" else "is_not_null", args[0]]
             if name == "Clip" and isinstance(detail, dict):
                 rest = args[1:]
-                lo = rest.pop(0) if detail.get("has_min") else None
-                hi = rest.pop(0) if detail.get("has_max") else None
+                lo = rest.pop(0) if detail.get("has_min") else ["lit"]
+                hi = rest.pop(0) if detail.get("has_max") else ["lit"]
                 return ["clip", args[0], lo, hi]
             raise _refuse(f"the function {json.dumps(fn)}")
         raise _refuse(f"the function {json.dumps(fn)}")
@@ -259,10 +261,12 @@ def from_tree(tree: Any) -> pl.Expr:
     if head == "col":
         return pl.col(args[0])
     if head == "lit":
-        return pl.lit(args[0])
+        return pl.lit(args[0]) if args else pl.lit(None)
     if head == "clip":
-        lo = None if args[1] is None else from_tree(args[1])
-        hi = None if args[2] is None else from_tree(args[2])
+        # A missing bound is the null literal `["lit"]` (or a bare null in
+        # a tree written before TOML could not carry one).
+        lo = None if args[1] in (None, ["lit"]) else from_tree(args[1])
+        hi = None if args[2] in (None, ["lit"]) else from_tree(args[2])
         return from_tree(args[0]).clip(lo, hi)
     e = [from_tree(a) for a in args if isinstance(a, list)]
     match head:

@@ -288,3 +288,52 @@ stats = []
         spec["features"] = []
         with pytest.raises(ValueError, match="features must be non-empty"):
             po.ModelBank([spec])
+
+
+def test_predict_drops_the_closed_groups_sidecar(online_cli, tmp_path):
+    """R2-P7: ``--predict`` dropped the config's ``save_state`` so one TOML
+    serves both runs, but kept its ``closed_groups``, which the scoring run
+    then refused."""
+    import polars as pl
+
+    import polars_online as po
+    from conftest import run_online
+
+    df = pl.DataFrame(
+        {
+            "g": ["a"] * 30 + ["b"] * 30,
+            "t": [float(i) for i in range(30)] * 2,
+            "x": [0.1 * i for i in range(60)],
+            "y": [0.2 * i for i in range(60)],
+        }
+    )
+    df.write_parquet(tmp_path / "in.parquet")
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        gap_cap=100.0,
+        group="g",
+        group_close="monotone",
+        half_life=10.0,
+    )
+    run_online(
+        online_cli,
+        tmp_path,
+        [spec],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        save_state=tmp_path / "bank.state",
+        closed_groups=tmp_path / "closed.parquet",
+    )
+    run_online(
+        online_cli,
+        tmp_path,
+        [spec],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "scored.parquet",
+        closed_groups=tmp_path / "closed.parquet",
+        args=["--predict", "--resume", str(tmp_path / "bank.state")],
+    )
+    assert pl.read_parquet(tmp_path / "scored.parquet").height == 60

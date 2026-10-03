@@ -362,6 +362,7 @@ fn frames_to_a_callback_equal_the_file() {
     let opts = RunOptions {
         chunk_rows: 64,
         predict: false,
+        learn_only: false,
     };
     let stats = run(
         &mut bank,

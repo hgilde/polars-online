@@ -57,6 +57,10 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             return {k: enc(x, k, who) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [enc(x, key, who) for x in v]
+        if isinstance(v, pl.Expr):
+            # A window expression in `targets`, as the builders take one
+            # (review R2, P5: every surface that writes a spec dict).
+            return enc(formula_target(f"spec {json.dumps(who)}", v), key, who)
         return v
 
     def name(s: Any) -> Any:
@@ -884,6 +888,10 @@ def ewridge(
         "window_every": window_every,
         "window_budget": window_budget,
     }
+    if ridge_scale not in ("mean", "sum"):
+        raise ValueError(
+            f'spec {json.dumps(name)}: ridge_scale must be "mean" or "sum", got {ridge_scale!r}'
+        )
     return _common(name, model, targets=targets, features=features, **common)
 
 

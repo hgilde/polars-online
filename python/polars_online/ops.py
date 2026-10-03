@@ -76,7 +76,9 @@ every window open across it: ``partial`` says what such a window gives,
 ``"keep"`` (the value over what it saw, the window ending at the last row
 seen; the default looking back), ``"null"`` (the default looking ahead) or
 ``"drop"`` (the row leaves the output). A reset discards it: null, never
-dropped. A forward window still open when the input ends is null.
+dropped -- and under ``session_gap="reset"`` a session change is a reset, so
+it discards rather than cuts. A forward window still open when the input
+ends is null.
 
 An operator's input is a column name or an element-wise expression of the
 row, :func:`increment` included -- not another window operator: a formula

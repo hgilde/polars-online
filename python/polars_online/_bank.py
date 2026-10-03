@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
@@ -63,21 +62,10 @@ class ModelBank:
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
-        # A hand-written dict may put a window expression in `targets` as
-        # the builders take one (review R1, D8).
-        from polars_online._spec import formula_target
-
-        written = []
-        for spec in specs:
-            targets = spec.get("targets")
-            if isinstance(targets, list) and any(isinstance(t, pl.Expr) for t in targets):
-                who = f"spec {json.dumps(spec.get('name'))}"
-                spec = dict(spec)
-                spec["targets"] = [
-                    formula_target(who, t) if isinstance(t, pl.Expr) else t for t in targets
-                ]
-            written.append(spec)
-        self._native = _native.ModelBank(_json(written))
+        # A hand-written dict may put a window expression in `targets`, as
+        # the builders take one; `_json` writes it as the builders would
+        # (review R1 D8, R2 P5).
+        self._native = _native.ModelBank(_json(list(specs)))
         # The specs as the bank runs them -- filled, as a state file carries
         # them -- so they read the same before a round trip as after it. The
         # caller's own dicts were kept, and a dict the builders did not write
@@ -292,12 +280,15 @@ class ModelBank:
         """
         return self._fit_predict_from(df, 0)
 
-    def _fit_predict_from(self, df: pl.DataFrame, row_base: int) -> pl.DataFrame:
+    def _fit_predict_from(
+        self, df: pl.DataFrame, row_base: int, learn_only: bool = False
+    ) -> pl.DataFrame:
         """:meth:`fit_predict` for rows ``row_base..`` of a longer input: an error
         names the input's row, not the chunk's. The chunked surfaces pass the rows
-        they have fed before the chunk."""
+        they have fed before the chunk; ``learn_only`` is :meth:`fit`'s run, which
+        keeps no prediction."""
         self._check_frame(df, "fit_predict")
-        outs = self._native.fit_predict(df, row_base)
+        outs = self._native.fit_predict(df, row_base, learn_only)
         self._warn_notices()
         return df.with_columns([pl.Series(s) for s in outs])
 
@@ -526,13 +517,14 @@ class ModelBank:
         guard = (
             f"ModelBank.{what}" if plan is not None and _is_python_scan(plan, plan_text) else None
         )
-        return self._feed(self._chunks(batches, chunk_rows), path, guard)
+        return self._feed(self._chunks(batches, chunk_rows), path, guard, what == "fit")
 
     def _feed(
         self,
         source: Iterable[pl.DataFrame],
         path: str | None,
         guard: str | None = None,
+        learn_only: bool = False,
     ) -> Iterable[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
         checked: a generator, so nothing here runs until a caller asks.
@@ -546,7 +538,7 @@ class ModelBank:
         rows_seen = 0
         try:
             for chunk in source:
-                out = self._fit_predict_from(chunk, rows_seen)
+                out = self._fit_predict_from(chunk, rows_seen, learn_only)
                 rows_seen += chunk.height
                 if path is not None:
                     rows = self.closed_groups()
@@ -615,7 +607,7 @@ class ModelBank:
 
         **With one exception, and it is this method's alone.** A fit whose every
         spec is an accumulator with no decay -- ``ewridge`` or ``rls`` at
-        ``lam=1.0``, no ``window``, no session, no drift reset -- reaches the same
+        ``lam=1.0``, no ``window_size``, no session, no drift reset -- reaches the same
         coefficients whatever order the rows arrived in, because its sums commute.
         Measured to rounding, not to the bit: 3.3e-16 over 200 rows. Since
         :meth:`fit` returns nothing and keeps only the state, the order genuinely
@@ -642,12 +634,10 @@ class ModelBank:
         # A formula target's window need not fit the embargo here: the run
         # keeps the state alone, and each row is learned once its window
         # closes (docs/PLAN.md task 104). `fit_predict` refuses that spec.
-        self._native.set_learn_only(True)
-        try:
-            for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
-                pass
-        finally:
-            self._native.set_learn_only(False)
+        # Said per call (review R2, P1): a flag on the bank could be left
+        # set when a `predict` on another thread held the bank.
+        for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
+            pass
 
     def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The coefficients behind every fit: one row per (spec, group, instance,
@@ -826,7 +816,7 @@ class ModelBank:
         ``rows_learned``
             Processed rows with a positive weight and, for a model with targets, at
             least one usable target -- a target that is a window expression counted
-            as handed over, its value to come when the window closes.
+            when the row is released with a value, once its window has closed.
         ``rows_zero_weight``
             Processed rows with weight 0 (the clock moved; nothing learned).
         ``weight_sum``
@@ -988,7 +978,7 @@ class ModelBank:
             var_y = g["target_vars"][0]
             r2 = 1 - (var_y - beta[1:] @ g["comoments"][1:, 1:] @ beta[1:]) / var_y
 
-        Under a ``window`` everything here is the window's, the target moments
+        Under a ``window_size`` everything here is the window's, the target moments
         included, since the window's snapshots carry them too, so ``po.gram.solve``
         on it fits the window as it stood after the last row.
 

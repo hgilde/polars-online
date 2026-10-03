@@ -96,6 +96,31 @@ carries breaking changes, and any change to the numbers a model returns.
     `filtered_`/`predicted_`, `pc<j>_loading_`, `penalty_selected`).
 - The windows state hashes a session with the bank's hash (`fnv1a`), not
   std's, which is not promised across toolchains.
+- **Review round R2** (the same day, three reviewers over the round-one
+  fixes and the Python and command-line surfaces; docs/PLAN.md §14):
+  - A run that keeps no prediction says so per call: `ModelBank.fit` passes
+    it with each chunk, and the command line's `--no-output` is that run,
+    so it takes any embargo under a formula target. A flag on the bank
+    could be left set when a `predict` on another thread held the bank, and
+    `fit_predict` then ran in sample.
+  - `ModelBank.fit` over a spec with a formula target is never exempt from
+    `OrderNotGuaranteedWarning`: the target reads the rows ahead.
+  - A null literal in a formula is written `["lit"]`, a form TOML can carry
+    (`when/then` without `otherwise`, a one-sided `clip`); `["lit", null]`
+    still reads.
+  - With two specs holding formula targets, a refusal raised by the second
+    spec left the first spec's window core holding the chunk; every spec's
+    frame and cores are now built before any is fed, and the cores are
+    snapshotted wherever a feed can still fail after rows went in.
+  - A non-strict `cast` lost its `"non_strict"` in the tree's serializer, so
+    a saved spec ran a strict cast; a boolean a feature also read reached a
+    formula as a number; a window expression in a hand-written spec dict is
+    taken on every surface (`output_fields`, `load_bytes`, a tuple of
+    targets), not only by the constructor.
+  - `--predict` drops the config's `closed_groups` with its `save_state`;
+    `rolling_metrics` names a missing clock before reading the window; the
+    `ewridge` builder refuses a wrong `ridge_scale` by name; `rows_learned`'s
+    docstring and the last `n_eff`/`window` leftovers.
 
 ### Changed
 

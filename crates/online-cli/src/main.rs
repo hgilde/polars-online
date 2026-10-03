@@ -45,7 +45,7 @@ struct Cli {
     /// Write no per-row output: the run's product is the state it saves, or
     /// the closed groups it writes (docs/ENHANCEMENTS.md E50). Needs
     /// `save_state` or `closed_groups`, in the config or as a flag. An
-    /// accumulator-only spec emits `n_eff` a row and nothing else, which over
+    /// accumulator-only spec emits `weight_sum` a row and nothing else, which over
     /// a billion rows is 8 GB of file written so it can be deleted.
     #[arg(long)]
     no_output: bool,
@@ -151,6 +151,9 @@ fn run() -> Result<(), String> {
     }
     if cli.predict {
         cfg.predict = true;
+        // A scoring run closes no group, so the learning run's sidecar is
+        // dropped with its `save_state` (review R2, P7).
+        cfg.closed_groups = None;
         // One TOML serves both the learning run and the scoring run, and its
         // `save_state` belongs to the former; `--predict` drops it. An
         // explicit `--save-state` is kept below, and `validate` refuses the

@@ -295,7 +295,7 @@ def test_fit_predict_refuses_an_embargo_below_the_window_and_fit_takes_it() -> N
         bank = po.ModelBank([spec(fwd(), embargo=short)])
         with pytest.raises(ValueError, match="fit_predict needs an embargo of at least 10"):
             bank.fit_predict(df)
-        with pytest.raises(ValueError, match="fit takes any embargo"):
+        with pytest.raises(ValueError, match="takes any embargo"):
             list(bank.fit_predict_batches(df, chunk_rows=10))
         assert bank.rows_seen() == 0
     later = df.slice(250, 50)
@@ -570,3 +570,142 @@ def test_a_raw_spec_dict_takes_a_window_expression() -> None:
     bank = po.ModelBank([s])
     assert bank.specs[0]["targets"][0]["name"] == "fwd"
     assert field(bank.fit_predict(stream(120, 35)), "pred_fwd")[-1] is not None
+
+
+# --------------------------------------------------------------------------
+# Review round R2 (2026-10-03)
+
+
+def test_learn_only_is_the_calls_not_the_banks() -> None:
+    """R2-P1: a learn-only flag on the bank could be left set when a
+    ``predict`` on another thread held the bank, and ``fit_predict`` then ran
+    in sample; the run says so per call, and the bank keeps no such flag."""
+    df = stream(120, 41)
+    bank = po.ModelBank([spec(fwd(), embargo=None)])
+    assert not hasattr(bank._native, "set_learn_only")
+    bank._native.fit_predict(df.slice(0, 60), 0, True)
+    with pytest.raises(ValueError, match="fit_predict needs an embargo"):
+        bank._native.fit_predict(df.slice(60, 60), 60)
+    with pytest.raises(ValueError, match="keeps no prediction"):
+        bank.fit_predict(df.slice(60, 60))
+
+
+def test_a_formula_target_is_never_order_free() -> None:
+    """R2-P2: ``fit`` over accumulator-only specs skips the row-order warning,
+    since their sums commute; a target that reads the rows ahead does not."""
+    from polars_online._frame import _order_free
+
+    plain = po.spec.ewridge("m", targets=["y"], features=["x"], lam=1.0)
+    ahead = po.spec.ewridge(
+        "m",
+        targets=[(po.rewm_mean("mid", half_life=5.0, window_size=10.0) - pl.col("mid")).alias("f")],
+        features=["x"],
+        lam=1.0,
+    )
+    assert _order_free([plain]) and not _order_free([ahead])
+    df = stream(200, 42).with_columns(y=pl.col("mid"))
+    other = pl.DataFrame({"t": df["t"], "z": range(200)})
+    plan = df.lazy().join(other.lazy(), on="t")
+    with pytest.warns(po.OrderNotGuaranteedWarning):
+        po.ModelBank([ahead]).fit(plan)
+
+
+def test_a_null_literal_has_a_form_toml_can_carry(online_cli: Any, tmp_path: Any) -> None:
+    """R2-P3: ``when/then`` with no ``otherwise`` carries a null literal, which
+    TOML has no value for; the tree spells it ``["lit"]``."""
+    from polars_online._formula import from_tree, to_tree
+
+    tree = to_tree(pl.when(pl.col("x") > 0).then("mid"))
+    assert tree[-1] == ["lit"]
+    assert from_tree(tree).meta.eq(pl.when(pl.col("x") > 0).then("mid"))
+    assert to_tree(pl.col("x").clip(upper_bound=1.0))[2] == ["lit"]
+    assert from_tree(to_tree(pl.col("x").clip(upper_bound=1.0))).meta.eq(
+        pl.col("x").clip(upper_bound=1.0)
+    )
+    df = stream(240, 43)
+    target = (
+        po.rewm_sum(pl.when(pl.col("x") > 0).then("mid"), half_life=H, window_size=W)
+        - pl.col("mid")
+    ).alias("fwd")
+    s = spec(target)
+    df.write_parquet(tmp_path / "in.parquet")
+    run_online(
+        online_cli, tmp_path, [s], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
+    )
+    got = pl.read_parquet(tmp_path / "out.parquet")
+    assert field(got, "pred_fwd") == field(native(df, s), "pred_fwd")
+
+
+def test_no_output_is_the_command_lines_fit(online_cli: Any, tmp_path: Any) -> None:
+    """R2-P4: a run with no output keeps no prediction, so it takes any
+    embargo, as ``ModelBank.fit`` does."""
+    df = stream(120, 44)
+    df.write_parquet(tmp_path / "in.parquet")
+    run_online(
+        online_cli,
+        tmp_path,
+        [spec(fwd(), embargo=None)],
+        input=tmp_path / "in.parquet",
+        save_state=tmp_path / "bank.state",
+        args=["--no-output"],
+    )
+    assert po.ModelBank.load(tmp_path / "bank.state").rows_seen() == 120
+
+
+def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
+    """R2-P5/F5: not only the constructor -- ``output_fields``, ``load_bytes``
+    and a tuple of targets."""
+    raw = dict(spec(fwd()))
+    raw["targets"] = (fwd(),)
+    assert "pred_fwd" in po.spec.output_fields(raw)
+    bank = po.ModelBank([raw])
+    bank.fit_predict(stream(80, 45))
+    again = po.ModelBank.load_bytes(bank.save_bytes(), [raw])
+    assert again.rows_seen() == 80
+
+
+def test_a_refused_chunk_leaves_every_specs_core_as_it_was() -> None:
+    """R2-F1: with two formula specs, a refusal raised by the second after
+    the first was fed left the first's core holding the chunk."""
+    df = stream(300, 46).with_columns(ask=pl.col("mid") + 0.01)
+    a = spec(fwd())
+    b = spec((po.rewm_mean("ask", half_life=H, window_size=W) - pl.col("ask")).alias("fwd"))
+    b["name"] = "b"
+    fresh = po.ModelBank([a, b]).fit_predict(df)
+    bank = po.ModelBank([a, b])
+    with pytest.raises(ValueError, match="ask"):
+        bank.fit_predict(df.drop("ask"))
+    assert bank.rows_seen() == 0
+    again = bank.fit_predict(df)
+    assert field(again, "pred_fwd") == field(fresh, "pred_fwd")
+
+
+def test_a_non_strict_cast_survives_the_specs_round_trip() -> None:
+    """R2-F2: the tree's serializer dropped ``"non_strict"``, so a saved spec
+    ran a strict cast."""
+    expr = (
+        po.rewm_mean(pl.col("mid").cast(pl.Float32, strict=False), half_life=H, window_size=W)
+        - pl.col("mid")
+    ).alias("fwd")
+    bank = po.ModelBank([spec(expr)])
+    formula = bank.specs[0]["targets"][0]["formula"]
+    assert "non_strict" in str(formula)
+    bank.fit_predict(stream(60, 47))
+    again = po.ModelBank.load_bytes(bank.save_bytes())
+    assert again.specs[0]["targets"][0]["formula"] == formula
+
+
+def test_a_boolean_also_read_as_a_number_reaches_the_formula_as_a_boolean() -> None:
+    """R2-F3: a boolean a feature also reads is held in two forms, and the
+    formula took the first found -- the number."""
+    df = stream(300, 48).with_columns(
+        is_buy=pl.Series(np.random.default_rng(2).random(300) < 0.5), qty=pl.lit(2.0)
+    )
+    expr = (
+        po.rewm_sum(pl.when(pl.col("is_buy")).then("qty"), half_life=H, window_size=W)
+        - pl.col("qty")
+    ).alias("fwd")
+    s = spec(expr, features=["x", "is_buy"])
+    got = native(df, s)
+    want = column_form(df, s, expr)
+    assert field(got, "pred_fwd") == field(want, "pred_fwd")
