@@ -150,6 +150,15 @@ pub struct ClockAdvance {
     /// not per accumulated gap: it is the one row's jump that breaks
     /// adjacency.
     pub capped: bool,
+    /// The time that passed since the previous accepted row, uncapped: the
+    /// clock column's forward steps, skipped rows' included, and at a
+    /// session change that restarts the clock, the session's gap. What a
+    /// delay counts (docs/PLAN.md task 153): `max_dclock` and `session_gap`
+    /// say how much a model forgets across a break, not how long it lasted,
+    /// so `d_clock` runs slower than the clock across a capped gap and
+    /// faster across a session gap longer than its step. `0` on the first
+    /// row and at a reset; only meaningful when `accepted`.
+    pub elapsed: f64,
 }
 
 /// One row's clock value, in the form the source had it: a number, or a
@@ -223,6 +232,15 @@ pub struct ClockState {
     pending: f64,
     /// Whether any row has been seen (drives the row-count clock's first delta).
     started: bool,
+    /// The time skipped rows covered, uncapped, folded into the next
+    /// accepted row's [`ClockAdvance::elapsed`] (docs/PLAN.md task 153).
+    /// Skipped when 0, the usual case, so a state writes the bytes it did.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    skipped_elapsed: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 impl ClockState {
@@ -328,6 +346,19 @@ impl ClockState {
             _ => false,
         };
 
+        // The time that passed: the column's forward step; across a session
+        // change that restarts the clock, the session's gap, the only
+        // measure of it there is; nothing for a step back within a session,
+        // which is refused, scored as a step of 0, or a reset.
+        let mut elapsed = match raw {
+            None => 0.0,
+            Some(raw) if raw >= 0.0 => raw,
+            Some(_) if session_changed => match cfg.session_gap {
+                Some(SessionGap::Gap(g)) => g.max(0.0),
+                _ => 0.0,
+            },
+            Some(_) => 0.0,
+        };
         let mut reset = false;
         let mut backwards = None;
         let mut disorder = None;
@@ -390,7 +421,9 @@ impl ClockState {
 
         if reset {
             self.pending = 0.0;
+            self.skipped_elapsed = 0.0;
             d = 0.0;
+            elapsed = 0.0;
         }
         self.prev_clock = clock;
         self.prev_session = session;
@@ -404,6 +437,8 @@ impl ClockState {
             // 2026-09-12, S3). A total over the cap is a capped gap.
             let total = self.pending + d;
             self.pending = 0.0;
+            let elapsed = self.skipped_elapsed + elapsed;
+            self.skipped_elapsed = 0.0;
             ClockAdvance {
                 d_clock: total.min(cfg.max_dclock),
                 reset,
@@ -412,9 +447,11 @@ impl ClockState {
                 disorder,
                 session_changed,
                 capped: capped || total > cfg.max_dclock,
+                elapsed,
             }
         } else {
             self.pending += d;
+            self.skipped_elapsed += elapsed;
             ClockAdvance {
                 d_clock: 0.0,
                 reset,
@@ -423,6 +460,7 @@ impl ClockState {
                 disorder,
                 session_changed,
                 capped,
+                elapsed: 0.0,
             }
         }
     }
@@ -437,6 +475,53 @@ mod tests {
             max_dclock: max,
             ..Default::default()
         }
+    }
+
+    /// Task 153: `elapsed` is the time that passed, uncapped, beside the
+    /// capped `d_clock`: across a capped gap it is the whole gap, a skipped
+    /// row's time joins the next accepted row's, a session change counts the
+    /// column's step when the clock runs on and the session's gap when it
+    /// restarts, and a reset or the first row is 0.
+    #[test]
+    fn elapsed_is_the_time_that_passed_uncapped() {
+        let v = |x: f64| Some(ClockValue::F64(x));
+        let mut c = ClockState::new();
+        let cfg = cfg(2.0);
+        assert_eq!(c.advance(&cfg, v(0.0), None, true).elapsed, 0.0);
+        let gap = c.advance(&cfg, v(5.0), None, true);
+        assert_eq!((gap.d_clock, gap.elapsed, gap.capped), (2.0, 5.0, true));
+        // Two skipped rows, each a step of 1.5, then an accepted one a step
+        // of 1 later: 4 of time, capped to 2 for the models.
+        assert_eq!(c.advance(&cfg, v(6.5), None, false).elapsed, 0.0);
+        c.advance(&cfg, v(8.0), None, false);
+        let after = c.advance(&cfg, v(9.0), None, true);
+        assert_eq!((after.d_clock, after.elapsed), (2.0, 4.0));
+
+        let sessions = ClockCfg {
+            max_dclock: 2.0,
+            session_gap: Some(SessionGap::Gap(30.0)),
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        c.advance(&sessions, v(10.0), Some(1), true);
+        // The clock runs on: one unit passed, whatever the model forgets.
+        let on = c.advance(&sessions, v(11.0), Some(2), true);
+        assert_eq!(
+            (on.d_clock, on.elapsed, on.session_changed),
+            (2.0, 1.0, true)
+        );
+        // The clock restarts: the session's gap is the only measure there is.
+        let restart = c.advance(&sessions, v(0.0), Some(3), true);
+        assert_eq!(restart.elapsed, 30.0);
+
+        let reset = ClockCfg {
+            session_gap: Some(SessionGap::Reset),
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        c.advance(&reset, v(0.0), Some(1), false);
+        let r = c.advance(&reset, v(4.0), Some(2), true);
+        assert_eq!((r.reset, r.elapsed), (true, 0.0));
     }
 
     /// The gap between two temporal values is taken in integer nanoseconds,

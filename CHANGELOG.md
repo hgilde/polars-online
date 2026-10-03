@@ -68,10 +68,24 @@ carries breaking changes, and any change to the numbers a model returns.
   rows `d` clock units apart, not `1 / (1 - λ)`; the Kish size likewise.
   `emit_selected` and `emit_averaged` rank each slot at its own halflife.
   `label_delay` without a clock counts every row of the group, a skipped one
-  included, and a capped gap releases the held rows as a session change
-  does. The README's account of the doubled stream is the current one: every
+  included. The README's account of the doubled stream is the current one: every
   residual diagnostic parts from it. `hmm`'s `transition` is the prior's
   mean, not seeded counts. No numbers move.
+
+### Fixed
+
+- **`label_delay` no longer learns a label before its delay has passed**
+  (task 153). A break -- a gap past `max_dclock`, or a session change --
+  released every held row at once, so a forward label was learned before it
+  was known wherever the break was shorter than the delay: with a 10-unit
+  delay and a 5-unit cap, an 8-unit gap learned two labels early, and a
+  session change with no gap at all learned nine. The delay now counts the
+  time that passed on the clock column, skipped rows included, and
+  `session_gap` where a session change restarts the clock; a break's events
+  (the lag rings' clear, `session_shrink`'s blend) wait with the row after it
+  and run when that row is learned, so the models run one delay behind,
+  events included. Where a break is longer than the delay, as overnight, the
+  release is where it was.
 
 ### Added
 

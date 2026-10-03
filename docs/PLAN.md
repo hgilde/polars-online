@@ -3569,9 +3569,10 @@ note, not a task.
         with no alias: the delay between a row and the learning of its
         target, as `po.stream.embargo` writes it out as data.
       - **The embargo is the only release, and nothing defaults it**
-        (decided 2026-10-02). A row is learned once its embargo has elapsed
-        on the bank's clock, *t* + embargo, and never before its target is
-        known; with no embargo, a row is learned where it sits once its
+        (decided 2026-10-02). A row is learned once its embargo has passed in
+        elapsed time -- the clock column's own steps, and `session_gap` where
+        a session change restarts the clock (task 153) -- and never before its
+        target is known; with no embargo, a row is learned where it sits once its
         target is known. The embargo means the same for every target, a
         plain column or an expression: a forward expression's window
         cannot close before *t* + w, so an embargo covering the window loses
@@ -3594,17 +3595,15 @@ note, not a task.
         `label_delay`: a fit with a delay of 5 rows and one with none over
         the same rows less the 5 still waiting predict new rows identically,
         bit for bit, with and without decay.)
-      - **An embargo longer than `max_dclock` is refused**, for every
-        target: a gap past the cap releases every held row, so a longer
-        embargo learns a label before its horizon has passed -- a plain
-        forward column with a one-hour embargo and a five-minute cap learns,
-        after a ten-minute gap, labels eleven minutes old. **Open, the
-        user's call:** with the embargo covering the window, this caps every
-        forward window at `max_dclock`, so a one-hour forward VWAP needs a
-        cap of an hour, which changes the decay across every gap. An
-        expression target's window is cut at such a gap, so its early
-        release learns nothing from after it; the rule could hold for plain
-        columns alone, the one rule that would tell the kinds apart.
+      - **No cap on the embargo** (decided 2026-10-02). A break releases
+        nothing early (task 153): the embargo counts elapsed time, and a
+        break's events wait with the row after it. So an embargo of any
+        length is honest for every kind of target, and a forward window may
+        be longer than `max_dclock`. The rule that refused an embargo longer
+        than `max_dclock` -- written because a break released every held row,
+        so a plain forward column with a one-hour embargo and a five-minute
+        cap learned, after a ten-minute gap, labels eleven minutes old -- and
+        its plain-column exception are gone.
       - **The held rows are bounded by one embargo of each group's rows**,
         and the docs state it: there is no row cap, so a denser stream holds
         proportionally more.
@@ -3619,22 +3618,18 @@ note, not a task.
       - **Each row is scored and emitted as it arrives.** It is held, with
         only its own columns the target expression reads, until the window
         core resolves it.
-      - **The bank releases a row when its embargo has elapsed and the
+      - **The bank releases a row when its embargo has passed and the
         window core has resolved it**: the window closes, a gap or session
         change cuts it, or a reset discards it. The target expression is
         evaluated by Polars on the rows each chunk resolves, then held until
         the embargo has passed. With an embargo of at least the window the
-        embargo is the later of the two: the bank's clock caps a run of
-        skipped rows as one step where the core caps each step, so the bank
-        reaches *t* + embargo no sooner than the core reaches *t* + w. A gap
-        past `max_dclock` or a session change releases every held row, as
-        `label_delay` does (the models' lag rings are cleared there,
-        docs/REVIEW-E54-E64.md L2), and the core cuts every window open
-        across it, so those rows are resolved. **Open for the review:** a
-        run of rows the spec skips totalling more than `max_dclock` while
-        each step stays under it, which the bank reads as a capped gap and
-        the core does not, so the bank would release rows whose windows the
-        core still holds open.
+        embargo is the later of the two: with no break between, the core's
+        steps are the clock column's, so elapsed time reaches *t* + w no
+        sooner than the core does, and a break cuts the window. A break's
+        events -- the lag rings' clear, the blend -- wait with its row and run
+        when it is learned (task 153; docs/REVIEW-E54-E64.md L2). The case
+        the review was to settle, a run of skipped rows the bank read as a
+        capped gap and the core did not, is gone with the early release.
       - **The window core sees every row with a value**, including rows the
         spec skips for a null feature: a target depends on the prices ahead,
         not on whether the model could use a row's features. Clock events on
@@ -3672,10 +3667,10 @@ note, not a task.
         and none; `fit` taking both, ending in the state of an embargoed
         fit; `predict` unaffected; a target with no forward operator
         refused.
-      - The embargo seen through task 152's clocks: on every row not just
-        after a break, the scored row's clock less the learned row's, on the
-        bank's capped clock, is at least the embargo, and the next row the
-        bank holds is less than one embargo back.
+      - The embargo seen through task 152's clocks: on every row the scored
+        row's clock less the learned row's is at least the embargo in elapsed
+        time, and the next row the bank holds is less than one embargo back,
+        across gaps and session changes alike.
 
 - [x] 105. **`po.prep` renamed `po.stream`, and the rules every function in
       it follows — split from task 78 on 2026-09-25; built 2026-09-28** (the
@@ -6194,12 +6189,12 @@ is not, since the model alone has `0.0` and `3.5` there.
         pair per spec, no `@h` suffix: every instance of a grid learns the
         same rows at the same time (a drift reset restarts a model, not the
         release).
-      - **The countdown runs on the bank's clock**, capped by `max_dclock`
-        with skipped rows' time folded in; the fields show the clock column.
-        So across a capped gap the difference between them is longer than
-        the delay by the gap's uncapped part, and right after a gap or a
-        session change, which release every held row, it can be shorter.
-        The docs say both.
+      - **The delay counts elapsed time on the clock column** (task 153),
+        so on every row `scored_clock` less `learned_clock` is at least the
+        delay, and the next held row is less than one delay back. Where a
+        session change restarts the clock, the two clocks are in different
+        sessions' units and the session's gap counts between them; the docs
+        say so.
       - **`predict`** scores against the saved state, so `learned_clock` is
         the fit's last learned row on every row it scores.
       - **The state** keeps the last learned row's clock, and each held row
@@ -6212,6 +6207,48 @@ is not, since the model alone has `0.0` and `3.5` there.
       `Datetime` clock exact to the nanosecond in each unit; a reset and a
       group's first row null; a zero-weight row never shown as learned;
       chunk invariance, save and load, `predict`.
+
+- [x] 153. **`label_delay` learned labels early at a break -- built
+      2026-10-02** (the user: "Why not simply consider the max dclock or
+      session gap a time delta and deliver rows as defined by it?", then
+      "Yes" to fixing it now). A break -- a gap past `max_dclock`, or a
+      session change -- released every held row at once, because its events
+      (the lag rings' clear, `corrchange`'s span, `session_shrink`'s blend)
+      ran when the break's row arrived, and a held row learned after them
+      would have been paired across the break or blended (review L2). So a
+      forward label was learned before it was known wherever a break was
+      shorter than the delay: measured with a 10-unit delay and a 5-unit
+      cap, an 8-unit gap learned two labels early, and a session change with
+      no gap learned nine. Capping the delay at `max_dclock`, as task 104
+      proposed, closed the gaps and not the sessions.
+
+      - **The delay counts elapsed time**, `ClockAdvance::elapsed`: the
+        clock column's own steps, uncapped, skipped rows' time included, and
+        `session_gap` where a session change restarts the clock (a clock may
+        restart at a session; `max_dclock` and `session_gap` say how much a
+        model forgets across a break, not how long it lasted -- counted as
+        time, a session gap longer than its real step released rows early).
+      - **A break's events wait in the buffer with the row after it** -- or,
+        raised on skipped rows, with the next accepted row, carried across a
+        chunk boundary in the stream's state (`HeldBreak`) -- and run when
+        that row is learned, after every row before the break. The models
+        run one delay behind, events included. A reset still acts on arrival
+        and drops the buffer.
+      - The data summary counts a break where it arrived. A spec without a
+        delay is unchanged, bit for bit; where a break is longer than the
+        delay, as overnight, the release is where it was. New fields are
+        `#[serde(default)]` within the unreleased schema 21.
+
+      Tests: at every row, the rows learned are the rows whose delay has
+      passed in elapsed time, counted from the frame, across a capped gap
+      shorter than the delay, a session change with no gap and a clock that
+      restarts at a session; the delayed bank ends as a plain bank fed the
+      matured rows, with breaks inside the last delay; `ew_cov`'s lagged
+      co-moments are the plain run's over the matured rows with breaks
+      shorter than the delay (L2 kept); a break on a skipped row survives any
+      chunking, the carry dropped is caught at chunk sizes 1, 3 and 81;
+      `ClockAdvance::elapsed` against hand-worked steps. The four count
+      tests failed on the old build.
 
 - [x] 148. **The docs say what the code does: the 2026-10-01 findings --
       built 2026-10-02.** Size S. Each was a wrong or missing sentence,

@@ -547,12 +547,13 @@ spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 # downstream of the label moves with it -- the prediction, sigma, resid_z, the metrics,
 # break detection, the conformal interval, n_eff and min_periods all see only labels
 # that had really arrived.
-#   - the clock is the model's own (capped by max_dclock, skipped rows' time included),
-#     which is what makes the release depend on the clock alone and survive any chunking
+#   - the delay counts the time that passed on the clock column, skipped rows included,
+#     not the capped step the model decays by; session_gap where a session restarts the
+#     clock. So the release depends on the rows alone and survives any chunking
 #   - with no clock column, one unit is one row of the group, a skipped row included:
 #     label_delay=20 is twenty rows
-#   - a reset drops the rows still waiting; a session change or a gap capped by
-#     max_dclock releases them in order
+#   - a break releases nothing early: its events wait with the row after it, and run
+#     when that row is learned; a reset drops the rows still waiting
 #   - rows still waiting when the stream ends are never learned from
 #   - the waiting rows live in the state and are saved with it: one row's values per
 #     row inside the delay, per group

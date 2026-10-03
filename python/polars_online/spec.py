@@ -108,9 +108,12 @@ sees a stream* is the guide to them; this is the reference.
     of the future before it predicts the rows in between. What: each row is
     scored where it sits and held back from learning until the clock has moved
     this much further on; the residual, ``sigma``, the metrics, drift, the
-    conformal band, ``n_eff`` and ``min_periods`` all see it then. A reset
-    drops the held rows; a session change or a gap capped by ``max_dclock``
-    releases them in order. Units: clock units, or without a ``clock`` the
+    conformal band, ``n_eff`` and ``min_periods`` all see it then. The delay
+    counts the time that passed on the clock column, skipped rows included --
+    not the capped step the models decay by -- and ``session_gap`` where a
+    session change restarts the clock. A break releases nothing early: its
+    events wait with the row after it, and run when that row is learned. A
+    reset drops the held rows. Units: clock units, or without a ``clock`` the
     group's rows, a skipped row included.
 ``group``, ``group_close``
     One model state per value of the ``group`` column. ``group_close`` says

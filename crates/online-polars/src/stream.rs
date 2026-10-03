@@ -1513,17 +1513,38 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
     }
 }
 
+/// A break's events while they wait in the `label_delay` buffer: a session
+/// change, the long-run blend it asks for, and a gap past `max_dclock`
+/// (docs/PLAN.md task 153). A skipped row's wait with the next accepted row,
+/// across a chunk boundary too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct HeldBreak {
+    pub session_changed: bool,
+    pub blend: bool,
+    pub capped: bool,
+}
+
+impl HeldBreak {
+    fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// One accepted row waiting for its label to mature (`label_delay`,
 /// docs/ENHANCEMENTS.md E47).
 ///
 /// It carries everything the models need to be stepped with later: the row
 /// itself, the clock delta it arrived with -- so replaying the buffer in
 /// order gives the models exactly the gap sequence they would have seen
-/// without the delay -- and the clock still to elapse before it is released.
+/// without the delay -- the time still to pass before it is released, and
+/// the break it arrived after, whose events run when it is learned
+/// (docs/PLAN.md task 153).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingRow {
-    /// Clock units still to pass before this row is learned from. Every
-    /// accepted row's delta counts down against it.
+    /// Time still to pass before this row is learned from: every accepted
+    /// row's elapsed time ([`online_core::ClockAdvance::elapsed`]) counts it
+    /// down, the clock column's own steps rather than the capped delta, so
+    /// a break never releases a row before its delay has passed.
     pub remaining: f64,
     /// The delta the row arrived with, replayed when it is released.
     pub d_clock: f64,
@@ -1531,6 +1552,17 @@ pub struct PendingRow {
     pub xs: Vec<f64>,
     /// `None` for a target that was null on the row.
     pub ys: Vec<Option<f64>>,
+    /// The break before this row -- a session change (with the long-run
+    /// blend `session_shrink` asks for) or a gap past `max_dclock`, on this
+    /// row or on rows skipped since the last accepted one -- applied to the
+    /// models when the row is learned, after every row before the break.
+    /// Applied when the row arrived, it forced every held row out first.
+    #[serde(default)]
+    pub session_changed: bool,
+    #[serde(default)]
+    pub blend: bool,
+    #[serde(default)]
+    pub capped: bool,
 }
 
 /// Serialized per-stream state: the clock plus each halflife's model.
@@ -1591,6 +1623,10 @@ pub struct StreamState {
     /// did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<PendingRow>,
+    /// The break skipped rows raised since the last accepted row, waiting
+    /// for the next one (docs/PLAN.md task 153). Skipped when there is none.
+    #[serde(default, skip_serializing_if = "HeldBreak::is_none")]
+    pub held_break: HeldBreak,
     /// Per model instance, the prediction each row in `pending` was *scored*
     /// with, in the same order (review 2026-09-12, C21): the one thing a
     /// replay cannot recompute, and what the residual diagnostics fold when
@@ -1717,6 +1753,9 @@ pub struct Stream {
     label_delay: Option<f64>,
     /// Rows accepted but not yet released into the models, oldest first.
     pending: Vec<PendingRow>,
+    /// The break skipped rows raised since the last accepted row, waiting
+    /// for the next one ([`HeldBreak`]).
+    held_break: HeldBreak,
     /// Per model instance, the score-time prediction of each row in
     /// `pending`, in the same order (C21); see [`StreamState::score_pred`].
     score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
@@ -2291,6 +2330,7 @@ impl Stream {
             notified: vec![Notified::default(); slots.len()],
             label_delay: spec.label_delay.as_ref().map(Span::value),
             pending: Vec::new(),
+            held_break: HeldBreak::default(),
             score_pred: slots
                 .iter()
                 .map(|_| std::collections::VecDeque::new())
@@ -2324,6 +2364,7 @@ impl Stream {
             },
             notified: self.notified.clone(),
             pending: self.pending.clone(),
+            held_break: self.held_break,
             score_pred: self
                 .score_pred
                 .iter()
@@ -2482,6 +2523,7 @@ impl Stream {
             return Err("saved state's pending rows do not fit this spec".into());
         }
         stream.pending = saved.pending.clone();
+        stream.held_break = saved.held_break;
         // The held rows' clock per instance. A schema-14 file has none, and
         // its loader rebuilds it as 0.10.0 did at every chunk boundary: the
         // sum over the rows still held.
@@ -2629,6 +2671,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                elapsed: adv.elapsed,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
                 session_changed: adv.session_changed,
@@ -2685,9 +2728,11 @@ impl Stream {
             )
             .ok()?;
         let mut pending = self.pending.clone();
+        let mut held_break = self.held_break;
         Self::apply_label_delay(
             self.label_delay,
             &mut pending,
+            &mut held_break,
             &mut plans,
             features,
             targets,
@@ -2794,21 +2839,11 @@ impl Stream {
         self.clock = clock_state;
         self.rows_seen = rows_seen;
 
-        // ---- label_delay: hold each row back until its label matures ----
-        // Rewrites the plan list into (release, ..., score this row) order,
-        // and hands the released rows' values out beside it. Release depends
-        // on the clock alone, so chunking cannot move a single one.
-        let released = Self::apply_label_delay(
-            self.label_delay,
-            &mut self.pending,
-            &mut plans,
-            features,
-            targets,
-        );
-
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
-        // nothing; per row in row order, so chunking cannot move a bit.
+        // nothing; per row in row order, so chunking cannot move a bit; and
+        // before `label_delay` moves a break's events onto the row that
+        // learns them, so a break counts where it arrived.
         if let Some(summary) = self.summary.as_mut() {
             for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
@@ -2826,6 +2861,19 @@ impl Stream {
                 }
             }
         }
+
+        // ---- label_delay: hold each row back until its label matures ----
+        // Rewrites the plan list into (release, ..., score this row) order,
+        // and hands the released rows' values out beside it. Release depends
+        // on the rows alone, so chunking cannot move a single one.
+        let released = Self::apply_label_delay(
+            self.label_delay,
+            &mut self.pending,
+            &mut self.held_break,
+            &mut plans,
+            features,
+            targets,
+        );
 
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
@@ -2907,28 +2955,37 @@ impl Stream {
     }
 
     /// Rewrite a chunk's plan list so each accepted row is *scored* where it
-    /// sits and *learned from* only once the model's clock has moved
-    /// `label_delay` further on (docs/ENHANCEMENTS.md E47). A no-op, and one
-    /// `Option` test, for a spec without a delay.
+    /// sits and *learned from* only once `label_delay` has passed
+    /// (docs/ENHANCEMENTS.md E47). A no-op, and one `Option` test, for a
+    /// spec without a delay.
     ///
     /// The rule is one line: at each accepted row, every buffered row whose
     /// wait has run out is released -- in arrival order, each replaying the
     /// clock delta it arrived with, so the models see exactly the sequence of
     /// gaps they would have seen without the delay -- and then the row itself
-    /// is scored and buffered. Release therefore depends on the clock alone,
-    /// which is what makes it chunk-invariant.
+    /// is scored and buffered. The wait counts the time that passed, the
+    /// clock column's own steps ([`online_core::ClockAdvance::elapsed`]), not
+    /// the capped delta: `max_dclock` and `session_gap` say how much a model
+    /// forgets across a break, not how long it lasted. Release therefore
+    /// depends on the rows alone, which is what makes it chunk-invariant.
     ///
-    /// Two events empty the buffer, because after them the clock no longer
-    /// speaks about what is in it. A **reset** drops it: the state those rows
-    /// would teach is being thrown away. A **session change** releases it in
-    /// order first: one session's clock does not measure time in the next, so
-    /// a row still waiting at the boundary would otherwise wait for a
-    /// deadline that never comes.
+    /// A break releases nothing early (docs/PLAN.md task 153). Its events --
+    /// the lag rings' clear at a gap past `max_dclock` or a session change,
+    /// and `session_shrink`'s blend -- wait in the buffer with the row that
+    /// raised them, or with the next accepted row when a skipped row raised
+    /// them, and run when that row is learned: after every row before the
+    /// break, before every row after it, so no ring pairs rows across it
+    /// (docs/REVIEW-E54-E64.md L2). Applied when the row arrived, they had
+    /// forced every held row out first, and a label shorter-lived than the
+    /// delay was learned before it was known. The models run one delay
+    /// behind, events included. Only a **reset** acts on arrival: it drops
+    /// the buffer, since the state those rows would teach is gone.
     ///
     /// Returns the released rows' values, indexed by `RowPlan::pending`.
     fn apply_label_delay(
         label_delay: Option<f64>,
         pending: &mut Vec<PendingRow>,
+        held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
@@ -2938,22 +2995,20 @@ impl Stream {
         };
         let mut released: Vec<PendingRow> = Vec::new();
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
-        // One template for every replayed row: only `pending` and the event
-        // flags differ, and a replay never emits, never wants coefficients
-        // and never counts as a row of the frame.
+        // One template for every replayed row: only `pending` and the
+        // break's events differ, and a replay never emits, never wants
+        // coefficients and never counts as a row of the frame.
         let replay = |slot: usize, row: &PendingRow| RowPlan {
             ri: usize::MAX,
             i: usize::MAX,
             pending: slot,
             d_clock: row.d_clock,
-            // The clock and session events stay with the row of the frame
-            // that raised them, and both empty the buffer, so a replayed row
-            // never carries one.
+            elapsed: 0.0,
             reset: false,
-            blend: false,
-            session_changed: false,
+            blend: row.blend,
+            session_changed: row.session_changed,
             backwards: false,
-            capped: false,
+            capped: row.capped,
             accept: true,
             want_coef: false,
             emit: false,
@@ -2961,60 +3016,48 @@ impl Stream {
             buffered: false,
             w: row.w,
         };
+        // The events of rows skipped since the last accepted one fall before
+        // the next accepted row, so they wait with it, across a chunk
+        // boundary too (`held_break` is the stream's).
         for plan in plans.drain(..) {
-            if !plan.accept {
-                // A skipped row teaches nothing and waits for nothing; its
-                // clock time is already folded into the next accepted row's
-                // delta, which is what counts the buffer down. Its *events*
-                // still reach the buffer: `run_instance` applies a skipped
-                // row's reset, blend and lag clear before its accept test, so
-                // a reset here left the old session's rows waiting to be
-                // replayed into the fresh model, and a session change or a
-                // capped gap released them across the break (review
-                // 2026-09-12, C5). The same two rules as an accepted row's.
-                if plan.reset {
-                    pending.clear();
-                } else if plan.session_changed || plan.capped {
-                    for row in pending.drain(..) {
-                        released.push(row);
-                        out.push(replay(released.len() - 1, released.last().unwrap()));
-                    }
-                }
-                out.push(plan);
-                continue;
-            }
             if plan.reset {
                 // The models restart at this row -- and the reset is applied
-                // here, not `delay` later, because the point of it is that
+                // here, not a delay later, because the point of it is that
                 // the state is no longer about this stream. The rows waiting
                 // to teach that state go with it.
                 pending.clear();
-            } else {
+                *held_break = HeldBreak::default();
+            }
+            // The break's events run when its row is learned, not here.
+            let quiet = RowPlan {
+                session_changed: false,
+                blend: false,
+                capped: false,
+                ..plan
+            };
+            if !plan.accept {
+                // A skipped row teaches nothing and waits for nothing; its
+                // time is folded into the next accepted row's, which is what
+                // counts the buffer down, and its events wait with that row.
+                held_break.session_changed |= plan.session_changed;
+                held_break.blend |= plan.blend;
+                held_break.capped |= plan.capped;
+                out.push(quiet);
+                continue;
+            }
+            if !plan.reset {
                 for row in pending.iter_mut() {
-                    row.remaining -= plan.d_clock;
+                    row.remaining -= plan.elapsed;
                 }
-                // A session change and a capped gap both say the rows
-                // behind this one are no longer adjacent to it, and both
-                // make the models drop what is indexed by rows back when
-                // this row is scored. Everything still waiting has to be
-                // learned *before* that happens, or it is replayed into a
-                // ring that was just cleared for it -- pairing rows across
-                // the very break the clear was for
-                // (docs/REVIEW-E54-E64.md L2).
-                let ready = if plan.session_changed || plan.capped {
-                    pending.len()
-                } else {
-                    pending.iter().take_while(|r| r.remaining <= 0.0).count()
-                };
+                let ready = pending.iter().take_while(|r| r.remaining <= 0.0).count();
                 for row in pending.drain(..ready) {
                     released.push(row);
                     out.push(replay(released.len() - 1, released.last().unwrap()));
                 }
             }
             // The row itself: scored from the state as it now stands, and
-            // buffered with the delta it arrived with. The event it carries
-            // rides with it, so a session change or a blend reaches the
-            // models in the same place in the sequence.
+            // buffered with the delta it arrived with and the break before
+            // it.
             let i = plan.i;
             pending.push(PendingRow {
                 remaining: delay,
@@ -3025,16 +3068,15 @@ impl Stream {
                     .iter()
                     .map(|t| Some(t[i]).filter(|v| usable(*v)))
                     .collect(),
+                session_changed: held_break.session_changed || plan.session_changed,
+                blend: held_break.blend || plan.blend,
+                capped: held_break.capped || plan.capped,
             });
-            // Scored from the state as it now stands. The row's own clock or
-            // session event applies here, where it happened: both have
-            // already emptied the buffer, so the models are caught up to this
-            // point and there is nothing left for the event to be out of
-            // order with.
+            *held_break = HeldBreak::default();
             out.push(RowPlan {
                 learn: false,
                 buffered: true,
-                ..plan
+                ..quiet
             });
         }
         *plans = out;
@@ -3114,6 +3156,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                elapsed: 0.0,
                 reset: false,
                 blend: false,
                 session_changed: false,
@@ -3478,6 +3521,9 @@ struct RowPlan {
     /// for a row read from the columns.
     pending: usize,
     d_clock: f64,
+    /// The time that passed since the previous accepted row, uncapped: what
+    /// counts the `label_delay` buffer down (docs/PLAN.md task 153).
+    elapsed: f64,
     reset: bool,
     blend: bool,
     /// The session id differed from the previous row's.

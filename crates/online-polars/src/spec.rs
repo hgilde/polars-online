@@ -1661,7 +1661,8 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     // *grew* (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN
     // poisons the clock. Zero froze the clock, and every positive gap
     // then read as a break, so `label_delay` released each held label on
-    // the next row: no decay is `halflife = "inf"`, or no clock. Infinity
+    // the next row (since task 153 a break releases nothing early): no
+    // decay is `halflife = "inf"`, or no clock. Infinity
     // took the break away, and handed a model an infinite step at a
     // session change.
     if let Some(m) = p.max_dclock {
@@ -1935,8 +1936,9 @@ pub struct Spec {
     /// required with a clock. It caps the step between two rows a model
     /// learns from, so a run of skipped rows hands the row after it at most
     /// this much clock (review 2026-09-12, S3); a step the ceiling cut is a
-    /// break, which clears `ew_cov`'s and `marginal`'s lagged co-moments
-    /// and releases `label_delay`'s held rows, adjacency being broken.
+    /// break, which clears `ew_cov`'s and `marginal`'s lagged co-moments,
+    /// adjacency being broken -- under `label_delay`, when the row after the
+    /// break is learned (docs/PLAN.md task 153).
     #[serde(default)]
     pub max_dclock: Option<Span>,
     #[serde(default)]
@@ -2134,13 +2136,18 @@ pub struct Spec {
     /// the conformal interval, `n_eff` and `min_periods` only once its label
     /// would really have been known.
     ///
-    /// The clock is the model's own: the raw column capped by `max_dclock`,
-    /// with skipped rows' time folded in, which is what makes release
-    /// chunk-invariant. With no `clock` column that is one unit per row of
-    /// the group, a skipped row included, so `label_delay = 20` is twenty
-    /// rows. A reset drops the buffer (the state it would teach is gone); a
-    /// session change or a gap capped by `max_dclock` releases it in order,
-    /// since the clock no longer measures time across either.
+    /// The delay counts the time that passed: the clock column's own steps,
+    /// skipped rows' time included, not the capped delta the models decay by
+    /// (`max_dclock` and `session_gap` say how much a model forgets across a
+    /// break, not how long it lasted), and the session's gap where a session
+    /// change restarts the clock (docs/PLAN.md task 153). Release depends on
+    /// the rows alone, which makes it chunk-invariant. With no `clock`
+    /// column that is one unit per row of the group, a skipped row included,
+    /// so `label_delay = 20` is twenty rows. A reset drops the buffer (the
+    /// state it would teach is gone). A break releases nothing early: its
+    /// events -- the lag rings' clear, `session_shrink`'s blend -- wait with
+    /// the row after it and run when that row is learned, so the models run
+    /// one delay behind, events included.
     #[serde(default)]
     pub label_delay: Option<Span>,
     /// One state per key.

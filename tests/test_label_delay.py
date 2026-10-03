@@ -346,10 +346,11 @@ class TestTheStreamContract:
         fresh.fit_predict(df.tail(100).with_columns(t=pl.Series(np.arange(100.0))))
         assert bank.gram("m")[0]["n_eff"] == pytest.approx(fresh.gram("m")[0]["n_eff"], rel=1e-12)
 
-    def test_a_session_change_releases_the_buffer(self):
-        """One session's clock does not measure time in the next, so a row
-        still waiting at the boundary is released rather than left to wait
-        for a deadline that never comes."""
+    def test_a_session_change_after_a_long_gap_releases_the_buffer(self):
+        """The delay counts the time that passed (task 153), and the night
+        between these sessions is longer than it, so every row still waiting
+        at the boundary has matured there: the first session is learned
+        whole, and the second bar its last ten."""
         n = 200
         df = frame(n=n, seed=10).with_columns(
             s=pl.Series(["a"] * 100 + ["b"] * 100),
@@ -364,13 +365,13 @@ class TestTheStreamContract:
         no_delay.fit_predict(df.head(190))
         assert bank.gram("m")[0]["n_eff"] == pytest.approx(no_delay.gram("m")[0]["n_eff"], rel=1e-6)
 
-    def test_a_capped_gap_releases_the_buffer_before_the_lag_ring_clears(self):
+    def test_a_capped_gap_clears_the_lag_ring_between_the_rows_it_parts(self):
         """A gap over ``max_dclock`` says the rows behind it are no longer
-        adjacent, and the models drop what is indexed by rows back when the
-        row carrying it is scored. Everything still waiting has to be learned
-        *before* that, or it is replayed into a ring that was just cleared
-        for it, pairing rows across the very break the clear was for
-        (docs/REVIEW-E54-E64.md L2).
+        adjacent, and the models drop what is indexed by rows back. The clear
+        waits with the row after the gap and runs when that row is learned,
+        after every row before it (task 153), so no ring pairs rows across
+        the break (docs/REVIEW-E54-E64.md L2). The gap here is longer than
+        the delay, so every held row matures at it.
 
         ``ew_cov`` with a lag is the model that shows it: the lagged
         co-moments are exactly a pairing of adjacent rows.
@@ -383,9 +384,9 @@ class TestTheStreamContract:
         df = pl.DataFrame({"x0": rng.standard_normal(n), "x1": rng.standard_normal(n), "t": t})
 
         def cov(**kw):
-            # `max_dclock` below the delay is what makes this bite: the
-            # capped row's own delta is clipped to 2, so it does not mature
-            # the whole buffer on its way past.
+            # `max_dclock` below the delay: the capped row's own delta is
+            # clipped to 2, while the 500 units that passed mature the
+            # whole buffer.
             return po.spec.ew_cov(
                 "c",
                 features=["x0", "x1"],
@@ -413,6 +414,176 @@ class TestTheStreamContract:
         short.fit_predict(df.head(matured))
         assert np.allclose(b["lag_comoments"], short.gram("c")[0]["lag_comoments"])
         assert not np.allclose(a["lag_comoments"], np.zeros_like(a["lag_comoments"]))
+
+
+class TestBreaksCountElapsedTime:
+    """docs/PLAN.md task 153: a row is learned once its delay has passed in
+    elapsed time -- the clock column's own step, skipped rows included, and
+    ``session_gap`` where a session change restarts the clock -- and a break
+    releases nothing early. A gap past ``max_dclock`` and a session change
+    released every held row at once, so a plain forward label was learned
+    before it was known wherever a break was shorter than the delay.
+
+    With no decay and unit weights ``n_eff`` is the number of rows learned,
+    so the oracle is a count: at row *s*, the rows *u* before it whose
+    elapsed time to *s* is at least the delay."""
+
+    DELAY = 10.0
+
+    @staticmethod
+    def _expected(steps, delay):
+        """Rows learned before each row is scored, from the elapsed steps."""
+        since = np.concatenate([[0.0], np.cumsum(steps[1:])])
+        return np.array([np.sum(since[s] - since[:s] >= delay) for s in range(len(steps))])
+
+    def _learned(self, df, **kw):
+        s = spec(label_delay=self.DELAY, halflife=1e9, min_periods=0.0, **kw)
+        bank = po.ModelBank([s])
+        out = bank.fit_predict(df)
+        return np.array(out["m"].struct.field("n_eff").to_list(), dtype=float), bank
+
+    def test_a_capped_gap_shorter_than_the_delay_holds_the_rows(self):
+        n = 80
+        t = np.arange(float(n))
+        t[40:] += 4.0  # a 5-unit step past a 2-unit cap, short of the delay
+        df = frame(n=n, seed=21).with_columns(t=pl.Series(t))
+        got, _ = self._learned(df, max_dclock=2.0)
+        want = self._expected(np.diff(t, prepend=t[0]), self.DELAY)
+        assert got == pytest.approx(want, rel=1e-6), np.flatnonzero(np.abs(got - want) > 1e-3)
+
+    def test_a_session_change_with_no_gap_holds_the_rows(self):
+        n = 80
+        t = np.arange(float(n))
+        df = frame(n=n, seed=22).with_columns(t=pl.Series(t), s=pl.Series(["a"] * 40 + ["b"] * 40))
+        got, _ = self._learned(df, session="s", session_gap=30.0)
+        # A session gap longer than the step is what the model forgets, not
+        # time that passed: the rows wait for the clock.
+        want = self._expected(np.diff(t, prepend=t[0]), self.DELAY)
+        assert got == pytest.approx(want, rel=1e-6), np.flatnonzero(np.abs(got - want) > 1e-3)
+
+    def test_a_clock_that_restarts_at_a_session_counts_the_session_gap(self):
+        n = 80
+        t = np.concatenate([np.arange(40.0), np.arange(40.0)])
+        df = frame(n=n, seed=23).with_columns(t=pl.Series(t), s=pl.Series(["a"] * 40 + ["b"] * 40))
+        got, _ = self._learned(df, session="s", session_gap=3.0)
+        steps = np.diff(t, prepend=t[0])
+        steps[40] = 3.0  # the column restarts, so the gap is the session's
+        want = self._expected(steps, self.DELAY)
+        assert got == pytest.approx(want, rel=1e-6), np.flatnonzero(np.abs(got - want) > 1e-3)
+
+    def test_the_state_is_the_matured_rows_across_breaks(self):
+        """With a capped gap and a session change inside the last delay of
+        the stream, the delayed bank ends as a plain bank fed only the rows
+        whose delay had passed: the same rows, in order, with every break's
+        events -- the lag rings' clear, the session's gap -- where they
+        fall. The early release learned rows a plain bank never saw."""
+        n = 120
+        t = np.arange(float(n))
+        t[110:] += 3.0
+        sess = ["a"] * 114 + ["b"] * 6
+        df = frame(n=n, seed=24).with_columns(t=pl.Series(t), s=pl.Series(sess))
+        kw = dict(halflife=40.0, max_dclock=2.0, session="s", session_gap=1.0, min_periods=0.0)
+        delayed = po.ModelBank([spec(label_delay=self.DELAY, **kw)])
+        delayed.fit_predict(df)
+        since = t[-1] - t
+        matured = int(np.sum(since >= self.DELAY))
+        plain = po.ModelBank([spec(**kw)])
+        plain.fit_predict(df.head(matured))
+        assert delayed.coef("m")["coef"].to_list() == plain.coef("m")["coef"].to_list()
+        assert delayed.gram("m")[0]["n_eff"] == plain.gram("m")[0]["n_eff"]
+
+    def test_the_lag_rings_never_pair_across_a_break_while_rows_are_held(self):
+        """The break's clear waits with its row and runs when that row is
+        learned, after every row before the break: the lagged co-moments
+        are the plain run's over the matured rows, with a gap and a session
+        change each shorter than the delay (docs/REVIEW-E54-E64.md L2)."""
+        n = 90
+        delay = 6.0
+        rng = np.random.default_rng(25)
+        t = np.arange(float(n))
+        t[30:] += 3.0  # past the cap, short of the delay
+        sess = ["a"] * 60 + ["b"] * 30
+        df = pl.DataFrame(
+            {"x0": rng.standard_normal(n), "x1": rng.standard_normal(n), "t": t, "s": sess}
+        )
+
+        def cov(**kw):
+            return po.spec.ew_cov(
+                "c",
+                features=["x0", "x1"],
+                lags=[1, 2],
+                halflife=1e9,
+                clock="t",
+                max_dclock=2.0,
+                session="s",
+                session_gap=1.0,
+                min_periods=3.0,
+                **kw,
+            )
+
+        delayed = po.ModelBank([cov(label_delay=delay)])
+        delayed.fit_predict(df)
+        matured = int(np.sum(t[-1] - t >= delay))
+        short = po.ModelBank([cov()])
+        short.fit_predict(df.head(matured))
+        a, b = delayed.gram("c")[0], short.gram("c")[0]
+        assert np.allclose(a["lag_comoments"], b["lag_comoments"], rtol=1e-12, atol=1e-15)
+        assert a["n_eff"] == pytest.approx(b["n_eff"], rel=1e-12)
+
+
+class TestBreaksOnSkippedRows:
+    """A break raised on a row the spec skips -- a null feature on the row of
+    a session change or of a capped gap -- waits with the next accepted row
+    (task 153), across a chunk boundary too."""
+
+    @staticmethod
+    def _df():
+        n = 120
+        t = np.arange(float(n))
+        t[50:] += 3.0  # a capped gap on row 50
+        sess = ["a"] * 80 + ["b"] * 40  # a session change on row 80
+        df = frame(n=n, seed=26).with_columns(t=pl.Series(t), s=pl.Series(sess))
+        holes = [50, 51, 80]
+        return df.with_columns(
+            x=pl.when(pl.int_range(pl.len()).is_in(holes)).then(None).otherwise(pl.col("x"))
+        )
+
+    # The events have to matter to be seen: the session's blend moves the
+    # fit, and both breaks clear the residual autocorrelation's ring.
+    EVENTS = dict(session_shrink=0.5, long_halflife=500.0, emit_autocorr=True)
+
+    @classmethod
+    def _spec(cls, **kw):
+        return spec(
+            max_dclock=2.0, session="s", session_gap=1.0, label_delay=6.0, **cls.EVENTS, **kw
+        )
+
+    @pytest.mark.parametrize("size", [1, 2, 3, 7, 50, 51, 81])
+    def test_chunking_cannot_move_a_break(self, size):
+        df = self._df()
+        whole = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct
+        bank = po.ModelBank([self._spec()])
+        parts = pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])[
+            "m"
+        ].struct
+        for field in ("pred_y", "resid_y", "n_eff", "autocorr_y"):
+            a, b = whole.field(field).to_numpy(), parts.field(field).to_numpy()
+            assert (np.isnan(a) == np.isnan(b)).all(), field
+            fin = np.isfinite(a)
+            assert np.array_equal(a[fin], b[fin]), field
+
+    def test_the_state_is_the_matured_rows(self):
+        df = self._df()
+        t = df["t"].to_numpy()
+        delayed = po.ModelBank([self._spec(min_periods=0.0)])
+        delayed.fit_predict(df)
+        matured = int(np.sum(t[-1] - t >= 6.0))
+        plain = po.ModelBank(
+            [spec(max_dclock=2.0, session="s", session_gap=1.0, min_periods=0.0, **self.EVENTS)]
+        )
+        plain.fit_predict(df.head(matured))
+        assert delayed.coef("m")["coef"].to_list() == plain.coef("m")["coef"].to_list()
+        assert delayed.gram("m")[0]["n_eff"] == plain.gram("m")[0]["n_eff"]
 
 
 class TestTheSurfaces:
