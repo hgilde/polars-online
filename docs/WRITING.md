@@ -18,7 +18,7 @@ assumes the reader has the author's map of it.
 |---|---|
 | [0. Write for one stated reader](#0-write-for-one-stated-reader) | a named reader, and every term defined for them |
 | [1. Every document has an altitude](#1-every-document-has-an-altitude-and-stays-at-it) | consequences up top, mechanisms in the deep docs |
-| [2. Plan the map, then give each section one job](#2-plan-the-map-then-give-each-section-one-job) | the structure, before any sentence |
+| [2. Plan the map, then give each section one job](#2-plan-the-map-then-give-each-section-one-job) | the structure, before any sentence: an opener, the kinds, then the detail |
 | [3. Code with comments](#3-code-with-comments-not-prose-that-narrates-code) | description shown as runnable code |
 | [4. Facts](#4-facts-whose-how-measured-and-where-they-live) | every claim true, sourced and checked |
 | [5. Sentences](#5-sentences) | one idea each, near 20 words |
@@ -125,10 +125,38 @@ each family opens with one line on what its members share.
 linked beside it, shows the hierarchy at a glance. The README's old
 contents was one paragraph of sixteen links, all at the same level.
 
-**Open a section with what its subsections share,** when the heading does
-not already say it. *How a bank sees a stream* opens by saying that every
-parameter in it belongs to every model, and where to find each one's units
-and default.
+**Every section opens with one to three sentences that introduce what it
+holds.** A reader decides from the opener whether the section answers their
+question. So it names the section's main contents, and which subsection
+holds each when there are several, before any subsection, table or code.
+*How a bank sees a stream* opens by saying which questions its parameters
+answer, and that most models take every one of them. What every subsection
+obeys is stated here too, before the first subsection rather than inside
+one: the rules both of *Windowed means*' subsections follow sat inside the
+first of them. A heading followed directly by a subheading is a section with
+no opener. On 2026-10-04 four of the README's eleven sections had none:
+*Introduction*, *Performance*, *Scope and integrations*, and *Versions,
+testing and development* (PHRASING: "Openers, kinds and tacked-on details").
+
+**Name the kinds first, then give each its own subsection.** This library
+does many things, and a paragraph that runs several of them together blurs
+them all. When a section covers more than one kind of functionality, its
+opener names the kinds, in a sentence or a short table. Each kind is then
+developed in a subsection of its own, or at least in a paragraph led by its
+rule in bold. A paragraph that introduces two parameters, two modes or two
+outputs is two paragraphs. The test is to list what each paragraph
+introduces: more than one item means a split.
+
+**Important information comes first, and nothing important is tacked on at
+the end.** A section's last sentences are the ones a reader is least likely
+to reach. So a rule, a caveat, a default, a limit or an exception never
+closes a section as an afterthought. It moves into the paragraph whose
+topic it is, or into the opener when the whole section depends on it. The
+signs are a last paragraph that opens with *Also*, *Note*, *One more*, *The
+exception is* or *Two limits remain*, and a lone sentence after the
+example. *Output as Arrow* ended its longest paragraph with the rule that an
+export can be read only once, and with the second call it documents,
+`predict_arrow`.
 
 **A heading's text is its anchor.** A heading may move to any level
 without breaking a link to it. Change its wording only after finding every
@@ -320,7 +348,7 @@ on rereading (PHRASING: "the task 89 rewrite"):
 | step | what to do | how it is checked |
 |---|---|---|
 | 1. measure | count the prose before touching it | the counts below |
-| 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in `docs/PLAN.md` before any prose changes |
+| 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in `docs/PLAN.md` before any prose changes, and gives each section's opener and the subsections its kinds become |
 | 3. draft | rewrite one section at a time | each section's code blocks run as it is finished |
 | 4. account | lose nothing | every number, backticked name and link target in the old text is in the new, or in the document it moved to: a diff, not a reading |
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
@@ -339,6 +367,7 @@ The counts, taken outside code blocks, tables and headings:
 | the aphorism *X, not Y* | a contrast that alludes rather than states |
 | tables, as rendered | comparisons drawn for the reader |
 | code blocks | description shown as code |
+| headings whose next non-blank line is another heading | a section with no opener (§2) |
 
 The cost words, as one pattern for `grep -E`, are
 `costs|pays|buys|for free|the price|the point`. They and the aphorisms

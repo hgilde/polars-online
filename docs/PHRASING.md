@@ -879,3 +879,33 @@ forward: the pass found the withheld reasons listed out of their declared
 order, a sentence about row order that was false of three kinds of model,
 and a lost API link. It also caught two claims its own new tables had
 invented, in cells the prose never filled, before either was committed.
+
+### README.md (the whole document; openers, kinds and tacked-on details, 2026-10-04)
+
+**Reported:** We we plan the next documentation update we ant to be sure
+that important information is presented first in a section, for example we
+do not want sentences at the end of a section that tack on important
+details. Instead we want to pull those details into the section. Each
+section should introduce its main contents in a succinct opening one to
+three sentences. This library provides a lot of functionality and it is
+easy to blur a lot of dense functionality into a single paragraph. The
+structure should be to first briefly explain the kinds of functionality
+available and then develop subsections that go into detail. Ensure that
+the phrasing and writing docs contain these best practices and then go
+through the readme again and suggest changes as you just did (redo the
+work)
+
+**Status:** open. The rules are `docs/WRITING.md` §2, "Every section opens
+with one to three sentences", "Name the kinds first" and "Important
+information comes first", with a check in §6's map step and a count in its
+table, added 2026-10-04. The README's next documentation update applies
+them.
+
+**Note:** instances in the README of 2026-10-04, each checked against the
+file. Four of its eleven sections went straight to their first subsection
+with no opener: *Introduction*, *Performance*, *Scope and integrations*, and
+*Versions, testing and development*. *Output as Arrow* ended its longest
+paragraph with the rule that an export can be read only once, and then
+named a second call, `predict_arrow`. The rules both of *Windowed means*'
+subsections obey (the clock keywords, the breaks, `partial`, the resets)
+sat inside the first subsection, *Windows as columns*.
