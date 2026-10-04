@@ -880,6 +880,23 @@ order, a sentence about row order that was false of three kinds of model,
 and a lost API link. It also caught two claims its own new tables had
 invented, in cells the prose never filled, before either was committed.
 
+### README.md:771 (the `refresh_time` example in "Series that tick at their own times")
+
+> grid = po.stream.refresh_time(ticks,             # long input: one row per tick, the series named in a column
+
+**Reported:** The example of refresh_time would be easier if it described
+ticks or showed the schema. refresh_time  does not seem to be a good name
+since it does not seem to do anything with time, or is that a mistake?
+
+**Status:** fixed (`1d0514b`): the example builds its eight ticks in the
+open and prints the grid they make, two points, and
+`tests/test_refresh_time.py` holds that table to what the code returns. The
+name stays, on the user's word: "Keep refresh_time".
+
+**Note:** the name is the literature's. Barndorff-Nielsen, Hansen, Lunde
+and Shephard define a refresh time as the first instant by which every
+series has ticked again, and the grid has a point at each.
+
 ### README.md (the whole document; openers, kinds and tacked-on details, 2026-10-04)
 
 **Reported:** We we plan the next documentation update we ant to be sure
@@ -911,3 +928,171 @@ paragraph with the rule that an export can be read only once, and then
 named a second call, `predict_arrow`. The rules both of *Windowed means*'
 subsections obey (the clock keywords, the breaks, `partial`, the resets)
 sat inside the first subsection, *Windows as columns*.
+
+### README.md:26-31 (the opener of "Introduction", and "A first fit")
+
+> polars-online fits models in a single pass over data too large to hold in
+> memory. *The idea* says how, *Terminology* defines the words this README
+> uses, and *What you can rely on* lists what holds in every run. *Install*
+> and *A first fit* then get it running.
+
+**Reported:** This section of the introduction is like a small table of
+contents for the section and does not help the user much.  “The idea says
+how, Terminology defines the words this README uses, and What you can rely
+on lists what holds in every run. Install and A first fit then get it
+running.” Instead be better to summarize the section for example, “here is
+a first model fit and an introduction to the library” the first fit should
+come first and it should explain the inputs and outputs of each line, what
+do the tables look like. The example should also include a forward rewma
+target.
+
+**Reported, then:** A section should open with a table of its contents if
+that table explains a lot about the subsections or adds more information.
+Otherwise it should be a short introduction. Do not just list the
+subsections in a sentence, they are already listed at the top.
+
+**Status:** open. The rules are `docs/WRITING.md` §2, "The introduction
+leads with its example" and "An opener never lists what follows in a
+sentence", and §3, "An example shows what goes in and what comes out",
+added 2026-10-04. In `docs/README-ITERATIONS.md` they are the ideas S11,
+S12, C4 and C5, for the README's next pass, I5.
+
+**Note:** the I4 rewrite (`4bcd286`) wrote that opener because §2's opener
+rule then asked for it: "it names the section's main contents, and which
+subsection holds each when there are several". Thirteen openers in that
+README map their subsections by name, or by *Below come* or *Below are*.
+They open *Introduction*, *Time and decay*, *A hard window*, *Row order and the two
+guarantees*, *Labels that arrive late*, *Reading the fit*, *Performance*,
+*Parallelism*, *Memory*, *Scope and integrations*, *Versions, testing and
+development*, *Versioning and the Polars pin* and *Testing*. "rewma" is
+read as `po.rewm_mean`, the forward time-weighted mean.
+
+### README.md:239-240 (the opener of "What a spec names")
+
+> A spec names its model, the columns it reads and how it treats time; its
+> first argument is the spec's own name, which its output column takes.
+
+**Reported:** This phrase is not good “A spec names its model, the columns
+it reads and how it treats time; its first argument is the spec's own name,
+which its output column takes. “ the second section of this sentence not
+only does not belong so closely joined to the first part but should be
+phrased more like “the name of the spec (the first parameter) is used to
+name the output column, for example …
+
+**Status:** open. The rules are `docs/WRITING.md` §5, "A semicolon joins
+the halves of one idea, never two ideas" and "Say what a parameter is used
+for, then show it", added 2026-10-04, with a count for each pattern in §6.
+In `docs/README-ITERATIONS.md` they are the ideas W1 and W2, for I5.
+
+**Note:** in the I4 README (`4bcd286`), 29 prose sentences outside tables
+and code join two clauses with a semicolon, and most join two ideas, as
+this one does. The inverted clause appears once more, in the null-target
+row of *Nulls, and three ways to hold a row back*: "the target's own
+weight, which its `min_weight` reads, only decays".
+
+### README.md:55-60 ("Features and targets can be windows over the stream", in "The idea")
+
+> **Features and targets can be windows over the stream.** Examples are the
+> last minute's time-weighted mean or the next minute's VWAP, written as
+> Polars expressions and computed in the same pass.
+
+**Reported:** This subsection “Features and targets can be windows over
+the stream.” Gives an example of a backward looking window but not a
+forward looking target.
+
+**Status:** open. The rule is `docs/WRITING.md` §3, "An example matches
+each part of its claim, and says which part it shows", added 2026-10-04.
+In `docs/README-ITERATIONS.md` it is the idea C6, for I5.
+
+**Note:** the paragraph does name the next minute's VWAP, but as an
+example of a window, never as a target. Nothing says which example is a
+feature and which a target, so the forward target is there only for a
+reader who already knows a VWAP over the next minute cannot be a feature.
+
+### README.md:173-182 (the local fit in "A first fit")
+
+> Give the same spec a clock, the timestamp column `ts`, and a finite
+> `half_life`, and each row's weight halves every ten minutes of `ts`.
+
+**Reported:** I will give an example rewrite of this paragraph “Give the
+same spec a clock, the timestamp column ts, and a finite half_life, and
+each row's weight halves every ten minutes of ts. The fit is now local: it
+describes the recent past, and it moves from row to row. Its state is
+weighted toward the last few tens of minutes, so serving from the final
+state predicts with the most recent fit alone. The thing to read is the
+path the coefficients took, which coef_every=1 writes on every row, rather
+than the state they ended on. That path has one row per input row: each
+stock's exposure to each signal, as it stood before that row. It is a time
+series, to plot, difference, or compare between two stocks over a day.”
+Give the same spec a clock (timestamp column ts) and half_life=“10m” and
+each row's weight halves every ten minutes of ts. The fit is now local: it
+describes the recent past, and it moves from row to row, weighted toward
+the last few tens of minutes. Because this is a local regression, remember
+that saving the final state may be of limited value. But using
+coef_every=1 produces a time series of the betas at every row, as they
+stood before learning that step. This can be used to track the betas over
+time.
+
+**Status:** open. The rules are `docs/WRITING.md` §5, "An aside inside a
+list goes in parentheses", "Give the value, not a description of it",
+"Turn a mechanism into the advice it implies" and "Lead with the setting
+and what it produces", added 2026-10-04, with both versions side by side
+in §8. In `docs/README-ITERATIONS.md` they are the ideas W3 to W6, C7 and
+E10, for I5.
+
+**Note:** one clause of the rewrite carries a fact from the README that is
+wrong: *as they stood before learning that step*. A row's `coef` is the
+fit after learning that row, and that row's `pred` came from the fit
+before it. `crates/online-polars/src/stream.rs` writes `coef` after the
+row's step has learned it, and a three-row `rls` with `coef_every=1` shows
+it: row one's `coef` is `[2/3, 2/3]`, the fit that row taught, and row
+two's `pred` of 2.0 is read from it. The README's *Coefficients* section
+says so. The error has been in the first fit since `9f6a5f9`
+(2026-09-16), first as a code comment and, in I4, as prose; it is E10.
+
+### README.md:70-74 ("The diagnostics are out-of-sample too", in "The idea")
+
+> **The diagnostics are out-of-sample too.** Residual spread, break
+> detection, a choice among several settings and running accuracy are
+> computed from what the models have already learned.
+
+**Reported:** the phrase “The diagnostics are out-of-sample too.” Is very
+far from the place that too is referencing, an indication that this
+paragraph should be combined with the referenced paragraph and simplified.
+
+**Reported, then:** For example the paragraph should start with something
+like “Every prediction and diagnostic is out-of-sample”
+
+**Status:** open. The rule is `docs/WRITING.md` §5, "A *too* far from what
+it points at marks one topic split in two", added 2026-10-04, with a count
+in §6. In `docs/README-ITERATIONS.md` they are the ideas S13 and W7, for
+I5.
+
+**Note:** the *too* leans on *Every prediction is out-of-sample*, at
+README.md:42, four paragraphs and 28 lines earlier. The I4 README has 38
+prose sentences with a back-reference of this kind: 17 with *too* meaning
+*also*, 17 with *also*, 3 with *the same way* and 1 with *as well*. Eight
+more use *too* as in *too large*, which points at nothing.
+
+### README.md:38-40 ("The paragraphs below", in "The idea")
+
+> The paragraphs below say what that pass guarantees, when row order
+> matters, and how a bank is run, saved and checked.
+
+**Reported:** This phrase is not useful “The paragraphs below say what
+that pass guarantees, when row order matters, and how a bank is run, saved
+and checked.” And should say something like “here are a few points to
+remember about fitting models with polars-online”
+
+**Status:** open. The rule is `docs/WRITING.md` §2, "An opener never lists
+what follows in a sentence", widened 2026-10-04 from subsections to
+paragraphs. In `docs/README-ITERATIONS.md` it is the idea S14, and S11
+grows to cover it, for I5.
+
+**Note:** the same fault as the Introduction's opener (PHRASING: "the
+opener of Introduction"), at the scale of paragraphs. The first count of
+such openers, thirteen, looked only for subsections named in the opener.
+Widened to what follows, it finds seventeen: the four more are *The idea*,
+*What a spec names* (*follow the example*), *Throughput* (*The paragraphs
+under the tables*) and *Window operators* (*the paragraphs after it
+give*).

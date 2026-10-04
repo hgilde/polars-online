@@ -7233,7 +7233,25 @@ tick, and that the series holding it up has a count near 1.
       is `one_run`, and the list of models that refuse a relative target
       sits after a colon. `tests/test_weight_scale.py` calls `kalman`'s
       `obs_var / w` a variance, as E4 has it. The verdict goes into
-      `docs/README-ITERATIONS.md`.
+      `docs/README-ITERATIONS.md`. It came the same day and is recorded
+      there, with the ideas it raised (S11 to S14, C4 to C7, W1 to W7
+      and E10) for the next pass, I5, eleven rules in WRITING §2, §3 and
+      §5, and the user's own rewrite of one paragraph beside its original
+      in §8.
+- [ ] 157. **The README rewritten as a test of every rule -- requested
+      2026-10-04.** Size L. The user's words: "Write all the rules and the
+      rewrite the readme as a test and show me the html". The rules are
+      WRITING's nine principles (its preamble) and the rules I4's verdict
+      added to §2, §3 and §5; the pass is `docs/README-ITERATIONS.md`'s I5,
+      applying every idea marked *I5* there. The README stays uncommitted
+      until the user's verdict. The map, where it moves from I4's:
+
+    | section | subsections, in order | moves |
+    |---|---|---|
+    | Introduction | A first fit (←, first) · The idea · Terminology · What you can rely on · Install | a one-line summary as the opener; the first fit installs, shows its input and output tables, and learns a forward `rewm_mean` target; *The idea* opens with *a few points to remember*, and its two out-of-sample paragraphs become one |
+    | How a bank sees a stream | as I4 | *What a spec names* opens on what a spec's name is used for |
+    | Performance | as I4 | a short introduction in place of the table of its subsections |
+    | every section | as I4 | an opener that lists what follows becomes a summary; a semicolon joining two ideas, and a back-reference farther than the paragraph before, are resolved |
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

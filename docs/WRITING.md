@@ -14,6 +14,23 @@ forms: a term used before it is named, a cost that does not say what is
 spent, a mechanism alluded to rather than stated, and a document that
 assumes the reader has the author's map of it.
 
+Nine principles sit above the numbered rules. They generalize the user's
+verdicts on the README's rewrites (README-ITERATIONS.md, I3 and I4), and
+were written down at the user's word on 2026-10-04: "Write all the rules".
+Each numbered rule is one way to keep one of them.
+
+| | principle | in practice |
+|---|---|---|
+| P1 | **Every sentence is about the library or the reader's task, never about the document** | no sentence lists what follows; a lead-in says what the points are for, as *here are a few points to remember about fitting models with polars-online*; a table of a section's contents opens it only when the table explains the subsections (§2) |
+| P2 | **Concrete first: show it working, then explain** | the introduction leads with its example; an example shows its input and its output; give the value, not a description of it (§2, §3, §5) |
+| P3 | **Show what is distinctive about the library early** | the first example carries what sets the library apart: a target that looks ahead, predictions made before learning, a local fit (§2, §3) |
+| P4 | **Say what it means for the reader, with the reason** | turn a mechanism into the advice it implies; why, then what (§5) |
+| P5 | **Plain spoken English, not compressed or literary phrasing** | the sentence a colleague would say aloud: say what a parameter is used for, then show it; an aside in a list goes in parentheses; no inverted clause, placeholder subject or *X rather than Y*; headings a reader scans for, such as *Terminology* (§5) |
+| P6 | **One topic, one place, led by the point to remember** | a far *too* merges two paragraphs; a semicolon never joins two ideas; nothing important is tacked on at the end (§2, §5) |
+| P7 | **Fewer ideas per paragraph, not shorter sentences** | cut a list of uses to the one that matters; secondary detail goes to the document that owns it (§1, §5) |
+| P8 | **An example is complete** | its input, its output, and every part of the claim it illustrates, each named as what it is (§3) |
+| P9 | **The opening is read hardest, and one instance stands for a pattern** | the top of the README gets the most care; a reported fault is counted and fixed everywhere it occurs (§6) |
+
 | section | what it asks of a draft |
 |---|---|
 | [0. Write for one stated reader](#0-write-for-one-stated-reader) | a named reader, and every term defined for them |
@@ -24,7 +41,7 @@ assumes the reader has the author's map of it.
 | [5. Sentences](#5-sentences) | one idea each, near 20 words |
 | [6. The pass itself](#6-the-pass-itself) | a sequence of steps, each with a check |
 | [7. Tables, not bullet lists](#7-tables-not-bullet-lists) | the shapes a comparison takes |
-| [8. The rewrite of 2026-09-23, as examples](#8-the-rewrite-of-2026-09-23-as-examples) | what these rules produced |
+| [8. Rewrites, as examples](#8-rewrites-as-examples) | what these rules produced, and a paragraph the user rewrote |
 
 ## 0. Write for one stated reader
 
@@ -125,12 +142,22 @@ each family opens with one line on what its members share.
 linked beside it, shows the hierarchy at a glance. The README's old
 contents was one paragraph of sixteen links, all at the same level.
 
-**Every section opens with one to three sentences that introduce what it
-holds.** A reader decides from the opener whether the section answers their
-question. So it names the section's main contents, and which subsection
-holds each when there are several, before any subsection, table or code.
-*How a bank sees a stream* opens by saying which questions its parameters
-answer, and that most models take every one of them. What every subsection
+**The introduction leads with its example.** A reader who has watched a
+bank run reads the idea and the terms as explanations of something seen.
+So the README's *Introduction* opens with a first fit, its inputs and
+outputs shown (§3). The idea, the terms and the guarantees follow it
+(PHRASING: "the opener of Introduction"). §1 gives the introduction that
+example as its job.
+
+**Every section opens with a short introduction, or with a table of its
+contents that explains the subsections.** A reader decides from the opener
+whether the section answers their question. A table of the subsections
+opens the section when it explains a lot about them or adds information
+(PHRASING: "the opener of Introduction"). *How a bank sees a stream* opens
+with the question each subsection answers and the parameters that answer
+it. Otherwise the opener is one to three sentences that say what the
+section offers: *here is a first model fit, and an introduction to the
+library*. What every subsection
 obeys is stated here too, before the first subsection rather than inside
 one: the rules both of *Windowed means*' subsections follow sat inside the
 first of them. A heading followed directly by a subheading, a table, a
@@ -140,10 +167,29 @@ to a subheading: *Introduction*, *Performance*, *Scope and integrations*,
 and *Versions, testing and development* (PHRASING: "Openers, kinds and
 tacked-on details").
 
+**An opener never lists what follows in a sentence.** The subsections
+are already listed at the top, in the contents table, and the bold leads
+name the paragraphs. So a sentence that walks through them tells the reader
+nothing new. One was *The idea says how, Terminology defines the words this
+README uses, and What you can rely on lists what holds in every run*. The
+user found it "like a small table of contents for the section" (PHRASING:
+"the opener of Introduction"). Another was *The paragraphs below say what
+that pass guarantees, when row order matters, and how a bank is run, saved
+and checked*. For that one the user's wording was *here are a few points to
+remember about fitting models with polars-online* (PHRASING: "The
+paragraphs below"). Its signs are a subsection's title, in italics or as a
+link, followed by *says*, *shows* or *lists*; *Below come*, *Below are* or
+*The paragraphs below say*; and *follow the example*. The test is to strip
+the names and topics of what follows from the opener: what remains must
+still say something about the content. Seventeen of the README's openers
+failed it on 2026-10-04.
+
 **Name the kinds first, then give each its own subsection.** This library
 does many things, and a paragraph that runs several of them together blurs
 them all. When a section covers more than one kind of functionality, its
-opener names the kinds, in a sentence or a short table. Each kind is then
+opener names the kinds, in a sentence or a short table. The kinds are what
+the functionality does, such as fit, save and serve, and not the titles of
+the subsections that develop them. Each kind is then
 developed in a subsection of its own, or at least in a paragraph led by its
 rule in bold. A paragraph that introduces two parameters, two modes or two
 outputs is two paragraphs. The test is to list what each paragraph
@@ -199,14 +245,33 @@ document — prose that should be code with comments"). One paragraph once
 explained that `repr(bank)` shows its specs and groups, that
 `bank.groups()` lists every group with its row count, and that
 `bank.drop_groups(...)` forgets the quiet ones. It is now a code block
-with comments (PHRASING: "A bank says what it holds", "As a query"). Where
-the output is what the reader needs to see, show the output too.
+with comments (PHRASING: "A bank says what it holds", "As a query").
 
 | the prose was | it becomes |
 |---|---|
 | what each parameter does | one spec built with every parameter in play, each on its own line with its comment |
 | what comes out of a structure | code that reads each field, with a comment saying what it holds |
 | how to use an API | the call sequence, with a comment per step |
+
+**An example shows what goes in and what comes out.** A reader cannot
+follow a call on a frame they have never seen. So an example shows its
+input, as a few rows printed in a table or as its schema, and the table
+each step returns. Its comments say what each line takes and what it
+gives. The `refresh_time` example became readable once it built its eight
+ticks in the open and printed the grid they make (PHRASING: "the
+`refresh_time` example"). The first fit is held to the same rule (PHRASING:
+"the opener of Introduction"). A printed table is a claim like any other,
+so a test holds it to what the code returns, as
+`tests/test_refresh_time.py` holds that grid.
+
+**An example matches each part of its claim, and says which part it
+shows.** *Features and targets can be windows over the stream* promised
+two things. Its examples, *the last minute's time-weighted mean or the next
+minute's VWAP*, never said which was a feature and which a target. So the
+user read it as a backward window with no forward target (PHRASING:
+"Features and targets can be windows"). A claim about features and targets
+names a feature that looks back and a target that looks ahead, each as
+what it is.
 
 **Prose that stays must carry what a comment cannot hold at comment
 length.** A reason earns its sentence: *filter after the bank, because a
@@ -307,8 +372,17 @@ given.
 **One idea per sentence.** A sentence carrying a rule, its reason and its
 exception makes the reader hold all three to get any one.
 
+**A semicolon joins the halves of one idea, never two ideas.** *A spec
+names its model, the columns it reads and how it treats time; its first
+argument is the spec's own name, which its output column takes* joined what
+a spec describes to what its name is for. The user found that the second
+half "does not belong so closely joined to the first part" (PHRASING: "the
+opener of What a spec names"). Two ideas take two sentences, and an idea on
+another topic goes to the paragraph that topic owns. The README of
+2026-10-04 had 29 prose sentences with a semicolon, most of them two ideas.
+
 **Aim near 20 words a sentence, and never 45.** Two claims joined by
-*and*, or by a semicolon, are usually two sentences. Task 89 took the
+*and* are usually two sentences. Task 89 took the
 README's mean sentence from 23.4 words to 19.9. Its sentences of 45 words
 or more went from 44 to 2, and both of those are two sentences the count
 merges (§6).
@@ -342,6 +416,52 @@ em-dash clauses and an italicised copula doing a verb's work (PHRASING:
 loop above*, must point at something the reader has just seen, in the
 document's current order (PHRASING: "As a query").
 
+**A *too* far from what it points at marks one topic split in two.**
+*The diagnostics are out-of-sample too* sat four paragraphs below *Every
+prediction is out-of-sample*, the claim its *too* leans on. The user read
+that distance as a sign that the two paragraphs are one, to be combined and
+simplified (PHRASING: "The diagnostics are out-of-sample too"). So a *too*,
+an *also* or a *the same way* points at the sentence before it, or at most
+the paragraph before. Farther than that, the two passages merge, under a
+lead that states what both share. The user's lead for this one was
+*Every prediction and diagnostic is out-of-sample*.
+
+**Say what a parameter is used for, then show it.** Name the parameter by
+what it is, say in a plain verb what it does, and give an example. The
+user's own wording is the model: *the name of the spec (the first
+parameter) is used to name the output column, for example*
+`po.spec.ewridge("ridge", ...)` *adds a column named* `ridge`. The draft
+said *its first argument is the spec's own name, which its output column
+takes*. Its inverted clause, *which its output column takes*, makes the
+reader rebuild the sentence before reading it (PHRASING: "the opener of
+What a spec names").
+
+The user rewrote one paragraph of *A first fit* to show the voice wanted
+(PHRASING: "the local fit in A first fit"), and §8 sets the two versions
+side by side. Four rules come from it.
+
+**An aside inside a list goes in parentheses.** *Give the same spec a
+clock, the timestamp column ts, and a finite half_life* reads as three
+things to give. *A clock (timestamp column `ts`) and `half_life="10m"`*
+reads as the two it is.
+
+**Give the value, not a description of it.** `half_life="10m"`, the value
+the example uses, tells the reader what to type. *A finite half_life* tells
+them only what kind of thing to look for.
+
+**Turn a mechanism into the advice it implies, and give the reason first.**
+*Its state is weighted toward the last few tens of minutes, so serving from
+the final state predicts with the most recent fit alone* left the reader to
+work out what to do. *Because this is a local regression, remember that
+saving the final state may be of limited value* says it, after its reason.
+
+**Lead with the setting and what it produces, and call the result by its
+short name.** *Using `coef_every=1` produces a time series of the betas at
+every row* names the setting, a plain verb and the result. *The thing to
+read is the path the coefficients took, which coef_every=1 writes on every
+row, rather than the state they ended on* put a placeholder subject first,
+the setting in a relative clause, and a contrast last.
+
 ## 6. The pass itself
 
 A rewrite is a sequence of steps, and each has a check that does not rely
@@ -369,7 +489,10 @@ The counts, taken outside code blocks, tables and headings:
 | the aphorism *X, not Y* | a contrast that alludes rather than states |
 | tables, as rendered | comparisons drawn for the reader |
 | code blocks | description shown as code |
-| headings whose next non-blank line is another heading, a table, a list or a code block | a section with no prose opener (§2) |
+| headings whose next non-blank line is another heading, a table, a list or a code block | a section with no opener, unless the table is one of its contents that explains the subsections (§2) |
+| openers that name a subsection followed by *says*, *shows* or *lists*, or that say *Below come*, *Below are*, *The paragraphs below say* or *follow the example* | a contents in place of a summary (§2) |
+| prose sentences with a semicolon, outside tables and code | two ideas joined, unless the halves are one idea (§5) |
+| *too* meaning *also*, *also*, *as well*, *the same way* | a back-reference to read: farther back than the paragraph before, it marks a topic split in two (§5) |
 
 The cost words, as one pattern for `grep -E`, are
 `costs|pays|buys|for free|the price|the point`. They and the aphorisms
@@ -437,10 +560,15 @@ single point, or steps that are only an order. A reason, a warning or a
 trade-off stays prose: it is an argument, and a table cell cuts an
 argument into fragments.
 
-## 8. The rewrite of 2026-09-23, as examples
+## 8. Rewrites, as examples
 
-What the rules above did to the README's own text, so a future draft has
-something concrete to be measured against:
+Two rewrites show what the rules produce, as something concrete for a
+future draft to be measured against: the task 89 rewrite of the whole
+README, and one paragraph the user rewrote by hand.
+
+### The rewrite of 2026-09-23
+
+What the rules above did to the README's own text:
 
 | before | after | rule |
 |---|---|---|
@@ -465,3 +593,45 @@ Measured the same way before and after, on paragraph boundaries (§6):
 | tables, as rendered | 15 | 37 |
 | top-level sections | 17 | 10 |
 | python blocks, all running | 59 | 59 |
+
+### A paragraph the user rewrote, 2026-10-04
+
+The user rewrote *A first fit*'s paragraph on the local fit (PHRASING:
+"the local fit in A first fit"). It went from six sentences and 124 words
+to five and 93, at about the same length a sentence, so the gain is in how
+each sentence is built.
+
+Before:
+
+> Give the same spec a clock, the timestamp column `ts`, and a finite
+> `half_life`, and each row's weight halves every ten minutes of `ts`. The
+> fit is now local: it describes the recent past, and it moves from row to
+> row. Its state is weighted toward the last few tens of minutes, so
+> serving from the final state predicts with the most recent fit alone. The
+> thing to read is the path the coefficients took, which `coef_every=1`
+> writes on every row, rather than the state they ended on. That path has
+> one row per input row: each stock's exposure to each signal, as it stood
+> before that row. It is a time series, to plot, difference, or compare
+> between two stocks over a day.
+
+After, in the user's words, with code formatting added and one fact
+corrected (§4): a row's betas are the fit *after* learning that row.
+
+> Give the same spec a clock (timestamp column `ts`) and `half_life="10m"`
+> and each row's weight halves every ten minutes of `ts`. The fit is now
+> local: it describes the recent past, and it moves from row to row,
+> weighted toward the last few tens of minutes. Because this is a local
+> regression, remember that saving the final state may be of limited
+> value. But using `coef_every=1` produces a time series of the betas at
+> every row, as they stood after learning that row. This can be used to
+> track the betas over time.
+
+| what changed | before | after | rule |
+|---|---|---|---|
+| an aside inside a list | *a clock, the timestamp column ts, and a finite half_life*: three things, apparently | *a clock (timestamp column ts) and half_life="10m"*: two | §5, an aside goes in parentheses |
+| the value | *a finite half_life* | `half_life="10m"` | §5, give the value |
+| what the final state is good for | *serving from the final state predicts with the most recent fit alone* | *Because this is a local regression, remember that saving the final state may be of limited value* | §5, the advice a mechanism implies |
+| the setting and its result | *The thing to read is the path the coefficients took, which coef_every=1 writes on every row* | *using coef_every=1 produces a time series of the betas at every row* | §5, lead with the setting |
+| where a fact sits | *weighted toward the last few tens of minutes* in the sentence about serving | the same words in the sentence about the fit they describe | §2, every paragraph serves its heading |
+| the uses | *to plot, difference, or compare between two stocks over a day* | *to track the betas over time* | §5, one idea per sentence |
+| how the sentences connect | six facts in a row | *Because …, remember … But …*: an argument | |
