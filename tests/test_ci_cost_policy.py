@@ -283,7 +283,7 @@ class TestMutationTesting:
         assert "--in-diff" in run and "mutants_report.py" in run and "--fail-on-missed" in run
 
     def test_the_weekly_pass_runs_while_public_or_by_hand(self):
-        """COST POLICY: forty-eight shards of up to four hours is not for a
+        """COST POLICY: ninety-six shards of up to four hours is not for a
         private repo's metered minutes."""
         cond = " ".join(self.MUT["jobs"]["weekly"]["if"].split())
         assert "github.event_name == 'schedule' && github.event.repository.private == false" in cond

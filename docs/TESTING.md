@@ -1401,7 +1401,7 @@ pass.
 `main` and pull request runs cargo-mutants over the lines it changed. It
 fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
 new code should come with a test that would notice it breaking. The whole of
-`online-core`, 11,138 mutants on 2026-10-03, runs weekly in forty-eight
+`online-core`, 11,138 mutants on 2026-10-03, runs weekly in ninety-six
 shards, sixteen at a time. The weekly pass runs on its schedule only while
 the repository is public, and by hand. Its survivors are reported through
 `scripts/mutants_report.py` and never gate.

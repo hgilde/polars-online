@@ -7116,6 +7116,27 @@ its lead sentence and its table's column renamed to match.
       `scripts/mutants.sh` takes the same two flags. Ticked when a pass
       finishes inside its limits, with its pace recorded here.
 
+      **The first pass, at 48 shards, did not fit** (run 37165801954,
+      dispatched 2026-10-04). GitHub's runners came in two speeds, and ten
+      of the first sixteen shards drew slow ones:
+
+    | runner | baseline build, test | a mutant, one slot | a shard of 232 |
+    |---|---|---|---|
+    | fast (shards 0, 1, 2, 7) | 41-47 s, 43-52 s | 135-148 s | finished in 2 h 13 min to 2 h 26 min |
+    | middling (9, 10) | 52-58 s, 68-69 s | 189-190 s | finished in about 3 h 7 min |
+    | slow (the other ten) | 63-69 s, 87-94 s | 229-246 s | stopped at 215 minutes, 205-221 tested |
+
+      Timeouts took 19-28% of a shard's time. The first wave tested 3,522
+      of its 3,714 mutants. One survived, `SplitMix64::choice`'s `>` against
+      `>=` in `cluster/summary.rs`, and a second missed mutant is an
+      equivalent the list names. Each stopped shard uploaded what it had
+      finished and its list, and the report, run here on the sixteen
+      uploads, named the ten short shards and exited 1. So the pass is
+      96 shards of about 116 mutants: about two hours on the slowest runner
+      measured, 55% of the stop, and about ten hours for the pass, sixteen
+      at a time. `lld`, which the job on a change's lines links with, is
+      left out of the weekly job until a pass measures what it saves.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

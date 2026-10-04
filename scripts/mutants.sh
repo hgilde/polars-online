@@ -11,7 +11,7 @@
 # of feature work; `--iterate` answers "did the survivors close?" for a tenth of
 # the cost, and `--in-diff` answers "is this branch covered?". CI runs both
 # kinds itself (.github/workflows/mutants.yml): the changed lines on every push,
-# failing on a survivor, and the whole crate weekly in forty-eight shards,
+# failing on a survivor, and the whole crate weekly in ninety-six shards,
 # reported, failing only when a shard did not finish (task 155).
 # scripts/mutants_equivalent.toml lists the mutants no test can catch.
 #

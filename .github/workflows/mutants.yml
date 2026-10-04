@@ -26,7 +26,7 @@ name: Mutants
 # online-polars and online-py, which the pytest suite covers through the
 # extension, would report most mutants as survivors when they are not.
 #
-# COST POLICY (ci.yml): the weekly pass is forty-eight shards of up to four
+# COST POLICY (ci.yml): the weekly pass is ninety-six shards of up to four
 # hours, so it runs on its schedule only while the repo is public, and by hand.
 on:
   push:
@@ -110,7 +110,7 @@ jobs:
           if-no-files-found: ignore
 
   weekly:
-    name: mutants, online-core, shard ${{ matrix.shard }} of 48
+    name: mutants, online-core, shard ${{ matrix.shard }} of 96
     if: >-
       (github.event_name == 'schedule' && github.event.repository.private == false)
       || github.event_name == 'workflow_dispatch'
@@ -124,14 +124,19 @@ jobs:
       # for CI on a push that lands while the pass runs.
       max-parallel: 16
       matrix:
-        # 11,138 mutants on 2026-10-03, about 232 a shard, dealt round-robin
-        # so no shard takes one slow file whole. By the pace measured that
-        # day a shard should need about an hour of its four (docs/PLAN.md
-        # task 155).
+        # 11,138 mutants on 2026-10-03, about 116 a shard, dealt round-robin
+        # so no shard takes one slow file whole. The first pass, at 48 shards
+        # of 232, measured GitHub's runners at 135 to 246 s a mutant, four at
+        # a time: ten of its first sixteen shards reached the 215-minute stop
+        # with 88 to 95% done. At 116, the slowest runner measured needs about
+        # two hours (docs/PLAN.md task 155).
         shard: [
           0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
           16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-          32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47
+          32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+          48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+          64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+          80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95
         ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -145,7 +150,7 @@ jobs:
       - name: cargo mutants, this shard
         run: |
           set +e
-          args=(--package online-core --shard ${{ matrix.shard }}/48 --sharding round-robin)
+          args=(--package online-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
           cargo mutants --list "${args[@]}" > listed.txt
           # Stopped inside the job's four hours, setup included, so the shard
           # still uploads what it finished and the report counts the rest.
@@ -180,4 +185,4 @@ jobs:
       # tests to write (docs/TESTING.md, "Mutation survivors"). A pass that
       # did not finish fails here, since its counts leave mutants out.
       - name: report
-        run: python3 scripts/mutants_report.py shards/* --expect-runs 48 --fail-on-incomplete
+        run: python3 scripts/mutants_report.py shards/* --expect-runs 96 --fail-on-incomplete
