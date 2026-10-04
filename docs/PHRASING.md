@@ -902,9 +902,11 @@ table, added 2026-10-04. The README's next documentation update applies
 them.
 
 **Note:** instances in the README of 2026-10-04, each checked against the
-file. Four of its eleven sections went straight to their first subsection
-with no opener: *Introduction*, *Performance*, *Scope and integrations*, and
-*Versions, testing and development*. *Output as Arrow* ended its longest
+file. Sixteen headings had no prose opener. Four of its eleven sections went
+straight to their first subsection: *Introduction*, *Performance*, *Scope
+and integrations*, and *Versions, testing and development*. Twelve
+subsections opened on code, a table or a list instead, such as *Install*,
+*What a spec names*, *Save and load* and *Development*. *Output as Arrow* ended its longest
 paragraph with the rule that an export can be read only once, and then
 named a second call, `predict_arrow`. The rules both of *Windowed means*'
 subsections obey (the clock keywords, the breaks, `partial`, the resets)

@@ -133,10 +133,12 @@ holds each when there are several, before any subsection, table or code.
 answer, and that most models take every one of them. What every subsection
 obeys is stated here too, before the first subsection rather than inside
 one: the rules both of *Windowed means*' subsections follow sat inside the
-first of them. A heading followed directly by a subheading is a section with
-no opener. On 2026-10-04 four of the README's eleven sections had none:
-*Introduction*, *Performance*, *Scope and integrations*, and *Versions,
-testing and development* (PHRASING: "Openers, kinds and tacked-on details").
+first of them. A heading followed directly by a subheading, a table, a
+list or a code block is a section with no opener. On 2026-10-04 sixteen of
+the README's headings were. Four were top-level sections that went straight
+to a subheading: *Introduction*, *Performance*, *Scope and integrations*,
+and *Versions, testing and development* (PHRASING: "Openers, kinds and
+tacked-on details").
 
 **Name the kinds first, then give each its own subsection.** This library
 does many things, and a paragraph that runs several of them together blurs
@@ -367,7 +369,7 @@ The counts, taken outside code blocks, tables and headings:
 | the aphorism *X, not Y* | a contrast that alludes rather than states |
 | tables, as rendered | comparisons drawn for the reader |
 | code blocks | description shown as code |
-| headings whose next non-blank line is another heading | a section with no opener (§2) |
+| headings whose next non-blank line is another heading, a table, a list or a code block | a section with no prose opener (§2) |
 
 The cost words, as one pattern for `grep -E`, are
 `costs|pays|buys|for free|the price|the point`. They and the aphorisms
