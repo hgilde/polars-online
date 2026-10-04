@@ -789,6 +789,34 @@ error naming the row, and nothing is interpolated. With `save_state=` and
 interval or not, as a bank does. The output looks synchronous and is not:
 each value is up to one of its own inter-tick intervals old.
 
+**A model reads the grid as it reads any frame.** Take each series' change
+between grid points, and fit on the grid's own clock, `time_refresh`. Here
+`ew_cov` tracks the three correlations, and `ewridge` regresses one
+series' change on the other two's:
+
+```python
+names = ["AAA", "BBB", "CCC"]
+grid = po.stream.refresh_time(ticks, series="symbol", names=names, clock="t", value="px")
+returns = grid.select(
+    "time_refresh",
+    *(pl.col(f"{s}_value").diff().alias(s) for s in names),  # each series' change since the last point
+)
+specs = [
+    po.spec.ew_cov("comove", features=names, stats=["corr"],
+                   clock="time_refresh", gap_cap=10.0, half_life=20.0),
+    po.spec.ewridge("beta", targets=["AAA"], features=["BBB", "CCC"],
+                    clock="time_refresh", gap_cap=10.0, half_life=20.0),
+]
+out = po.ModelBank(specs).fit_predict(returns)
+# comove: corr_AAA_BBB, corr_AAA_CCC, corr_BBB_CCC, each from the points before the row
+# beta:   pred_AAA, resid_AAA and coef: AAA's change predicted from BBB's and CCC's
+```
+
+The first grid point has no change, so both models skip it. The same chain
+runs as one query: a `LazyFrame` into `refresh_time` gives a `LazyFrame`,
+and [`lf.online.fit_predict(specs)`](#as-a-query-lfonlinefit_predict) runs
+the models in the same pass, with the same numbers.
+
 ### Windowed means, looking back or ahead
 
 **A trailing time-weighted mean with a hard cutoff, and its mirror image

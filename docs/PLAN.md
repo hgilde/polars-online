@@ -7052,7 +7052,7 @@ columns as step 1):
 
 | document | prose words | sentences | mean | 35+ | 45+ | cost words | *X, not Y* | tables | code blocks | bullets | `##` sections |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `README.md` | 18,431 | 1,011 | 18.2 | 5 | 0 | 4 | 13 | 58 | 91 (64 python) | 2 | 11 |
+| `README.md` | 18,511 | 1,016 | 18.2 | 5 | 0 | 4 | 13 | 58 | 92 (65 python) | 2 | 11 |
 | `docs/RUNNER.md` | 1,492 | 86 | 17.3 | 1 | 0 | 0 | 0 | 3 | 9 | 0 | 4 |
 | `docs/STATE-WORKFLOW.md` | 3,631 | 216 | 16.8 | 3 | 1 | 0 | 0 | 14 | 4 (3 python) | 5 | 2 |
 | `docs/OUTPUTS.md` | 293 | 19 | 15.4 | 0 | 0 | 0 | 0 | 26 | 0 | 0 | 22 |
@@ -7075,13 +7075,19 @@ STATE-WORKFLOW, whose one is in its dated research. The README's five of
 35 or more are the splitter joining a sentence to the next, which opens
 with a lowercase name (`polars-online`, `sklearn`, a path).
 
-**After the pass, two corrections from the user (2026-10-03).** The
+**After the pass, two corrections and an addition from the user
+(2026-10-03).** The
 README's opening paragraph read clunky. The pass had added the windowed
 means to its list of models, on a line it left unwrapped, so "for data too
 large to hold in memory" hung off "looking back or ahead". The first
 sentence is task 138's again, and the windowed means have a sentence of
 their own. And *Four words* is now *Terminology*, with its contents link,
-its lead sentence and its table's column renamed to match.
+its lead sentence and its table's column renamed to match. Then the user
+asked for an example of `po.stream.refresh_time` feeding a model, in the
+README and in the conversation. *Series that tick at their own times* now
+ends with one: each series' change between grid points, fitted by `ew_cov`
+and `ewridge` on the grid's own clock. It runs with the README's other
+blocks, and its query form gives the same numbers, checked when written.
 
 - [ ] 155. **The weekly mutation pass sized to finish -- requested
       2026-10-03.** Size S. The user asked "How can we ensure that the run
