@@ -355,6 +355,27 @@ def test_predict_scores_without_the_target() -> None:
 def test_what_is_refused() -> None:
     with pytest.raises(ValueError, match="holds no operator looking ahead"):
         spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
+
+
+def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_column() -> None:
+    """A formula that only looks back is a column `with_windows` makes; one of
+    the row alone is Polars' own `with_columns`, which `with_windows` refuses.
+    The refusal used to send both to `with_windows` (docs/README-ITERATIONS.md,
+    E11), so following it failed for the second."""
+    with pytest.raises(ValueError, match="po.stream.with_windows"):
+        spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
+    with pytest.raises(ValueError, match="with_columns") as plain:
+        spec((pl.col("price") - pl.col("mid")).alias("rel"))
+    assert "with_windows" not in str(plain.value)
+    # And the advice works: with_windows refuses the plain formula, as the
+    # message now says, and makes the column from the one that looks back.
+    frame = pl.DataFrame({"t": [0.0, 1.0, 2.0], "mid": [1.0, 2.0, 3.0], "price": [1.5, 2.5, 3.5]})
+    with pytest.raises(ValueError, match="with_columns"):
+        po.stream.with_windows(frame, rel=pl.col("price") - pl.col("mid"), clock="t", gap_cap=10.0)
+    made = po.stream.with_windows(
+        frame, back=po.ewm_mean("mid", half_life=H) - pl.col("mid"), clock="t", gap_cap=10.0
+    )
+    assert made.columns == ["t", "mid", "price", "back"]
     with pytest.raises(ValueError, match="needs a name"):
         spec(po.rewm_mean("mid", half_life=H, window_size=W))
     with pytest.raises(ValueError, match="group_close does not work with a formula target"):

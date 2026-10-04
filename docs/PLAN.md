@@ -7253,6 +7253,18 @@ tick, and that the series holding it up has a count near 1.
     | Performance | as I4 | a short introduction in place of the table of its subsections |
     | every section | as I4 | an opener that lists what follows becomes a summary; a semicolon joining two ideas, and a back-reference farther than the paragraph before, are resolved |
 
+      *E11, fixed 2026-10-04 on the user's word ("Fix the bug and commit
+      that").* Found while checking the verdict's note on relative targets:
+      a target formula known at its own row was refused with "add it as a
+      column with po.stream.with_windows", which refuses a formula with no
+      operator in turn. The refusal now names the call that works: Polars'
+      `with_columns` for a formula with no operator at all, `with_windows`
+      for one whose operators only look back, in the spec's Python check
+      (`_spec.py`, `formula_target`) and in the Rust parser a TOML or JSON
+      target goes through (`targets.rs`). Tests:
+      `tests/test_formula_targets.py`, which also follows each piece of
+      advice, and `targets::tests::a_formula_target_that_is_not_one_is_refused`.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

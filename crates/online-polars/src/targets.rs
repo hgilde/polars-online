@@ -346,10 +346,19 @@ impl<'de> Deserialize<'de> for Targets {
                             )));
                         }
                         if !tree.has_forward_operator() {
+                            // Name the call that makes the column: with_windows
+                            // for a formula over operators looking back, Polars'
+                            // with_columns for one of the row alone, which
+                            // with_windows refuses in turn.
+                            let make = if tree.operators().is_empty() {
+                                "Polars' with_columns, since it holds no operator at all"
+                            } else {
+                                "po.stream.with_windows"
+                            };
                             return Err(serde::de::Error::custom(format!(
                                 "target {name:?}: a formula target holds at least one operator \
                                  looking ahead (rewm_mean, rewm_sum or rewm_rate); a formula \
-                                 known at its own row is a column, po.stream.with_windows"
+                                 known at its own row is a column: make it with {make}"
                             )));
                         }
                         defs.push(TargetDef::formula(name, tree));
@@ -506,6 +515,15 @@ mod tests {
         let back = r#"["ewm_mean", ["col", "mid"], {"half_life": "10s"}]"#;
         let err = json(&format!(r#"[{{"name": "f", "formula": {back}}}]"#)).unwrap_err();
         assert!(err.contains("looking ahead"), "{err}");
+        // A formula that looks back is a column with_windows makes; one of the
+        // row alone is Polars' own with_columns, which with_windows refuses.
+        // Each refusal names the call that works.
+        assert!(err.contains("po.stream.with_windows"), "{err}");
+        let plain = r#"["-", ["col", "price"], ["col", "mid"]]"#;
+        let err = json(&format!(r#"[{{"name": "f", "formula": {plain}}}]"#)).unwrap_err();
+        assert!(err.contains("looking ahead"), "{err}");
+        assert!(err.contains("with_columns"), "{err}");
+        assert!(!err.contains("with_windows"), "{err}");
         let err = json(r#"[{"name": "f"}]"#).unwrap_err();
         assert!(
             err.contains("names a `column`, or a `name` and a `formula`"),

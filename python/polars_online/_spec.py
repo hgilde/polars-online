@@ -454,10 +454,17 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
             f'give it with .alias("...")'
         )
     if not _formula.looks_ahead(tree):
+        # Name the call that makes the column: with_windows for a formula over
+        # operators looking back, Polars' with_columns for one of the row alone,
+        # which with_windows refuses in turn (README-ITERATIONS, E11).
+        if _formula.operators(tree):
+            make = "add it as a column with po.stream.with_windows"
+        else:
+            make = "it holds no operator at all, so add it as a column with Polars' with_columns"
         raise ValueError(
             f"{who}: target {name!r} holds no operator looking ahead (rewm_mean, rewm_sum or "
-            f"rewm_rate), so it is known at its own row: add it as a column with "
-            f"po.stream.with_windows and name the column as the target"
+            f"rewm_rate), so it is known at its own row: {make}, and name the column as the "
+            f"target"
         )
     return {"name": name, "formula": tree}
 
