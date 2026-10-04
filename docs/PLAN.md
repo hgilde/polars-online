@@ -7094,8 +7094,10 @@ seemed to do nothing with time. The section now says what a refresh time
 is, the first instant by which every series has ticked since the last, and
 opens with eight ticks and the two-point grid they make. That table is held
 by `test_the_readme_example_is_the_grid_it_shows`. The name is the
-literature's (Barndorff-Nielsen, Hansen, Lunde and Shephard); renaming it
-is the user's call. Reading the grid against its docs found `n_obs`
+literature's (Barndorff-Nielsen, Hansen, Lunde and Shephard), and other
+libraries use it: R's `highfrequency` has `refreshTime()`, and Python's
+`hfhd` has `refresh_time`. The user kept it on 2026-10-04, after the
+alternative raised, `refresh_grid`, turned out to be used nowhere. Reading the grid against its docs found `n_obs`
 described wrongly twice. The docstring said the grid keeps a series' first
 tick of an interval, and `refresh.rs`'s module comment said a large count
 marks the series holding the grid up. Both now say the grid keeps the last
