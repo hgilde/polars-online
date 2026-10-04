@@ -7137,6 +7137,32 @@ its lead sentence and its table's column renamed to match.
       at a time. `lld`, which the job on a change's lines links with, is
       left out of the weekly job until a pass measures what it saves.
 
+      **The 96-shard pass finished, and its time limit hid survivors** (run
+      37177791033, 2026-10-04). Every shard tested all its mutants, in 64 to
+      127 minutes, and the pass took 11.5 hours: 60 of its 96 shards drew
+      slow runners. The report counted 9,249 caught, 11 survived, 3
+      equivalent, 1,588 timed out and 287 unviable. Fourteen per cent timed
+      out, where TESTING's rule calls a few per cent untrustworthy. Rerun
+      here with a limit of ten times the baseline, 25 of those timeouts
+      sampled at random came out:
+
+    | outcome | of 25 | test time against the solo baseline |
+    |---|---:|---|
+    | survived | 19 | 1.3 to 2.3 times, at four jobs on fourteen cores |
+    | caught | 4 | 1.6 to 6.3 times |
+    | still hung | 2 | past ten times |
+
+      A survivor runs the whole suite while the other jobs share the cores,
+      and the baseline runs alone. At fourteen jobs on fourteen cores, close
+      to the runner's four on four, the nineteen took 1.7 to 6.3 times the
+      baseline, median 5.2. So the limit of three times counted most
+      survivors as timeouts: about 1,200 of the 1,588, by the sample. It
+      did so in the job on a change's lines too, which fails on a survivor
+      and so could pass one. The multiplier is 10 in both jobs and in
+      `scripts/mutants.sh`. By the sample, it adds about 16 minutes to a
+      slow shard, so the slowest stays near two-thirds of the stop. Ticked
+      when a pass at this limit finishes with timeouts at a few per cent.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

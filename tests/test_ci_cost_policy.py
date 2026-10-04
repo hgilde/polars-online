@@ -300,16 +300,19 @@ class TestMutationTesting:
             self.MUT["jobs"]["weekly"]
         )
 
-    def test_every_run_skips_the_doctests_and_caps_a_hang(self):
+    def test_every_run_skips_the_doctests_and_leaves_a_survivor_room(self):
         """Task 155: a test run of online-core took 67 seconds, 39 of them its
-        three doctests, and a mutant's time limit is a multiple of that run,
-        so one that loops ran for over six minutes. Every run skips the
-        doctests, which CI and the gate still run, and stops a mutant at
-        three times the baseline."""
+        three doctests, and a mutant's time limit is a multiple of that run.
+        Every run skips the doctests, which CI and the gate still run. The
+        multiplier is 10, not the 3 first tried: a survivor runs the whole
+        suite while the other jobs share the runner's cores, and nineteen
+        survivors took 1.7 to 6.3 times the solo baseline at fourteen jobs on
+        fourteen cores. At 3 the first full pass counted 1,588 timeouts, and
+        19 of 25 sampled were survivors."""
         for job in ("changed", "weekly"):
             run = self._runs(self.MUT["jobs"][job])
             assert "--cargo-test-arg=--tests" in run, job
-            assert "--timeout-multiplier 3" in run, job
+            assert "--timeout-multiplier 10" in run, job
 
     def test_a_run_stops_before_its_job_limit_and_counts_what_it_missed(self):
         """A job killed at its limit uploads and reports nothing. So each run

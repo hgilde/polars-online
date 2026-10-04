@@ -34,12 +34,13 @@ source scripts/env.sh
 # multiple of the baseline's test run, so two settings keep it short, as in CI
 # (task 155). `--cargo-test-arg=--tests` skips the doctests, which the gate
 # still runs: on 2026-10-03 the test binaries took 22 s here and the three
-# doctests 39 s more. `--timeout-multiplier 3` stops a mutant at three times the
-# baseline, where cargo-mutants' default is five: about a minute, where it was
-# over five. Raise it on a busy machine, where a legitimate test can run that
-# slow. `--minimum-test-timeout` lowers cargo-mutants' 20 s floor, which no
-# longer binds.
-args=(--package online-core -j 4 --minimum-test-timeout 10 --cargo-test-arg=--tests --timeout-multiplier 3)
+# doctests 39 s more. `--timeout-multiplier 10` stops a mutant at ten times the
+# baseline. The baseline runs alone, and a survivor runs the whole suite beside
+# the other jobs: here, at fourteen jobs, nineteen survivors took 1.7 to 6.3
+# times it, so the 3 first tried counted most survivors as timeouts.
+# `--minimum-test-timeout` lowers cargo-mutants' 20 s floor, which no longer
+# binds.
+args=(--package online-core -j 4 --minimum-test-timeout 10 --cargo-test-arg=--tests --timeout-multiplier 10)
 # Anything starting with `-` is a cargo-mutants flag; a bare word is a file to
 # scope to. That keeps the common `./scripts/mutants.sh some/file.rs` working
 # while allowing `--iterate` and `--in-diff <(...)` through: a `-`-flag takes
