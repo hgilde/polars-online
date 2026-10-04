@@ -19,6 +19,7 @@ timeout without meaning to.
 """
 
 import pathlib
+import re
 import subprocess
 import tomllib
 
@@ -46,6 +47,12 @@ class TestEveryJobIsBounded:
     """A job with no timeout runs for GitHub's default six hours. On Windows
     that is 720 billed minutes for one hung step; on macOS, 3,600."""
 
+    #: Jobs allowed past two hours, with their cap. The weekly mutation
+    #: shards run on Linux, only while the repository is public or by hand,
+    #: and stop cargo-mutants well inside the limit; four hours is the
+    #: backstop for a slow week (task 155).
+    LONGER = {("mutants.yml", "weekly"): 240}
+
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
         for job, spec in ALL[name].get("jobs", {}).items():
@@ -54,7 +61,17 @@ class TestEveryJobIsBounded:
             if "uses" in spec:
                 continue
             assert "timeout-minutes" in spec, f"{name}:{job} has no timeout-minutes"
-            assert 0 < spec["timeout-minutes"] <= 120, f"{name}:{job} timeout is not sane"
+            cap = self.LONGER.get((name, job), 120)
+            assert 0 < spec["timeout-minutes"] <= cap, f"{name}:{job} timeout is not sane"
+
+    def test_a_longer_job_runs_only_on_linux_while_public_or_by_hand(self):
+        for (name, job), _ in self.LONGER.items():
+            spec = ALL[name]["jobs"][job]
+            assert spec["runs-on"] == "ubuntu-latest", (name, job)
+            cond = " ".join(spec["if"].split())
+            assert "github.event.repository.private == false" in cond, (name, job)
+            assert cond.replace("(", "").replace(")", "").count("||") == 1, (name, job)
+            assert "github.event_name == 'workflow_dispatch'" in cond, (name, job)
 
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_workflow_has_a_concurrency_group(self, name):
@@ -266,7 +283,7 @@ class TestMutationTesting:
         assert "--in-diff" in run and "mutants_report.py" in run and "--fail-on-missed" in run
 
     def test_the_weekly_pass_runs_while_public_or_by_hand(self):
-        """COST POLICY: sixteen shards of up to two hours is not for a
+        """COST POLICY: forty-eight shards of up to four hours is not for a
         private repo's metered minutes."""
         cond = " ".join(self.MUT["jobs"]["weekly"]["if"].split())
         assert "github.event_name == 'schedule' && github.event.repository.private == false" in cond
@@ -282,6 +299,35 @@ class TestMutationTesting:
         assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in self._runs(
             self.MUT["jobs"]["weekly"]
         )
+
+    def test_every_run_skips_the_doctests_and_caps_a_hang(self):
+        """Task 155: a test run of online-core took 67 seconds, 39 of them its
+        three doctests, and a mutant's time limit is a multiple of that run,
+        so one that loops ran for over six minutes. Every run skips the
+        doctests, which CI and the gate still run, and stops a mutant at
+        three times the baseline."""
+        for job in ("changed", "weekly"):
+            run = self._runs(self.MUT["jobs"][job])
+            assert "--cargo-test-arg=--tests" in run, job
+            assert "--timeout-multiplier 3" in run, job
+
+    def test_a_run_stops_before_its_job_limit_and_counts_what_it_missed(self):
+        """A job killed at its limit uploads and reports nothing. So each run
+        stops cargo-mutants first, with SIGINT, which keeps the outcomes it
+        finished; it writes the list of the mutants it was given; and the
+        report fails on a run that tested fewer, or a shard that sent
+        nothing (task 155)."""
+        for job in ("changed", "weekly"):
+            j = self.MUT["jobs"][job]
+            run = self._runs(j)
+            m = re.search(r"timeout --signal=INT (?:--kill-after=\S+ )?(\d+)m cargo mutants", run)
+            assert m, job
+            assert int(m.group(1)) + 15 <= j["timeout-minutes"], job
+            assert "cargo mutants --list" in run and "listed.txt" in run, job
+        shards = len(self.MUT["jobs"]["weekly"]["strategy"]["matrix"]["shard"])
+        report = self._runs(self.MUT["jobs"]["weekly-report"])
+        assert f"--expect-runs {shards}" in report and "--fail-on-incomplete" in report
+        assert "--fail-on-incomplete" in self._runs(self.MUT["jobs"]["changed"])
 
     def test_a_push_cannot_cancel_the_weekly_pass(self):
         assert "github.event_name" in self.MUT["concurrency"]["group"]

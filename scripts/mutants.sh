@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Mutation testing on online-core (docs/TESTING.md T-D4).
 #
-#   ./scripts/mutants.sh                      # the whole crate (9,079 mutants, ~8 h at 4 jobs)
-#   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (~1 min)
+#   ./scripts/mutants.sh                      # the whole crate (11,138 mutants on 2026-10-03; over a day at 4 jobs)
+#   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (85 mutants: minutes)
 #   ./scripts/mutants.sh --iterate            # only what the last run did not catch
 #   ./scripts/mutants.sh --in-diff <(git diff main...)     # only code a diff touches
 #   python3 scripts/mutants_report.py mutants.out          # the survivors, less the equivalents
@@ -11,7 +11,8 @@
 # of feature work; `--iterate` answers "did the survivors close?" for a tenth of
 # the cost, and `--in-diff` answers "is this branch covered?". CI runs both
 # kinds itself (.github/workflows/mutants.yml): the changed lines on every push,
-# failing on a survivor, and the whole crate weekly in sixteen shards, reported.
+# failing on a survivor, and the whole crate weekly in forty-eight shards,
+# reported, failing only when a shard did not finish (task 155).
 # scripts/mutants_equivalent.toml lists the mutants no test can catch.
 #
 # What it does: makes one small change to the source (flip an operator, replace
@@ -27,14 +28,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/env.sh
 
-# `--minimum-test-timeout` overrides cargo-mutants' 20s floor. Mutations that
-# make a loop spin are detected by timing out, and they are common here (any
-# comparison that ends an iteration can be flipped), so that floor dominates the
-# run: the first full pass spent ~58 of its 120 minutes on 175 timeouts. The
-# whole online-core suite runs in under a second, so 10s is a 10x margin even
-# with four jobs competing. Raise it if a legitimate test is ever misreported as
-# a timeout.
-args=(--package online-core -j 4 --minimum-test-timeout 10)
+# Mutations that make a loop spin are detected by timing out, and they are
+# common here (any comparison that ends an iteration can be flipped): the first
+# full pass spent ~58 of its 120 minutes on 175 timeouts. A mutant's limit is a
+# multiple of the baseline's test run, so two settings keep it short, as in CI
+# (task 155). `--cargo-test-arg=--tests` skips the doctests, which the gate
+# still runs: on 2026-10-03 the test binaries took 22 s here and the three
+# doctests 39 s more. `--timeout-multiplier 3` stops a mutant at three times the
+# baseline, where cargo-mutants' default is five: about a minute, where it was
+# over five. Raise it on a busy machine, where a legitimate test can run that
+# slow. `--minimum-test-timeout` lowers cargo-mutants' 20 s floor, which no
+# longer binds.
+args=(--package online-core -j 4 --minimum-test-timeout 10 --cargo-test-arg=--tests --timeout-multiplier 3)
 # Anything starting with `-` is a cargo-mutants flag; a bare word is a file to
 # scope to. That keeps the common `./scripts/mutants.sh some/file.rs` working
 # while allowing `--iterate` and `--in-diff <(...)` through: a `-`-flag takes

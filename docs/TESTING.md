@@ -590,7 +590,7 @@ Rust tests reach, and the mutants no test catches.
 | T-W8's case-insensitivity | no test covers it; T-W8's file locking and long paths are tested | open since 2026-09-25 |
 | a network share path, `\\server\share\...` | out of a CI runner's reach | untested (T-W3) |
 | `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests [above](#the-window-operators-and-formula-targets), and by review rounds R1 to R9 |
-| the weekly mutation pass over all of `online-core` | it reports without failing, and no figure from it is recorded here | [Mutation survivors](#mutation-survivors) |
+| the weekly mutation pass over all of `online-core` | no pass has finished: the one run before task 155 failed at its baseline, and its shards were too large for their limit | resized by task 155; [Mutation survivors](#mutation-survivors) |
 
 The last three entries closed on 2026-09-24: T-A2's numpy `lasso_ref` for the
 pred path, T-D4's mutation testing in CI, and T-W3's paths on a Windows
@@ -629,7 +629,7 @@ every pull request. It fails on a survivor that
 `scripts/mutants_equivalent.toml` does not list. That file names 23
 equivalent mutants, each with the reason no input can tell it from the
 original. The weekly pass over all of `online-core`, 11,138 mutants on
-2026-10-03, reports without failing.
+2026-10-03, reports its survivors without failing on them.
 
 **Equivalent mutants are left alone deliberately: no test can kill them.**
 Two from the first passes show the kind. Flipping `Ftrl::weight`'s
@@ -786,9 +786,11 @@ look like an error. It looked like good news.
 2616. Run 2, under load, had 425. Run 3, idle, had 18 of 690. Above a few
 percent, the numbers underneath are not trustworthy.
 
-`--minimum-test-timeout 10` in `scripts/mutants.sh` makes a pass faster, but
-*more* sensitive to this. It is right for an idle machine and wrong for a
-busy one.
+A shorter limit makes a pass faster, but *more* sensitive to this. Since
+task 155 a mutant stops at three times the baseline's test run, where
+cargo-mutants' default is five, in CI and in `scripts/mutants.sh`. That is
+right for an idle machine and a CI runner, and wrong for a busy one: raise
+it there.
 
 #### Where the 217 stood after run 3
 
@@ -1399,10 +1401,17 @@ pass.
 `main` and pull request runs cargo-mutants over the lines it changed. It
 fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
 new code should come with a test that would notice it breaking. The whole of
-`online-core`, 11,138 mutants on 2026-10-03, runs weekly in sixteen shards
-that each fit the two-hour job limit. It is reported through
-`scripts/mutants_report.py` and never gates. The weekly pass runs on its
-schedule only while the repository is public, and by hand.
+`online-core`, 11,138 mutants on 2026-10-03, runs weekly in forty-eight
+shards, sixteen at a time. The weekly pass runs on its schedule only while
+the repository is public, and by hand. Its survivors are reported through
+`scripts/mutants_report.py` and never gate.
+
+**Every run is sized to finish, and says when it did not** (task 155). It
+skips the doctests, which took 39 of the 67 seconds a test run of
+`online-core` cost, and stops a mutant at three times the baseline's test
+run. It stops itself inside its job's limit and lists the mutants it was
+given, so the report fails on a run that tested fewer, or a shard that sent
+nothing.
 
 The changed-lines scope is `online-core` and `online-polars/src/span.rs`,
 chosen by measurement. cargo-mutants runs `cargo test` only, and the pytest

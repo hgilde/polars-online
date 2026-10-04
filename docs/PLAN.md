@@ -7083,6 +7083,39 @@ sentence is task 138's again, and the windowed means have a sentence of
 their own. And *Four words* is now *Terminology*, with its contents link,
 its lead sentence and its table's column renamed to match.
 
+- [ ] 155. **The weekly mutation pass sized to finish -- requested
+      2026-10-03.** Size S. The user asked "How can we ensure that the run
+      will finish?", then "Make the changes and push and run it now". No
+      weekly pass had finished. Its one run, on 2026-09-27, failed at its
+      baseline on a `corrchange` test, fixed that day in `0166135`. And its
+      sixteen shards of about 700 mutants could not fit two hours.
+
+    | measured on 2026-10-03 | value |
+    |---|---|
+    | `online-core`'s mutants | 11,138 |
+    | the pace on GitHub's runner, from the 45-mutant run of 2026-09-27 | 37 minutes, two at a time: about 92 s a mutant |
+    | a test run of `online-core`, here | 67 s: the test binaries 22 s, the three doctests 39 s |
+    | a rebuild after one file changes, here | 36 s |
+    | a mutant's time limit, five times the baseline | 377 s on the runner |
+
+    | change | why |
+    |---|---|
+    | every run skips the doctests (`--cargo-test-arg=--tests`) | they were most of each test run, and of the baseline every limit is a multiple of; CI and the gate still run them |
+    | a mutant stops at three times the baseline (`--timeout-multiplier 3`) | a mutant that loops ran for over six minutes |
+    | the weekly pass is 48 shards, dealt round-robin, sixteen at a time | about 232 mutants a shard, from every file; four of the account's twenty concurrent jobs stay free |
+    | a weekly shard's job may run four hours, and cargo-mutants stops at 215 minutes; the job on a change's lines stops it at 100 of its 120 | a job killed at its limit uploads and reports nothing |
+    | each run lists the mutants it was given, and `mutants_report.py` fails on a run that tested fewer, or a shard that sent nothing | a pass cut short read as a smaller clean one |
+
+      Checked in a clean clone on `comp.rs`: the baseline's test run fell to
+      22 s, and the limit to 68 s. Stopped by SIGINT after 10 of its 23
+      mutants, cargo-mutants exited 1 and its `outcomes.json` held those 10,
+      valid. The cost policy's two-hour cap gains one exception, the weekly
+      shard at four hours, held to Linux and to a public repository or a
+      dispatch. Pinned by three tests in `tests/test_mutants_report.py` and
+      three in `tests/test_ci_cost_policy.py`, each failing first.
+      `scripts/mutants.sh` takes the same two flags. Ticked when a pass
+      finishes inside its limits, with its pace recorded here.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

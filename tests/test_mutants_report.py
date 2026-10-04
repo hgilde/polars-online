@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -90,3 +93,50 @@ def test_a_change_with_no_mutable_code_is_reported_as_such(tmp_path):
     empty.mkdir()
     text, missed = report_mod.report([empty], root=tmp_path, equivalents=[])
     assert missed == 0 and "No mutants" in text
+
+
+def _listed(run: Path, n: int) -> None:
+    """The run's list of the mutants it was given, as the jobs write it."""
+    lines = "".join(f"src/m.rs:{i}:9: replace + with - in f\n" for i in range(n))
+    (run / "listed.txt").write_text(lines, encoding="utf-8")
+
+
+def test_a_run_that_stopped_early_is_incomplete(tmp_path):
+    """A shard stopped at its time limit tests fewer mutants than it was
+    given, and its outcomes stop where it stopped. The report counted what
+    it found, so a shard cut short read as a smaller clean one (task 155)."""
+    run = _run(tmp_path, [("", 2, "replace > with >=")])
+    _listed(run, 5)
+    assert report_mod.incomplete([run]) == ["mutants.out: tested 2 of the 5 mutants it was given"]
+    text, _ = report_mod.report([run], root=tmp_path, equivalents=[])
+    assert "### Incomplete" in text and "tested 2 of the 5" in text
+
+
+def test_a_run_that_sent_nothing_is_missing(tmp_path):
+    """A shard killed outright uploads nothing: the report knows how many
+    runs to expect, and a path that is not a directory is not one."""
+    run = _run(tmp_path, [])
+    _listed(run, 1)
+    assert report_mod.incomplete([run, tmp_path / "absent"], expect_runs=3) == [
+        "2 of the 3 runs reported nothing"
+    ]
+
+
+def test_completeness_and_survivors_set_the_exit_apart(tmp_path):
+    """The weekly report fails on an incomplete pass, never on a survivor;
+    the job on a change's lines fails on both."""
+    run = _run(tmp_path, [("", 2, "replace < with <=")])
+    _listed(run, 2)
+    assert report_mod.incomplete([run], expect_runs=1) == []
+    env = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+
+    def exit_code(*flags: str) -> int:
+        script = str(REPO / "scripts/mutants_report.py")
+        cmd = [sys.executable, script, str(run), *flags]
+        return subprocess.run(cmd, capture_output=True, env=env, check=False).returncode
+
+    assert exit_code("--expect-runs", "1", "--fail-on-incomplete") == 0
+    assert exit_code("--fail-on-missed") == 1
+    _listed(run, 3)
+    assert exit_code("--fail-on-incomplete") == 1
+    assert exit_code() == 0

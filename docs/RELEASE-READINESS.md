@@ -1001,17 +1001,17 @@ what the fixes changed.
 
 ### The policy, as the test holds it
 
-`tests/test_ci_cost_policy.py` parses every workflow, in 46 cases over
+`tests/test_ci_cost_policy.py` parses every workflow, in 49 cases over
 eight classes:
 
 | class | what it asserts |
 |---|---|
-| `TestEveryJobIsBounded` | every job in every workflow has a timeout, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead |
+| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead. The one longer job is the weekly mutation shard, at four hours, on Linux and only while public or by hand |
 | `TestTheMatrixDefaultsToCheap` | lint stays on Linux and never builds the extension; the expensive runners are opt-in; the visibility test fails safe on a missing field; macOS is reachable only by a manual dispatch or the repository being public |
 | `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
-| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request; the weekly pass runs only while public or by hand, and reports |
+| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at three times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer |
 | `TestTheRustTestsLinkNoPython` | every workflow and the local gate leave `online-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 
