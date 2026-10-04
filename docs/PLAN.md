@@ -7183,6 +7183,58 @@ tick, and that the series holding it up has a count near 1.
       slow shard, so the slowest stays near two-thirds of the stop. Ticked
       when a pass at this limit finishes with timeouts at a few per cent.
 
+- [x] 156. **The README rewritten by the ideas of two reviews -- requested
+      2026-10-04.** Size L. The user's words: "Keep a doc of these ideas,
+      we will be iterating on the readme and we want to keep track of which
+      promos get us to a better doc. Then rewrite the readme according to
+      those ideas and present me the html rendering". The record is
+      `docs/README-ITERATIONS.md`: this pass is its I4, and the ideas it
+      applies are those marked *I4* there. They come from two reviews of
+      2026-10-04, the second under WRITING §2's new rules: an opener of one
+      to three sentences for every section, the kinds of functionality
+      named first and each developed below, and nothing important tacked on
+      at the end. Counted before: 18,614 prose words, 1,024 sentences at
+      18.2 words, 5 of 35+, 0 of 45+, 60 tables, 16 headings with no prose
+      opener. The map, before any prose changes (`←` marks what moves):
+
+    | section | subsections, in order | moves |
+    |---|---|---|
+    | Introduction | The idea · Terminology · What you can rely on (←) · Install · A first fit | an opener; *The idea*'s last paragraph as bold-led paragraphs; *A first fit* opens with its last paragraph's point (←) |
+    | How a bank sees a stream | What a spec names · Time and decay, as `#### Clock types and units` and `#### Sessions, gaps and steps back` · Convergence without a decay · A hard window · A local fit along any feature · Row order and the two guarantees (←) · Groups · Weights · Warm-up · Labels that arrive late · Nulls, and three ways to hold a row back | a note naming the examples' frames; the null rule into *What a spec names* (←); `weight_sum` into *Warm-up* (←); the huge-half-life warning into *Convergence* (←) |
+    | Preparing a stream | Windowed means, looking back or ahead (←), with its three subsections · Series that tick at their own times | the rules every window form obeys into *Windowed means*' body (← *Windows as columns*) |
+    | Running a bank | As a query · In a loop · Outside a live Python process · Output as Arrow | `lf.online.predict` into *Serving without learning* (←) |
+    | Saving, loading and serving | Save and load · Serving without learning · Reading a state without this library | the release refusal into the opener (← the loading table's last row) |
+    | Reading the fit | What a bank holds · Output field names (←) · Coefficients · The running sums behind a fit · One row per finished group · Reading a correlation matrix | |
+    | Diagnostics, selection and evaluation | Per-row diagnostics · Conformal intervals · Choosing among a grid's settings (new) · Evaluating an output frame · Evaluating a stream too large to hold · Data whose truth is known | the selection switches out of a comment (←); the conformal rule out of a comment (←) |
+    | Models | the model table first, then the shared rules, the legend and the notation · Linear models · Moments and correlation · Clustering and classification · Sequential tests and regimes as `seqtest`, `corrchange`, `bocpd` (←), `hmm` | family openers that map their entries; a shared-parameter table and a half-life table under *Linear models* |
+    | Performance | Throughput · Parallelism (←) · Chunk size · Memory · Tuning memory with Polars' own settings · Window operators (←) · Against scikit-learn | the read-ahead into *Tuning memory* (← *Parallelism*) |
+    | Scope and integrations | What this is not · Databases: DuckDB and ADBC (←) · Pathway | |
+    | Versions, testing and development | Versioning and the Polars pin, as This package's own versioning (←), What is pinned, How the pin moves, Which interfaces carry a promise · Testing · Development · License | the dated runs cut, since RELEASE-READINESS holds them |
+
+      *Constraints.* Every heading another file links to keeps its text,
+      wherever it moves. Every `####` under *Models* is a model, with its
+      *API:* line. Every python block runs alone in the namespace
+      `tests/test_production_hardening.py` gives it. The errors E1 to E8 of
+      the record are fixed. Six writers, one per part of the README,
+      write the new text; the account (WRITING §6, step 4) is a diff of
+      every number, backticked name and link against `21bedd7`.
+
+      *Done 2026-10-04.* The six parts were assembled under a rebuilt
+      contents table, read through whole, and published as a rendering
+      for the user's verdict. Counted after: 22,627 prose words, 1,298
+      sentences at 17.4 words, 7 of 35+ and 2 of 45+ (each a merge of two
+      sentences at a lowercase name, as all five before were), 112 tables,
+      no heading without a prose opener, and 13 continued comment lines
+      where there were 111. The account against `21bedd7` loses nothing:
+      the run dates are in RELEASE-READINESS, five names moved from
+      backticks into code, and `like=spec` became `like=edge`. The full
+      read fixed the rest: `lf` keeps one meaning (the parquet query is
+      `files`), the window target's spec is `edge` and one run's output
+      is `one_run`, and the list of models that refuse a relative target
+      sits after a colon. `tests/test_weight_scale.py` calls `kalman`'s
+      `obs_var / w` a variance, as E4 has it. The verdict goes into
+      `docs/README-ITERATIONS.md`.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

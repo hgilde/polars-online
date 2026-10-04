@@ -25,6 +25,7 @@ another document cites it.
 | **Writing the documentation** | |
 | [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in PHRASING.md, with the README's task 89 rewrite as the worked example |
 | [PHRASING.md](PHRASING.md) | you have a phrasing problem to log, or want the report behind a rule in WRITING.md — the running list of phrasing reports, begun for task 68's clarity pass |
+| [README-ITERATIONS.md](README-ITERATIONS.md) | you are starting a pass over the README, or want to know which prompts improved it — every pass with its prompt verbatim, its counts and its verdict, and every idea the reviews raised with its status |
 
 ## Records
 

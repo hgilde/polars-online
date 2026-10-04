@@ -36,7 +36,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning"
 EXCEPTIONS = {
     "rls": "A <- lam A + w z z' starts from ridge * I: a sum-scale prior a heavier "
     "stream outweighs sooner (classic RLS regularization)",
-    "kalman": "a row's weight is its observation's precision, obs_var / w",
+    "kalman": "a row's weight scales its observation's precision: its variance is obs_var / w",
     "sgd": "the gradient is d * z * w: a weight is a step size",
     "ftrl": "an importance weight, as Vowpal Wabbit's: the gradient carries it "
     "against l1, l2 and beta in absolute weight (task 147 kept VW's semantics)",

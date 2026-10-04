@@ -10,7 +10,7 @@ the same question at runtime, for the exact spec you built.
 | [Linear models](../README.md#linear-models) | [`ewridge`](#ewridge) · [`rls`](#rls) · [`lasso`](#lasso) · [`kalman`](#kalman) · [`huber`](#huber) · [`quantile`](#quantile) · [`sgd`](#sgd) · [`pa`](#pa) · [`ftrl`](#ftrl) · [`holt`](#holt) |
 | [Moments and correlation](../README.md#moments-and-correlation) | [`ew_cov`](#ew_cov) · [`marginal`](#marginal) · [`deco`](#deco) · [`rcov`](#rcov) |
 | [Clustering and classification](../README.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
-| [Sequential tests and regimes](../README.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`hmm`](#hmm) · [`bocpd`](#bocpd) |
+| [Sequential tests and regimes](../README.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
 
 [Reading this page](#reading-this-page) says how a field's name is built,
 defines the four fields most models write, and says what is left out.
@@ -301,6 +301,20 @@ hand: change the generator, then run
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 
+## `bocpd`
+
+| field | meaning |
+|---|---|
+| `p_change` | `P(run length <= 1)`: the mass sitting on a change at or just before this row |
+| `run_mode` | most likely run length *before* this row, so `t - run_mode` dates the regime |
+| `run_mean` | posterior mean run length |
+| `pred_x0` | the predictive mean for feature `<f>` under the fitted model |
+| `pred_x1` | the predictive mean for feature `<f>` under the fitted model |
+| `loglik` | log predictive density of the row, under the model as it stood before the row |
+| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
+| `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
+| `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
+
 ## `hmm`
 
 | field | meaning |
@@ -315,17 +329,3 @@ hand: change the generator, then run
 | `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
 | `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |
 | `coef` | the numbers behind the fit as one list, on the rows `coef_every` fills ([shared field](#fields-most-models-write)) |
-
-## `bocpd`
-
-| field | meaning |
-|---|---|
-| `p_change` | `P(run length <= 1)`: the mass sitting on a change at or just before this row |
-| `run_mode` | most likely run length *before* this row, so `t - run_mode` dates the regime |
-| `run_mean` | posterior mean run length |
-| `pred_x0` | the predictive mean for feature `<f>` under the fitted model |
-| `pred_x1` | the predictive mean for feature `<f>` under the fitted model |
-| `loglik` | log predictive density of the row, under the model as it stood before the row |
-| `weight_sum` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) |
-| `settled_frac` | how far the decay window had filled before this row; null where nothing decays ([shared field](#fields-most-models-write)) |
-| `withheld_reason` | why the row's predictions are null, and null where nothing was withheld ([shared field](#fields-most-models-write)) |

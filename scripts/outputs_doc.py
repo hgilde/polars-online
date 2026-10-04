@@ -41,7 +41,7 @@ FAMILIES: dict[str, tuple[str, ...]] = {
     ),
     "Moments and correlation": ("ew_cov", "marginal", "deco", "rcov"),
     "Clustering and classification": ("kmeans", "micro", "ew_class"),
-    "Sequential tests and regimes": ("seqtest", "corrchange", "hmm", "bocpd"),
+    "Sequential tests and regimes": ("seqtest", "corrchange", "bocpd", "hmm"),
 }
 
 #: Where the four fields most models write are defined in full.

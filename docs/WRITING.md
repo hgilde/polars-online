@@ -398,6 +398,12 @@ mechanism, the equations, the units, the defaults and the refusals:
 | 7, render | Sphinx with `-W`, which the gate runs: a docstring that is not valid reStructuredText fails there |
 | 8, gate | the doc tests, and the tests that pin a docstring's text. `tests/test_temporal_clock.py` wants each clock parameter's entry to say "clock units" on one line, and `tests/test_weight_scale.py` pins whole phrases, line wraps included. Grep the tests for `__doc__` before a batch, and run them |
 
+**Record every pass over the README in
+[README-ITERATIONS.md](README-ITERATIONS.md).** Its prompt goes in
+verbatim before the pass starts, with the ideas it takes on and the counts
+of step 1. The counts of step 6 and the user's verdict follow, so the
+record shows which prompts produced a better document.
+
 **Keep the report verbatim.** When a reader names a problem, or confirms
 an approach, PHRASING.md keeps their words unedited and the
 interpretation separate. The rule drawn from it can then be checked
