@@ -7052,7 +7052,7 @@ columns as step 1):
 
 | document | prose words | sentences | mean | 35+ | 45+ | cost words | *X, not Y* | tables | code blocks | bullets | `##` sections |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `README.md` | 18,511 | 1,016 | 18.2 | 5 | 0 | 4 | 13 | 58 | 92 (65 python) | 2 | 11 |
+| `README.md` | 18,614 | 1,024 | 18.2 | 5 | 0 | 4 | 13 | 60 | 92 (65 python) | 2 | 11 |
 | `docs/RUNNER.md` | 1,492 | 86 | 17.3 | 1 | 0 | 0 | 0 | 3 | 9 | 0 | 4 |
 | `docs/STATE-WORKFLOW.md` | 3,631 | 216 | 16.8 | 3 | 1 | 0 | 0 | 14 | 4 (3 python) | 5 | 2 |
 | `docs/OUTPUTS.md` | 293 | 19 | 15.4 | 0 | 0 | 0 | 0 | 26 | 0 | 0 | 22 |
@@ -7088,6 +7088,18 @@ README and in the conversation. *Series that tick at their own times* now
 ends with one: each series' change between grid points, fitted by `ew_cov`
 and `ewridge` on the grid's own clock. It runs with the README's other
 blocks, and its query form gives the same numbers, checked when written.
+The user then found the example hard to follow with `ticks` undescribed,
+and asked whether *refresh time* was a mistaken name, since the function
+seemed to do nothing with time. The section now says what a refresh time
+is, the first instant by which every series has ticked since the last, and
+opens with eight ticks and the two-point grid they make. That table is held
+by `test_the_readme_example_is_the_grid_it_shows`. The name is the
+literature's (Barndorff-Nielsen, Hansen, Lunde and Shephard); renaming it
+is the user's call. Reading the grid against its docs found `n_obs`
+described wrongly twice. The docstring said the grid keeps a series' first
+tick of an interval, and `refresh.rs`'s module comment said a large count
+marks the series holding the grid up. Both now say the grid keeps the last
+tick, and that the series holding it up has a count near 1.
 
 - [ ] 155. **The weekly mutation pass sized to finish -- requested
       2026-10-03.** Size S. The user asked "How can we ensure that the run

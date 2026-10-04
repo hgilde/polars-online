@@ -312,8 +312,8 @@ def refresh_time(
     ``<s>_value``
         Each series' last value at that instant.
     ``n_obs_<s>``
-        Ticks of ``s`` since the previous point, the first of which is the
-        one on the grid.
+        Ticks of ``s`` since the previous point. The grid keeps the last of
+        them, the series' value at the refresh time.
     ``retained_fraction``
         ``m / sum(n_obs)``: how many of the interval's ticks the grid kept.
         Look at it before trusting a correlation computed on the result.

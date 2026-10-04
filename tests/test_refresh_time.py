@@ -159,6 +159,36 @@ def test_the_eight_nine_ten_example_gives_seven_points_and_21_of_27():
     assert out.height <= min(ticks.count(s) for s in NAMES)
 
 
+def test_the_readme_example_is_the_grid_it_shows():
+    """The README's eight ticks and the table it prints of their grid, read
+    off by hand: a point when the last series to tick ticks, each series'
+    last value there, and its ticks since the previous point."""
+    ticks = pl.DataFrame(
+        {
+            "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],
+            "t": [0.4, 0.9, 1.3, 1.6, 2.2, 2.5, 2.8, 3.1],
+            "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],
+        }
+    )
+    grid = po.stream.refresh_time(
+        ticks, series="symbol", names=["AAA", "BBB", "CCC"], clock="t", value="px"
+    )
+    assert grid.rows() == [
+        (1.6, 100.2, 20.0, 50.0, 2, 1, 1, 0.75),
+        (3.1, 100.4, 20.1, 49.9, 2, 1, 1, 0.75),
+    ]
+    assert grid.columns == [
+        "time_refresh",
+        "AAA_value",
+        "BBB_value",
+        "CCC_value",
+        "n_obs_AAA",
+        "n_obs_BBB",
+        "n_obs_CCC",
+        "retained_fraction",
+    ]
+
+
 @pytest.mark.parametrize("size", [1, 3, 97, 100_000])
 def test_the_same_grid_from_one_chunk_and_from_a_thousand(size):
     df = poisson_obs(n=200)

@@ -36,10 +36,11 @@
 //! **The staleness caveat** (their §2.1) is worth stating, because the output
 //! looks synchronous and is not: a refresh vector is *treated* as observed at
 //! `time_refresh`, but each series' value is up to one of its own inter-tick
-//! intervals old. `n_obs_<s>` is that staleness made visible -- a series
-//! with a large count between two grid points is the one holding the grid up,
-//! and the one whose value is freshest; a series with a count of 1 has not
-//! moved since it last did.
+//! intervals old. `n_obs_<s>` counts a series' ticks between two grid
+//! points, of which the grid keeps the last, so a large count is ticks the
+//! grid dropped. The series holding the grid up is the one whose tick
+//! completes each point: its count is near 1, and its value is the freshest,
+//! observed at `time_refresh` itself.
 //!
 //! # Why a Rust operator
 //!

@@ -764,19 +764,39 @@ fine common grid pushes the correlation toward zero, the Epps effect, and
 filling values forward invents observations that were never made.
 [`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time)
 puts them on the grid Barndorff-Nielsen, Hansen, Lunde and Shephard
-defined: a point wherever **every** series has ticked at least once since
-the last point, each carrying its last observed value.
+defined. A *refresh time* is the first instant by which **every** series
+has refreshed, ticked at least once, since the previous one. The grid has
+a point at each refresh time, holding each series' last observed value.
+
+The input is long: one row per tick, saying which series ticked, when, and
+what it observed. Three series on a clock `t`:
 
 ```python
-grid = po.stream.refresh_time(ticks,             # long input: one row per tick, the series named in a column
-                              series="symbol", names=["AAA", "BBB", "CCC"],
+ticks = pl.DataFrame({
+    "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],  # which series ticked
+    "t": [0.4, 0.9, 1.3, 1.6, 2.2, 2.5, 2.8, 3.1],                      # when, in clock order
+    "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],         # what it observed
+})
+grid = po.stream.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],
                               clock="t", value="px")   # a DataFrame in, a DataFrame out
-# one row per grid point:
-#   time_refresh        the grid point
-#   AAA_value, ...      each series' last observed value at that point
-#   n_obs_AAA, ...      ticks of that series since the previous point, of which the grid kept one
-#   retained_fraction   how much of the data survived -- read this before trusting a correlation
 ```
+
+| time_refresh | AAA_value | BBB_value | CCC_value | n_obs_AAA | n_obs_BBB | n_obs_CCC | retained_fraction |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1.6 | 100.2 | 20.0 | 50.0 | 2 | 1 | 1 | 0.75 |
+| 3.1 | 100.4 | 20.1 | 49.9 | 2 | 1 | 1 | 0.75 |
+
+The first refresh time is 1.6, when CCC ticks for the first time. AAA's
+value there is 100.2, from its tick at 1.3, and its tick at 0.4 is dropped.
+Since 1.6, BBB has ticked at 2.2 and AAA twice, so CCC's tick at 3.1
+completes the second point.
+
+| column | what it holds |
+|---|---|
+| `time_refresh` | the refresh time: the clock of the tick that completed the point |
+| `AAA_value`, ... | each series' last observed value at that time |
+| `n_obs_AAA`, ... | that series' ticks since the previous point, of which the grid kept the last |
+| `retained_fraction` | the share of those ticks the grid kept. Read it before trusting a correlation |
 
 The grid runs at the pace of the slowest series, so a fast one loses most
 of its ticks, and `retained_fraction` says how many. The series holding the
@@ -791,7 +811,8 @@ each value is up to one of its own inter-tick intervals old.
 
 **A model reads the grid as it reads any frame.** Take each series' change
 between grid points, and fit on the grid's own clock, `time_refresh`. Here
-`ew_cov` tracks the three correlations, and `ewridge` regresses one
+`ticks` is a longer stream of the same shape, a hundred ticks of each
+series. `ew_cov` tracks the three correlations, and `ewridge` regresses one
 series' change on the other two's:
 
 ```python
