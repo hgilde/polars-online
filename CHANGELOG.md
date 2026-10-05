@@ -274,6 +274,14 @@ The output names task 144 renamed:
   where the row is the given matrix at every positive prior; under
   `learn=False` the filter never used the matrix it was given. Such a row
   is now the prior's mean: the given matrix, or uniform when none is given.
+- **A list `min_weight` in `sgd`, `pa`, `ftrl` and `rls` checks each
+  target's threshold against that target's own weight** (task 158). Each
+  model held a target on its own weight, but against the smallest
+  threshold of the list, and the bank checked the list against the shared
+  weight. So under `min_weight=[5, 30]`, a target present on one row in ten
+  first predicted at row 30, where the other regression models wait for its
+  thirtieth row. A single threshold, or a list of equal ones, gives the
+  numbers it gave.
 - **`rcov`'s pre-averaged estimate under `psd=False` subtracts the bias at
   the window actually run** (task 158). Its bias term read the configured
   `theta`, where Christensen, Kinnebrock and Podolskij define θ by the

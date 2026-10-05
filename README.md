@@ -263,7 +263,7 @@ pip install polars-online      # or: uv add polars-online
 | depends on | nothing beyond `polars` at run time, since the wheel carries its own copy of Polars' Rust code |
 | numpy | needed only by `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError` |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
-| size | 8 to 10 MB to download and 26 to 37 MB installed, by platform, for 0.12.0 |
+| size | 8 to 10 MB to download and 26 to 37 MB installed, by platform, for 0.13.0 |
 
 To build from a checkout, install uv and a stable Rust toolchain
 ([Development](#development)), then run from its root:
@@ -686,9 +686,11 @@ agrees to 1e-12 with a kernel-weighted least squares recomputed from
 scratch at every row.
 
 **The kernel is one-sided, so the fit lags.** Narrow the bandwidth to lag
-less, and widen it to smooth the noise. On `sin(x)` at a bandwidth of 0.25,
-the fit sits 0.08 from the truth, where the best straight line sits 0.39.
-At a bandwidth of 1.0 it sits 0.29, most of the way back to the line.
+less, and widen it to smooth the noise. Take 1,200 points of `sin(x)`,
+plus noise of standard deviation 0.1, for x between −3 and 3
+(`tests/test_ewridge.py`). At a bandwidth of 0.25, the fit's root-mean-square
+distance from the curve is 0.08, where the best straight line's is 0.39. At
+a bandwidth of 1.0 it is 0.29, most of the way back to the line.
 
 **The clock column can stay out of `features`.** With other columns as
 features, the fit is a regression whose coefficients move along the clock.
@@ -1566,6 +1568,7 @@ group = "stock_id"
 [specs.model]                    # the model, and its own keywords
 type = "ew_ridge"
 ridge = [1e-6, 0.1]
+standardize = true
 ```
 
 ```sh
@@ -1611,9 +1614,9 @@ Here is how two consumers take a struct, as measured:
 
 Save a bank's state (everything it has learned, for every spec and group)
 to one file, and load it back to keep learning or to score new rows
-without learning. Or export it as JSON. A state saved by any release so
-far, 0.13.0 included, does not load in this build: refit the bank from its
-input. `with_windows` keeps a state of its own ([Saving and resuming a
+without learning. Or export it as JSON. A state saved by 0.13.0 or an
+earlier release does not load in the releases after it: refit the bank from
+its input. `with_windows` keeps a state of its own ([Saving and resuming a
 window run](#saving-and-resuming-a-window-run)).
 
 ### Save and load
@@ -1689,7 +1692,7 @@ file:**
 | is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
 | holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
 | was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
-| was written under a state schema below 25, which is every release so far, 0.13.0 included | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives this build's schema |
+| was written under a state schema below 25, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
 
 ### Serving without learning
 

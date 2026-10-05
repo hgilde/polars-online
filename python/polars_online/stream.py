@@ -341,8 +341,10 @@ def refresh_time(
     sits near 1.
 
     Rows must be in ``clock`` order within each ``group``, as a stream must
-    be. A clock below the previous row's is a ``ValueError`` naming the row,
-    as a spec refuses one with ``restart_after_step_back`` unset. A temporal
+    be. A clock below the previous row's is refused naming the row, as a spec
+    refuses one with ``restart_after_step_back`` unset. The refusal arrives as
+    polars' ``ComputeError``, around a ``ValueError``, because the sampler
+    runs as a polars source, for a ``DataFrame`` too. A temporal
     clock is compared exactly, in integer nanoseconds. A null ``value`` is a
     tick that observed nothing, so it does not update the series. Feeding
     the input in one chunk or a thousand gives the same grid, since a point

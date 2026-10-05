@@ -7432,6 +7432,32 @@ tick, and that the series holding it up has a count near 1.
       computation's own error, which the report would show apart and fail
       on none of, and the push.
 
+      *The open items, 2026-10-05, on the user's word ("Your suggestion item
+      1, 2, 3, 4, 5, 6, 7, e15, e14, e9").* The `rcov` test whose stream
+      never clips is named for what it checks,
+      `a_spiked_kernel_estimate_under_psd_is_positive_semi_definite`; the
+      clip itself was already held by
+      `the_psd_repair_clips_the_negative_eigenvalues_alone`. A new test runs
+      the README's TOML through the built `online` and compares it with the
+      Python `spec` it mirrors. It failed: the TOML left out `standardize =
+      true` (README-ITERATIONS E16), now added. The README's state sentence
+      names the releases it means, its `sin(x)` figures name their stream
+      and test, which now holds them to two places, and its wheel sizes are
+      0.13.0's (E9). E15's three fixes: PERFORMANCE's glossary, the test's
+      quote, now asserted, and ARROW-SOURCES §2, whose ADBC crash proved
+      wider than the trap it was found in. Nine of E14's ten docstrings are
+      corrected against the code. One of them was a code defect behind the
+      words: `sgd`, `pa`, `ftrl` and `rls` held each target on its own
+      weight but against the smallest threshold of a `min_weight` list,
+      and the bank checked the list against the shared weight, so a sparse
+      target under `[5, 30]` predicted from row 30, not row 291. Each now
+      reports its per-target weights (`target_n_eff_into`), as the six
+      other models with one do; `test_a_sparse_target_warms_up_on_its_own_weight`
+      takes unequal thresholds, the case that tells, and failed on the four
+      before. A block that reads only a frame derived from the example data
+      takes no example-data line, and W14 waits for the next README rewrite,
+      both by the user's decision.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

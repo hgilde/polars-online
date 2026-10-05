@@ -129,12 +129,15 @@ that takes `window_budget` is in that test's table.
 `numpy`, and a new windowed kind that predicts a target belongs in its
 parametrization.
 
-**A weight per target.** `ewridge`, `lasso`, `kalman`, `robust` and `holt`
-keep one. With `target_n_eff_into` overridden, each target's `min_weight` is
-checked against its own weight rather than the shared `n_eff`. The default
-leaves every target on the shared one, and
+**A weight per target.** `ewridge`, `lasso`, `kalman`, `robust`, `holt`,
+`sgd`, `pa`, `ftrl` and `rls` keep one. With `target_n_eff_into` overridden,
+each target's `min_weight` is checked against its own weight rather than the
+shared `n_eff`. The default leaves every target on the shared one, and
 `test_a_sparse_target_warms_up_on_its_own_weight` fails for a model that keeps
-the default.
+the default. Its unequal thresholds are the case that tells: `sgd`, `pa`,
+`ftrl` and `rls` gated each target on its own weight inside the model, but
+against the smallest threshold, and kept the default, so a list was checked
+against the shared weight until task 158.
 
 **A parameter in the targets slot.** `bocpd`'s hazard column and `hmm`'s
 exogenous column are read out of `y`. Without `predict_with`, `predict`

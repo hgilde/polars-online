@@ -509,9 +509,10 @@ def target(
     ``relative_to`` and a ``name`` of its own is the column renamed.
 
     Only a model that regresses its targets takes a relative one: a model with
-    no target, ``ew_class``, ``seqtest`` and ``ftrl`` with its logistic loss
-    refuse it by name. A target's column used as a feature is refused, as a
-    target is; its reference may be a feature.
+    no target, ``ew_class``, ``seqtest``, ``ftrl`` with its logistic loss and
+    ``sgd`` with its logistic or Poisson loss refuse it by name. A target's
+    column used as a feature is refused, as a target is; its reference may be
+    a feature.
 
     In the CLI's TOML the same target is a table:
     ``targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]``.
@@ -1505,7 +1506,10 @@ def kalman(
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. :meth:`polars_online.ModelBank.predict` moves the coefficients
     by ``Phi`` over the clock distance from the last learned row, capped by
-    ``gap_cap``, so a prediction far past the data is the intercept alone.
+    ``gap_cap``. So however far past the data, a coefficient has shrunk by
+    ``2 ** (-gap_cap / r_i)`` at most, and the prediction is the intercept
+    alone only where ``gap_cap`` spans several of the slopes' reversion
+    half-lives and the intercept's is ``inf``.
 
     .. rubric:: Example
 
@@ -1964,8 +1968,9 @@ def ew_cov(
     ``stats``
         Which statistics to write, from ``mean``, ``var``, ``std``, ``cov``,
         ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr``. Default
-        ``["mean", "std", "corr"]``. ``[]`` writes nothing but ``weight_sum``
-        and accumulates all the same. The spec's value is then its state,
+        ``["mean", "std", "corr"]``. ``[]`` writes no statistic, only
+        ``weight_sum``, ``settled_frac`` and ``withheld_reason``, and
+        accumulates all the same. The spec's value is then its state,
         read back with :meth:`polars_online.ModelBank.gram` and
         :meth:`polars_online.ModelBank.describe`. That is the form for a wide
         set of columns, where even the means are k values per row nobody
@@ -2475,8 +2480,9 @@ def holt(
 ) -> dict[str, Any]:
     """Holt's linear trend: the target's own level and slope, extrapolated.
 
-    The one model that takes no features -- the forecasting baseline a
-    feature-based model should have to beat. If a regression cannot
+    It takes no features, as only :func:`seqtest` among the other models
+    does -- the forecasting baseline a feature-based model should have to
+    beat. If a regression cannot
     outperform "the series is going up at about this rate", its features are
     not earning their place. Run it in the same bank and compare the two
     ``sigma``, or let a :func:`seqtest` with ``a`` and ``b`` say which
@@ -3845,7 +3851,9 @@ def bocpd(
            * - ``"gaussian"``
              - a normal-inverse-Wishart over all of them
              - the one that can see a break in the correlation with the
-               marginals unchanged
+               marginals unchanged: in ``run_mode``, since ``p_change`` never
+               moves, and late, a median of 98 rows after the break in
+               ``docs/REGIMES.md`` §5
            * - ``"robust"``
              - each row weighted by ``(pi(x) / pi(mode)) ** robust_beta`` in
                what the run learns and in the message it passes on

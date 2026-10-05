@@ -163,7 +163,10 @@ covers DuckDB.
 
 **One cursor, one open stream: a silent trap.** Build a plan on a cursor's
 stream, re-execute that cursor before collecting the plan, and **both** plans
-come back wrong, with no error and no warning. Measured on SQLite: the newer
+come back wrong. The newer one comes back short, with no error and no
+warning. The stale one comes back out of order, which a spec with a `clock`
+refuses as a step back, with a `ComputeError`; under specs that read no
+clock it, too, raises nothing. Measured on SQLite: the newer
 plan returned 198,976 of 200,000 rows and the stale one 201,024, out of order
 -- one 1,024-row batch's worth had moved from one to the other. Neither
 triggers `ConsumedSourceWarning`, which keys on a plan that yields nothing.
@@ -177,6 +180,26 @@ Found by tripping over it. My first probe of the lazy chain built a plan, left
 it uncollected, re-executed the same cursor for the next check, and reported a
 mismatch that looked like a defect in the plan form. Every engine agreed once
 each plan had its own stream.
+
+**Closing a cursor just after its stream stopped early crashes the process.**
+When a read of a cursor's stream stops before the end, by an error or by the
+consumer, and the cursor is closed at once, the process dies with a
+segmentation fault. Measured 2026-10-05 on SQLite, `adbc_driver_manager`
+1.12.0, polars 1.44.2, at 200,000 rows, every run:
+
+| the read that stopped early, then `cur.close()` | runs crashed |
+|---|---|
+| the trap above, at 200,000 rows: the stale plan raises its `ComputeError` | 3 of 3, and 3 of 3 with both plans deleted first |
+| a plan whose bank raises partway, its clock stepping back mid-stream | 1 of 1 |
+| polars alone: `collect_batches()` stopped after its first batch | 2 of 2 |
+
+At 20,000 rows, the example's size, none of these crash. Neither do a read
+that ran to its end, `head(1000).collect()`, a plan never collected, or a
+`map_batches` function that raises. A wait of 3 s before the close, or no
+close before the process exits, avoided the crash in 2 of 2 runs each. That
+points to a race with polars' reader, still pulling the stream after the
+consumer stopped, against the close that frees it; it is inferred from those
+runs, not traced. No call is known that waits for that reader.
 
 **List columns are the driver's call, not the protocol's.** SQLite's driver
 refuses our output with `NOT_IMPLEMENTED: Column 5 has unsupported type

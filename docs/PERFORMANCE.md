@@ -89,7 +89,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 |---|---|
 | golden number | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A task in §3 that moved one was wrong by definition. Later sections accept a reordering of the arithmetic that moves a value within that tolerance (§8, §20) |
 | bit-identical, bit-exact | the same floating-point bits: §13 compares every float column as its `u64` bits, with its validity |
-| stream | as the README's *Parallelism* uses it: one spec over one group's rows, in order, which is the bank's unit of parallel work (§15). A single stream is one spec over one group, or with no `group` at all |
+| stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
 | section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `group` (row indices per key), `extract` (the columns), `process` (the models) and `assemble` (the output columns) (§12) |

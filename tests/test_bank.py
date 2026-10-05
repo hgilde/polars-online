@@ -326,8 +326,9 @@ class TestPerTargetMinPeriods:
         out = self._out(20.0)
         assert self._first(out, "pred_y0") == self._first(out, "pred_y1") == 21
 
+    @pytest.mark.parametrize("late", [5.0, 30.0])
     @pytest.mark.parametrize("kind", sorted(REGRESSIONS))
-    def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
+    def test_a_sparse_target_warms_up_on_its_own_weight(self, kind, late):
         """Each target's threshold is checked against that target's own weight
         -- the rows it was present on -- and it was checked against the shared
         ``weight_sum``, the feature side's, the same for every target (review
@@ -337,14 +338,21 @@ class TestPerTargetMinPeriods:
         41, not row 5. ``y0``, present on every row, first predicts on row 5,
         except in ``rls``, which learns a row only when every target is present
         and so waits for the same five rows. The emitted ``weight_sum`` stays the
-        shared weight."""
-        n = 120
+        shared weight.
+
+        Under ``min_weight=[5, 30]`` ``y1`` waits for its thirtieth
+        observation, row 291. Equal thresholds could not tell the two weights
+        apart in ``pa``, ``sgd``, ``ftrl`` and ``rls``: each held a target on
+        its own weight against the smallest threshold, while the bank checked
+        the list against the shared weight, so ``y1`` came out at row 30
+        (task 158, E14)."""
+        n = 400
         x = np.random.default_rng(2).standard_normal(n)
         df = pl.DataFrame(
             {"x0": x, "y0": 2 * x, "y1": [-x[i] if i % 10 == 0 else None for i in range(n)]},
             schema={"x0": pl.Float64, "y0": pl.Float64, "y1": pl.Float64},
         )
-        common = dict(targets=["y0", "y1"], half_life=float("inf"), min_weight=[5.0, 5.0])
+        common = dict(targets=["y0", "y1"], half_life=float("inf"), min_weight=[5.0, late])
         solves = dict(features=["x0"], max_rows_between_solves=1)
         spec = {
             "ewridge": lambda: po.spec.ewridge("m", **solves, **common),
@@ -369,7 +377,7 @@ class TestPerTargetMinPeriods:
             for t in ("y0", "y1")
         }
         assert self._first(out, pred["y0"]) == (41 if kind == "rls" else 5)
-        assert self._first(out, pred["y1"]) == 41
+        assert self._first(out, pred["y1"]) == 10 * (late - 1) + 1
         assert out["m"].struct.field("weight_sum").to_list()[41] == pytest.approx(41.0)
 
     def test_a_late_target_has_no_residual_or_sigma_either(self):

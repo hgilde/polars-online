@@ -452,7 +452,8 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     backwards, because a row is scored before it is learned from, so a curve
     is followed with the lag that implies. A wider bandwidth is a flatter
     fit: at `half_life=1.0` the same stream gives 0.29, most of the way back
-    to the line."""
+    to the line. The README's *A local fit along any feature* cites these
+    three figures, rounded to two places, and this test holds them there."""
     rng = np.random.default_rng(1)
     n = 1200
     x = np.sort(rng.uniform(-3.0, 3.0, n))
@@ -478,7 +479,7 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
     rms = lambda a: float(np.sqrt(np.mean((a[fit] - np.sin(x[fit])) ** 2)))  # noqa: E731
 
     assert rms(narrow) < 0.12 < rms(wide) < rms(line)
-    assert rms(line) > 0.35
+    assert [round(rms(a), 2) for a in (narrow, line, wide)] == [0.08, 0.39, 0.29]
 
 
 class TestWarmPriorsThroughTheOrigin:

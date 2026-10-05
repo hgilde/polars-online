@@ -1407,9 +1407,11 @@ mod tests {
     }
 
     #[test]
-    fn the_psd_clip_repairs_a_negative_eigenvalue_and_says_so() {
-        // A one-spike stream makes the kernel estimate indefinite at a
-        // bandwidth this large relative to the block.
+    fn a_spiked_kernel_estimate_under_psd_is_positive_semi_definite() {
+        // A one-spike stream under a wide kernel, read under `psd`. This
+        // stream happens to leave the estimate positive already, so the clip
+        // does not run here; `the_psd_repair_clips_the_negative_eigenvalues_alone`
+        // holds the clip itself on matrices that need it.
         let k = 2;
         let mut m = Rcov::new(RcovCfg {
             psd: true,

@@ -77,8 +77,9 @@ sees a stream* is the guide to them. This is the reference.
     Why: a stream in market-data-like sessions has boundaries where the clock
     stops measuring time -- overnight, over a weekend. What: ``session`` names
     a column whose value changes at such a boundary. ``session_gap`` is the
-    clock step to apply there, finite and at most ``gap_cap``; ``"reset"``
-    starts the model over instead. Units: clock units.
+    clock step to apply there, finite and at least 0, and capped at
+    ``gap_cap`` like any other step; ``"reset"`` starts the model over
+    instead. Units: clock units.
 ``weight``
     A row-weight column. A row of weight 0 is scored, advances the clock and
     teaches nothing; a null weight skips the row. ``seqtest`` and ``rcov``
@@ -88,11 +89,13 @@ sees a stream* is the guide to them. This is the reference.
     converged, so it never reports a number it is not yet informed enough to
     give. What: the weight a model must have seen before its outputs stop
     being null; the model learns from every row either way. A list gives one
-    threshold per target. Six models keep a weight per target: ``ewridge``,
-    ``lasso``, ``kalman``, ``huber``, ``quantile`` and ``holt``. Each checks a
-    target's threshold against that target's own weight: the rows it was
-    present on, at their raw weights, decayed, and inside the window under
-    one. The other models check the shared ``weight_sum``. The ``weight_sum``
+    threshold per target. Ten models keep a weight per target: ``ewridge``,
+    ``lasso``, ``kalman``, ``huber``, ``quantile``, ``holt``, ``sgd``, ``pa``,
+    ``ftrl`` and ``rls``. Each checks a target's threshold against that
+    target's own weight: the rows it was present on, at their raw weights,
+    decayed, and inside the window under one. ``rls`` learns only from rows
+    on which every target is present, so its targets' weights are equal. The
+    other models check the shared ``weight_sum``. The ``weight_sum``
     field is the shared weight in every model. So a target that is often null
     is gated on its own rows, and its first prediction comes later than the
     others'. Units: ``weight_sum`` units, not rows.

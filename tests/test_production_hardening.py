@@ -1010,6 +1010,33 @@ class TestReadmeExamples:
         written = (tmp_path / "bank.toml").read_text(encoding="utf-8")
         assert tomllib.loads(shown[0]) == tomllib.loads(written)
 
+    def test_the_readme_config_gives_the_numbers_its_python_spec_gives(
+        self, tmp_path, monkeypatch, online_cli
+    ):
+        """The README's TOML block mirrors its Python `spec` and says the
+        `online` command line gives "the numbers the bank gives in Python".
+        So the block runs here as written, on the example data's
+        `ticks.parquet`, and every prediction, residual and weight it writes
+        must be that spec's in Python, bit for bit. The coefficients are left
+        out: they come on each group's last row of each chunk, and the two
+        runs chunk differently (PLAN §3)."""
+        monkeypatch.chdir(tmp_path)
+        shown = [code for _, _, code in _doc_blocks("README.md", "toml")]
+        assert len(shown) == 1, shown
+        ns = _readme_namespace(tmp_path)  # writes ticks.parquet
+        (tmp_path / "readme.toml").write_text(shown[0], encoding="utf-8")
+        subprocess.run(
+            [str(online_cli), "--config", "readme.toml", "--quiet"],
+            check=True,
+            capture_output=True,
+        )
+        got = pl.read_parquet(tmp_path / "fitted.parquet")["ridge"].struct.unnest()
+        want = po.ModelBank([ns["spec"]]).fit_predict(ns["df"])["ridge"].struct.unnest()
+        assert got.columns == want.columns
+        numbers = [c for c in want.columns if c.startswith(("pred_", "resid_", "weight_sum"))]
+        assert len(numbers) == 5, want.columns  # pred and resid at each ridge, and the weight
+        assert got.select(numbers).equals(want.select(numbers))
+
     def test_there_are_docstring_blocks_to_check(self):
         assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS
 

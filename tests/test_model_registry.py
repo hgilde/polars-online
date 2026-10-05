@@ -189,9 +189,13 @@ def test_the_builder_list_covers_every_builder():
 
 
 def test_the_api_snapshot_pins_every_models_output_fields():
-    """Output field names are API (README, "Output field names are part of
-    the API"), and the snapshot is where they are pinned -- one
-    `<model> minimal:` block each."""
+    """Output field names are API -- the README's *Output field names*: "a
+    test holds every name, default and signature to a checked-in snapshot"
+    -- and the snapshot is where they are pinned, one `<model> minimal:`
+    block each. The quote is checked too: the one here before named a
+    sentence the README no longer had (README-ITERATIONS, E15)."""
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert "a test holds every name, default and signature to a checked-in snapshot" in readme
     surface = test_api_surface.describe_api()
     pinned = set(re.findall(r"^  ([a-z_]+) minimal:$", surface, flags=re.MULTILINE))
     assert pinned == set(MINIMAL), "tests/test_api_surface.py pins no output fields for a model"

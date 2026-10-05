@@ -517,6 +517,15 @@ fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
 }
 
 impl OnlineModel for Sgd {
+    /// Each target's own weight, the rows that carried it, for the bank's
+    /// per-target `min_weight` gate: without it the bank checked a list of
+    /// thresholds against the shared `n_eff` (task 158, E14).
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        out.extend_from_slice(&self.w_target);
+        true
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;
         let off = usize::from(self.cfg.fit_intercept);

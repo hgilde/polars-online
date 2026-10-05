@@ -411,11 +411,29 @@ mod tests {
         assert!(rls.window_shadow().is_none());
         assert_eq!(rls.support_coef(), None);
         let mut out = vec![7.0];
-        assert!(!rls.target_n_eff_into(&mut out));
         assert!(!rls.error_inflation_into(&mut out));
         assert!(!rls.error_inflation_gate_into(&mut out, 2.0));
         assert!(!rls.row_error_inflation_into(&[1.0], &mut out));
         assert_eq!(out, [7.0], "a model with none fills nothing");
+        // `rls` keeps a weight per target, the rows it learned from: here
+        // the first row only, since a row with a null target teaches nothing,
+        // decayed by the one clock unit since, at a half-life of 10.
+        assert!(rls.target_n_eff_into(&mut out));
+        let first = 0.5f64.powf(0.1);
+        assert!(
+            out.len() == 2 && out.iter().all(|w| (w - first).abs() < 1e-15),
+            "{out:?}"
+        );
+        // A model that keeps only the shared weight fills nothing.
+        let mut seq = crate::SeqTest::new(crate::SeqTestCfg {
+            n_targets: 2,
+            min_weight: 0.0,
+        })
+        .unwrap();
+        seq.step(&[], &[Some(1.0), Some(-1.0)], 0.0, 1.0);
+        let mut out = vec![7.0];
+        assert!(!seq.target_n_eff_into(&mut out));
+        assert_eq!(out, [7.0]);
     }
 
     /// The noise gate's default is the exact statistic: a model that reports

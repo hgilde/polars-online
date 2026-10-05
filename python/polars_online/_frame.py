@@ -202,16 +202,18 @@ class OrderNotGuaranteedWarning(UserWarning):
     An online model learns in row order, so the order a plan delivers is part of
     the model. :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches` and
     ``lf.online.fit_predict`` run a plan through polars' streaming engine, and a
-    ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
-    different stream there than ``lf.collect()`` gives. Measured on 200,000
+    ``join``, ``group_by``, ``unique`` or ``sort`` by several keys without an
+    order guarantee delivers a different stream there than ``lf.collect()``
+    gives. Measured on 200,000
     rows: ``collect()`` kept the input order and ``collect_batches()`` did not,
     so a plan checked by collecting it learns something else when it is fed.
     The order may also differ between runs.
 
     The warning names each such node and its fix: ``maintain_order="left"`` on
-    a join, ``maintain_order=True`` on a ``group_by``, a ``sort`` after a
-    ``unique`` (the streaming engine does not honour its ``maintain_order``), or
-    a sort before the bank.
+    a join, ``maintain_order=True`` on a ``group_by`` and on a ``sort`` by
+    several keys (rows with equal keys come out in no particular order), a
+    ``sort`` after a ``unique`` (the streaming engine does not honour its
+    ``maintain_order``), or a sort before the bank.
 
     Best-effort by design. The plan's ``explain`` text is read first, and only
     when it names a join, an aggregation or a ``unique`` is the plan read
