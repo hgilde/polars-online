@@ -545,4 +545,27 @@ mod tests {
         assert!(!boxed(&[0.0; 2], &[f64::INFINITY; 2], None).is_trivial());
         assert!(!boxed(&[f64::NEG_INFINITY; 2], &[f64::INFINITY; 2], Some(0.0)).is_trivial());
     }
+
+    /// A `coef_sum` the bounds miss by no more than the rounding slack,
+    /// `1e-12·(1 + the largest of |Σ lo|, |Σ hi| and |coef_sum|)`, is
+    /// accepted -- at the slack exactly too -- and one past it is refused.
+    /// The slack has a floor: near zero it is `1e-12`, not a fraction of
+    /// nothing, and at `1e6` it is a millionth.
+    #[test]
+    fn the_sum_slack_is_relative_with_a_floor() {
+        // Each `|Σ| ≤ 1`, so the slack is `1e-12·2` exactly.
+        let slack = 1e-12 * 2.0;
+        let ok = |lo: f64, hi: f64, s: f64| boxed(&[lo], &[hi], Some(s)).validate(1, "pa");
+        ok(0.0, 1.0, -slack).unwrap();
+        ok(-1.0, 0.0, slack).unwrap();
+        for (lo, hi, s) in [(0.0, 1.0, -3e-12), (-1.0, 0.0, 3e-12)] {
+            let e = ok(lo, hi, s).unwrap_err();
+            assert!(e.contains("outside what the bounds allow"), "{e}");
+        }
+        // The floor: bounds and sum all at zero still allow `1e-12`.
+        ok(0.0, 0.0, 5e-13).unwrap();
+        // Relative: a millionth past a bound of a million is inside it.
+        ok(1e6, 2e6, 1e6 - 1e-6).unwrap();
+        ok(1e6, 2e6, 1e6 - 3e-6).unwrap_err();
+    }
 }

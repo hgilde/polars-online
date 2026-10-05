@@ -1708,4 +1708,614 @@ mod tests {
             "prior_mean must be finite",
         );
     }
+
+    // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
+
+    /// `ln Γ(k/2)` for a whole `k >= 1`, by the recurrence `Γ(x + 1) =
+    /// x·Γ(x)` from `Γ(1/2) = √π` and `Γ(1) = 1`: a sum of logs, sharing
+    /// nothing with the Lanczos series the model uses.
+    fn ln_gamma_half(k: u64) -> f64 {
+        let (mut x, mut acc) = if k % 2 == 0 {
+            (1.0, 0.0)
+        } else {
+            (0.5, 0.5 * std::f64::consts::PI.ln())
+        };
+        while x < k as f64 / 2.0 {
+            acc += f64::ln(x);
+            x += 1.0;
+        }
+        acc
+    }
+
+    /// `ln Σ exp(v)`, written here so the longhands below do not borrow the
+    /// model's.
+    fn lse(v: &[f64]) -> f64 {
+        let top = v.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        top + v.iter().map(|x| (x - top).exp()).sum::<f64>().ln()
+    }
+
+    /// Below `1/2` the log gamma reflects, `Γ(x)·Γ(1 − x) = π / sin(πx)`.
+    /// No caller reaches it -- `ν₀ > 1` keeps every argument above `1/2` --
+    /// but the function says it handles it, and these are the tabled values
+    /// of `Γ(1/4)`, `Γ(1/10)` and `Γ(1/3)`.
+    #[test]
+    fn the_log_gamma_reflects_below_one_half() {
+        for (x, gamma) in [
+            (0.25, 3.625609908221908),
+            (0.1, 9.513507698668732),
+            (1.0 / 3.0, 2.6789385347077475),
+        ] {
+            let want = f64::ln(gamma);
+            assert!(
+                (ln_gamma(x) - want).abs() < 1e-12,
+                "{x}: {} vs {want}",
+                ln_gamma(x)
+            );
+        }
+        // The recurrence the longhands below use, against the same series
+        // where both apply.
+        for k in 1..40 {
+            let x = k as f64 / 2.0;
+            assert!(
+                (ln_gamma_half(k) - ln_gamma(x)).abs() < 1e-11 * (1.0 + ln_gamma(x).abs()),
+                "Γ({x})"
+            );
+        }
+    }
+
+    /// The `gaussian` emission's predictive is the normal-inverse-Wishart
+    /// posterior predictive, a multivariate Student-t (Murphy 2007,
+    /// "Conjugate Bayesian analysis of the Gaussian distribution", its
+    /// normal-inverse-Wishart section):
+    /// `t_{νₙ−d+1}(μₙ, Ψₙ(κₙ+1)/(κₙ(νₙ−d+1)))`, with `κₙ = κ₀ + n`,
+    /// `νₙ = ν₀ + n`, `μₙ = (κ₀μ₀ + n·x̄)/κₙ` and `Ψₙ = Ψ₀ + S +
+    /// (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`. Written out here from each run's own
+    /// rows, two-pass, with `faer`'s LU for the determinant and the quadratic
+    /// form, the gamma function by its recurrence, and Algorithm 1 in
+    /// probabilities: nothing is shared with the model's Cholesky, its
+    /// Lanczos series or its centred updates. Three correlated columns, a
+    /// full `Ψ₀` that is not diagonal, `κ₀ = 1/2` and a prior mean away from
+    /// zero, so every term of the predictive is live; and every output is
+    /// checked, the run length's mode and mean among them.
+    #[test]
+    fn the_gaussian_emission_is_the_longhand_normal_inverse_wishart() {
+        use faer::linalg::solvers::Solve;
+        use faer::prelude::*;
+        let d = 3usize;
+        let (hazard, k0, nu0) = (40.0, 0.5, 5u64);
+        let h = 1.0 / hazard;
+        let mu0 = [0.3, -0.2, 0.1];
+        let psi0 = [1.5, 0.4, 0.2, 0.4, 1.0, -0.3, 0.2, -0.3, 2.0];
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard,
+            emission: BocpdEmission::Gaussian,
+            prior_mean: Some(mu0.to_vec()),
+            prior_kappa: k0,
+            prior_nu: Some(nu0 as f64),
+            prior_scale: Some(psi0.to_vec()),
+            ..cfg(d)
+        })
+        .unwrap();
+        // `(ln π(x), μₙ)` of the run holding `rows`.
+        let predictive = |rows: &[Vec<f64>], x: &[f64]| -> (f64, Vec<f64>) {
+            let n = rows.len();
+            let nf = n as f64;
+            let bar: Vec<f64> = (0..d)
+                .map(|i| {
+                    if n > 0 {
+                        rows.iter().map(|r| r[i]).sum::<f64>() / nf
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let kn = k0 + nf;
+            let mun: Vec<f64> = (0..d).map(|i| (k0 * mu0[i] + nf * bar[i]) / kn).collect();
+            // `νₙ − d + 1`, a whole number here.
+            let dof = nu0 + n as u64 + 1 - d as u64;
+            let dof_f = dof as f64;
+            let scale = (kn + 1.0) / (kn * dof_f);
+            let sigma = Mat::from_fn(d, d, |i, j| {
+                let s: f64 = rows.iter().map(|r| (r[i] - bar[i]) * (r[j] - bar[j])).sum();
+                let g = k0 * nf / kn * (bar[i] - mu0[i]) * (bar[j] - mu0[j]);
+                (psi0[i * d + j] + s + g) * scale
+            });
+            let delta = Mat::from_fn(d, 1, |i, _| x[i] - mun[i]);
+            let sol = sigma.partial_piv_lu().solve(&delta);
+            let q: f64 = (0..d).map(|i| delta[(i, 0)] * sol[(i, 0)]).sum();
+            let det = sigma.determinant();
+            let lp = ln_gamma_half(dof + d as u64)
+                - ln_gamma_half(dof)
+                - 0.5 * d as f64 * (dof_f * std::f64::consts::PI).ln()
+                - 0.5 * det.ln()
+                - 0.5 * (dof_f + d as f64) * (q / dof_f).ln_1p();
+            (lp, mun)
+        };
+        let mut runs: Vec<Vec<Vec<f64>>> = vec![vec![]];
+        let mut joint = vec![1.0];
+        let mut n = Normals::new(41);
+        for t in 0..100 {
+            let shift = if t < 50 { 0.0 } else { 3.0 };
+            let f = n.normal();
+            let x: Vec<f64> = (0..d)
+                .map(|i| shift * (i as f64 - 1.0) + 0.8 * f + 0.6 * n.normal())
+                .collect();
+            let got = m.step(&x, &[], 1.0, 1.0).pred;
+            let parts: Vec<(f64, Vec<f64>)> = runs.iter().map(|r| predictive(r, &x)).collect();
+            let total: f64 = joint.iter().sum();
+            let pre: Vec<f64> = joint.iter().map(|j| j / total).collect();
+            let mut new = vec![0.0; runs.len() + 1];
+            for (i, (lp, _)) in parts.iter().enumerate() {
+                new[i + 1] = joint[i] * lp.exp() * (1.0 - h);
+                new[0] += joint[i] * lp.exp() * h;
+            }
+            let z: f64 = new.iter().sum();
+            let mode = (0..pre.len()).fold(0, |b, i| if pre[i] > pre[b] { i } else { b });
+            let run_mean: f64 = pre.iter().enumerate().map(|(i, p)| p * i as f64).sum();
+            let loglik = pre
+                .iter()
+                .zip(&parts)
+                .map(|(p, (lp, _))| p * lp.exp())
+                .sum::<f64>()
+                .ln();
+            assert!(
+                (got[0] - (new[0] + new[1]) / z).abs() < 1e-10,
+                "row {t}: p_change {} vs {}",
+                got[0],
+                (new[0] + new[1]) / z
+            );
+            assert_eq!(got[1], mode as f64, "row {t}: run_mode");
+            assert!(
+                (got[2] - run_mean).abs() < 1e-9 * (1.0 + run_mean),
+                "row {t}: run_mean {} vs {run_mean}",
+                got[2]
+            );
+            for j in 0..d {
+                let want: f64 = pre.iter().zip(&parts).map(|(p, (_, mu))| p * mu[j]).sum();
+                assert!(
+                    (got[3 + j] - want).abs() < 1e-10 * (1.0 + want.abs()),
+                    "row {t}: pred_{j} {} vs {want}",
+                    got[3 + j]
+                );
+            }
+            assert!(
+                (got[3 + d] - loglik).abs() < 1e-9 * (1.0 + loglik.abs()),
+                "row {t}: loglik {} vs {loglik}",
+                got[3 + d]
+            );
+            let mut next = vec![vec![]];
+            next.extend(runs.iter().map(|r| {
+                let mut r = r.clone();
+                r.push(x.clone());
+                r
+            }));
+            runs = next;
+            joint = new.iter().map(|v| v / z).collect();
+        }
+        assert_eq!(m.solve_failures, 0);
+    }
+
+    /// `robust`, with row weights, against the module docs written out: a
+    /// run takes a row at `(w/w̄)·(π(x)/π(mode))^β`, `w̄` the mean weight of
+    /// the rows learned from, this one included; the recursion passes
+    /// `π^{(w/w̄)·(π(x)/π(mode))^β}`; what the row reports is read at the
+    /// mean weight. Per feature a normal-inverse-gamma, with the predictive
+    /// `t_{νₙ}(μₙ, ψₙ(κₙ+1)/(νₙκₙ))` from each run's weighted rows, two-pass,
+    /// and `π(mode)` the density at `x = μₙ`. Two columns, so the mode is a
+    /// product and not one feature's; a wild row, a shift, a heavy row and
+    /// uneven weights, so the tempering and the relative weight both move.
+    #[test]
+    fn the_robust_emission_with_row_weights_is_the_longhand() {
+        let d = 2usize;
+        let (hazard, k0, nu0, beta, psi0) = (30.0, 0.7, 3.0, 0.4, 1.3);
+        let h = 1.0 / hazard;
+        let mu0 = [0.2, -0.1];
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard,
+            emission: BocpdEmission::Robust,
+            robust_beta: beta,
+            prior_mean: Some(mu0.to_vec()),
+            prior_kappa: k0,
+            prior_nu: Some(nu0),
+            prior_scale: Some(vec![psi0]),
+            ..cfg(d)
+        })
+        .unwrap();
+        // `(ln π(x), ln π(mode), μₙ)` of a run's weighted rows.
+        let predictive = |rows: &[(Vec<f64>, f64)], x: &[f64]| -> (f64, f64, Vec<f64>) {
+            let n: f64 = rows.iter().map(|r| r.1).sum();
+            let (kn, nun) = (k0 + n, nu0 + n);
+            let (mut lp, mut mode, mut mun) = (0.0, 0.0, vec![0.0; d]);
+            for i in 0..d {
+                let bar = if n > 0.0 {
+                    rows.iter().map(|(r, w)| w * r[i]).sum::<f64>() / n
+                } else {
+                    0.0
+                };
+                let s: f64 = rows.iter().map(|(r, w)| w * (r[i] - bar).powi(2)).sum();
+                mun[i] = (k0 * mu0[i] + n * bar) / kn;
+                let psin = psi0 + s + k0 * n / kn * (bar - mu0[i]).powi(2);
+                let var = psin * (kn + 1.0) / (nun * kn);
+                let base = ln_gamma((nun + 1.0) / 2.0)
+                    - ln_gamma(nun / 2.0)
+                    - 0.5 * (nun * std::f64::consts::PI * var).ln();
+                lp += base - 0.5 * (nun + 1.0) * ((x[i] - mun[i]).powi(2) / (var * nun)).ln_1p();
+                mode += base;
+            }
+            (lp, mode, mun)
+        };
+        let mut runs: Vec<Vec<(Vec<f64>, f64)>> = vec![vec![]];
+        let mut logj = vec![0.0];
+        let mut seen = Vec::new();
+        let mut n = Normals::new(47);
+        let mut least_tempered = 1.0f64;
+        for t in 0..120 {
+            let x: Vec<f64> = if t == 30 {
+                vec![15.0, -12.0]
+            } else {
+                let shift = if t < 60 { 0.0 } else { 3.0 };
+                vec![shift + n.normal(), 0.5 * n.normal()]
+            };
+            let w = if t == 61 {
+                4.0
+            } else {
+                0.5 + 0.25 * ((t * 5) % 7) as f64
+            };
+            let got = m.step(&x, &[], 1.0, w).pred;
+            seen.push(w);
+            let rel = w / (seen.iter().sum::<f64>() / seen.len() as f64);
+            let parts: Vec<(f64, f64, Vec<f64>)> = runs.iter().map(|r| predictive(r, &x)).collect();
+            let temper: Vec<f64> = parts
+                .iter()
+                .map(|(lp, mode, _)| (beta * (lp - mode)).exp())
+                .collect();
+            least_tempered = temper.iter().fold(least_tempered, |a, &b| a.min(b));
+            let message = |scale: f64| {
+                let mut new = vec![f64::NEG_INFINITY; runs.len() + 1];
+                let mut cp = Vec::new();
+                for (i, (lp, _, _)) in parts.iter().enumerate() {
+                    let b = logj[i] + scale * temper[i] * lp;
+                    new[i + 1] = b + (1.0 - h).ln();
+                    cp.push(b + h.ln());
+                }
+                new[0] = lse(&cp);
+                new
+            };
+            let shown = message(1.0);
+            let z_pre = lse(&logj);
+            let pre: Vec<f64> = logj.iter().map(|l| (l - z_pre).exp()).collect();
+            let p_change = (lse(&shown[..2]) - lse(&shown)).exp();
+            let mode = (0..pre.len()).fold(0, |b, i| if pre[i] > pre[b] { i } else { b });
+            let run_mean: f64 = pre.iter().enumerate().map(|(i, p)| p * i as f64).sum();
+            let mix: Vec<f64> = pre
+                .iter()
+                .zip(&parts)
+                .map(|(p, (lp, _, _))| p.ln() + lp)
+                .collect();
+            assert!(
+                (got[0] - p_change).abs() < 1e-10,
+                "row {t}: p_change {} vs {p_change}",
+                got[0]
+            );
+            assert_eq!(got[1], runs[mode].len() as f64, "row {t}: run_mode");
+            assert!(
+                (got[2] - run_mean).abs() < 1e-9 * (1.0 + run_mean),
+                "row {t}: run_mean {} vs {run_mean}",
+                got[2]
+            );
+            for j in 0..d {
+                let want: f64 = pre
+                    .iter()
+                    .zip(&parts)
+                    .map(|(p, (_, _, mu))| p * mu[j])
+                    .sum();
+                assert!(
+                    (got[3 + j] - want).abs() < 1e-10 * (1.0 + want.abs()),
+                    "row {t}: pred_{j} {} vs {want}",
+                    got[3 + j]
+                );
+            }
+            assert!(
+                (got[3 + d] - lse(&mix)).abs() < 1e-9 * (1.0 + lse(&mix).abs()),
+                "row {t}: loglik {} vs {}",
+                got[3 + d],
+                lse(&mix)
+            );
+            logj = message(rel);
+            let mut next = vec![vec![]];
+            next.extend(runs.iter().zip(&temper).map(|(r, tw)| {
+                let mut r = r.clone();
+                r.push((x.clone(), rel * tw));
+                r
+            }));
+            runs = next;
+        }
+        // The wild row was forgiven, nearly entirely, by every run.
+        assert!(least_tempered < 1e-3, "{least_tempered}");
+    }
+
+    /// A row's hazard must leave both branches a probability, `H = 1/hazard`
+    /// strictly inside `(0, 1)`. A row hazard of 1 (`H = 1`: no run ever
+    /// grows) or of infinity (`H = 0`: no run ever starts) is refused at the
+    /// row: it reports nulls, is counted, and moves nothing. (The plumbing
+    /// refuses both before they arrive; the model holds the line too.)
+    #[test]
+    fn a_row_hazard_of_one_or_infinity_is_refused() {
+        for bad in [1.0, f64::INFINITY] {
+            let mut m = Bocpd::new(BocpdCfg {
+                hazard_from_row: true,
+                ..cfg(1)
+            })
+            .unwrap();
+            let mut n = Normals::new(5);
+            for _ in 0..20 {
+                m.step(&[n.normal()], &[None], 1.0, 1.0);
+            }
+            let before = m.clone();
+            let shown = m.predict_with(&[0.3], &[Some(bad)], 1.0);
+            assert!(shown.pred.iter().all(|v| v.is_nan()), "{bad}: {shown:?}");
+            let out = m.step(&[0.3], &[Some(bad)], 1.0, 1.0);
+            assert!(out.pred.iter().all(|v| v.is_nan()), "{bad}: {out:?}");
+            assert_eq!(m.runs, before.runs, "{bad}");
+            assert_eq!(m.logjoint, before.logjoint, "{bad}");
+            assert_eq!(m.solve_failures, before.solve_failures + 1, "{bad}");
+            // And a usable row hazard is used.
+            let fine = m.step(&[0.3], &[Some(50.0)], 1.0, 1.0);
+            assert!(fine.pred.iter().all(|v| v.is_finite()), "{fine:?}");
+        }
+    }
+
+    /// `run_mode` is the first maximum of the run posterior. With `H = 1/2`
+    /// the first row splits the posterior between "a run of none" and "a run
+    /// of one" exactly, and the shorter run is the one reported.
+    #[test]
+    fn a_tie_in_the_run_posterior_reports_the_shorter_run() {
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard: 2.0,
+            ..cfg(1)
+        })
+        .unwrap();
+        m.step(&[0.4], &[], 1.0, 1.0);
+        assert_eq!(m.logjoint.len(), 2);
+        assert_eq!(m.logjoint[0], m.logjoint[1], "no tie to break");
+        let out = m.step(&[-0.2], &[], 1.0, 1.0);
+        assert_eq!(out.pred[1], 0.0);
+    }
+
+    /// The fold at `max_run` keeps the mass: the last kept run takes the
+    /// summed probability of itself and of every longer run, and each
+    /// shorter run keeps its own.
+    #[test]
+    fn the_fold_at_max_run_keeps_every_runs_mass() {
+        let mut m = Bocpd::new(cfg(1)).unwrap();
+        let mut n = Normals::new(37);
+        for _ in 0..30 {
+            m.step(&[n.normal()], &[], 1.0, 1.0);
+        }
+        let p = m.run_posterior();
+        assert_eq!(p.len(), 31);
+        let cut = 10;
+        m.cfg.max_run = cut;
+        m.prune();
+        let q = m.run_posterior();
+        assert_eq!(q.len(), cut);
+        for i in 0..cut - 1 {
+            assert!((q[i] - p[i]).abs() < 1e-14, "run {i}: {} vs {}", q[i], p[i]);
+        }
+        let tail: f64 = p[cut - 1..].iter().sum();
+        assert!(
+            p[cut - 1] > 1e-3 && tail > p[cut - 1] + 1e-3,
+            "both halves of the fold carry mass: {} of {tail}",
+            p[cut - 1]
+        );
+        assert!(
+            (q[cut - 1] - tail).abs() < 1e-12,
+            "{} vs {tail}",
+            q[cut - 1]
+        );
+    }
+
+    /// A state's shape is its emission's: a `gaussian` state of three
+    /// columns, whose runs hold `d²` scatter entries each, restores to
+    /// itself; one with a run whose scatter is short is refused, its means
+    /// the right length or not.
+    #[test]
+    fn a_gaussian_state_restores_and_a_short_scatter_is_refused() {
+        use crate::{ModelState, StateError};
+        let mut m = Bocpd::new(BocpdCfg {
+            emission: BocpdEmission::Gaussian,
+            prior_nu: Some(5.0),
+            ..cfg(3)
+        })
+        .unwrap();
+        let mut n = Normals::new(53);
+        for _ in 0..10 {
+            m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
+        }
+        assert_eq!(Bocpd::restore(&m.state()).unwrap(), m);
+        let mut s = m.state();
+        let ModelState::Bocpd(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.runs[2].m2.pop();
+        match Bocpd::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `solve_failures` is left out of a state that never counted one, so
+    /// such a state writes the bytes it always did; it is written where
+    /// there were some, so a round trip keeps the count. A row whose feature
+    /// is not a number is one: the predictive cannot be evaluated.
+    #[test]
+    fn solve_failures_is_written_only_when_there_were_some() {
+        let mut m = Bocpd::new(cfg(1)).unwrap();
+        m.step(&[0.1], &[], 1.0, 1.0);
+        let v = serde_json::to_value(&m).unwrap();
+        assert!(v.get("solve_failures").is_none(), "{v}");
+        let out = m.step(&[f64::NAN], &[], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| v.is_nan()));
+        assert_eq!(m.solve_failures, 1);
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["solve_failures"], 1, "{v}");
+        let bytes = rmp_serde::to_vec(&m).unwrap();
+        let back: Bocpd = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, m);
+    }
+
+    /// A row of weight 0 lengthens a run and moves nothing else, to the bit
+    /// (`Run::add`'s contract; it is what the `robust` emission's full
+    /// forgiveness reaches). Two rows leave the mean a pair that adding zero
+    /// would round afresh (`crate::comp::add` says why), so even a step of
+    /// zero would show.
+    #[test]
+    fn a_row_of_no_weight_moves_nothing_in_a_run() {
+        for full in [false, true] {
+            let mut run = Run::new(1, full);
+            run.add(&[0.04], 1.0, full);
+            run.add(&[1.99], 1.0, full);
+            assert_ne!(
+                run.mean[0] + run.mean_lo[0],
+                run.mean[0],
+                "the pair is one adding zero leaves alone"
+            );
+            let before = run.clone();
+            run.add(&[-7.0], 0.0, full);
+            assert_eq!(run.len, before.len + 1.0);
+            assert_eq!(run.n.to_bits(), before.n.to_bits());
+            assert_eq!(run.mean[0].to_bits(), before.mean[0].to_bits());
+            assert_eq!(run.mean_lo[0].to_bits(), before.mean_lo[0].to_bits());
+            assert_eq!(run.m2, before.m2);
+        }
+    }
+
+    /// The configuration's edges, each where the docs put it: `ν₀ > d + 1`
+    /// for `gaussian` and `> 1` otherwise; `robust_beta >= 0` whatever the
+    /// emission; `max_run >= 2`; `min_weight >= 0`; and `ν₀` absent is
+    /// `d + 2`.
+    #[test]
+    fn the_configuration_edges_are_where_the_docs_put_them() {
+        let bad = |c: BocpdCfg, msg: &str| {
+            let e = Bocpd::new(c).unwrap_err();
+            assert!(e.contains(msg), "{e}");
+        };
+        let gaussian = |nu: f64| BocpdCfg {
+            emission: BocpdEmission::Gaussian,
+            prior_nu: Some(nu),
+            ..cfg(2)
+        };
+        bad(gaussian(3.0), "prior_nu must be finite and > 3 ");
+        Bocpd::new(gaussian(3.0 + 1e-9)).unwrap();
+        bad(
+            BocpdCfg {
+                prior_nu: Some(1.0),
+                ..cfg(1)
+            },
+            "prior_nu must be finite and > 1 ",
+        );
+        for beta in [-1.0, f64::NAN] {
+            bad(
+                BocpdCfg {
+                    robust_beta: beta,
+                    ..cfg(1)
+                },
+                "robust_beta must be finite and >= 0",
+            );
+        }
+        let mut m = Bocpd::new(BocpdCfg {
+            max_run: 2,
+            ..cfg(1)
+        })
+        .unwrap();
+        for i in 0..5 {
+            m.step(&[i as f64], &[], 1.0, 1.0);
+        }
+        assert_eq!(m.runs.len(), 2);
+        bad(
+            BocpdCfg {
+                min_weight: -1.0,
+                ..cfg(1)
+            },
+            "min_weight must be >= 0",
+        );
+        Bocpd::new(BocpdCfg {
+            min_weight: 5.0,
+            ..cfg(1)
+        })
+        .unwrap();
+        assert_eq!(
+            BocpdCfg {
+                prior_nu: None,
+                ..cfg(3)
+            }
+            .nu0(),
+            5.0
+        );
+    }
+
+    /// `Ψ₀`'s short forms are the matrices they name, run for run: absent is
+    /// the identity and a scalar `s` is `sI`; and `ν₀` absent is `d + 2`.
+    #[test]
+    fn the_prior_scale_and_nu_short_forms_run_as_what_they_name() {
+        let run = |c: BocpdCfg| {
+            let d = c.n_features;
+            let mut m = Bocpd::new(c).unwrap();
+            let mut n = Normals::new(43);
+            (0..60)
+                .map(|t| {
+                    let x: Vec<f64> = (0..d)
+                        .map(|i| (if t < 30 { 0.0 } else { 2.5 }) * i as f64 + n.normal())
+                        .collect();
+                    m.step(&x, &[], 1.0, 1.0).pred
+                })
+                .collect::<Vec<_>>()
+        };
+        let gaussian = |scale: Option<Vec<f64>>| BocpdCfg {
+            emission: BocpdEmission::Gaussian,
+            prior_nu: Some(4.5),
+            prior_scale: scale,
+            ..cfg(2)
+        };
+        let identity = run(gaussian(Some(vec![1.0, 0.0, 0.0, 1.0])));
+        let twice = run(gaussian(Some(vec![2.0, 0.0, 0.0, 2.0])));
+        assert_ne!(identity, twice, "the scale moves the outputs");
+        assert_eq!(run(gaussian(None)), identity);
+        assert_eq!(run(gaussian(Some(vec![2.0]))), twice);
+        let diag = |nu: Option<f64>| BocpdCfg {
+            prior_nu: nu,
+            ..cfg(3)
+        };
+        assert_ne!(run(diag(Some(5.0))), run(diag(Some(6.0))));
+        assert_eq!(run(diag(None)), run(diag(Some(5.0))));
+    }
+
+    /// A matrix `prior_scale` is held to symmetry cell by cell, each upper
+    /// entry against its lower one, to `1e-12` of the larger plus `1e-12`.
+    /// Of three columns, an asymmetry in `[1][2]` alone is found and named;
+    /// one at the tolerance exactly is rounding and is taken, as is one under
+    /// it at a large scale or a tiny one.
+    #[test]
+    fn a_matrix_prior_scale_is_symmetric_to_a_tolerance() {
+        let with = |v: Vec<f64>| {
+            let d = if v.len() == 9 { 3 } else { 2 };
+            BocpdCfg {
+                emission: BocpdEmission::Gaussian,
+                prior_nu: Some(6.0),
+                prior_scale: Some(v),
+                ..cfg(d)
+            }
+        };
+        let e = Bocpd::new(with(vec![4.0, 1.0, 0.5, 1.0, 4.0, 0.9, 0.5, 0.5, 4.0])).unwrap_err();
+        assert!(e.contains("[1][2] is 0.9 and [2][1] is 0.5"), "{e}");
+        // The asymmetry `c` whose tolerance is `c` itself.
+        let mut c = 1e-12f64;
+        while 1e-12 * (1.0 + c) != c {
+            c = 1e-12 * (1.0 + c);
+        }
+        assert_eq!((0.0 - c).abs(), 1e-12 * (1.0 + 0.0f64.max(c)));
+        Bocpd::new(with(vec![1.0, 0.0, c, 1.0])).unwrap();
+        Bocpd::new(with(vec![1e7, 1e6, 1e6 * (1.0 + 1e-13), 1e7])).unwrap();
+        Bocpd::new(with(vec![1.0, 0.0, 5e-13, 1.0])).unwrap();
+    }
 }

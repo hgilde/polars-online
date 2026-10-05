@@ -10,13 +10,6 @@
 # (docs/TESTING.md, "Mutation survivors").
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
-function = "SlotMetrics::update"
-mutation = "replace > with >="
-line_has = "if denom > 0.0 {"
-why = "a scored row has w > 0, so denom = lam * W + w is positive and the branch is always taken"
-
-[[equivalent]]
 file = "crates/online-polars/src/span.rs"
 function = "format_duration"
 mutation = "replace < with <="
@@ -60,14 +53,6 @@ why = """the first `>`: a row of weight 0 passes `w >= 0` and fails the \
 fraction test after it (`0 > EMPTY_FRACTION · lam · w_sum` for any weight), \
 so it is not counted either way; the second `>` is caught (the row at the \
 fraction exactly)"""
-
-[[equivalent]]
-file = "crates/online-core/src/marginal.rs"
-function = "Marginal::learn"
-mutation = "replace > with >="
-line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {"
-why = """as `EwCov::update`'s: a row of weight 0 fails the fraction test \
-after `w >= 0`, so it is not counted either way; the second `>` is caught"""
 
 [[equivalent]]
 file = "crates/online-core/src/cluster/summary.rs"
@@ -160,14 +145,6 @@ an underflow to -0 could reach"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::error_inflation_into"
-mutation = "replace > with >="
-line_has = "if n > 0.0 && edf.is_finite() {"
-why = """`n` is Kish's count for a Gram with weight (a Gram without any gives \
-`None` and is skipped two lines up), and that count is positive"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
 function = "<impl OnlineModel for EwRidge>::row_error_inflation_into"
 mutation = "replace > with >="
 line_has = "let q = if kk > 0 {"
@@ -208,3 +185,1251 @@ line_has = "if self.zbuf.len() != self.cfg.k_total() {"
 why = """`new` and `restore` both size the buffer at `k_total`, so the branch \
 never runs; the mutant reallocates it every row instead, and the row \
 overwrites every entry before anything reads it"""
+
+
+# Task 158, batch A (rcov, marglag, margbins and five smaller files): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "phi2"
+mutation = "replace + with *"
+line_has = "(j + 1..k).map(|i| g(i) * g(i - j)).sum()"
+why = """the range starts at `i = j`, adding the term `g(j/k)·g(0)`, and `g(0) = min(0, 1) = 0`, so every sum is the same number; the one trace is the sign of a zero (at `j = k − 1` the original's empty sum is Rust's −0.0, the mutant's single zero term +0.0), which `==` cannot see and `phi_12` and `phi_22` multiply away"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "StridedRv::push"
+mutation = "replace += with -="
+line_has = "self.partial[o * k + i] += xi;"
+why = """the partial sum reaches the accumulators only as `v·v` and `v·v·v·v`; the mutant builds `−Σx` exactly (negation is exact and round-to-nearest symmetric), whose even powers are the same doubles"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "StridedRv::mean"
+mutation = "replace * with /"
+line_has = "*v += from[o * k + i] * scale;"
+why = """the `* scale` one: `mean`'s only caller, `mean_rv`, passes `scale = 1.0`, and `x / 1.0` is `x * 1.0` for every double (the index's `o * k` mutant on the same line is caught)"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "Rcov::push"
+mutation = "replace += with -="
+line_has = "*o += w * v;"
+why = """this builds the pre-averaged return `Ȳ`, which enters the state only through the outer product `ȲȲ'`; the mutant builds `−Ȳ` exactly, whose outer product is the same doubles"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "Rcov::bandwidth"
+mutation = "replace > with >="
+line_has = "if *v > 0.0 && w.is_finite() && *w >= 0.0 {"
+why = """`v` is a mean of sums of squares, so `>=` adds only `v = 0`, where `w / v` is ±inf or NaN; that feature's `H` is then not finite, and the `is_finite` filter after the map drops it as it drops the guard's NaN"""
+
+[[equivalent]]
+file = "crates/online-core/src/rcov.rs"
+function = "Rcov::bandwidth"
+mutation = "replace && with ||"
+line_has = "if *v > 0.0 && w.is_finite() && *w >= 0.0 {"
+why = """either `&&` turned `||` lets through only a feature with `v = 0`, `v` NaN or `w` infinite (`w` is a mean of squares, never negative); each makes `w / v` ±inf or NaN, so its `H` is not finite and the `is_finite` filter after the map drops it, as it drops the guard's NaN"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "MarginalBins::best_split"
+mutation = "replace - with /"
+line_has = "for c in 0..self.n_bins(j) - 1 {"
+why = """`n_bins / 1` adds one pass, the cut after the last bin; there `left_w` has added every weight in the order `total_w` did (its −0.0 start is no different from +0.0 once a weight is added), so `right_w` is exactly 0 and the pass is skipped before it reads an edge"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "MarginalBins::best_split"
+mutation = "replace += with -="
+line_has = "left_d += w[c] * (mean[c] - mean_all);"
+why = """`left_d` enters the gain only as `(left_d / left_w)·(left_d / right_w)`, so the mutant's `−left_d`, exact by the symmetry of rounding, gives the same product"""
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "edges_from"
+mutation = "replace || with &&"
+line_has = "if !share.is_finite() || share <= 0.0 {"
+why = """the mutant never breaks here and the search below breaks instead: `share` is never NaN (the weights are finite and positive); it is +inf only when they overflow, at the first edge, where every cumulative weight is `<= inf` and the search runs off the end; and it is `<= 0` only when every weight left was absorbed into `base`, where every `c − base` is 0 and the search again runs off the end; `i >= n` then breaks with the same edges"""
+
+[[equivalent]]
+file = "crates/online-core/src/pa.rs"
+function = "<impl OnlineModel for Pa>::step"
+mutation = "replace * with /"
+line_has = "let step = tau * err.signum();"
+why = """`err.signum()` is ±1 here (an `err` of 0 has no loss, `eps >= 0` being validated, and NaN cannot reach the line, `y` and `p` being finite), and dividing by ±1 is multiplying by it, exactly"""
+
+[[equivalent]]
+file = "crates/online-core/src/seqtest.rs"
+function = "<impl OnlineModel for SeqTest>::step"
+mutation = "replace * with /"
+line_has = "self.log_e_pos[j] += (lam_pos * s).ln_1p();"
+why = """`s` is the target's sign, ±1 (a zero continues above), and `x / ±1` is `x * ±1` exactly"""
+
+[[equivalent]]
+file = "crates/online-core/src/seqtest.rs"
+function = "<impl OnlineModel for SeqTest>::step"
+mutation = "replace * with /"
+line_has = "self.log_e_neg[j] += (-lam_neg * s).ln_1p();"
+why = """as the line above: `s` is ±1, and `x / ±1` is `x * ±1` exactly"""
+
+[[equivalent]]
+file = "crates/online-core/src/seqtest.rs"
+function = "<impl OnlineModel for SeqTest>::step"
+mutation = "replace > with >="
+line_has = "if s > 0.0 {"
+why = """`s` is ±1, never 0 (a zero target continues above), so `>` and `>=` agree"""
+
+[[equivalent]]
+file = "crates/online-core/src/drift.rs"
+function = "PageHinkley::update"
+mutation = "replace < with <="
+line_has = "if self.cum < self.min_cum {"
+why = """at `cum == min_cum` the mutant stores the same value; the two could differ only in the sign of a zero, and `cum` is never −0.0: it starts (and resets) at +0.0, and a round-to-nearest sum is −0.0 only when both terms are"""
+
+
+# Task 158, batch B (marginal, gaps, model, clock, ewlagcov and ftrl): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/ewlagcov.rs"
+function = "EwLagCov::update"
+mutation = "replace < with <="
+line_has = "if w < 0.0 {"
+why = """they differ only at `w = 0`. With weight behind the row, `a = \
+lam·W/(lam·W)` is 1 and `b` is 0 exactly, so every cell becomes `c + ±0`, \
+the same double save the sign of a zero, which only an underflow to -0 \
+could reach; the ring takes no zero-weight row either way. With none, the \
+`w_new <= 0` return two lines down is taken. So returning at `w = 0` \
+changes nothing (`a_zero_weight_row_ages_the_matrices_and_stays_out_of_the_ring`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::cut"
+mutation = "replace - with +"
+line_has = "let b = mb - ratio * db;"
+why = """`cut` returns `(wn, a, b, s)` and `pair`, its one caller, discards `b` \
+at all three call sites (each reads its mean from `a`), so this line's value \
+is never read; `db` reaches `s` on the next line directly"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::cut"
+mutation = "replace - with /"
+line_has = "let b = mb - ratio * db;"
+why = """as `replace - with +` on this line: `b` is discarded at every call site"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::cut"
+mutation = "replace * with +"
+line_has = "let b = mb - ratio * db;"
+why = """as `replace - with +` on this line: `b` is discarded at every call site"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::cut"
+mutation = "replace * with /"
+line_has = "let b = mb - ratio * db;"
+why = """as `replace - with +` on this line: `b` is discarded at every call site"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::pair"
+mutation = "replace > with >="
+line_has = "if wn > crate::window::EMPTY_FRACTION * self.wt[t] && wn.is_finite() {"
+why = """the lag moments' emptiness test is the exact complement of `cut`'s on \
+the same `wn = W_t − f·W_u`; at `wn = EMPTY_FRACTION·W_t` `cut` returned \
+`None`, the pair's variances are NaN, and every lag correlation is \
+`norm(·, NaN)`, NaN whichever branch this line takes (the `*` on this line \
+is caught: under `/` light rows read empty)"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::pair"
+mutation = "replace && with ||"
+line_has = "if wn > crate::window::EMPTY_FRACTION * self.wt[t] && wn.is_finite() {"
+why = """as `replace > with >=` here: the mutant lets through only a `wn` at or \
+below the fraction, or not finite, where `cut` returned `None` and every lag \
+correlation is NaN either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::pair"
+mutation = "replace > with >="
+line_has = "if factor.is_finite() && factor > 0.0 {"
+why = """`serial_factor` never returns 0: the truncated and Bartlett rules turn \
+a factor at or below zero into NaN, and the geometric one is `1 + 2p/(1 − p) \
+≥ 1` for `p` in `[0, 1)` (the `&&` on this line is caught)"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "serial_factor"
+mutation = "replace || with &&"
+line_has = "if !px.is_finite() || !py.is_finite() {"
+why = """`fit` returns NaN or a finite number (`exp` of at most 3/5 of \
+`ln f64::MAX`, since at least two lags enter it), and with either one NaN \
+`prod` is NaN, which the range test after this line returns as the same \
+`(NaN, px, py)`"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::flush_rows"
+mutation = "replace > with >="
+line_has = "if p > 0 {"
+why = """`p` is `n_features`, which `MarginalCfg::validate` holds at one or \
+more, so the branch is taken either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::advance_target"
+mutation = "replace > with >="
+line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {"
+why = """as `EwCov::update`'s: a row of weight 0 fails the fraction test after \
+`w >= 0` (`0 > EMPTY_FRACTION · lam · W_t` for no weight), so it is not \
+counted either way; the second `>` is caught. The line moved here from \
+`Marginal::learn`, whose entry no longer matches it"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "MarginalShard<'a>::run"
+mutation = "replace > with >="
+line_has = "if n_lags > 0 && job.shared {"
+why = """with no lags the block walks `d.backs[0..0]` and does nothing (the \
+`d.shared[r]` it reads first exists for every held row under shared \
+moments), and what follows the `if` runs either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "MarginalShard<'a>::run"
+mutation = "replace > with >="
+line_has = "} else if n_lags > 0 {"
+why = """with no lags each present target's loop walks the empty `backs` and \
+does nothing"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "MarginalShard<'a>::run"
+mutation = "replace |= with &="
+line_has = "self.wrote |= crate::margbins::update_cells("
+why = """`wrote` is read only by a `debug_assert!` in `flush_rows`, which holds \
+of a correct flush; under `&=` it stays false and the assertion holds \
+vacuously, and no number reads it"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "<impl OnlineModel for Marginal>::step"
+mutation = "replace > with >="
+line_has = "if self.defer.n > 0 {"
+why = """a flush with nothing held changes no state: `flush_rows` only frees \
+`defer`'s buffers, which serde skips and every reader ignores"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "Grams::update"
+mutation = "delete match arm 0"
+line_has = "0 => {}"
+why = """every Gram has a reader: a split moves only the absent targets to the \
+new Gram and leaves the present ones, and `Acc::has_shape` refuses a \
+restored state with a Gram nobody reads; so no Gram's flags are 0 and the \
+arm is never reached"""
+
+
+# Task 158, batch C (bocpd, hmm, ewclass, conformal and cluster/summary): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "BocpdCfg::psi0"
+mutation = "replace match guard v.len() == 1 with true"
+line_has = "Some(v) if v.len() == 1 => {"
+why = """`validate` admits a `prior_scale` of one value or of `d·d`, and the \
+arm above takes `d·d` first (at `d = 1` the two are one length), so the \
+guard is true wherever it is reached"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "BocpdCfg::validate"
+mutation = "replace + with *"
+line_has = "for j in (i + 1)..d {"
+why = """`(i * 1)..d` adds the diagonal, each entry compared with itself; \
+the entries are finite (refused just above otherwise), so `|a − a| = 0` \
+passes the tolerance"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Run::add"
+mutation = "replace > with >="
+line_has = "if !(w > 0.0 && n_new > 0.0) {"
+why = """the second `>`: `w > 0` and `n ≥ 0` make `n_new = n + w` positive, \
+so `>= 0` admits nothing more; the first `>` is caught \
+(`a_row_of_no_weight_moves_nothing_in_a_run`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Bocpd::log_predictive"
+mutation = "replace || with &&"
+line_has = "if var.is_nan() || var <= 0.0 || nun <= 0.0 {"
+why = """both mutants let a NaN or non-positive variance through (`ν > 1` \
+keeps `nun` positive): its log density is then NaN (`z` or the constant is \
+infinite, and `∞ − ∞`), and a NaN in any run's term makes the row's \
+normaliser NaN, so `read` returns the same nulls and no update as the \
+early `None`"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Bocpd::read"
+mutation = "replace > with >="
+line_has = "if pre[i] > 0.0 {"
+why = """at `pre[i] = 0` the mutant's `ln 0 + ln π = −∞` is the `−∞` the \
+other branch gives: a log density is never `+∞`, and a NaN one makes the \
+row's normaliser NaN and the row null either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Bocpd::read"
+mutation = "replace > with >="
+line_has = "let short = if new.len() > 1 {"
+why = """`new` holds a slot more than the runs, and there is always a run \
+(`restore` refuses an empty vector and `prune` never drops `r = 0`), so \
+its length is at least 2 and both tests hold"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Bocpd::prune"
+mutation = "replace > with >="
+line_has = "if self.cfg.prune_below > 0.0 {"
+why = """at `prune_below = 0` every run passes `exp(l − z) >= 0` (the log \
+joint is finite or `−∞`, and `z` is finite here), so the retain keeps \
+them all"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "Bocpd::prune"
+mutation = "replace > with >="
+line_has = "if self.runs.len() > self.cfg.max_run {"
+why = """at a length of exactly `max_run` the fold sums one entry: \
+`log_sum_exp([l]) = l + ln 1 = l`, to the bit, and the truncation drops \
+nothing"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "<impl crate::OnlineModel for Bocpd>::step"
+mutation = "replace > with >="
+line_has = "let (rel, w_mean, w_rows) = if weight > 0.0 {"
+why = """at weight 0 the mutant's relative weight feeds only the update, \
+which the zero-weight return discards, and the mean and count it forms \
+are stored only past that return; the row's outputs do not read it"""
+
+[[equivalent]]
+file = "crates/online-core/src/hmm.rs"
+function = "HmmCfg::validate"
+mutation = "replace > with >="
+line_has = "|| (row.iter().sum::<f64>() - 1.0).abs() > 1e-9"
+why = """they differ only where `|Σ − 1|` is the double `1e-9` exactly; a sum \
+near 1 differs from it by an exact multiple of `2⁻⁵³` (Sterbenz), and \
+`fl(1e-9)` is not one, so no row reaches the boundary"""
+
+[[equivalent]]
+file = "crates/online-core/src/hmm.rs"
+function = "HmmCfg::validate"
+mutation = "replace + with *"
+line_has = "for j in (i + 1)..d {"
+why = """as `BocpdCfg::validate`'s: `(i * 1)..d` adds the diagonal, each \
+finite entry compared with itself"""
+
+[[equivalent]]
+file = "crates/online-core/src/hmm.rs"
+function = "Hmm::read"
+mutation = "replace > with >="
+line_has = "if pred[l] > 0.0 {"
+why = """at `p̃ₗ = 0` the mutant's `ln 0 + ln fₗ` is `−∞`, the other \
+branch's value: `log_densities` returns every `ln fₗ` finite or none"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::n_eff"
+mutation = "replace match guard old.n_eff > 0.0 with true"
+line_has = "Some((u, old)) if old.n_eff > 0.0 => {"
+why = """a snapshot's weight is never negative, so the guard fails only at \
+0, where the subtraction leaves `n_eff` itself -- the factor to the \
+boundary is at most 1 on a clock that does not step back, which the \
+plumbing refuses, and 0 times it is 0 -- which the floor passes or, at 0, \
+returns as the 0 it is"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::n_eff"
+mutation = "replace > with >="
+line_has = "Some((u, old)) if old.n_eff > 0.0 => {"
+why = """as the guard's other mutant: at a snapshot weight of 0 the \
+subtraction gives back `n_eff`, which is what the other arm returns"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::label"
+mutation = "replace < with <="
+line_has = "v.fract() == 0.0 && v < self.cfg.n_classes as f64 {"
+why = """a label of exactly `n_classes` matches no class in `step`'s loop, \
+so every class decays and nothing else reads it: the row is unlabelled \
+either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::score"
+mutation = "replace || with &&"
+line_has = "if total <= 0.0 || total.is_nan() {"
+why = """the class weights are finite, so only `total = 0` differs: every \
+class then has weight 0 and is skipped (`shared` factorizes the zero matrix \
+under jitter and reads no column), `ell` stays `−∞`, and the non-finite \
+maximum returns the same nulls"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::score"
+mutation = "replace > with >="
+line_has = "let seen: Vec<usize> = (0..nc).filter(|&c| weights[c] > 0.0).collect();"
+why = """a class of weight 0 joins the pool at `π = 0`, adding exact zeros to \
+the matrix (its co-moments and ridge are finite), and its own score is \
+`ln 0 − … = −∞`, as the class left out has"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "Conformal::update_against"
+mutation = "replace > with >="
+line_has = "let rel = if self.w_mean > 0.0 {"
+why = """`w_mean` has just taken this row's weight `w > 0` into a mean of \
+positive weights (each step lands between the old mean and `w`), so it is \
+positive wherever the line runs; a weight of NaN or `∞` takes the same \
+branch under both"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "norm_ppf"
+mutation = "replace > with >="
+line_has = "if !(p > 0.0 && p < 1.0) {"
+why = """the guard is redundant: every `p` it refuses gives NaN through the \
+formula too -- `ln` of zero or less is `−∞` or NaN, and the tail at `∞` is \
+`−∞/∞` -- so `p = ±0` let through returns the NaN it returned"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "norm_ppf"
+mutation = "replace && with ||"
+line_has = "if !(p > 0.0 && p < 1.0) {"
+why = """as the `>` mutant: every `p` outside `(0, 1)` gives NaN through the \
+formula as it does through the guard"""
+
+[[equivalent]]
+file = "crates/online-core/src/conformal.rs"
+function = "norm_ppf"
+mutation = "replace < with <="
+line_has = "if !(p > 0.0 && p < 1.0) {"
+why = """at `p = 1` the upper tail reads `ln(1 − p) = −∞` and returns \
+`−(−∞/∞)`, NaN, as the guard does"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/summary.rs"
+function = "FeatureMoments::metric"
+mutation = "replace > with >="
+line_has = "*o = if standardize && v > 0.0 && inv.is_finite() {"
+why = """at `v = ±0` the reciprocal is infinite, which `inv.is_finite()` \
+refuses next, so the weight is 1 either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/summary.rs"
+function = "SplitMix64::choice"
+mutation = "replace - with +"
+line_has = "return ((u * n as f64) as usize).min(n - 1);"
+why = """`u < 1`, and the product of a double below 1 and `n` rounds below \
+`n`, so `⌊u·n⌋ ≤ n − 1` already and the `min` never binds, at `n + 1` or \
+`n − 1`"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/summary.rs"
+function = "SplitMix64::choice"
+mutation = "replace - with /"
+line_has = "return ((u * n as f64) as usize).min(n - 1);"
+why = """as the `+` mutant: the cast is at most `n − 1`, so neither `min(n)` \
+nor `min(n − 1)` binds"""
+
+
+# Task 158, batch D (kmeans, micro, deco, humanfloat and window): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/humanfloat.rs"
+function = "tag"
+mutation = "replace > with >="
+line_has = "} else if v > 0.0 {"
+why = """every caller tags only a value that is not finite (`!v.is_finite()` \
+is tested first), so `v` is NaN or ±∞, never the 0 where `> 0` and `>= 0` \
+part"""
+
+[[equivalent]]
+file = "crates/online-core/src/humanfloat.rs"
+function = "vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_none"
+mutation = "replace vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_none -> Result<Self::Value, E> with Ok(Default::default())"
+line_has = "Ok(None)"
+why = "`Option::default()` is `None`, which is what the visitor returns"
+
+[[equivalent]]
+file = "crates/online-core/src/humanfloat.rs"
+function = "vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_unit"
+mutation = "replace vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_unit -> Result<Self::Value, E> with Ok(Default::default())"
+line_has = "Ok(None)"
+why = "`Option::default()` is `None`, which is what the visitor returns"
+
+[[equivalent]]
+file = "crates/online-core/src/window.rs"
+function = "Snapshots<S>::enforce"
+mutation = "replace - with +"
+line_has = ".filter(|(i, _)| (n - 1 - i) % 2 == 0)"
+why = """either `-` made `+` (`n + 1 - i`, or `n - 1 + i`) moves the number by \
+2 or by `2i`, so its parity, and the snapshots the filter keeps, stay the \
+same; with `i < n` neither overflows"""
+
+[[equivalent]]
+file = "crates/online-core/src/deco.rs"
+function = "<impl crate::OnlineModel for Deco>::restore"
+mutation = "replace > with >="
+line_has = "if m.rho_w.len() == 1 && values > 1 {"
+why = """`values` is at least 1, and at 1 the mutant widens a list of one \
+weight `[w]` to `vec![w; 1]`, the same list"""
+
+[[equivalent]]
+file = "crates/online-core/src/deco.rs"
+function = "Deco::advance"
+mutation = "replace > with >="
+line_has = "let b = if w_new > 0.0 { w / w_new } else { 0.0 };"
+why = """they differ only at `w_new = 0` with `w_old > 0` (both zero is \
+skipped above), so `lam = 0` and `w = 0`, where the mutant's `b` is 0/0 = \
+NaN; `b` is read only by `if b > 0.0`, false for NaN as for 0, so the level \
+takes no step either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/micro.rs"
+function = "Micro::prune_horizon"
+mutation = "replace < with <="
+line_has = "(f_tp < 1.0).then_some((tp, f_tp))"
+why = """`f_tp` is 1 only where `2^(-Tp/h)` rounds to 1; there the mutant's \
+horizon makes `ξ = (2^(-age/h) - 1) / (1 - 1)` a number at most 0 over +0 \
+(the clock a model is given never steps back, so `age >= 0`), -∞ or NaN, \
+and `n < ξ·w̄` is false for both: no outlier summary is pruned, as under \
+`None`"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/micro.rs"
+function = "Micro::link_potential"
+mutation = "replace + with *"
+line_has = "for b in (a + 1)..m {"
+why = """`a * 1` starts either loop at `b = a`: the distances' loop then writes \
+`dist2(c, c)` to the diagonal, which nothing reads (the nearest-neighbour \
+fold skips `b == a`, and the linkage loop never reaches it), and the \
+linkage loop unions a summary with itself, which moves no root"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::learn_row"
+mutation = "replace > with >="
+line_has = "let far = self.cfg.split_merge > 0.0 && self.is_far(d2);"
+why = """they differ only at `split_merge = 0`, where the far cut keeps the ∞ \
+it starts at (`refresh_far_cut` runs only while the rule is on) and no `d²` \
+is past ∞: `is_far` is false either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::checkpoint"
+mutation = "replace > with >="
+line_has = "if self.cfg.split_merge > 0.0 {"
+why = """at `split_merge = 0` the mutant refreshes the cut and runs the check \
+too, but no row is far while the rule is off (`learn_row` and `try_seed` \
+test the rule first), so every far summary is empty: winsorizing folds \
+nothing, no pair is below a ratio of 0, and the dead rule finds no far \
+source. It moves only `far_cut`, `r2_typical` and `since_sm` in the state, \
+which nothing reads while the rule is off"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::split_merge_check"
+mutation = "replace > with >="
+line_has = "} else if den > 0.0 {"
+why = """`den` is a sum of two roots, never negative; at `den = 0` the centres \
+are apart (`d = 0` is the branch above), and the mutant's `d / 0` is the \
++∞ the original assigns"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::split_merge_check"
+mutation = "replace > with >="
+line_has = "if k >= 2 && self.cfg.dead_frac > 0.0 {"
+why = """at `dead_frac = 0` the floor `0 · n_eff / k` is 0 (NaN if `n_eff` \
+overflowed), and no weight is below either, so nothing is freed (the `&&` \
+made `||` on this line is caught)"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::buffer_cut"
+mutation = "replace > with >="
+line_has = "let mean = if wsum > 0.0 { sum / wsum } else { 0.0 };"
+why = """`buffer_cut` runs only from `try_seed`, right after a row of positive \
+weight joined the buffer undecayed, so `wsum > 0` whenever it runs"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::try_seed"
+mutation = "replace && with ||"
+line_has = "if kept.len() >= k && kept.len() < self.buf.len() {"
+why = """where the mutant seeds from the kept rows and the original does not, \
+either they are the whole buffer -- the same rows and weights in the same \
+order, the generator restarting from `seed` in each call, so the same \
+seeds, which the fallback also gives when they are not distinct -- or fewer \
+than `k`, where `seed_centres` returns `None` and the fallback runs as \
+before"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::try_seed"
+mutation = "replace < with <="
+line_has = "if kept.len() >= k && kept.len() < self.buf.len() {"
+why = """the kept rows are drawn from the buffer, so `<=` differs only where \
+they are the whole buffer, and seeding from those gives the seeds the \
+fallback does (the `&&` entry above)"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "KMeans::try_seed"
+mutation = "replace > with >="
+line_has = "if self.cfg.split_merge > 0.0 {"
+why = """at `split_merge = 0` the mutant refreshes the far cut after seeding, \
+which nothing reads while the rule is off (`learn_row` tests the rule \
+first); only `far_cut` and `r2_typical` in the state differ"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "inertia"
+mutation = "replace < with <="
+line_has = "if d < best {"
+why = """on a tie the mutant sets `best` to the value it already holds, so it \
+ends at the same minimum"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/kmeans.rs"
+function = "shrink"
+mutation = "replace < with <="
+line_has = "if q < *d {"
+why = "as `inertia`'s: on a tie the mutant writes the value already there"
+
+
+# Task 158, batch E (corrchange, robust, boundary and rls): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/rls.rs"
+function = "Rls::solve"
+mutation = "replace > with >="
+line_has = "let b = if d > 0.0 { acc / d } else { 0.0 };"
+why = """the factor's diagonal is never negative, and at `d = 0` the mutant's \
+`acc / 0` is ±inf or NaN, which the next line's `is_finite` check sets to \
+the 0 the original gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/rls.rs"
+function = "<impl OnlineModel for Rls>::step"
+mutation = "replace > with >="
+line_has = "                    if !(rho > 0.0 && rho.is_finite()) {"
+why = """the inner check, after `hypot`: `zi` is not 0 there (a zero entry \
+skips the rotation above), so `hypot(rii, zi) >= |zi| > 0` and `>= 0` \
+admits nothing `> 0` refuses; a NaN fails both alike"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::row_update"
+mutation = "replace > with >="
+line_has = "let psi = if r > 0.0 { tau } else { tau - 1.0 };"
+why = """the line runs only outside the band, `|r| >= h`, and `h = \
+scale·max(quantile_eps, (k/n)^(2/5))` is positive (a positive scale, \
+`quantile_eps` validated `> 0`), so `r` is never 0 there; a NaN fails both \
+alike"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::solve_centred"
+mutation = "replace + with *"
+line_has = ".filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))"
+why = """as `EwRidge::solve_centred`'s: both mutants are inside the second \
+argument, which `variance_is_usable` ignores; `cov.raw(i * 1, ..)` is still \
+in range"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::solve_centred"
+mutation = "replace > with >="
+line_has = "if kk > 0 {"
+why = """with no usable feature the mutant solves the empty system: \
+`solve_spd` of a 0×0 matrix returns an empty solution and no jitter, so \
+nothing is written and nothing counted"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::solve_through_origin"
+mutation = "replace > with >="
+line_has = "if kk > 0 {"
+why = """as `Robust::solve_centred`'s: `solve_spd` of a 0×0 matrix returns an \
+empty solution and no jitter"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace > with >="
+line_has = "let aged_rows = if present > 0.0 {"
+why = """`present`, the target's rows decayed at their weights, rounds to 0 \
+only through a decay that leaves `rows`, the same rows decayed one each, \
+under one row (each counted row adds at least the least subnormal to the \
+one and 1 to the other; 0.8 at most over 200,000 random decay sequences at \
+subnormal weights), so `row_update` takes its warm-up arm, `rows < \
+WARM_ROWS·k`, before it reads `aged_rows`"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace > with >="
+line_has = "let step = if raw.abs() > most {"
+why = """at `|raw| = most` both arms give the same double: `most.copysign(raw)` \
+is `raw`"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace && with ||"
+line_has = "if weight.is_finite() && weight > 0.0 {"
+why = """a weight is finite and `>= 0` (`OnlineModel::step`'s contract; the \
+plumbing passes nothing else), so the mutant adds only what the original \
+adds and a weight of 0, which leaves the sum where it was"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace > with >="
+line_has = "if weight.is_finite() && weight > 0.0 {"
+why = """a weight of 0 passes `>= 0` and adds 0, which leaves the sum where it \
+was"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "<impl crate::OnlineModel for CorrChange>::step"
+mutation = "replace * with +"
+line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
+why = """below 2w rows the ring has not been full since it was last emptied, \
+which dropped the permutation value too, so the mutant's earlier calls find \
+none and `permutation_crit` returns `None` before drawing (its own 2w \
+guard): the value stays `None` and `since_perm` 0, as without the calls"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "<impl crate::OnlineModel for CorrChange>::step"
+mutation = "replace * with /"
+line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
+why = """`2 / w` is 0, so the mutant calls `permutation_crit` from the first \
+row; below 2w rows it finds no value held and returns `None` before \
+drawing, as the `replace * with +` entry above says"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "bartlett"
+mutation = "replace < with <="
+line_has = "if a < 1.0 { 1.0 - a } else { 0.0 }"
+why = "at `|x| = 1` both arms give 0"
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::corr_of"
+mutation = "replace > with >="
+line_has = "if den > 0.0 { vab / den } else { f64::NAN }"
+why = """`den = 0` is a column without spread (or a product that underflows): \
+the mutant's `vab / 0` is NaN or ±inf where the original gives NaN, and \
+every caller reads a correlation only through `is_finite`, on it or on a \
+ratio built from it"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::long_run_sd"
+mutation = "replace > with >="
+line_has = "if v > 0.0 { v.sqrt() } else { f64::NAN }"
+why = """`v = 0` gives a standard deviation of 0 under the mutant, and both \
+callers treat one that is not positive as none: `monitor_stat_at`'s `sd <= \
+0.0`, `begin_monitoring`'s `if sd > 0.0`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::begin_monitoring"
+mutation = "replace > with >="
+line_has = "scale.push(if sd > 0.0 { sd } else { f64::NAN });"
+why = """`long_run_sd` never returns 0: it is the root of a positive `v`, \
+itself positive, or NaN"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::sequential_stat"
+mutation = "replace > with >="
+line_has = "let rho = if den > 0.0 { c / den } else { f64::NAN };"
+why = """at `den = 0` the mutant's `c / 0` is NaN or ±inf, and the ratio built \
+from it is not finite and is skipped, as the original's NaN is"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::sequential_since_change"
+mutation = "replace += with -="
+line_has = "run += r[0];"
+why = """the mutant negates every prefix mean and the last one alike; \
+negation is exact, so each score `j·|p − last|` is the same double"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::sequential_since_change"
+mutation = "replace += with -="
+line_has = "sab += da * (r[b] - mb);"
+why = """the mutant negates every prefix correlation and the last one alike \
+(`den` does not change); negation is exact, so each score is the same \
+double"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::sequential_since_change"
+mutation = "replace > with >="
+line_has = "if den > 0.0 { sab / den } else { f64::NAN }"
+why = """at `den = 0` the mutant's `sab / 0` is NaN or ±inf: a score built \
+from it is not finite and is skipped, and a last prefix that is not finite \
+gives NaN either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::scalarise"
+mutation = "replace || with &&"
+line_has = "if v.is_nan() || v <= 0.0 {"
+why = """without the guard a NaN or non-positive variance makes `r` NaN or \
+±inf, and the equicorrelation built from it is NaN, the value the guard \
+returns"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::scalarise"
+mutation = "replace += with -="
+line_has = "s1 += r;"
+why = """`s1` enters only squared; the mutant accumulates `−s1` exactly \
+(negation commutes with rounding), whose square is the same double"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::scalarise"
+mutation = "replace > with >="
+line_has = "if s2 > 0.0 {"
+why = """`s2 = 0` means every `r²` is 0, so `s1²` is 0 too and the mutant's \
+`0 / 0` is the NaN the other arm gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::window_stat"
+mutation = "replace < with >"
+line_has = "if rows.len() < 2 * w {"
+why = """every caller passes exactly 2w rows (`read` trims to them and \
+returns before fewer, the permutation reassembles all 2w), so `< 2w` and \
+`> 2w` are both false"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::window_stat"
+mutation = "replace * with +"
+line_has = "if rows.len() < 2 * w {"
+why = """every caller passes exactly 2w rows, and `2w < w + 2` is false for \
+every `w >= 3` the cfg allows"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::window_stat"
+mutation = "replace * with /"
+line_has = "if rows.len() < 2 * w {"
+why = """every caller passes exactly 2w rows, and `2 / w` is 0, so the guard \
+is false either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::permutation_crit"
+mutation = "replace < with >"
+line_has = "if self.ring.len() < 2 * w {"
+why = """called only from `step` under `ring.len() >= 2 * w`, with the ring \
+never past 2w, so it always sees exactly 2w rows and neither guard fires"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::permutation_crit"
+mutation = "replace * with +"
+line_has = "if self.ring.len() < 2 * w {"
+why = """it always sees exactly 2w rows (see `replace < with >`), and `2w < w \
++ 2` is false for every `w >= 3`"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::permutation_crit"
+mutation = "replace * with /"
+line_has = "if self.ring.len() < 2 * w {"
+why = """it always sees exactly 2w rows, and `2 / w` is 0, so the guard is \
+false either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::read"
+mutation = "replace > with >="
+line_has = "if flag && at > 0 {"
+why = """a flag needs `stat > crit > 0`, so the argmax was set and `at` is at \
+least 1"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "kolmogorov_cdf"
+mutation = "replace < with <="
+line_has = "if term < 1e-18 {"
+why = """it differs only at a term of exactly 1e-18, and the terms after the \
+first one under 1e-18 sum to under half an ulp of the partial sum: summed \
+to the end or cut there, the series is the same double at every one of 1.06 \
+million `x` from 1e-3 to 40"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "kolmogorov_cdf"
+mutation = "replace < with =="
+line_has = "if term < 1e-18 {"
+why = """the series is then summed to its last term, but the terms after the \
+first one under 1e-18 fall like `e^{−2k²x²}` and sum to under half an ulp \
+of the partial sum: the same double at every one of 1.06 million `x` from \
+1e-3 to 40"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "sup_abs_bm_cdf"
+mutation = "replace < with <="
+line_has = "if term < 1e-18 {"
+why = """as `kolmogorov_cdf`'s: summed to the end or cut at the first term \
+under 1e-18, the series is the same double at every one of 1.06 million \
+`x` from 1e-3 to 40"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "sup_abs_bm_cdf"
+mutation = "replace < with =="
+line_has = "if term < 1e-18 {"
+why = """the series is then summed to its 400th term, but the terms after the \
+first one under 1e-18 fall like `e^{−n²π²/(8x²)}` and sum to under half an \
+ulp of the partial sum: the same double at every one of 1.06 million `x` \
+from 1e-3 to 40"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "bernoulli"
+mutation = "replace < with <="
+line_has = "if z.abs() < 1e-8 {"
+why = """they differ only at `|z| = 1e-8` exactly, a floating-point \
+coincidence of the flux arithmetic that the solve can meet only below `c = \
+0.02`, where its mass is at its rounding floor (the law's own value \
+underflows)"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace < with <="
+line_has = "while t < t_end {"
+why = """they differ only when `t`, a sum of steps of 0.002, lands exactly on \
+`t_end`, a logarithm of `c`, a floating-point coincidence; and then by one \
+more step of a solve that has settled (doubling `t_end` moves the result \
+by under 1e-14)"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace > with >="
+line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
+why = """the guard is redundant: for a `p` outside (0, 1) \
+`sup_abs_bm_quantile` returns NaN, for a `γ` outside [0, 1/2) \
+`boundary_cdf` does, and the regula falsi carries a NaN through to the \
+result, so every form of the guard gives NaN for the same inputs"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace && with ||"
+line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
+why = """the guard is redundant (see `replace > with >=`): a `p` it lets \
+through returns NaN by way of `sup_abs_bm_quantile`"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with <="
+line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
+why = """the guard is redundant (see `replace > with >=`): `p = 1` returns \
+NaN by way of `sup_abs_bm_quantile`"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace || with &&"
+line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
+why = """the guard is redundant (see `replace > with >=`): a bad `p` returns \
+NaN by way of `sup_abs_bm_quantile`, a bad `γ` by way of `boundary_cdf`"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with <="
+line_has = "while fhi < 0.0 {"
+why = """they differ only when `boundary_cdf(q0 + 1)` is `p` exactly, a \
+floating-point coincidence, and then both return `q0 + 1`: the original as \
+the bracket's right end, the mutant as its left"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with <="
+line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
+why = """both mutants: they differ only when a step's residual is exactly \
+1e-11 or the bracket exactly 1e-9 wide, a floating-point coincidence no \
+input can be built to reach"""
+
+[[equivalent]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with <="
+line_has = "if fm < 0.0 {"
+why = """`fm = 0` never reaches this line: the stopping test just above breaks \
+on `|fm| < 1e-11`; a NaN fails both alike"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::read"
+mutation = "replace + with *"
+line_has = "for b in (a + 1)..self.cfg.n_features {"
+why = """the mutant adds the pairs `(a, a)`, whose `ρ̂ = sxy/(sx·sx)` has `sxy \
+= sx²` formed alike and so sits within a few ulps of 1 (exactly 1 where the \
+moment is subnormal): the collinear guard, `1 − ρ² <= 64ε`, makes their \
+long-run sd NaN and their statistic is skipped; where the moments overflow \
+`ρ̂` and the sd are NaN"""
+
+
+# Task 158, batch F (ewcov, sgd, ewridge, solve, kalman, stats and lasso): the survivors of run 37217857544 no test
+# can catch, each with the reason (docs/PLAN.md task 158).
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "SpdFactor::inverse_is_finite"
+mutation = "replace > with >="
+line_has = "if !(d > 0.0 && d.is_finite()) {"
+why = """faer accepts a factor only when every pivot is positive before its root \
+and positive and finite after it (`!(diag > 0)` and `diag == 0 || !finite` \
+are its two refusals), so `d` is never 0 here; and a 0 would make `zi` \
+infinite, which the next test refuses anyway"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "SpdFactor::inverse_is_finite"
+mutation = "replace && with ||"
+line_has = "if !(d > 0.0 && d.is_finite()) {"
+why = """as above: every pivot of a factor faer accepts is positive and finite, \
+so the guard is false under either operator"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "SpdFactor::inverse_is_finite"
+mutation = "replace || with &&"
+line_has = "if zi.is_nan() || zi > 1e150 {"
+why = """`z` is never NaN (1 plus products of finite entries and positive `z`), \
+and a `zi` past `1e150` that the mutant lets through puts `b > 1e150` in \
+`b²`, past `1e300` (the next double above `1e150` squares to \
+`1.0000000000000003e300`), so the final test refuses it; an infinite `zi` \
+stays in `z` and makes `b` infinite"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::next"
+mutation = "replace match guard self.buckets.is_empty() with false"
+line_has = "None if self.buckets.is_empty() => None,"
+why = """`next(None)` is called only by `settle`, when `below + zero < p·total`; \
+with no buckets `total` is `zero` to the bit (both take the same additions, \
+and `rescale` recomputes `total` from them) and `below` is 0 (it grows only \
+past a bucket), so `zero < p·zero` never holds and the arm is never reached"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::add"
+mutation = "replace < with <="
+line_has = "} else if k < self.lo {"
+why = """at `k == lo` the branch prepends `lo − k = 0` buckets and sets `lo` to \
+the `lo` it was, which is what falling through to the next test does"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "SlotMetrics::update_about"
+mutation = "replace > with >="
+line_has = "if denom > 0.0 {"
+why = """a scored row has w > 0, so denom = lam * W + w is positive and the branch \
+is always taken (the entry for `SlotMetrics::update`, whose body moved here)"""
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardized"
+mutation = "replace + with -"
+line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
+why = """the mutant is inside the second argument, which `variance_is_usable` \
+ignores (it tests the variance alone)"""
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardized"
+mutation = "replace + with *"
+line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardized"
+mutation = "replace * with +"
+line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardized"
+mutation = "replace * with /"
+line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "<impl OnlineModel for Sgd>::step"
+mutation = "replace * with /"
+line_has = "let g = (d * 1.0 * weight).clamp(-clip, clip);"
+why = """on the first `*` only (column 36, in both the constant-rate and the \
+AdaGrad arm): `d / 1.0` is `d * 1.0`, both `d` exactly. The second `*`'s \
+`/` divides by the weight and is caught; this entry names the line, so it \
+would also excuse that one if it ever survived"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::scales_into"
+mutation = "replace || with &&"
+line_has = "*s = if !self.cfg.standardize || i < off {"
+why = """the scales are read only under `standardize` and only for a feature \
+slot (`step`'s `zs`, `standardized` and `coefficients` each test both first), \
+and the intercept's scale the mutant computes is 1 anyway: its slot holds \
+the constant 1, so its variance is 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "EwRidge::inflation_into"
+mutation = "replace > with >="
+line_has = "if n > 0.0 {"
+why = """at `n = 0` the bound's ratio `sqrt(1 + bound/0)` is infinite (or NaN at \
+a bound of 0), never below `limit`, so the arm it lets in falls through to \
+the exact ratio, as the original does"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "Readiness::has_pending"
+mutation = "replace Readiness::has_pending -> bool with true"
+line_has = "self.pending.iter().any(Option::is_some)"
+why = """it only chooses between serializing or comparing the readiness as it is \
+and a settled copy of it; with nothing pending, settling changes nothing"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::step"
+mutation = "replace > with >="
+line_has = "if weight.is_finite() && weight > 0.0 {"
+why = """on the second operand: it adds a weight of 0 to `weight_since_solve`, \
+which leaves it as it was (`weight >= 0` is the trait's contract)"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "<impl OnlineModel for Lasso>::step"
+mutation = "replace > with >="
+line_has = "if weight.is_finite() && weight > 0.0 {"
+why = """as `EwRidge::step`'s: a weight of 0 added to `weight_since_solve` leaves \
+it as it was"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::flush"
+mutation = "replace > with >="
+line_has = "if ui > 0.0 {"
+why = """both lines (the block mean and the residue): a held row of weight 0 then \
+adds `0 · (x − s)` or `0 · (x − m_B)`, a zero, since inputs within \
+`INPUT_BOUND` keep the difference finite, and a zero added to a sum that \
+starts at +0 leaves it as it was"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "Pca::of"
+mutation = "replace < with <="
+line_has = "if d < 0.0 {"
+why = """the arm's guard `d != 0.0` excludes the one value where `<` and `<=` \
+differ (a NaN `d` fails both alike)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "Pca::of"
+mutation = "replace < with <="
+line_has = "if v[lead] < 0.0 { -1.0 } else { 1.0 }"
+why = """`v` is a unit eigenvector, so its largest-magnitude entry is never 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCovModel::read"
+mutation = "replace * with /"
+line_has = "self.cfg.lags.len() * k * k))"
+why = """both `*`: the arm runs only with no lagged accumulator, which a model \
+has only when its cfg has no lags (`new` builds one for any, `restore` adds \
+one), so `lags.len()` is 0 and every form of the product is 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCovModel::read"
+mutation = "replace * with +"
+line_has = "self.cfg.lags.len() * k * k))"
+why = """both `*`: as above the arm runs only for a cfg without lags, and a cfg \
+with `lagcorr` and no lags is refused by `validate`, so `lagcorr` never \
+reaches the arm (a hand-made state with such a cfg would; `restore` does \
+not re-validate the cfg)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCovModel::read"
+mutation = "replace > with >="
+line_has = "if self.cfg.pca > 0 {"
+why = """with `pca = 0` there are no components: `refresh_pca` runs only when \
+`pca > 0` and `restore` refuses a component the cfg does not ask for, so the \
+arm pushes `0 · (k + 3)` NaNs or the components of an empty set"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCovModel::read"
+mutation = "replace > with >="
+line_has = "out.push(if p.trace > 0.0 {"
+why = """a co-moment matrix with trace 0 has no variance, which leaves it all \
+zeros (each co-moment's product underflows with the two squares, and the \
+window zeroes an unresolved row); faer's eigenvalues of the zero matrix are \
+0, and `0/0` is the NaN the other branch gives"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "<impl crate::OnlineModel for EwCovModel>::step"
+mutation = "replace && with ||"
+line_has = "if score.is_finite() && weight > 0.0 {"
+why = """`EwQuantile::add` sees nothing that is not a finite value at a positive, \
+finite weight, so the calls the mutant adds are the no-op skipping them is"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "<impl crate::OnlineModel for EwCovModel>::step"
+mutation = "replace > with >="
+line_has = "if score.is_finite() && weight > 0.0 {"
+why = """as above: `EwQuantile::add` ignores a weight of 0"""

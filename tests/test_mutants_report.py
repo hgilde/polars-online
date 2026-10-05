@@ -27,10 +27,14 @@ def test_every_equivalent_still_finds_its_line():
     assert entries, "the list is empty"
     for e in entries:
         assert set(e) == {"file", "function", "mutation", "line_has", "why"}, e
-        assert re.fullmatch(r"replace .+ with .+", e["mutation"]), e["mutation"]
+        # cargo-mutants' two kinds: an operator or a body replaced, and a match
+        # arm or an operator deleted (task 158 named the first `delete`).
+        assert re.fullmatch(r"replace .+ with .+|delete .+", e["mutation"]), e["mutation"]
         source = (REPO / e["file"]).read_text(encoding="utf-8")
         assert e["line_has"] in source, f"{e['file']}: no line has {e['line_has']!r}"
-        assert f"fn {e['function'].rsplit('::', 1)[-1]}(" in source, e["function"]
+        # A generic function is `fn name<'a>(`, so the name ends at `<` or `(`.
+        name = re.escape(e["function"].rsplit("::", 1)[-1])
+        assert re.search(rf"\bfn {name}\s*[<(]", source), e["function"]
 
 
 def _run(tmp_path: Path, missed: list[tuple[str, int, str]]) -> Path:

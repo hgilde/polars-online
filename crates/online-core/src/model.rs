@@ -387,6 +387,79 @@ mod tests {
         }
     }
 
+    /// A model that keeps none of the optional statistics answers as the
+    /// trait's defaults say: no schedule, no window, no weight per target,
+    /// no noise inflation, no data shares -- and says so, leaving each
+    /// buffer it was handed as it found it. `rls` overrides none of them
+    /// (task 158: the defaults were changed to answers no test noticed).
+    #[test]
+    fn a_model_without_the_optional_statistics_reports_none_of_them() {
+        let mut rls = crate::Rls::new(crate::RlsCfg {
+            n_features: 1,
+            n_targets: 2,
+            fit_intercept: true,
+            decay: crate::Decay::Halflife(10.0),
+            ridge: 1.0,
+            coef_prior: None,
+            min_weight: 0.0,
+        })
+        .unwrap();
+        rls.step(&[1.0], &[Some(2.0), Some(-1.0)], 0.0, 1.0);
+        rls.step(&[3.0], &[Some(5.0), None], 1.0, 1.0);
+        assert_eq!(rls.solve_share(), None);
+        assert_eq!(rls.window_over_budget(), None);
+        assert!(rls.window_shadow().is_none());
+        assert_eq!(rls.support_coef(), None);
+        let mut out = vec![7.0];
+        assert!(!rls.target_n_eff_into(&mut out));
+        assert!(!rls.error_inflation_into(&mut out));
+        assert!(!rls.error_inflation_gate_into(&mut out, 2.0));
+        assert!(!rls.row_error_inflation_into(&[1.0], &mut out));
+        assert_eq!(out, [7.0], "a model with none fills nothing");
+    }
+
+    /// The noise gate's default is the exact statistic: a model that reports
+    /// [`OnlineModel::error_inflation_into`] and keeps no bound of its own
+    /// hands the gate that statistic, whatever the limit.
+    #[test]
+    fn the_noise_gates_default_is_the_exact_statistic() {
+        struct Inflated;
+        impl OnlineModel for Inflated {
+            fn step(&mut self, x: &[f64], _: &[Option<f64>], d: f64, _: f64) -> Step {
+                self.predict(x, d)
+            }
+            fn predict(&self, _: &[f64], _: f64) -> Step {
+                Step {
+                    pred: vec![f64::NAN; 2],
+                    n_eff: 0.0,
+                    extra: None,
+                }
+            }
+            fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+                out.clear();
+                out.extend([1.25, f64::INFINITY]);
+                true
+            }
+            fn state(&self) -> State {
+                State::new(ModelState::EwCov(Box::new(crate::EwCov::new(1))))
+            }
+            fn restore(_: &State) -> Result<Self, StateError> {
+                Err(StateError::Invalid("a test model keeps no state".into()))
+            }
+            fn n_targets(&self) -> usize {
+                2
+            }
+            fn n_features(&self) -> usize {
+                0
+            }
+        }
+        for limit in [0.5, 1.25, 2.0, f64::INFINITY] {
+            let mut out = Vec::new();
+            assert!(Inflated.error_inflation_gate_into(&mut out, limit));
+            assert_eq!(out, [1.25, f64::INFINITY], "at the limit {limit}");
+        }
+    }
+
     #[test]
     fn schema_check() {
         let s = State::new(ModelState::EwCov(Box::new(crate::EwCov::new(1))));

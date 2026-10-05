@@ -1592,4 +1592,390 @@ mod tests {
             <Robust as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap()).unwrap();
         assert!(m.cov.iter().all(|c| !c.keeps_runs()));
     }
+
+    // --- task 158: the mutation survivors --------------------------------
+
+    /// `solve_share` is refused unless it is finite and positive, and
+    /// accepted at any such value.
+    #[test]
+    fn a_bad_solve_share_is_refused() {
+        let huber = RobustLoss::Huber { delta: 1.5 };
+        for f in [0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut c = cfg(2, 1, huber);
+            c.solve_share = Some(f);
+            match c.validate() {
+                Err(e) => assert!(e.contains("solve_share must be finite and > 0"), "{f}: {e}"),
+                Ok(()) => panic!("solve_share {f} accepted"),
+            }
+        }
+        for f in [1e-9, 0.02, 1.0, 5.0] {
+            let mut c = cfg(2, 1, huber);
+            c.solve_share = Some(f);
+            c.validate().unwrap();
+        }
+    }
+
+    /// The warm-up is `WARM_ROWS` rows per coefficient, and no more: with
+    /// three coefficients the row with nine before it is the first Newton
+    /// step, so the tenth row's prediction is the first to part from least
+    /// squares.
+    #[test]
+    fn the_warm_up_ends_at_three_rows_per_coefficient() {
+        let mut qc = cfg(2, 1, RobustLoss::Quantile { tau: 0.7 });
+        qc.min_weight = 0.0;
+        let mut lc = cfg(2, 1, RobustLoss::Huber { delta: 1e9 });
+        lc.min_weight = 0.0;
+        let (mut q, mut l) = (Robust::new(qc).unwrap(), Robust::new(lc).unwrap());
+        let mut s = 91u64;
+        for i in 0..=10 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 0.5 + x[0] - 0.25 * x[1] + 0.3 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let (qs, ls) = (
+                q.step(&x, &[Some(y)], d, 1.0),
+                l.step(&x, &[Some(y)], d, 1.0),
+            );
+            if i == 10 {
+                assert_ne!(qs.pred, ls.pred, "the ninth row was a Newton step");
+            } else if i > 0 {
+                assert_eq!(qs.pred, ls.pred, "row {i} follows least-squares rows only");
+            }
+        }
+    }
+
+    /// The band's weight is read in rows of the target's mean weight
+    /// (task 147): at a weight of 4 a row, a band holding 6 holds 1.5 rows,
+    /// under one row per coefficient (`k = 2`), and the next row is a
+    /// least-squares row; a band holding 8 holds exactly 2, one row per
+    /// coefficient, and a row far outside it is a nudge. With no decay and
+    /// equal weights the count is exactly a quarter of the weight.
+    #[test]
+    fn the_band_is_counted_in_rows_of_the_mean_weight() {
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.min_weight = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 13u64;
+        for i in 0..300 {
+            let x = [lcg(&mut s)];
+            let y = x[0] + 0.1 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 4.0);
+        }
+        assert_eq!((m.nobs[0], m.wobs[0]), (300.0, 1200.0));
+        for (band, least_squares) in [(6.0, true), (8.0, false)] {
+            let mut t = m.clone();
+            t.wj[0] = band;
+            t.step(&[0.3], &[Some(1e6)], 1.0, 4.0);
+            let want = if least_squares { band + 4.0 } else { band };
+            assert_eq!(
+                t.wj[0],
+                want,
+                "a band of {band} ({} rows): least squares {least_squares}",
+                band / 4.0
+            );
+        }
+    }
+
+    /// The band is open, `|r| < h`: a residual of exactly `h` is outside it.
+    /// Rows of zeros keep the fit at 0 and every residual exactly 0, so the
+    /// scale is 1 and `h` is `quantile_eps` itself once the floor `(k/n)^(2/5)`
+    /// is under it; a row at `h` then nudges (the band's weight stays) and
+    /// one just under it is a fit row (the band's weight takes it).
+    #[test]
+    fn the_band_is_open_at_its_edge() {
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.min_weight = 0.0;
+        c.quantile_eps = 0.5;
+        let mut m = Robust::new(c).unwrap();
+        for i in 0..20 {
+            m.step(&[0.0], &[Some(0.0)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert_eq!(m.sig2[0], 0.0, "every residual so far is exactly 0");
+        assert_eq!(m.predict(&[0.0], 1.0).pred[0], 0.0);
+        assert!(
+            (2.0f64 / 20.0).powf(0.4) < 0.5,
+            "the floor is under quantile_eps"
+        );
+        let wj = m.wj[0];
+        let mut edge = m.clone();
+        edge.step(&[0.0], &[Some(0.5)], 1.0, 1.0);
+        assert_eq!(edge.wj[0], wj, "a residual of h is outside the band");
+        let mut inside = m.clone();
+        inside.step(&[0.0], &[Some(0.5 - 1e-12)], 1.0, 1.0);
+        assert_eq!(inside.wj[0], wj + 1.0, "one just under h is inside");
+    }
+
+    /// Through the origin and standardized, a feature that has only ever been
+    /// 0 has no scale and is dropped with a coefficient of 0: the fit of the
+    /// other is the fit without it, and no solve fails.
+    #[test]
+    fn a_feature_without_scale_is_dropped_through_the_origin() {
+        let run = |dead: bool| {
+            let mut c = cfg(
+                if dead { 2 } else { 1 },
+                1,
+                RobustLoss::Huber { delta: 1e9 },
+            );
+            c.fit_intercept = false;
+            c.standardize = true;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 17u64;
+            for i in 0..50 {
+                let a = lcg(&mut s);
+                let x = if dead { vec![a, 0.0] } else { vec![a] };
+                let y = 1.5 * a + 0.1 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            (m.coefficients().unwrap()[0].clone(), m.solve_failures)
+        };
+        let ((with, failed), (without, _)) = (run(true), run(false));
+        assert_eq!(failed, 0, "no solve failed");
+        assert_eq!(with[1], 0.0, "the dead feature's coefficient");
+        assert!(
+            (with[0] - without[0]).abs() <= 1e-12 * without[0].abs(),
+            "{} against {}",
+            with[0],
+            without[0]
+        );
+    }
+
+    /// `a_solve_failure_is_counted_and_the_previous_fit_is_kept` through the
+    /// origin: two equal features and no ridge make the raw Gram singular,
+    /// the jitter ladder rescues it, and the rescue is counted.
+    #[test]
+    fn a_solve_failure_through_the_origin_is_counted() {
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.ridge = 0.0;
+        c.fit_intercept = false;
+        c.min_weight = 2.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 101u64;
+        for i in 0..40 {
+            let a = lcg(&mut s);
+            m.step(
+                &[a, a],
+                &[Some(2.0 * a)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = &m.coefficients().unwrap()[0];
+        assert!(beta.iter().all(|v| v.is_finite()), "{beta:?}");
+        assert!(m.solve_failures > 0, "a singular solve must be recorded");
+    }
+
+    /// The rows a model solves on: where its coefficients appear or move.
+    /// Every row is fresh, so a solve always moves them.
+    fn solve_rows(m: &mut Robust, n: usize) -> Vec<usize> {
+        let mut s = 7u64;
+        let mut out = Vec::new();
+        for i in 0..n {
+            let before = m.coefficients().map(<[Vec<f64>]>::to_vec);
+            let x = [lcg(&mut s)];
+            let y = x[0] + lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if m.coefficients().map(<[Vec<f64>]>::to_vec) != before {
+                out.push(i);
+            }
+        }
+        out
+    }
+
+    /// The clock cadence: the first solve on the first row with `min_weight`
+    /// (two rows here), then one each `solve_every` of clock (5), with
+    /// `max_rows_between_solves` too far off to decide.
+    #[test]
+    fn the_clock_cadence_solves_every_solve_every() {
+        let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1e9 });
+        c.solve_every = 5.0;
+        c.max_rows_between_solves = 1000;
+        let mut m = Robust::new(c).unwrap();
+        assert_eq!(solve_rows(&mut m, 30), [1, 6, 11, 16, 21, 26]);
+    }
+
+    /// The row cadence: no clock (`solve_every` infinite), a solve every
+    /// `max_rows_between_solves` rows (4) after the first.
+    #[test]
+    fn the_row_cadence_solves_every_max_rows_between_solves() {
+        let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1e9 });
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 4;
+        let mut m = Robust::new(c).unwrap();
+        assert_eq!(solve_rows(&mut m, 20), [1, 5, 9, 13, 17]);
+    }
+
+    /// The share cadence, set as the spec sets it (`set_solve_share`, after
+    /// building): a solve once the weight learned since the last one reaches
+    /// `solve_share` of the weight the fit holds (docs/PLAN.md task 115
+    /// (b)), the clock left out. The rows are the rule's, written out.
+    #[test]
+    fn the_share_cadence_solves_at_its_share_of_the_weight() {
+        let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1e9 });
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 1000;
+        let mut m = Robust::new(c).unwrap();
+        assert_eq!(m.solve_share(), None);
+        m.set_solve_share(Some(0.25));
+        assert_eq!(m.solve_share(), Some(0.25));
+        let (mut held, mut since, mut fit, mut want) = (0.0, 0.0, false, Vec::new());
+        for i in 0..60 {
+            held += 1.0;
+            since += 1.0;
+            if since >= 0.25 * held || (!fit && held >= 2.0) {
+                want.push(i);
+                (since, fit) = (0.0, true);
+            }
+        }
+        assert!(want.len() > 8 && want[want.len() - 1] - want[want.len() - 2] > 5);
+        assert_eq!(solve_rows(&mut m, 60), want);
+        m.set_solve_share(None);
+        assert_eq!(m.solve_share(), None);
+    }
+
+    /// A target that has never been present has no fit, so no prediction,
+    /// beside one that has.
+    #[test]
+    fn a_target_never_present_has_no_prediction() {
+        let mut c = cfg(1, 2, RobustLoss::Huber { delta: 1.5 });
+        c.min_weight = 2.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 3u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s)];
+            m.step(&x, &[Some(x[0]), None], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let p = m.predict(&[0.5], 1.0).pred;
+        assert!(p[0].is_finite() && p[1].is_nan(), "{p:?}");
+    }
+
+    /// A model deserialized on its own, outside `restore`, has no row buffer
+    /// (it is not state); its first step makes one, and it goes on as the
+    /// model it was saved from.
+    #[test]
+    fn a_model_deserialized_without_restore_steps_on() {
+        let mut m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.5 })).unwrap();
+        let mut s = 5u64;
+        let mut row = || {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            (x, x[0] - x[1])
+        };
+        for i in 0..10 {
+            let (x, y) = row();
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let bytes = rmp_serde::to_vec_named(&m).unwrap();
+        let mut back: Robust = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(back.zbuf.is_empty(), "the buffer is not saved");
+        for _ in 0..10 {
+            let (x, y) = row();
+            assert_eq!(
+                m.step(&x, &[Some(y)], 1.0, 1.0).pred,
+                back.step(&x, &[Some(y)], 1.0, 1.0).pred
+            );
+        }
+    }
+
+    /// Each of the shape checks on load refuses on its own: an accumulator
+    /// of the wrong width, a cross-moment row too many, a per-target vector
+    /// short, a coefficient row short, a coefficient row too many.
+    #[test]
+    fn each_shape_check_refuses_on_its_own() {
+        let mut m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.0 })).unwrap();
+        let mut s = 9u64;
+        for i in 0..10 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.beta.is_some());
+        type Spoil = (&'static str, fn(&mut Robust));
+        let cases: [Spoil; 5] = [
+            ("an accumulator two wide", |m| {
+                m.cov[0] = EwCov::new(2).without_runs();
+            }),
+            ("a cross-moment row too many", |m| {
+                m.cross.push(vec![0.0; 3])
+            }),
+            ("no residual variance", |m| m.sig2.clear()),
+            ("a short coefficient row", |m| {
+                m.beta.as_mut().unwrap()[0].truncate(2);
+            }),
+            ("a coefficient row too many", |m| {
+                m.beta.as_mut().unwrap().push(vec![0.0; 3]);
+            }),
+        ];
+        for (what, spoil) in cases {
+            let mut bad = m.clone();
+            spoil(&mut bad);
+            match Robust::restore(&bad.state()) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+        assert!(Robust::restore(&m.state()).is_ok());
+    }
+
+    /// A zero-weight row is not one of the rows a quantile fit counts toward
+    /// its warm-up and band floor (hard rule 9): with no decay, a stream with
+    /// zero-weight rows among its first rows is the stream without them.
+    #[test]
+    fn zero_weight_rows_do_not_count_toward_the_warm_up() {
+        let run = |ghosts: bool| {
+            let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.7 });
+            c.min_weight = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 91u64;
+            let mut preds = Vec::new();
+            for i in 0..60 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = 0.5 + x[0] - 0.25 * x[1] + 0.3 * lcg(&mut s);
+                if ghosts && i < 8 {
+                    m.step(&[-x[1], x[0]], &[Some(-y)], 0.0, 0.0);
+                }
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                preds.push(m.step(&x, &[Some(y)], d, 1.0).pred[0]);
+            }
+            (preds, m.nobs[0])
+        };
+        let ((with, n_with), (without, n_without)) = (run(true), run(false));
+        assert_eq!(n_with, n_without, "the zero-weight rows were counted");
+        for (i, (a, b)) in with.iter().zip(&without).enumerate() {
+            assert!(
+                (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-12 * (1.0 + b.abs()),
+                "row {i}: {a} against {b}"
+            );
+        }
+    }
+
+    /// A nudge is bounded by the row's own residual over its leverage (G2).
+    /// At the value a feature has always taken the leverage is 0, so a heavy
+    /// row outside the band moves the fit exactly to its target and no
+    /// further; off that value the leverage is unbounded (the Gram holds no
+    /// curvature for it) and the fit does not move. At a weight of `1e4` the
+    /// step before the bound is far past the residual, so the bound decides.
+    #[test]
+    fn a_nudge_on_a_feature_without_spread_is_bounded_by_the_residual() {
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.min_weight = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 23u64;
+        for i in 0..40 {
+            let y = 0.1 * lcg(&mut s);
+            m.step(&[1.0], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert_eq!(m.cov[0].cov(1, 1), 0.0, "the feature has no spread");
+        let p = m.predict(&[1.0], 1.0).pred[0];
+        let mut on = m.clone();
+        on.step(&[1.0], &[Some(p + 0.5)], 1.0, 1e4);
+        assert_eq!(on.wj[0], m.wj[0], "the row was a nudge");
+        let q = on.predict(&[1.0], 1.0).pred[0];
+        assert!(
+            (q - (p + 0.5)).abs() <= 1e-12,
+            "brought to its target: {p} -> {q}, target {}",
+            p + 0.5
+        );
+        let mut off = m.clone();
+        let p2 = off.predict(&[2.0], 1.0).pred[0];
+        off.step(&[2.0], &[Some(p2 + 0.5)], 1.0, 1e4);
+        assert_eq!(off.wj[0], m.wj[0], "the row was a nudge");
+        assert_eq!(off.coefficients(), m.coefficients(), "and moved nothing");
+    }
 }

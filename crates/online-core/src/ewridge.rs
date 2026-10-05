@@ -5623,4 +5623,200 @@ mod tests {
         assert!(out[0].is_finite(), "{out:?}");
         assert_eq!(out[1], f64::INFINITY, "{out:?}");
     }
+
+    // --- the weekly pass's survivors (docs/PLAN.md task 158) --------------
+
+    /// `solve_share` is a positive, finite fraction: 0, a negative, `inf`
+    /// and NaN are refused, and a fraction accepted.
+    #[test]
+    fn solve_share_must_be_finite_and_positive() {
+        let with = |f: f64| {
+            let mut c = cfg(2, 1);
+            c.solve_share = Some(f);
+            c.validate()
+        };
+        for bad in [0.0, -0.5, f64::INFINITY, f64::NAN] {
+            let err = with(bad).unwrap_err();
+            assert!(err.contains("solve_share"), "{bad}: {err}");
+        }
+        with(0.25).unwrap();
+    }
+
+    /// The share the model runs at is the one it is given, by its cfg or
+    /// set on it later.
+    #[test]
+    fn the_solve_share_is_the_one_set() {
+        let mut c = cfg(2, 1);
+        c.solve_share = Some(0.25);
+        let mut m = EwRidge::new(c).unwrap();
+        assert_eq!(m.solve_share(), Some(0.25));
+        m.set_solve_share(Some(0.75));
+        assert_eq!(m.solve_share(), Some(0.75));
+        m.set_solve_share(None);
+        assert_eq!(m.solve_share(), None);
+    }
+
+    /// Under `solve_share` a solve is due once the weight learned since the
+    /// last one reaches that share of `n_eff` (the row's own included), and
+    /// at the first row that meets `min_weight`; only a positive, finite
+    /// weight counts toward it. Held to that rule kept beside the model,
+    /// at weights that move and with a decay (`max_rows_between_solves` out
+    /// of reach).
+    #[test]
+    fn solve_share_solves_when_the_weight_since_reaches_its_share() {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 0.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_share = Some(0.3);
+        let mut m = EwRidge::new(c).unwrap();
+        let (mut w_sum, mut since, mut first) = (0.0f64, 0.0f64, true);
+        let (mut s, mut solves) = (109u64, 0);
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if i % 7 == 3 {
+                0.0
+            } else {
+                0.25 + (lcg(&mut s) + 1.0)
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            m.step(&x, &[Some(x[0] - x[1])], d, w);
+            w_sum = 0.5f64.powf(d / 20.0) * w_sum + w;
+            since += w;
+            let due = since >= 0.3 * w_sum || first;
+            assert_eq!(m.rows_since_solve == 0, due, "row {i}");
+            if due {
+                (since, first, solves) = (0.0, false, solves + 1);
+            }
+        }
+        assert!((20..150).contains(&solves), "{solves} solves");
+        // A weight that is not finite does not count toward the share.
+        let before = m.weight_since_solve;
+        m.step(&[0.1, 0.2], &[Some(0.0)], 1.0, f64::INFINITY);
+        assert_eq!(m.weight_since_solve, before);
+    }
+
+    /// The slots whose solve still holds its factor: every slot after a
+    /// solve, none once the run has settled them (docs/PLAN.md task 140).
+    #[test]
+    fn pending_readiness_counts_the_slots_holding_a_factor() {
+        let mut c = cfg(2, 2);
+        c.min_weight = 0.0;
+        let (mut m, _) = fitted(c, 20, 111);
+        assert_eq!(m.pending_readiness(), 2);
+        m.settle_readiness();
+        assert_eq!(m.pending_readiness(), 0);
+    }
+
+    /// The noise gate's bound, read exactly: where a solve is unread and its
+    /// shares are sure to be numbers, a slot below the limit reads
+    /// `sqrt(1 + (1 + k) / n_kish)`, the ratio at the largest `edf` the
+    /// eliminated intercept and `k` slopes could make, `n_kish` the Kish
+    /// count of the weights (kept here from the definition); at a limit
+    /// exactly that ratio the bound is not below it and the exact ratio is
+    /// read; and once a read has taken the shares, the gate reads them,
+    /// never the bound.
+    #[test]
+    fn the_gate_bound_is_the_largest_edf_ratio_and_only_below_the_limit() {
+        let mut c = cfg(3, 1);
+        c.decay = Decay::Halflife(25.0);
+        c.min_weight = 0.0;
+        c.solve_every = 3.0;
+        c.max_rows_between_solves = 100;
+        c.ridge = vec![0.3];
+        let (_, rows) = fitted(c.clone(), 60, 113);
+        let mut m = EwRidge::new(c).unwrap();
+        let (mut w_sum, mut q_sum) = (0.0f64, 0.0f64);
+        let (mut gate, mut exact) = (Vec::new(), Vec::new());
+        let (mut stood_in, mut read) = (0, 0);
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            if let Some(bound) = m.ready.edf_bound_at(0) {
+                let n = w_sum * w_sum / q_sum;
+                let want = (1.0 + 4.0 / n).sqrt();
+                m.error_inflation_gate_into(&mut gate, 10.0);
+                assert!(
+                    (gate[0] - want).abs() <= 1e-12 * want,
+                    "row {i}: {gate:?} against {want}"
+                );
+                assert_eq!(bound, 4.0);
+                stood_in += 1;
+                // At the bound's own ratio, the exact one.
+                let n = m.gram_kish()[0].unwrap();
+                let at = (1.0 + bound / n).sqrt();
+                m.error_inflation_gate_into(&mut gate, at);
+                m.error_inflation_into(&mut exact);
+                assert!(exact[0] < at, "row {i}: the shares are under 1");
+                assert_eq!(gate[0].to_bits(), exact[0].to_bits(), "row {i}");
+            }
+            if m.beta.is_some() {
+                // The shares are taken: the gate reads them.
+                m.error_inflation_into(&mut exact);
+                m.error_inflation_gate_into(&mut gate, 10.0);
+                assert_eq!(gate[0].to_bits(), exact[0].to_bits(), "row {i}");
+                read += 1;
+            }
+            m.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+            let lam = if i == 0 { 1.0 } else { 0.5f64.powf(1.0 / 25.0) };
+            w_sum = lam * w_sum + w;
+            q_sum = lam * lam * q_sum + w * w;
+        }
+        assert!(
+            stood_in > 5 && read > 20,
+            "{stood_in} stood in, {read} read"
+        );
+    }
+
+    /// A Gram whose Kish count is 0 -- its `Σ w²` held at the smallest
+    /// subnormal by rounding while `W²` underflows, over thousands of rows
+    /// of weight 0 -- with a fit of no degrees of freedom (no intercept, a
+    /// feature always 0, a ridge of 1) reads the infinite ratio, not
+    /// `sqrt(1 + 0/0)`.
+    #[test]
+    fn a_kish_count_of_zero_reads_an_infinite_ratio() {
+        let mut c = cfg(1, 1);
+        c.fit_intercept = false;
+        c.ridge = vec![1.0];
+        c.min_weight = 0.0;
+        c.decay = Decay::Halflife(5.0);
+        let mut m = EwRidge::new(c).unwrap();
+        m.step(&[0.0], &[Some(1.0)], 0.0, 1.0);
+        let mut i = 0;
+        while m.gram_kish()[0] != Some(0.0) {
+            m.step(&[0.0], &[Some(1.0)], 1.0, 0.0);
+            i += 1;
+            assert!(
+                i < 20_000,
+                "Kish's count never reached 0: {:?}",
+                m.gram_kish()
+            );
+        }
+        assert_eq!(m.ready.edf_at(0), 0.0, "a fit of no degrees of freedom");
+        let mut out = Vec::new();
+        m.error_inflation_into(&mut out);
+        assert_eq!(out, vec![f64::INFINITY]);
+    }
+
+    /// The ring's shadow is the ring: learning the rows the model learns, it
+    /// is past a refusing budget exactly when the model's ring is (docs/PLAN.md
+    /// task 115 (d)); a model without a window has none.
+    #[test]
+    fn the_window_shadow_follows_the_ring() {
+        assert!(EwRidge::new(cfg(2, 1)).unwrap().window_shadow().is_none());
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(30.0);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        c.min_weight = 0.0;
+        let (mut m, rows) = fitted(c, 10, 115);
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(0.002)));
+        let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
+        let mut over = 0;
+        for (x, y, w) in &rows {
+            shadow.learn(1.0);
+            m.step(x, y, 1.0, *w);
+            assert_eq!(shadow.over_budget(), m.window_over_budget());
+            over += usize::from(m.window_over_budget().is_some());
+        }
+        assert!(over > 0, "the ring went past its budget");
+    }
 }

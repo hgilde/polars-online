@@ -403,4 +403,51 @@ mod tests {
             assert!(e.contains(msg), "{e}");
         }
     }
+
+    /// The shape a restored state must hold (review 2026-09-18, B3), one
+    /// condition broken at a time: the feature count, the lags themselves
+    /// (as many of them, so the matrices' length agrees), the matrices'
+    /// length, and a ring row's width.
+    #[test]
+    fn each_part_of_the_shape_is_checked_alone() {
+        let mut lc = EwLagCov::new(2, vec![1, 2]).unwrap();
+        assert_eq!(lc.k(), 2);
+        assert_eq!(EwLagCov::new(3, vec![1]).unwrap().k(), 3);
+        assert!(lc.has_shape(2, &[1, 2]));
+        // Three features, the ring still empty.
+        assert!(!lc.has_shape(3, &[1, 2]));
+        // Two features at two other lags: eight cells either way.
+        assert!(!lc.has_shape(2, &[1, 3]));
+        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[]), 0.0, 1.0, 1.0);
+        assert_eq!(lc.depth(), 1);
+        assert!(lc.has_shape(2, &[1, 2]));
+        let mut wide = lc.clone();
+        wide.ring[0].push(3.0);
+        assert!(!wide.has_shape(2, &[1, 2]), "a ring row of three");
+        let mut short = lc.clone();
+        short.c.pop();
+        assert!(!short.has_shape(2, &[1, 2]), "a matrix short a cell");
+    }
+
+    /// A negative weight is a caller's bug, and changes nothing: not the
+    /// matrices, and not the ring.
+    #[test]
+    fn a_negative_weight_changes_nothing() {
+        let k = 2;
+        let mut cov = EwCov::new(k);
+        let mut lc = EwLagCov::new(k, vec![1, 2]).unwrap();
+        for x in &rows(4, k, 5) {
+            lc.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.9, 1.0);
+            cov.update(x, 0.9, 1.0);
+        }
+        let before = lc.clone();
+        lc.update(
+            &[3.0, -2.0],
+            (cov.means(), cov.means_lo()),
+            cov.n_eff(),
+            0.9,
+            -0.5,
+        );
+        assert_eq!(lc, before);
+    }
 }

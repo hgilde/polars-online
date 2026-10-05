@@ -1532,4 +1532,243 @@ mod tests {
         let err = reread(&m, |v| shorten_first(v, "beta")).unwrap_err();
         assert!(err.contains("wrong shape"), "{err}");
     }
+
+    /// Each shape check refuses on its own: a state one target short of its
+    /// cfg, and one whose scaler is another width than the row, are each
+    /// refused with every other part of the state in shape (task 158).
+    #[test]
+    fn a_state_missing_a_target_or_with_a_scaler_of_another_width_is_refused() {
+        let json = |c: &SgdCfg| serde_json::to_value(Sgd::new(c.clone()).unwrap()).unwrap();
+        let loads = |v: &serde_json::Value| serde_json::from_value::<Sgd>(v.clone());
+        let mut two = cfg(2, SgdLoss::Squared);
+        two.decay = Decay::Halflife(50.0); // JSON has no `inf`
+        two.n_targets = 2;
+        let mut v = json(&two);
+        assert!(loads(&v).is_ok(), "the control");
+        v["beta"].as_array_mut().unwrap().pop();
+        let err = loads(&v).unwrap_err().to_string();
+        assert!(err.contains("sgd: state has the wrong shape"), "{err}");
+
+        let mut scaled = two.clone();
+        scaled.standardize = true;
+        let mut wider = scaled.clone();
+        wider.n_features = 3;
+        let mut v = json(&scaled);
+        assert!(loads(&v).is_ok(), "the control");
+        v["scaler"] = json(&wider)["scaler"].clone();
+        let err = loads(&v).unwrap_err().to_string();
+        assert!(err.contains("sgd: state has the wrong shape"), "{err}");
+    }
+
+    /// `dot` is `beta · [1, z]` whatever the lanes it sums in: 3, 8, 11 and
+    /// 19 features, every slot nonzero, against the plain sum (task 158).
+    #[test]
+    fn dot_is_the_plain_sum_in_every_lane() {
+        let mut s = 71u64;
+        for k in [3usize, 5, 7, 8, 11, 19] {
+            for off in [0usize, 1] {
+                let beta: Vec<f64> = (0..k + off).map(|_| 0.5 + lcg(&mut s)).collect();
+                let z: Vec<f64> = (0..k).map(|_| 1.5 + lcg(&mut s)).collect();
+                let plain: f64 = (0..k).map(|i| beta[off + i] * z[i]).sum::<f64>()
+                    + if off == 1 { beta[0] } else { 0.0 };
+                let got = dot(&beta, off, &z);
+                assert!(
+                    (got - plain).abs() <= 1e-13 * plain.abs().max(1.0),
+                    "k {k}, off {off}: {got} against {plain}"
+                );
+            }
+        }
+    }
+
+    /// The logistic link is `1 / (1 + e^-eta)` on both sides of 0, and the
+    /// quantile loss's gradient at `y = p` is `-tau` (`1{y < p} − tau`,
+    /// the module table) (task 158).
+    #[test]
+    fn the_logistic_link_is_the_sigmoid_and_a_quantile_tie_is_minus_tau() {
+        let lg = Sgd::new(cfg(1, SgdLoss::Logistic)).unwrap();
+        for eta in [-3.0, -0.5, 0.25, 2.0] {
+            let want = 1.0 / (1.0 + f64::exp(-eta));
+            let got = lg.link(eta);
+            assert!(
+                (got - want).abs() <= 1e-15,
+                "eta {eta}: {got} against {want}"
+            );
+        }
+        let q = Sgd::new(cfg(1, SgdLoss::Quantile { tau: 0.9 })).unwrap();
+        assert_eq!(q.dloss(1.0, 1.0), -0.9);
+    }
+
+    /// Without an intercept, `standardize` divides each feature by the root
+    /// of its raw second moment, the row admitted at unit weight, and leaves
+    /// a feature with none (here one always 0) as it is; the coefficients are
+    /// the betas over the root of the raw moment as it stands. Held to SGD
+    /// written from the module docs over the raw sums `Σ w`, `Σ w x²`
+    /// (task 158).
+    #[test]
+    fn standardizing_without_an_intercept_is_the_raw_moment_scaling() {
+        let mut c = cfg(3, SgdLoss::Squared);
+        c.fit_intercept = false;
+        c.standardize = true;
+        c.min_weight = 0.0;
+        c.learning_rate = 0.1;
+        c.l2 = 0.01;
+        c.decay = Decay::Halflife(10.0);
+        let mut m = Sgd::new(c).unwrap();
+        let (mut w_sum, mut s2, mut b) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
+        let mut s = 73u64;
+        for i in 0..300 {
+            let x = [3.0 + 2.0 * lcg(&mut s), 0.01 * lcg(&mut s), 0.0];
+            let y = 0.4 * x[0] - 50.0 * x[1] + 0.1 * lcg(&mut s);
+            let w = 0.5 + 0.5 * (lcg(&mut s) + 1.0);
+            let d_clock = if i == 0 { 0.0 } else { 1.0 };
+            let lam = 0.5f64.powf(d_clock / 10.0);
+            let z: Vec<f64> = (0..3)
+                .map(|f| {
+                    let raw = (lam * s2[f] + x[f] * x[f]) / (lam * w_sum + 1.0);
+                    if raw > 0.0 { x[f] / raw.sqrt() } else { x[f] }
+                })
+                .collect();
+            let want: f64 = (0..3).map(|f| b[f] * z[f]).sum();
+            let got = m.step(&x, &[Some(y)], d_clock, w).pred[0];
+            assert!(
+                (got - want).abs() <= 1e-10 * want.abs().max(1.0),
+                "row {i}: {got} against {want}"
+            );
+            for f in 0..3 {
+                b[f] -= 0.1 * ((want - y) * z[f] * w + 0.01 * b[f]);
+                s2[f] = lam * s2[f] + w * x[f] * x[f];
+            }
+            w_sum = lam * w_sum + w;
+        }
+        let got = &m.coefficients()[0];
+        for f in 0..3 {
+            let raw = s2[f] / w_sum;
+            let want = if raw > 0.0 { b[f] / raw.sqrt() } else { b[f] };
+            assert!(
+                (got[f] - want).abs() <= 1e-10 * want.abs().max(1e-3),
+                "slot {f}: {} against {want}",
+                got[f]
+            );
+        }
+        assert_eq!(got[2], 0.0, "the feature with no moment");
+    }
+
+    /// AdaGrad, from the module docs: each slot's sum of squared gradients
+    /// decays on the clock and grows by `g²`, and the slot steps by
+    /// `lr / (√G + 1e-8) · g`, `g = d z w (+ l2 b off the intercept)`. With
+    /// and without an intercept, at weights other than 1 and through a gap
+    /// of 40 half-lives that re-opens the rate (task 158).
+    #[test]
+    fn adagrad_is_its_recursion() {
+        for fit_intercept in [true, false] {
+            let mut c = cfg(3, SgdLoss::Squared);
+            c.fit_intercept = fit_intercept;
+            c.schedule = LearningRate::AdaGrad;
+            c.min_weight = 0.0;
+            c.learning_rate = 0.3;
+            c.l2 = 0.05;
+            c.decay = Decay::Halflife(5.0);
+            let mut m = Sgd::new(c).unwrap();
+            let off = usize::from(fit_intercept);
+            let k = 3 + off;
+            let (mut b, mut g2) = (vec![0.0f64; k], vec![0.0f64; k]);
+            let mut s = 79u64;
+            for i in 0..200 {
+                let x = [lcg(&mut s), 2.0 * lcg(&mut s), 0.5 * lcg(&mut s)];
+                let y = 1.0 + 0.7 * x[0] - 0.3 * x[1] + 0.05 * lcg(&mut s);
+                let w = 0.25 + 1.5 * (lcg(&mut s) + 1.0) / 2.0;
+                let d_clock = match i {
+                    0 => 0.0,
+                    100 => 200.0,
+                    _ => 1.0,
+                };
+                let lam = 0.5f64.powf(d_clock / 5.0);
+                g2.iter_mut().for_each(|g| *g *= lam);
+                let zrow: Vec<f64> = (0..off).map(|_| 1.0).chain(x).collect();
+                let want: f64 = (0..k).map(|f| b[f] * zrow[f]).sum();
+                let got = m.step(&x, &[Some(y)], d_clock, w).pred[0];
+                assert!(
+                    (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+                    "intercept {fit_intercept}, row {i}: {got} against {want}"
+                );
+                for f in 0..k {
+                    let pen = if f < off { 0.0 } else { 0.05 * b[f] };
+                    let g = (want - y) * zrow[f] * w + pen;
+                    g2[f] += g * g;
+                    b[f] -= 0.3 / (g2[f].sqrt() + 1e-8) * g;
+                }
+            }
+        }
+    }
+
+    /// The scaler learns the row as `[1, x]`: its intercept slot holds the
+    /// constant 1 (task 158).
+    #[test]
+    fn the_scaler_learns_the_intercepts_constant() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.standardize = true;
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 83u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let sc = m.scaler.as_ref().unwrap();
+        assert_eq!((sc.mean(0), sc.var(0)), (1.0, 0.0));
+    }
+
+    /// Under `standardize` a row that moves the scales re-projects every
+    /// target, also one that did not learn from it: target 1 carries a value
+    /// on one row in three, and its coefficients stay in the box on every
+    /// row, where the scales shrinking would carry them past it. A row of
+    /// weight 0 moves no scale and leaves every coefficient where it was, to
+    /// the bit (task 158).
+    #[test]
+    fn every_target_is_reprojected_when_the_scales_move() {
+        let mut c = constrained(2, 0.0, 0.01, None);
+        c.n_targets = 2;
+        c.standardize = true;
+        c.min_weight = 0.0;
+        c.decay = Decay::Halflife(20.0);
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 89u64;
+        let mut moved = 0;
+        for i in 0..400 {
+            let x = [10.0 * lcg(&mut s), 0.1 * lcg(&mut s)];
+            let y = 0.5 * x[0] + 5.0 * x[1];
+            let y1 = (i % 3 == 0).then_some(y);
+            let before = m.beta[1].clone();
+            m.step(&x, &[Some(y), y1], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            moved += usize::from(y1.is_none() && m.beta[1] != before);
+            for (j, b) in m.coefficients().iter().enumerate() {
+                assert!(
+                    b[1..].iter().all(|v| *v >= -1e-15 && *v <= 0.01 + 1e-15),
+                    "row {i}, target {j}: {b:?}"
+                );
+            }
+        }
+        assert!(
+            moved > 0,
+            "target 1 was re-projected on rows it did not learn"
+        );
+
+        let mut c = constrained(2, f64::NEG_INFINITY, f64::INFINITY, Some(0.3));
+        c.n_targets = 2;
+        c.standardize = true;
+        c.decay = Decay::Halflife(20.0);
+        let mut m = Sgd::new(c).unwrap();
+        for i in 0..100 {
+            let x = [10.0 * lcg(&mut s), 0.1 * lcg(&mut s)];
+            let y = 0.5 * x[0] + 5.0 * x[1];
+            m.step(
+                &x,
+                &[Some(y), Some(-y)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let before = m.beta.clone();
+        m.step(&[3.0, -0.05], &[Some(1.0), Some(1.0)], 1.0, 0.0);
+        assert_eq!(m.beta, before);
+    }
 }

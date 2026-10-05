@@ -293,3 +293,176 @@ pub mod opt_f64_or_tag {
         d.deserialize_option(Opt)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use serde::de::IntoDeserializer;
+
+    type ValueError = serde::de::value::Error;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct One {
+        #[serde(with = "f64_or_tag")]
+        a: f64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Lists {
+        #[serde(with = "vec_opt_vec_f64_or_tag")]
+        v: Vec<Option<Vec<f64>>>,
+    }
+
+    /// Equal as numbers, NaN equal to NaN.
+    fn same(a: &[Option<Vec<f64>>], b: &[Option<Vec<f64>>]) -> bool {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(x, y)| match (x, y) {
+                (None, None) => true,
+                (Some(x), Some(y)) => {
+                    x.len() == y.len()
+                        && x.iter()
+                            .zip(y)
+                            .all(|(p, q)| p == q || (p.is_nan() && q.is_nan()))
+                }
+                _ => false,
+            })
+    }
+
+    /// A number arrives as whatever kind the format holds it as -- an `f32`
+    /// in msgpack, a signed or an unsigned integer in JSON -- and reads as
+    /// its value.
+    #[test]
+    fn a_number_of_any_kind_reads_as_its_value() {
+        let f: Result<f64, ValueError> = f64_or_tag::deserialize(2.5f32.into_deserializer());
+        assert_eq!(f.unwrap(), 2.5);
+        let i: Result<f64, ValueError> = f64_or_tag::deserialize((-3i64).into_deserializer());
+        assert_eq!(i.unwrap(), -3.0);
+        let u: Result<f64, ValueError> = f64_or_tag::deserialize(7u64.into_deserializer());
+        assert_eq!(u.unwrap(), 7.0);
+
+        // The same through the two formats a state is written in.
+        assert_eq!(serde_json::from_str::<One>(r#"{"a": 7}"#).unwrap().a, 7.0);
+        assert_eq!(serde_json::from_str::<One>(r#"{"a": -3}"#).unwrap().a, -3.0);
+        #[derive(Serialize)]
+        struct Narrow {
+            a: f32,
+        }
+        let bytes = rmp_serde::to_vec_named(&Narrow { a: 2.5 }).unwrap();
+        assert_eq!(rmp_serde::from_slice::<One>(&bytes).unwrap().a, 2.5);
+    }
+
+    /// A value of the wrong kind is refused with what was expected, in each
+    /// helper: the message is what a caller reading a hand-edited state
+    /// sees.
+    #[test]
+    fn a_value_of_the_wrong_kind_names_what_was_expected() {
+        fn says<T: std::fmt::Debug, E: std::fmt::Display>(got: Result<T, E>, want: &str) {
+            let e = got.expect_err("refused").to_string();
+            assert!(e.contains(want), "{e:?} does not say {want:?}");
+        }
+        let mut d = serde_json::Deserializer::from_str("true");
+        says(
+            f64_or_tag::deserialize(&mut d),
+            "expected a number, or \"inf\" / \"-inf\" / \"nan\"",
+        );
+        let mut d = serde_json::Deserializer::from_str("5");
+        says(
+            vec_f64_or_tag::deserialize(&mut d),
+            "expected a sequence of numbers or \"inf\" / \"-inf\" / \"nan\"",
+        );
+        let mut d = serde_json::Deserializer::from_str("5");
+        says(
+            vec_vec_f64_or_tag::deserialize(&mut d),
+            "expected a sequence of sequences of numbers or tags",
+        );
+        let mut d = serde_json::Deserializer::from_str("5");
+        says(
+            vec_opt_vec_f64_or_tag::deserialize(&mut d),
+            "expected a sequence of nulls or sequences of numbers or tags",
+        );
+        // JSON hands an option's visitor a value and never asks it what it
+        // expected; a deserializer with no options of its own, as serde's
+        // value deserializers are, does.
+        let b: serde::de::value::BoolDeserializer<ValueError> = true.into_deserializer();
+        says(
+            opt_f64_or_tag::deserialize(b),
+            "expected null, a number, or \"inf\" / \"-inf\" / \"nan\"",
+        );
+        let seq: serde::de::value::SeqDeserializer<_, ValueError> =
+            serde::de::value::SeqDeserializer::new(vec![true].into_iter());
+        says(
+            vec_opt_vec_f64_or_tag::deserialize(seq),
+            "expected null or a sequence of numbers or tags",
+        );
+    }
+
+    /// A row's `support_coef` -- present vectors with infinities and a NaN
+    /// in them, an absent one, an empty one -- reads back as it was written:
+    /// in JSON with the non-finite values tagged and the absent one `null`,
+    /// and in msgpack as the bytes of the bare type.
+    #[test]
+    fn a_list_of_optional_lists_round_trips_with_its_tags() {
+        let v = vec![
+            Some(vec![2.5, f64::INFINITY, f64::NEG_INFINITY]),
+            None,
+            Some(vec![]),
+            Some(vec![f64::NAN, -0.75]),
+        ];
+        let lists = Lists { v: v.clone() };
+        let json = serde_json::to_string(&lists).unwrap();
+        assert_eq!(
+            json, r#"{"v":[[2.5,"inf","-inf"],null,[],["nan",-0.75]]}"#,
+            "the non-finite values are tagged"
+        );
+        let back: Lists = serde_json::from_str(&json).unwrap();
+        assert!(same(&back.v, &v), "{:?} against {v:?}", back.v);
+
+        #[derive(Serialize)]
+        struct Bare {
+            v: Vec<Option<Vec<f64>>>,
+        }
+        let bytes = rmp_serde::to_vec_named(&lists).unwrap();
+        assert_eq!(
+            bytes,
+            rmp_serde::to_vec_named(&Bare { v: v.clone() }).unwrap()
+        );
+        let back: Lists = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(same(&back.v, &v), "{:?} against {v:?}", back.v);
+
+        // And an empty list is an empty list.
+        let none: Lists = serde_json::from_str(r#"{"v":[]}"#).unwrap();
+        assert!(none.v.is_empty());
+    }
+
+    /// A format that buffers what it reads -- serde's own, under
+    /// `#[serde(flatten)]` or an untagged enum -- hands an option a JSON
+    /// `null` as a unit: it stays `null`.
+    #[test]
+    fn a_null_read_through_a_buffered_format_stays_null() {
+        #[derive(Debug, Deserialize)]
+        struct Inner {
+            #[serde(with = "opt_f64_or_tag")]
+            c: Option<f64>,
+        }
+        #[derive(Debug, Deserialize)]
+        struct Outer {
+            #[serde(flatten)]
+            inner: Inner,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            It(Inner),
+        }
+        let flat: Outer = serde_json::from_str(r#"{"c": null}"#).unwrap();
+        assert_eq!(flat.inner.c, None);
+        let Either::It(un) = serde_json::from_str(r#"{"c": null}"#).unwrap();
+        assert_eq!(un.c, None);
+        // The values beside it read as they do anywhere.
+        let flat: Outer = serde_json::from_str(r#"{"c": "inf"}"#).unwrap();
+        assert_eq!(flat.inner.c, Some(f64::INFINITY));
+        let flat: Outer = serde_json::from_str(r#"{"c": 1.5}"#).unwrap();
+        assert_eq!(flat.inner.c, Some(1.5));
+    }
+}

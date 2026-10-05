@@ -397,4 +397,129 @@ mod tests {
             "{certified} certified, {not_finite} not finite: both must occur"
         );
     }
+
+    /// The jitter is `eps · trace/k` (`trace/k` = 2.5 here, a singular
+    /// matrix whose first row sums to 6), and 1 stands in for `trace/k`
+    /// when the trace is not positive: the zero matrix is rescued at the
+    /// first rung with exactly `1e-12`, a negative definite one fails every
+    /// rung (task 158).
+    #[test]
+    fn the_jitter_is_a_rung_times_trace_over_k() {
+        let a = [4.0, 2.0, 2.0, 1.0];
+        let f = SpdFactor::of(&a, 2).unwrap();
+        assert!(f.attempts() > 0, "the singular matrix needed a rung");
+        let eps = [0.0, 1e-12, 1e-9, 1e-6, 1e-3][f.attempts() as usize];
+        assert_eq!(f.jitter(), 2.5 * eps);
+        // The 3x3 trace is 9, `trace/k` 3.
+        let b = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 7.0];
+        let g = SpdFactor::of(&b, 3).unwrap();
+        let eps = [0.0, 1e-12, 1e-9, 1e-6, 1e-3][g.attempts() as usize];
+        assert!(g.attempts() > 0);
+        assert_eq!(g.jitter(), 3.0 * eps);
+        let zero = SpdFactor::of(&[0.0; 4], 2).expect("a zero Gram is rescued");
+        assert_eq!((zero.attempts(), zero.jitter()), (1, 1e-12));
+        assert!(SpdFactor::of(&[-1.0, 0.0, 0.0, -1.0], 2).is_none());
+    }
+
+    /// `inverse_is_finite`'s certificate from its definition, by faer
+    /// rather than the hand-written substitution: `z = M(L)⁻¹ 1` with
+    /// `M(L)` the comparison matrix (`|l_jj|` on the diagonal, `−|l_ij|`
+    /// below it), `b = max(max z, 1)`, `l = max(max |l_ij|, 1)`, and the
+    /// quantity `k² · l · b²` it holds to `1e300`.
+    fn certificate(f: &SpdFactor) -> f64 {
+        let l = f.llt.L();
+        let k = l.nrows();
+        let m = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
+            std::cmp::Ordering::Equal => l[(i, i)].abs(),
+            std::cmp::Ordering::Greater => -l[(i, j)].abs(),
+            std::cmp::Ordering::Less => 0.0,
+        });
+        let mut z = Mat::from_fn(k, 1, |_, _| 1.0);
+        faer::linalg::triangular_solve::solve_lower_triangular_in_place(
+            m.as_ref(),
+            z.as_mut(),
+            Par::Seq,
+        );
+        let b = (0..k).fold(1.0f64, |a, i| a.max(z[(i, 0)]));
+        let mut lmax = 1.0f64;
+        for i in 0..k {
+            for j in 0..=i {
+                lmax = lmax.max(l[(i, j)].abs());
+            }
+        }
+        (k * k) as f64 * lmax * b * b
+    }
+
+    /// Matrices built to land the certificate a few per cent either side of
+    /// its `1e300` limit, so every term of it decides one of them: `k` from
+    /// 1 to 4, rows coupled strongly (so `z` is mostly the substitution's
+    /// sums), and a first row at `1e6` so `l > 1`. `inverse_is_finite` is
+    /// the faer-computed certificate's verdict on each (task 158).
+    #[test]
+    fn inverse_is_finite_is_its_certificate_on_either_side_of_the_limit() {
+        // `L0`, lower triangular with strong, uneven coupling below the diagonal.
+        let l0 = |i: usize, j: usize| -> f64 {
+            match i.cmp(&j) {
+                std::cmp::Ordering::Equal => 1.0 + 0.25 * i as f64,
+                std::cmp::Ordering::Greater => -(1.5 + 0.5 * (i + 2 * j) as f64),
+                std::cmp::Ordering::Less => 0.0,
+            }
+        };
+        // `A = (D L0)(D L0)ᵀ`, `D = diag(√s, ..., √s)` with its first entry
+        // `top` instead when that is past 1; the factor is `D L0` up to
+        // rounding.
+        let build = |k: usize, top: f64, s: f64| -> Vec<f64> {
+            let d = |i: usize| if i == 0 && top > 1.0 { top } else { s.sqrt() };
+            let lt = |i: usize, j: usize| d(i) * l0(i, j);
+            let mut a = vec![0.0; k * k];
+            for i in 0..k {
+                for j in 0..k {
+                    a[i * k + j] = (0..k).map(|r| lt(i, r) * lt(j, r)).sum();
+                }
+            }
+            a
+        };
+        let (mut certified, mut refused) = (0, 0);
+        for k in 1..=4usize {
+            for top in [1.0, 1e6] {
+                if k == 1 && top > 1.0 {
+                    continue;
+                }
+                let s0 = 1e-280;
+                let q0 = certificate(&SpdFactor::of(&build(k, top, s0), k).unwrap());
+                for r in [0.5, 0.95, 1.05, 2.0] {
+                    // The certificate goes as `1/s` once `z` is past 1.
+                    let s = s0 * q0 / (r * 1e300);
+                    let f = SpdFactor::of(&build(k, top, s), k).unwrap();
+                    assert_eq!(f.attempts(), 0, "k {k}, top {top}, r {r}");
+                    let q = certificate(&f);
+                    let ratio = q / 1e300;
+                    assert!(
+                        (ratio - r).abs() < 0.01 * r,
+                        "k {k}, top {top}: certificate {q:e} for target {r}"
+                    );
+                    assert_eq!(f.inverse_is_finite(), q <= 1e300, "k {k}, top {top}, r {r}");
+                    if top > 1.0 {
+                        assert!(f.llt.L()[(0, 0)] > 1e5, "l > 1 on this case");
+                    }
+                    certified += usize::from(q <= 1e300);
+                    refused += usize::from(q > 1e300);
+                }
+            }
+        }
+        assert_eq!((certified, refused), (14, 14));
+    }
+
+    /// `z_0 = 1/l_00` exactly at the substitution's `1e150` cut is not
+    /// refused there: `1e150²` rounds to just under `1e300`, so the 1x1
+    /// matrix `[1e-300]`, whose inverse is `1e300`, is certified (task 158).
+    #[test]
+    fn a_pivot_exactly_at_the_cut_is_certified() {
+        let f = SpdFactor::of(&[1e-300], 1).unwrap();
+        assert_eq!(1.0 / f.llt.L()[(0, 0)], 1e150, "z_0 lands on the cut");
+        assert!(certificate(&f) <= 1e300);
+        assert!(f.inverse_is_finite());
+        let inv = f.inverse_diagonal(1)[0];
+        assert!((inv / 1e300 - 1.0).abs() < 1e-15, "{inv:e}");
+    }
 }

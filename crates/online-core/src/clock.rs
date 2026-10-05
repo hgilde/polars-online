@@ -584,6 +584,141 @@ mod tests {
         assert_eq!(t.seconds(), later.seconds());
         assert_eq!(t.seconds(), 1_704_187_800.0);
         assert!(ClockValue::F64(1.0).is_before(ClockValue::F64(2.0)));
+        // A numeric value is not before itself, nor before the temporal
+        // value that reports the same number.
+        assert!(!ClockValue::F64(1.0).is_before(ClockValue::F64(1.0)));
+        assert!(!ClockValue::F64(12.0).is_before(ClockValue::Ns(12_000_000_000)));
+    }
+
+    /// A count of nanoseconds past an `i64` -- a difference of two stamps
+    /// more than 292 years apart -- takes the 128-bit road, and is still the
+    /// whole seconds exact and the rest rounded once: `10^19 + 5·10^8` ns is
+    /// `10^10 + 0.5` s, and its negative is `−10^10 − 0.5`, whose Euclidean
+    /// whole part is `−10^10 − 1` with `0.5` over.
+    #[test]
+    fn nanoseconds_past_an_i64_are_seconds_too() {
+        let ns: i128 = 10_000_000_000_500_000_000;
+        assert!(i64::try_from(ns).is_err(), "the 128-bit road");
+        assert_eq!(seconds_of_ns(ns), 10_000_000_000.5);
+        assert_eq!(seconds_of_ns(-ns), -10_000_000_000.5);
+        // A whole number of seconds, and one that is all remainder.
+        assert_eq!(seconds_of_ns(30_000_000_000_000_000_000), 3e10);
+        assert_eq!(
+            seconds_of_ns(-30_000_000_000_250_000_000),
+            -30_000_000_000.25
+        );
+    }
+
+    /// Task 153's `skipped_elapsed` is written only while it holds time, so
+    /// a state with none is the bytes it was before the field existed; one
+    /// with some writes it, and reads it back.
+    #[test]
+    fn a_state_writes_the_skipped_time_only_while_there_is_some() {
+        let cfg = ClockCfg::default();
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true);
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("skipped_elapsed").is_none(), "{json}");
+        let before = rmp_serde::to_vec(&c).unwrap();
+        // A skipped row four units on: its time waits for the next row.
+        c.advance(&cfg, Some(ClockValue::F64(4.0)), None, false);
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["skipped_elapsed"], 4.0, "{json}");
+        let bytes = rmp_serde::to_vec(&c).unwrap();
+        assert!(bytes.len() > before.len());
+        let mut back: ClockState = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, c);
+        let next = back.advance(&cfg, Some(ClockValue::F64(5.0)), None, true);
+        assert_eq!((next.d_clock, next.elapsed), (5.0, 5.0));
+        // Folded into that row, it is gone from the state again.
+        let json = serde_json::to_value(&back).unwrap();
+        assert!(json.get("skipped_elapsed").is_none(), "{json}");
+    }
+
+    /// The previous session is the last row's, skipped or not, and none
+    /// before the first row.
+    #[test]
+    fn the_previous_session_is_the_last_rows() {
+        let cfg = ClockCfg {
+            session_gap: Some(SessionGap::Gap(1.0)),
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        assert_eq!(c.prev_session(), None);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(42), true);
+        assert_eq!(c.prev_session(), Some(42));
+        c.advance(&cfg, Some(ClockValue::F64(1.0)), Some(7), false);
+        assert_eq!(c.prev_session(), Some(7));
+        c.advance(&cfg, Some(ClockValue::F64(2.0)), None, true);
+        assert_eq!(c.prev_session(), None);
+    }
+
+    /// A session's gap is the time that passed across a session change that
+    /// restarts the clock, and only there: a step back within one session
+    /// passed no time, scored, refused as a late row or refused outright,
+    /// whatever `session_gap` says.
+    #[test]
+    fn a_step_back_within_a_session_passes_no_time() {
+        let v = |x: f64| Some(ClockValue::F64(x));
+        for policy in [OnClockReset::Error, OnClockReset::ResetState] {
+            let cfg = ClockCfg {
+                gap_cap: 60.0,
+                on_clock_reset: policy,
+                session_gap: Some(SessionGap::Gap(30.0)),
+                min_backwards_jump: 5.0,
+            };
+            for session in [None, Some(3)] {
+                let mut c = ClockState::new();
+                c.advance(&cfg, v(100.0), session, true);
+                let scored = c.clone().advance_scoring(&cfg, v(90.0), session);
+                assert_eq!(
+                    (scored.d_clock, scored.elapsed, scored.session_changed),
+                    (0.0, 0.0, false),
+                    "{policy:?} {session:?}: scored"
+                );
+                let refused = c.clone().advance(&cfg, v(98.0), session, true);
+                assert_eq!(refused.backwards, Some(-2.0), "{policy:?} {session:?}");
+                assert_eq!(refused.elapsed, 0.0, "{policy:?} {session:?}: refused");
+                // Skipped, it carries nothing into the next row either.
+                let mut skipped = c.clone();
+                skipped.advance(&cfg, v(98.0), session, false);
+                let next = skipped.advance(&cfg, v(99.0), session, true);
+                assert_eq!(next.elapsed, 1.0, "{policy:?} {session:?}: skipped");
+            }
+        }
+    }
+
+    /// A gap exactly at the ceiling is not over it, on either road a session
+    /// change takes: the session's gap, or the clock's own step where
+    /// `session_gap` is unset (a direct caller's). Each is judged on the row
+    /// itself, accepted or skipped, where an accepted row's total is judged
+    /// again.
+    #[test]
+    fn a_session_change_at_the_ceiling_is_not_capped() {
+        let v = |x: f64| Some(ClockValue::F64(x));
+        for accept in [true, false] {
+            let at_cap = ClockCfg {
+                gap_cap: 60.0,
+                session_gap: Some(SessionGap::Gap(60.0)),
+                ..Default::default()
+            };
+            let mut c = ClockState::new();
+            c.advance(&at_cap, v(0.0), Some(1), true);
+            let a = c.advance(&at_cap, v(1.0), Some(2), accept);
+            assert!(a.session_changed && !a.capped, "session gap at the cap");
+
+            let unset = ClockCfg {
+                gap_cap: 60.0,
+                ..Default::default()
+            };
+            for (step, want) in [(10.0, false), (60.0, false), (61.0, true)] {
+                let mut c = ClockState::new();
+                c.advance(&unset, v(0.0), Some(1), true);
+                let a = c.advance(&unset, v(step), Some(2), accept);
+                assert!(a.session_changed);
+                assert_eq!(a.capped, want, "a step of {step}, accepted {accept}");
+            }
+        }
     }
 
     /// A stream's clock keeps one form for its life; a direct caller that

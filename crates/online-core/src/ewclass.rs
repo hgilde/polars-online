@@ -1480,4 +1480,361 @@ mod tests {
         });
         assert!(matches!(restore(v), Err(crate::StateError::Invalid(_))));
     }
+
+    // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
+
+    /// A precision prior that is not finite and positive is refused by this
+    /// model, by the name the spec gives it, before the accumulator's own
+    /// check can answer in its terms.
+    #[test]
+    fn a_bad_precision_prior_is_refused_by_the_models_name() {
+        for prior in [0.0, -1.0, f64::INFINITY] {
+            let err = EwClass::new(EwClassCfg {
+                precision_prior: prior,
+                ..cfg(2, 2, Covariance::Full)
+            })
+            .unwrap_err();
+            assert!(
+                err.starts_with("ew_class: precision_prior"),
+                "{prior}: {err}"
+            );
+        }
+    }
+
+    /// Under a `window`, every weight the model reads is the weight inside
+    /// it: the rows at or after the boundary snapshot's clock `u`, each
+    /// decayed to now -- `n_eff` over every row, each class's weight over
+    /// its own -- recomputed here from the rows at every step.
+    #[test]
+    fn under_a_window_every_weight_is_the_rows_inside_it() {
+        let mut c = cfg(2, 2, Covariance::Diagonal);
+        c.decay = Decay::Halflife(25.0);
+        c.window = Some(30.0);
+        c.window_every = Some(1);
+        let decay = c.decay;
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 17u64;
+        let mut rows: Vec<(f64, f64, usize)> = Vec::new();
+        let mut clock = 0.0;
+        let mut subtracted = 0;
+        for i in 0..80 {
+            let d = if i == 0 {
+                0.0
+            } else if i % 3 == 0 {
+                2.0
+            } else {
+                1.0
+            };
+            clock += d;
+            let label = usize::from(lcg(&mut s) > 0.0);
+            let w = 1.0 + 0.5 * lcg(&mut s);
+            let x = [lcg(&mut s) + label as f64, lcg(&mut s)];
+            OnlineModel::step(&mut m, &x, &[Some(label as f64)], d, w);
+            rows.push((clock, w, label));
+            let (u, old) = m.win.as_ref().unwrap().snaps.boundary().unwrap();
+            if old.n_eff > 0.0 {
+                subtracted += 1;
+            }
+            let inside = |class: Option<usize>| -> f64 {
+                rows.iter()
+                    .filter(|r| r.0 >= *u && class.is_none_or(|c| r.2 == c))
+                    .map(|r| r.1 * decay.factor(clock - r.0))
+                    .sum()
+            };
+            let want = inside(None);
+            assert!(
+                (m.n_eff() - want).abs() <= 1e-12 * want,
+                "row {i}: n_eff {} vs {want}",
+                m.n_eff()
+            );
+            for (class, got) in m.class_weights().iter().enumerate() {
+                let want = inside(Some(class));
+                assert!(
+                    (got - want).abs() <= 1e-12 * (1.0 + want),
+                    "row {i}, class {class}: {got} vs {want}"
+                );
+            }
+        }
+        assert!(
+            subtracted > 40,
+            "the window subtracted on {subtracted} rows"
+        );
+    }
+
+    /// After a gap that empties the window, `n_eff` is 0 exactly at any
+    /// scale of the weights: the subtraction's remainder is a rounding of
+    /// the history's weight, so the floor that zeroes it is a fraction of
+    /// that weight too. A half-life of two rows makes the per-row factor a
+    /// rounded `2^(-1/2)`, so the decay row by row and the boundary's factor
+    /// in one step round apart, and leave remainders above zero to floor;
+    /// `2⁴⁰` rounds as the unit scale does, its remainders `2⁴⁰` larger.
+    #[test]
+    fn a_gap_that_empties_the_window_leaves_zero_at_any_weight_scale() {
+        for scale in [1e-6, 1.0, 1e6, 2f64.powi(40)] {
+            let mut c = cfg(2, 2, Covariance::Diagonal);
+            c.decay = Decay::Halflife(4.0);
+            c.window = Some(70.0);
+            c.window_every = Some(1);
+            let mut m = EwClass::new(c).unwrap();
+            let mut s = 11u64;
+            for i in 0..40 {
+                let label = f64::from(lcg(&mut s) > 0.0);
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let d = if i == 0 { 0.0 } else { 2.0 };
+                OnlineModel::step(&mut m, &x, &[Some(label)], d, scale * (1.5 + lcg(&mut s)));
+            }
+            let last = m.win.as_ref().unwrap().clock;
+            let (mut empty, mut crumbs) = (0, 0);
+            for _ in 0..60 {
+                OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 2.0, 0.0);
+                let win = m.win.as_ref().unwrap();
+                let (u, old) = win.snaps.boundary().unwrap();
+                if *u <= last {
+                    continue;
+                }
+                // The window holds no weighted row: what the subtraction
+                // leaves is rounding, and it reads as 0.
+                empty += 1;
+                let raw = m.n_eff - m.cfg.decay.factor(win.clock - u) * old.n_eff;
+                assert!(raw.abs() < 1e-9 * m.n_eff, "scale {scale}: {raw}");
+                crumbs += usize::from(raw > 0.0);
+                assert_eq!(m.n_eff(), 0.0, "scale {scale}: n_eff is a crumb, not 0");
+            }
+            assert!(
+                empty > 10,
+                "scale {scale}: the window emptied on {empty} rows"
+            );
+            assert!(
+                crumbs > 0,
+                "scale {scale}: the subtraction left no crumb above 0"
+            );
+        }
+    }
+
+    /// `min_weight` holds the outputs back while `n_eff < min_weight`, and
+    /// not once it is reached: with no decay, two rows of weight 1 make the
+    /// third row's `n_eff` exactly 2.
+    #[test]
+    fn the_row_that_reaches_min_weight_is_scored() {
+        let mut c = cfg(2, 2, Covariance::Full);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.min_weight = 2.0;
+        let mut m = EwClass::new(c).unwrap();
+        m.step(&[0.0, 1.0], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[1.0, 0.0], &[Some(1.0)], 1.0, 1.0);
+        let out = m.step(&[0.5, 0.5], &[None], 1.0, 1.0);
+        assert_eq!(out.n_eff, 2.0);
+        assert!(out.pred.iter().all(|v| v.is_finite()), "{out:?}");
+    }
+
+    /// The priors are `n_c / Σ n`, so the posteriors do not depend on the
+    /// unit the weights come in: the same stream at `1e-200` times the
+    /// weights gives the same outputs, in every shape.
+    #[test]
+    fn a_weights_scale_moves_no_posterior() {
+        for shape in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            let rows = stream(200, 2, 3, 37);
+            let (mut one, mut tiny) = (
+                EwClass::new(cfg(2, 3, shape)).unwrap(),
+                EwClass::new(cfg(2, 3, shape)).unwrap(),
+            );
+            let mut scored = 0;
+            for (i, r) in rows.iter().enumerate() {
+                let y = [r.label.map(|c| c as f64)];
+                let a = one.step(&r.x, &y, r.d, r.w).pred;
+                let b = tiny.step(&r.x, &y, r.d, 1e-200 * r.w).pred;
+                assert!(close(&a, &b, 1e-9), "{shape:?} row {i}: {a:?} vs {b:?}");
+                scored += usize::from(a[0].is_finite());
+            }
+            assert!(scored > 150, "{shape:?}: {scored} rows scored");
+        }
+    }
+
+    /// The class is the first maximum: two classes whose rows mirror each
+    /// other through the origin, with no decay, have the same moments to the
+    /// bit, so the origin scores them the same and class 0 is reported.
+    #[test]
+    fn a_tie_between_classes_reports_the_first() {
+        for shape in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            let mut c = cfg(2, 2, shape);
+            c.decay = Decay::Halflife(f64::INFINITY);
+            let mut m = EwClass::new(c).unwrap();
+            for (i, x) in [[1.0, 2.0], [1.5, 1.0], [0.5, 2.5], [2.0, 1.5]]
+                .iter()
+                .enumerate()
+            {
+                m.step(x, &[Some(0.0)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                m.step(&[-x[0], -x[1]], &[Some(1.0)], 1.0, 1.0);
+            }
+            let p = m.predict(&[0.0, 0.0], 1.0).pred;
+            assert_eq!(p[1], p[2], "{shape:?}: no tie to break: {p:?}");
+            assert_eq!(p[0], 0.0, "{shape:?}");
+        }
+    }
+
+    /// A pooled matrix of determinant one has a log-determinant of 0, and is
+    /// scored like any other: one class, rows at 0 and 1 with no decay, so
+    /// its variance is `1/4` and its prior scale `1/2`, under a precision
+    /// prior of `3/2` -- `M = 1/4 + 3/4`, exactly.
+    #[test]
+    fn a_pooled_matrix_of_determinant_one_is_scored() {
+        let mut c = cfg(1, 2, Covariance::Shared);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.precision_prior = 1.5;
+        let mut m = EwClass::new(c).unwrap();
+        m.step(&[0.0], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[1.0], &[Some(0.0)], 1.0, 1.0);
+        let cov = m.class_cov(0);
+        assert_eq!(cov.comoments()[0] + 1.5 * cov.precision_scale(), 1.0);
+        let p = m.predict(&[0.3], 1.0).pred;
+        assert_eq!(p, vec![0.0, 1.0, 0.0]);
+    }
+
+    /// No window, no budget; a window's ring reports a refusing budget's
+    /// overrun as its bytes and spacing, and clears with the budget; and its
+    /// shadow, learning the rows the model steps with, sees the overrun on
+    /// the row the model does.
+    #[test]
+    fn a_window_budget_reports_its_overrun_and_its_shadow_sees_it() {
+        let plain = EwClass::new(cfg(2, 2, Covariance::Diagonal)).unwrap();
+        assert_eq!(plain.window_over_budget(), None);
+        assert!(plain.window_shadow().is_none());
+        let mut c = cfg(2, 2, Covariance::Diagonal);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 21u64;
+        let mut row = |m: &mut EwClass, d: f64| {
+            let label = f64::from(lcg(&mut s) > 0.0);
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(label)], d, 1.0);
+        };
+        for i in 0..40 {
+            row(&mut m, if i == 0 { 0.0 } else { 2.0 });
+        }
+        assert_eq!(m.window_over_budget(), None, "no budget, no overrun");
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(1e-6)));
+        match m.window_over_budget() {
+            Some((bytes, every)) => {
+                assert!(bytes > 1, "{bytes}");
+                assert_eq!(every, 2);
+            }
+            None => panic!("a ring of snapshots is past a budget of one byte"),
+        }
+        m.set_window_budget(None);
+        assert_eq!(m.window_over_budget(), None);
+        // Half a snapshot of room: the next snapshot is refused.
+        let snaps = &m.win.as_ref().unwrap().snaps;
+        let snapshot = crate::Footprint::footprint(&snaps.boundary().unwrap().1);
+        let room = snaps.bytes() as f64 + 0.5 * snapshot as f64;
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(room / (1024.0 * 1024.0))));
+        let mut shadow = m.window_shadow().expect("a window has a shadow");
+        assert_eq!(shadow.over_budget(), None);
+        for i in 0..6 {
+            shadow.learn(2.0);
+            row(&mut m, 2.0);
+            assert_eq!(shadow.over_budget(), m.window_over_budget(), "row {i}");
+        }
+        assert!(
+            m.window_over_budget().is_some(),
+            "the budget was never reached"
+        );
+    }
+
+    /// A class matrix no jitter can factorize -- its co-moments overflowed
+    /// -- withholds the row and is counted.
+    #[test]
+    fn a_class_matrix_that_will_not_factorize_is_counted() {
+        let mut m = EwClass::new(cfg(2, 2, Covariance::Full)).unwrap();
+        m.step(&[1e200, 1e200], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[-1e200, -1e200], &[Some(0.0)], 1.0, 1.0);
+        assert!(
+            m.class_cov(0).comoments().iter().all(|v| v.is_infinite()),
+            "{:?}",
+            m.class_cov(0).comoments()
+        );
+        assert_eq!(m.solve_failures, 0);
+        let out = m.step(&[0.0, 0.0], &[None], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
+        assert_eq!(m.solve_failures, 1);
+    }
+
+    /// A row of weight 0 learns nothing whatever its label: the whole state
+    /// after a labelled one is the state after an unlabelled one, a class no
+    /// row has carried included.
+    #[test]
+    fn a_zero_weight_row_is_the_same_labelled_or_not() {
+        let (mut labelled, mut unlabelled) = (
+            EwClass::new(cfg(2, 2, Covariance::Full)).unwrap(),
+            EwClass::new(cfg(2, 2, Covariance::Full)).unwrap(),
+        );
+        for (i, (x, y)) in [
+            ([0.1, 0.2], Some(0.0)),
+            ([0.5, -0.4], Some(1.0)),
+            ([0.3, 0.3], None),
+        ]
+        .iter()
+        .enumerate()
+        {
+            labelled.step(&[3.0, -3.0], &[Some(1.0)], 1.0, 0.0);
+            unlabelled.step(&[3.0, -3.0], &[None], 1.0, 0.0);
+            assert_eq!(labelled, unlabelled, "zero-weight row {i}");
+            labelled.step(x, &[*y], 1.0, 1.0);
+            unlabelled.step(x, &[*y], 1.0, 1.0);
+        }
+    }
+
+    /// The window follows the cfg on restore: a windowed state without its
+    /// window, or a plain one with one, is refused.
+    #[test]
+    fn a_state_whose_window_is_not_the_cfgs_is_refused() {
+        for window in [Some(30.0), None] {
+            let mut c = cfg(2, 2, Covariance::Diagonal);
+            c.window = window;
+            let m = EwClass::new(c.clone()).unwrap();
+            let mut s = m.state();
+            let ModelState::EwClass(inner) = &mut s.model else {
+                unreachable!()
+            };
+            inner.win = match window {
+                Some(_) => None,
+                None => {
+                    EwClass::new(EwClassCfg {
+                        window: Some(30.0),
+                        ..c
+                    })
+                    .unwrap()
+                    .win
+                }
+            };
+            match EwClass::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                other => panic!("{window:?}: {other:?}"),
+            }
+        }
+    }
+
+    /// The `full` shape keeps the factor of every class a row did not move
+    /// (docs/PERFORMANCE.md §13), ready for the next row and for `predict`,
+    /// which reads it rather than factorizing again; the class the row
+    /// taught is stale until it is next scored.
+    #[test]
+    fn the_full_shape_keeps_the_factor_of_a_class_the_row_did_not_move() {
+        let mut m = EwClass::new(cfg(2, 2, Covariance::Full)).unwrap();
+        m.step(&[0.0, 1.0], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[1.0, 0.0], &[Some(1.0)], 1.0, 1.0);
+        m.step(&[0.5, 0.5], &[Some(1.0)], 1.0, 1.0);
+        assert!(m.factors.peek(0).is_some(), "class 0 was not moved");
+        assert!(m.factors.peek(1).is_none(), "class 1 learned the row");
+        let fresh = EwClass::restore(
+            &rmp_serde::from_slice(&rmp_serde::to_vec(&m.state()).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(fresh.factors.peek(0).is_none(), "a load starts with none");
+        let x = [0.2, 0.7];
+        assert!(same_bits(
+            &m.predict(&x, 1.0).pred,
+            &fresh.predict(&x, 1.0).pred
+        ));
+    }
 }

@@ -1144,4 +1144,280 @@ mod tests {
         let read: Read = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(read.rho_w, vec![2.5]);
     }
+
+    /// A negative weight in the linear recursion is refused whichever of
+    /// the two it is, and so is a negative or NaN `min_weight`.
+    #[test]
+    fn a_negative_weight_or_floor_is_refused_by_name() {
+        let bad = |c: DecoCfg, msg: &str| {
+            let e = Deco::new(c).unwrap_err();
+            assert!(e.contains(msg), "{e}");
+        };
+        let linear = |alpha, beta| DecoCfg {
+            dynamics: DecoDynamics::Linear,
+            alpha: Some(alpha),
+            beta: Some(beta),
+            ..cfg(3)
+        };
+        bad(linear(-0.1, 0.5), "alpha and beta must be >= 0");
+        bad(linear(0.5, -0.1), "alpha and beta must be >= 0");
+        for floor in [-1.0, f64::NAN] {
+            bad(
+                DecoCfg {
+                    min_weight: floor,
+                    ..cfg(3)
+                },
+                "min_weight must be >= 0",
+            );
+        }
+    }
+
+    /// `rho()` is the level the outputs carry, one value per block and per
+    /// pair of blocks.
+    #[test]
+    fn rho_is_the_level_the_outputs_carry() {
+        let mut m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        for x in stream(100, 4, 0.4, 5) {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        let out = m.predict(&[0.1, 0.2, -0.3, 0.4], 1.0).pred;
+        assert_eq!(m.rho().len(), 3);
+        assert!(m.rho().iter().all(|v| v.is_finite()), "{:?}", m.rho());
+        assert_eq!(m.rho(), &out[3..6]);
+    }
+
+    /// `(S₁, S₂, n)` per block are the sum, the sum of squares and the
+    /// count of the block's columns that have a standardized value, and a
+    /// column without one says so.
+    #[test]
+    fn block_sums_are_over_each_blocks_columns_with_a_value() {
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 2], vec![1, 3, 4]],
+            ..cfg(5)
+        })
+        .unwrap();
+        let (s1, s2, n, ok) = m.block_sums(&[0.5, -1.0, 2.0, f64::NAN, 0.25]);
+        assert_eq!(s1, [2.5, -0.75]);
+        assert_eq!(s2, [4.25, 1.0625]);
+        assert_eq!(n, [2.0, 2.0]);
+        assert!(!ok);
+    }
+
+    /// `u_AB` from its definition: the mean product of a column of `A` and
+    /// a column of `B`, over the root of the product of the two blocks'
+    /// mean squares (Engle & Kelly's ratio, restricted to the pair).
+    fn u_between_longhand(ra: &[f64], rb: &[f64]) -> f64 {
+        let mut cross = 0.0;
+        for a in ra {
+            for b in rb {
+                cross += a * b;
+            }
+        }
+        let (na, nb) = (ra.len() as f64, rb.len() as f64);
+        let ma = ra.iter().map(|v| v * v).sum::<f64>() / na;
+        let mb = rb.iter().map(|v| v * v).sum::<f64>() / nb;
+        cross / (na * nb) / (ma * mb).sqrt()
+    }
+
+    /// Every value of a two-block row against its definition: each block's
+    /// `u` the longhand pair sum over its own columns, and the pair's the
+    /// longhand cross product, on blocks of three and two columns.
+    #[test]
+    fn u_between_blocks_is_the_longhand_cross_product() {
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1, 2], vec![3, 4]],
+            ..cfg(5)
+        })
+        .unwrap();
+        for r in [
+            [0.4, -1.1, 0.7, 0.25, -0.6],
+            [1.3, 0.2, 0.9, 1.7, 0.4],
+            [-0.3, 2.2, -1.4, 0.05, 3.1],
+        ] {
+            let (s1, s2, n, _) = m.block_sums(&r);
+            let u = m.row_u(&s1, &s2, &n);
+            let want = [
+                u_longhand(&r[..3]),
+                u_longhand(&r[3..]),
+                u_between_longhand(&r[..3], &r[3..]),
+            ];
+            for (got, want) in u.iter().zip(want) {
+                assert!((got - want).abs() < 1e-12, "{r:?}: {u:?}, want {want}");
+            }
+        }
+    }
+
+    /// A row whose standardized values square below the double's range has
+    /// no `u` where the squares are lost, rather than one outside the bounds
+    /// a correlation keeps: block A's squares underflow to 0 while its sum's
+    /// square does not, and the pair's denominator underflows to 0 while its
+    /// numerator does not.
+    #[test]
+    fn a_row_whose_squares_underflow_says_nothing_outside_the_bounds() {
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        let r = [1.5e-162, 1.5e-162, 1e-100, 1e-100];
+        let (s1, s2, n, ok) = m.block_sums(&r);
+        assert!(ok);
+        assert!(
+            s2[0] == 0.0 && s1[0] * s1[0] > 0.0,
+            "the fixture: {s1:?} {s2:?}"
+        );
+        assert!(
+            (n[0] * n[1] * s2[0] * s2[1]).sqrt() == 0.0 && s1[0] * s1[1] > 0.0,
+            "the fixture: {s1:?} {s2:?}"
+        );
+        let u = m.row_u(&s1, &s2, &n);
+        for (i, v) in u.iter().enumerate() {
+            assert!(
+                v.is_nan() || (-1.0..=1.0).contains(v),
+                "value {i} is {v}: {u:?}"
+            );
+        }
+        assert_eq!(u[1], 1.0, "block B's equal columns are one");
+    }
+
+    /// The density reads `ρ` clamped into `(−1/(n−1) + 1e-9, 1 − 1e-9)`:
+    /// a level past the lower edge (a block whose flat column let `u` reach
+    /// below `−1/(n−1)`), at the upper edge (every standardized value equal,
+    /// so `u` is 1) and past it, is read at the clamp, where the density is
+    /// the closed form's.
+    #[test]
+    fn the_density_reads_a_level_past_its_bounds_at_the_clamp() {
+        let k = 5;
+        let m = Deco::new(cfg(k)).unwrap();
+        let (s1, s2) = (1.7, 4.25);
+        let n = k as f64;
+        let closed = |rho: f64| {
+            let det = (n - 1.0) * (1.0 - rho).ln() + (1.0 + (n - 1.0) * rho).ln();
+            let quad = (s2 - rho * s1 * s1 / (1.0 + (n - 1.0) * rho)) / (1.0 - rho);
+            -0.5 * (n * std::f64::consts::TAU.ln() + det + quad)
+        };
+        let lo = -1.0 / (n - 1.0) + 1e-9;
+        for (rho, at) in [(-0.6, lo), (1.0, 1.0 - 1e-9), (1.5, 1.0 - 1e-9)] {
+            let got = m.loglik(&[rho], &[s1], &[s2]);
+            let want = closed(at);
+            assert!(
+                got.is_finite() && (got - want).abs() <= 1e-5 * want.abs(),
+                "rho {rho}: {got} against {want} at {at}"
+            );
+        }
+    }
+
+    /// The Woodbury path over three blocks against the dense `n x n`
+    /// Gaussian density, the determinant from `faer`'s eigenvalues and the
+    /// quadratic form from its LU, sharing nothing with the model's own
+    /// factorization. Three blocks have three pairs, so each pair's value
+    /// must reach its own entries.
+    #[test]
+    fn the_block_loglik_of_three_blocks_is_the_dense_gaussian_density() {
+        use faer::Side;
+        use faer::linalg::solvers::Solve;
+        use faer::prelude::*;
+        let blocks = vec![vec![0usize, 1], vec![2, 3, 4], vec![5, 6]];
+        let m = Deco::new(DecoCfg {
+            blocks: blocks.clone(),
+            ..cfg(7)
+        })
+        .unwrap();
+        // Within A, B, C; then A-B, A-C, B-C.
+        let rho = [0.5, 0.3, 0.6, 0.2, 0.1, 0.15];
+        let r = [0.4, -1.1, 0.7, 0.25, -0.6, 1.3, 0.2];
+        let (s1, s2, _, ok) = m.block_sums(&r);
+        assert!(ok);
+        let got = m.loglik(&rho, &s1, &s2);
+
+        let n = r.len();
+        let of = |i: usize| blocks.iter().position(|b| b.contains(&i)).unwrap();
+        let pair = |a: usize, b: usize| match (a.min(b), a.max(b)) {
+            (0, 1) => 3,
+            (0, 2) => 4,
+            _ => 5,
+        };
+        let dense = Mat::from_fn(n, n, |i, j| {
+            if i == j {
+                1.0
+            } else if of(i) == of(j) {
+                rho[of(i)]
+            } else {
+                rho[pair(of(i), of(j))]
+            }
+        });
+        let evd = dense.self_adjoint_eigen(Side::Lower).unwrap();
+        let eig: Vec<f64> = (0..n).map(|i| evd.S()[i]).collect();
+        assert!(
+            eig.iter().all(|&v| v > 0.0),
+            "a correlation matrix: {eig:?}"
+        );
+        let log_det: f64 = eig.iter().map(|v| v.ln()).sum();
+        let x = dense
+            .partial_piv_lu()
+            .solve(Mat::from_fn(n, 1, |i, _| r[i]));
+        let quad: f64 = (0..n).map(|i| r[i] * x[(i, 0)]).sum();
+        let want = -0.5 * (n as f64 * std::f64::consts::TAU.ln() + log_det + quad);
+        assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+    }
+
+    /// Two blocks with a flat column in one for a while give each value its
+    /// own weight; the state carries them, and restores to the same model.
+    #[test]
+    fn a_state_with_a_weight_per_value_round_trips() {
+        let mut m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        for (i, row) in stream(80, 4, 0.4, 11).iter().enumerate() {
+            let mut x = row.clone();
+            if i < 40 {
+                x[3] = 2.0;
+            }
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(
+            m.rho_w[0] != m.rho_w[1] && m.rho.iter().all(|v| v.is_finite()),
+            "the fixture: {:?} {:?}",
+            m.rho_w,
+            m.rho
+        );
+        let back = Deco::restore(&m.state()).unwrap();
+        assert_eq!(back, m);
+    }
+
+    /// Each part of a state's shape is checked on its own: blocks that are
+    /// not the cfg's, a standardizer of the wrong width, a weight list of
+    /// the wrong length, each with everything else right.
+    #[test]
+    fn each_part_of_a_states_shape_is_checked_on_its_own() {
+        use crate::{ModelState, StateError};
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3]],
+            ..cfg(4)
+        })
+        .unwrap();
+        type Edit = fn(&mut Deco);
+        let edits: [(&str, Edit); 3] = [
+            ("blocks", |d| d.blocks = vec![vec![0, 2], vec![1, 3]]),
+            ("diag", |d| d.diag = EwDiag::new(5)),
+            ("rho_w", |d| d.rho_w = vec![0.0; 2]),
+        ];
+        for (what, edit) in edits {
+            let mut s = m.state();
+            let ModelState::Deco(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match Deco::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+    }
 }

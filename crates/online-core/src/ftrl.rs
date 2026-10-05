@@ -1173,4 +1173,141 @@ mod tests {
         let river = -zz / ((c.beta + n.sqrt()) / c.alpha + c.l2);
         assert_eq!(m.coefficients()[0][0].to_bits(), river.to_bits());
     }
+
+    /// A decay given as a per-unit factor is the half-life it equals: at a
+    /// clock of one unit a row `Lam(2^(-1/h))` and `Halflife(h)` age the
+    /// sums by the same double, so the two models are one to the bit -- the
+    /// forgetting form included, where `Lam(lam)` once read as "no decay"
+    /// would have taken river's penalties. `Lam(1)` forgets nothing, as an
+    /// infinite half-life does.
+    #[test]
+    fn a_decay_factor_is_the_half_life_it_equals() {
+        let h = 7.0;
+        let lam = Decay::Halflife(h).factor(1.0);
+        assert!(lam < 1.0 && Decay::Lam(lam).factor(1.0) == lam);
+        for (a, b) in [
+            (Decay::Lam(lam), Decay::Halflife(h)),
+            (Decay::Lam(1.0), Decay::Halflife(f64::INFINITY)),
+        ] {
+            let mk = |decay: Decay| {
+                let mut c = cfg(2, 2);
+                c.decay = decay;
+                c.l1 = 0.05;
+                c.min_weight = 0.0;
+                c.loss = FtrlLoss::Squared;
+                Ftrl::new(c).unwrap()
+            };
+            let (mut ma, mut mb) = (mk(a), mk(b));
+            let mut s = 31u64;
+            for i in 0..60 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = [Some(2.0 * x[0] - x[1]), (i % 3 != 0).then(|| x[1] + 0.5)];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let (pa, pb) = (ma.step(&x, &y, d, 1.0), mb.step(&x, &y, d, 1.0));
+                assert_eq!(pa, pb, "{a:?} against {b:?} at row {i}");
+            }
+            assert_eq!(ma.coefficients(), mb.coefficients(), "{a:?} against {b:?}");
+            assert_eq!(ma.forgets(), mb.forgets(), "{a:?} against {b:?}");
+        }
+    }
+
+    /// River's closed form without decay, `b = -(z - sign(z)·l1) /
+    /// ((beta + sqrt(n))/alpha + l2)` (McMahan et al. 2013, Algorithm 1),
+    /// after one row from zero: the squared loss on `y = 10` at `p = 0`
+    /// gives `g = -10`, `n = 100`, `z = -10`, and with `alpha = 0.1`, `beta
+    /// = l1 = l2 = 1` the intercept is `9 / 111`. The penalty pulls toward
+    /// zero from either side, so `y = -10` gives `-9 / 111`.
+    #[test]
+    fn the_l1_shrinkage_pulls_toward_zero_from_either_side() {
+        for (y, want) in [(10.0, 9.0 / 111.0), (-10.0, -9.0 / 111.0)] {
+            let mut c = cfg(1, 1);
+            c.l1 = 1.0;
+            c.min_weight = 0.0;
+            c.loss = FtrlLoss::Squared;
+            let mut m = Ftrl::new(c).unwrap();
+            assert!(!m.forgets());
+            m.step(&[0.0], &[Some(y)], 0.0, 1.0);
+            assert_eq!(m.zz[0][0], -y, "z after one row");
+            let b = m.coefficients()[0][0];
+            assert!((b - want).abs() < 1e-12, "y = {y}: {b} against {want}");
+            assert_eq!(m.coefficients()[0][1], 0.0, "a zero feature stays at zero");
+        }
+    }
+
+    /// No prior and no curvature yet is no fit. Under a half-life with
+    /// `beta = l2 = 0`, a target so small that its squared gradient
+    /// underflows moves `z` but adds nothing to the proximal sum, so the
+    /// rate is 0: the weight is 0, not `-z / 0 = ±inf`.
+    #[test]
+    fn a_rate_of_zero_is_no_fit() {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(50.0);
+        c.beta = 0.0;
+        c.l2 = 0.0;
+        c.min_weight = 0.0;
+        c.loss = FtrlLoss::Squared;
+        let mut m = Ftrl::new(c).unwrap();
+        m.step(&[0.0], &[Some(1e-170)], 0.0, 1.0);
+        assert!(m.forgets());
+        assert_eq!(m.zz[0][0], -1e-170, "the row moved z");
+        assert_eq!((m.n[0][0], m.prox[0][0]), (0.0, 0.0), "and no sum");
+        assert_eq!(m.coefficients(), vec![vec![0.0, 0.0]]);
+        let p = m.predict(&[1.0], 1.0).pred[0];
+        assert_eq!(p, 0.0);
+    }
+
+    /// One corruption per accumulator and per part of the penalties' scale,
+    /// each refused alone; the three scale parts all absent are a state
+    /// written before them, which loads at a scale of 1.
+    #[test]
+    fn each_part_of_a_state_is_checked_alone() {
+        use crate::{ModelState, StateError};
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(20.0);
+        let mut m = Ftrl::new(c).unwrap();
+        m.step(&[0.5, -1.0], &[Some(1.0), Some(0.0)], 0.0, 1.0);
+        m.step(&[1.5, 0.2], &[None, Some(1.0)], 1.0, 1.0);
+        let restored = |f: &dyn Fn(&mut Ftrl)| {
+            let mut s = m.state();
+            let ModelState::Ftrl(inner) = &mut s.model else {
+                unreachable!()
+            };
+            f(inner);
+            Ftrl::restore(&s)
+        };
+        assert_eq!(restored(&|_| {}).unwrap(), m);
+        type Corruption<'a> = (&'a str, &'a dyn Fn(&mut Ftrl));
+        let parts: [Corruption; 7] = [
+            ("a target short in n", &|f: &mut Ftrl| {
+                f.n.pop();
+            }),
+            ("a coordinate short in n", &|f: &mut Ftrl| {
+                f.n[1].pop();
+            }),
+            ("a target short in zz", &|f: &mut Ftrl| {
+                f.zz.pop();
+            }),
+            ("no prox", &|f: &mut Ftrl| f.prox.clear()),
+            ("no scale", &|f: &mut Ftrl| f.scale.clear()),
+            ("no pending decay", &|f: &mut Ftrl| f.pending.clear()),
+            ("neither W* nor the pending decay", &|f: &mut Ftrl| {
+                f.w_taught.clear();
+                f.pending.clear();
+            }),
+        ];
+        for (what, corrupt) in parts {
+            match restored(corrupt) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+        let old = restored(&|f| {
+            f.scale.clear();
+            f.w_taught.clear();
+            f.pending.clear();
+        })
+        .unwrap();
+        assert_eq!((old.scale, old.pending), (vec![1.0; 2], vec![1.0; 2]));
+        assert_eq!(old.w_taught, m.w_target);
+    }
 }

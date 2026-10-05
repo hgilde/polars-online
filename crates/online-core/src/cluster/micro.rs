@@ -1501,4 +1501,317 @@ mod tests {
             .is_none()
         );
     }
+
+    /// No decay, no checkpoint, no linkage unless a test asks for it: the
+    /// summaries are exactly what the rows make them.
+    fn still() -> MicroCfg {
+        MicroCfg {
+            decay: Decay::Halflife(f64::INFINITY),
+            prune_every: 1000,
+            macro_link: Some(0.0),
+            ..cfg()
+        }
+    }
+
+    /// `rows` rows of weight 1 at `x`.
+    fn feed(m: &mut Micro, x: [f64; 2], rows: usize) {
+        for _ in 0..rows {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+    }
+
+    /// A summary placed by hand, of weight 5 and no radius.
+    fn placed(id: u64, c: Vec<f64>, potential: bool) -> MicroCluster {
+        MicroCluster {
+            id,
+            s: ClusterSummary::at(c, 5.0, 0.0),
+            age: 0.0,
+            potential,
+            label: id,
+        }
+    }
+
+    /// A state written before the stream's mean weight (task 147) reads as
+    /// a mean weight of 1: its summaries admit a unit row, so a row at a
+    /// summary's centre is taken and one far from it opens a new one.
+    #[test]
+    fn a_state_without_the_mean_weight_admits_a_unit_row() {
+        let mut m = Micro::new(cfg()).unwrap();
+        feed(&mut m, [0.0, 0.0], 5);
+        let mut old = serde_json::to_value(&m).unwrap();
+        let fields = old.as_object_mut().unwrap();
+        assert!(fields.remove("w_mean").is_some() && fields.remove("w_rows").is_some());
+        let back: Micro = serde_json::from_value(old).unwrap();
+        assert_eq!((back.w_mean, back.w_rows), (0.0, 0.0), "the fixture");
+        let far = back.predict(&[5.0, 0.0], 1.0).pred;
+        assert_eq!(far[2], 1.0, "a far row opens id 1: {far:?}");
+        assert_eq!(far[3], 1.0);
+        let near = back.predict(&[0.0, 0.0], 1.0).pred;
+        assert_eq!(near[2], 0.0, "{near:?}");
+    }
+
+    /// The metric is all ones in raw units, and `1 / v_i` standardized,
+    /// `v_i` each feature's variance over the rows (no decay, unit weights:
+    /// the plain population variance).
+    #[test]
+    fn the_metric_is_one_over_each_features_variance_when_standardizing() {
+        let mut plain = Micro::new(still()).unwrap();
+        let mut scaled = Micro::new(MicroCfg {
+            standardize: true,
+            ..still()
+        })
+        .unwrap();
+        let rows = [[0.0, 0.0], [2.0, 10.0], [4.0, -10.0], [2.0, 0.0]];
+        for x in rows {
+            plain.step(&x, &[], 1.0, 1.0);
+            scaled.step(&x, &[], 1.0, 1.0);
+        }
+        assert_eq!(plain.metric(), &[1.0, 1.0]);
+        assert_eq!(scaled.metric().len(), 2);
+        for j in 0..2 {
+            let mean = rows.iter().map(|x| x[j]).sum::<f64>() / 4.0;
+            let var = rows.iter().map(|x| (x[j] - mean).powi(2)).sum::<f64>() / 4.0;
+            let got = scaled.metric()[j];
+            assert!(
+                (got - 1.0 / var).abs() <= 1e-12 / var,
+                "feature {j}: {got} against 1/{var}"
+            );
+        }
+    }
+
+    /// The nearest summary is decided on the squares, first minimum
+    /// winning: between summaries equally far the first is the nearest,
+    /// and between two whose squares differ by a rounding step the smaller
+    /// square is, though the distances round to one number.
+    #[test]
+    fn the_nearest_summary_is_decided_on_the_squares() {
+        // Equally far: (1, 0) and (-1, 0) from the origin.
+        let mut m = Micro::new(MicroCfg {
+            eps: 0.25,
+            ..still()
+        })
+        .unwrap();
+        feed(&mut m, [1.0, 0.0], 3);
+        feed(&mut m, [-1.0, 0.0], 3);
+        assert!(m.micro_clusters().iter().all(|c| c.potential) && m.n_clusters() == 2);
+        let tie = m.predict(&[0.0, 0.0], 1.0).pred;
+        assert_eq!(tie[0], 0.0, "the first of two equally far: {tie:?}");
+        // A rounding step apart: 1 + 2^-52 against 1.
+        let step = 2f64.powi(-26);
+        let mut m = Micro::new(MicroCfg {
+            eps: 0.25,
+            ..still()
+        })
+        .unwrap();
+        feed(&mut m, [1.0, step], 3);
+        feed(&mut m, [-1.0, 0.0], 3);
+        let a = dist2(&m.micro_clusters()[0].s.c, &[0.0, 0.0], m.metric());
+        let b = dist2(&m.micro_clusters()[1].s.c, &[0.0, 0.0], m.metric());
+        assert!(a > b && a.sqrt() == b.sqrt(), "the fixture: {a} and {b}");
+        let near = m.predict(&[0.0, 0.0], 1.0).pred;
+        assert_eq!(near[0], 1.0, "the smaller square: {near:?}");
+    }
+
+    /// Among squares that overflow, the overflow-free norms decide, first
+    /// minimum winning; where one square is finite, the squares do, even
+    /// against a square that overflowed by a rounding step and whose norm
+    /// rounds to the finite one's.
+    #[test]
+    fn overflowed_squares_are_decided_by_their_norms() {
+        let mut m = Micro::new(cfg()).unwrap();
+        m.mc = vec![
+            placed(0, vec![0.0, 3e200], true),
+            placed(1, vec![1e200, 0.0], true),
+            placed(2, vec![-1e200, 0.0], true),
+            placed(3, vec![0.0, -2e200], true),
+        ];
+        (m.next_id, m.n_clusters) = (4, 4);
+        let out = m.predict(&[0.0, 0.0], 1.0).pred;
+        assert_eq!(out[0], 1.0, "the first of the two nearest: {out:?}");
+        assert_eq!(out[1], 1e200);
+
+        // The smallest double whose square overflows, before one whose
+        // square is just finite and whose norm rounds to the same number
+        // (found by search in IEEE doubles).
+        let over = 1.3407807929942597e154;
+        let under = [1.3262349803990826e154, 1.9696170091710862e153];
+        let origin = [0.0, 0.0];
+        let (d_over, d_under) = (
+            dist2(&[over, 0.0], &origin, &[1.0, 1.0]),
+            dist2(&under, &origin, &[1.0, 1.0]),
+        );
+        assert!(
+            d_over.is_infinite()
+                && d_under.is_finite()
+                && dist(&under, &origin, &[1.0, 1.0]) == dist(&[over, 0.0], &origin, &[1.0, 1.0]),
+            "the fixture"
+        );
+        m.mc = vec![
+            placed(0, vec![over, 0.0], true),
+            placed(1, under.to_vec(), true),
+        ];
+        (m.next_id, m.n_clusters) = (2, 2);
+        let out = m.predict(&origin, 1.0).pred;
+        assert_eq!(out[0], 1.0, "the finite square: {out:?}");
+    }
+
+    /// At the cap the lightest outlier summary goes, the first of two
+    /// equally light: outliers of weights 2, 1 and 1 lose the first 1.
+    #[test]
+    fn the_cap_evicts_the_first_of_the_lightest_outliers() {
+        let mut m = Micro::new(MicroCfg {
+            max_clusters: 4,
+            ..still()
+        })
+        .unwrap();
+        feed(&mut m, [0.0, 0.0], 3); // id 0, potential
+        feed(&mut m, [10.0, 0.0], 2); // id 1, weight 2
+        feed(&mut m, [20.0, 0.0], 1); // id 2, weight 1
+        feed(&mut m, [30.0, 0.0], 1); // id 3, weight 1
+        feed(&mut m, [40.0, 0.0], 1); // id 4, evicting id 2
+        let ids: Vec<u64> = m.micro_clusters().iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![0, 1, 3, 4]);
+    }
+
+    /// A summary promoted takes the label of the nearest other potential
+    /// summary within the linkage threshold -- the nearer of two, wherever
+    /// it sits in creation order, and the first of two equally near -- and
+    /// with none in reach, its own.
+    #[test]
+    fn a_promoted_summary_takes_the_label_of_the_nearest_within_reach() {
+        // eps 0.25 (bound 0.125) keeps the three summaries apart; a
+        // threshold of 4 eps √p is a squared distance of 2, so the outer
+        // two (2 or 1.9 apart) are separate clusters and the middle one
+        // reaches both.
+        let linked = MicroCfg {
+            eps: 0.25,
+            macro_link: Some(4.0),
+            ..still()
+        };
+        for (b, want) in [(0.9, 1u64), (1.0, 0)] {
+            let mut m = Micro::new(linked.clone()).unwrap();
+            assert_eq!(m.link2, 2.0, "the fixture");
+            feed(&mut m, [-1.0, 0.0], 3);
+            feed(&mut m, [b, 0.0], 3);
+            assert_eq!(m.n_clusters(), 2, "b {b}: the outer two are apart");
+            feed(&mut m, [0.0, 0.0], 3);
+            let mc = m.micro_clusters();
+            assert_eq!(mc.len(), 3, "b {b}");
+            assert!(mc[2].potential, "b {b}");
+            assert_eq!(mc[2].label, want, "b {b}: {mc:?}");
+            assert_eq!(m.n_clusters(), 2, "b {b}: it joined a cluster");
+        }
+        // Out of reach: its own label.
+        let mut m = Micro::new(MicroCfg {
+            eps: 0.25,
+            macro_link: Some(1.0),
+            ..still()
+        })
+        .unwrap();
+        feed(&mut m, [-1.0, 0.0], 3);
+        feed(&mut m, [0.0, 0.0], 3);
+        assert_eq!(m.micro_clusters()[1].label, 1);
+        assert_eq!(m.n_clusters(), 2);
+    }
+
+    /// `macro_link = 0` links nothing, not even two potential summaries at
+    /// one centre: when the second is promoted, and at a checkpoint.
+    #[test]
+    fn a_threshold_of_zero_links_nothing_even_at_one_centre() {
+        let mut m = Micro::new(still()).unwrap();
+        assert_eq!(m.link2, 0.0);
+        m.mc = vec![
+            placed(0, vec![1.0, 2.0], true),
+            placed(1, vec![1.0, 2.0], false),
+        ];
+        (m.next_id, m.n_clusters) = (2, 1);
+        m.mc[1].potential = true;
+        m.attach(1);
+        assert_eq!(m.mc[1].label, 1);
+        assert_eq!(m.n_clusters(), 2);
+        m.link_potential();
+        assert_eq!(m.n_clusters(), 2);
+        assert_eq!((m.mc[0].label, m.mc[1].label), (0, 1));
+    }
+
+    /// The checkpoint keeps a potential summary of exactly `beta_mu` rows,
+    /// and an outlier one of exactly `ξ(age)` rows: DenStream drops one
+    /// lighter than the bound, not one at it. A summary that has just taken
+    /// its first row is at `ξ(0) = 1`.
+    #[test]
+    fn the_checkpoint_keeps_a_summary_at_its_bound() {
+        let mut m = Micro::new(MicroCfg {
+            prune_every: 3,
+            ..still()
+        })
+        .unwrap();
+        feed(&mut m, [0.0, 0.0], 3);
+        let mc = m.micro_clusters();
+        assert!(
+            mc.len() == 1 && mc[0].potential && mc[0].s.n == 3.0,
+            "{mc:?}"
+        );
+        assert_eq!(m.events().1, 0, "nothing pruned");
+
+        let mut m = Micro::new(MicroCfg {
+            prune_every: 1,
+            decay: Decay::Halflife(100.0),
+            ..still()
+        })
+        .unwrap();
+        assert!(m.prune_horizon().is_some(), "outliers are pruned here");
+        feed(&mut m, [0.0, 0.0], 1);
+        assert_eq!(m.micro_clusters().len(), 1, "{:?}", m.micro_clusters());
+        assert_eq!(m.events().1, 0);
+    }
+
+    /// The derived threshold: `LINK_FACTOR` times the 90th percentile
+    /// (nearest rank) of the potential summaries' nearest-neighbour
+    /// distances, and never below `LINK_FLOOR · eps √p`.
+    #[test]
+    fn the_derived_threshold_is_the_spacings_90th_percentile_or_the_floor() {
+        let mut m = Micro::new(MicroCfg {
+            macro_link: None,
+            ..still()
+        })
+        .unwrap();
+        // Gaps of 1 to 9 along a line: nearest-neighbour distances 1, 1, 2,
+        // ..., 9.
+        let xs = [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0];
+        m.mc = xs
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| placed(i as u64, vec![x, 0.0], true))
+            .collect();
+        m.link_potential();
+        let mut nn: Vec<f64> = (0..xs.len())
+            .map(|a| {
+                (0..xs.len())
+                    .filter(|&b| b != a)
+                    .map(|b| (xs[a] - xs[b]).abs())
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .collect();
+        nn.sort_by(f64::total_cmp);
+        let rank = (9 * xs.len()).div_ceil(10);
+        let want = LINK_FACTOR * nn[rank - 1];
+        assert_eq!(want, 12.0, "the fixture");
+        assert!(
+            (m.link() - want).abs() < 1e-12,
+            "{} against {want}",
+            m.link()
+        );
+
+        // Spacing far below the floor.
+        m.mc = (0..3)
+            .map(|i| placed(i, vec![0.1 * i as f64, 0.0], true))
+            .collect();
+        m.link_potential();
+        let floor = LINK_FLOOR * 0.3 * 2f64.sqrt();
+        assert!(
+            (m.link() - floor).abs() < 1e-12,
+            "{} against {floor}",
+            m.link()
+        );
+    }
 }

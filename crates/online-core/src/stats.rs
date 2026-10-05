@@ -953,6 +953,135 @@ mod tests {
             assert!((got - base).abs() < 1e-9, "{name}: {got} vs {base}");
         }
     }
+
+    /// The levels come back as given, in order, and `reset` returns the
+    /// sketch to a new one at the same levels (task 158).
+    #[test]
+    fn a_sketch_reports_its_levels_and_resets_to_new() {
+        let levels = [0.25, 0.5, 0.9];
+        let mut q = EwQuantile::new(&levels).unwrap();
+        assert_eq!(q.levels(), &levels);
+        for i in 0..50 {
+            q.age(0.9);
+            q.add(f64::from(i), 1.0);
+        }
+        assert_ne!(q, EwQuantile::new(&levels).unwrap());
+        q.reset();
+        assert_eq!(q, EwQuantile::new(&levels).unwrap());
+        assert_eq!(q.get(0), None);
+    }
+
+    /// "Anything else is not seen": a weight of 0 leaves the sketch exactly
+    /// as it was, buckets and all, not a bucket of weight 0 (task 158).
+    #[test]
+    fn a_value_at_weight_zero_leaves_the_sketch_untouched() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        q.add(3.0, 1.0);
+        let before = q.clone();
+        q.add(1e10, 0.0);
+        q.add(1e-10, 0.0);
+        assert_eq!(q, before);
+    }
+
+    /// The smallest normal float is a value, not a zero: it lands in its
+    /// bucket and is reported within `α`; anything below it counts as 0
+    /// (task 158).
+    #[test]
+    fn the_smallest_normal_float_is_a_value_and_below_it_a_zero() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        q.add(f64::MIN_POSITIVE, 1.0);
+        let got = q.get(0).unwrap();
+        assert!(
+            (got - f64::MIN_POSITIVE).abs() <= EW_QUANTILE_ALPHA * f64::MIN_POSITIVE,
+            "{got:e}"
+        );
+        let mut z = EwQuantile::new(&[0.5]).unwrap();
+        z.add(f64::MIN_POSITIVE / 2.0, 1.0);
+        assert_eq!(z.get(0), Some(0.0));
+    }
+
+    /// A decay of 0 leaves the sketch as a new one: no bucket kept, of
+    /// weight 0 or otherwise (task 158).
+    #[test]
+    fn a_full_decay_leaves_a_new_sketch() {
+        let levels = [0.1, 0.9];
+        let mut q = EwQuantile::new(&levels).unwrap();
+        for v in [0.0, 1.0, 5.0, 1e9] {
+            q.add(v, 1.0);
+        }
+        q.age(0.0);
+        assert_eq!(q, EwQuantile::new(&levels).unwrap());
+    }
+
+    /// The decay is folded into the buckets once it passes `2^-64`, not at
+    /// it: after 64 halvings the buckets still hold the weights as added and
+    /// the factor beside them is `2^-64`; the 65th folds it in (task 158).
+    #[test]
+    fn the_decay_is_folded_in_once_it_passes_two_to_the_minus_64() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        q.add(1.0, 1.0);
+        for _ in 0..64 {
+            q.age(0.5);
+        }
+        assert_eq!(q.scale, RENORM);
+        assert_eq!(q.buckets, vec![1.0]);
+        q.age(0.5);
+        assert_eq!(q.scale, 1.0);
+        assert_eq!(q.buckets, vec![0.5 * RENORM]);
+    }
+
+    /// At a fold, the ends that weigh under `1e-12` of the total go and
+    /// every bucket between the heaviest ends stays: two values from the
+    /// first rows, far below and far above the rest, weigh `2^-64` of it at
+    /// the fold and are dropped, while the buckets of 1 and 2 (indices 0 and
+    /// 64) are kept whole. At weights of `1e8`, so the share is of the
+    /// total's size, not of 1 (task 158).
+    #[test]
+    fn a_fold_drops_the_light_ends_and_keeps_the_rest() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        let w = 1e8;
+        q.add(1e-100, w);
+        q.add(1e100, w);
+        let mut folded = false;
+        for i in 0..70 {
+            q.age(0.5);
+            q.add(if i % 2 == 0 { 1.0 } else { 2.0 }, w);
+            if q.scale == 1.0 {
+                folded = true;
+                break;
+            }
+        }
+        assert!(folded, "the decay was folded in");
+        assert_eq!(q.lo, 0, "the bucket of 1 is the lowest kept");
+        assert_eq!(q.buckets.len(), 65, "up to the bucket of 2");
+        assert!(q.buckets[0] > 0.0 && q.buckets[64] > 0.0);
+    }
+
+    /// The top level at `p` just under 1: `p · total` is the total less an
+    /// ulp, while the walk's own sum to the last bucket rounds below it. The
+    /// pointer stays on the last bucket rather than stepping past the end,
+    /// and reports it (task 158).
+    #[test]
+    fn a_level_next_to_one_stays_on_the_last_bucket() {
+        let p = 1.0 - f64::EPSILON / 2.0;
+        let mut q = EwQuantile::new(&[p]).unwrap();
+        q.add(1.0, 1.0);
+        // `1 + s` rounds up a whole ulp each time; their own sum does not.
+        let s = 0.625 * f64::EPSILON;
+        let mut past = 0;
+        for _ in 0..4 {
+            q.add(2.0, s);
+            let last = q.lo + q.buckets.len() as i32 - 1;
+            let walked = q.below[0] + q.weight(q.at[0]);
+            past += usize::from(q.at[0] == Some(last) && walked < p * q.total);
+        }
+        assert!(
+            past > 0,
+            "the walk's sum fell under the target at the last bucket"
+        );
+        let got = q.get(0).unwrap();
+        assert!((got - 2.0).abs() <= EW_QUANTILE_ALPHA * 2.0, "{got}");
+    }
 }
 
 #[cfg(test)]
@@ -1213,6 +1342,10 @@ mod metric_tests {
         m.update_about(0.9, 1.0, 0.5, 1.0, false, 1.0);
         assert_eq!(m.hit_rate(), before.hit_rate(), "on the centre: not scored");
         assert_eq!(m.hit_w, 0.5 * before.hit_w, "but aged");
+        // Both below the centre agree too (task 158).
+        let mut below = SlotMetrics::new();
+        below.update_about(0.8, 0.9, 0.9, 1.0, false, 1.0);
+        assert_eq!(below.hit_rate(), Some(1.0), "both below 1");
         let (mut a, mut b) = (SlotMetrics::new(), SlotMetrics::new());
         let mut s = 5u64;
         for i in 0..40 {

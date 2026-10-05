@@ -2007,6 +2007,588 @@ mod tests {
         );
     }
 
+    /// A model seeded by `first` at `centres` (in raw units, no decay, no
+    /// split-merge unless the caller sets it), each centre exactly its row.
+    fn seeded_at(centres: &[[f64; 2]], c: KMeansCfg) -> KMeans {
+        let mut m = KMeans::new(KMeansCfg {
+            k: centres.len(),
+            warm_rows: centres.len(),
+            ..c
+        })
+        .unwrap();
+        for x in centres {
+            m.step(x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded());
+        let got: Vec<Vec<f64>> = centres.iter().map(|x| x.to_vec()).collect();
+        assert_eq!(m.coefficients().unwrap(), got, "the fixture");
+        m
+    }
+
+    fn seeded(k: usize) -> KMeans {
+        let centres: Vec<[f64; 2]> = (0..k).map(|i| [10.0 * i as f64, 0.0]).collect();
+        seeded_at(&centres, cfg(k))
+    }
+
+    /// The metric is all ones in raw units, and `1 / v_i` standardized,
+    /// `v_i` each feature's variance over the rows (no decay, unit weights:
+    /// the plain population variance).
+    #[test]
+    fn the_metric_is_one_over_each_features_variance_when_standardizing() {
+        let mut plain = KMeans::new(cfg(2)).unwrap();
+        let mut scaled = KMeans::new(KMeansCfg {
+            standardize: true,
+            ..cfg(2)
+        })
+        .unwrap();
+        let rows = [[0.0, 0.0], [2.0, 10.0], [4.0, -10.0], [2.0, 0.0]];
+        for x in rows {
+            plain.step(&x, &[], 1.0, 1.0);
+            scaled.step(&x, &[], 1.0, 1.0);
+        }
+        assert_eq!(plain.metric(), &[1.0, 1.0]);
+        assert_eq!(scaled.metric().len(), 2);
+        for j in 0..2 {
+            let mean = rows.iter().map(|x| x[j]).sum::<f64>() / 4.0;
+            let var = rows.iter().map(|x| (x[j] - mean).powi(2)).sum::<f64>() / 4.0;
+            let got = scaled.metric()[j];
+            assert!(
+                (got - 1.0 / var).abs() <= 1e-12 / var,
+                "feature {j}: {got} against 1/{var}"
+            );
+        }
+    }
+
+    /// Among squares that overflow, the overflow-free norms decide the
+    /// nearest and the runner-up, first minimum winning; where one square
+    /// is finite, the squares decide, even against one that overflowed by a
+    /// rounding step and whose norm rounds to the finite one's.
+    #[test]
+    fn overflowed_squares_are_ranked_by_their_norms() {
+        let origin = [0.0, 0.0];
+        // Norms 1e200, 2e200, 3e200: nearest the first, runner-up the second.
+        let m = seeded_at(&[[1e200, 0.0], [0.0, 2e200], [-3e200, 0.0]], cfg(3));
+        assert!(
+            m.clusters
+                .iter()
+                .all(|c| dist2(&c.c, &origin, &m.mw).is_infinite())
+        );
+        assert_eq!(m.predict(&origin, 1.0).pred, vec![0.0, 1e200, 2e200]);
+        // Two equally far: the first is the nearest, the second the runner-up.
+        let m = seeded_at(&[[1e200, 0.0], [-1e200, 0.0], [0.0, 3e200]], cfg(3));
+        assert_eq!(m.predict(&origin, 1.0).pred, vec![0.0, 1e200, 1e200]);
+        // The smallest double whose square overflows, before one whose
+        // square is just finite and whose norm rounds to the same number
+        // (found by search in IEEE doubles).
+        let over = [1.3407807929942597e154, 0.0];
+        let under = [1.3262349803990826e154, 1.9696170091710862e153];
+        let one = [1.0, 1.0];
+        assert!(
+            dist2(&over, &origin, &one).is_infinite()
+                && dist2(&under, &origin, &one).is_finite()
+                && dist(&under, &origin, &one) == dist(&over, &origin, &one),
+            "the fixture"
+        );
+        let m = seeded_at(&[over, under], cfg(2));
+        assert_eq!(m.predict(&origin, 1.0).pred[0], 1.0, "the finite square");
+    }
+
+    /// A finite squared distance is reported as its root, to the bit, not
+    /// as the overflow-free norm, which differs from it in the last bit
+    /// here: `√18` against `3 √2`.
+    #[test]
+    fn a_finite_distance_is_the_root_of_its_square() {
+        let m = seeded_at(&[[0.0, 0.0], [10.0, 0.0]], cfg(2));
+        let row = [3.0, 3.0];
+        assert_ne!(
+            dist(&[0.0, 0.0], &row, &m.mw),
+            18f64.sqrt(),
+            "the fixture: the norm is another number"
+        );
+        let out = m.predict(&row, 1.0).pred;
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 18f64.sqrt());
+        assert_eq!(out[2], dist2(&[10.0, 0.0], &row, &m.mw).sqrt());
+    }
+
+    /// Until a cluster has a trusted radius nothing is far (the module
+    /// docs), not even a row whose squared distance overflows: it is
+    /// learned into its cluster, not into the far summary.
+    #[test]
+    fn before_a_trusted_radius_not_even_an_overflowed_square_is_far() {
+        let mut m = seeded_at(
+            &[[0.0, 0.0], [1.0, 0.0]],
+            KMeansCfg {
+                split_merge: 0.5,
+                split_merge_every: 1000,
+                ..cfg(2)
+            },
+        );
+        assert_eq!(m.far_cut, f64::INFINITY, "no trusted radius yet");
+        m.step(&[1e200, 0.0], &[], 1.0, 1.0);
+        assert_eq!(m.rows.iter().sum::<u64>(), 3, "learned: {:?}", m.rows);
+        assert_eq!(m.far_rows, vec![0, 0]);
+    }
+
+    /// The window weight `V` is the weight learned since the last check,
+    /// decayed with the clock as every weight is (`V ← λV + w`, the module
+    /// docs), from the buffer's replay on; with the rule off it counts
+    /// nothing.
+    #[test]
+    fn the_window_weight_decays_and_counts_what_is_learned() {
+        let decay = Decay::Halflife(5.0);
+        let mut m = KMeans::new(KMeansCfg {
+            warm_rows: 3,
+            split_merge: 0.5,
+            split_merge_every: 1000,
+            decay,
+            ..cfg(3)
+        })
+        .unwrap();
+        for x in [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]] {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded());
+        let lam = decay.factor(1.0);
+        let mut v = lam * lam + lam + 1.0;
+        assert!(
+            (m.window_w - v).abs() <= 1e-12 * v,
+            "{} against {v}",
+            m.window_w
+        );
+        let mut s = 7u64;
+        for (i, x) in blobs(10, 2).iter().enumerate() {
+            let d = [0.5, 1.0, 2.0][i % 3];
+            let w = 0.5 + lcg(&mut s).abs();
+            m.step(x, &[], d, w);
+            v = decay.factor(d) * v + w;
+            assert!(
+                (m.window_w - v).abs() <= 1e-12 * v,
+                "row {i}: {} against {v}",
+                m.window_w
+            );
+        }
+        let mut off = KMeans::new(KMeansCfg {
+            warm_rows: 3,
+            decay,
+            ..cfg(3)
+        })
+        .unwrap();
+        for x in blobs(10, 2) {
+            off.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(off.seeded());
+        assert_eq!(off.window_w, 0.0);
+    }
+
+    /// At a check, far rows count in a cluster's radius at the cut, against
+    /// its weight; a cluster without far rows keeps its radius, to the bit,
+    /// and one without weight too (no `0/0`).
+    #[test]
+    fn a_cluster_without_far_rows_keeps_its_radius_at_the_check() {
+        let mut m = seeded(3);
+        m.far_cut = 1.0;
+        for (c, (n, r2)) in m
+            .clusters
+            .iter_mut()
+            .zip([(3.0, 0.1), (7.0, 0.3), (0.0, 0.2)])
+        {
+            (c.n, c.r2) = (n, r2);
+        }
+        m.far[1].n = 2.0;
+        assert_ne!(
+            (3.0 * 0.1) / 3.0,
+            0.1,
+            "the fixture: the round trip moves 0.1"
+        );
+        m.winsorize_radii();
+        assert_eq!(m.clusters[0].r2, 0.1);
+        assert_eq!(m.clusters[2].r2, 0.2);
+        assert_eq!(m.clusters[1].r2, (7.0 * 0.3 + 2.0 * 1.0) / 9.0);
+    }
+
+    /// The far source is the cluster with the most far weight, the first of
+    /// two equally heavy, and none while no cluster has any.
+    #[test]
+    fn the_far_source_is_the_first_heaviest_far_summary() {
+        let mut m = seeded(4);
+        let mut with = |ns: [f64; 4]| {
+            for (f, n) in m.far.iter_mut().zip(ns) {
+                f.n = n;
+            }
+            m.far_source()
+        };
+        assert_eq!(with([0.0; 4]), None);
+        assert_eq!(with([0.0, 2.0, 5.0, 5.0]), Some(2));
+    }
+
+    /// A merge of `j` into `i` pools their far rows, and places the freed
+    /// centre on the heaviest far summary -- the pool on a tie -- only when
+    /// it is a component's worth: `FAR_ROWS` rows, `FAR_SHARE` of the
+    /// window's weight, and some weight at all.
+    #[test]
+    fn a_merge_wants_a_components_worth_of_far_rows() {
+        let mut m = seeded(4);
+        let mut source = |ns: [f64; 4], rows: [u64; 4], window: f64| {
+            for ((f, r), (n, rw)) in m
+                .far
+                .iter_mut()
+                .zip(&mut m.far_rows)
+                .zip(ns.into_iter().zip(rows))
+            {
+                (f.n, *r) = (n, rw);
+            }
+            m.window_w = window;
+            m.merge_source(0, 1)
+        };
+        // Cluster 2 outweighs the pool of 0 and 1 (4 against 3).
+        assert_eq!(source([1.0, 2.0, 4.0, 3.0], [1, 1, 5, 5], 40.0), Some(2));
+        // A tie keeps the pool, which has the rows (2 + 2).
+        assert_eq!(source([1.0, 2.0, 3.0, 0.0], [2, 2, 4, 0], 40.0), Some(0));
+        // Too few rows; too little of the window; no weight at all.
+        assert_eq!(source([1.0, 2.0, 0.0, 0.0], [1, 1, 0, 0], 40.0), None);
+        assert_eq!(source([1.0, 0.9, 0.0, 0.0], [3, 3, 0, 0], 40.0), None);
+        assert_eq!(source([0.0; 4], [3, 3, 0, 0], 0.0), None);
+    }
+
+    /// A split leaves the source half its weight and places the target on
+    /// the source's far rows with the other half and the typical radius,
+    /// trusted at once.
+    #[test]
+    fn a_split_halves_the_source_and_places_the_target_on_its_far_rows() {
+        let mut m = seeded(3);
+        m.clusters[2].n = 8.0;
+        m.far[2].c = vec![5.0, -1.0];
+        m.r2_typical = 0.25;
+        m.split(0, 2);
+        assert_eq!(m.clusters[2].n, 4.0);
+        assert_eq!(
+            m.clusters[0],
+            ClusterSummary::at(vec![5.0, -1.0], 4.0, 0.25)
+        );
+        assert_eq!(m.rows[0], RADIUS_ROWS);
+    }
+
+    /// A model with clusters placed by hand: centres, weights and radii,
+    /// far rows on `far_on` (weight 5, five rows, mean `(50, 50)`), a window
+    /// of 20 and `n_eff` of 100.
+    fn placed(
+        centres: &[[f64; 2]],
+        n: &[f64],
+        far_on: usize,
+        split_merge: f64,
+        dead_frac: f64,
+    ) -> KMeans {
+        let mut m = seeded_at(
+            centres,
+            KMeansCfg {
+                split_merge,
+                dead_frac,
+                ..cfg(centres.len())
+            },
+        );
+        for (c, &w) in m.clusters.iter_mut().zip(n) {
+            (c.n, c.r2) = (w, 1.0);
+        }
+        m.far[far_on] = ClusterSummary::at(vec![50.0, 50.0], 5.0, 0.0);
+        m.far_rows[far_on] = 5;
+        m.window_w = 20.0;
+        m.moments.w = 100.0;
+        m
+    }
+
+    /// The closest pair is measured in summed radii, `d / (r_i + r_j)`, and
+    /// merges below `split_merge`, not at it: centres 3 apart with radii of
+    /// 1 are 1.5 summed radii apart.
+    #[test]
+    fn a_pair_merges_below_split_merge_not_at_it() {
+        let centres = [[0.0, 0.0], [3.0, 0.0], [100.0, 0.0]];
+        let mut at = placed(&centres, &[10.0; 3], 2, 1.5, 0.0);
+        at.split_merge_check();
+        assert_eq!(at.events(), (0, 0), "1.5 is not below 1.5");
+        let mut below = placed(&centres, &[10.0; 3], 2, 1.6, 0.0);
+        below.split_merge_check();
+        assert_eq!(below.events(), (1, 0));
+        assert_eq!(below.clusters[0].c, vec![1.5, 0.0], "the pair merged");
+        assert_eq!(below.clusters[1].c, vec![50.0, 50.0], "the freed centre");
+    }
+
+    /// Of two pairs equally close, the first is merged: centres at 0, 2
+    /// and 4 on a line, each pair of neighbours one summed radius apart.
+    #[test]
+    fn of_two_pairs_equally_close_the_first_merges() {
+        let mut m = placed(
+            &[[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]],
+            &[10.0; 3],
+            0,
+            1.5,
+            0.0,
+        );
+        m.split_merge_check();
+        assert_eq!(m.events(), (1, 0));
+        let cs: Vec<Vec<f64>> = m.clusters.iter().map(|c| c.c.clone()).collect();
+        assert_eq!(cs, vec![vec![1.0, 0.0], vec![50.0, 50.0], vec![4.0, 0.0]]);
+    }
+
+    /// The dead rule: the lightest cluster -- the first of two equally
+    /// light -- goes to the far rows when lighter than `dead_frac · n_eff /
+    /// k`, not when at it, and the event is counted. With one cluster there
+    /// is nothing to free: the rule needs two.
+    #[test]
+    fn the_dead_rule_frees_the_first_lightest_below_its_floor() {
+        // Floor 0.25 · 100 / 2 = 12.5.
+        let mut m = placed(&[[0.0, 0.0], [10.0, 0.0]], &[20.0, 1.0], 0, 0.5, 0.25);
+        m.split_merge_check();
+        assert_eq!(m.events(), (0, 1));
+        assert_eq!(m.clusters[1].c, vec![50.0, 50.0]);
+        let mut m = placed(&[[0.0, 0.0], [10.0, 0.0]], &[20.0, 12.5], 0, 0.5, 0.25);
+        m.split_merge_check();
+        assert_eq!(m.events(), (0, 0), "at the floor, alive");
+        // Two equally light, the pairs far apart in summed radii.
+        let mut m = placed(
+            &[[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]],
+            &[5.0, 0.1, 0.1],
+            0,
+            0.5,
+            0.25,
+        );
+        m.split_merge_check();
+        assert_eq!(m.events(), (0, 1));
+        assert_eq!(m.clusters[1].c, vec![50.0, 50.0], "the first of the two");
+        assert_eq!(m.clusters[2].c, vec![0.0, 100.0]);
+        // One cluster, far lighter than the floor.
+        let mut m = placed(&[[0.0, 0.0]], &[1.0], 0, 0.5, 0.5);
+        m.split_merge_check();
+        assert_eq!(m.events(), (0, 0));
+        assert_eq!(m.clusters[0].c, vec![0.0, 0.0]);
+    }
+
+    /// The buffer's cut: `far_factor` times its rows' weighted mean squared
+    /// distance to the EW mean.
+    #[test]
+    fn the_buffers_cut_is_its_weighted_mean_squared_distance_times_the_factor() {
+        let mut m = KMeans::new(cfg(2)).unwrap();
+        m.moments.mean = vec![1.0, 2.0];
+        // Squared distances 0, 25 and 1.
+        m.buf = vec![vec![1.0, 2.0], vec![4.0, 6.0], vec![0.0, 2.0]];
+        m.buf_w = vec![0.5, 2.0, 1.5];
+        let want = m.far_factor * (0.5 * 0.0 + 2.0 * 25.0 + 1.5 * 1.0) / (0.5 + 2.0 + 1.5);
+        assert!(
+            (m.buffer_cut() - want).abs() <= 1e-12 * want,
+            "{} against {want}",
+            m.buffer_cut()
+        );
+    }
+
+    /// Nine rows, one far from the rest -- far enough to be past the
+    /// buffer's cut, which the row itself raises -- for `first` seeding at
+    /// `k = 2`.
+    const ONE_FAR: [[f64; 2]; 9] = [
+        [0.0, 0.0],
+        [100.0, 100.0],
+        [10.0, 0.0],
+        [0.1, 0.0],
+        [10.1, 0.0],
+        [0.0, 0.1],
+        [10.0, 0.1],
+        [0.1, 0.1],
+        [10.1, 0.1],
+    ];
+
+    fn seed_on(rows: &[[f64; 2]], c: KMeansCfg) -> KMeans {
+        let mut m = KMeans::new(KMeansCfg {
+            warm_rows: rows.len(),
+            ..c
+        })
+        .unwrap();
+        for x in rows {
+            m.step(x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded());
+        m
+    }
+
+    /// A row of the seed buffer past its cut chooses no seed; under the
+    /// split-merge rule it is replayed as a far row, so the centres are the
+    /// means of the other rows; with the rule off every row is learned.
+    #[test]
+    fn a_far_row_in_the_seed_buffer_chooses_no_seed() {
+        let on = seed_on(
+            &ONE_FAR,
+            KMeansCfg {
+                split_merge: 0.5,
+                split_merge_every: 1000,
+                ..cfg(2)
+            },
+        );
+        let near = |got: &[f64], want: [f64; 2]| {
+            assert!(
+                (got[0] - want[0]).abs() < 1e-12 && (got[1] - want[1]).abs() < 1e-12,
+                "{got:?} against {want:?}"
+            );
+        };
+        near(&on.clusters[0].c, [0.05, 0.05]);
+        near(&on.clusters[1].c, [10.05, 0.05]);
+        assert_eq!(on.far_rows, vec![0, 1], "replayed as far");
+        let off = seed_on(&ONE_FAR, cfg(2));
+        near(&off.clusters[0].c, [0.05, 0.05]);
+        near(&off.clusters[1].c, [140.2 / 5.0, 100.2 / 5.0]);
+        let total: f64 = off.clusters.iter().map(|c| c.n).sum();
+        assert_eq!(total, off.n_eff(), "every row learned");
+    }
+
+    /// When the rows within the cut cannot give `k` distinct seeds, the
+    /// whole buffer chooses them: nine equal rows and one far.
+    #[test]
+    fn seeds_that_coincide_are_chosen_again_from_the_whole_buffer() {
+        let mut rows = vec![[1.0, 1.0]; 9];
+        rows.push([100.0, 100.0]);
+        let m = seed_on(
+            &rows,
+            KMeansCfg {
+                seed_rule: SeedRule::Farthest,
+                split_merge: 0.5,
+                split_merge_every: 1000,
+                ..cfg(2)
+            },
+        );
+        assert_eq!(
+            m.coefficients().unwrap(),
+            vec![vec![1.0, 1.0], vec![100.0, 100.0]]
+        );
+    }
+
+    /// A buffer of one row repeated has no spread and a cut of 0, and its
+    /// rows, at the mean, are not past it: all learned.
+    #[test]
+    fn a_buffer_without_spread_learns_every_row() {
+        let m = seed_on(
+            &[[2.0, 3.0]; 3],
+            KMeansCfg {
+                split_merge: 0.5,
+                split_merge_every: 1000,
+                ..cfg(1)
+            },
+        );
+        assert_eq!(m.clusters[0].n, 3.0);
+        assert_eq!(m.far_rows, vec![0]);
+    }
+
+    /// Seeding on rows enough for a trusted radius sets the far cut at
+    /// once, so the first row after it is already judged: a row far from
+    /// the blob goes to the far summary.
+    #[test]
+    fn the_far_cut_holds_from_the_first_row_after_seeding() {
+        let mut s = 5u64;
+        let rows: Vec<[f64; 2]> = (0..12).map(|_| [lcg(&mut s), lcg(&mut s)]).collect();
+        let mut m = seed_on(
+            &rows,
+            KMeansCfg {
+                split_merge: 0.5,
+                split_merge_every: 1000,
+                ..cfg(1)
+            },
+        );
+        assert!(m.far_cut.is_finite(), "{}", m.far_cut);
+        assert_eq!(m.rows, vec![12]);
+        m.step(&[50.0, 50.0], &[], 1.0, 1.0);
+        assert_eq!((m.rows[0], m.far_rows[0]), (12, 1));
+    }
+
+    /// The restarts are ranked by the weighted sum over the buffer of each
+    /// row's squared distance to its nearest centre.
+    #[test]
+    fn inertia_is_the_weighted_squared_distance_to_the_nearest_centre() {
+        let buf = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 0.0],
+            vec![4.0, 4.0],
+            vec![5.0, 4.0],
+        ];
+        let w = [1.0, 2.0, 0.5, 3.0];
+        let centres = vec![vec![0.0, 0.0], vec![5.0, 5.0]];
+        // Nearest squared distances 0, 1, 2 and 1.
+        let want = 1.0 * 0.0 + 2.0 * 1.0 + 0.5 * 2.0 + 3.0 * 1.0;
+        assert_eq!(inertia(&buf, &w, &centres, &[1.0, 1.0]), want);
+    }
+
+    /// Farthest-first takes the first of two rows equally far, as every
+    /// argmin and argmax here does (and `tests/reference_cluster.py`).
+    #[test]
+    fn farthest_first_takes_the_first_of_two_equally_far() {
+        let buf = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![-1.0, 0.0]];
+        assert_eq!(
+            farthest(&buf, 2, &[1.0, 1.0]),
+            vec![vec![0.0, 0.0], vec![1.0, 0.0]]
+        );
+    }
+
+    /// Lloyd's assignment gives a row equally near two centres to the
+    /// first, and a centre no row is nearest to stays where it is.
+    #[test]
+    fn lloyd_assigns_a_tie_to_the_first_centre_and_leaves_an_empty_one_put() {
+        let buf = vec![vec![0.0, 0.0], vec![-1.0, 0.0], vec![1.0, 0.0]];
+        let w = [1.0; 3];
+        let got = lloyd(
+            &buf,
+            &w,
+            vec![vec![-1.0, 0.0], vec![1.0, 0.0]],
+            &[1.0, 1.0],
+            1,
+        );
+        assert_eq!(got, vec![vec![-0.5, 0.0], vec![1.0, 0.0]]);
+        let got = lloyd(
+            &buf,
+            &w,
+            vec![vec![0.0, 0.0], vec![50.0, 50.0]],
+            &[1.0, 1.0],
+            3,
+        );
+        assert_eq!(got[1], vec![50.0, 50.0]);
+    }
+
+    /// Each part of a state's shape is checked on its own: a centre, a
+    /// batch, a far summary, a row count, a far-row count, a buffered weight
+    /// or a buffered row of the wrong size, each with everything else
+    /// right.
+    #[test]
+    fn each_part_of_a_states_shape_is_checked_on_its_own() {
+        let mut warm = KMeans::new(KMeansCfg {
+            warm_rows: 10,
+            ..cfg(2)
+        })
+        .unwrap();
+        for x in blobs(1, 1) {
+            warm.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(!warm.seeded() && warm.buffered() == 3);
+        type Edit = fn(&mut KMeans);
+        let edits: [(&str, &KMeans, Edit); 7] = [
+            ("centre", &seeded(3), |m| m.clusters[1].c.push(0.0)),
+            ("batch", &seeded(3), |m| m.batch.truncate(2)),
+            ("far", &seeded(3), |m| m.far[2].c.truncate(1)),
+            ("rows", &seeded(3), |m| m.rows.push(0)),
+            ("far_rows", &seeded(3), |m| m.far_rows.truncate(2)),
+            ("buf_w", &warm, |m| m.buf_w.push(1.0)),
+            ("buf", &warm, |m| m.buf[1].push(1.0)),
+        ];
+        for (what, model, edit) in edits {
+            let mut s = model.state();
+            let ModelState::KMeans(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match KMeans::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+            assert!(
+                KMeans::restore(&model.state()).is_ok(),
+                "{what}: the unedited state"
+            );
+        }
+    }
+
     #[test]
     fn seed_rule_names_are_snake_case() {
         for (rule, name) in [

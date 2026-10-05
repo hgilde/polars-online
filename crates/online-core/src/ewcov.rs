@@ -4281,6 +4281,375 @@ mod tests {
         on.update(&[1.0, 2.0], 0.9, 1.0);
         assert_eq!(on.held_from(0, 1), Some(1.0));
     }
+
+    // --- the weekly pass's survivors (docs/PLAN.md task 158) --------------
+
+    /// `from_moments` takes `k` means and `k²` co-moments, each checked on
+    /// its own, at `k = 3` where `k²` is not `2k`; and a weight that is
+    /// finite and not negative, 0 included.
+    #[test]
+    fn from_moments_checks_each_shape_and_the_weight() {
+        let (m3, c9) = (vec![0.0; 3], vec![0.0; 9]);
+        assert!(EwCov::from_moments(3, 1.0, &m3, &c9, 1.0).is_ok());
+        assert!(
+            EwCov::from_moments(3, 1.0, &m3[..2], &c9, 1.0).is_err(),
+            "means short"
+        );
+        assert!(
+            EwCov::from_moments(3, 1.0, &m3, &c9[..6], 1.0).is_err(),
+            "co-moments 2k"
+        );
+        assert!(
+            EwCov::from_moments(3, 0.0, &m3, &c9, 1.0).is_ok(),
+            "no weight yet"
+        );
+        for bad in [-1.0, f64::INFINITY, f64::NAN] {
+            assert!(
+                EwCov::from_moments(3, bad, &m3, &c9, 1.0).is_err(),
+                "w_sum {bad}"
+            );
+        }
+    }
+
+    /// `has_shape` holds each part to `k` on its own.
+    #[test]
+    fn has_shape_checks_each_part() {
+        let ok = EwCov::new(3);
+        assert!(ok.has_shape(3) && !ok.has_shape(2));
+        let mut m = ok.clone();
+        m.m.pop();
+        assert!(!m.has_shape(3), "a mean short");
+        let mut c = ok.clone();
+        c.c.pop();
+        assert!(!c.has_shape(3), "a co-moment short");
+    }
+
+    /// A target that has not seen a weighted row has no Kish count; a blend
+    /// is the centred mixture `a·v + b·v' + a·b·(m − m')²` of the two
+    /// variances and the mixture of the means; and a partial correlation
+    /// with no precision on a diagonal is NaN, not ±1.
+    #[test]
+    fn target_moments_kish_and_blend_and_a_partial_corr_without_precision() {
+        let tm = TargetMoments::new(2);
+        assert_eq!(tm.n_kish(&[0.0, 0.0]), vec![None, None]);
+        let mut a = TargetMoments::new(1);
+        (a.mean[0], a.var[0]) = (1.0, 2.0);
+        let mut b = TargetMoments::new(1);
+        (b.mean[0], b.var[0]) = (4.0, 3.0);
+        a.blend(&b, 0, 0.25, 0.75);
+        assert_eq!(a.var[0], 0.25 * 2.0 + 0.75 * 3.0 + 0.25 * 0.75 * 9.0);
+        assert_eq!(a.mean[0], 3.25);
+        assert!(partial_corr(&[0.0, 0.5, 0.5, 2.0], 2, 0, 1).is_nan());
+    }
+
+    /// `window_size` is finite and positive: 0, a negative, `inf` and NaN
+    /// are each refused.
+    #[test]
+    fn an_ew_cov_window_must_be_finite_and_positive() {
+        for bad in [0.0, -3.0, f64::INFINITY, f64::NAN] {
+            let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+            c.window = Some(bad);
+            let err = c.validate().unwrap_err();
+            assert!(err.contains("window_size"), "{bad}: {err}");
+        }
+    }
+
+    /// Each component's sign is set for continuity with the previous
+    /// refresh's same component, `v_new · v_old >= 0`: on `diag(1, 2, 3)`
+    /// with the previous second component `−e₂`, the second stays `−e₂`;
+    /// on a 2x2 matrix whose top vector is `(0.8, 0.6)`, a previous
+    /// `(0.7, −0.714)` (dot 0.13) keeps it `(0.8, 0.6)`. A previous loading
+    /// exactly orthogonal (here zero) falls to the rule for none: the
+    /// largest-magnitude entry positive, on a matrix whose raw eigenvector
+    /// faer gives with that entry negative. And eigenvalues that overflow
+    /// leave no components.
+    #[test]
+    fn pca_signs_follow_the_previous_component() {
+        use faer::Side;
+        use faer::prelude::*;
+        let c = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
+        let prev = Pca {
+            eig: vec![3.0, 2.0],
+            trace: 6.0,
+            loadings: vec![0.0, 0.0, 1.0, 0.0, -1.0, 0.0],
+        };
+        let p = Pca::of(&c, 3, 2, Some(&prev)).unwrap();
+        assert_eq!(p.loadings, vec![0.0, 0.0, 1.0, 0.0, -1.0, 0.0]);
+
+        let c = [2.28, 0.96, 0.96, 1.72];
+        let prev = Pca {
+            eig: vec![3.0],
+            trace: 4.0,
+            loadings: vec![0.7, -0.714],
+        };
+        let p = Pca::of(&c, 2, 1, Some(&prev)).unwrap();
+        assert!(
+            (p.loadings[0] - 0.8).abs() < 1e-12 && (p.loadings[1] - 0.6).abs() < 1e-12,
+            "{p:?}"
+        );
+
+        let c = [
+            1.9692192435623304,
+            -1.0189929071772608,
+            -1.678794952215703,
+            0.41393543745829764,
+            -1.0189929071772608,
+            1.1803220149294875,
+            1.2278042677158563,
+            -0.45118386359032686,
+            -1.678794952215703,
+            1.2278042677158563,
+            1.9379537610346815,
+            -0.33794526671041136,
+            0.41393543745829764,
+            -0.45118386359032686,
+            -0.33794526671041136,
+            0.8238902915440387,
+        ];
+        let raw = Mat::from_fn(4, 4, |i, j| c[i * 4 + j])
+            .self_adjoint_eigen(Side::Lower)
+            .unwrap();
+        let lead = |v: &[f64]| {
+            let mut l = 0;
+            for (i, vi) in v.iter().enumerate() {
+                if vi.abs() > v[l].abs() {
+                    l = i;
+                }
+            }
+            v[l]
+        };
+        let top: Vec<f64> = (0..4).map(|i| raw.U()[(i, 3)]).collect();
+        assert!(
+            lead(&top) < 0.0,
+            "faer's own vector leads negative: {top:?}"
+        );
+        let zero = Pca {
+            eig: vec![1.0],
+            trace: 1.0,
+            loadings: vec![0.0; 4],
+        };
+        let got = Pca::of(&c, 4, 1, Some(&zero)).unwrap();
+        assert_eq!(got, Pca::of(&c, 4, 1, None).unwrap());
+        assert!(lead(&got.loadings) > 0.0, "{got:?}");
+
+        assert_eq!(Pca::of(&[1e308, 1e308, 1e308, 1e308], 2, 2, None), None);
+    }
+
+    /// The window's weight is the windowed accumulator's, an empty window's
+    /// 0 included: after rows of weight about `1e6`, rows of weight 0 for
+    /// longer than the window leave a crumb `±W·1e-16` where nothing is
+    /// inside it, which reads 0, not the crumb (`EMPTY_FRACTION` of the live
+    /// weight, not of its inverse).
+    #[test]
+    fn the_window_weight_is_the_windowed_accumulators_and_a_crumb_is_empty() {
+        use crate::OnlineModel;
+        let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+        c.decay = crate::Decay::Halflife(3.0);
+        c.window = Some(5.0);
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 119u64;
+        let (mut crumbs, mut empty) = (0, 0);
+        for i in 0..400 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if (i / 10) % 2 == 0 {
+                1e6 * (1.5 + lcg(&mut s))
+            } else {
+                0.0
+            };
+            let want = m.windowed_cov().n_eff();
+            assert_eq!(m.n_eff().to_bits(), want.to_bits(), "row {i}");
+            if let Some((u, old)) = m.win.as_ref().and_then(|win| {
+                let (u, old) = win.snaps.boundary()?;
+                Some((*u, old.w))
+            }) {
+                let live = m.cov.n_eff();
+                let f = m.cfg.decay.factor(m.win.as_ref().unwrap().clock - u);
+                let crumb = live - f * old;
+                if crumb != 0.0 && crumb.abs() <= crate::window::EMPTY_FRACTION * live {
+                    crumbs += 1;
+                }
+            }
+            empty += usize::from(want == 0.0);
+            m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, w);
+        }
+        assert!(
+            crumbs > 0 && empty > 0,
+            "{crumbs} crumbs, {empty} empty windows"
+        );
+    }
+
+    /// A windowed model reports its ring past a refusing budget, the
+    /// snapshot spacing with it, and clears when the budget goes; its
+    /// shadow, learning the rows the model learns, is past it exactly when
+    /// the ring is (docs/PLAN.md task 115 (d)).
+    #[test]
+    fn an_ew_cov_window_budget_and_its_shadow() {
+        use crate::OnlineModel;
+        let plain = EwCovModel::new(model_cfg(2, vec![EwCovStat::Mean])).unwrap();
+        assert!(plain.window_shadow().is_none());
+        let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+        c.decay = crate::Decay::Halflife(30.0);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 127u64;
+        for i in 0..10 {
+            m.step(
+                &[lcg(&mut s), lcg(&mut s)],
+                &[],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert_eq!(m.window_over_budget(), None, "no budget, no overrun");
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(1e-6)));
+        match m.window_over_budget() {
+            Some((bytes, every)) => {
+                assert!(bytes > 1, "{bytes}");
+                assert_eq!(every, 2);
+            }
+            None => panic!("a ring of snapshots is past a budget of one byte"),
+        }
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(0.0005)));
+        let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
+        let mut over = 0;
+        for _ in 0..30 {
+            shadow.learn(1.0);
+            m.step(&[lcg(&mut s), lcg(&mut s)], &[], 1.0, 1.0);
+            assert_eq!(shadow.over_budget(), m.window_over_budget());
+            over += usize::from(m.window_over_budget().is_some());
+        }
+        assert!(over > 0, "the ring went past its budget");
+        m.set_window_budget(None);
+        assert_eq!(m.window_over_budget(), None);
+    }
+
+    /// The partial correlations are one a pair, `k(k−1)/2` of them; the
+    /// components before their first refresh are `pca · (k + 3)` NaNs; and
+    /// each row is as wide as the cfg says, at `k = 3` (task 158).
+    #[test]
+    fn every_statistic_is_as_wide_as_the_cfg_says() {
+        use crate::OnlineModel;
+        let mut c = model_cfg(3, vec![EwCovStat::PartialCorr]);
+        c.precision_prior = Some(1e-3);
+        c.min_weight = 0.0;
+        c.pca = 2;
+        c.pca_every = 5;
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 131u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let out = m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+            assert_eq!(out.len(), 3 + 2 * 6, "row {i}");
+            if i == 0 {
+                assert!(out[3..].iter().all(|v| v.is_nan()), "{out:?}");
+            } else {
+                assert!(out[..3].iter().all(|v| (-1.0..=1.0).contains(v)), "{out:?}");
+            }
+        }
+    }
+
+    /// A column whose variance underflows to 0 has no lagged correlation,
+    /// even where its lagged co-moment with a wide partner does not
+    /// underflow: deviations near `1e-170` square to 0, while their product
+    /// with deviations near `1e90` is `1e-80` (task 158).
+    #[test]
+    fn a_column_without_variance_has_no_lagged_correlation() {
+        use crate::OnlineModel;
+        let mut c = model_cfg(2, vec![EwCovStat::LagCorr]);
+        c.lags = vec![1];
+        c.min_weight = 0.0;
+        c.decay = crate::Decay::Halflife(20.0);
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 137u64;
+        let mut out = Vec::new();
+        for i in 0..30 {
+            let u = lcg(&mut s);
+            let x = [1e-170 * u, 1e90 * (u + 0.1 * lcg(&mut s))];
+            out = m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+        }
+        assert_eq!(
+            m.cov.var(0),
+            0.0,
+            "the narrow column's variance underflowed"
+        );
+        assert!(m.cov.var(1) > 0.0);
+        let lag = m.lag.as_ref().unwrap();
+        assert!(
+            lag.get(0, 0, 1) != 0.0 || lag.get(0, 1, 0) != 0.0,
+            "a co-moment survived"
+        );
+        // Slots `a·k + b`: (0, 0), (0, 1), (1, 0), (1, 1).
+        assert!(
+            out[0].is_nan() && out[1].is_nan() && out[2].is_nan(),
+            "{out:?}"
+        );
+        assert!(out[3].is_finite(), "{out:?}");
+    }
+
+    /// A model without components keeps no component counter in its state
+    /// (task 158).
+    #[test]
+    fn a_model_without_components_counts_no_refreshes() {
+        use crate::OnlineModel;
+        let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+        c.min_weight = 10.0;
+        let mut m = EwCovModel::new(c).unwrap();
+        for i in 0..5 {
+            m.step(&[1.0, f64::from(i)], &[], 1.0, 1.0);
+        }
+        assert_eq!(m.since_pca, 0);
+    }
+
+    /// A state with components loads when they are its cfg's (here `k = 3`
+    /// and two components, where `r · k` is not `r + k`), and is refused
+    /// when its loadings are short, its lagged moments are another shape
+    /// than its lags, or it has a ring its cfg has no window for -- each on
+    /// its own (task 158).
+    #[test]
+    fn a_state_is_refused_for_each_part_of_the_wrong_shape() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let mut c = pca_cfg(3, 2, 1);
+        c.min_weight = 0.0;
+        c.lags = vec![1];
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 139u64;
+        for i in 0..10 {
+            m.step(
+                &[lcg(&mut s), lcg(&mut s), lcg(&mut s)],
+                &[],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert_eq!(m.pca.as_ref().map(Pca::r), Some(2));
+        let back = EwCovModel::restore(&m.state()).expect("the state's own shape loads");
+        assert_eq!(back.pca, m.pca);
+        let refused = |edit: &dyn Fn(&mut EwCovModel)| {
+            let mut st = m.state();
+            let ModelState::EwCovModel(inner) = &mut st.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match EwCovModel::restore(&st) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                other => panic!("{other:?}"),
+            }
+        };
+        refused(&|inner| {
+            inner.pca.as_mut().unwrap().loadings.pop();
+        });
+        refused(&|inner| inner.lag = Some(crate::EwLagCov::new(3, vec![2]).unwrap()));
+        refused(&|inner| {
+            let mut w = EwCovModel::new({
+                let mut c = model_cfg(3, vec![EwCovStat::Mean]);
+                c.window = Some(10.0);
+                c
+            })
+            .unwrap();
+            inner.win = w.win.take();
+        });
+    }
 }
 
 /// The blocked Gram update (E51, docs/PLAN.md task 71).
@@ -4937,5 +5306,56 @@ mod block_tests {
         assert_eq!(untouched.m, blk.m);
         assert!(matches!(blk.flushed(), Cow::Borrowed(_)));
         assert!(matches!(seq.flushed(), Cow::Borrowed(_)));
+    }
+
+    /// A block whose own mean rounds: `1` and `1 + 3ε` at equal weight have
+    /// the mean `1 + 1.5ε`, which rounds to `1 + 2ε`, so the scatter about
+    /// it is `5ε²` where the scatter about the true mean is `4.5ε²`. The
+    /// residue `δ = −ε/2` takes the difference back out, and the block's
+    /// variance is the definition's `(1.5ε)²` to the bit, as the per-row
+    /// recursion's is (task 158).
+    #[test]
+    fn a_block_whose_mean_rounds_takes_the_residue_back_out() {
+        let e = f64::EPSILON;
+        let rows = [(vec![1.0], 1.0, 1.0), (vec![1.0 + 3.0 * e], 1.0, 1.0)];
+        let blk = run(&rows, 1, 2);
+        let seq = run(&rows, 1, 0);
+        assert_eq!(1.0 + 1.5 * e, 1.0 + 2.0 * e, "the block's mean rounds");
+        assert_eq!(blk.c[0], (1.5 * e) * (1.5 * e));
+        assert_eq!(seq.c[0], blk.c[0]);
+    }
+
+    /// A row of weight 0 opening a block, at `1e100` against rows at `1e7`,
+    /// takes no part in where the block is centred: the block is centred on
+    /// its first row of weight, and its moments are the per-row recursion's
+    /// to the data's resolution (centred on the zero row, the block's mean
+    /// would read 0 and its variance cancel `1e14` against `1`) (task 158).
+    #[test]
+    fn a_zero_weight_row_opening_a_block_is_not_its_centre() {
+        let k = 2;
+        let mut rows = stream(4, k, 31, 1e7, 1.0, 0);
+        rows.push((vec![1e100, 1e100], 1.0, 0.0));
+        rows.extend(stream(3, k, 37, 1e7, 1.0, 0));
+        let blk = run(&rows, k, 4);
+        let seq = run(&rows, k, 0);
+        assert_moments_close(&seq, &blk, "a zero-weight row first in the second block");
+        assert_scalars_equal(&seq, &blk, "a zero-weight row first in the second block");
+    }
+
+    /// A row of weight 0 whose decay takes the whole history -- `lam · W`
+    /// underflows to 0 while `lam` and `W` are not 0 -- is the decay alone:
+    /// the weight goes to 0 (task 115 (c)), and the next row starts over
+    /// (task 158).
+    #[test]
+    fn a_decay_that_underflows_the_weight_empties_the_accumulator() {
+        let mut c = EwCov::new(1);
+        c.update(&[3.0], 1.0, 0.25);
+        let lam = f64::from_bits(1); // 2^-1074
+        assert_eq!(lam * 0.25, 0.0);
+        assert!(lam / 0.25 > 0.0);
+        c.update(&[5.0], lam, 0.0);
+        assert_eq!(c.n_eff(), 0.0);
+        c.update(&[7.0], 1.0, 1.0);
+        assert_eq!((c.n_eff(), c.mean(0)), (1.0, 7.0));
     }
 }

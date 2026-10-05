@@ -343,4 +343,131 @@ mod tests {
         assert!(boundary_quantile(0.9, 0.5).is_nan() && boundary_quantile(1.0, 0.2).is_nan());
         assert!(sequential_crit(0.05, 0.2, 0.0).is_nan());
     }
+
+    /// Task 158: the quantile meets its own stopping tolerance, `|P(Z_γ ≤ q)
+    /// − p| < 1e-11`, in a tail too: at `p = 1e-4`, where the solve's slope
+    /// is small and a plain regula falsi stalls on one end of its bracket,
+    /// and at `p = 0.2`. Illinois's halving of the stale end is what keeps
+    /// both bracket ends moving.
+    #[test]
+    fn the_quantile_meets_its_tolerance_in_a_tail() {
+        for p in [1e-4, 0.2] {
+            let q = boundary_quantile(p, 0.05);
+            let got = boundary_cdf(q, 0.05);
+            assert!((got - p).abs() < 1e-11, "p = {p}: P(Z ≤ {q}) = {got}");
+        }
+    }
+
+    /// Task 158: the Bernoulli function `B(z) = z/(e^z − 1)` near 0 is its
+    /// Taylor series `1 − z/2 + z²/12 − z⁴/720`, and at 0 its limit, 1.
+    #[test]
+    fn the_bernoulli_function_is_its_series_near_zero() {
+        assert_eq!(bernoulli(0.0), 1.0);
+        for z in [1e-300f64, 1e-12, 3e-9, 2e-8, 1e-6, 1e-4] {
+            for z in [z, -z] {
+                let series = 1.0 - z / 2.0 + z * z / 12.0 - z.powi(4) / 720.0;
+                let got = bernoulli(z);
+                assert!(
+                    (got - series).abs() <= 4e-16,
+                    "z = {z:e}: {got} against {series}"
+                );
+            }
+        }
+        // And away from 0 the formula itself.
+        for z in [-3.0f64, 0.5, 20.0] {
+            assert!((bernoulli(z) - z / z.exp_m1()).abs() <= 1e-15 * bernoulli(z));
+        }
+    }
+
+    /// `P(Z_γ ≤ c)` computed a second way, from the definition rather than
+    /// the diffusion: `W` observed at `s_k = e^{−k·dt}`, going back from
+    /// `s = 1`, where `V_k = W(s_k)/√s_k` is the Gaussian AR(1) `V_{k+1} =
+    /// ρV_k + σε` with `ρ = e^{−dt/2}`, `σ² = 1 − e^{−dt}` (the Brownian
+    /// bridge from 0 to `W(s_k)`, rescaled) and `V_0 = W(1) ~ N(0, 1)`. The
+    /// path stays under `c·s^γ` when `|V_k| ≤ c·e^{βk·dt}`, `β = 1/2 − γ`, at
+    /// every `k`, and between two observations it does so with the
+    /// Brownian-bridge chance of not crossing a straight boundary, `1 −
+    /// exp(−2(b − x)(b' − y)/dt)` on each side. The mass is carried on a grid
+    /// over `|V| ≤ reach` until the corridor reaches `reach`, past which
+    /// nothing crosses to the precision read here.
+    fn bridged_cdf(c: f64, gamma: f64) -> f64 {
+        let (dt, reach, cells) = (0.02f64, 6.0f64, 450usize);
+        let beta = 0.5 - gamma;
+        let rho = (-0.5 * dt).exp();
+        let sigma = (-(-dt).exp_m1()).sqrt();
+        let steps = ((reach / c).ln() / beta / dt).ceil() as usize;
+        let h = 2.0 * reach / cells as f64;
+        let v: Vec<f64> = (0..cells).map(|i| -reach + h * (i as f64 + 0.5)).collect();
+        let phi = |z: f64| (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+        let mut mass: Vec<f64> = v
+            .iter()
+            .map(|&x| if x.abs() < c { phi(x) * h } else { 0.0 })
+            .collect();
+        // The transition from each cell, over the cells within 7σ of `ρx`.
+        let band = (7.0 * sigma / h).ceil() as usize;
+        let width = 2 * band + 1;
+        let (mut first, mut kernel) = (vec![0usize; cells], vec![0.0; cells * width]);
+        for i in 0..cells {
+            let centre = ((rho * v[i] + reach) / h).floor() as usize;
+            let lo = centre.saturating_sub(band).min(cells - width);
+            first[i] = lo;
+            for o in 0..width {
+                kernel[i * width + o] = phi((v[lo + o] - rho * v[i]) / sigma) * h / sigma;
+            }
+        }
+        // Where the bridge factor differs from 1 by more than `e^{−20}`.
+        let near = (10.0 * dt).sqrt();
+        let mut next = vec![0.0; cells];
+        for k in 0..steps {
+            let b0 = c * (beta * k as f64 * dt).exp();
+            let b1 = c * (beta * (k + 1) as f64 * dt).exp();
+            next.iter_mut().for_each(|m| *m = 0.0);
+            for i in 0..cells {
+                if mass[i] == 0.0 {
+                    continue;
+                }
+                let x = v[i];
+                for o in 0..width {
+                    let j = first[i] + o;
+                    let y = v[j];
+                    if y.abs() >= b1 {
+                        continue;
+                    }
+                    let mut w = kernel[i * width + o];
+                    if b0 - x.abs() < near || b1 - y.abs() < near {
+                        let up = (-2.0 * (b0 - x) * (b1 - y) / dt).exp();
+                        let down = (-2.0 * (b0 + x) * (b1 + y) / dt).exp();
+                        w *= (1.0 - up) * (1.0 - down);
+                    }
+                    next[j] += mass[i] * w;
+                }
+            }
+            std::mem::swap(&mut mass, &mut next);
+        }
+        mass.iter().sum()
+    }
+
+    /// The solve against `bridged_cdf`, which shares nothing with it but the
+    /// definition of `Z_γ`. The second way is first held to the series at
+    /// `γ = 0`, to within its own grid's error (3e-5); then the two agree at
+    /// the `γ` where the solve runs longest and the corridor widens slowest:
+    /// to 4e-5 at `(γ, c) = (0.3, 0.84), (0.4, 0.9), (0.49, 4)`, where a solve
+    /// stopped short of settling reads 2e-4 to 6e-4 high.
+    #[test]
+    fn the_solve_is_a_second_computation_of_the_law() {
+        for x in [0.8, 1.5, 2.2414, 3.0] {
+            let (got, want) = (bridged_cdf(x, 0.0), sup_abs_bm_cdf(x));
+            assert!(
+                (got - want).abs() < 3e-5,
+                "x = {x}: {got} against the series {want}"
+            );
+        }
+        for (gamma, c) in [(0.3, 0.84), (0.4, 0.9), (0.49, 4.0)] {
+            let (solve, second) = (boundary_cdf(c, gamma), bridged_cdf(c, gamma));
+            assert!(
+                (solve - second).abs() < 4e-5,
+                "γ = {gamma}, c = {c}: {solve} against {second}"
+            );
+        }
+    }
 }

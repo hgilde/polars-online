@@ -2512,4 +2512,574 @@ mod tests {
         .unwrap();
         assert_eq!(m.seq_crit, 2.5);
     }
+
+    // --- task 158: the mutation survivors --------------------------------
+
+    /// Each bound `validate` draws sits where its message puts it: `alpha`
+    /// strictly inside (0, 1), and every "at least" inclusive -- `span_rows`
+    /// 8 for `monitor` and `sequential` and 3 for `window`, `monitor_rows`
+    /// 2, `n_perm` 20, and a `perm_block` of the whole span.
+    #[test]
+    fn each_configuration_bound_is_where_its_message_puts_it() {
+        for alpha in [0.0, 1.0] {
+            let e = CorrChange::new(CorrChangeCfg {
+                alpha,
+                ..cfg(2, CorrChangeKind::Monitor)
+            })
+            .unwrap_err();
+            assert!(e.contains("alpha must be strictly between"), "{alpha}: {e}");
+        }
+        for ok in [
+            CorrChangeCfg {
+                span_rows: 8,
+                ..cfg(2, CorrChangeKind::Monitor)
+            },
+            seq_cfg(2, 8, 10, 0.0),
+            seq_cfg(2, 20, 2, 0.0),
+            CorrChangeCfg {
+                span_rows: 3,
+                ..cfg(2, CorrChangeKind::Window)
+            },
+            CorrChangeCfg {
+                n_perm: 20,
+                ..cfg(2, CorrChangeKind::Window)
+            },
+            CorrChangeCfg {
+                span_rows: 50,
+                perm_block: 50,
+                ..cfg(2, CorrChangeKind::Window)
+            },
+        ] {
+            let shown = format!("{ok:?}");
+            assert!(CorrChange::new(ok).is_ok(), "{shown}");
+        }
+    }
+
+    /// The output slots, named in the order they are emitted.
+    #[test]
+    fn the_labels_name_the_five_outputs_in_order() {
+        assert_eq!(
+            CorrChange::labels(),
+            ["stat", "crit", "flag", "since_flag", "since_change"]
+        );
+        assert_eq!(CorrChange::labels().len(), CorrChange::n_outputs_for());
+    }
+
+    /// The Kolmogorov distribution has a second series, the theta-function
+    /// form `√(2π)/x · Σ_{k≥1} exp(−(2k−1)²π²/(8x²))`, fast where the first is
+    /// slow (Feller 1948, eq. 1.4; Marsaglia, Tsang & Wang 2003). The two
+    /// agree at every `x`: below the quantiles, where the first series needs
+    /// many terms, as much as at them.
+    #[test]
+    fn the_kolmogorov_series_is_the_theta_series() {
+        use std::f64::consts::PI;
+        for x in [0.3, 0.5, 0.7, 1.0, 1.3581, 2.0] {
+            let theta = (2.0 * PI).sqrt() / x
+                * (1..60)
+                    .map(|k| {
+                        let n = f64::from(2 * k - 1);
+                        (-(n * n) * PI * PI / (8.0 * x * x)).exp()
+                    })
+                    .sum::<f64>();
+            let got = kolmogorov_cdf(x);
+            assert!(
+                (got - theta).abs() < 1e-12,
+                "x = {x}: {got} against {theta}"
+            );
+        }
+    }
+
+    /// `since_flag` is the learned rows since the last flag, this row
+    /// included: the row's ordinal before any flag, counted again from the
+    /// row after one. A span that does not flag dates nothing.
+    #[test]
+    fn since_flag_counts_the_rows_since_the_last_flag() {
+        let t = 40usize;
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let mut n = Normals::new(2);
+        let (mut last_flag, mut flags) = (0usize, Vec::new());
+        for i in 1..=4 * t {
+            // A break of 0 to 0.95 halfway through the second span.
+            let rho = if (t + t / 2..=2 * t).contains(&i) {
+                0.95
+            } else {
+                0.0
+            };
+            let out = m.step(&n.pair(rho), &[], 1.0, 1.0).pred;
+            if i % t != 0 {
+                assert!(out[3].is_nan(), "row {i}: nothing off a span's last row");
+                continue;
+            }
+            assert_eq!(out[3], (i - last_flag) as f64, "row {i}");
+            if out[2] == 1.0 {
+                (last_flag, flags) = (i, [flags, vec![i]].concat());
+            } else {
+                assert!(out[4].is_nan(), "row {i}: no flag, no date");
+            }
+        }
+        assert_eq!(flags, [2 * t], "the break's span flags, and only it");
+    }
+
+    /// The window kind reports nothing until both windows are full, not even
+    /// its critical value. With `reset` a flag empties both, and the next
+    /// report waits for both again; without it a flag empties nothing.
+    #[test]
+    fn the_window_kind_waits_for_both_windows() {
+        let w = 10usize;
+        let reports = |crit: f64, reset: bool| {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: Some(crit),
+                reset,
+                ..cfg(2, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let mut n = Normals::new(4);
+            (1..=6 * w)
+                .filter(|_| m.step(&n.pair(0.3), &[], 1.0, 1.0).pred[1].is_finite())
+                .collect::<Vec<usize>>()
+        };
+        let every: Vec<usize> = (2 * w..=6 * w).collect();
+        assert_eq!(reports(1e9, true), every, "nothing flags");
+        assert_eq!(reports(1e-9, false), every, "every report flags");
+        assert_eq!(reports(1e-9, true), [2 * w, 4 * w, 6 * w], "and resets");
+    }
+
+    /// With a fixed critical value no permutation is drawn: the generator
+    /// is where the seed put it, and no permutation value is held.
+    #[test]
+    fn a_fixed_critical_value_draws_no_permutations() {
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: 10,
+            crit: Some(0.5),
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let mut n = Normals::new(6);
+        for _ in 0..60 {
+            m.step(&n.pair(0.3), &[], 1.0, 1.0);
+        }
+        assert!(m.perm_crit.is_none());
+        assert_eq!(m.rng, SplitMix64::new(m.cfg.seed));
+    }
+
+    /// The permutation critical value is redrawn on its cadence: drawn after
+    /// the first row that fills both windows reports, then kept for
+    /// `permute_every` rows and redrawn after the next, so each value is in
+    /// force for `permute_every + 1` reports.
+    #[test]
+    fn the_permutation_critical_value_is_redrawn_on_its_cadence() {
+        let (w, every) = (10usize, 4usize);
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: w,
+            crit: None,
+            permute_every: every,
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let mut n = Normals::new(8);
+        let crits: Vec<f64> = (0..2 * w + 5 * (every + 1))
+            .map(|_| m.step(&n.pair(0.3), &[], 1.0, 1.0).pred[1])
+            .collect();
+        assert!(crits[..2 * w].iter().all(|c| c.is_nan()), "{crits:?}");
+        let blocks: Vec<&[f64]> = crits[2 * w..].chunks(every + 1).collect();
+        for (b, block) in blocks.iter().enumerate() {
+            assert!(block.iter().all(|c| *c == block[0]), "block {b}: {block:?}");
+            if b > 0 {
+                assert_ne!(block[0], blocks[b - 1][0], "block {b} was not redrawn");
+            }
+        }
+    }
+
+    /// A `sequential` state saved in its monitoring period is held to the
+    /// cfg's shape on load, each of the period's vectors on its own.
+    #[test]
+    fn each_monitoring_vector_is_held_to_its_shape_on_load() {
+        let mut m = CorrChange::new(seq_cfg(3, 20, 40, 0.0)).unwrap();
+        let mut n = Normals::new(12);
+        for _ in 0..25 {
+            m.step(&equicorrelated(&mut n, 3, 0.3), &[], 1.0, 1.0);
+        }
+        assert!(m.monitoring.as_ref().is_some_and(|mon| mon.rows.len() == 5));
+        type Spoil = (&'static str, fn(&mut Monitoring));
+        let cases: [Spoil; 6] = [
+            ("level", |mon| mon.level.push(0.0)),
+            ("scale", |mon| mon.scale.push(1.0)),
+            ("mean", |mon| mon.mean.push(0.0)),
+            ("m2", |mon| mon.m2.push(0.0)),
+            ("cross", |mon| mon.cross.push(0.0)),
+            ("a row", |mon| mon.rows[0].push(0.0)),
+        ];
+        for (what, spoil) in cases {
+            let mut bad = m.clone();
+            spoil(bad.monitoring.as_mut().unwrap());
+            match CorrChange::restore(&bad.state()) {
+                Err(crate::StateError::Invalid(e)) => {
+                    assert!(e.contains("wrong shape"), "{what}: {e}");
+                }
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+        assert!(CorrChange::restore(&m.state()).is_ok());
+    }
+
+    /// `pair_at` walks the pairs `a < b`, `a` outer and `b` inner: the order
+    /// `level` holds them in.
+    #[test]
+    fn pair_at_walks_the_upper_triangle_in_order() {
+        for d in 2..=6usize {
+            let want: Vec<(usize, usize)> = (0..d)
+                .flat_map(|a| ((a + 1)..d).map(move |b| (a, b)))
+                .collect();
+            let got: Vec<(usize, usize)> =
+                (0..want.len()).map(|i| CorrChange::pair_at(d, i)).collect();
+            assert_eq!(got, want, "d = {d}");
+        }
+    }
+
+    fn scalar_monitor() -> CorrChange {
+        CorrChange::new(CorrChangeCfg {
+            span_rows: 8,
+            scalar: true,
+            ..cfg(3, CorrChangeKind::Monitor)
+        })
+        .unwrap()
+    }
+
+    fn column(us: &[f64]) -> Vec<Vec<f64>> {
+        us.iter().map(|&u| vec![u]).collect()
+    }
+
+    /// The scalar statistic needs four rows, as the pair one does
+    /// (`a_span_of_four_rows_is_the_first_with_a_long_run_sd`): three give
+    /// none, four give one.
+    #[test]
+    fn a_scalar_span_of_four_rows_is_the_first_with_a_statistic() {
+        let m = scalar_monitor();
+        let u = column(&[0.3, -0.2, 0.5, 0.1]);
+        assert!(m.scalar_stat(&u[..3]).is_nan());
+        let four = m.scalar_stat(&u);
+        assert!(four.is_finite() && four > 0.0, "{four}");
+    }
+
+    /// A series without spread has no long-run standard deviation and so no
+    /// statistic: eight values of 0.25, whose mean is exact, so every
+    /// deviation is exactly 0.
+    #[test]
+    fn a_constant_scalar_series_has_no_statistic() {
+        assert!(CorrChange::scalar_long_run_sd(&[0.25; 8], 2).is_nan());
+        assert!(scalar_monitor().scalar_stat(&column(&[0.25; 8])).is_nan());
+    }
+
+    /// The scalar CUSUM's argmax is the row, counted from 1, at which its
+    /// maximum is first reached. Here `(j/√T)·|ūⱼ − ū|` is the same double at
+    /// rows 1 and 2 (the steps between them are powers of two) and smaller
+    /// after, so the change is dated after row 1.
+    #[test]
+    fn the_scalar_cusum_dates_at_the_first_maximum() {
+        let (stat, at) =
+            scalar_monitor().scalar_stat_at(&column(&[1.0, 0.0, -0.5, 0.0, -0.5, 0.0, 0.0, 0.0]));
+        assert!(stat.is_finite() && stat > 0.0, "{stat}");
+        assert_eq!(at, 1);
+    }
+
+    /// The pair CUSUM's argmax is the first `j` at which its maximum is
+    /// reached. These ten integer rows (found by a search) have `ρ̂_T = 0`
+    /// exactly and `(j/√T)·|ρ̂ⱼ − ρ̂_T|` the same double at `j = 2` and `j = 4`
+    /// (`ρ̂₂ = −1`, `ρ̂₄ = −1/2`, and the steps between are powers of two),
+    /// the largest over the span, so the change is dated after row 2.
+    #[test]
+    fn the_pair_cusum_dates_at_the_first_maximum() {
+        let rows: Vec<Vec<f64>> = [
+            (3, -3),
+            (1, -2),
+            (0, -3),
+            (0, 0),
+            (2, 2),
+            (1, 2),
+            (3, -3),
+            (-1, -2),
+            (-1, -3),
+            (2, -3),
+        ]
+        .iter()
+        .map(|&(x, y)| vec![f64::from(x), f64::from(y)])
+        .collect();
+        let t = rows.len();
+        assert_eq!(CorrChange::corr_of(&rows, t, 0, 1), 0.0);
+        assert_eq!(CorrChange::corr_of(&rows, 2, 0, 1), -1.0);
+        assert_eq!(CorrChange::corr_of(&rows, 4, 0, 1), -0.5);
+        let m = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let (stat, at) = m.monitor_stat_at(&rows, 0, 1);
+        assert!(stat.is_finite() && stat > 0.0, "{stat}");
+        assert_eq!(at, 2);
+    }
+
+    /// `sequential`'s detector reports the first pair, in the walk order,
+    /// at which its largest ratio is reached: that pair dates the change. A
+    /// monitoring period built by hand, and a row at its means, so that
+    /// each pair's correlation is its co-moment over the root of its
+    /// second moments exactly: `±2/√(4·4) = ±1/2`, against levels 0 and
+    /// −1, ties the first two pairs at `|ρ − level| = 1/2`.
+    #[test]
+    fn the_sequential_detector_reports_the_first_pair_on_a_tie() {
+        let m = CorrChange::new(seq_cfg(3, 20, 40, 0.0)).unwrap();
+        let mon = Monitoring {
+            level: vec![0.0, -1.0, 0.0],
+            scale: vec![1.0; 3],
+            rows: vec![vec![0.0; 3]; 4],
+            mean: vec![0.0; 3],
+            m2: vec![4.0; 3],
+            cross: vec![2.0, -2.0, 0.0],
+        };
+        let (ratio, at) = m.sequential_stat(&mon, &[0.0, 0.0, 0.0]);
+        assert!(ratio.is_finite() && ratio > 0.0, "{ratio}");
+        assert_eq!(at, 0);
+    }
+
+    /// A `scalar` monitoring period of the given values of `u`.
+    fn scalar_period(us: &[f64]) -> Monitoring {
+        Monitoring {
+            level: vec![0.0],
+            scale: vec![1.0],
+            rows: column(us),
+            mean: vec![0.0],
+            m2: vec![0.0],
+            cross: vec![],
+        }
+    }
+
+    /// W&G's Eq. 8 for `scalar`, written out on the monitored values: `k̂`
+    /// maximises `j·|ūⱼ − ūₙ|` over the prefix means, the earliest `j` on a
+    /// tie, and the output is `n + 1 − k̂`. The first period's scores are 1,
+    /// 1, 0, 0; the others are shifted Gaussian series of several lengths.
+    #[test]
+    fn the_scalar_change_is_dated_by_eq_8() {
+        let m = CorrChange::new(CorrChangeCfg {
+            scalar: true,
+            ..seq_cfg(3, 20, 40, 0.0)
+        })
+        .unwrap();
+        let tie = scalar_period(&[1.0, 0.0, -1.0, 0.0]);
+        assert_eq!(m.sequential_since_change(&tie, 0), 4.0);
+        let mut n = Normals::new(31);
+        for trial in 0..20usize {
+            let (len, shift) = (10 + trial, 3 + trial % 6);
+            let us: Vec<f64> = (0..len)
+                .map(|i| n.normal() + if i >= shift { 2.0 } else { 0.0 })
+                .collect();
+            let mean = |j: usize| us[..j].iter().sum::<f64>() / j as f64;
+            let last = mean(len);
+            let (mut best, mut k_hat) = (f64::NEG_INFINITY, 0);
+            for j in 1..=len {
+                let score = j as f64 * (mean(j) - last).abs();
+                if score > best {
+                    (best, k_hat) = (score, j);
+                }
+            }
+            assert_eq!(
+                m.sequential_since_change(&scalar_period(&us), 0),
+                (len + 1 - k_hat) as f64,
+                "trial {trial}"
+            );
+        }
+    }
+
+    /// A window in which one pair has no correlation (a column constant in
+    /// the first window) gives no statistic under either norm: the L∞
+    /// norm's running maximum would otherwise pass over the NaN (`f64::max`
+    /// ignores one) and report the other pairs' largest.
+    #[test]
+    fn a_pair_without_a_correlation_leaves_no_window_statistic() {
+        let w = 20usize;
+        let mut n = Normals::new(14);
+        let rows: Vec<Vec<f64>> = (0..2 * w)
+            .map(|i| {
+                let mut r = n.pair(0.4);
+                r.push(if i < w { 1.5 } else { n.normal() });
+                r
+            })
+            .collect();
+        for norm in [ChangeNorm::L1, ChangeNorm::LInf] {
+            let m = |d: usize| {
+                CorrChange::new(CorrChangeCfg {
+                    span_rows: w,
+                    crit: Some(0.5),
+                    norm,
+                    ..cfg(d, CorrChangeKind::Window)
+                })
+                .unwrap()
+            };
+            assert!(m(3).window_stat(&rows).is_nan(), "{norm:?}");
+            assert!(
+                m(2).window_stat(&rows).is_finite(),
+                "{norm:?}: the first pair"
+            );
+        }
+    }
+
+    /// The window statistic is free of the columns' units: one column scaled
+    /// by a power of two gives the same statistic, to the bit. At `2^-270`
+    /// the column's sums of squares (`~2^-540`) are normal and their squares
+    /// are not, so no correlation of the column with itself could be formed
+    /// there; the statistic is over the pairs `a < b` alone.
+    #[test]
+    fn the_window_statistic_is_free_of_a_columns_units() {
+        let w = 20usize;
+        let mut n = Normals::new(15);
+        let rows: Vec<Vec<f64>> = (0..2 * w)
+            .map(|i| equicorrelated(&mut n, 3, if i < w { 0.2 } else { 0.6 }))
+            .collect();
+        for norm in [ChangeNorm::L1, ChangeNorm::LInf] {
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: Some(0.5),
+                norm,
+                ..cfg(3, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let base = m.window_stat(&rows);
+            assert!(base.is_finite() && base > 0.0, "{base}");
+            for e in [-270, 300] {
+                let s = 2f64.powi(e);
+                let scaled: Vec<Vec<f64>> =
+                    rows.iter().map(|r| vec![r[0], s * r[1], r[2]]).collect();
+                assert_eq!(m.window_stat(&scaled), base, "{norm:?} at 2^{e}");
+            }
+        }
+    }
+
+    /// The permutation null in blocks: three blocks have six orders, and two
+    /// hundred Fisher–Yates draws visit every one, so at a level that reads
+    /// the largest draw the critical value is the largest statistic over the
+    /// six orders, written out here, and at 50 % it is one of them below
+    /// that. The largest is at an odd order only, which a shuffle that only
+    /// ever composes 3-cycles would never reach.
+    #[test]
+    fn the_permutation_null_visits_every_block_order() {
+        let (w, block) = (3usize, 2usize);
+        let mut n = Normals::new(21);
+        let rows: Vec<Vec<f64>> = (0..2 * w).map(|_| n.pair(0.3)).collect();
+        let base = CorrChange::new(CorrChangeCfg {
+            span_rows: w,
+            crit: None,
+            n_perm: 200,
+            perm_block: block,
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let odd = [false, true, true, false, false, true];
+        let all: Vec<f64> = orders
+            .iter()
+            .map(|order| {
+                let shuffled: Vec<Vec<f64>> = order
+                    .iter()
+                    .flat_map(|&b| rows[b * block..(b + 1) * block].to_vec())
+                    .collect();
+                base.window_stat(&shuffled)
+            })
+            .collect();
+        let top = all.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            all.iter().zip(odd).all(|(&s, o)| s < top || o),
+            "the largest must be at an odd order only: {all:?}"
+        );
+        for (alpha, at_top) in [(0.001, true), (0.5, false)] {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                alpha,
+                ..base.cfg.clone()
+            })
+            .unwrap();
+            m.ring = rows.iter().cloned().collect();
+            let crit = m.permutation_crit().expect("both windows are full");
+            assert!(all.contains(&crit), "alpha {alpha}: {crit} not in {all:?}");
+            if at_top {
+                assert_eq!(crit, top, "alpha {alpha}");
+            } else {
+                assert!(crit < top, "alpha {alpha}: {crit} against {top}");
+            }
+        }
+    }
+
+    /// The monitor's statistic is the largest of its pairs': with three
+    /// columns and a break in the correlation of the first and the third
+    /// alone, it is that pair's -- not the first pair's, not the last's, not
+    /// the smallest.
+    #[test]
+    fn the_monitor_statistic_is_the_largest_pair() {
+        let t = 80usize;
+        let fresh = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(3, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let mut m = fresh.clone();
+        let mut n = Normals::new(16);
+        let rows: Vec<Vec<f64>> = (0..t)
+            .map(|i| {
+                let p = n.pair(if i < t / 2 { 0.0 } else { 0.9 });
+                vec![p[0], n.normal(), p[1]]
+            })
+            .collect();
+        let mut last = vec![];
+        for x in &rows {
+            last = m.step(x, &[], 1.0, 1.0).pred;
+        }
+        let q: Vec<f64> = [(0, 1), (0, 2), (1, 2)]
+            .iter()
+            .map(|&(a, b)| fresh.monitor_stat(&rows, a, b))
+            .collect();
+        assert!(q[1] > q[0] && q[1] > q[2], "{q:?}");
+        assert_eq!(last[0], q[1]);
+    }
+
+    /// The detector flags where it exceeds the critical value, not where it
+    /// meets it (W&G stop at `|V_k| > c·w(k/m)`): set to the largest
+    /// statistic of a cycle, the critical value lets that row pass, and
+    /// every row before it.
+    #[test]
+    fn a_statistic_at_the_critical_value_does_not_flag() {
+        let make = |crit: f64| {
+            CorrChange::new(CorrChangeCfg {
+                crit: Some(crit),
+                ..seq_cfg(2, 20, 30, 0.0)
+            })
+            .unwrap()
+        };
+        let mut n = Normals::new(18);
+        let rows: Vec<Vec<f64>> = (0..50).map(|_| n.pair(0.3)).collect();
+        let mut free = make(1e9);
+        let (mut at, mut top) = (0, f64::NEG_INFINITY);
+        for (i, x) in rows.iter().enumerate() {
+            let s = free.step(x, &[], 1.0, 1.0).pred[0];
+            if s > top {
+                (at, top) = (i, s);
+            }
+        }
+        assert!(top.is_finite() && at > 20, "{at}: {top}");
+        let mut held = make(top);
+        for (i, x) in rows.iter().enumerate().take(at + 1) {
+            let out = held.step(x, &[], 1.0, 1.0).pred;
+            assert_ne!(out[2], 1.0, "row {i}: {} against {top}", out[0]);
+            if i == at {
+                assert_eq!(out[0], top);
+            }
+        }
+    }
 }

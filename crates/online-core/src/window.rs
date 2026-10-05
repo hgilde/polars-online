@@ -1334,4 +1334,217 @@ mod tests {
             "the refusing budget tripped at the shortest cadence"
         );
     }
+
+    /// Ten of the test rings' eight-byte snapshots, in MiB.
+    const TEN: f64 = 80.0 / (1024.0 * 1024.0);
+
+    /// A ring of `n` snapshots a clock unit apart, then given `budget`.
+    fn ring_of(n: usize, window: f64, budget: Option<WindowBudget>) -> Snapshots<usize> {
+        let mut r = Snapshots::new(window, 1).unwrap();
+        for i in 0..n {
+            r.offer(i as f64, || i);
+            r.trim(i as f64);
+        }
+        r.set_budget(budget);
+        r
+    }
+
+    /// A ring's shadow, learning the rows the ring takes, reports the
+    /// overrun the ring reaches, when it reaches it, and none where the ring
+    /// stays inside its budget: a window of three clock units holds four
+    /// snapshots at most, one of thirty reaches ten at the eleventh row --
+    /// from a first row at clock 10, and at clock 0 (docs/PLAN.md task 115
+    /// (d)).
+    #[test]
+    fn a_shadow_reports_the_overrun_its_ring_reaches() {
+        for (window, start, trips_at) in [
+            (3.0, 10.0, None),
+            (3.0, 0.0, None),
+            (30.0, 10.0, Some(10)),
+            (30.0, 0.0, Some(10)),
+        ] {
+            let mut ring: Snapshots<usize> = Snapshots::new(window, 1).unwrap();
+            ring.set_budget(Some(WindowBudget::Refuse(TEN)));
+            ring.offer(start, || 0);
+            ring.trim(start);
+            let mut shadow = WindowShadow::new(start, &ring, || 0);
+            let mut clock = start;
+            let mut tripped = None;
+            for i in 1..40 {
+                clock += 1.0;
+                ring.offer(clock, || i);
+                ring.trim(clock);
+                shadow.learn(1.0);
+                let case = format!("window {window}, from {start}, row {i}");
+                assert_eq!(shadow.over_budget(), ring.over_budget(), "{case}");
+                if tripped.is_none() && ring.over_budget().is_some() {
+                    tripped = Some(i);
+                }
+            }
+            assert_eq!(tripped, trips_at, "window {window}, from {start}");
+            if trips_at.is_some() {
+                assert_eq!(shadow.over_budget(), Some((88, 1)), "eleven snapshots");
+            }
+        }
+    }
+
+    /// `could_refuse` says whether that many rows could take the ring past a
+    /// refusing budget, a snapshot a row at most: a budget reached exactly
+    /// still fits, one row more does not, a ring already past it could
+    /// refuse with no row at all, and a thinning budget or none refuses
+    /// nothing.
+    #[test]
+    fn could_refuse_says_whether_rows_could_cross_a_refusing_budget() {
+        let refuse = Some(WindowBudget::Refuse(TEN));
+        // Four snapshots of eight bytes held, room for six more.
+        let shadow = WindowShadow::new(3.0, &ring_of(4, 1e9, refuse), || 0);
+        assert!(!shadow.could_refuse(0));
+        assert!(!shadow.could_refuse(6), "eighty bytes: the budget exactly");
+        assert!(shadow.could_refuse(7), "eighty-eight");
+        for budget in [None, Some(WindowBudget::Thin(TEN))] {
+            let shadow = WindowShadow::new(3.0, &ring_of(4, 1e9, budget), || 0);
+            assert!(!shadow.could_refuse(1000), "{budget:?}");
+        }
+        let over = ring_of(12, 1e9, refuse);
+        assert_eq!(over.over_budget(), Some((96, 1)), "the fixture");
+        assert!(WindowShadow::new(11.0, &over, || 0).could_refuse(0));
+    }
+
+    /// The accessors: the window as given, the snapshots oldest first, and
+    /// whether there are any.
+    #[test]
+    fn a_ring_reports_its_window_and_its_snapshots_oldest_first() {
+        let mut r: Snapshots<usize> = Snapshots::new(7.5, 1).unwrap();
+        assert_eq!(r.window(), 7.5);
+        assert!(r.is_empty());
+        assert_eq!(r.iter().count(), 0);
+        for i in 0..4 {
+            r.offer(i as f64, || 10 + i);
+            r.trim(i as f64);
+        }
+        assert!(!r.is_empty());
+        assert_eq!(r.iter().copied().collect::<Vec<_>>(), vec![10, 11, 12, 13]);
+    }
+
+    /// A ring stopped by a refusing budget makes no snapshot, so the
+    /// clock can leave its newest behind: `trim` keeps that one, the
+    /// boundary, however old it is.
+    #[test]
+    fn trim_keeps_the_newest_snapshot_however_old() {
+        let mut r: Snapshots<usize> = Snapshots::new(5.0, 1).unwrap();
+        r.set_budget(Some(WindowBudget::Refuse(8.0 / (1024.0 * 1024.0))));
+        r.offer(0.0, || 0);
+        r.trim(0.0);
+        r.offer(100.0, || 1);
+        assert_eq!(r.over_budget(), Some((16, 1)), "the second is refused");
+        r.trim(100.0);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.boundary().map(|b| b.0), Some(0.0));
+    }
+
+    /// A snapshot exactly a window old is inside the window (the module
+    /// docs: `t_j >= t - window`), so it does not force one off the
+    /// cadence; a hair older does.
+    #[test]
+    fn a_snapshot_at_the_window_edge_is_inside_it() {
+        let mut r: Snapshots<usize> = Snapshots::new(5.0, 10).unwrap();
+        r.offer(0.0, || 0);
+        assert!(!r.takes(5.0), "exactly a window old");
+        r.offer(5.0, || 1);
+        assert_eq!(r.len(), 1, "and the cadence is not due");
+        assert!(r.takes(5.5));
+        r.offer(5.5, || 2);
+        assert_eq!(r.len(), 2);
+    }
+
+    /// Thinning keeps the newest snapshot and every second one before it,
+    /// and stops as soon as the ring fits: six snapshots under a budget of
+    /// three keep the second, fourth and sixth, at twice the spacing.
+    #[test]
+    fn thinning_keeps_the_newest_and_every_second_before_it() {
+        let r = ring_of(6, 100.0, Some(WindowBudget::Thin(24.0 / (1024.0 * 1024.0))));
+        assert_eq!(r.iter().copied().collect::<Vec<_>>(), vec![1, 3, 5]);
+        assert_eq!(r.every, 2);
+        assert_eq!(r.bytes(), 24, "the budget exactly, which fits");
+    }
+
+    /// One snapshot larger than a thinning budget is kept: there is nothing
+    /// to thin, and thinning a ring of one would never end.
+    #[test]
+    fn a_ring_of_one_snapshot_past_a_thinning_budget_keeps_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut r: Snapshots<usize> = Snapshots::new(100.0, 1).unwrap();
+            r.set_budget(Some(WindowBudget::Thin(4.0 / (1024.0 * 1024.0))));
+            r.offer(0.0, || 7);
+            let _ = tx.send(r.iter().copied().collect::<Vec<_>>());
+        });
+        let kept = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("thinning a ring of one snapshot did not end");
+        assert_eq!(kept, vec![7]);
+    }
+
+    /// What a `Moments` snapshot counts toward a budget: eight bytes for
+    /// every number it holds, with every field present.
+    #[test]
+    fn a_moments_snapshot_counts_eight_bytes_for_every_number_it_holds() {
+        fn numbers(v: &serde_json::Value) -> usize {
+            match v {
+                serde_json::Value::Number(_) => 1,
+                serde_json::Value::Array(a) => a.iter().map(numbers).sum(),
+                serde_json::Value::Object(o) => o.values().map(numbers).sum(),
+                _ => 0,
+            }
+        }
+        let snap = Moments {
+            w: 3.0,
+            m: vec![1.0, -2.0],
+            c: vec![4.0, 0.5, 0.5, 9.0],
+            rows: Some(7),
+            q: Some(2.5),
+        };
+        let held = numbers(&serde_json::to_value(&snap).unwrap());
+        assert_eq!(held, 9, "the fixture");
+        assert_eq!(snap.footprint(), 8 * held);
+    }
+
+    /// A window holding less than `EMPTY_FRACTION` of the live weight is
+    /// empty, at a live weight of a million and of a millionth: the
+    /// fraction is relative, so a remainder ten times it is a window at
+    /// either scale, and one a tenth of it is none. So is a remainder of
+    /// nothing at all.
+    #[test]
+    fn a_window_is_empty_below_a_fraction_of_the_live_weight_at_any_scale() {
+        for w_now in [1e6, 1e-6] {
+            let mut cov = EwCov::new(1);
+            cov.update(&[2.0], 1.0, w_now);
+            assert_eq!(cov.n_eff(), w_now, "the fixture");
+            for (rest, empty) in [
+                (0.0, true),
+                (0.1 * EMPTY_FRACTION * w_now, true),
+                (10.0 * EMPTY_FRACTION * w_now, false),
+            ] {
+                let w_old = w_now - rest;
+                let case = format!("live {w_now:e}, remainder {rest:e}");
+                assert_eq!(
+                    truncated_scalar(w_now, 2.0, w_old, 2.0, 1.0).is_none(),
+                    empty,
+                    "{case}: scalar"
+                );
+                assert_eq!(
+                    truncated_mean(w_now, &[2.0], w_old, &[2.0], 1.0).is_none(),
+                    empty,
+                    "{case}: mean"
+                );
+                let mut old = Moments::of(&cov, 1.0);
+                old.w = w_old;
+                assert_eq!(
+                    truncated(&cov, &old, 1.0).is_none(),
+                    empty,
+                    "{case}: moments"
+                );
+            }
+        }
+    }
 }

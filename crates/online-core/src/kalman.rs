@@ -1675,4 +1675,271 @@ mod tests {
             assert!(err.contains("wrong shape"), "{field}: {err}");
         }
     }
+
+    /// The list `field` of the state, one entry short.
+    fn shorten(v: &mut rmpv::Value, field: &str) {
+        let rmpv::Value::Map(entries) = v else {
+            panic!("a map")
+        };
+        let (_, x) = entries
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == Some(field))
+            .unwrap_or_else(|| panic!("no {field}"));
+        let rmpv::Value::Array(rows) = x else {
+            panic!("{field} is a list")
+        };
+        rows.pop();
+    }
+
+    /// Each per-target list is checked on its own: a state one target short
+    /// in its coefficients, its residual weights or its target weights alone
+    /// is refused (task 158).
+    #[test]
+    fn a_state_one_target_short_in_any_list_is_refused() {
+        let m = Kalman::new(cfg(2, 2, vec![50.0])).unwrap();
+        assert!(reread(&m, |_| {}).is_ok(), "the control");
+        for field in ["beta", "wsig", "wj"] {
+            let err = reread(&m, |v| shorten(v, field)).unwrap_err();
+            assert!(
+                err.contains("kalman: state has the wrong shape"),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    /// Before any residual there is no observation variance to report, and
+    /// `pred_var` says so with NaN rather than a 0 (task 158).
+    #[test]
+    fn pred_var_is_nan_before_any_residual() {
+        let m = Kalman::new(cfg(2, 1, vec![50.0])).unwrap();
+        assert!(m.pred_var(&[0.3, -0.2])[0].is_nan());
+    }
+
+    /// Each target's weight is the EW sum of the weights of the rows that
+    /// carried it, null or weight-0 rows only ageing it, and the model
+    /// reports it (task 158).
+    #[test]
+    fn the_target_weights_are_the_rows_that_carried_each_target() {
+        let mut c = cfg(2, 2, vec![50.0]);
+        c.decay = Decay::Halflife(7.0);
+        let mut m = Kalman::new(c).unwrap();
+        let mut want = [0.0f64; 2];
+        let mut s = 97u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if i % 5 == 4 { 0.0 } else { 1.0 + lcg(&mut s) };
+            let ys = [Some(x[0]), (i % 3 == 0).then_some(x[1])];
+            let d = if i == 0 { 0.0 } else { 1.0 + f64::from(i % 2) };
+            m.step(&x, &ys, d, w);
+            let lam = 0.5f64.powf(d / 7.0);
+            for (j, wj) in want.iter_mut().enumerate() {
+                *wj = lam * *wj + if ys[j].is_some() { w } else { 0.0 };
+            }
+        }
+        let mut out = vec![-1.0; 5];
+        assert!(m.target_n_eff_into(&mut out));
+        assert_eq!(out.len(), 2);
+        for j in 0..2 {
+            assert!(
+                (out[j] - want[j]).abs() <= 1e-12 * want[j],
+                "{out:?} against {want:?}"
+            );
+        }
+        assert!(want[1] < want[0], "the targets' weights differ");
+    }
+
+    /// Without an intercept, `standardize` scales each feature by the root of
+    /// its raw second moment, so the filter cannot tell a feature's units:
+    /// the same stream with one feature in thousands and one in thousandths
+    /// predicts the same, and a feature that is always 0 is left at 0 rather
+    /// than divided by a zero scale. `predict` is the next `step`'s number
+    /// to the bit (task 158).
+    #[test]
+    fn standardizing_without_an_intercept_does_not_see_the_units() {
+        let run = |units: [f64; 2]| {
+            let mut c = cfg(3, 1, vec![30.0]);
+            c.fit_intercept = false;
+            c.min_weight = 1.5;
+            c.decay = Decay::Halflife(40.0);
+            let mut m = Kalman::new(c).unwrap();
+            let mut s = 101u64;
+            let mut preds = Vec::new();
+            for i in 0..200 {
+                let x = [2.0 + lcg(&mut s), lcg(&mut s)];
+                let y = 0.8 * x[0] - 1.5 * x[1] + 0.1 * lcg(&mut s);
+                let xs = [units[0] * x[0], units[1] * x[1], 0.0];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let ahead = m.predict(&xs, d).pred[0];
+                // The first row meets no scale yet and is read raw, so it
+                // carries no target: it only sets the scales.
+                let got = m.step(&xs, &[(i > 0).then_some(y)], d, 1.0).pred[0];
+                assert_eq!(
+                    ahead.to_bits(),
+                    got.to_bits(),
+                    "row {i}: predict is step's number"
+                );
+                assert_eq!(got.is_nan(), i < 2, "row {i}: {got}");
+                preds.push(got);
+            }
+            preds
+        };
+        let (a, b) = (run([1.0, 1.0]), run([1000.0, 0.001]));
+        for (i, (pa, pb)) in a.iter().zip(&b).enumerate().skip(2) {
+            assert!(
+                (pa - pb).abs() <= 1e-9 * pa.abs().max(1.0),
+                "row {i}: {pa} against {pb}"
+            );
+        }
+    }
+
+    /// The filter written from the module docs, unstandardized and without
+    /// reversion: per target, `R` and the `Q` from `half_life` are both the
+    /// EW residual variance, the mean across targets under `share_p`, 1
+    /// before there is one; `P` takes `Q d²` once a row, before the first
+    /// target's update; a target present at a positive weight corrects `b`
+    /// and `P` by the gain `P z / (zᵀ P z + R / w)`; the residual variance
+    /// is the EW mean of the squared out-of-sample errors, its weight ageing
+    /// on every row. Two targets, one present one row in three, weights
+    /// other than 1, shared and not (task 158).
+    #[test]
+    fn the_filter_is_its_recursion() {
+        for share in [true, false] {
+            let (h, hq) = (30.0, 50.0);
+            let mut c = cfg(2, 2, vec![hq]);
+            c.standardize = false;
+            c.share_p = share;
+            c.min_weight = 0.0;
+            c.decay = Decay::Halflife(h);
+            let mut m = Kalman::new(c).unwrap();
+            let k = 3;
+            let n_p = if share { 1 } else { 2 };
+            let mut p = vec![vec![0.0f64; k * k]; n_p];
+            for pp in &mut p {
+                for i in 0..k {
+                    pp[i * k + i] = 1.0;
+                }
+            }
+            let mut b = [[0.0f64; 3]; 2];
+            let (mut sig2, mut wsig, mut wj) = ([0.0f64; 2], [0.0f64; 2], [0.0f64; 2]);
+            let mut s = 103u64;
+            for i in 0..150 {
+                let x = [lcg(&mut s), 1.0 + lcg(&mut s)];
+                let ys = [
+                    Some(0.5 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s)),
+                    (i % 3 == 0).then(|| -x[0] + 3.0 * lcg(&mut s)),
+                ];
+                let w = 0.5 + (lcg(&mut s) + 1.0);
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let lam = 0.5f64.powf(d / h);
+                let z = [1.0, x[0], x[1]];
+                let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
+                let want: Vec<f64> = (0..2)
+                    .map(|j| if wj[j] > 0.0 { dotz(&b[j]) } else { f64::NAN })
+                    .collect();
+                let got = m.step(&x, &ys, d, w).pred;
+                for j in 0..2 {
+                    assert_eq!(got[j].is_nan(), want[j].is_nan(), "share {share}, row {i}");
+                    if want[j].is_finite() {
+                        assert!(
+                            (got[j] - want[j]).abs() <= 1e-10 * want[j].abs().max(1.0),
+                            "share {share}, row {i}, target {j}: {} against {}",
+                            got[j],
+                            want[j]
+                        );
+                    }
+                }
+                for j in 0..2 {
+                    let pi = if share { 0 } else { j };
+                    let s2 = if share {
+                        (sig2[0] + sig2[1]) / 2.0
+                    } else {
+                        sig2[j]
+                    };
+                    let sigma2 = if s2 > 0.0 { s2 } else { 1.0 };
+                    if !share || j == 0 {
+                        let q = sigma2 * (std::f64::consts::LN_2 / hq).powi(2);
+                        for a in 0..k {
+                            p[pi][a * k + a] += q * d * d;
+                        }
+                    }
+                    let Some(y) = ys[j] else {
+                        wj[j] *= lam;
+                        wsig[j] *= lam;
+                        continue;
+                    };
+                    let pz: Vec<f64> = (0..k).map(|a| dotz(&p[pi][a * k..(a + 1) * k])).collect();
+                    let s_inn = dotz(&pz) + sigma2 / w;
+                    let err = y - dotz(&b[j]);
+                    for a in 0..k {
+                        b[j][a] += pz[a] / s_inn * err;
+                        for bb in 0..k {
+                            p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                        }
+                    }
+                    let aged = lam * wsig[j];
+                    wsig[j] = aged;
+                    if want[j].is_finite() {
+                        let r = y - want[j];
+                        sig2[j] = (aged * sig2[j] + w * r * r) / (aged + w);
+                        wsig[j] = aged + w;
+                    }
+                    wj[j] = lam * wj[j] + w;
+                }
+            }
+        }
+    }
+
+    /// A row of weight 0 learns nothing, the residual variance included:
+    /// across every such row `σ²` keeps its bits, not `(a σ²) / a` (task
+    /// 158).
+    #[test]
+    fn a_zero_weight_row_keeps_the_residual_variance_to_the_bit() {
+        let mut c = cfg(2, 1, vec![50.0]);
+        c.decay = Decay::Halflife(9.0);
+        c.min_weight = 0.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 107u64;
+        let mut checked = 0;
+        for i in 0..300 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = x[0] - x[1] + 0.3 * lcg(&mut s);
+            let w = if i % 3 == 2 { 0.0 } else { 1.0 };
+            let before = m.sigma2()[0];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 0.7 }, w);
+            if w == 0.0 && before > 0.0 {
+                assert_eq!(m.sigma2()[0].to_bits(), before.to_bits(), "row {i}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 90);
+    }
+
+    /// A row whose innovation variance is 0 -- a zero regressor and an
+    /// observation variance that underflows at the row's weight -- is
+    /// skipped, not divided by; and so is a target that is not a number
+    /// (task 158).
+    #[test]
+    fn an_innovation_of_zero_or_a_target_not_a_number_corrects_nothing() {
+        let mut m = Kalman::new(KalmanCfg {
+            n_features: 1,
+            n_targets: 1,
+            fit_intercept: false,
+            decay: Decay::Halflife(f64::INFINITY),
+            half_life: vec![f64::INFINITY],
+            q: None,
+            obs_var: Some(f64::from_bits(1)),
+            p0: 1.0,
+            share_p: false,
+            min_weight: 0.0,
+            revert_half_life: vec![f64::INFINITY],
+            standardize: false,
+        })
+        .unwrap();
+        assert_eq!(f64::from_bits(1) / 4.0, 0.0, "R / w underflows");
+        m.step(&[0.0], &[Some(1.0)], 0.0, 4.0);
+        assert_eq!(m.beta[0], vec![0.0], "s = 0: skipped");
+        m.step(&[1.0], &[Some(f64::NAN)], 1.0, 1.0);
+        assert_eq!(m.beta[0], vec![0.0], "a NaN target: skipped");
+        assert!(m.step(&[1.0], &[Some(2.0)], 1.0, 1.0).pred[0].is_finite());
+    }
 }

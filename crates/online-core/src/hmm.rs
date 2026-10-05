@@ -1260,4 +1260,474 @@ mod tests {
         let m = Hmm::new(cfg(2, 2)).unwrap();
         assert!(m.states.iter().all(|s| !s.keeps_runs()));
     }
+
+    // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
+
+    /// The Gaussian log density `−(d/2)ln 2π − ½ ln det M − ½ δ'M⁻¹δ`, with
+    /// `faer`'s LU for the determinant and the solve: nothing shared with the
+    /// model's Cholesky.
+    fn gaussian_log_density(m: &[f64], delta: &[f64]) -> f64 {
+        use faer::linalg::solvers::Solve;
+        use faer::prelude::*;
+        let d = delta.len();
+        let mat = Mat::from_fn(d, d, |i, j| m[i * d + j]);
+        let rhs = Mat::from_fn(d, 1, |i, _| delta[i]);
+        let sol = mat.partial_piv_lu().solve(&rhs);
+        let q: f64 = (0..d).map(|i| delta[i] * sol[(i, 0)]).sum();
+        -0.5 * d as f64 * std::f64::consts::TAU.ln() - 0.5 * mat.determinant().ln() - 0.5 * q
+    }
+
+    /// Two states given at `±3` in two columns, unit covariances.
+    fn given(c: HmmCfg) -> HmmCfg {
+        HmmCfg {
+            means: Some(vec![-3.0, -3.0, 3.0, 3.0]),
+            covs: Some(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
+            ..c
+        }
+    }
+
+    /// The configuration's edges, each where the docs put it, and the shapes
+    /// read at `k = 3`, where `k·k`, `k·d` and `k + k` part.
+    #[test]
+    fn the_configuration_edges_are_where_the_docs_put_them() {
+        let bad = |c: HmmCfg, msg: &str| {
+            let e = Hmm::new(c).unwrap_err();
+            assert!(e.contains(msg), "{e}");
+        };
+        for tau in [-1.0, f64::INFINITY] {
+            bad(
+                HmmCfg {
+                    transition_prior: tau,
+                    ..cfg(2, 2)
+                },
+                "transition_prior must be finite and >= 0",
+            );
+        }
+        bad(
+            HmmCfg {
+                min_weight: -1.0,
+                ..cfg(2, 2)
+            },
+            "min_weight must be >= 0",
+        );
+        // A row that sums to one with a negative cell is not a distribution.
+        bad(
+            HmmCfg {
+                transition: Some(vec![1.5, -0.5, 0.5, 0.5]),
+                ..cfg(2, 2)
+            },
+            "transition row 0 is not a distribution",
+        );
+        bad(
+            HmmCfg {
+                tvtp: Some((vec![0.0; 3], vec![0.0; 4])),
+                ..cfg(2, 2)
+            },
+            "tvtp_coef A and B must each be 2x2",
+        );
+        bad(
+            HmmCfg {
+                tvtp: Some((vec![0.0; 4], vec![0.0; 3])),
+                ..cfg(2, 2)
+            },
+            "tvtp_coef A and B must each be 2x2",
+        );
+        // Three states in two columns, every shape right, a cell of zero.
+        let eye = [1.0, 0.0, 0.0, 1.0];
+        let m = Hmm::new(HmmCfg {
+            learn: false,
+            transition: Some(vec![1.0, 0.0, 0.0, 0.2, 0.5, 0.3, 0.0, 0.5, 0.5]),
+            means: Some(vec![-3.0, 0.0, 0.0, 0.0, 3.0, 0.0]),
+            covs: Some(eye.repeat(3)),
+            tvtp: Some((vec![0.1; 9], vec![0.2; 9])),
+            ..cfg(2, 3)
+        })
+        .unwrap();
+        assert_eq!(m.transition().len(), 9);
+        // `warm_rows` of `k` exactly seeds `k` states.
+        let mut m = Hmm::new(HmmCfg {
+            warm_rows: 3,
+            ..cfg(2, 3)
+        })
+        .unwrap();
+        for x in [[-3.0, 0.0], [0.0, 0.0], [3.0, 0.0]] {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded);
+    }
+
+    /// A state covariance is held to symmetry cell by cell, each upper entry
+    /// against its lower one, to `1e-12` of the larger plus `1e-12`. Of
+    /// three columns, an asymmetry in `[1][2]` alone is found and named; one
+    /// at the tolerance exactly is rounding and is taken, as is one under it
+    /// at a large scale or a tiny one.
+    #[test]
+    fn a_state_covariance_is_symmetric_to_a_tolerance() {
+        let with = |first: Vec<f64>| {
+            let d = if first.len() == 9 { 3 } else { 2 };
+            let mut covs = first;
+            covs.extend((0..d * d).map(|ij| f64::from(ij / d == ij % d)));
+            HmmCfg {
+                means: Some((0..2 * d).map(|i| i as f64).collect()),
+                covs: Some(covs),
+                ..cfg(d, 2)
+            }
+        };
+        let e = Hmm::new(with(vec![4.0, 1.0, 0.5, 1.0, 4.0, 0.9, 0.5, 0.5, 4.0])).unwrap_err();
+        assert!(
+            e.contains("covs[0] must be symmetric; [1][2] is 0.9 and [2][1] is 0.5"),
+            "{e}"
+        );
+        let mut c = 1e-12f64;
+        while 1e-12 * (1.0 + c) != c {
+            c = 1e-12 * (1.0 + c);
+        }
+        assert_eq!((0.0 - c).abs(), 1e-12 * (1.0 + 0.0f64.max(c)));
+        Hmm::new(with(vec![1.0, 0.0, c, 1.0])).unwrap();
+        Hmm::new(with(vec![1e7, 1e6, 1e6 * (1.0 + 1e-13), 1e7])).unwrap();
+        Hmm::new(with(vec![1.0, 0.0, 5e-13, 1.0])).unwrap();
+    }
+
+    /// With no prior mass (`transition_prior = 0`) and no counts yet, a row
+    /// of `Π` has nothing to normalise and is uniform -- whatever `Π₀` says,
+    /// since its pseudo-counts are `τ·K·Π₀ = 0` -- and the filter runs.
+    #[test]
+    fn a_transition_row_with_no_mass_is_uniform() {
+        for k in [2, 3] {
+            let mut m = Hmm::new(HmmCfg {
+                learn: false,
+                transition_prior: 0.0,
+                means: Some((0..2 * k).map(|i| i as f64).collect()),
+                covs: Some([1.0, 0.0, 0.0, 1.0].repeat(k)),
+                ..cfg(2, k)
+            })
+            .unwrap();
+            let u = 1.0 / k as f64;
+            assert_eq!(m.transition(), vec![u; k * k]);
+            let out = m.step(&[0.5, 0.5], &[], 1.0, 1.0);
+            assert!(out.pred.iter().all(|v| v.is_finite()), "{out:?}");
+        }
+    }
+
+    /// Under `tvtp` the filter is Hamilton's with `Π(t) = softmaxₗ(Aₖₗ +
+    /// Bₖₗ·zₜ)`, `zₜ` the row's exogenous value from `y[0]`, and 0 where it is
+    /// missing or not finite: the longhand at fixed states, every row, from
+    /// `step` and from `predict_with`.
+    #[test]
+    fn tvtp_filters_with_the_matrix_of_each_rows_exogenous_value() {
+        let (d, k) = (2usize, 2usize);
+        let (a, b) = (vec![0.5, -0.3, 0.1, 0.8], vec![0.2, 1.5, -0.7, 0.4]);
+        let mut m = Hmm::new(given(HmmCfg {
+            learn: false,
+            tvtp: Some((a.clone(), b.clone())),
+            ..cfg(d, k)
+        }))
+        .unwrap();
+        let ridge = 1e-3;
+        let zs = [
+            Some(0.3),
+            Some(-2.0),
+            None,
+            Some(1.7),
+            Some(f64::NAN),
+            Some(0.6),
+        ];
+        let mut p = vec![0.5, 0.5];
+        for (t, (x, _)) in stream(60, 7, 4).into_iter().enumerate() {
+            let y = [zs[t % zs.len()]];
+            let z = y[0].filter(|v| v.is_finite()).unwrap_or(0.0);
+            let pi: Vec<f64> = (0..k * k)
+                .map(|rc| {
+                    let r = rc / k;
+                    let num = (a[rc] + b[rc] * z).exp();
+                    let den: f64 = (0..k)
+                        .map(|c| (a[r * k + c] + b[r * k + c] * z).exp())
+                        .sum();
+                    num / den
+                })
+                .collect();
+            let pred: Vec<f64> = (0..k)
+                .map(|l| (0..k).map(|kk| p[kk] * pi[kk * k + l]).sum())
+                .collect();
+            let f: Vec<f64> = (0..k)
+                .map(|l| {
+                    let c = if l == 0 { -3.0 } else { 3.0 };
+                    let q: f64 = x.iter().map(|xi| (xi - c).powi(2) / (1.0 + ridge)).sum();
+                    (-0.5
+                        * (d as f64 * std::f64::consts::TAU.ln()
+                            + d as f64 * (1.0 + ridge).ln()
+                            + q))
+                        .exp()
+                })
+                .collect();
+            let zsum: f64 = (0..k).map(|l| pred[l] * f[l]).sum();
+            let shown = m.predict_with(&x, &y, 1.0).pred;
+            let step = m.step(&x, &y, 1.0, 1.0).pred;
+            assert_eq!(shown, step, "row {t}");
+            for c in 0..k {
+                assert!((step[k + c] - pred[c]).abs() < 1e-12, "row {t}: p1_{c}");
+            }
+            assert!(
+                (step[2 * k + 1] - zsum.ln()).abs() < 1e-9,
+                "row {t}: loglik"
+            );
+            p = (0..k).map(|l| pred[l] * f[l] / zsum).collect();
+        }
+    }
+
+    /// The softmax is taken about the largest logit, so logits in the
+    /// hundreds give the distribution they define rather than `inf / inf`.
+    #[test]
+    fn tvtp_logits_in_the_hundreds_are_a_distribution() {
+        let m = Hmm::new(given(HmmCfg {
+            learn: false,
+            tvtp: Some((vec![1000.0, 999.0, 0.0, 0.0], vec![0.0; 4])),
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        let pi = m.transition_at(Some(0.0));
+        let e = (-1.0f64).exp();
+        assert!((pi[0] - 1.0 / (1.0 + e)).abs() < 1e-15, "{pi:?}");
+        assert!((pi[1] - e / (1.0 + e)).abs() < 1e-15, "{pi:?}");
+    }
+
+    /// `shared` pools the states' covariances by their weights, `πₛ = nₛ/Σn`
+    /// -- and by `1/K` when no state has any weight, here after a gap the
+    /// decay took the whole history in -- and scores every state against the
+    /// pool: the Gaussian written out with `faer`, from the model's own
+    /// states.
+    #[test]
+    fn shared_pools_the_states_by_their_weights_or_evenly_with_none() {
+        let mut m = Hmm::new(given(HmmCfg {
+            covariance: Covariance::Shared,
+            decay: Decay::Halflife(1.0),
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        // Unequal weights: most rows near the second state.
+        for (i, (x, _)) in stream(40, 3, 10).into_iter().enumerate() {
+            let w = if i % 10 < 3 { 0.2 } else { 1.0 };
+            m.step(&x, &[], 0.1, w);
+        }
+        let x = [0.4, -0.7];
+        let want = |m: &Hmm| -> Vec<f64> {
+            let weights: Vec<f64> = m.states.iter().map(EwCov::n_eff).collect();
+            let total: f64 = weights.iter().sum();
+            let mut pool = vec![0.0; 4];
+            for (s, state) in m.states.iter().enumerate() {
+                let pi = if total > 0.0 { weights[s] / total } else { 0.5 };
+                for (p, c) in pool.iter_mut().zip(state.comoments()) {
+                    *p += pi * c;
+                }
+                pool[0] += pi * m.ridge(s);
+                pool[3] += pi * m.ridge(s);
+            }
+            m.states
+                .iter()
+                .map(|s| gaussian_log_density(&pool, &[s.deviation(0, x[0]), s.deviation(1, x[1])]))
+                .collect()
+        };
+        let w: Vec<f64> = m.states.iter().map(EwCov::n_eff).collect();
+        assert!(
+            (w[0] - w[1]).abs() > 0.1 * (w[0] + w[1]),
+            "the weights are unequal: {w:?}"
+        );
+        let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
+        for s in 0..2 {
+            assert!(
+                (got[s] - expect[s]).abs() < 1e-9 * expect[s].abs(),
+                "{got:?} vs {expect:?}"
+            );
+        }
+        // A gap of two thousand half-lives: every state's weight is 0.
+        m.step(&x, &[], 2000.0, 0.0);
+        assert!(m.states.iter().all(|s| s.n_eff() == 0.0));
+        let (got, expect) = (m.log_densities(&x).unwrap(), want(&m));
+        for s in 0..2 {
+            assert!(
+                (got[s] - expect[s]).abs() < 1e-9 * expect[s].abs(),
+                "{got:?} vs {expect:?}"
+            );
+        }
+        let fails = m.solve_failures;
+        let out = m.step(&x, &[], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| v.is_finite()), "{out:?}");
+        assert_eq!(m.solve_failures, fails);
+    }
+
+    /// The predicted state is the first maximum of `p̃`: on the first row,
+    /// with a uniform chain, `p̃` is flat and the state is 0.
+    #[test]
+    fn a_tie_in_the_predicted_state_reports_the_first() {
+        let mut m = Hmm::new(given(HmmCfg {
+            learn: false,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        let out = m.step(&[2.0, 2.0], &[], 1.0, 1.0);
+        assert_eq!(out.pred[2], out.pred[3], "p̃ is flat");
+        assert_eq!(out.pred[4], 0.0);
+    }
+
+    /// The warm-up replay assigns each buffered row to its nearest centre,
+    /// the first on a tie: a row midway between the two first rows goes to
+    /// the first state.
+    #[test]
+    fn a_seeding_row_midway_goes_to_the_first_centre() {
+        let mut m = Hmm::new(HmmCfg {
+            warm_rows: 3,
+            seed_rule: SeedRule::First,
+            ..cfg(2, 2)
+        })
+        .unwrap();
+        for x in [[-1.0, 0.0], [1.0, 0.0], [0.0, 0.0]] {
+            m.step(&x, &[], 1.0, 1.0);
+        }
+        assert!(m.seeded);
+        assert_eq!(m.state_cov(0).n_eff(), 2.0);
+        assert_eq!(m.state_cov(1).n_eff(), 1.0);
+    }
+
+    /// A row of no weight, and a row that fails to score, age the transition
+    /// counts by the row's decay: one half-life halves them.
+    #[test]
+    fn a_row_that_learns_nothing_ages_the_counts() {
+        for (x, w) in [([0.5, 0.5], 0.0), ([1e300, 1e300], 1.0)] {
+            let mut m = Hmm::new(HmmCfg {
+                decay: Decay::Halflife(10.0),
+                ..cfg(2, 2)
+            })
+            .unwrap();
+            for (row, _) in stream(200, 11, 40) {
+                m.step(&row, &[], 1.0, 1.0);
+            }
+            let (a, fails) = (m.a.clone(), m.solve_failures);
+            assert!(a.iter().all(|v| *v > 0.0));
+            m.step(&x, &[], 10.0, w);
+            let halved: Vec<f64> = a.iter().map(|v| 0.5 * v).collect();
+            assert_eq!(m.a, halved, "weight {w}");
+            assert_eq!(m.solve_failures, fails + u64::from(w > 0.0), "weight {w}");
+        }
+    }
+
+    /// The filtered joint `ξ` sums to one over its cells, so a learned row
+    /// adds its weight to the counts -- also a row far from every state,
+    /// whose densities are each too small to be a double; the reference the
+    /// joint is scaled about cancels.
+    #[test]
+    fn a_row_far_from_every_state_still_adds_its_weight_to_the_counts() {
+        let mut m = Hmm::new(given(cfg(2, 2))).unwrap();
+        let x = [40.0, 40.0];
+        let logf = m.log_densities(&x).unwrap();
+        assert!(logf.iter().all(|l| l.exp() == 0.0), "{logf:?}");
+        let before: f64 = m.a.iter().sum();
+        let out = m.step(&x, &[], 1.0, 0.7);
+        assert!(out.pred.iter().all(|v| v.is_finite()), "{out:?}");
+        let after: f64 = m.a.iter().sum();
+        assert!(
+            (after - (before + 0.7)).abs() < 1e-12,
+            "{before} -> {after}"
+        );
+    }
+
+    /// A row whose most likely state the chain gives no way to reach (no
+    /// prior mass, and counts that never left the first state) has a
+    /// filtered joint of zero everywhere: it teaches the counts nothing,
+    /// rather than `0/0`, and the chain goes on.
+    #[test]
+    fn a_row_the_chain_cannot_reach_teaches_the_counts_nothing() {
+        let mut m = Hmm::new(given(HmmCfg {
+            transition_prior: 0.0,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        // Far on the first state's side, lightly: the filter lands on it
+        // exactly, and the counts learn only "from either state to it".
+        m.step(&[-80.0, -80.0], &[], 1.0, 1e-6);
+        assert_eq!(m.filtered(), &[1.0, 0.0]);
+        assert_eq!(m.transition(), vec![1.0, 0.0, 1.0, 0.0]);
+        // Far on the second state's side: its density is the larger by more
+        // than a double spans, and `p̃` gives it nothing.
+        let x = [80.0, 80.0];
+        let logf = m.log_densities(&x).unwrap();
+        assert!((logf[0] - logf[1]).exp() == 0.0, "{logf:?}");
+        let a = m.a.clone();
+        let out = m.step(&x, &[], 1.0, 1.0);
+        assert_eq!(&out.pred[2..4], &[1.0, 0.0], "p̃");
+        assert_eq!(m.a, a);
+        assert!(m.transition().iter().all(|v| v.is_finite()));
+        let next = m.step(&[-3.0, -3.0], &[], 1.0, 1.0);
+        assert!(next.pred.iter().all(|v| v.is_finite()), "{next:?}");
+    }
+
+    /// Each shape check refuses alone: too few states, a short count
+    /// matrix; and the shapes that are right restore, at `k = 3`, and with
+    /// rows still buffered for the warm-up. The factor cache is derived, so
+    /// a model with its factors built equals itself read back without them.
+    #[test]
+    fn each_shape_check_refuses_alone_and_the_right_shapes_restore() {
+        use crate::{ModelState, StateError};
+        let refuse = |edit: &dyn Fn(&mut Hmm)| {
+            let mut s = Hmm::new(cfg(2, 2)).unwrap().state();
+            let ModelState::Hmm(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match Hmm::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                other => panic!("{other:?}"),
+            }
+        };
+        refuse(&|m| {
+            m.states.pop();
+        });
+        refuse(&|m| {
+            m.a.pop();
+        });
+        let three = Hmm::new(cfg(2, 3)).unwrap();
+        assert_eq!(Hmm::restore(&three.state()).unwrap(), three);
+        let mut warming = Hmm::new(cfg(2, 2)).unwrap();
+        for (x, _) in stream(5, 3, 2) {
+            warming.step(&x, &[], 1.0, 1.0);
+        }
+        assert_eq!(warming.buffer.len(), 5);
+        assert_eq!(Hmm::restore(&warming.state()).unwrap(), warming);
+        let mut scorer = Hmm::new(given(HmmCfg {
+            learn: false,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        scorer.step(&[0.1, 0.2], &[], 1.0, 1.0);
+        assert!(scorer.factors.peek(0).is_some(), "the cache is built");
+        let bytes = rmp_serde::to_vec(&scorer.state()).unwrap();
+        let back = Hmm::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+        assert!(back.factors.peek(0).is_none(), "and not written");
+        assert_eq!(back, scorer);
+    }
+
+    /// The factor cache is the `full` shape's, built once the states are
+    /// seeded (`ensure_factors`): a `diagonal` model builds none, nor does a
+    /// `full` one still warming up.
+    #[test]
+    fn only_a_seeded_full_model_builds_factors() {
+        let mut diag = Hmm::new(given(HmmCfg {
+            learn: false,
+            covariance: Covariance::Diagonal,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        diag.step(&[0.1, 0.2], &[], 1.0, 1.0);
+        assert!(diag.factors.peek(0).is_none(), "diagonal");
+        let mut warming = Hmm::new(cfg(2, 2)).unwrap();
+        warming.step(&[0.1, 0.2], &[], 1.0, 1.0);
+        assert!(!warming.seeded);
+        assert!(warming.factors.peek(0).is_none(), "warming up");
+        let mut full = Hmm::new(given(HmmCfg {
+            learn: false,
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        full.step(&[0.1, 0.2], &[], 1.0, 1.0);
+        assert!(full.factors.peek(0).is_some() && full.factors.peek(1).is_some());
+    }
 }

@@ -7368,6 +7368,49 @@ tick, and that the series holding it up has a count near 1.
       `preavg_rows = 6` at the default `theta`, had pinned the old bias and
       is re-pinned: its first variance moves from 9.410 to 7.978.
 
+      *The survivors, worked through 2026-10-05.* Six workers, one batch of
+      files each and each in its own worktree, wrote Rust tests and checked
+      every kill with cargo-mutants run on exactly their survivors, at the
+      weekly pass's flags (`RUST_TEST_THREADS=2` once three runs at once
+      took the machine to load 65). Of the 1,272:
+
+    | batch | files | survivors | killed | equivalent | not killed |
+    |---|---|---:|---:|---:|---:|
+    | A | `rcov`, `marglag`, `margbins`, `constraint`, `pa`, `holt`, `seqtest`, `drift`, `lib` | 209 | 193 | 15 | 1 |
+    | B | `marginal`, `gaps`, `model`, `clock`, `ewlagcov`, `ftrl` | 202 | 186 | 16 | 0 |
+    | C | `bocpd`, `hmm`, `ewclass`, `conformal`, `cluster/summary` | 197 | 170 | 25 | 2 |
+    | D | `kmeans`, `micro`, `deco`, `humanfloat`, `window` | 233 | 213 | 20 | 0 |
+    | E | `corrchange`, `robust`, `boundary`, `rls` | 196 | 123 | 46 | 27 |
+    | F | `ewcov`, `sgd`, `ewridge`, `solve`, `kalman`, `stats`, `lasso` | 235 | 203 | 29 | 3 |
+    | | | **1,272** | **1,088** | **151** | **33** |
+
+      The tests add about 8,700 lines, in each module's own `mod tests`, and
+      change no production line. With its share `marginal.rs` passed the
+      repository's 250 KB cap for a source file, so its tests moved to
+      `marginal/tests.rs` (cargo-mutants finds no mutant there, and the
+      crate's count is unchanged); `ewridge.rs`, at 243 KB, and
+      online-polars' `bank.rs`, at 242 KB, are the next near it. The 151 equivalents are 141 new entries in
+      `scripts/mutants_equivalent.toml`, each with the reason no input can
+      tell the two apart; three stale entries left it (a function renamed,
+      a line moved, and one whose reason was wrong and whose mutant a test
+      now kills), and `tests/test_mutants_report.py` accepts a generic
+      function's `fn name<` and cargo-mutants' `delete` mutations. Every one
+      of the 161 entries matches a mutant of today's code. The 33 not killed
+      differ only by rounding or below the computation's own error (most
+      are `boundary`'s solver stopping a settled solve), are reachable only
+      past the input bound, sit behind a `debug_assert!` no test build
+      passes, or wait on a decision: whether `EwQuantile` drops an end
+      bucket at exactly its prune share, as the code does, or only under
+      it, as its doc says. Two tests were found pinning nothing: a sharded
+      `marginal` stream whose pairs were all NaN from row 92, and an `rcov`
+      PSD-clip test whose stream never clips. Findings beyond the `rcov`
+      bias, raised with the user: `rls` loses precision where a rotation's
+      squares are subnormal (relative error 1.4e-5 at a scale of 2^-530,
+      inside the input bound); an `hmm` given a `transition` with
+      `transition_prior = 0` filters with a uniform chain, and under
+      `learn = False` never uses the given matrix; and a remote `robust`
+      case at weights near 5e-324.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

@@ -346,4 +346,17 @@ mod tests {
         once.age(0.5);
         assert_eq!(nan, once, "a non-finite error is a step with no error");
     }
+
+    /// Drift is a statistic strictly above the threshold, the module doc's
+    /// `m_t − M_t > threshold`: at the threshold exactly it is not.
+    #[test]
+    fn the_threshold_itself_is_not_drift() {
+        let mut ph = PageHinkley::new(0.0, 1.0);
+        assert!(!ph.update(0.0, 1.0, 1.0));
+        // The mean is 1 after the second error, whose excess is `2 − 1`.
+        assert!(!ph.update(2.0, 1.0, 1.0));
+        assert_eq!(ph.statistic(), 1.0);
+        assert_eq!(ph.n(), 2.0, "not reset");
+        assert!(ph.update(5.0, 1.0, 1.0), "past it");
+    }
 }

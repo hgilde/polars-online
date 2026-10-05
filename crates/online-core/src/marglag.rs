@@ -893,4 +893,387 @@ mod tests {
         assert!(l.has_shape(1, 1, &[1], None));
         assert_eq!(l.cxy(0, 0, 0), 0.1);
     }
+
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// The module doc's recursion, written out longhand: per learned row and
+    /// lag `ℓ`, `C' = a·C + a·b·d_now·d_lag` where row `t − ℓ` is in the ring
+    /// and carried what `d_lag` reads, and `C' = a·C` where it is not, every
+    /// deviation against the means before the row. Cross moments are kept at
+    /// every lag here; a model keeping fewer is compared at the ones it keeps.
+    struct Longhand {
+        lags: Vec<usize>,
+        /// `[lag][target]`
+        cyy: Vec<Vec<f64>>,
+        /// `[lag][target][feature]`, and `[lag][feature]` for the shared
+        /// layout's feature autocovariance.
+        cxx: Vec<Vec<Vec<f64>>>,
+        cxx_shared: Vec<Vec<f64>>,
+        cxy: Vec<Vec<Vec<f64>>>,
+        cyx: Vec<Vec<Vec<f64>>>,
+        ring: Vec<(Vec<f64>, Vec<Option<f64>>)>,
+        /// Evidence the two branches the test is for ran: steps that met a
+        /// target absent `ℓ` rows back, and steps with nothing `ℓ` rows back
+        /// that aged a moment that was not zero.
+        absent_back: usize,
+        aged: usize,
+    }
+
+    impl Longhand {
+        fn new(p: usize, t: usize, lags: &[usize]) -> Self {
+            let l = lags.len();
+            Self {
+                lags: lags.to_vec(),
+                cyy: vec![vec![0.0; t]; l],
+                cxx: vec![vec![vec![0.0; p]; t]; l],
+                cxx_shared: vec![vec![0.0; p]; l],
+                cxy: vec![vec![vec![0.0; p]; t]; l],
+                cyx: vec![vec![vec![0.0; p]; t]; l],
+                ring: Vec::new(),
+                absent_back: 0,
+                aged: 0,
+            }
+        }
+
+        /// Target `t`'s moments: its autocovariance and the cross terms, and
+        /// the feature's autocovariance where `own_xx` (the per-target
+        /// layout).
+        #[allow(clippy::too_many_arguments)]
+        fn target(
+            &mut self,
+            t: usize,
+            x: &[f64],
+            y: f64,
+            mx: &[f64],
+            my: f64,
+            a: f64,
+            b: f64,
+            own_xx: bool,
+        ) {
+            for li in 0..self.lags.len() {
+                let lag = self.lags[li];
+                if lag > self.ring.len() {
+                    let before = self.cyy[li][t];
+                    self.cyy[li][t] = a * before;
+                    for j in 0..x.len() {
+                        if own_xx {
+                            self.cxx[li][t][j] *= a;
+                        }
+                        self.cxy[li][t][j] *= a;
+                        self.cyx[li][t][j] *= a;
+                    }
+                    if before != 0.0 {
+                        self.aged += 1;
+                    }
+                    continue;
+                }
+                let (xb, yb) = &self.ring[self.ring.len() - lag];
+                let dy_now = y - my;
+                let dy_lag = yb[t].map(|v| v - my);
+                for j in 0..x.len() {
+                    let dx_now = x[j] - mx[j];
+                    let dx_lag = xb[j] - mx[j];
+                    if own_xx {
+                        let c = self.cxx[li][t][j];
+                        self.cxx[li][t][j] = a * c + a * b * dx_now * dx_lag;
+                    }
+                    let c = self.cyx[li][t][j];
+                    self.cyx[li][t][j] = a * c + a * b * dy_now * dx_lag;
+                    let c = self.cxy[li][t][j];
+                    self.cxy[li][t][j] = match dy_lag {
+                        Some(d) => a * c + a * b * dx_now * d,
+                        None => a * c,
+                    };
+                }
+                let c = self.cyy[li][t];
+                self.cyy[li][t] = match dy_lag {
+                    Some(d) => a * c + a * b * dy_now * d,
+                    None => a * c,
+                };
+                if dy_lag.is_none() {
+                    self.absent_back += 1;
+                }
+            }
+        }
+
+        /// The shared layout's feature autocovariance, with the row's mix.
+        fn features(&mut self, x: &[f64], mx: &[f64], a: f64, b: f64) {
+            for li in 0..self.lags.len() {
+                let lag = self.lags[li];
+                for j in 0..x.len() {
+                    let c = self.cxx_shared[li][j];
+                    self.cxx_shared[li][j] = if lag > self.ring.len() {
+                        a * c
+                    } else {
+                        let xb = &self.ring[self.ring.len() - lag].0;
+                        a * c + a * b * (x[j] - mx[j]) * (xb[j] - mx[j])
+                    };
+                }
+            }
+        }
+
+        fn push(&mut self, x: &[f64], y: &[Option<f64>]) {
+            self.ring.push((x.to_vec(), y.to_vec()));
+            if self.ring.len() > *self.lags.last().unwrap() {
+                self.ring.remove(0);
+            }
+        }
+    }
+
+    /// One stream of fourteen learned rows, two features and two targets,
+    /// the second absent on every third row; the ring cleared after the
+    /// eighth, as a break in the clock clears it. Per row: the features, the
+    /// targets, each target's feature means, target mean and mix, and the
+    /// row's own mix for the shared layout.
+    type Row = (
+        Vec<f64>,
+        Vec<Option<f64>>,
+        Vec<Vec<f64>>,
+        Vec<f64>,
+        Vec<(f64, f64)>,
+        (f64, f64),
+    );
+
+    fn rows() -> Vec<Row> {
+        let mut s = 17u64;
+        (0..14)
+            .map(|r| {
+                let x = vec![lcg(&mut s), 2.0 * lcg(&mut s)];
+                let y = vec![Some(lcg(&mut s)), (r % 3 != 1).then(|| lcg(&mut s))];
+                let rf = r as f64;
+                let mx = (0..2)
+                    .map(|t| {
+                        (0..2)
+                            .map(|j| 0.03 * rf - 0.1 * t as f64 + 0.05 * j as f64)
+                            .collect()
+                    })
+                    .collect();
+                let my = (0..2).map(|t| 0.02 * rf + 0.1 * t as f64).collect();
+                let mix = (0..2)
+                    .map(|t| {
+                        (
+                            0.8 + 0.05 * t as f64 + 0.01 * (r % 4) as f64,
+                            0.15 + 0.02 * t as f64,
+                        )
+                    })
+                    .collect();
+                (x, y, mx, my, mix, (0.85, 0.12 + 0.01 * (r % 3) as f64))
+            })
+            .collect()
+    }
+
+    const BREAK_AFTER: usize = 7;
+
+    fn near(got: f64, want: f64, what: &str) {
+        assert!(
+            (got - want).abs() <= 1e-13 * (1.0 + want.abs()),
+            "{what}: {got} vs {want}"
+        );
+    }
+
+    /// The per-target layout's moments are the recursion, at every lag and
+    /// with the cross terms at every lag or at some, through a target absent
+    /// `ℓ` rows back and through the rows after a break, where nothing is
+    /// `ℓ` rows back and the moments age and wait. A window's snapshot reads
+    /// the same numbers as the model does.
+    #[test]
+    fn the_lag_moments_are_the_recursion_written_out() {
+        let (p, t, lags) = (2usize, 2usize, vec![1usize, 3]);
+        for cross in [None, Some(vec![3usize])] {
+            let mut l = MarginalLags::new(p, t, lags.clone(), cross.clone(), false).unwrap();
+            let mut o = Longhand::new(p, t, &lags);
+            for (r, (x, y, mx, my, mix, _)) in rows().iter().enumerate() {
+                for tt in 0..t {
+                    let Some(yt) = y[tt] else { continue };
+                    let (a, b) = mix[tt];
+                    let zeros = [0.0; 2];
+                    let pm = PairMix {
+                        mx: &mx[tt],
+                        mx_lo: &zeros,
+                        my: my[tt],
+                        my_lo: 0.0,
+                        a,
+                        b,
+                    };
+                    l.update_target(tt, x, yt, pm);
+                    o.target(tt, x, yt, &mx[tt], my[tt], a, b, true);
+                }
+                l.push(x, y);
+                o.push(x, y);
+                if r == BREAK_AFTER {
+                    l.clear();
+                    o.ring.clear();
+                }
+            }
+            assert!(
+                o.absent_back > 0 && o.aged > 0,
+                "{} {}",
+                o.absent_back,
+                o.aged
+            );
+            let snap = l.moments();
+            for li in 0..lags.len() {
+                for tt in 0..t {
+                    near(l.cyy(li, tt), o.cyy[li][tt], "cyy");
+                    near(snap.cyy(li, tt), o.cyy[li][tt], "the snapshot's cyy");
+                    for j in 0..p {
+                        near(l.cxx(li, tt, j), o.cxx[li][tt][j], "cxx");
+                        near(snap.cxx(li, tt, j), o.cxx[li][tt][j], "the snapshot's cxx");
+                    }
+                }
+            }
+            for (ci, lag) in l.cross_lags().to_vec().into_iter().enumerate() {
+                let li = lags.iter().position(|&v| v == lag).unwrap();
+                for tt in 0..t {
+                    for j in 0..p {
+                        let what = format!("{cross:?}, lag {lag}, target {tt}, feature {j}");
+                        near(l.cxy(ci, tt, j), o.cxy[li][tt][j], &format!("cxy {what}"));
+                        near(l.cyx(ci, tt, j), o.cyx[li][tt][j], &format!("cyx {what}"));
+                        near(
+                            snap.cxy(ci, tt, j),
+                            o.cxy[li][tt][j],
+                            &format!("snap cxy {what}"),
+                        );
+                        near(
+                            snap.cyx(ci, tt, j),
+                            o.cyx[li][tt][j],
+                            &format!("snap cyx {what}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The shared layout's moments are the same recursion: the feature's
+    /// autocovariance once, with the row's mix and the shared means, and
+    /// each present target's terms with its own mix, through the same
+    /// absences and the same break.
+    #[test]
+    fn the_shared_lag_moments_are_the_recursion_written_out() {
+        let (p, t, lags) = (2usize, 2usize, vec![1usize, 3]);
+        for cross in [None, Some(vec![1usize])] {
+            let mut l = MarginalLags::new(p, t, lags.clone(), cross.clone(), true).unwrap();
+            assert!(l.is_shared());
+            let mut o = Longhand::new(p, t, &lags);
+            for (r, (x, y, mx, my, mix, row)) in rows().iter().enumerate() {
+                // One set of feature means for every target: the first's.
+                let shared_mx = &mx[0];
+                let targets: Vec<Option<TargetLag>> = (0..t)
+                    .map(|tt| {
+                        y[tt].map(|yt| TargetLag {
+                            a: mix[tt].0,
+                            b: mix[tt].1,
+                            yt,
+                            my: my[tt],
+                            my_lo: 0.0,
+                        })
+                    })
+                    .collect();
+                l.update_shared(x, Some(*row), &targets, shared_mx, &[0.0; 2]);
+                o.features(x, shared_mx, row.0, row.1);
+                for tt in 0..t {
+                    if let Some(yt) = y[tt] {
+                        o.target(tt, x, yt, shared_mx, my[tt], mix[tt].0, mix[tt].1, false);
+                    }
+                }
+                l.push(x, y);
+                o.push(x, y);
+                if r == BREAK_AFTER {
+                    l.clear();
+                    o.ring.clear();
+                }
+            }
+            assert!(
+                o.absent_back > 0 && o.aged > 0,
+                "{} {}",
+                o.absent_back,
+                o.aged
+            );
+            for li in 0..lags.len() {
+                for tt in 0..t {
+                    near(l.cyy(li, tt), o.cyy[li][tt], "cyy");
+                    for j in 0..p {
+                        near(l.cxx(li, tt, j), o.cxx_shared[li][j], "the shared cxx");
+                    }
+                }
+            }
+            for (ci, lag) in l.cross_lags().to_vec().into_iter().enumerate() {
+                let li = lags.iter().position(|&v| v == lag).unwrap();
+                for tt in 0..t {
+                    for j in 0..p {
+                        let what = format!("{cross:?}, lag {lag}, target {tt}, feature {j}");
+                        near(l.cxy(ci, tt, j), o.cxy[li][tt][j], &format!("cxy {what}"));
+                        near(l.cyx(ci, tt, j), o.cyx[li][tt][j], &format!("cyx {what}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A snapshot matches the lags it was taken from, and no others: each
+    /// dimension `matches` reads, changed alone, is refused.
+    #[test]
+    fn a_snapshot_matches_only_the_lags_it_was_taken_from() {
+        let l = MarginalLags::new(2, 2, vec![1, 3], Some(vec![3]), false).unwrap();
+        let snap = l.moments();
+        assert!(snap.matches(&l));
+        type Edit = (&'static str, fn(&mut LagMoments));
+        let edits: [Edit; 7] = [
+            ("another width", |s| s.p = 3),
+            ("a lag too many in cyy", |s| s.cyy.push(vec![0.0; 2])),
+            ("a target short in cyy", |s| {
+                s.cyy[0].pop();
+            }),
+            ("a lag short in cxx", |s| {
+                s.cxx.pop();
+            }),
+            ("a pair short in cxx", |s| {
+                s.cxx[1].pop();
+            }),
+            ("a cross lag too many in cxy", |s| s.cxy.push(vec![0.0; 4])),
+            ("a pair too many in cyx", |s| s.cyx[0].push(0.0)),
+        ];
+        for (what, edit) in edits {
+            let mut s = snap.clone();
+            edit(&mut s);
+            assert!(!s.matches(&l), "{what}");
+        }
+    }
+
+    /// A model whose feature moments are shared keeps its lags that way, and
+    /// its state, which says so, restores.
+    #[test]
+    fn a_shared_model_with_lags_restores() {
+        use crate::{Decay, FeatureMomentLayout, Marginal, MarginalCfg, OnlineModel};
+        let cfg = MarginalCfg {
+            n_features: 2,
+            n_targets: 2,
+            decay: Decay::Halflife(20.0),
+            min_weight: vec![0.0; 2],
+            lags: vec![1, 2],
+            serial_rule: None,
+            cross_lags: None,
+            bins: None,
+            feature_moments: FeatureMomentLayout::Shared,
+            window: None,
+            window_every: None,
+        };
+        let mut m = Marginal::new(cfg).unwrap();
+        for i in 0..10 {
+            let v = f64::from(i);
+            m.step(
+                &[v, 1.0 - v * v],
+                &[Some(v), (i % 2 == 0).then_some(-v)],
+                1.0,
+                1.0,
+            );
+        }
+        assert_eq!(Marginal::restore(&m.state()).unwrap(), m);
+    }
 }

@@ -471,4 +471,128 @@ mod tests {
         let back: Conformal = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, c);
     }
+
+    // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
+
+    /// The recursion against its definitions, row for row, with each kind of
+    /// row that is no evidence mixed in -- no residual, no weight, and a
+    /// delayed row shown no interval -- under an uneven decay. The realized
+    /// coverage is the weighted EW mean of `1{s ≤ q}` over the scored rows,
+    /// every row ageing it; the step reads the row's weight against `w̄`, the
+    /// EW mean weight of the rows with a residual and a weight, every row
+    /// ageing their count. Both are written out as sums over the rows they
+    /// hold, each row's age the product of the factors after it.
+    #[test]
+    fn the_recursion_is_its_definitions_among_rows_that_are_no_evidence() {
+        let (alpha, rate) = (0.2, 0.3);
+        let mut c = Conformal::new(1.0 - alpha, rate).unwrap();
+        // `(w, hit, age)` per scored row, and `(w, age)` per row in `w̄`.
+        let mut scored: Vec<(f64, f64, f64)> = Vec::new();
+        let mut means: Vec<(f64, f64)> = Vec::new();
+        let mut q = f64::NAN;
+        let mut s = 3u64;
+        let mut kinds = [0usize; 4];
+        for t in 0..300 {
+            let lam = 0.9 + 0.09 * lcg(&mut s);
+            let resid = 2.0 * gauss(&mut s);
+            let w = 0.5 + lcg(&mut s);
+            let sigma = 1.0 + 0.5 * lcg(&mut s);
+            scored.iter_mut().for_each(|e| e.2 *= lam);
+            means.iter_mut().for_each(|e| e.1 *= lam);
+            match t % 7 {
+                1 => {
+                    c.update(f64::NAN, sigma, lam, w);
+                    kinds[0] += 1;
+                }
+                3 => {
+                    c.update(resid, sigma, lam, 0.0);
+                    kinds[1] += 1;
+                }
+                5 if q.is_finite() => {
+                    c.update_against(resid, sigma, lam, w, Some(f64::NAN));
+                    means.push((w, 1.0));
+                    kinds[2] += 1;
+                }
+                _ => {
+                    c.update(resid, sigma, lam, w);
+                    means.push((w, 1.0));
+                    if q.is_finite() {
+                        let miss = resid.abs() > q;
+                        scored.push((w, f64::from(!miss), 1.0));
+                        let wbar = means.iter().map(|(w, a)| w * a).sum::<f64>()
+                            / means.iter().map(|(_, a)| a).sum::<f64>();
+                        q = (q + rate * sigma * (w / wbar) * (f64::from(miss) - alpha)).max(0.0);
+                        kinds[3] += 1;
+                    } else {
+                        q = sigma * norm_ppf(1.0 - 0.5 * alpha);
+                    }
+                }
+            }
+            let got = c.radius().unwrap_or(f64::NAN);
+            assert!(
+                (got - q).abs() <= 1e-12 * (1.0 + q) || (got.is_nan() && q.is_nan()),
+                "row {t}: radius {got} vs {q}"
+            );
+            let want = (!scored.is_empty()).then(|| {
+                scored.iter().map(|(w, hit, a)| w * hit * a).sum::<f64>()
+                    / scored.iter().map(|(w, _, a)| w * a).sum::<f64>()
+            });
+            match (c.coverage(), want) {
+                (Some(g), Some(w)) => assert!((g - w).abs() < 1e-12, "row {t}: {g} vs {w}"),
+                (g, w) => assert_eq!(g, w, "row {t}"),
+            }
+        }
+        assert!(kinds.iter().all(|&k| k > 30), "{kinds:?}");
+    }
+
+    /// The radius starts on the first row with a residual and an error
+    /// scale: a `σ` of 0, or one that is not finite, starts nothing, and the
+    /// next row with a finite `σ > 0` starts it at `σ·Φ⁻¹(1 − α/2)`.
+    #[test]
+    fn a_sigma_of_zero_or_infinity_does_not_start_the_radius() {
+        let mut c = Conformal::new(0.9, 0.05).unwrap();
+        c.update(0.3, 0.0, 1.0, 1.0);
+        assert_eq!(c.radius(), None);
+        c.update(0.3, f64::INFINITY, 1.0, 1.0);
+        assert_eq!(c.radius(), None);
+        c.update(0.3, 2.0, 1.0, 1.0);
+        assert_eq!(c.radius(), Some(2.0 * norm_ppf(0.95)));
+    }
+
+    /// A radius that overflows -- a step of `rate·σ` past the largest double
+    /// -- is no radius: the next row with an error scale starts it again at
+    /// the Gaussian one and, like the first warm start, is not scored, so it
+    /// only ages the coverage, which carries on.
+    #[test]
+    fn a_radius_that_overflows_starts_again_and_the_coverage_ages() {
+        let mut c = Conformal::new(0.9, 1e300).unwrap();
+        c.update(1.0, 1e10, 0.5, 1.0); // the warm start
+        c.update(1.0, 1.0, 0.5, 1.0); // a hit: the radius steps down to 0
+        assert_eq!(c.radius(), Some(0.0));
+        c.update(1.0, 1e10, 0.5, 1.0); // a miss, with a step of 1e310
+        assert_eq!(c.radius(), None);
+        let cov = c.coverage().unwrap();
+        c.update(1.0, 1.0, 0.5, 1.0); // starts again
+        assert_eq!(c.radius(), Some(norm_ppf(0.95)));
+        assert_eq!(c.coverage(), Some(cov));
+        c.update(0.1, 1.0, 0.5, 1.0); // a hit
+        // The hit, the miss and the hit, aged by the rows after each.
+        let want = (0.125 * 1.0 + 0.25 * 0.0 + 1.0 * 1.0) / (0.125 + 0.25 + 1.0);
+        assert!((c.coverage().unwrap() - want).abs() < 1e-15, "{c:?}");
+    }
+
+    /// `Φ⁻¹` is odd about `1/2`, `Φ⁻¹(1 − p) = −Φ⁻¹(p)`, at the knot where
+    /// Acklam's approximation changes branch too: `p = 0.02425` and its
+    /// mirror both take the central branch, which is odd by construction.
+    /// The tail branch is as accurate there, but on the other side of the
+    /// true quantile (`-1.9729610513118845`, from Python's
+    /// `statistics.NormalDist`), so a knot taken by both would break the
+    /// symmetry by `4.4e-9`.
+    #[test]
+    fn norm_ppf_is_odd_at_the_knot() {
+        let p = 0.02425;
+        let (lo, hi) = (norm_ppf(p), norm_ppf(1.0 - p));
+        assert!((lo + hi).abs() < 1e-12, "{lo} and {hi}");
+        assert!((lo - -1.972_961_051_311_884_5).abs() < 3e-9, "{lo}");
+    }
 }

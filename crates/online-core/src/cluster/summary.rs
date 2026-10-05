@@ -1115,4 +1115,78 @@ mod tests {
         assert!(seen.iter().all(|&c| c > 800), "{seen:?}");
         assert!(g.choice(&[1.0]) == 0);
     }
+
+    // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
+
+    /// The state whose next draw is `out`: splitmix64's output function
+    /// undone step by step, each xor-shift and each odd multiply being a
+    /// bijection of the 64-bit words.
+    fn state_before(out: u64) -> u64 {
+        let unshift = |y: u64, k: u32| {
+            let mut x = y;
+            for _ in 0..64 / k + 1 {
+                x = y ^ (x >> k);
+            }
+            x
+        };
+        // Newton's iteration for the inverse modulo 2⁶⁴ doubles the bits
+        // right each step, from the three an odd number has.
+        let inverse = |a: u64| {
+            let mut x = a;
+            for _ in 0..6 {
+                x = x.wrapping_mul(2u64.wrapping_sub(a.wrapping_mul(x)));
+            }
+            x
+        };
+        let mut z = unshift(out, 31);
+        z = z.wrapping_mul(inverse(0x94D0_49BB_1331_11EB));
+        z = unshift(z, 27);
+        z = z.wrapping_mul(inverse(0xBF58_476D_1CE4_E5B9));
+        z = unshift(z, 30);
+        z.wrapping_sub(0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// `choice` is the first index whose running sum *exceeds* `u·Σw`: a
+    /// draw of exactly one half over two equal weights lands on the second.
+    /// And it never lands on a weight of zero, even where the weights are so
+    /// small that `u·Σw` rounds up to the whole sum and the walk ends on its
+    /// fallback.
+    #[test]
+    fn choice_takes_the_first_sum_past_the_draw_and_never_a_zero_weight() {
+        let mut g = SplitMix64(state_before(1 << 63));
+        assert_eq!(g.clone().uniform(), 0.5, "the draw is not one half");
+        assert_eq!(g.choice(&[1.0, 1.0]), 1);
+        let tiny = f64::from_bits(1);
+        let mut g = SplitMix64::new(5);
+        let mut fallbacks = 0;
+        for _ in 0..200 {
+            fallbacks += usize::from(g.clone().uniform() > 0.5);
+            assert_eq!(g.choice(&[tiny, 0.0]), 0);
+        }
+        assert!(fallbacks > 50, "{fallbacks}");
+    }
+
+    /// The distance is a norm: one feature one unit from the centre, on
+    /// either side and through zero, is one unit away, and two units are
+    /// two.
+    #[test]
+    fn a_distance_through_zero_is_its_length() {
+        assert_eq!(dist(&[0.0], &[-1.0], &[1.0]), 1.0);
+        assert_eq!(dist(&[1.0], &[-1.0], &[1.0]), 2.0);
+        assert_eq!(dist(&[-1.0], &[1.0], &[4.0]), 4.0);
+    }
+
+    /// The moments' shape check reads both vectors.
+    #[test]
+    fn the_feature_moments_shape_check_reads_both_vectors() {
+        let m = FeatureMoments::new(3);
+        assert!(m.has_shape(3));
+        assert!(!m.has_shape(2));
+        let mut short_mean = m.clone();
+        short_mean.mean.pop();
+        assert!(!short_mean.has_shape(3));
+        let mut short_var = m.clone();
+        short_var.var.pop();
+        assert!(!short_var.has_shape(3));
+    }
 }

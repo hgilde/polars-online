@@ -1107,10 +1107,18 @@ mod tests {
     }
 
     /// The kernel against the definition, written out over the effective
-    /// return series (jittered ends and all).
+    /// return series (jittered ends and all). Four columns as well as two:
+    /// at two the only pair above the diagonal is `(0, 1)`, which no slip in
+    /// the symmetrizing loop's indices can miss.
     #[test]
     fn the_kernel_is_its_definition_on_the_effective_returns() {
-        let (k, n, m_j, h) = (2usize, 60usize, 2usize, 4usize);
+        for k in [2usize, 4] {
+            kernel_against_its_definition(k);
+        }
+    }
+
+    fn kernel_against_its_definition(k: usize) {
+        let (n, m_j, h) = (60usize, 2usize, 4usize);
         let rows = returns(n, k, 11, 0.4);
         let mut model = Rcov::new(RcovCfg {
             bandwidth: Some(h),
@@ -1167,14 +1175,21 @@ mod tests {
                 }
             }
         }
-        // The estimate is symmetrized; compare the symmetric part.
+        // The estimate is symmetrized; compare the symmetric part. And it
+        // is symmetric to the bit, whatever the order the two triangles
+        // were summed in.
         for i in 0..k {
             for j in 0..k {
                 let w = 0.5 * (want[i * k + j] + want[j * k + i]);
                 assert!(
                     (got[i * k + j] - w).abs() <= 1e-9 * (1.0 + w.abs()),
-                    "[{i}][{j}]: {} vs {w}",
+                    "k = {k}, [{i}][{j}]: {} vs {w}",
                     got[i * k + j]
+                );
+                assert_eq!(
+                    got[i * k + j].to_bits(),
+                    got[j * k + i].to_bits(),
+                    "k = {k}, [{i}][{j}]"
                 );
             }
         }
@@ -1452,22 +1467,33 @@ mod tests {
 
     #[test]
     fn the_auto_bandwidth_is_its_formula() {
-        let (k, n) = (1usize, 400usize);
-        let rows = returns(n, k, 29, 0.5);
-        let mut m = Rcov::new(RcovCfg {
-            bandwidth: None,
-            block_rows: Some(n),
-            ..cfg(k, RcovKind::Kernel)
-        })
-        .unwrap();
-        feed(&mut m, &rows);
-        let e = m.estimate();
-        let (w, v) = (e.omega2.unwrap()[0], e.iv_sparse.unwrap()[0]);
-        let xi2 = w / v;
-        let want = (parzen_c_star() * xi2.sqrt().powf(0.8) * (e.n as f64).powf(0.6)).ceil() as i64;
-        let max_bandwidth = m.cfg().ring_for().unwrap() as i64;
-        assert_eq!(e.bandwidth_used, Some(want.min(max_bandwidth)));
-        assert!(w > 0.0 && v > 0.0);
+        // One column, and two, where `H` is the mean of the columns' own.
+        for k in [1usize, 2] {
+            let n = 400usize;
+            let rows = returns(n, k, 29, 0.5);
+            let mut m = Rcov::new(RcovCfg {
+                bandwidth: None,
+                block_rows: Some(n),
+                ..cfg(k, RcovKind::Kernel)
+            })
+            .unwrap();
+            feed(&mut m, &rows);
+            let e = m.estimate();
+            let (w, v) = (e.omega2.unwrap(), e.iv_sparse.unwrap());
+            let per: Vec<f64> = w
+                .iter()
+                .zip(&v)
+                .map(|(w, v)| parzen_c_star() * (w / v).sqrt().powf(0.8) * (e.n as f64).powf(0.6))
+                .collect();
+            let want = (per.iter().sum::<f64>() / k as f64).ceil() as i64;
+            let max_bandwidth = m.cfg().ring_for().unwrap() as i64;
+            assert!(
+                want < max_bandwidth,
+                "k = {k}: the formula sets it, not the ring: {want} vs {max_bandwidth}"
+            );
+            assert_eq!(e.bandwidth_used, Some(want), "k = {k}");
+            assert!(w.iter().chain(&v).all(|x| *x > 0.0), "k = {k}");
+        }
     }
 
     #[test]
@@ -1662,5 +1688,483 @@ mod tests {
             },
             "theta must be",
         );
+    }
+
+    /// Each stride is checked on its own, and the smallest window allowed is
+    /// allowed.
+    #[test]
+    fn each_stride_is_refused_at_zero_and_a_window_of_two_is_allowed() {
+        for (noise_stride, iv_stride) in [(0, 20), (1, 0)] {
+            let e = Rcov::new(RcovCfg {
+                noise_stride,
+                iv_stride,
+                ..cfg(2, RcovKind::Plain)
+            })
+            .unwrap_err();
+            assert!(
+                e.contains("noise_stride and iv_stride must be >= 1"),
+                "{noise_stride}, {iv_stride}: {e}"
+            );
+        }
+        assert!(
+            Rcov::new(RcovCfg {
+                preavg_rows: Some(2),
+                ..cfg(2, RcovKind::Preavg)
+            })
+            .is_ok()
+        );
+    }
+
+    /// Every estimate names its kind.
+    #[test]
+    fn an_estimate_names_its_kind() {
+        for (kind, name) in [
+            (RcovKind::Plain, "plain"),
+            (RcovKind::Kernel, "kernel"),
+            (RcovKind::Preavg, "preavg"),
+        ] {
+            assert_eq!(kind.as_str(), name);
+            let mut m = Rcov::new(RcovCfg {
+                preavg_rows: (kind == RcovKind::Preavg).then_some(4),
+                ..cfg(2, kind)
+            })
+            .unwrap();
+            feed(&mut m, &returns(30, 2, 3, 0.1));
+            let e = m.estimate();
+            assert!(e.rcov.is_some(), "{name}");
+            assert_eq!(e.kind, name);
+        }
+    }
+
+    /// `n` counts the returns accepted, and a zero-weight row is not one.
+    #[test]
+    fn n_counts_the_returns_accepted() {
+        let rows = returns(7, 2, 5, 0.1);
+        let mut m = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        assert_eq!(m.n(), 0);
+        feed(&mut m, &rows);
+        m.step(&rows[0], &[], 1.0, 0.0);
+        assert_eq!(m.n(), 7);
+    }
+
+    /// The pre-averaging constants at small `k`, worked by hand from their
+    /// definitions with `g(i/4) = 0, 1/4, 1/2, 1/4, 0`: the differences
+    /// `g((i−1)/4) − g(i/4)` are `−1/4, −1/4, 1/4`, so `φ₁(0..4) = 3/16, 0,
+    /// −1/16, 0` and `φ₂(0..4) = 3/8, 1/4, 1/16, 0`; then `Φ₁₁ = 4·(10/256 −
+    /// 9/512) = 11/128`, `Φ₁₂ = (17/256 − 9/256)/4 = 1/128` and `Φ₂₂ =
+    /// (53/256 − 18/256)/64 = 35/16384`. `ψ₁` is `1` at an even `k` and `(k −
+    /// 1)/k` at an odd one, where the middle step of `g` is flat, and so 0
+    /// at `k = 1`, where `g(0) = g(1)` and nothing is read outside `[0, 1]`.
+    /// All are dyadic or near it, so the comparison is to the last bits.
+    #[test]
+    fn the_preaveraging_constants_at_small_k_are_their_definitions() {
+        let near = |got: f64, want: f64| (got - want).abs() <= 1e-15 * want.abs();
+        assert_eq!(psi1(1), 0.0);
+        assert!(near(psi1(4), 1.0), "{}", psi1(4));
+        assert!(near(psi1(3), 2.0 / 3.0), "{}", psi1(3));
+        assert!(near(psi1(5), 4.0 / 5.0), "{}", psi1(5));
+        assert_eq!(phi1(4, 0), 3.0 / 16.0);
+        assert_eq!(phi1(4, 2), -1.0 / 16.0);
+        assert_eq!(phi2(4, 0), 3.0 / 8.0);
+        assert_eq!(phi2(4, 1), 1.0 / 4.0);
+        assert_eq!(phi2(4, 2), 1.0 / 16.0);
+        assert_eq!(phi_11(4), 11.0 / 128.0);
+        assert_eq!(phi_12(4), 1.0 / 128.0);
+        assert_eq!(phi_22(4), 35.0 / 16384.0);
+    }
+
+    /// Offset `o`'s runs: returns `o, o + 1, ...` summed `stride` at a
+    /// time, complete runs only.
+    fn runs(rows: &[Vec<f64>], k: usize, stride: usize, o: usize) -> Vec<Vec<f64>> {
+        rows.get(o..)
+            .unwrap_or(&[])
+            .chunks_exact(stride)
+            .map(|c| (0..k).map(|i| c.iter().map(|r| r[i]).sum()).collect())
+            .collect()
+    }
+
+    /// `(ω̂², IV̂, IQ)` per column, from their definitions (BNHLS §4.1):
+    /// the means, over the offsets that completed a run, of `RV_o / (2 n_o)`,
+    /// `RV_o` and `(n_o / 3)·Σ run⁴`, with `RV_o = Σ run²` over offset
+    /// `o`'s `n_o` runs.
+    fn subsampled(rows: &[Vec<f64>], k: usize, stride: usize) -> [Vec<f64>; 3] {
+        let mut out = [vec![0.0; k], vec![0.0; k], vec![0.0; k]];
+        let mut live = 0.0;
+        for o in 0..stride {
+            let r = runs(rows, k, stride, o);
+            if r.is_empty() {
+                continue;
+            }
+            live += 1.0;
+            let n = r.len() as f64;
+            for i in 0..k {
+                let rv: f64 = r.iter().map(|s| s[i] * s[i]).sum();
+                let rq: f64 = r.iter().map(|s| s[i].powi(4)).sum();
+                out[0][i] += rv / (2.0 * n);
+                out[1][i] += rv;
+                out[2][i] += n / 3.0 * rq;
+            }
+        }
+        for v in out.iter_mut().flatten() {
+            *v /= live;
+        }
+        out
+    }
+
+    /// The noise variance, the sparse integrated variance and the
+    /// quarticity proxy every estimate carries, against their definitions,
+    /// over three columns and strides of one to five -- including a block
+    /// so short that two of the sparse grid's four offsets never complete a
+    /// run, and are left out of the mean rather than counted as zeros.
+    #[test]
+    fn the_noise_variance_and_quarticity_are_their_definitions() {
+        let k = 3;
+        for (n, noise_stride, iv_stride) in [(47, 3, 4), (47, 1, 5), (47, 4, 1), (5, 3, 4)] {
+            let rows = returns(n, k, 41, 0.3);
+            let mut m = Rcov::new(RcovCfg {
+                noise_stride,
+                iv_stride,
+                ..cfg(k, RcovKind::Plain)
+            })
+            .unwrap();
+            feed(&mut m, &rows);
+            let e = m.estimate();
+            let [omega2, _, _] = subsampled(&rows, k, noise_stride);
+            let [_, iv, iq] = subsampled(&rows, k, iv_stride);
+            for (name, got, want) in [
+                ("omega2", e.omega2.unwrap(), omega2),
+                ("iv_sparse", e.iv_sparse.unwrap(), iv),
+                ("iq", e.iq.unwrap(), iq),
+            ] {
+                assert_eq!(got.len(), k, "{name}");
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        (g - w).abs() <= 1e-12 * w.abs(),
+                        "n = {n}, strides {noise_stride}/{iv_stride}, {name}[{i}]: {g} vs {w}"
+                    );
+                }
+            }
+        }
+        let rows = returns(5, k, 41, 0.3);
+        assert!(runs(&rows, k, 4, 1).len() == 1 && runs(&rows, k, 4, 2).is_empty());
+    }
+
+    /// Each check `restore` makes refuses a state on its own: the lag
+    /// products, a buffered return, and every field of the two subsampled
+    /// accumulators. Three columns, where `k·k` and `k + k` differ, so the
+    /// good state loads only if the width is read as a square.
+    #[test]
+    fn each_shape_check_refuses_a_state_on_its_own() {
+        use crate::{ModelState, StateError};
+        let k = 3;
+        let mut m = Rcov::new(RcovCfg {
+            noise_stride: 3,
+            iv_stride: 4,
+            ..cfg(k, RcovKind::Kernel)
+        })
+        .unwrap();
+        feed(&mut m, &returns(30, k, 9, 0.1));
+        let good = m.state();
+        assert_eq!(Rcov::restore(&good).unwrap(), m);
+        type Edit = (&'static str, fn(&mut Rcov));
+        let edits: [Edit; 12] = [
+            ("the lag products", |r| {
+                r.gamma.pop();
+            }),
+            ("a leading-jitter return", |r| r.head[0].push(0.0)),
+            ("a final return in the ring", |r| {
+                r.fin[0].pop();
+            }),
+            ("the dense grid's width", |r| r.dense.k = 2),
+            ("the dense grid's stride", |r| r.dense.stride = 2),
+            ("the dense grid's partial sums", |r| {
+                r.dense.partial.push(0.0)
+            }),
+            ("the dense grid's squares", |r| r.dense.rv.push(0.0)),
+            ("the dense grid's fourth powers", |r| r.dense.rq.push(0.0)),
+            ("the dense grid's counts", |r| r.dense.counts.push(0)),
+            ("the sparse grid's width", |r| r.sparse.k = 4),
+            ("the sparse grid's stride", |r| r.sparse.stride = 1),
+            ("the sparse grid's squares", |r| {
+                r.sparse.rv.pop();
+            }),
+        ];
+        for (what, edit) in edits {
+            let mut s = good.clone();
+            let ModelState::Rcov(inner) = &mut s.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match Rcov::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+    }
+
+    /// The pre-averaging window and the automatic ring depth are the
+    /// formulas the cfg documents, worked by hand: `⌈θ·n^0.6⌉` under `psd`
+    /// and `⌊θ·√n⌋` without it, and `⌈c*·n^{3/5}⌉`. At `θ = 0.5` and `n =
+    /// 400`, `400^0.6 = 36.41`, so 19 and 10; `c* = 3.5134`, so `⌈127.93⌉ =
+    /// 128`. And the window is the one the block runs with: `n − kₙ + 1`
+    /// pre-averaged returns.
+    #[test]
+    fn the_window_and_the_ring_are_their_formulas() {
+        let at = |kind, psd| RcovCfg {
+            theta: 0.5,
+            psd,
+            block_rows: Some(400),
+            bandwidth: None,
+            ..cfg(1, kind)
+        };
+        assert_eq!(at(RcovKind::Preavg, true).window_for(), Some(19));
+        assert_eq!(at(RcovKind::Preavg, false).window_for(), Some(10));
+        assert_eq!(at(RcovKind::Kernel, false).ring_for(), Some(128));
+        for (psd, kn) in [(true, 19), (false, 10)] {
+            let mut m = Rcov::new(at(RcovKind::Preavg, psd)).unwrap();
+            feed(&mut m, &returns(100, 1, 3, 0.2));
+            assert_eq!(m.estimate().n, 100 - kn + 1, "psd = {psd}");
+        }
+    }
+
+    /// The ring of final returns holds `max_bandwidth` of them and no more,
+    /// and none at `H = 0`: the state is a ring however long the block runs
+    /// (the module doc's "a ring of `max_bandwidth + m` vectors").
+    #[test]
+    fn the_lag_ring_holds_max_bandwidth_returns() {
+        for h in [0usize, 3] {
+            let mut m = Rcov::new(RcovCfg {
+                bandwidth: Some(h),
+                max_bandwidth: Some(h),
+                ..cfg(2, RcovKind::Kernel)
+            })
+            .unwrap();
+            feed(&mut m, &returns(50, 2, 3, 0.1));
+            assert_eq!(m.fin.len(), h, "max_bandwidth {h}");
+            assert!(m.tail.len() <= m.cfg.jitter && m.head.len() <= m.cfg.jitter);
+        }
+    }
+
+    /// Each kind's shortest block with an estimate, and the block one
+    /// return shorter: `plain` from one return, which is its own outer
+    /// product; `kernel` from `2m` (one leading and one trailing jittered
+    /// return); `preavg` from `kₙ` (one pre-averaged return), the smallest
+    /// window, 2, included.
+    #[test]
+    fn the_shortest_blocks_with_an_estimate() {
+        let rows = returns(12, 2, 21, 0.2);
+        let mut m = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        feed(&mut m, &rows[..1]);
+        let e = m.estimate();
+        let x = &rows[0];
+        assert_eq!(
+            e.rcov.unwrap(),
+            vec![x[0] * x[0], x[0] * x[1], x[1] * x[0], x[1] * x[1]]
+        );
+        assert_eq!(e.n, 1);
+        for m_j in [2usize, 3] {
+            let kern = || {
+                Rcov::new(RcovCfg {
+                    jitter: m_j,
+                    bandwidth: Some(1),
+                    ..cfg(2, RcovKind::Kernel)
+                })
+                .unwrap()
+            };
+            let mut a = kern();
+            feed(&mut a, &rows[..2 * m_j]);
+            let e = a.estimate();
+            assert!(e.rcov.is_some() && e.n == 2, "jitter {m_j}, 2m rows: {e:?}");
+            let mut b = kern();
+            feed(&mut b, &rows[..2 * m_j - 1]);
+            let e = b.estimate();
+            assert!(
+                e.rcov.is_none() && e.n == 0,
+                "jitter {m_j}, 2m − 1 rows: {e:?}"
+            );
+        }
+        for kn in [2usize, 5] {
+            let pre = || {
+                Rcov::new(RcovCfg {
+                    preavg_rows: Some(kn),
+                    ..cfg(2, RcovKind::Preavg)
+                })
+                .unwrap()
+            };
+            let mut a = pre();
+            feed(&mut a, &rows[..kn]);
+            let e = a.estimate();
+            assert!(e.rcov.is_some() && e.n == 1, "window {kn}, kn rows: {e:?}");
+            let mut b = pre();
+            feed(&mut b, &rows[..kn - 1]);
+            assert!(b.estimate().rcov.is_none(), "window {kn}, kn − 1 rows");
+        }
+    }
+
+    /// A last stretch cut short by a break before its tail fills adds
+    /// nothing: the block is what the stretches before it gave.
+    #[test]
+    fn a_short_last_stretch_leaves_the_block_to_the_stretches_before_it() {
+        let rows = returns(11, 2, 33, 0.2);
+        let kern = || {
+            Rcov::new(RcovCfg {
+                bandwidth: Some(2),
+                ..cfg(2, RcovKind::Kernel)
+            })
+            .unwrap()
+        };
+        let mut first = kern();
+        feed(&mut first, &rows[..10]);
+        let want = first.estimate();
+        let mut m = kern();
+        feed(&mut m, &rows[..10]);
+        m.clear_lags();
+        feed(&mut m, &rows[10..]);
+        let got = m.estimate();
+        // A lead, the six returns between the jitters, and the trail.
+        assert_eq!((got.n, want.n), (8, 8));
+        for (g, w) in got.rcov.unwrap().iter().zip(&want.rcov.unwrap()) {
+            assert!((g - w).abs() <= 1e-12 * (1.0 + w.abs()), "{g} vs {w}");
+        }
+    }
+
+    /// Without `psd` the bias subtracted is CKP's `ψ₁/(θ²ψ₂)·RV/(2n)`, at a
+    /// `θ` other than 1. The block is `block_rows` long and `θ·√n` a whole
+    /// number, so `θ` is exactly `kₙ/√n` and the definition has no other
+    /// reading: `kₙ = 0.5·√400 = 10`.
+    #[test]
+    fn the_preaveraging_bias_carries_theta() {
+        let (k, n, theta) = (2usize, 400usize, 0.5);
+        let rows = returns(n, k, 61, 0.5);
+        let mut model = Rcov::new(RcovCfg {
+            theta,
+            block_rows: Some(n),
+            ..cfg(k, RcovKind::Preavg)
+        })
+        .unwrap();
+        assert_eq!(model.cfg().window_for(), Some(10));
+        feed(&mut model, &rows);
+        let e = model.estimate();
+        let got = e.rcov.unwrap();
+        let kn = 10usize;
+        let (p1, p2) = (psi1(kn), psi2(kn));
+        let nf = n as f64;
+        let mut sum = vec![0.0; k * k];
+        for start in 0..=(n - kn) {
+            let ybar: Vec<f64> = (0..k)
+                .map(|c| {
+                    (1..kn)
+                        .map(|j| preavg_g(j as f64 / kn as f64) * rows[start + j][c])
+                        .sum()
+                })
+                .collect();
+            for i in 0..k {
+                for j in 0..k {
+                    sum[i * k + j] += ybar[i] * ybar[j];
+                }
+            }
+        }
+        let scale = nf / (nf - kn as f64 + 2.0) / (p2 * kn as f64);
+        // `θ²` is `kₙ²/n` here, exactly.
+        let bias = p1 / (p2 * (kn * kn) as f64 / nf) / (2.0 * nf);
+        for i in 0..k {
+            for j in 0..k {
+                let raw: f64 = rows.iter().map(|x| x[i] * x[j]).sum();
+                let w = scale * sum[i * k + j] - bias * raw;
+                assert!(
+                    (got[i * k + j] - w).abs() <= 1e-9 * (1.0 + w.abs()),
+                    "[{i}][{j}]: {} vs {w}",
+                    got[i * k + j]
+                );
+            }
+        }
+        assert_eq!(e.n, (n - kn + 1) as i64);
+    }
+
+    /// A variance near the top of the range survives the symmetrizing,
+    /// which averages only the entries off the diagonal: averaging one with
+    /// itself would add two numbers past half of `f64::MAX`.
+    #[test]
+    fn a_variance_near_the_top_of_the_range_stays_finite() {
+        let mut m = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        let x = [1.2e154, 1.0];
+        m.step(&x, &[], 1.0, 1.0);
+        let cov = m.estimate().rcov.unwrap();
+        assert!(cov[0] > f64::MAX / 2.0 && cov[0].is_finite(), "{cov:?}");
+        assert_eq!(
+            cov,
+            vec![x[0] * x[0], x[0] * x[1], x[1] * x[0], x[1] * x[1]]
+        );
+    }
+
+    /// `rcorr` is `cov_ij / √(cov_ii·cov_jj)`, over three columns, one of
+    /// them moving against the others.
+    #[test]
+    fn the_correlation_is_its_definition() {
+        let k = 3;
+        let rows: Vec<Vec<f64>> = returns(80, k, 51, 0.2)
+            .into_iter()
+            .map(|mut r| {
+                r[1] = -r[1];
+                r
+            })
+            .collect();
+        let mut m = Rcov::new(cfg(k, RcovKind::Plain)).unwrap();
+        feed(&mut m, &rows);
+        let corr = m.estimate().rcorr.unwrap();
+        let s = |i: usize, j: usize| rows.iter().map(|r| r[i] * r[j]).sum::<f64>();
+        for i in 0..k {
+            for j in 0..k {
+                let want = s(i, j) / (s(i, i) * s(j, j)).sqrt();
+                assert!(
+                    (corr[i * k + j] - want).abs() < 1e-12,
+                    "[{i}][{j}]: {} vs {want}",
+                    corr[i * k + j]
+                );
+            }
+        }
+        assert!(corr[1] < -0.1 && corr[2] > 0.1, "{corr:?}");
+    }
+
+    /// A variance that is not positive gives no correlation in its row or
+    /// column, whatever covariance sits beside it.
+    #[test]
+    fn no_correlation_without_a_positive_variance() {
+        for var0 in [0.0, -1.0] {
+            let c = correlation(&[var0, 0.5, 0.5, 4.0], 2);
+            assert!(c[0].is_nan() && c[1].is_nan() && c[2].is_nan(), "{c:?}");
+            assert_eq!(c[3], 1.0);
+        }
+    }
+
+    /// The PSD repair keeps the eigenvectors and sets the negative
+    /// eigenvalues to zero, worked by hand on matrices whose eigensystems
+    /// are known: `[[1, 2], [2, 1]]` has eigenvalues 3 and −1 on `(1, 1)/√2`
+    /// and `(1, −1)/√2`, so its repair is `3·(1, 1)'(1, 1)/2`, every entry
+    /// 1.5; beside a block that is positive already, that block is kept. A
+    /// matrix that is PSD already -- definite, singular or zero -- comes back
+    /// as it went in and is not reported repaired; one that is not finite
+    /// has no decomposition.
+    #[test]
+    fn the_psd_repair_clips_the_negative_eigenvalues_alone() {
+        let close = |got: &[f64], want: &[f64]| {
+            got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-12)
+        };
+        let (got, fixed) = clip_psd(&[1.0, 2.0, 2.0, 1.0], 2).unwrap();
+        assert!(fixed && close(&got, &[1.5; 4]), "{got:?}");
+        let (got, fixed) = clip_psd(&[1.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 5.0], 3).unwrap();
+        assert!(
+            fixed && close(&got, &[1.5, 1.5, 0.0, 1.5, 1.5, 0.0, 0.0, 0.0, 5.0]),
+            "{got:?}"
+        );
+        for (cov, k) in [
+            (vec![2.0, 1.0, 1.0, 2.0], 2),
+            (vec![1.0, 0.0, 0.0, 0.0], 2),
+            (vec![0.0; 4], 2),
+        ] {
+            assert_eq!(clip_psd(&cov, k), Some((cov.clone(), false)), "{cov:?}");
+        }
+        assert_eq!(clip_psd(&[1.0, f64::NAN, f64::NAN, 1.0], 2), None);
+        assert_eq!(clip_psd(&[f64::INFINITY, 0.0, 0.0, 1.0], 2), None);
     }
 }

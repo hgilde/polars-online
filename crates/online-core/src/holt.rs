@@ -1038,4 +1038,52 @@ mod tests {
         let c: HoltCfg = serde_json::from_str(json).expect("loads without the field");
         assert!(c.trend, "the omitted field is the trend on");
     }
+
+    /// Each target's weight is its level's, decayed over the clock since the
+    /// target was last seen: `Σᵢ wᵢ·2^(−(T − tᵢ)/h)` over the rows that
+    /// carried it, `T` the clock now and `h` the level's half-life. The
+    /// second target is absent on the last rows, so its weight has aged
+    /// since; a zero-weight row carries nothing.
+    #[test]
+    fn a_targets_weight_is_its_rows_decayed_to_now() {
+        let h = 4.0;
+        let mut m = Holt::new(HoltCfg {
+            n_targets: 2,
+            ..cfg(h, 8.0)
+        })
+        .unwrap();
+        let mut clock = 0.0;
+        let mut carried: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
+        for i in 0..12usize {
+            let d = 0.5 + 0.75 * (i % 3) as f64;
+            clock += d;
+            let w = if i == 5 {
+                0.0
+            } else {
+                0.5 + 0.25 * (i % 4) as f64
+            };
+            let y = [Some(i as f64), (i % 4 != 3 && i < 9).then(|| -(i as f64))];
+            m.step(&[], &y, d, w);
+            for t in 0..2 {
+                if y[t].is_some() && w > 0.0 {
+                    carried[t].push((clock, w));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        assert!(m.target_n_eff_into(&mut out));
+        assert_eq!(out.len(), 2);
+        for t in 0..2 {
+            let want: f64 = carried[t]
+                .iter()
+                .map(|(at, w)| w * (-(clock - at) / h).exp2())
+                .sum();
+            assert!(
+                (out[t] - want).abs() <= 1e-12 * want,
+                "target {t}: {} vs {want}",
+                out[t]
+            );
+        }
+        assert!(m.since[1] > 0.0, "the second target has aged since");
+    }
 }

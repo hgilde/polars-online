@@ -926,3 +926,503 @@ pub(crate) fn gram_parts(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Footprint;
+
+    /// One row of a test stream: the feature row, each target, the row's
+    /// weight.
+    type Row = (Vec<f64>, Vec<Option<f64>>, f64);
+
+    /// What a shape test breaks, and how.
+    type Corruption<'a, T> = (&'a str, &'a dyn Fn(&mut T));
+
+    /// The definition of what the accumulators hold, straight from the rows:
+    /// with each row's weight as given, over every row the weight `W` and
+    /// the mean `m` of `z`; over the rows target `j` is present on, its
+    /// weight `W_j`, the means `m_j` of `z` and `ȳ_j` of `y_j`, and `c_j =
+    /// Σ w·(z − m_j)(y_j − ȳ_j) / W_j`.
+    struct Pooled {
+        w: f64,
+        m: Vec<f64>,
+        wj: Vec<f64>,
+        mj: Vec<Vec<f64>>,
+        my: Vec<f64>,
+        c: Vec<Vec<f64>>,
+    }
+
+    fn pooled(rows: &[Row]) -> Pooled {
+        let (k, n) = (rows[0].0.len(), rows[0].1.len());
+        let mean = |on: &dyn Fn(&Row) -> bool, of: &dyn Fn(&Row) -> f64| {
+            let (mut s, mut w) = (0.0, 0.0);
+            for r in rows.iter().filter(|r| on(r)) {
+                s += r.2 * of(r);
+                w += r.2;
+            }
+            s / w
+        };
+        let all = |_: &Row| true;
+        let w: f64 = rows.iter().map(|r| r.2).sum();
+        let m = (0..k).map(|i| mean(&all, &|r| r.0[i])).collect();
+        let (mut wj, mut mj, mut my, mut c) = (vec![], vec![], vec![], vec![]);
+        for j in 0..n {
+            let on = |r: &Row| r.1[j].is_some();
+            let yj = |r: &Row| r.1[j].unwrap_or(f64::NAN);
+            wj.push(rows.iter().filter(|r| on(r)).map(|r| r.2).sum());
+            let y = mean(&on, &yj);
+            let z: Vec<f64> = (0..k).map(|i| mean(&on, &|r| r.0[i])).collect();
+            c.push(
+                (0..k)
+                    .map(|i| mean(&on, &|r| (r.0[i] - z[i]) * (yj(r) - y)))
+                    .collect(),
+            );
+            my.push(y);
+            mj.push(z);
+        }
+        Pooled {
+            w,
+            m,
+            wj,
+            mj,
+            my,
+            c,
+        }
+    }
+
+    fn close(got: f64, want: f64, tol: f64) -> bool {
+        (got - want).abs() <= tol * want.abs().max(1.0)
+    }
+
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// Two features and two targets, the second absent on every third row,
+    /// at a level so a slip in a mean shows.
+    fn stream(n: usize, seed: u64) -> Vec<Row> {
+        let mut s = seed;
+        (0..n)
+            .map(|i| {
+                let z = vec![5.0 + lcg(&mut s), -3.0 + 2.0 * lcg(&mut s)];
+                let y0 = 1.0 + 2.0 * z[0] - z[1] + 0.3 * lcg(&mut s);
+                let y1 = (i % 3 != 0).then(|| 4.0 - z[0] + 0.5 * lcg(&mut s));
+                (z, vec![Some(y0), y1], 0.5 + 0.25 * (i % 4) as f64)
+            })
+            .collect()
+    }
+
+    /// The rows into fresh accumulators, `lam` a row after the first.
+    fn learned(rows: &[Row], lam: f64, gaps: TargetGaps) -> Acc {
+        let mut acc = Acc::new(rows[0].1.len(), rows[0].0.len(), 0, true);
+        for (i, (z, y, w)) in rows.iter().enumerate() {
+            acc.learn(z, y, if i == 0 { 1.0 } else { lam }, *w, gaps);
+        }
+        acc
+    }
+
+    /// Each row's weight decayed to the last row, `lam` a row.
+    fn decayed(rows: &[Row], lam: f64) -> Vec<Row> {
+        let n = rows.len();
+        rows.iter()
+            .enumerate()
+            .map(|(i, (z, y, w))| (z.clone(), y.clone(), w * lam.powi((n - 1 - i) as i32)))
+            .collect()
+    }
+
+    #[test]
+    fn a_rows_share_of_nothing_is_nothing() {
+        assert_eq!(row_share(3.0, 1.0), 0.25);
+        assert_eq!(row_share(0.0, 2.0), 1.0);
+        // No weight carried and none added: 0, not 0/0 (hard rule 9).
+        assert_eq!(row_share(0.0, 0.0), 0.0);
+    }
+
+    /// PLAN §13 for the cross-moments: the accumulators with a snapshot
+    /// subtracted are those of the rows after it, every one of them -- the
+    /// weight and mean over every row, and each target's weight, means and
+    /// centred cross-moment over its own rows -- as the definition computes
+    /// them from those rows alone.
+    #[test]
+    fn a_window_is_the_moments_of_the_rows_inside_it() {
+        let (lam, n, s) = (0.9_f64, 40, 25);
+        let rows = stream(n, 3);
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let mut acc = learned(&rows[..s], lam, gaps);
+            let snap = acc.snapshot(lam);
+            for (z, y, w) in &rows[s..] {
+                acc.learn(z, y, lam, *w, gaps);
+            }
+            let f = lam.powi((n - 1 - s) as i32);
+            let view = acc.window(&snap, f).expect("rows have aged out");
+            let want = pooled(&decayed(&rows[s..], lam));
+            let tol = 1e-9;
+            assert!(close(view.cross.w, want.w, tol), "{gaps:?} w");
+            for i in 0..2 {
+                let (got, w) = (view.cross.m[i], want.m[i]);
+                assert!(close(got, w, tol), "{gaps:?} m[{i}]: {got} against {w}");
+            }
+            for j in 0..2 {
+                assert!(close(view.wj[j], want.wj[j], tol), "{gaps:?} wj[{j}]");
+                assert!(close(view.cross.my[j], want.my[j], tol), "{gaps:?} my[{j}]");
+                for i in 0..2 {
+                    let (got, w) = (view.cross.mj[j][i], want.mj[j][i]);
+                    assert!(
+                        close(got, w, tol),
+                        "{gaps:?} mj[{j}][{i}]: {got} against {w}"
+                    );
+                    let (got, w) = (view.cross.c[j][i], want.c[j][i]);
+                    assert!(
+                        close(got, w, tol),
+                        "{gaps:?} c[{j}][{i}]: {got} against {w}"
+                    );
+                }
+            }
+            // The second target's own rows are not every row: the test reads
+            // two different means of each feature.
+            assert!((want.mj[1][0] - want.m[0]).abs() > 1e-3);
+        }
+    }
+
+    /// A window is empty below `EMPTY_FRACTION` of the live weight, at any
+    /// scale of the weight: half the fraction left is nothing, twice it is
+    /// a window. A window with nothing at all left is empty too.
+    #[test]
+    fn an_empty_window_is_a_fraction_of_the_weight_at_any_scale() {
+        for scale in [1e-3, 1.0, 1e3] {
+            let mut live = Cross::new(1, 1);
+            live.w = scale;
+            assert!(live.truncated(&live, 1.0, &[None]).is_none(), "{scale}");
+            for (left, empty) in [(0.5, true), (2.0, false)] {
+                let mut old = live.clone();
+                old.w = scale * (1.0 - left * EMPTY_FRACTION);
+                let got = live.truncated(&old, 1.0, &[None]);
+                assert_eq!(got.is_none(), empty, "{left} of the fraction at {scale}");
+            }
+        }
+    }
+
+    /// Mixing toward a twin is the mixture of the two data sets, `1 − f` of
+    /// this side's and `f` of the twin's, each normalised to its own weight
+    /// (docs/PLAN.md task 145): computed from the pooled rows, the Gram's
+    /// mean and co-moments over every row, the all-row mean, and each
+    /// target's means and centred cross-moment over its own rows. The
+    /// weights stay this side's.
+    #[test]
+    fn a_blend_is_the_mixture_of_the_two_data_sets() {
+        let (lam, f) = (0.95_f64, 0.3_f64);
+        let (mine, theirs) = (stream(30, 5), stream(30, 6));
+        let mut fast = learned(&mine, lam, TargetGaps::Pairwise);
+        let slow = learned(&theirs, lam, TargetGaps::Pairwise);
+        let (w_before, wj_before) = (fast.cross.w, fast.wj.clone());
+        assert!(fast.blend(&slow, f));
+        // The pool: each side's rows at their decayed weights, scaled so the
+        // side sums to its share -- per target, of that target's weight.
+        let (a, b) = (decayed(&mine, lam), decayed(&theirs, lam));
+        let (pa, pb) = (pooled(&a), pooled(&b));
+        let scaled = |rows: &[Row], share: f64, total: f64, j: Option<usize>| -> Vec<Row> {
+            rows.iter()
+                .filter(|r| j.is_none_or(|j| r.1[j].is_some()))
+                .map(|(z, y, w)| (z.clone(), y.clone(), share * w / total))
+                .collect()
+        };
+        let all: Vec<Row> = [scaled(&a, 1.0 - f, pa.w, None), scaled(&b, f, pb.w, None)].concat();
+        let want = pooled(&all);
+        let tol = 1e-10;
+        let gram = &fast.grams.grams[0];
+        for i in 0..2 {
+            assert!(close(fast.cross.m[i], want.m[i], tol), "m[{i}]");
+            assert!(close(gram.mean(i), want.m[i], tol), "the Gram's mean {i}");
+            for k in 0..2 {
+                let pool: f64 = all
+                    .iter()
+                    .map(|r| r.2 * (r.0[i] - want.m[i]) * (r.0[k] - want.m[k]))
+                    .sum();
+                let got = gram.comoments()[i * 2 + k];
+                assert!(
+                    close(got, pool, tol),
+                    "the Gram's C[{i}][{k}]: {got} against {pool}"
+                );
+            }
+        }
+        for j in 0..2 {
+            let own = pooled(
+                &[
+                    scaled(&a, 1.0 - f, pa.wj[j], Some(j)),
+                    scaled(&b, f, pb.wj[j], Some(j)),
+                ]
+                .concat(),
+            );
+            assert!(close(fast.cross.my[j], own.my[j], tol), "my[{j}]");
+            for i in 0..2 {
+                assert!(
+                    close(fast.cross.mj[j][i], own.mj[j][i], tol),
+                    "mj[{j}][{i}]"
+                );
+                let (got, w) = (fast.cross.c[j][i], own.c[j][i]);
+                assert!(close(got, w, tol), "c[{j}][{i}]: {got} against {w}");
+            }
+        }
+        assert_eq!((fast.cross.w, &fast.wj), (w_before, &wj_before));
+        assert_eq!(gram.n_eff(), w_before);
+    }
+
+    /// A blend mixes only what both sides have weight in: nothing at all
+    /// when either side has none, and per target only a target both sides
+    /// have seen -- the other keeps its moments as they were.
+    #[test]
+    fn a_blend_moves_only_what_both_sides_have() {
+        let gaps = TargetGaps::Pairwise;
+        let fresh = Acc::new(2, 2, 0, true);
+        let full = learned(&stream(20, 8), 0.9, gaps);
+        for (what, mine, theirs) in [
+            ("a twin with nothing", &full, &fresh),
+            ("nothing toward a twin", &fresh, &full),
+        ] {
+            let mut acc = mine.clone();
+            assert!(!acc.blend(theirs, 0.3), "{what}");
+            assert_eq!(&acc, mine, "{what}");
+        }
+        // The second target on one side's rows only.
+        let without: Vec<Row> = stream(20, 9)
+            .into_iter()
+            .map(|(z, y, w)| (z, vec![y[0], None], w))
+            .collect();
+        let partial = learned(&without, 0.9, gaps);
+        for (what, mine, theirs) in [
+            ("a target the twin never saw", &full, &partial),
+            ("a target this side never saw", &partial, &full),
+        ] {
+            let mut acc = mine.clone();
+            assert!(acc.blend(theirs, 0.3), "{what}: the first target mixes");
+            assert_ne!(acc.cross.my[0], mine.cross.my[0], "{what}");
+            assert_eq!(acc.wj[1], mine.wj[1], "{what}");
+            assert_eq!(acc.cross.my[1], mine.cross.my[1], "{what}");
+            assert_eq!(acc.cross.mj[1], mine.cross.mj[1], "{what}");
+            assert_eq!(acc.cross.c[1], mine.cross.c[1], "{what}");
+            assert_eq!(acc.tm.means()[1], mine.tm.means()[1], "{what}");
+            assert_eq!(acc.tm.vars()[1], mine.tm.vars()[1], "{what}");
+        }
+    }
+
+    /// At the head of a stream a row of no weight parts the targets present
+    /// on it from those absent: there is no weight to age, so the present
+    /// ones' Gram refuses the row (`W' = 0`) where the absent ones' ages
+    /// over it, and the two no longer take the same steps -- the prior's
+    /// scale shows it. With weight to age, the same row parts nothing.
+    #[test]
+    fn a_row_of_no_weight_parts_the_targets_only_where_there_is_no_weight_to_age() {
+        let mut g = Grams::new(2, 2, 0, false);
+        g.update(
+            &[1.0, 2.0],
+            &[Some(3.0), None],
+            0.5,
+            0.0,
+            TargetGaps::OwnRows,
+        );
+        assert_eq!((g.grams.len(), g.of.clone()), (2, vec![0, 1]));
+        assert_eq!(g.grams[0].prior_scale(), 1.0, "refused");
+        assert_eq!(g.grams[1].prior_scale(), 0.5, "aged");
+
+        let mut g = Grams::new(2, 2, 0, false);
+        let both = [Some(3.0), Some(1.0)];
+        g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows);
+        g.update(
+            &[1.0, 2.0],
+            &[Some(3.0), None],
+            0.5,
+            0.0,
+            TargetGaps::OwnRows,
+        );
+        assert_eq!((g.grams.len(), g.of.clone()), (1, vec![0, 0]));
+    }
+
+    /// One corruption per condition [`Cross::has_shape`] checks, each refused
+    /// alone.
+    #[test]
+    fn each_part_of_the_cross_moments_shape_is_checked_alone() {
+        let good = Cross::new(2, 3);
+        assert!(good.has_shape(2, 3));
+        let parts: [Corruption<Cross>; 6] = [
+            ("a slot short in m", &|c: &mut Cross| {
+                c.m.pop();
+            }),
+            ("a target short in my", &|c: &mut Cross| {
+                c.my.pop();
+            }),
+            ("a target too many in mj", &|c: &mut Cross| {
+                c.mj.push(vec![0.0; 3]);
+            }),
+            ("a target short in c", &|c: &mut Cross| {
+                c.c.pop();
+            }),
+            ("a slot short in one mj", &|c: &mut Cross| {
+                c.mj[1].pop();
+            }),
+            ("a target short in mj_lo", &|c: &mut Cross| {
+                c.mj_lo.pop();
+            }),
+        ];
+        for (what, corrupt) in parts {
+            let mut c = good.clone();
+            corrupt(&mut c);
+            assert!(!c.has_shape(2, 3), "{what}");
+        }
+        let mut old = good.clone();
+        old.mj_lo.clear();
+        assert!(old.has_shape(2, 3), "a state written before the low parts");
+    }
+
+    /// One corruption per condition [`Acc::has_shape`] checks, each refused
+    /// alone: a Gram of another width, a reader too many, a reader of a Gram
+    /// that does not exist, a Gram nobody reads, a target short in the
+    /// weights, and one too many in the target moments.
+    #[test]
+    fn each_part_of_the_accumulators_shape_is_checked_alone() {
+        let good = learned(&stream(6, 2), 0.9, TargetGaps::OwnRows);
+        assert!(good.has_shape(2, 2));
+        assert_eq!(good.grams.grams.len(), 2, "the second target split off");
+        let parts: [Corruption<Acc>; 6] = [
+            ("a Gram of three slots", &|a: &mut Acc| {
+                a.grams.grams[0] = EwCov::new(3);
+            }),
+            ("a third reader", &|a: &mut Acc| a.grams.of.push(0)),
+            ("a reader past the Grams", &|a: &mut Acc| {
+                a.grams.grams.truncate(1);
+            }),
+            ("a Gram nobody reads", &|a: &mut Acc| {
+                a.grams.of = vec![0, 0];
+            }),
+            ("a target short in the weights", &|a: &mut Acc| {
+                a.wj.pop();
+            }),
+            ("a target too many in the moments", &|a: &mut Acc| {
+                a.tm = TargetMoments::new(3);
+            }),
+        ];
+        for (what, corrupt) in parts {
+            let mut a = good.clone();
+            corrupt(&mut a);
+            assert!(!a.has_shape(2, 2), "{what}");
+        }
+    }
+
+    /// A snapshot's copy of the cross-moments counts every vector it holds:
+    /// the weight, `k + T` means, `T·k` own means and as many cross-moments,
+    /// and the low parts where they are kept -- a snapshot keeps none.
+    #[test]
+    fn the_cross_moments_footprint_counts_every_vector() {
+        let (t, k) = (2, 3);
+        let live = Cross::new(t, k);
+        let floats = 1 + k + t + (k + t) + 3 * t * k;
+        assert_eq!(live.footprint(), 8 * floats);
+        let snap = Acc::new(t, k, 0, true).snapshot(1.0);
+        assert_eq!(snap.cross.footprint(), 8 * (1 + k + t + 2 * t * k));
+    }
+
+    /// The window's weights are each zero below `EMPTY_FRACTION` of the live
+    /// one, judged at any scale, and so is a target's in the window's
+    /// moments: over every row (1e-10 left of 1e3), and per target while
+    /// the window holds other rows (the second target's 1e-10 of 1e3 beside
+    /// the first's whole row). At the fraction exactly it is nothing too: 1
+    /// of 1e12, whose fraction is the double 1.
+    #[test]
+    fn a_window_weight_at_or_below_the_fraction_is_nothing() {
+        let gaps = TargetGaps::OwnRows;
+        let both = |w: f64| (vec![0.5, 1.0], vec![Some(1.0), Some(2.0)], w);
+        let first = |w: f64| (vec![1.5, -1.0], vec![Some(3.0), None], w);
+        let second = |w: f64| (vec![-0.5, 2.0], vec![None, Some(-1.0)], w);
+        let windowed = |before: &[Row], after: &[Row]| {
+            let mut acc = learned(before, 1.0, gaps);
+            let snap = acc.snapshot(1.0);
+            for (z, y, w) in after {
+                acc.learn(z, y, 1.0, *w, gaps);
+            }
+            (acc, snap)
+        };
+        // Over every row.
+        let (acc, snap) = windowed(&[both(1e3)], &[both(1e-10)]);
+        assert_eq!(acc.window_weights(&snap, 1.0), Some((0.0, vec![0.0, 0.0])));
+        // The second target alone.
+        let (acc, snap) = windowed(&[both(1e3)], &[first(1.0), second(1e-10)]);
+        let (w, wj) = acc.window_weights(&snap, 1.0).unwrap();
+        assert!(close(w, 1.0, 1e-9) && close(wj[0], 1.0, 1e-9), "{w} {wj:?}");
+        assert_eq!(wj[1], 0.0);
+        let view = acc.window(&snap, 1.0).unwrap();
+        assert_eq!(view.wj[1], 0.0);
+        assert!(close(view.wj[0], 1.0, 1e-9));
+        // At the fraction exactly.
+        let (acc, snap) = windowed(&[both(999_999_999_999.0)], &[both(1.0), first(1e6)]);
+        assert_eq!(acc.wj[1] - snap.wj[1], EMPTY_FRACTION * acc.wj[1]);
+        let (_, wj) = acc.window_weights(&snap, 1.0).unwrap();
+        assert_eq!(wj[1], 0.0);
+        let view = acc.window(&snap, 1.0).unwrap();
+        assert_eq!(view.wj[1], 0.0);
+    }
+
+    /// A target never seen has nothing in the window: weight 0 and every
+    /// moment 0, not the 0/0 of a share of no weight.
+    #[test]
+    fn a_target_never_seen_reads_nothing_in_the_window() {
+        let rows: Vec<Row> = stream(12, 4)
+            .into_iter()
+            .map(|(z, y, w)| (z, vec![y[0], None], w))
+            .collect();
+        let mut acc = learned(&rows[..6], 0.9, TargetGaps::Pairwise);
+        let snap = acc.snapshot(0.9);
+        for (z, y, w) in &rows[6..] {
+            acc.learn(z, y, 0.9, *w, TargetGaps::Pairwise);
+        }
+        let view = acc.window(&snap, 0.9_f64.powi(5)).unwrap();
+        assert!(view.cross.w > 0.0);
+        assert_eq!(view.wj[1], 0.0);
+        assert_eq!(view.cross.my[1], 0.0);
+        assert_eq!(view.cross.mj[1], [0.0, 0.0]);
+        assert_eq!(view.cross.c[1], [0.0, 0.0]);
+    }
+
+    /// Kish's count inside the window is no count where the window holds no
+    /// weight -- at or below `EMPTY_FRACTION` of the Gram's, at any scale --
+    /// whatever its Kish sum's remainder says, and none where that sum
+    /// rounds to nothing beside a weight that does not: a row of 1e-9 after
+    /// one of 1 leaves `Q = 1 + 1e-18 = 1`. The snapshots' Kish sums are
+    /// set by hand to leave the remainder a rounding could.
+    #[test]
+    fn the_windowed_kish_count_needs_weight_and_a_kish_sum() {
+        let gaps = TargetGaps::Pairwise;
+        let row = |w: f64| (vec![0.5, 1.0], vec![Some(1.0)], w);
+        let windowed = |before: f64, after: Option<f64>| {
+            let mut acc = learned(&[row(before)], 1.0, gaps);
+            let snap = acc.snapshot(1.0);
+            if let Some(w) = after {
+                let (z, y, _) = row(w);
+                acc.learn(&z, &y, 1.0, w, gaps);
+            }
+            (acc, snap)
+        };
+        // A Kish sum that rounds to nothing.
+        let (acc, snap) = windowed(1.0, Some(1e-9));
+        assert_eq!(acc.grams.grams[0].q_sum(), Some(1.0));
+        assert_eq!(acc.window_kish(&snap, 1.0), Some(vec![None]));
+        // A window with no weight left, beside a Kish sum's remainder.
+        for (before, after) in [
+            (1.0, None),
+            (1e3, Some(1e-10)),
+            (999_999_999_999.0, Some(1.0)),
+        ] {
+            let (acc, mut snap) = windowed(before, after);
+            let q = acc.grams.grams[0].q_sum().unwrap();
+            snap.grams.grams[0].q = Some(0.5 * q);
+            let got = acc.window_kish(&snap, 1.0);
+            assert_eq!(got, Some(vec![None]), "{before} {after:?}");
+        }
+        // And a window with weight and a Kish sum has its count.
+        let (acc, snap) = windowed(1.0, Some(3.0));
+        let got = acc.window_kish(&snap, 1.0).unwrap()[0].unwrap();
+        assert!(close(got, 1.0, 1e-12), "{got}");
+    }
+}

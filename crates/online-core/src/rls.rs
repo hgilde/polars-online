@@ -751,4 +751,118 @@ mod tests {
             );
         }
     }
+
+    /// Task 158: the same rows at a power of two of the scale, with the
+    /// prior moved with them, are the same fit -- `A` and every `b_j` scale
+    /// by its square, so `beta = A^-1 b` does not move. `pre`, a clock
+    /// step, feeds the scaled model two zero-weight rows of it first, which
+    /// decay its prior to the scale's square of the twin's.
+    fn assert_scale_free(cfg: RlsCfg, twin: RlsCfg, scale: f64, pre: Option<f64>) {
+        let mut scaled = Rls::new(cfg).unwrap();
+        let mut unit = Rls::new(twin).unwrap();
+        if let Some(d) = pre {
+            for _ in 0..2 {
+                scaled.step(&[0.0, 0.0], &[Some(0.0)], d, 0.0);
+            }
+        }
+        let mut s = 5u64;
+        for _ in 0..30 {
+            let u = [lcg(&mut s), lcg(&mut s)];
+            let v = 2.0 * u[0] - u[1] + 0.1 * lcg(&mut s);
+            scaled.step(&[scale * u[0], scale * u[1]], &[Some(scale * v)], 0.0, 1.0);
+            unit.step(&u, &[Some(v)], 0.0, 1.0);
+        }
+        let (a, b) = (&scaled.coefficients()[0], &unit.coefficients()[0]);
+        assert!((b[0] - 2.0).abs() < 0.2, "the fixture is a fit: {b:?}");
+        for i in 0..2 {
+            assert!(
+                (a[i] - b[i]).abs() <= 1e-12 * b[i].abs(),
+                "at {scale:e}, slot {i}: {} against {}",
+                a[i],
+                b[i]
+            );
+        }
+    }
+
+    fn origin_cfg(hl: f64, ridge: f64) -> RlsCfg {
+        RlsCfg {
+            fit_intercept: false,
+            ..rls_cfg(2, 1, hl, ridge)
+        }
+    }
+
+    /// A row whose squares overflow (`2^700`, past `1e154`) is rotated in by
+    /// `hypot`, which scales internally: the fit is the one the same rows
+    /// give at scale 1. The prior there is `2^-200`, as negligible beside the
+    /// rows as a prior of 1 is beside rows at `2^700`.
+    #[test]
+    fn a_row_whose_squares_overflow_is_rotated_in_by_hypot() {
+        let scale = 2f64.powi(700);
+        assert!((scale * scale).is_infinite(), "the squares overflow");
+        assert_scale_free(
+            origin_cfg(f64::INFINITY, 1.0),
+            origin_cfg(f64::INFINITY, 2f64.powi(-200)),
+            scale,
+            None,
+        );
+    }
+
+    /// A row whose squares underflow to 0 (`2^-560`) is rotated in by `hypot`
+    /// too, where `0/0` would have poisoned the factor. Two zero-weight rows
+    /// of 560 half-lives first take the prior's factor to `2^-560` with the
+    /// rows, so the scaled system is the unit one times `2^-1120`.
+    #[test]
+    fn a_row_whose_squares_underflow_is_rotated_in_by_hypot() {
+        let scale = 2f64.powi(-560);
+        assert_eq!(scale * scale, 0.0, "the squares underflow");
+        assert_scale_free(
+            origin_cfg(1.0, 1.0),
+            origin_cfg(f64::INFINITY, 1.0),
+            scale,
+            Some(560.0),
+        );
+    }
+
+    /// A rotation whose `hypot` itself overflows (two entries at `1.5e308`)
+    /// cannot be represented, and the row is not taken in that direction:
+    /// two rows on `y = x` still give the line's slope, 1.
+    #[test]
+    fn a_rotation_that_overflows_is_not_taken() {
+        let mut m = Rls::new(RlsCfg {
+            n_features: 1,
+            ..origin_cfg(f64::INFINITY, 1.0)
+        })
+        .unwrap();
+        let x = 1.5e308f64;
+        assert!(x.hypot(x).is_infinite(), "the second rotation overflows");
+        m.step(&[x], &[Some(x)], 0.0, 1.0);
+        assert_eq!(m.coefficients()[0], vec![1.0], "the first row's slope");
+        m.step(&[x], &[Some(x)], 0.0, 1.0);
+        assert_eq!(m.coefficients()[0], vec![1.0], "and still the line's");
+        assert_eq!(m.predict(&[1.0], 1.0).pred[0], 1.0);
+    }
+
+    /// Task 158: each per-target vector is held to the cfg's count and to
+    /// its width on load, the count and the width each on its own.
+    #[test]
+    fn a_state_whose_target_vectors_are_the_wrong_shape_is_refused() {
+        let m = Rls::new(rls_cfg(2, 1, 100.0, 1.0)).unwrap();
+        type Spoil = (&'static str, fn(&mut Rls));
+        let cases: [Spoil; 4] = [
+            ("one u too many", |m| m.u.push(vec![0.0; 3])),
+            ("a short u", |m| m.u[0].truncate(2)),
+            ("one beta too many", |m| m.beta.push(vec![0.0; 3])),
+            ("a short beta", |m| m.beta[0].truncate(2)),
+        ];
+        for (what, spoil) in cases {
+            let mut bad = m.clone();
+            spoil(&mut bad);
+            let s = State::new(ModelState::Rls(Box::new(bad)));
+            match Rls::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+        assert!(Rls::restore(&m.state()).is_ok());
+    }
 }

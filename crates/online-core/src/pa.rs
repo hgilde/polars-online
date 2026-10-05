@@ -740,4 +740,62 @@ mod tests {
         c.eps = -1.0;
         assert!(Pa::new(c).is_err());
     }
+
+    /// Rows that teach nothing move nothing, to the bit. Under a sum
+    /// constraint that holds only if such a row is never projected: the
+    /// projection is not idempotent in the last bits (projecting its own
+    /// output moves a coordinate by an ulp about two times in five). So: a
+    /// zero-weight row however far off the fit (hard rule 9), and a target
+    /// that is not finite.
+    #[test]
+    fn a_row_that_teaches_nothing_moves_nothing() {
+        use crate::OnlineModel;
+        let bits = |m: &Pa| {
+            m.coefficients()
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let mut c = cfg(3, PaMode::Pa1);
+        c.min_weight = 0.0;
+        c.constraint = Some(Constraint {
+            lo: vec![f64::NEG_INFINITY; 3],
+            hi: vec![f64::INFINITY; 3],
+            sum: Some(1.0),
+        });
+        let mut m = Pa::new(c).unwrap();
+        let mut s = 11u64;
+        for i in 0..40 {
+            let x = [3.0 * lcg(&mut s), 3.0 * lcg(&mut s), 3.0 * lcg(&mut s)];
+            let y = x[0] - 2.0 * x[1] + 0.5 * lcg(&mut s);
+            m.step(&x, &[Some(y)], 1.0, 1.0);
+            let before = bits(&m);
+            m.step(&x, &[Some(y + 10.0)], 1.0, 0.0);
+            assert_eq!(bits(&m), before, "row {i}: a zero weight");
+            m.step(&x, &[Some(f64::INFINITY)], 1.0, 1.0);
+            assert_eq!(bits(&m), before, "row {i}: an infinite target");
+        }
+    }
+
+    /// A row whose prediction overflows takes no step: its loss is infinite,
+    /// and a step from it would be permanent. One tiny feature makes a
+    /// coefficient of `1e204`, which a feature of `1e300` -- past
+    /// [`crate::INPUT_BOUND`], so the bank would have called it missing; the
+    /// guard is the model's own -- takes past `f64::MAX`.
+    #[test]
+    fn an_overflowing_prediction_takes_no_step() {
+        use crate::OnlineModel;
+        let mut c = cfg(1, PaMode::Pa);
+        c.fit_intercept = false;
+        c.min_weight = 0.0;
+        let mut m = Pa::new(c).unwrap();
+        m.step(&[1e-104], &[Some(1e100)], 1.0, 1.0);
+        let big = m.coefficients()[0][0];
+        assert!(big > 1e200 && big.is_finite(), "{big}");
+        let p = m.predict(&[1e300], 1.0).pred[0];
+        assert!(p.is_infinite(), "the prediction overflows: {p}");
+        m.step(&[1e300], &[Some(0.0)], 1.0, 1.0);
+        assert_eq!(m.coefficients()[0][0], big);
+    }
 }

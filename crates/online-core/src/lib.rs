@@ -418,3 +418,19 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
 pub const MIN_SCHEMA_VERSION: u32 = 14;
+
+#[cfg(test)]
+mod tests {
+    /// The default solve share is what its doc says it is: the share of the
+    /// steady-state weight that `half_life / 50` of clock brings. A row per
+    /// clock unit at a half-life of 500 holds `1/(1 − 2^(−1/500))` in steady
+    /// state, and ten rows bring ten of it; the two agree to `O(1/h)`.
+    #[test]
+    fn the_default_solve_share_is_a_fiftieth_of_a_half_life() {
+        let h = 500.0_f64;
+        let steady = 1.0 / (1.0 - (-1.0 / h).exp2());
+        let share = (h / 50.0) / steady;
+        let rel = (super::DEFAULT_SOLVE_SHARE - share).abs() / share;
+        assert!(rel < 1e-3, "{} vs {share}", super::DEFAULT_SOLVE_SHARE);
+    }
+}

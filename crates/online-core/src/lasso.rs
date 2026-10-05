@@ -2082,4 +2082,105 @@ mod tests {
         assert!(pred[..2].iter().all(|v| v.is_finite()), "{pred:?}");
         assert!(pred[2..].iter().all(|v| v.is_nan()), "{pred:?}");
     }
+
+    // --- the weekly pass's survivors (docs/PLAN.md task 158) --------------
+
+    /// `solve_share` is a positive, finite fraction: 0, a negative, `inf`
+    /// and NaN are refused, and a fraction accepted.
+    #[test]
+    fn solve_share_must_be_finite_and_positive() {
+        let with = |f: f64| {
+            let mut c = cfg(2, 1, vec![0.1]);
+            c.solve_share = Some(f);
+            c.validate()
+        };
+        for bad in [0.0, -0.5, f64::INFINITY, f64::NAN] {
+            let err = with(bad).unwrap_err();
+            assert!(err.contains("solve_share"), "{bad}: {err}");
+        }
+        with(0.25).unwrap();
+    }
+
+    /// The share the model runs at is the one it is given, by its cfg or
+    /// set on it later.
+    #[test]
+    fn the_solve_share_is_the_one_set() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 1, vec![0.1]);
+        c.solve_share = Some(0.25);
+        let mut m = Lasso::new(c).unwrap();
+        assert_eq!(m.solve_share(), Some(0.25));
+        m.set_solve_share(Some(0.75));
+        assert_eq!(m.solve_share(), Some(0.75));
+        m.set_solve_share(None);
+        assert_eq!(m.solve_share(), None);
+    }
+
+    /// Under `solve_share` a solve is due once the weight learned since the
+    /// last one reaches that share of `n_eff` (the row's own included), and
+    /// at the first row that meets `min_weight`; only a positive, finite
+    /// weight counts toward it. Held to that rule kept beside the model,
+    /// at weights that move and with a decay (`max_rows_between_solves` out
+    /// of reach).
+    #[test]
+    fn solve_share_solves_when_the_weight_since_reaches_its_share() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 1, vec![0.1]);
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 0.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_share = Some(0.3);
+        let mut m = Lasso::new(c).unwrap();
+        let (mut w_sum, mut since, mut first) = (0.0f64, 0.0f64, true);
+        let (mut s, mut solves) = (109u64, 0);
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if i % 7 == 3 {
+                0.0
+            } else {
+                0.25 + (lcg(&mut s) + 1.0)
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            m.step(&x, &[Some(x[0] - x[1])], d, w);
+            w_sum = 0.5f64.powf(d / 20.0) * w_sum + w;
+            since += w;
+            let due = since >= 0.3 * w_sum || first;
+            assert_eq!(m.rows_since_solve == 0, due, "row {i}");
+            if due {
+                (since, first, solves) = (0.0, false, solves + 1);
+            }
+        }
+        assert!((20..150).contains(&solves), "{solves} solves");
+        // A weight that is not finite does not count toward the share.
+        let before = m.weight_since_solve;
+        m.step(&[0.1, 0.2], &[Some(0.0)], 1.0, f64::INFINITY);
+        assert_eq!(m.weight_since_solve, before);
+    }
+
+    /// The ring's shadow is the ring: learning the rows the model learns, it
+    /// is past a refusing budget exactly when the model's ring is (docs/PLAN.md
+    /// task 115 (d)); a model without a window has none.
+    #[test]
+    fn the_window_shadow_follows_the_ring() {
+        use crate::OnlineModel;
+        let plain = Lasso::new(cfg(2, 1, vec![0.01])).unwrap();
+        assert!(plain.window_shadow().is_none());
+        let mut c = cfg(2, 1, vec![0.01]);
+        c.window = Some(40.0);
+        c.window_every = Some(2);
+        c.decay = Decay::Halflife(30.0);
+        c.min_weight = 0.0;
+        let rows = weighted_rows(2, 30, 117);
+        let mut m = run(c, &rows[..10]);
+        m.set_window_budget(Some(crate::WindowBudget::Refuse(0.002)));
+        let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
+        let mut over = 0;
+        for (x, y, w) in &rows[10..] {
+            shadow.learn(1.0);
+            m.step(x, &y[..1], 1.0, *w);
+            assert_eq!(shadow.over_budget(), m.window_over_budget());
+            over += usize::from(m.window_over_budget().is_some());
+        }
+        assert!(over > 0, "the ring went past its budget");
+    }
 }

@@ -1335,6 +1335,168 @@ mod tests {
         assert!(b.best_split(0, 0).is_none(), "one bin, constant target");
     }
 
+    /// A pair's bins are its own target's, over two targets and two features
+    /// of different bin counts: each bin's weight and mean are those of the
+    /// rows whose feature fell in it (a value on an edge counted above it)
+    /// and which carried that target.
+    #[test]
+    fn each_target_reads_its_own_bins() {
+        let edges = vec![vec![-0.5, 0.0, 0.5], vec![0.0]];
+        let mut b = MarginalBins::new(2, 2, edges.clone()).unwrap();
+        let mut seed = 9u64;
+        let mut rows = Vec::new();
+        for i in 0..60 {
+            let x = [lcg(&mut seed), lcg(&mut seed)];
+            let y = [
+                Some(3.0 * x[0] + 0.1 * lcg(&mut seed)),
+                (i % 4 != 0).then(|| 10.0 - x[1].abs()),
+            ];
+            b.update_row(&x, &y, 1.0);
+            rows.push((x, y));
+        }
+        for t in 0..2 {
+            for (j, e) in edges.iter().enumerate() {
+                let bins = b.bins(t, j);
+                assert_eq!(bins.len(), e.len() + 1);
+                for (k, bin) in bins.iter().enumerate() {
+                    let ys: Vec<f64> = rows
+                        .iter()
+                        .filter(|(x, _)| e.iter().filter(|v| **v <= x[j]).count() == k)
+                        .filter_map(|(_, y)| y[t])
+                        .collect();
+                    let n = ys.len() as f64;
+                    let mean = ys.iter().sum::<f64>() / n;
+                    assert_eq!(bin.n, n, "target {t}, feature {j}, bin {k}");
+                    assert!(
+                        (bin.mean_y - mean).abs() < 1e-12,
+                        "target {t}, feature {j}, bin {k}: {} vs {mean}",
+                        bin.mean_y
+                    );
+                }
+            }
+        }
+    }
+
+    /// `folds_at` is whether `decay` would fold: a scale that lands on
+    /// `RENORM_AT` exactly is kept and one below it folds, a factor of zero
+    /// folds, a factor that is not a number in `[0, ∞)` is refused by both,
+    /// and an empty histogram is never aged, so never folds.
+    #[test]
+    fn folds_at_is_whether_decay_folds() {
+        let mut b = MarginalBins::new(1, 1, vec![vec![0.0]]).unwrap();
+        for lam in [1e-200, 0.0] {
+            assert!(!b.folds_at(lam), "empty, {lam}");
+        }
+        b.update_row(&[1.0], &[Some(2.0)], 1.0);
+        assert_eq!(b.scale, 1.0);
+        for (lam, folds) in [
+            (RENORM_AT, false),
+            (RENORM_AT.next_down(), true),
+            (0.0, true),
+            (0.5, false),
+            (f64::NAN, false),
+            (-1.0, false),
+            (f64::INFINITY, false),
+        ] {
+            assert_eq!(b.folds_at(lam), folds, "{lam}");
+            if lam.is_finite() && lam >= 0.0 {
+                // A fold puts the scale back at 1; otherwise it is `lam`.
+                let mut c = b.clone();
+                c.decay(lam);
+                assert_eq!(c.scale == 1.0, folds, "decay({lam}) left {}", c.scale);
+            }
+        }
+    }
+
+    /// After a total gap the bins hold no weight but keep their old means.
+    /// A split read from rows that then fill some bins and not others is
+    /// the stump's on those rows alone, against the definition: the grand
+    /// mean is not taken from an empty bin's leftover, an empty bin at the
+    /// low end cuts nothing, and two cuts with an empty bin between them
+    /// split the same rows, the lower edge reported.
+    #[test]
+    fn a_split_after_a_wipe_reads_only_the_bins_that_hold_weight() {
+        let edges = vec![-1.0, 0.0, 1.0, 2.0];
+        let mut b = MarginalBins::new(1, 1, vec![edges.clone()]).unwrap();
+        for x in [-2.0, -0.5, 0.5, 1.5, 3.0] {
+            b.update_row(&[x], &[Some(1e20)], 1.0);
+        }
+        b.decay(0.0);
+        assert!(b.is_empty() && b.mean.iter().all(|m| *m == 1e20));
+        // Rows in bins 1, 2 and 4: none below -1, none in [1, 2).
+        let mut seed = 5u64;
+        let mut rows = Vec::new();
+        for i in 0..90 {
+            let u = lcg(&mut seed);
+            let (x, level) = match i % 3 {
+                0 => (-0.5 + 0.4 * u, 1.0),
+                1 => (0.5 + 0.4 * u, 1.5),
+                _ => (3.0 + 0.5 * u, 6.0),
+            };
+            let y = level + 0.3 * lcg(&mut seed);
+            b.update_row(&[x], &[Some(y)], 1.0);
+            rows.push((x, y));
+        }
+        let var_of = |rs: &[(f64, f64)]| {
+            let n = rs.len() as f64;
+            let m = rs.iter().map(|r| r.1).sum::<f64>() / n;
+            rs.iter().map(|r| (r.1 - m) * (r.1 - m)).sum::<f64>() / n
+        };
+        let total = var_of(&rows);
+        let (mut best, mut best_at) = (0.0_f64, f64::NAN);
+        for &c in &edges {
+            let (l, r): (Vec<_>, Vec<_>) = rows.iter().partition(|(x, _)| *x < c);
+            if l.is_empty() || r.is_empty() {
+                continue;
+            }
+            let (nl, nr) = (l.len() as f64, r.len() as f64);
+            let g = (total - (nl * var_of(&l) + nr * var_of(&r)) / (nl + nr)) / total;
+            if g > best {
+                best = g;
+                best_at = c;
+            }
+        }
+        let got = b.best_split(0, 0).unwrap();
+        assert!(
+            (got.gain - best).abs() < 1e-9,
+            "gain {} vs {best}",
+            got.gain
+        );
+        assert_eq!((got.at, best_at), (1.0, 1.0));
+    }
+
+    /// The budget holds a histogram whose buffers come to it exactly and
+    /// refuses one a byte over, counting bins, one more than the edges, for
+    /// every feature: three features of two edges are nine bins.
+    #[test]
+    fn the_budget_is_inclusive_and_counts_bins() {
+        let (p, t) = (3, 2);
+        let bytes = histogram_bytes(p, t, 9);
+        let at = |bytes: usize| BinCfg {
+            n_bins: 0,
+            edges: Some(vec![vec![0.0, 1.0]; 3]),
+            rule: BinRule::Quantile,
+            warm_rows: 0,
+            budget_mib: Some(bytes as f64 / (1u64 << 20) as f64),
+        };
+        assert!(at(bytes).validate(p, t).is_ok());
+        let err = at(bytes - 1).validate(p, t).unwrap_err();
+        assert!(err.contains("9 bins over 3 features x 2 targets"), "{err}");
+    }
+
+    /// Each quantile edge closes a bin of the weight still unassigned over
+    /// the bins still to come: ten equal rows into four bins close `10/4` ->
+    /// `{1, 2}`, then `8/3` -> `{3, 4}`, then `6/2` -> `{5, 6, 7}`, leaving
+    /// `{8, 9, 10}`.
+    #[test]
+    fn each_quantile_edge_shares_what_is_left() {
+        let mut v = sample(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(
+            edges_from(BinRule::Quantile, 4, &mut v),
+            vec![3.0, 5.0, 8.0]
+        );
+    }
+
     fn sample(values: &[f64]) -> Vec<(f64, f64)> {
         values.iter().map(|v| (*v, 1.0)).collect()
     }
