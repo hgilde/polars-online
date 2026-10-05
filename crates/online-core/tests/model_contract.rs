@@ -2795,6 +2795,39 @@ mod generated {
         .unwrap();
     }
 
+    /// The case that failed the scheduled mutation pass of 2026-10-04 at its
+    /// baseline (run 37194203887, shard 13), as proptest shrank it: on row
+    /// 7 a feature at the input bound, standardized against a scale the
+    /// earlier rows set, times its coefficient overflowed, and `kalman`
+    /// predicted `inf` for the second target. Kept as a named test, since
+    /// proptest cannot find this file's source to save its own regression
+    /// file (docs/PLAN.md task 158).
+    #[test]
+    fn kalman_at_the_input_bound_predicts_a_number_or_nothing() {
+        let row = |x: [f64; 2], y: Option<f64>, d: f64, w: f64| GenRow {
+            x: x.to_vec(),
+            y: vec![None, y],
+            d,
+            w,
+        };
+        let rows = [
+            row([-1.197488167584902, 0.0], Some(0.0), 1.0, 2.785109721135609),
+            row([0.0, 0.0], None, 4.697822926878844, 0.0),
+            row(
+                [-2.982070606445263, 4.622005473946053e49],
+                Some(0.0),
+                1.0,
+                1.0,
+            ),
+            row([-0.6358232128145591, 0.0], Some(INPUT_BOUND), 1.0, 1e100),
+            row([0.0, 0.0], None, 1.0, 0.0),
+            row([0.0, 0.2675076319235289], Some(0.0), 1.0, 1.0),
+            row([-INPUT_BOUND, 0.5], Some(0.0), 0.0, 1.0),
+            row([0.0, INPUT_BOUND], None, 1.0, 1.0),
+        ];
+        contract(|| Kalman::new(kalman_cfg()).unwrap(), &rows, 0).unwrap();
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 

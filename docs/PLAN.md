@@ -7332,9 +7332,19 @@ tick, and that the series holding it up has a count near 1.
       through all the survivors and fix the cause of the last task
       failure." First the cause: proptest's generated stream for `kalman`,
       with features near `±1e100`, a feature of `4.6e49`, weights and a
-      target at `1e100`, made row 7 predict `[NaN, inf]`. Its case goes
-      into `model_contract.proptest-regressions`, and a named test holds
-      the fix. Then the 1,272 survivors of run 37217857544, file by file:
+      target at `1e100`, made row 7 predict `[NaN, inf]`: a feature at the
+      input bound, standardized against a scale the earlier rows set,
+      times its coefficient overflowed `z . beta`. `step` already skipped
+      the update such a row would poison (IMPROVEMENTS C2), but emitted the
+      prediction. *Fixed 2026-10-05:* `step` and `predict` both withhold a
+      prediction that is not a number, as NaN, which the bank writes as a
+      null. The shrunk case is the named test
+      `generated::kalman_at_the_input_bound_predicts_a_number_or_nothing`,
+      since proptest cannot find that file's source to save a regression
+      file; it failed on the old code with the scheduled run's own message.
+      Sixteen runs of every model's generated stream, about 2,000 cases
+      each, found nothing more. Then the 1,272 survivors of run
+      37217857544, file by file:
       each is killed by a Rust test (the only tests cargo-mutants sees), or
       named an equivalent in `scripts/mutants_equivalent.toml` with the
       reason, as the 27 there are.

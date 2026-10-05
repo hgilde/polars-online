@@ -526,6 +526,17 @@ impl Kalman {
     }
 }
 
+/// A prediction, or none (NaN) when it is not a number. A feature at the
+/// input bound, standardized against a scale the earlier rows set, times its
+/// coefficient can overflow `z . beta` to `inf`, and an infinite prediction
+/// is no forecast: `step` and `predict` both withhold it, as `step` already
+/// skips the update such a row would poison (docs/IMPROVEMENTS.md C2). Found
+/// by the generated stream in `tests/model_contract.rs` (docs/PLAN.md
+/// task 158).
+fn a_number_or_none(v: f64) -> f64 {
+    if v.is_finite() { v } else { f64::NAN }
+}
+
 impl OnlineModel for Kalman {
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
@@ -578,7 +589,9 @@ impl OnlineModel for Kalman {
         if ready {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.wj[j] > 0.0 {
-                    *p = self.zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
+                    *p = a_number_or_none(
+                        self.zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum(),
+                    );
                 }
             }
         }
@@ -704,7 +717,7 @@ impl OnlineModel for Kalman {
             let reverts = self.cfg.reverts();
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.wj[j] > 0.0 {
-                    *p = if reverts {
+                    *p = a_number_or_none(if reverts {
                         zs.iter()
                             .zip(&self.beta[j])
                             .enumerate()
@@ -712,7 +725,7 @@ impl OnlineModel for Kalman {
                             .sum()
                     } else {
                         zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum()
-                    };
+                    });
                 }
             }
         }
