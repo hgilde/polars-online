@@ -397,8 +397,12 @@ impl Grams {
                 ABSENT => grams[g].skip(z, lam),
                 // A Gram every target has left; there is none.
                 0 => {}
-                // A row with no weight, and weight to age: no split.
-                _ if w == 0.0 && lam * grams[g].n_eff() > 0.0 => grams[g].update(z, lam, w),
+                // A row with no weight: no split. Its present and its absent
+                // targets take the same step, the decay alone, with weight
+                // to age or without (task 159, R1: with none, the present
+                // ones' Gram refused the row and kept the prior's scale at 1
+                // where the absent ones' aged it, so the two parted).
+                _ if w == 0.0 => grams[g].update(z, lam, w),
                 // Its targets part on this row.
                 _ => {
                     let id = grams.len();
@@ -1209,36 +1213,33 @@ mod tests {
         }
     }
 
-    /// At the head of a stream a row of no weight parts the targets present
-    /// on it from those absent: there is no weight to age, so the present
-    /// ones' Gram refuses the row (`W' = 0`) where the absent ones' ages
-    /// over it, and the two no longer take the same steps -- the prior's
-    /// scale shows it. With weight to age, the same row parts nothing.
+    /// A row of no weight parts no targets, at the head of a stream or
+    /// after it: the present ones' Gram and the absent ones' take the same
+    /// step, the decay alone, so the prior's scale ages by `lam` in both.
+    /// At the head the present ones' Gram once refused the row (`W' = 0`)
+    /// and kept its scale at 1 where the absent ones' aged it, which parted
+    /// the two for the stream's life (task 159, R1).
     #[test]
-    fn a_row_of_no_weight_parts_the_targets_only_where_there_is_no_weight_to_age() {
-        let mut g = Grams::new(2, 2, 0, false);
-        g.update(
-            &[1.0, 2.0],
-            &[Some(3.0), None],
-            0.5,
-            0.0,
-            TargetGaps::OwnRows,
-        );
-        assert_eq!((g.grams.len(), g.of.clone()), (2, vec![0, 1]));
-        assert_eq!(g.grams[0].prior_scale(), 1.0, "refused");
-        assert_eq!(g.grams[1].prior_scale(), 0.5, "aged");
-
-        let mut g = Grams::new(2, 2, 0, false);
-        let both = [Some(3.0), Some(1.0)];
-        g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows);
-        g.update(
-            &[1.0, 2.0],
-            &[Some(3.0), None],
-            0.5,
-            0.0,
-            TargetGaps::OwnRows,
-        );
-        assert_eq!((g.grams.len(), g.of.clone()), (1, vec![0, 0]));
+    fn a_row_of_no_weight_parts_no_targets() {
+        for first in [None, Some([Some(3.0), Some(1.0)])] {
+            let mut g = Grams::new(2, 2, 0, false);
+            if let Some(both) = first {
+                g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows);
+            }
+            g.update(
+                &[1.0, 2.0],
+                &[Some(3.0), None],
+                0.5,
+                0.0,
+                TargetGaps::OwnRows,
+            );
+            assert_eq!((g.grams.len(), g.of.clone()), (1, vec![0, 0]));
+            assert_eq!(
+                g.grams[0].prior_scale(),
+                0.5,
+                "aged, head row or not: {first:?}"
+            );
+        }
     }
 
     /// One corruption per condition [`Cross::has_shape`] checks, each refused

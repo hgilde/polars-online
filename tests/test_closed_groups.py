@@ -789,7 +789,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 25 since
+    """The version a bank file names, held to the library's: 26 since
+    2026-10-05 (task 159: a number clock's policy time in the windows state
+    is the clock itself, windows state 6); 25 since
     2026-10-03 (review R6: the windows state a bank file embeds per formula
     target went to version 5, and the bank's schema moves with it; 24 in
     review R4 the same day, for the same reason); 21 since
@@ -807,7 +809,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 25
+    assert po.schema_version() == 26
     assert sys.version_info >= (3, 12)
 
 

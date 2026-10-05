@@ -824,10 +824,10 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 25, state[i]
-    for before in (23, 24):
+    assert state[i] == 26, state[i]
+    for before in (24, 25):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 25"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 26"
         ):
             po.ModelBank.load_bytes(old)

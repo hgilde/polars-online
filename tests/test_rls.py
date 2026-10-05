@@ -56,6 +56,44 @@ class TestRls:
         assert m.sum() > 500
         assert np.max(np.abs(pa[m] - pb[m])) < 1e-9
 
+    def test_leading_zero_weight_rows_age_the_prior_as_rls_does(self):
+        """Task 159 (R1): ``ewridge(ridge_scale="sum")`` refused a zero-weight
+        row while its weight was still 0, so the prior's scale stayed at 1
+        across it, where ``rls`` ages its factor on every row; after two such
+        rows a clock unit apart the two, documented as one estimator, were
+        6.8e-2 apart. A zero-weight row advances the clock and ages the prior
+        in both."""
+        rng = np.random.default_rng(3)
+        n = 60
+        x = rng.standard_normal((n, 2))
+        df = pl.DataFrame(
+            {
+                "t": np.arange(float(n)),
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y0": x @ np.array([1.0, -2.0]) + 0.1 * rng.standard_normal(n),
+                "w": [0.0, 0.0, 0.0] + [1.0] * (n - 3),
+            }
+        )
+        common = dict(
+            targets=["y0"],
+            features=["x0", "x1"],
+            clock="t",
+            half_life=5.0,
+            gap_cap=10.0,
+            weight="w",
+            ridge=5.0,
+            min_weight=2.0,
+        )
+        a = po.ModelBank([po.spec.rls("m", **common)]).fit_predict(df)
+        b = po.ModelBank(
+            [po.spec.ewridge("m", ridge_scale="sum", max_rows_between_solves=1, **common)]
+        ).fit_predict(df)
+        pa, pb = _np(a, "pred_y0"), _np(b, "pred_y0")
+        m = np.isfinite(pa) & np.isfinite(pb)
+        assert m.sum() > 40
+        assert np.max(np.abs(pa[m] - pb[m])) < 1e-9
+
     def test_matches_numpy_oracle(self):
         df, _ = synthetic(seed=22, n_groups=1, n_rows=250, k=2, null_frac=0.0)
         spec = po.spec.rls(

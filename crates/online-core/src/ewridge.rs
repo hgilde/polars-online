@@ -4187,10 +4187,10 @@ mod tests {
 
     /// A row with no weight learns nothing, so it parts no targets: one
     /// that is null on a zero-weight row keeps its Gram, which is still, to
-    /// the bit, the Gram of a model of that target alone. Only a zero-weight
-    /// row that also takes all of the weight -- `lam = 0`, an infinite clock
-    /// gap -- splits them, since there taking the row and skipping it age
-    /// the Gram differently.
+    /// the bit, the Gram of a model of that target alone. A zero-weight row
+    /// that also takes all of the weight -- `lam = 0`, an infinite clock gap
+    /// -- parts none either: taking the row and skipping it are both the
+    /// decay alone (task 159, R1; it once split them there).
     #[test]
     fn a_zero_weight_row_splits_no_gram() {
         let mut c = cfg(2, 2);
@@ -4224,11 +4224,7 @@ mod tests {
             assert_eq!(bank.acc.wj[j], a.acc.wj[0], "target {j}");
         }
         bank.step(&[0.1, 0.2], &[Some(1.0), None], f64::INFINITY, 0.0);
-        assert_eq!(
-            bank.acc.grams.grams.len(),
-            2,
-            "an infinite gap does split them"
-        );
+        assert_eq!(bank.acc.grams.grams.len(), 1, "an infinite gap split them");
         let of = &bank.acc.grams.of;
         assert_eq!(bank.acc.grams.grams[of[1]].n_eff(), 0.0);
         assert_eq!(bank.acc.grams.grams[of[0]].n_eff(), bank.acc.wj[0]);

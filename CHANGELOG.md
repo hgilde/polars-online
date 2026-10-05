@@ -75,7 +75,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   rows the state read, which would come out twice (task 158). A refusal
   while a query runs surfaces as `polars.exceptions.ComputeError` under
   py-polars 1.x and as `ValueError` under 2.0.
-  Windows state version 5; a state file that cannot be read is reported as
+  Windows state version 6; a state file that cannot be read is reported as
   damaged. Nine review rounds of the window operators, each finding pinned
   by a test, are in docs/PLAN.md §14.
 - **Window expressions as model targets** (task 104): a spec's `targets`
@@ -126,7 +126,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 25,
+- **Every saved bank must be refit.** A bank file now carries schema 26,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Three changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -268,6 +268,23 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`rcov`'s pre-averaged estimate forms every one of CKP's terms** (task
+  159). It never formed the first, `Ȳ₀`, over a stretch's first `k_n − 1`
+  returns, so each stretch summed one term fewer than its scale counted:
+  0.2% to 14% of a block's diagonal in the review's streams. The scale is
+  now `n` over the terms summed, the paper's "true number of summands",
+  which across a break inside a block is fewer than `n − k_n + 2`, and
+  `rcov_n` counts them. The numbers of `kind="preavg"` move.
+- **`ewridge(ridge_scale="sum")` ages its prior across a zero-weight row at
+  the head of a stream** (task 159), as `rls`, the same estimator, does;
+  after two such rows a clock unit apart the two were 6.8e-2 apart.
+- **A step back of exactly `restart_after_step_back` on a `Datetime` clock
+  is a late row at every scale** (task 159). A negative delta under a
+  second read a last bit large (`−1 ms` as `−1 + 0.999`), so at 1 to 3 ms
+  the inclusive edge restarted the model instead.
+- **`bocpd`'s `prior_nu` floor message says what the floor buys** (task
+  159): a finite mean under `diag` and `robust` (`> 1`), a finite variance
+  under `gaussian` (`> d + 1`).
 - **`rls` keeps its precision on rows near `1e-155`** (task 158). Its
   rotation took the plain root of `r² + z²` whenever that root was positive
   and finite, including where the squares are subnormal and have lost most

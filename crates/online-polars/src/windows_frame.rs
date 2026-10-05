@@ -63,7 +63,9 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 5 since review R6 (D1): the last row read, beside the rows held, as a
+/// 6 since task 159 (W3): a number clock's policy time is the clock
+/// itself, where 5 measured it from the stretch's origin; 5 since review R6
+/// (D1): the last row read, beside the rows held, as a
 /// sliced state's identity of its input; 4 since review R5 (C5): the skip
 /// a sliced state carries counts the rows of its input consumed so far,
 /// and the state knows that input by its first clock (round four changed
@@ -72,7 +74,7 @@ const WINDOWS_MAGIC: &str = "polars-online windows";
 /// task 143: formulas over operators, where 1 held descriptions. An older
 /// state would load with defaults and misbehave. The bank's schema moves
 /// with this number (review R4, A2; R6, D5).
-const WINDOWS_VERSION: u32 = 5;
+const WINDOWS_VERSION: u32 = 6;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -2050,7 +2052,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 5)"),
+            err.contains("state version 2 not supported (this build reads 6)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2132,7 +2134,7 @@ mod tests {
     /// refuses an older form by number, not at a group's first chunk.
     #[test]
     fn a_windows_state_version_moves_the_banks_schema_with_it() {
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (5, 25));
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (6, 26));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

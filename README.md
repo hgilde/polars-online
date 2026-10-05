@@ -1700,7 +1700,7 @@ file:**
 | is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
 | holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
 | was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
-| was written under a state schema below 25, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
+| was written under a state schema below 26, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
 
 ### Serving without learning
 

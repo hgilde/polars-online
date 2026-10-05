@@ -48,7 +48,8 @@ def _mass(h: float, d: float) -> float:
     """``integral_0^d lam**s ds``."""
     if d <= 0:
         return 0.0
-    return d if math.isinf(h) else h / math.log(2) * (1.0 - _lam(h) ** d)
+    # The closed form by expm1, as the core takes it (task 159, W2).
+    return d if math.isinf(h) else -h / math.log(2) * math.expm1(-d * math.log(2) / h)
 
 
 def _between(h: float, forward: bool, t: float, a: float, b: float) -> float:
@@ -1136,6 +1137,47 @@ def _ms(ms: list[int]) -> pl.DataFrame:
     return pl.DataFrame({"t": t, "x": [1.0] * len(ms)})
 
 
+def test_a_long_half_life_agrees_with_the_definition_and_tends_to_the_even_one() -> None:
+    """Task 159 (W2): the core's `1 - 2^(-t/h)` cancelled at a half-life far
+    past the window -- 6e-5 of the mass at `h/t = 1e12`, all of it from 1e17,
+    every mean null -- and the oracle here took the same form. Both take the
+    closed form by expm1; at 1e17 the mean is the even window's."""
+    df = pl.DataFrame({"t": [float(i) for i in range(20)], "x": [float(i % 5) for i in range(20)]})
+    for h in (1e9, 1e12):
+        out = po.stream.with_windows(df, y=po.ewm_mean("x", half_life=h, window_size=5.0), **CLOCK)
+        want = loop(df, "ewm_mean", "x", half_life=h, window_size=5.0)
+        assert_close(out["y"].to_list(), want, f"half_life {h}")
+    far = po.stream.with_windows(df, y=po.ewm_mean("x", half_life=1e17, window_size=5.0), **CLOCK)
+    even = po.stream.with_windows(
+        df, y=po.ewm_mean("x", half_life=math.inf, window_size=5.0), **CLOCK
+    )
+    assert far["y"].null_count() == even["y"].null_count() < 20
+    assert_close(far["y"].to_list(), even["y"].to_list(), "1e17 against inf", tol=1e-12)
+
+
+def test_a_number_clock_decides_an_edge_from_the_two_rows_clocks() -> None:
+    """Task 159 (W3): on a number clock an edge was decided from two
+    origin-subtracted policy times, so with `t = [0.1, 0.2, 0.5]` the row
+    exactly one window (0.3) back fell outside it: `(0.5 - 0.1) - (0.2 - 0.1)`
+    is `0.30000000000000004` where `0.5 - 0.2` is `0.3`. The edge is the
+    difference of the two rows' clocks, as on a temporal clock since R2-W1."""
+    df = pl.DataFrame({"t": [0.1, 0.2, 0.5], "x": [1.0, 1.0, 1.0]})
+    left = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="left")
+    assert po.stream.with_windows(df, y=left, **CLOCK)["y"].to_list() == [None, 1.0, 1.0]
+    both = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="both")
+    assert po.stream.with_windows(df, y=both, **CLOCK)["y"].to_list() == [1.0, 2.0, 2.0]
+    right = po.ewm_sum("x", half_life=math.inf, window_size=0.3, closed="right")
+    assert po.stream.with_windows(df, y=right, **CLOCK)["y"].to_list() == [1.0, 2.0, 1.0]
+
+
+def test_a_subnormal_half_life_is_refused() -> None:
+    """Task 159 (W5): a subnormal half-life gave a mean of 0 and a rate of
+    inf, where every other bad half-life is refused by name."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [0.3, 0.3, 0.3]})
+    with pytest.raises(ValueError, match="half_life must be a normal number"):
+        po.stream.with_windows(df, y=po.ewm_rate("x", half_life=5e-324, window_size=2.0), **CLOCK)
+
+
 @pytest.mark.parametrize("base", [0, EPOCH_2024_MS])
 def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> None:
     """R2-W1: an edge was decided from two rounded policy times, so a row
@@ -1298,7 +1340,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 5\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 6\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )

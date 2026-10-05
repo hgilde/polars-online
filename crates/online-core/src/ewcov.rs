@@ -795,12 +795,16 @@ impl EwCov {
             self.rows_learned += 1;
             self.runs.track(x, self.rows_learned);
         }
-        // A zero-weight row the decay took the whole history from -- `lam·W`
-        // is 0 with `W > 0`, from 1075 half-lives on -- is the decay alone:
-        // the weight goes to 0 and the next row starts over, as it all but
-        // does one half-life short of that. The update below is `0/0` there,
-        // and refusing it kept the history whole (task 115 (c), PLAN §12).
-        if w == 0.0 && self.w_sum > 0.0 && lam * self.w_sum == 0.0 {
+        // A zero-weight row with no weight to come out of the update --
+        // `lam·W` is 0: the decay took the whole history, from 1075
+        // half-lives on, or there was none, a zero-weight head row -- is the
+        // decay alone: the weight stays 0, and the prior's scale ages by
+        // `lam`, as a row advances the clock (hard rule 9) and as `rls` ages
+        // its factor. The update below is `0/0` there; refusing it kept the
+        // history whole (task 115 (c), PLAN §12) but, at `W == 0`, left the
+        // prior's scale at 1 across the row, 6.8e-2 from the definition
+        // after two such rows (task 159, R1).
+        if w == 0.0 && lam * self.w_sum == 0.0 {
             return self.decay(lam);
         }
         if self.pending.block_rows > 0 {
@@ -2072,6 +2076,20 @@ impl crate::OnlineModel for EwCovModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zero-weight head row ages the prior's scale as it advances the
+    /// clock: `update` at `W == 0` with `w == 0` is the decay, as `rls` ages
+    /// its factor on every row; refusing it left the scale at 1 (task 159, R1).
+    #[test]
+    fn a_zero_weight_head_row_ages_the_prior() {
+        let mut c = EwCov::new(1);
+        c.update(&[1.0], 0.5, 0.0);
+        assert_eq!((c.w_sum, c.prior_scale()), (0.0, 0.5));
+        c.update(&[1.0], 0.5, 0.0);
+        assert_eq!((c.w_sum, c.prior_scale()), (0.0, 0.25));
+        c.update(&[1.0], 0.5, 1.0);
+        assert_eq!((c.w_sum, c.prior_scale()), (1.0, 0.125));
+    }
 
     /// A state whose accumulator is not the cfg's width is refused, where
     /// it loaded and panicked on the first `step` (review 2026-09-18, B3).
@@ -5043,8 +5061,9 @@ mod block_tests {
 
     /// A zero-weight row is legal as the **first** row of a stream, where it
     /// means "advance the clock, learn nothing" (CLAUDE.md rule 9). It must
-    /// not open a block, because the shipped path treats it as no event at
-    /// all -- not even the decay.
+    /// not open a block: it is the decay alone, which holds nothing and
+    /// ages the prior's scale as the clock advances (task 159, R1; it once
+    /// did not age that row either).
     #[test]
     fn a_zero_weight_first_row_opens_no_block() {
         let k = 2;
@@ -5056,10 +5075,7 @@ mod block_tests {
             "a row the shipped path ignores must not be held"
         );
         assert_eq!(c.w_sum, 0.0);
-        assert_eq!(
-            c.prior_scale, 1.0,
-            "the shipped path does not age on that row either"
-        );
+        assert_eq!(c.prior_scale, 0.5, "the row ages the prior's scale");
 
         let rows = stream(30, k, 13, 1e3, 0.995, 0);
         let mut with_lead = vec![(vec![1e3; k], 0.5, 0.0)];

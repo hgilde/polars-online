@@ -166,8 +166,11 @@ def test_the_preaveraged_estimate_is_its_definition():
         for i in range(1, kn + 1)
     )
     psi2 = sum(min(i / kn, 1 - i / kn) ** 2 for i in range(1, kn)) / kn
+    # CKP Eq. 9: Ȳ_i over Δ_{i+j}, j = 1..k_n−1, for i = 0..n−k_n+1 -- n − k_n + 2
+    # terms, the first over the first k_n − 1 returns (task 159, D1: the model
+    # once skipped it and scaled as if it had it).
     ybar = np.array(
-        [sum(g[j] * ret[start + j] for j in range(1, kn)) for start in range(n - kn + 1)]
+        [sum(g[j] * ret[start + j - 1] for j in range(1, kn)) for start in range(n - kn + 2)]
     )
     # CKP's bias term at the theta their Eq. 7 defines: k_n / sqrt(n), the window
     # run over this block's n rows.

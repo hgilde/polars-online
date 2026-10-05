@@ -91,7 +91,7 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// bank holding a version-4 core failed late. A windows state version
 /// moves this number with it
 /// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
-const MIN_BANK_SCHEMA_VERSION: u32 = 25;
+const MIN_BANK_SCHEMA_VERSION: u32 = 26;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

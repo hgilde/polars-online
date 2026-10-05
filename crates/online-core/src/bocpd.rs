@@ -227,15 +227,20 @@ impl BocpdCfg {
             return Err("bocpd: prior_kappa must be finite and > 0".into());
         }
         let nu = self.nu0();
-        let floor = if self.emission == BocpdEmission::Gaussian {
-            d as f64 + 1.0
+        // The normal-inverse-Wishart predictive is a `t` on `ν − d + 1`
+        // degrees of freedom, with a variance from `ν > d + 1`; the
+        // per-feature normal-inverse-gamma predictive is a `t` on `ν`, with
+        // a mean from `ν > 1` and a variance only from `ν > 2`, so its floor
+        // buys the mean (task 159, D2: the message said variance for both).
+        let (floor, what) = if self.emission == BocpdEmission::Gaussian {
+            (d as f64 + 1.0, "variance")
         } else {
-            1.0
+            (1.0, "mean")
         };
         if !(nu > floor && nu.is_finite()) {
             return Err(format!(
                 "bocpd: prior_nu must be finite and > {floor} for this emission (got {nu}); \
-                 below it the predictive has no finite variance"
+                 below it the predictive has no finite {what}"
             ));
         }
         if let Some(v) = &self.prior_scale {
@@ -2206,6 +2211,9 @@ mod tests {
             ..cfg(2)
         };
         bad(gaussian(3.0), "prior_nu must be finite and > 3 ");
+        // The floor buys a finite variance under the Wishart, a finite mean
+        // under the gamma, and the message says which (task 159, D2).
+        bad(gaussian(3.0), "no finite variance");
         Bocpd::new(gaussian(3.0 + 1e-9)).unwrap();
         bad(
             BocpdCfg {
@@ -2214,6 +2222,18 @@ mod tests {
             },
             "prior_nu must be finite and > 1 ",
         );
+        bad(
+            BocpdCfg {
+                prior_nu: Some(1.0),
+                ..cfg(1)
+            },
+            "no finite mean",
+        );
+        Bocpd::new(BocpdCfg {
+            prior_nu: Some(1.5),
+            ..cfg(1)
+        })
+        .unwrap();
         for beta in [-1.0, f64::NAN] {
             bad(
                 BocpdCfg {

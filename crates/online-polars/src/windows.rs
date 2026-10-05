@@ -237,6 +237,16 @@ impl KernelDef {
         if self.half_life.is_nan() || self.half_life <= 0.0 {
             return Err(format!("half_life must be above 0, got {}", self.half_life));
         }
+        if self.half_life < f64::MIN_POSITIVE {
+            // A subnormal half-life: `mass·x` underflows to 0 and a rate
+            // divides by that mass, so the mean came out 0 and the rate
+            // infinite (task 159, W5).
+            return Err(format!(
+                "half_life must be a normal number, at least {:e}, got {:e}",
+                f64::MIN_POSITIVE,
+                self.half_life
+            ));
+        }
         match (self.direction, self.window_size) {
             (Direction::Forward, None) => {
                 return Err("a forward operator needs a window_size".into());
@@ -277,7 +287,12 @@ impl KernelDef {
         } else if self.half_life.is_infinite() {
             t
         } else {
-            self.half_life / std::f64::consts::LN_2 * (1.0 - self.discount(t))
+            // `1 − 2^(−t/h)` cancels where `t ≪ h`: 6e-5 of the mass at
+            // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
+            // W2). `exp_m1` keeps the small difference whole; `discount`
+            // itself has nothing to lose.
+            let h = self.half_life;
+            -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
         }
     }
 }
@@ -756,8 +771,9 @@ impl Queue {
 struct Wait {
     seq: u64,
     tau: f64,
-    /// The row's raw clock in integer nanoseconds, 0 without a temporal
-    /// clock.
+    /// The row's raw clock in integer nanoseconds on a temporal clock; the
+    /// bits of its value on a number clock, and of the policy time without
+    /// a clock column (task 159, W3).
     off: i64,
 }
 
@@ -770,9 +786,10 @@ struct Group {
     /// the stretch (review R1, C2).
     origin: Option<ClockValue>,
     /// The last row's raw clock in integer nanoseconds, and whether that
-    /// is exact (a temporal clock): a window's edge between two rows is
-    /// decided from the difference of their raw clocks, never from two
-    /// rounded policy times (review R2, W1).
+    /// is exact (a temporal clock), else the bits of the clock's value (of
+    /// the policy time without a clock column): a window's edge between two
+    /// rows is decided from the difference of their raw clocks, never from
+    /// two rounded policy times (review R2, W1; task 159, W3).
     off: i64,
     exact: bool,
     /// The next row starts the windows over: the group has no row yet, or
@@ -970,7 +987,9 @@ mod clock_form {
 /// integer nanoseconds and rounded once, as the clock takes its steps.
 /// The clock between two rows of one stretch, for a window's edge: the
 /// exact difference of their raw clocks in integer nanoseconds on a
-/// temporal clock (`exact`), else the difference of their policy times.
+/// temporal clock (`exact`), else of the clocks carried as bits in `off`
+/// (a number clock's own value; the policy time without a clock column),
+/// never of two origin-subtracted policy times (task 159, W3).
 /// Two rounded policy times differ by rounding, and a row exactly one
 /// window after another landed on either side of the edge (review R2, W1:
 /// 0.4 − 0.1 is not 0.3 in a double). Against a window given as a duration
@@ -985,11 +1004,11 @@ enum Gap {
 }
 
 #[inline]
-fn gap(exact: bool, from_off: i64, from_tau: f64, to_off: i64, to_tau: f64) -> Gap {
+fn gap(exact: bool, from_off: i64, to_off: i64) -> Gap {
     if exact {
         Gap::Ns(to_off.saturating_sub(from_off))
     } else {
-        Gap::Secs(to_tau - from_tau)
+        Gap::Secs(f64::from_bits(to_off as u64) - f64::from_bits(from_off as u64))
     }
 }
 
@@ -1381,10 +1400,17 @@ impl Windows {
                 g.origin = row.clock;
             }
         }
-        // The raw clock a window's edge is decided from (review R2, W1).
+        // The raw clock a window's edge is decided from (review R2, W1): the
+        // nanoseconds of a temporal clock, exact; the bits of a number
+        // clock, so the edge is the difference of the two rows' clocks, as
+        // Polars takes it, not of two origin-subtracted policy times, which
+        // put a row exactly one window back outside the edge, `0.4 − 0.1`
+        // not being `0.3` (task 159, W3); the policy time's bits without a
+        // clock column, where the two are one.
         (g.off, g.exact) = match row.clock {
             Some(ClockValue::Ns(c)) => (c, true),
-            _ => (0, false),
+            Some(ClockValue::F64(c)) => (c.to_bits() as i64, false),
+            None => (g.tau.to_bits() as i64, false),
         };
         let (tau, off, exact) = (g.tau, g.off, g.exact);
         let new_stamp = g.stamp != row.clock || !has_clock;
@@ -1402,7 +1428,7 @@ impl Windows {
             // "both", so the window closes only past it.
             while g.closed[ki] < g.waiting.len() && {
                 let t = g.waiting[g.closed[ki]];
-                let d = gap(exact, t.off, t.tau, off, tau).cmp_window(k);
+                let d = gap(exact, t.off, off).cmp_window(k);
                 if k.closed.far(Direction::Forward) {
                     d == Ordering::Greater
                 } else {
@@ -1881,8 +1907,8 @@ fn read_backward(
         // everywhere, so a row exactly a window old lands on the same side
         // every time.
         let far = k.closed.far(Direction::Backward);
-        q.evict(k, scratch, |_, t_tau, t_off| {
-            let age = gap(exact, t_off, t_tau, off, tau).cmp_window(k);
+        q.evict(k, scratch, |_, _, t_off| {
+            let age = gap(exact, t_off, off).cmp_window(k);
             if far {
                 age == Ordering::Greater
             } else {
@@ -2001,8 +2027,8 @@ fn close(
     // under "right" and "none" none at the stamp is. Each edge is the exact
     // span from the row (review R2, W1).
     let near_in = k.closed.near(Direction::Forward);
-    q.evict(k, scratch, |_, j_tau, j_off| {
-        let ahead = gap(exact, t.off, t.tau, j_off, j_tau).cmp_zero();
+    q.evict(k, scratch, |_, _, j_off| {
+        let ahead = gap(exact, t.off, j_off).cmp_zero();
         if near_in {
             ahead == Ordering::Less
         } else {
@@ -2018,8 +2044,8 @@ fn close(
     // stamp, under "left" and "both") and not past the far edge.
     // The open row may be the row itself, when the next row closed the
     // window before the row joined the queue: in under "left" and "both".
-    let open = open.filter(|&(_, o_tau, o_off)| {
-        let ahead = gap(exact, t.off, t.tau, o_off, o_tau);
+    let open = open.filter(|&(_, _, o_off)| {
+        let ahead = gap(exact, t.off, o_off);
         let (near, far) = (ahead.cmp_zero(), ahead.cmp_window(k));
         (if near_in {
             near != Ordering::Less
@@ -2234,26 +2260,66 @@ mod tests {
         Ok(t)
     }
 
+    /// `mass` at a half-life far past the window is the even kernel's, to
+    /// the series' next term: `1 − 2^(−t/h)` lost 6e-5 of it at `h/t = 1e12`
+    /// and all of it from 1e17, every mean null (task 159, W2). Where the
+    /// series is nowhere near, the closed form itself.
+    #[test]
+    fn mass_at_a_long_half_life_is_the_even_kernels() {
+        let kernel = |h: f64| KernelDef {
+            direction: Direction::Backward,
+            half_life: h,
+            window_size: Some(5.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let ln2 = std::f64::consts::LN_2;
+        for h in [1e9, 1e12, 1e17, 1e300] {
+            let got = kernel(h).mass(5.0);
+            let want = 5.0 - 12.5 * ln2 / h;
+            assert!(
+                (got - want).abs() <= 1e-12 * 5.0,
+                "h = {h}: {got} vs {want}"
+            );
+        }
+        let got = kernel(2.0).mass(3.0);
+        let want = 2.0 / ln2 * (1.0 - 0.5f64.powf(1.5));
+        assert!((got - want).abs() < 1e-15, "{got} vs {want}");
+    }
+
+    /// A subnormal half-life passed `check`: `mass·x` underflowed to 0 and
+    /// a rate divided by that mass, so the mean came out 0 and the rate
+    /// infinite (task 159, W5).
+    #[test]
+    fn a_subnormal_half_life_is_refused() {
+        for h in [5e-324, 1e-310] {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life: h,
+                window_size: Some(2.0),
+                window_ns: None,
+                closed: Closed::Right,
+            };
+            let err = k.check().expect_err("refused");
+            assert!(err.contains("normal number"), "{err}");
+        }
+    }
+
     /// `∫_a^b λ^(T - s) ds` / `∫_a^b λ^(s - T) ds`, written from the
     /// definition with the discount as a closed form.
     fn mass_bf(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
         if b <= a {
             return 0.0;
         }
-        let lam = |d: f64| {
-            if k.half_life.is_infinite() {
-                1.0
-            } else {
-                (-(d / k.half_life)).exp2()
-            }
-        };
         let m = |d: f64| {
             if d <= 0.0 {
                 0.0
             } else if k.half_life.is_infinite() {
                 d
             } else {
-                k.half_life / std::f64::consts::LN_2 * (1.0 - lam(d))
+                // The closed form by `exp_m1`, as `mass` takes it (task 159, W2).
+                -(k.half_life / std::f64::consts::LN_2)
+                    * (-(d * std::f64::consts::LN_2 / k.half_life)).exp_m1()
             }
         };
         match k.direction {
@@ -2281,10 +2347,12 @@ mod tests {
 
     /// The clock from stretch row `from` to stretch row `to`, as the core
     /// decides an edge: the raw clocks' exact difference on a temporal
-    /// clock, else the policy times' (review R2, W1).
+    /// clock, the raw clocks' on a number clock (task 159, W3), else the
+    /// policy times' (review R2, W1).
     fn gap_bf(rows: &[Row], s: &Stretch, from: usize, to: usize) -> Gap {
         match (rows[s.rows[from]].clock, rows[s.rows[to]].clock) {
             (Some(ClockValue::Ns(x)), Some(ClockValue::Ns(y))) => Gap::Ns(y - x),
+            (Some(ClockValue::F64(x)), Some(ClockValue::F64(y))) => Gap::Secs(y - x),
             _ => Gap::Secs(s.tau[to] - s.tau[from]),
         }
     }

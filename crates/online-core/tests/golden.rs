@@ -868,7 +868,10 @@ const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761
 // Re-pinned 2026-10-05 (docs/PLAN.md task 158): the stream runs `preavg_rows
 // = 6` at the default `theta`, and the bias term now reads θ from that window,
 // `k_n/√n`, as CKP's Eq. 7 defines it, where it read the configured `theta`.
-const GOLDEN_RCOV_PREAVG: &[f64] = &[7.978238741944206, -1.6390325313075758, 20.24474706199032];
+// Re-pinned 2026-10-05 (task 159, D1): the pre-averaged estimate now forms
+// CKP's first term, `Ȳ₀`, so a block has `n − k_n + 2` terms and the scale
+// counts the terms summed; the entries moved by 4e-4 to 3e-3.
+const GOLDEN_RCOV_PREAVG: &[f64] = &[7.978660961271573, -1.6354544255766184, 20.275069787152503];
 const GOLDEN_DECO: &[f64] = &[
     -0.05328065158114557,
     -0.10464551302436545,

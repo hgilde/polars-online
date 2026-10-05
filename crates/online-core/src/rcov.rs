@@ -653,14 +653,18 @@ impl Rcov {
             let kn = self.cfg.window_for().unwrap_or(0);
             if kn >= 2 {
                 self.pre_ring.push_back(x.to_vec());
-                if self.pre_ring.len() == kn {
-                    // `Ȳ_i = Σ_{j=1}^{kn−1} g(j/kn)·x_{i+j}`: the window is
-                    // the `kn − 1` returns *after* the oldest in the ring,
-                    // which is what makes the first one start at `i = 0`.
+                if self.pre_ring.len() == kn - 1 {
+                    // `Ȳ_i = Σ_{j=1}^{kn−1} g(j/kn)·Δ_{i+j}` for `i = 0..=n−kn+1`
+                    // (CKP 2010, Eq. 9): `kn − 1` consecutive returns, the
+                    // first term the first `kn − 1` of the stretch. The ring
+                    // once waited for `kn` returns and read the `kn − 1`
+                    // after its oldest, so `Ȳ_0` was never formed: each
+                    // stretch was one term short, while the scale counted it
+                    // (task 159, D1).
                     let mut y = vec![0.0; k];
                     for j in 1..kn {
                         let w = preavg_g(j as f64 / kn as f64);
-                        for (o, v) in y.iter_mut().zip(&self.pre_ring[j]) {
+                        for (o, v) in y.iter_mut().zip(&self.pre_ring[j - 1]) {
                             *o += w * v;
                         }
                     }
@@ -760,13 +764,17 @@ impl Rcov {
             }
             RcovKind::Preavg => {
                 let kn = self.cfg.window_for().unwrap_or(0);
-                if self.n < kn as u64 || kn < 2 {
+                if kn < 2 || self.pre_count == 0 {
                     return short(self.pre_count as i64);
                 }
                 let n = self.n as f64;
                 let knf = kn as f64;
                 let (p1, p2) = (psi1(kn), psi2(kn));
-                let scale = n / (n - knf + 2.0) / (p2 * knf);
+                // CKP's `n/(n − k_n + 2)`, "a finite sample correction for the
+                // true number of summands": that number, `n − k_n + 2` in one
+                // stretch and fewer across a break, which starts the ring
+                // over (task 159, D1).
+                let scale = n / self.pre_count as f64 / (p2 * knf);
                 let bias = if self.cfg.psd {
                     // CKP §3.4's PSD configuration has no bias term with the
                     // longer window (their Eq. 17; see `window_for`).
@@ -1235,6 +1243,68 @@ mod tests {
         }
     }
 
+    /// Across a break the ring starts over, so a block of two stretches
+    /// has `n₁ − k_n + 2` and `n₂ − k_n + 2` terms, and CKP's finite-sample
+    /// factor counts the terms there are, `n / pre_count`, not
+    /// `n / (n − k_n + 2)`, which assumed one stretch (task 159, D1). The
+    /// oracle is Eq. 9 per stretch, the bias over every return of the block.
+    #[test]
+    fn the_scale_counts_the_terms_summed_across_a_break() {
+        let (k, n1, n2, kn) = (2usize, 150usize, 130usize, 8usize);
+        let rows = returns(n1 + n2, k, 17, 0.5);
+        let mut model = Rcov::new(RcovCfg {
+            bandwidth: None,
+            preavg_rows: Some(kn),
+            ..cfg(k, RcovKind::Preavg)
+        })
+        .unwrap();
+        feed(&mut model, &rows[..n1]);
+        model.clear_lags();
+        feed(&mut model, &rows[n1..]);
+        let e = model.estimate();
+        let got = e.rcov.unwrap();
+        let count = (n1 - kn + 2) + (n2 - kn + 2);
+        assert_eq!(e.n, count as i64);
+        let (p1, p2) = (psi1(kn), psi2(kn));
+        let mut sum = vec![0.0; k * k];
+        for (lo, hi) in [(0, n1), (n1, n1 + n2)] {
+            let seg = &rows[lo..hi];
+            for start in 0..=(seg.len() - kn + 1) {
+                let ybar: Vec<f64> = (0..k)
+                    .map(|c| {
+                        (1..kn)
+                            .map(|j| preavg_g(j as f64 / kn as f64) * seg[start + j - 1][c])
+                            .sum()
+                    })
+                    .collect();
+                for i in 0..k {
+                    for j in 0..k {
+                        sum[i * k + j] += ybar[i] * ybar[j];
+                    }
+                }
+            }
+        }
+        let mut raw = vec![0.0; k * k];
+        for x in &rows {
+            for i in 0..k {
+                for j in 0..k {
+                    raw[i * k + j] += x[i] * x[j];
+                }
+            }
+        }
+        let nf = (n1 + n2) as f64;
+        let scale = nf / count as f64 / (p2 * kn as f64);
+        let bias = p1 / (2.0 * p2 * (kn * kn) as f64);
+        for i in 0..k * k {
+            let want = scale * sum[i] - bias * raw[i];
+            assert!(
+                (got[i] - want).abs() <= 1e-9 * want.abs().max(1e-12),
+                "entry {i}: {} vs {want}",
+                got[i]
+            );
+        }
+    }
+
     /// The MRC against its definition, pre-averaged windows and all.
     #[test]
     fn the_preaveraged_estimate_is_its_definition() {
@@ -1253,11 +1323,11 @@ mod tests {
         let (p1, p2) = (psi1(kn), psi2(kn));
         let mut sum = vec![0.0; k * k];
         let mut count = 0u64;
-        for start in 0..=(n - kn) {
+        for start in 0..=(n - kn + 1) {
             let ybar: Vec<f64> = (0..k)
                 .map(|c| {
                     (1..kn)
-                        .map(|j| preavg_g(j as f64 / kn as f64) * rows[start + j][c])
+                        .map(|j| preavg_g(j as f64 / kn as f64) * rows[start + j - 1][c])
                         .sum()
                 })
                 .collect();
@@ -1277,7 +1347,11 @@ mod tests {
             }
         }
         let nf = n as f64;
-        let scale = nf / (nf - kn as f64 + 2.0) / (p2 * kn as f64);
+        // CKP Eq. 9: `n − k_n + 2` terms, the first over the first `k_n − 1`
+        // returns; the model once formed one fewer (task 159, D1).
+        assert_eq!(count as usize, n - kn + 2);
+        assert_eq!(model.estimate().n, count as i64);
+        let scale = nf / count as f64 / (p2 * kn as f64);
         // CKP's bias term, `ψ₁/(θ²ψ₂)·Ψ̂` with `Ψ̂ = Σ x x'/(2n)` (their Eq.
         // 12 and Theorem 1), at the θ their Eq. 7 defines: `k_n/√n`, the
         // window run over this block's `n` rows.
@@ -1908,8 +1982,8 @@ mod tests {
     /// formulas the cfg documents, worked by hand: `⌈θ·n^0.6⌉` under `psd`
     /// and `⌊θ·√n⌋` without it, and `⌈c*·n^{3/5}⌉`. At `θ = 0.5` and `n =
     /// 400`, `400^0.6 = 36.41`, so 19 and 10; `c* = 3.5134`, so `⌈127.93⌉ =
-    /// 128`. And the window is the one the block runs with: `n − kₙ + 1`
-    /// pre-averaged returns.
+    /// 128`. And the window is the one the block runs with: `n − kₙ + 2`
+    /// pre-averaged returns (CKP Eq. 9).
     #[test]
     fn the_window_and_the_ring_are_their_formulas() {
         let at = |kind, psd| RcovCfg {
@@ -1925,7 +1999,7 @@ mod tests {
         for (psd, kn) in [(true, 19), (false, 10)] {
             let mut m = Rcov::new(at(RcovKind::Preavg, psd)).unwrap();
             feed(&mut m, &returns(100, 1, 3, 0.2));
-            assert_eq!(m.estimate().n, 100 - kn + 1, "psd = {psd}");
+            assert_eq!(m.estimate().n, 100 - kn + 2, "psd = {psd}");
         }
     }
 
@@ -1950,8 +2024,9 @@ mod tests {
     /// Each kind's shortest block with an estimate, and the block one
     /// return shorter: `plain` from one return, which is its own outer
     /// product; `kernel` from `2m` (one leading and one trailing jittered
-    /// return); `preavg` from `kₙ` (one pre-averaged return), the smallest
-    /// window, 2, included.
+    /// return); `preavg` from `kₙ − 1` (one pre-averaged return, CKP's `Ȳ₀`
+    /// over the first `kₙ − 1` returns; task 159, D1), the smallest window,
+    /// 2, included.
     #[test]
     fn the_shortest_blocks_with_an_estimate() {
         let rows = returns(12, 2, 21, 0.2);
@@ -1994,12 +2069,15 @@ mod tests {
                 .unwrap()
             };
             let mut a = pre();
-            feed(&mut a, &rows[..kn]);
+            feed(&mut a, &rows[..kn - 1]);
             let e = a.estimate();
-            assert!(e.rcov.is_some() && e.n == 1, "window {kn}, kn rows: {e:?}");
+            assert!(
+                e.rcov.is_some() && e.n == 1,
+                "window {kn}, kn − 1 rows: {e:?}"
+            );
             let mut b = pre();
-            feed(&mut b, &rows[..kn - 1]);
-            assert!(b.estimate().rcov.is_none(), "window {kn}, kn − 1 rows");
+            feed(&mut b, &rows[..kn - 2]);
+            assert!(b.estimate().rcov.is_none(), "window {kn}, kn − 2 rows");
         }
     }
 
@@ -2052,11 +2130,11 @@ mod tests {
         let (p1, p2) = (psi1(kn), psi2(kn));
         let nf = n as f64;
         let mut sum = vec![0.0; k * k];
-        for start in 0..=(n - kn) {
+        for start in 0..=(n - kn + 1) {
             let ybar: Vec<f64> = (0..k)
                 .map(|c| {
                     (1..kn)
-                        .map(|j| preavg_g(j as f64 / kn as f64) * rows[start + j][c])
+                        .map(|j| preavg_g(j as f64 / kn as f64) * rows[start + j - 1][c])
                         .sum()
                 })
                 .collect();
@@ -2080,7 +2158,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!(e.n, (n - kn + 1) as i64);
+        assert_eq!(
+            e.n,
+            (n - kn + 2) as i64,
+            "CKP's n − k_n + 2 terms (task 159, D1)"
+        );
     }
 
     /// A variance near the top of the range survives the symmetrizing,

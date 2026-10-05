@@ -224,6 +224,13 @@ impl From<f64> for ClockValue {
 /// conversion that cost a window core a tenth of its row (task 143).
 pub fn seconds_of_ns(ns: i128) -> f64 {
     const PER: i128 = 1_000_000_000;
+    if ns < 0 {
+        // On the magnitude, so a step back is its mirror: `−1 ms` was
+        // `−1 + 0.999`, a last bit over `−0.001`, and a step back of exactly
+        // `restart_after_step_back` restarted the model at the inclusive
+        // edge (task 159, R2).
+        return -seconds_of_ns(ns.saturating_neg());
+    }
     if let Ok(d) = i64::try_from(ns) {
         const PER64: i64 = 1_000_000_000;
         return d.div_euclid(PER64) as f64 + d.rem_euclid(PER64) as f64 / 1e9;
@@ -588,6 +595,28 @@ mod tests {
         // value that reports the same number.
         assert!(!ClockValue::F64(1.0).is_before(ClockValue::F64(1.0)));
         assert!(!ClockValue::F64(12.0).is_before(ClockValue::Ns(12_000_000_000)));
+    }
+
+    /// A step back of a fraction of a second is the mirror of the step
+    /// forward: `−1 ms` is `−0.001` exactly, as `1 ms` is `0.001`. It read
+    /// `−1 + 0.999`, a last bit over, so a step back of exactly
+    /// `restart_after_step_back` fell past the inclusive edge and restarted
+    /// the model (task 159, R2).
+    #[test]
+    fn a_step_back_is_the_mirror_of_the_step_forward() {
+        for ns in [
+            1i128,
+            999,
+            1_000_000,
+            123_456_789,
+            1_500_000_000,
+            10_000_000_000_500_000_000,
+        ] {
+            assert_eq!(seconds_of_ns(-ns), -seconds_of_ns(ns), "{ns}");
+        }
+        assert_eq!(seconds_of_ns(-1_000_000), -0.001);
+        assert_eq!(ClockValue::Ns(0).delta(ClockValue::Ns(1_000_000)), -0.001);
+        assert_eq!(seconds_of_ns(i128::MIN), -seconds_of_ns(i128::MAX));
     }
 
     /// A count of nanoseconds past an `i64` -- a difference of two stamps

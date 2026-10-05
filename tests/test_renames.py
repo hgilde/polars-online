@@ -14,6 +14,7 @@ the builder, naming the inputs. The API surface snapshot
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -213,6 +214,30 @@ def test_restart_after_step_back_is_one_rule():
         po.spec.ewridge(
             "m", targets=["y"], features=["x"], half_life=10.0, restart_after_step_back=1.0
         )
+
+
+def test_the_restart_edge_is_inclusive_at_a_millisecond_on_a_temporal_clock():
+    """Task 159 (R2): a negative delta under a second was rounded at the
+    scale of a second (``-1 ms`` read ``-1 + 0.999``, a last bit over), so on
+    a Datetime clock a step back of exactly ``restart_after_step_back`` at 1
+    to 3 ms restarted the model, where the rule makes it a late row; at 100
+    ms, and on a number clock, it was refused. The edge is inclusive at
+    every scale."""
+    base = datetime(2024, 1, 2, 9, 30)
+    for ms in (1, 3, 100):
+        t = [base + timedelta(milliseconds=m) for m in (0, 10 * ms, 20 * ms, 19 * ms, 30 * ms)]
+        df = pl.DataFrame({"t": t, "x": [1.0] * 5, "y": [1.0] * 5})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            half_life="10s",
+            clock="t",
+            gap_cap="1h",
+            restart_after_step_back=timedelta(milliseconds=ms),
+        )
+        with pytest.raises(ValueError, match="no more than restart_after_step_back"):
+            po.ModelBank([spec]).fit_predict(df)
 
 
 def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
