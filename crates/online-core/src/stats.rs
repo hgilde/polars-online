@@ -28,7 +28,7 @@ pub const EW_QUANTILE_ALPHA: f64 = 0.007_812_341_058_161_014;
 /// The decay a sketch takes before its buckets are rescaled to it.
 const RENORM: f64 = 5.421_010_862_427_522e-20; // 2^-64
 
-/// An end bucket lighter than this share of the total is dropped when the
+/// An end bucket at or below this share of the total is dropped when the
 /// sketch is rescaled.
 const PRUNE: f64 = 1e-12;
 
@@ -53,7 +53,7 @@ const PRUNE: f64 = 1e-12;
 /// it, relatively. One sketch answers every level.
 ///
 /// The decay is kept as one factor beside the buckets and folded into them
-/// every 64 halvings, when an end bucket under `1e-12` of the total is
+/// every 64 halvings, when an end bucket at or under `1e-12` of the total is
 /// dropped; each level keeps the bucket its quantile sits in and the weight
 /// below it, so a row costs a few comparisons, not a walk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1030,7 +1030,25 @@ mod tests {
         assert_eq!(q.buckets, vec![0.5 * RENORM]);
     }
 
-    /// At a fold, the ends that weigh under `1e-12` of the total go and
+    /// An end bucket at exactly the prune share of the total is dropped, as
+    /// `rescale`'s `b > floor` has it: the bucket of 4 weighs `2^-65` after
+    /// the fold, which is `PRUNE · total` to the bit. The docs once said
+    /// "lighter than" and "under"; task 158 settled them on the code's side,
+    /// which moves no number.
+    #[test]
+    fn an_end_bucket_at_exactly_the_prune_share_is_dropped() {
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        q.add(1.0, 999_999_999_999.0);
+        q.add(4.0, 1.0);
+        assert!(q.buckets.len() > 1, "two values, many buckets apart");
+        q.age(2f64.powi(-65));
+        let total = q.zero + q.buckets.iter().sum::<f64>();
+        assert_eq!(q.buckets.len(), 1, "the bucket of 4 is dropped");
+        // The one left is the bucket of 1; the dropped one weighed the floor.
+        assert_eq!(2f64.powi(-65), PRUNE * (total + 2f64.powi(-65)));
+    }
+
+    /// At a fold, the ends that weigh at or under `1e-12` of the total go and
     /// every bucket between the heaviest ends stays: two values from the
     /// first rows, far below and far above the rest, weigh `2^-64` of it at
     /// the fold and are dropped, while the buckets of 1 and 2 (indices 0 and

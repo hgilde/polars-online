@@ -263,6 +263,17 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`rls` keeps its precision on rows near `1e-155`** (task 158). Its
+  rotation took the plain root of `r² + z²` whenever that root was positive
+  and finite, including where the squares are subnormal and have lost most
+  of their bits: rows scaled by `2^-530`, inside the input bound, gave a
+  slope 1.4e-5 off the same rows at scale 1. It now takes `hypot` wherever
+  the sum of the squares is below the smallest normal double.
+- **An `hmm` given a `transition` matrix with `transition_prior=0` uses it**
+  (task 158). A row of the matrix with no counts fell back to uniform,
+  where the row is the given matrix at every positive prior; under
+  `learn=False` the filter never used the matrix it was given. Such a row
+  is now the prior's mean: the given matrix, or uniform when none is given.
 - **`rcov`'s pre-averaged estimate under `psd=False` subtracts the bias at
   the window actually run** (task 158). Its bias term read the configured
   `theta`, where Christensen, Kinnebrock and Podolskij define θ by the

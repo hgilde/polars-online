@@ -251,10 +251,13 @@ impl OnlineModel for Rls {
                 }
                 let row = i * k;
                 let rii = self.r[row + i];
-                let mut rho = (rii * rii + zi * zi).sqrt();
-                if !(rho > 0.0 && rho.is_finite()) {
-                    // Squares over- or underflowed (inputs beyond 1e154 or
-                    // below 1e-154); `hypot` scales internally.
+                let squares = rii * rii + zi * zi;
+                let mut rho = squares.sqrt();
+                if !(squares >= f64::MIN_POSITIVE && squares.is_finite()) {
+                    // Squares that overflowed (inputs beyond 1e154), or that
+                    // are subnormal or 0 (below 1e-154), where the plain root
+                    // has lost its bits or is 0/0: `hypot` scales internally
+                    // (a subnormal sum cost 1.4e-5 of a slope, task 158).
                     rho = rii.hypot(zi);
                     if !(rho > 0.0 && rho.is_finite()) {
                         continue;
@@ -820,6 +823,26 @@ mod tests {
             origin_cfg(f64::INFINITY, 1.0),
             scale,
             Some(560.0),
+        );
+    }
+
+    /// A row whose squares are subnormal (`2^-530`: not 0, but below
+    /// `f64::MIN_POSITIVE`) has lost most of their bits, so it is rotated in
+    /// by `hypot` too. The plain root was taken there, since it is positive
+    /// and finite, and the slope came out 1.4e-5 off (docs/PLAN.md task 158).
+    #[test]
+    fn a_row_whose_squares_are_subnormal_is_rotated_in_by_hypot() {
+        let scale = 2f64.powi(-530);
+        let square = scale * scale;
+        assert!(
+            square > 0.0 && square < f64::MIN_POSITIVE,
+            "the squares are subnormal"
+        );
+        assert_scale_free(
+            origin_cfg(1.0, 1.0),
+            origin_cfg(f64::INFINITY, 1.0),
+            scale,
+            Some(530.0),
         );
     }
 

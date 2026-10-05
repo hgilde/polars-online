@@ -4364,7 +4364,8 @@ def hmm(
     ``transition_prior``, ``transition``
         The Dirichlet pseudo-count per cell (default 1), and a matrix to
         spread that mass over instead of flat, so the given matrix is the
-        prior mean.
+        prior mean. A row with no counts is that mean, the given matrix or
+        uniform, ``transition_prior = 0`` included.
     ``means``, ``covs``
         The states given outright (``K x d`` and ``K`` matrices of ``d x d``,
         both flattened row-major), and then there is no warm-up. Each

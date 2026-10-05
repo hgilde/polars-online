@@ -355,7 +355,17 @@ impl Hmm {
                 .collect();
             let z: f64 = row.iter().sum();
             for (c, v) in row.iter().enumerate() {
-                out[r * k + c] = if z > 0.0 { v / z } else { 1.0 / k as f64 };
+                out[r * k + c] = if z > 0.0 {
+                    v / z
+                } else {
+                    // No counts and no prior mass (`τ = 0`): the prior's
+                    // mean, `Π₀` or uniform, which is what the row is at
+                    // every `τ > 0` before a count (task 158).
+                    match &self.cfg.transition {
+                        Some(p) => p[r * k + c],
+                        None => 1.0 / k as f64,
+                    }
+                };
             }
         }
         out
@@ -1388,9 +1398,9 @@ mod tests {
         Hmm::new(with(vec![1.0, 0.0, 5e-13, 1.0])).unwrap();
     }
 
-    /// With no prior mass (`transition_prior = 0`) and no counts yet, a row
-    /// of `Π` has nothing to normalise and is uniform -- whatever `Π₀` says,
-    /// since its pseudo-counts are `τ·K·Π₀ = 0` -- and the filter runs.
+    /// With no prior mass (`transition_prior = 0`), no counts yet and no
+    /// `Π₀` given, a row of `Π` has nothing to normalise and is uniform, the
+    /// flat prior's mean, and the filter runs.
     #[test]
     fn a_transition_row_with_no_mass_is_uniform() {
         for k in [2, 3] {
@@ -1407,6 +1417,37 @@ mod tests {
             let out = m.step(&[0.5, 0.5], &[], 1.0, 1.0);
             assert!(out.pred.iter().all(|v| v.is_finite()), "{out:?}");
         }
+    }
+
+    /// With no prior mass (`transition_prior = 0`) and a `Π₀` given, a row
+    /// with no counts is `Π₀`: the row `(counts + τ·K·Π₀)/(its sum)` is `Π₀`
+    /// at every `τ > 0` before a count, and so its limit at 0. Under `learn =
+    /// false` the filter then runs on the matrix it was given, where it ran
+    /// on a uniform one and never used `Π₀` (docs/PLAN.md task 158).
+    #[test]
+    fn a_row_with_no_mass_is_the_given_matrix() {
+        let pi0 = vec![0.9, 0.1, 0.2, 0.8];
+        let mut m = Hmm::new(given(HmmCfg {
+            learn: false,
+            transition_prior: 0.0,
+            transition: Some(pi0.clone()),
+            ..cfg(2, 2)
+        }))
+        .unwrap();
+        assert_eq!(m.transition(), pi0);
+        // From the uniform start, p̃ = [1/2, 1/2]·Π₀ = [0.55, 0.45]; a uniform
+        // chain would give [0.5, 0.5].
+        let out = m.step(&[0.0, 0.0], &[], 1.0, 1.0);
+        assert!(
+            (out.pred[2] - 0.55).abs() < 1e-12,
+            "p̃ {:?}",
+            &out.pred[2..4]
+        );
+        assert!(
+            (out.pred[3] - 0.45).abs() < 1e-12,
+            "p̃ {:?}",
+            &out.pred[2..4]
+        );
     }
 
     /// Under `tvtp` the filter is Hamilton's with `Π(t) = softmaxₗ(Aₖₗ +

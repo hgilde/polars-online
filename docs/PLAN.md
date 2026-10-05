@@ -7411,6 +7411,27 @@ tick, and that the series holding it up has a count near 1.
       `learn = False` never uses the given matrix; and a remote `robust`
       case at weights near 5e-324.
 
+      *The obvious follow-ups, 2026-10-05, on the user's word ("Handle the
+      obvious answers").* `rls` takes `hypot` wherever the sum of a
+      rotation's squares is below `f64::MIN_POSITIVE`, not only where its
+      root is 0 or not finite; held by
+      `a_row_whose_squares_are_subnormal_is_rotated_in_by_hypot`, which failed
+      on the old line (1.8677183 against 1.8677443). An `hmm` row with no
+      counts and no prior mass is the prior's mean, `Π₀` or uniform, the
+      row's value at every `τ > 0` before a count, where it was uniform
+      whatever `Π₀` said; held by `a_row_with_no_mass_is_the_given_matrix`,
+      which failed on the old code. `EwQuantile`'s docs said an end bucket
+      "lighter than" or "under" the prune share is dropped, where the code
+      drops one at the share too: the docs now say "at or below", which
+      moves no number, and
+      `an_end_bucket_at_exactly_the_prune_share_is_dropped` kills the
+      mutant that boundary left (`stats.rs:223:39`, checked by cargo-mutants),
+      so 32 of the 1,272 are left. The six workers' worktrees, merged and
+      clean, were removed (13.5 GB); their branches stay. Left for the user:
+      a list of the survivors that differ only by rounding or below a
+      computation's own error, which the report would show apart and fail
+      on none of, and the push.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
