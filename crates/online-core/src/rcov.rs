@@ -40,7 +40,8 @@
 //! **`preavg`** is the modulated realised covariance of Christensen,
 //! Kinnebrock & Podolskij (2010): the returns are pre-averaged over a window
 //! of `kₙ = ⌊θ√n⌋` with the weight function `g(x) = min(x, 1−x)`, which
-//! averages the noise away, and the residual bias is subtracted.
+//! averages the noise away, and the residual bias is subtracted, at the θ
+//! the window itself gives, `kₙ/√n` (their Eq. 7).
 //!
 //! # Nothing reads a future row
 //!
@@ -314,6 +315,8 @@ pub struct RcovCfg {
     pub jitter: usize,
     /// Pre-averaging window scale: `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`, the
     /// default, and `⌊θ√block_rows⌋` without it ([`RcovCfg::window_for`]).
+    /// It sets the window and nothing else: the bias term reads θ from the
+    /// window actually run, `kₙ/√n` over the block's own `n`.
     pub theta: f64,
     /// Clip negative eigenvalues at close.
     pub psd: bool,
@@ -769,7 +772,15 @@ impl Rcov {
                     // longer window (their Eq. 17; see `window_for`).
                     0.0
                 } else {
-                    p1 / (self.cfg.theta * self.cfg.theta * p2) / (2.0 * n)
+                    // CKP's bias term, `ψ₁/(θ²ψ₂)·Ψ̂` with `Ψ̂ = Σ x x'/(2n)`
+                    // (their Eq. 12 and Theorem 1), where θ is what their Eq.
+                    // 7 makes it: the window's own `k_n/√n`, over this block's
+                    // `n`. So `ψ₁/(θ²ψ₂)/(2n) = ψ₁/(2ψ₂k_n²)`. The configured
+                    // `theta` sets the window only when `preavg_rows` is absent
+                    // and the block is `block_rows` long; read here, it
+                    // subtracted too little noise wherever the two parted, 195
+                    // on pure noise whose truth is 0 (docs/PLAN.md task 158).
+                    p1 / (2.0 * p2 * knf * knf)
                 };
                 let out = self
                     .pre_sum
@@ -1169,6 +1180,46 @@ mod tests {
         }
     }
 
+    /// Pure noise has no integrated variance, so the bias-corrected MRC of
+    /// its returns is 0 in expectation. The bias term once read the
+    /// configured `theta`, where CKP's Eq. 7 makes θ the window's own
+    /// `k_n/√n`; wherever the two parted it subtracted too little noise. On
+    /// these streams the mean came out near 195 under `preavg_rows = 20`, and
+    /// near 11 in a block four times `block_rows`, each over 50 standard
+    /// errors from 0; now each is within 1.5 (docs/PLAN.md task 158). One
+    /// stream's estimate moves by several units, so the mean of sixteen is
+    /// held to four standard errors.
+    #[test]
+    fn the_bias_term_reads_theta_from_the_window_actually_run() {
+        let n = 20_000usize;
+        for (preavg_rows, block_rows) in [(Some(20), None), (None, Some(n / 4)), (None, Some(n))] {
+            let estimates: Vec<f64> = (1..=16u64)
+                .map(|seed| {
+                    let mut s = seed;
+                    // An efficient price that never moves, seen through U(-1, 1) noise.
+                    let noise: Vec<f64> = (0..=n).map(|_| lcg(&mut s)).collect();
+                    let rows: Vec<Vec<f64>> = noise.windows(2).map(|w| vec![w[1] - w[0]]).collect();
+                    let mut model = Rcov::new(RcovCfg {
+                        preavg_rows,
+                        block_rows,
+                        ..cfg(1, RcovKind::Preavg)
+                    })
+                    .unwrap();
+                    feed(&mut model, &rows);
+                    model.estimate().rcov.unwrap()[0]
+                })
+                .collect();
+            let m = estimates.len() as f64;
+            let mean = estimates.iter().sum::<f64>() / m;
+            let var = estimates.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / (m - 1.0);
+            let se = (var / m).sqrt();
+            assert!(
+                mean.abs() < 4.0 * se,
+                "preavg_rows {preavg_rows:?}, block_rows {block_rows:?}: mean {mean}, standard error {se}, where the truth is 0"
+            );
+        }
+    }
+
     /// The MRC against its definition, pre-averaged windows and all.
     #[test]
     fn the_preaveraged_estimate_is_its_definition() {
@@ -1212,7 +1263,11 @@ mod tests {
         }
         let nf = n as f64;
         let scale = nf / (nf - kn as f64 + 2.0) / (p2 * kn as f64);
-        let bias = p1 / p2 / (2.0 * nf);
+        // CKP's bias term, `ψ₁/(θ²ψ₂)·Ψ̂` with `Ψ̂ = Σ x x'/(2n)` (their Eq.
+        // 12 and Theorem 1), at the θ their Eq. 7 defines: `k_n/√n`, the
+        // window run over this block's `n` rows.
+        let theta2 = (kn * kn) as f64 / nf;
+        let bias = p1 / (theta2 * p2) / (2.0 * nf);
         assert_eq!(count as i64, model.estimate().n);
         for i in 0..k {
             for j in 0..k {

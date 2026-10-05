@@ -7349,6 +7349,25 @@ tick, and that the series holding it up has a count near 1.
       named an equivalent in `scripts/mutants_equivalent.toml` with the
       reason, as the 27 there are.
 
+      *The `rcov` bias, fixed 2026-10-05 on the user's word ("Fix the rcov
+      bug").* Batch A's worker found it while pinning `rcov`'s survivors.
+      Under `kind="preavg"` and `psd=False` the bias term was
+      `ψ₁/(θ²ψ₂)·Σxx'/(2n)` with the configured `theta`, where CKP's Eq. 7
+      defines θ by the window, `k_n/√n`; the two part when `preavg_rows` is
+      given, or a block's length differs from `block_rows`, and too little
+      noise was subtracted. On pure noise, whose truth is 0, sixteen streams
+      of 20,000 returns averaged 195.5 (standard error 1.4) under
+      `preavg_rows=20`, and about 11 in a block four times `block_rows`. The
+      term now reads θ from the window run, `ψ₁/(2ψ₂k_n²)`, and those means
+      are within 1.5 standard errors of 0. Held by
+      `rcov::tests::the_bias_term_reads_theta_from_the_window_actually_run`,
+      which fails on the old line, and by the Rust and Python definition
+      tests, now written with Eq. 7's θ. REGIMES §8, re-run, moves in one
+      cell at the third decimal (refresh time, `psd=False`: bias −0.010 to
+      −0.009, the same error). The golden stream `rcov_preavg`, which runs
+      `preavg_rows = 6` at the default `theta`, had pinned the old bias and
+      is re-pinned: its first variance moves from 9.410 to 7.978.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

@@ -263,6 +263,15 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`rcov`'s pre-averaged estimate under `psd=False` subtracts the bias at
+  the window actually run** (task 158). Its bias term read the configured
+  `theta`, where Christensen, Kinnebrock and Podolskij define θ by the
+  window, `k_n / sqrt(n)`. The two part when `preavg_rows` is given, or a
+  block's length differs from `block_rows`, and too little noise was
+  subtracted: 195 on pure noise whose true value is 0 under
+  `preavg_rows=20` and the default `theta`. The numbers of `kind="preavg"`
+  with `psd=False` move wherever they parted.
+
 - **`embargo` no longer learns a label before its delay has passed**
   (task 153). A break -- a gap past `gap_cap`, or a session change --
   released every held row at once. So a forward label was learned before it

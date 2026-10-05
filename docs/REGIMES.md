@@ -539,7 +539,7 @@ keeps only the rows where both series have moved.
 | clean | −0.001 ± 0.001 / 0.016 | −0.004 ± 0.003 / 0.042 | −0.013 ± 0.008 / 0.113 | −0.006 ± 0.005 / 0.074 |
 | noise | −0.177 ± 0.006 / 0.197 | −0.011 ± 0.003 / 0.045 | −0.013 ± 0.008 / 0.113 | −0.006 ± 0.005 / 0.074 |
 | noise, half observed, previous tick | −0.420 ± 0.014 / 0.465 | −0.094 ± 0.004 / 0.110 | −0.017 ± 0.008 / 0.114 | −0.021 ± 0.005 / 0.078 |
-| noise, half observed, refresh time | −0.219 ± 0.008 / 0.246 | −0.017 ± 0.005 / 0.075 | −0.020 ± 0.011 / 0.151 | −0.010 ± 0.008 / 0.106 |
+| noise, half observed, refresh time | −0.219 ± 0.008 / 0.246 | −0.017 ± 0.005 / 0.075 | −0.020 ± 0.011 / 0.151 | −0.009 ± 0.008 / 0.106 |
 
 **On clean returns, `plain` is the estimator to use.** Its error is 0.016,
 against 0.042 for the kernel and 0.074 at best for pre-averaging. The

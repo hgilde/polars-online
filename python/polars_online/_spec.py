@@ -4540,6 +4540,9 @@ def rcov(
         ceil(theta * block_rows^0.6)`` without the bias term, and clips any
         negative eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes
         ``k_n`` (at least 2) instead of deriving it from ``block_rows``.
+        ``theta`` sets the window and nothing else: the bias term reads theta
+        from the window actually run, ``k_n / sqrt(n)`` over the block's own
+        ``n`` rows (the paper's Eq. 7).
     ``noise_stride``, ``iv_stride``
         The two subsampled grids behind an automatic bandwidth (defaults 1 and
         20): the noise variance ``omega2`` from the dense one, deliberately biased

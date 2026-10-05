@@ -865,7 +865,10 @@ const GOLDEN_CORRCHANGE: &[f64] = &[0.8103851544234802, 0.764942538158755, 0.662
 // alone, as it does in every other model (docs/REVIEW-E54-E64.md H1).
 const GOLDEN_HMM: &[f64] = &[-1.1511065244639265, -2.6218190023816343, -0.875789289803333];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
-const GOLDEN_RCOV_PREAVG: &[f64] = &[9.410243164612856, -1.8070645542417443, 21.4716237436384];
+// Re-pinned 2026-10-05 (docs/PLAN.md task 158): the stream runs `preavg_rows
+// = 6` at the default `theta`, and the bias term now reads θ from that window,
+// `k_n/√n`, as CKP's Eq. 7 defines it, where it read the configured `theta`.
+const GOLDEN_RCOV_PREAVG: &[f64] = &[7.978238741944206, -1.6390325313075758, 20.24474706199032];
 const GOLDEN_DECO: &[f64] = &[
     -0.05328065158114557,
     -0.10464551302436545,

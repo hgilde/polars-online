@@ -169,9 +169,12 @@ def test_the_preaveraged_estimate_is_its_definition():
     ybar = np.array(
         [sum(g[j] * ret[start + j] for j in range(1, kn)) for start in range(n - kn + 1)]
     )
-    want = n / (n - kn + 2) / (psi2 * kn) * sum(np.outer(y, y) for y in ybar) - psi1 / psi2 / (
-        2 * n
-    ) * sum(np.outer(x, x) for x in ret)
+    # CKP's bias term at the theta their Eq. 7 defines: k_n / sqrt(n), the window
+    # run over this block's n rows.
+    theta2 = kn**2 / n
+    want = n / (n - kn + 2) / (psi2 * kn) * sum(np.outer(y, y) for y in ybar) - psi1 / (
+        theta2 * psi2
+    ) / (2 * n) * sum(np.outer(x, x) for x in ret)
     got = unvech(rows["rcov"][0].to_list(), 2)
     assert np.allclose(got, (want + want.T) / 2, rtol=1e-9, atol=1e-15)
     assert rows["rcov_n"][0] == len(ybar)
