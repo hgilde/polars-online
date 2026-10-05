@@ -7103,7 +7103,7 @@ tick of an interval, and `refresh.rs`'s module comment said a large count
 marks the series holding the grid up. Both now say the grid keeps the last
 tick, and that the series holding it up has a count near 1.
 
-- [ ] 155. **The weekly mutation pass sized to finish -- requested
+- [x] 155. **The weekly mutation pass sized to finish -- requested
       2026-10-03.** Size S. The user asked "How can we ensure that the run
       will finish?", then "Make the changes and push and run it now". No
       weekly pass had finished. Its one run, on 2026-09-27, failed at its
@@ -7182,6 +7182,19 @@ tick, and that the series holding it up has a count near 1.
       `scripts/mutants.sh`. By the sample, it adds about 16 minutes to a
       slow shard, so the slowest stays near two-thirds of the stop. Ticked
       when a pass at this limit finishes with timeouts at a few per cent.
+
+      **The pass at ten times the baseline finished inside its limits**
+      (run 37217857544, dispatched 2026-10-04, done 2026-10-05). Every one
+      of the 96 shards tested all its mutants, in 65 to 138 minutes, mean
+      109, so the slowest used 64% of the 215-minute stop. The report
+      counted 9,486 caught, 1,272 survived, 27 equivalent, 66 timed out
+      (0.6%) and 287 unviable. The sample's estimate held: 1,261 of the
+      previous pass's 1,588 timeouts were survivors. The survivors are task
+      158. The scheduled pass of 2026-10-04 (run 37194203887, at the old
+      limit) failed in shard 13 at its baseline, before any mutant: a
+      generated stream drove `kalman`'s prediction to NaN in
+      `model_contract.rs`'s `generated::kalman`, so that shard reported
+      nothing. That bug is task 158's first item.
 
 - [x] 156. **The README rewritten by the ideas of two reviews -- requested
       2026-10-04.** Size L. The user's words: "Keep a doc of these ideas,
@@ -7312,6 +7325,19 @@ tick, and that the series holding it up has a count near 1.
       term used before its section), whether blocks on frames built from
       the example data (`flows`, `by_block`) carry the line too, and a test
       that runs the README's TOML through the command line.
+
+- [ ] 158. **The mutation survivors worked through, and the bug behind the
+      scheduled pass's failure fixed -- requested 2026-10-05.** Size L. The
+      user's words: "After the push, tick task 155 and commit, then work
+      through all the survivors and fix the cause of the last task
+      failure." First the cause: proptest's generated stream for `kalman`,
+      with features near `±1e100`, a feature of `4.6e49`, weights and a
+      target at `1e100`, made row 7 predict `[NaN, inf]`. Its case goes
+      into `model_contract.proptest-regressions`, and a named test holds
+      the fix. Then the 1,272 survivors of run 37217857544, file by file:
+      each is killed by a Rust test (the only tests cargo-mutants sees), or
+      named an equivalent in `scripts/mutants_equivalent.toml` with the
+      reason, as the 27 there are.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
