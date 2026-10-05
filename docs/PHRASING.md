@@ -1096,3 +1096,196 @@ Widened to what follows, it finds seventeen: the four more are *The idea*,
 *What a spec names* (*follow the example*), *Throughput* (*The paragraphs
 under the tables*) and *Window operators* (*the paragraphs after it
 give*).
+
+### README.md:272-274 ("each exception is named", the opener of "How a bank sees a stream", I5)
+
+> The parameters every spec shares say how its model reads the stream, one
+> chunk at a time. Most models take all of them, and each exception is
+> named where its parameter is introduced.
+
+**Reported:** This phrase discusses an exception, it is not clear if this means a
+python exception or an exception to the rule of every “model takes all of
+them Most models take all of them, and each exception is named where its
+parameter is introduced.”
+
+**Status:** open. The rule is `docs/WRITING.md` §5, "A word with a Python
+meaning keeps it", added 2026-10-04, with a count in §6. In
+`docs/README-ITERATIONS.md` it is the idea W8, for the next pass.
+
+**Note:** in the I5 README (uncommitted), *exception* in the everyday
+sense appears seven times: this opener, *Convergence without a decay*
+twice, the chunk-invariance guarantee, the window target's column form,
+*Parallelism*'s `shards` row and *Window operators*' sparse input. *Raise*
+means *increase* five times: "the ways to raise the cap", "Raise
+`dead_frac`", "raise `eps`", "Raise `boundary_gamma`" and "raising the
+ceiling", where seven others mean an error raised.
+
+### README.md:40-95 (the first fit's code comments, I5)
+
+> # A trading day, 9:30 to 16:00, a row a second for the stocks A, B and C in turn.
+
+**Reported:** The first fit section is much better but add comments to the code
+briefly describing what is happening but not high detail since the section
+has good detail
+
+**Status:** fixed in the I5 working tree (uncommitted): each of the
+block's four steps opens with a one-line comment, numbered 1 to 4, and the
+lines that had none say what they give. The rule is `docs/WRITING.md` §3,
+"A long example names its steps in brief comments, and leaves the detail
+to the prose", added 2026-10-04; in `docs/README-ITERATIONS.md` it is the
+idea C8.
+
+**Note:** the first report in this log on I5's first fit, and it confirms
+the approach the rules of 2026-10-04 asked for (WRITING §2, "The
+introduction leads with its example"; §3, "An example shows what goes in
+and what comes out").
+
+### README.md:323-358 and 1958 (relative targets as expressions, I5)
+
+> targets=["ret_5m", po.target("price_5m", relative_to="mid")],   # learns and predicts price_5m - mid
+
+**Reported:** The examples use relative targets rather than the new polars expressions
+that let you construct relative targets. The new expressions are more clear
+
+**Status:** open. The rule is `docs/WRITING.md` §3, "An example builds a
+thing in Polars' own terms when the library takes them", added 2026-10-04.
+In `docs/README-ITERATIONS.md` it is the idea C9, for the next pass.
+
+**Note:** checked against the code before the pass. A target expression
+must hold an operator looking ahead (`rewm_mean`, `rewm_sum` or
+`rewm_rate`; `_spec.py` `formula_target`), so a relative target in
+expression form is a window that looks ahead less a column of the row:
+`(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")`. Its
+ratio and log ratio are `/ pl.col("mid")` and `.log()`; all three build,
+and the difference run on the README's `trades` predicts 2,894 of 3,000
+rows. A plain `pl.col("price_5m") - pl.col("mid")` is refused as a target,
+and the refusal sends the user to `po.stream.with_windows`, which refuses
+the same expression in turn ("a formula of the row alone is Polars'
+with_columns"): E11, fixed in `fc51308`.
+
+**Reported, then:** We will  need example of constructing targets using with columns and forward windows
+
+### README.md (the whole document; procedural sentences, after I6)
+
+> **A target that needs no window is a column made first.**
+
+**Reported:** When explaining how something is done, write procedural sentences, not
+compressed definitions. Name the concrete tool, method, and point in the
+pipeline (e.g. "made with Polars expressions and chained before the
+model"), not abstractions like "a column made first." State conditions
+explicitly and cover both branches: "X requires Y; otherwise, do Z with
+[tool] at [step]." Don't define things by negation ("a target that needs no
+window") or use aphoristic "An X that is Y is a Z" phrasing. Don't use
+relative words like "first," "later," or "upstream" without saying
+relative to what. Test each sentence: could a reader act on it without
+having to infer a missing step or tool?
+
+**Status:** open. The rules are `docs/WRITING.md`'s principle P10, "A
+reader can act on every how-to sentence without inferring a step or a
+tool", and four rules in §5: procedural sentences that name the tool, the
+method and the point in the pipeline; a condition with both branches; no
+definition by negation or by "An X that is Y is a Z"; a relative word with
+its reference. §6 counts the last two. In `docs/README-ITERATIONS.md` they
+are the ideas W9 to W12, for the next pass.
+
+**Note:** counted in the I6 README (uncommitted). Eight bold leads take
+the form *An X … is a Z*: the two in *Relative and look-ahead targets*, and
+*A mistake in the query's construction … is a `ValueError`*, *A closed row
+is the `gram()` …*, *A transition is one row, so a weekend is one step*, *A
+search over factor sets is a list of specs*, *The speed difference is a
+difference in semantics* and *The canary is a weekly job*. One noun is
+defined by negation, *a target that needs no window*. Of 25 relative words
+the count lists, about ten lack their reference: *make first* and *made
+first* (the report's example), *parse field names downstream*, *difference
+upstream*, *cleaning upstream*, *Polars expressions upstream*, *the earlier
+one's weights decayed first*, *a later step of the query*, *a variable set
+later* and *everything downstream of the label*. The rest carry one (*five
+minutes later*, *`w` later*) or order a list (*the intercept first*).
+
+### README.md:300-304 ("The examples from here on read two frames", the end of the opener of "How a bank sees a stream", I7)
+
+> The examples from here on read two frames. `df` has 400 rows, with a
+> numeric clock `t` and a timestamp `ts` one minute apart. Its other columns
+> are the numbers `x0`, `x1`, `x2`, `signal_a`, `signal_b`, `y` and `ret`,
+> and the text columns `stock_id` (four stocks), `group`, `session` and
+> `venue`. `lf` holds the same rows as a query, `df.lazy()`.
+
+**Reported:** This statement is out of context, it’s very hard to understand this paragraph  what should be done to fix it? “The examples from here on read two frames”
+
+**Reported, then:** We want to know why the reviewers missed it and how to make them catch it in the future
+
+**Status:** fixed in the I7 README (uncommitted). The frames get a
+subsection of their own, *Example data*, after *Install*. It says what the
+frames are for, then builds `df`, `lf`, `trades`, `today` and `later` in
+code a reader can run. The paragraph is gone from the section about
+parameters, and the two prose descriptions of `trades` link to the new
+subsection. The rules are `docs/WRITING.md` §3, "Every name an example
+reads was built by an example before it", and §5's relative-word rule,
+widened to positions in the document, with §6's new step 9, the cold read.
+In `docs/README-ITERATIONS.md` they are the ideas C11 and W13 and the
+review steps V1 and V2.
+
+**Note:** why every pass missed it is in README-ITERATIONS, under I7's
+verdict. In short: the paragraph was I4's answer to R1's finding C2,
+*introduce every frame an example reads*, so each later pass saw C2 as
+done. The README test hands every block `df` ready-made, so no test could
+fail. The counts had no pattern for *from here on*. The writers' rules are
+about sentences, each writer read one part, and the assembler's read
+looked for facts and rule breaks, knowing what the paragraph was for. The
+test that would have caught it,
+`test_every_name_a_readme_example_reads_was_built_by_an_earlier_one`, fails
+on the I7 README with six names: `df`, `trades`, `lf`, and three of the
+same kind no one had reported, `now`, `today` and `later`. All six are now
+built in code.
+
+### README.md:440-447 (`po.target`, in "Relative and look-ahead targets", I7)
+
+> **To take one column against another of its row without `with_columns`,
+> put `po.target` in `targets`.**
+> `po.target("price_5m", relative_to="mid")` is the target `price_5m − mid`,
+> under the default `relative="difference"`, and `"ratio"` or `"log_ratio"`
+> change the scale. Its reference gives each scale's null rules. Its
+> `"ratio"` is the one target that sits about 1, so its `hit_rate` asks which
+> side of 1 prediction and outcome fall on. In the CLI's TOML it is a table:
+> `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`.
+
+**Reported:** The paragraph starting with “To take one column against another of its row without “ looks like it should be a code example with comments instead
+
+**Status:** fixed in the I7 README (uncommitted). The bold lead stays, and
+an example follows it, run on `trades` with the section's first `flows`:
+three targets take `price` against `mid`, one per scale, each named with
+`name=`. Its comments give each scale and what it sits about, the ratio's
+`hit_rate`, the null rule, the level prediction and the TOML table. The
+rule is `docs/WRITING.md` §3's first, "When the content is *describing*,
+show it as code", which the paragraph broke. §6 now counts such
+paragraphs, and README-ITERATIONS records the note as C12.
+
+**Note:** running the example taught a fact the paragraph never said: one
+column taken two ways needs `name=`, since a spec refuses a target name it
+has already seen ("targets lists "price" more than once"). The new count,
+four or more inline code spans with arguments in one prose paragraph,
+leaving math out, ranks this paragraph first on the I7 README, at six. The
+six it lists in the fixed README are rules or advice with their example
+beside them.
+
+### README.md (every example on the example data, I7)
+
+**Reported:** Be sure that when a code section references the example data, there is a line of prose just above the code block stating that it uses example data with a link to that section.
+
+**Status:** done in the I7 README (uncommitted). 57 python blocks read
+the example data: a name *Example data* builds (`df`, `lf`, `trades`,
+`today`, `later`) that the block reads and does not assign, or a file it
+writes (`ticks.parquet`, `ticks/*.parquet`). Above each, the last sentence
+is now *This code uses … from [Example data](../README.md#example-data):*,
+naming what that block reads. Where the paragraph above ended in a colon
+that introduced the code, the colon became a full stop. Where a table or
+an equations block sat just above, the line is a paragraph of its own. One
+block already had it. The rule is `docs/WRITING.md` §3, "An example that
+reads the example data says so in the line just above it", and
+`tests/test_production_hardening.py` holds every block to it. In
+`docs/README-ITERATIONS.md` it is C15.
+
+**Note:** a block that reads only a name an earlier example built from
+the example data, such as `flows` or `by_block`, is not counted. Its own
+section names where that frame came from, and the block that built it
+carries the line.

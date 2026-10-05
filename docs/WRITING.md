@@ -28,8 +28,9 @@ Each numbered rule is one way to keep one of them.
 | P5 | **Plain spoken English, not compressed or literary phrasing** | the sentence a colleague would say aloud: say what a parameter is used for, then show it; an aside in a list goes in parentheses; no inverted clause, placeholder subject or *X rather than Y*; headings a reader scans for, such as *Terminology* (§5) |
 | P6 | **One topic, one place, led by the point to remember** | a far *too* merges two paragraphs; a semicolon never joins two ideas; nothing important is tacked on at the end (§2, §5) |
 | P7 | **Fewer ideas per paragraph, not shorter sentences** | cut a list of uses to the one that matters; secondary detail goes to the document that owns it (§1, §5) |
-| P8 | **An example is complete** | its input, its output, and every part of the claim it illustrates, each named as what it is (§3) |
+| P8 | **An example is complete** | its input, built by code the reader has seen before it; its output; and every part of the claim it illustrates, each named as what it is (§3) |
 | P9 | **The opening is read hardest, and one instance stands for a pattern** | the top of the README gets the most care; a reported fault is counted and fixed everywhere it occurs (§6) |
+| P10 | **A reader can act on every how-to sentence without inferring a step or a tool** | a procedure in procedural sentences, naming the tool, the method and the point in the pipeline; a condition with both branches; no definition by negation or "An X that is Y is a Z"; a relative word with its reference (§5) |
 
 | section | what it asks of a draft |
 |---|---|
@@ -246,6 +247,10 @@ explained that `repr(bank)` shows its specs and groups, that
 `bank.groups()` lists every group with its row count, and that
 `bank.drop_groups(...)` forgets the quiet ones. It is now a code block
 with comments (PHRASING: "A bank says what it holds", "As a query").
+So is a paragraph that walks through a call's forms: *`po.target("price_5m",
+relative_to="mid")` is the target `price_5m − mid` … In the CLI's TOML it
+is a table* became three targets in one spec, a comment on each scale
+(PHRASING: "`po.target`, in Relative and look-ahead targets").
 
 | the prose was | it becomes |
 |---|---|
@@ -255,14 +260,36 @@ with comments (PHRASING: "A bank says what it holds", "As a query").
 
 **An example shows what goes in and what comes out.** A reader cannot
 follow a call on a frame they have never seen. So an example shows its
-input, as a few rows printed in a table or as its schema, and the table
-each step returns. Its comments say what each line takes and what it
+input, built in code the reader has seen, with a few of its rows printed in
+a table where their shape matters, and the table each step returns. Its comments say what each line takes and what it
 gives. The `refresh_time` example became readable once it built its eight
 ticks in the open and printed the grid they make (PHRASING: "the
 `refresh_time` example"). The first fit is held to the same rule (PHRASING:
 "the opener of Introduction"). A printed table is a claim like any other,
 so a test holds it to what the code returns, as
 `tests/test_refresh_time.py` holds that grid.
+
+**Every name an example reads was built by an example before it.** A
+reader starts with nothing and runs the examples in order, so a frame
+described in prose is a frame they cannot make. A frame that several
+sections read is built once, in *Example data* after *Install*, and a
+section that runs on it links there. I4 answered R1's *introduce every
+frame an example reads* with a paragraph that listed `df`'s columns. It
+sat at the end of a section about parameters for four rewrites, until the
+user found it "out of context" and "very hard to understand" (PHRASING:
+"The examples from here on read two frames"). No test could see it,
+because the README test's namespace hands every block `df` ready-made. So
+`test_every_name_a_readme_example_reads_was_built_by_an_earlier_one` parses
+the README's blocks in order, and fails on a name that no block before it
+builds.
+
+**An example that reads the example data says so in the line just above
+it, with a link.** The last sentence above such a block names what it
+reads, as *This code uses `df` from [Example data](../README.md#example-data):*,
+so a reader who opens the README at any section can tell where `df` comes
+from, and build it (the user, 2026-10-05).
+`test_an_example_on_the_example_data_says_so_just_above_it` holds every
+block to it.
 
 **An example matches each part of its claim, and says which part it
 shows.** *Features and targets can be windows over the stream* promised
@@ -272,6 +299,23 @@ user read it as a backward window with no forward target (PHRASING:
 "Features and targets can be windows"). A claim about features and targets
 names a feature that looks back and a target that looks ahead, each as
 what it is.
+
+**A long example names its steps in brief comments, and leaves the detail
+to the prose.** The first fit runs four steps in one block: make up the
+input, fit every row and serve, fit locally, and forecast a target that
+looks ahead. The user found the section "much better" with its tables and
+prose, and asked for comments "briefly describing what is happening but not
+high detail since the section has good detail" (PHRASING: "the first fit's
+code comments"). So each step opens with a one-line comment that says what
+it does, and a line's own comment says what it gives.
+
+**An example builds a thing in Polars' own terms when the library takes
+them.** Where a spec takes a Polars expression, the example writes one, and
+a helper that does the same job comes second, if at all. The user found
+the expressions clearer than `po.target("price_5m", relative_to="mid")`
+(PHRASING: "relative targets as expressions"). An expression such as
+`(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")` shows what
+is computed and over which rows, in a language the reader already knows.
 
 **Prose that stays must carry what a comment cannot hold at comment
 length.** A reason earns its sentence: *filter after the bank, because a
@@ -288,7 +332,10 @@ examples, so a converted passage is also a test of what it describes. Run
 a section's blocks while drafting it, not only at the end.
 `_readme_namespace` in `tests/test_production_hardening.py` builds the
 namespace each README block runs in, so a draft's blocks can run there
-before they reach the README.
+before they reach the README: `uv run python scripts/doc_review.py run
+DRAFT.md` runs each the way the README test does. It holds what the README's examples have
+built, so a block that runs there has not shown that a reader could run
+it: the rule above checks that.
 
 **An example may name a model. A survey may not.** A runnable example
 needs a real spec, so it names one; that is what the library does. A
@@ -416,6 +463,47 @@ em-dash clauses and an italicised copula doing a verb's work (PHRASING:
 loop above*, must point at something the reader has just seen, in the
 document's current order (PHRASING: "As a query").
 
+**Explain how something is done in procedural sentences, naming the tool,
+the method and the point in the pipeline.** A compressed definition leaves
+the reader to infer the step. *Or the target can be a column you make
+first* names no tool and no point; *make the column with Polars'
+`with_columns`, chained in the query before the bank* names both. The
+user's model wording is *made with Polars expressions and chained before
+the model* (PHRASING: "procedural sentences"). The test, for every how-to
+sentence: could a reader act on it without inferring a missing step or
+tool?
+
+**State a condition with both branches.** The user's form is *X requires
+Y; otherwise, do Z with [tool] at [step]*. A sentence that gives only the
+case where something works leaves the reader to guess what to do in the
+other. Its semicolon joins the two halves of one idea, as §5 allows.
+
+**Do not define a thing by negation, or by "An X that is Y is a Z".** *A
+target that needs no window is a column made first* does both: it names a
+thing by what it lacks, and states the procedure as an identity. Say what
+to do instead. *A transition is one row, so a weekend is one step* and *The
+speed difference is a difference in semantics* are the same form; the
+README of 2026-10-04 led eight paragraphs with it.
+
+**A relative word says what it is relative to.** *First*, *later*,
+*earlier*, *upstream* and *downstream* need their reference: first before
+what, upstream of which step. *So difference upstream* becomes *so compute
+the returns with Polars' `diff()` in the query before the bank*. An
+ordering inside a list, as *the intercept first*, and a span with its
+reference, as *five minutes later*, are fine. A position in the document
+is not a reference: *from here on*, *below* and *above* say where the
+writer stands, which a reader who jumped to the section does not share.
+Name what they point at, such as *every example after the first fit*, or
+link to it.
+
+**A word with a Python meaning keeps it.** In a Python library's docs,
+*exception* and *raise* mean an error raised. *Most models take all of
+them, and each exception is named where its parameter is introduced* left
+the user asking whether a model raised something (PHRASING: "each exception
+is named"). For the everyday sense, say *except*, *apart from*, *a model
+that does not take it*, *increase* or *a larger*. On 2026-10-04 the README
+used *exception* in that sense seven times and *raise* for *increase* five.
+
 **A *too* far from what it points at marks one topic split in two.**
 *The diagnostics are out-of-sample too* sat four paragraphs below *Every
 prediction is out-of-sample*, the claim its *too* leans on. The user read
@@ -469,16 +557,17 @@ on rereading (PHRASING: "the task 89 rewrite"):
 
 | step | what to do | how it is checked |
 |---|---|---|
-| 1. measure | count the prose before touching it | the counts below |
+| 1. measure | count the prose before touching it | the counts below, with `scripts/doc_review.py measure` and `counts` |
 | 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in `docs/PLAN.md` before any prose changes, and gives each section's opener and the subsections its kinds become |
 | 3. draft | rewrite one section at a time | each section's code blocks run as it is finished |
-| 4. account | lose nothing | every number, backticked name and link target in the old text is in the new, or in the document it moved to: a diff, not a reading |
+| 4. account | lose nothing | every number, backticked name and link target in the old text is in the new, or in the document it moved to: a diff, not a reading. `uv run python scripts/doc_review.py account OLD.md NEW.md [--also DOC.md ...]` lists what was lost |
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
-| 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown` |
-| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks |
+| 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
+| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks |
+| 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for (README-ITERATIONS, I7's verdict) |
 
-The counts, taken outside code blocks, tables and headings:
+The counts, taken outside code blocks, tables and headings. `uv run python scripts/doc_review.py measure FILE.md` takes the first seven, and `counts FILE.md` lists every hit of the eleven numbered ones, in this order:
 
 | count | what it finds |
 |---|---|
@@ -489,10 +578,17 @@ The counts, taken outside code blocks, tables and headings:
 | the aphorism *X, not Y* | a contrast that alludes rather than states |
 | tables, as rendered | comparisons drawn for the reader |
 | code blocks | description shown as code |
-| headings whose next non-blank line is another heading, a table, a list or a code block | a section with no opener, unless the table is one of its contents that explains the subsections (§2) |
-| openers that name a subsection followed by *says*, *shows* or *lists*, or that say *Below come*, *Below are*, *The paragraphs below say* or *follow the example* | a contents in place of a summary (§2) |
-| prose sentences with a semicolon, outside tables and code | two ideas joined, unless the halves are one idea (§5) |
-| *too* meaning *also*, *also*, *as well*, *the same way* | a back-reference to read: farther back than the paragraph before, it marks a topic split in two (§5) |
+| 1. headings whose next non-blank line is another heading, a table, a list or a code block | a section with no opener, unless the table is one of its contents that explains the subsections (§2) |
+| 2. openers that name a subsection followed by *says*, *shows* or *lists*, or that say *Below come*, *Below are*, *The paragraphs below say* or *follow the example* | a contents in place of a summary (§2) |
+| 3. prose sentences with a semicolon, outside tables and code | two ideas joined, unless the halves are one idea (§5) |
+| 4. *too* meaning *also*, *also*, *as well*, *the same way* | a back-reference to read: farther back than the paragraph before, it marks a topic split in two (§5) |
+| 5. a clause turned around, as *which its … takes* | an inverted clause, where the plain order reads more easily (§5) |
+| 6. a sentence about the document: *the table below*, *this section*, *from here on* | a sentence about the page, where one about the library or the reader's task belongs (P1) |
+| 7. bold leads of the form *An X … is a Z* | a definition where a procedure belongs (§5) |
+| 8. nouns defined by what they lack (*that needs no*, *with no*) | a definition by negation, where the thing itself belongs (§5) |
+| 9. *first*, *later*, *earlier*, *upstream*, *downstream* with no reference, and *from here on*, *below* or *above* pointing into the document | a step, or a place, the reader must find for themselves (§5) |
+| 10. prose that names three or more of the library's own names (a parameter, a call, an output field or a quoted value) that no code block under the same heading shows, a parameter as `name=`, a call as `name(`, a value verbatim | a parameter, a structure or a call described where an example with comments belongs (§3). It ranked the `po.target` paragraph third of 25 on the I7 README; about a third of what it lists should be code, and the rest are rules and lists of names |
+| 11. *exception* outside an error, *raise* meaning *increase*, table cells included | a word whose Python meaning the reader will hear first (§5) |
 
 The cost words, as one pattern for `grep -E`, are
 `costs|pays|buys|for free|the price|the point`. They and the aphorisms

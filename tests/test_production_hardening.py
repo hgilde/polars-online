@@ -18,10 +18,13 @@ This round found and fixed two real defects before writing a single test:
 Both are now spec-validation errors, pinned below.
 """
 
+import ast
+import builtins
 import contextlib
 import copy
 import os
 import pickle
+import re
 import subprocess
 import threading
 from datetime import datetime, timedelta
@@ -694,12 +697,15 @@ def _trades(n: int = 3000) -> pl.DataFrame:
 
 
 def _readme_namespace(tmp_path: Path) -> dict[str, object]:
-    """What the README's prose has already introduced by the time a block runs:
-    a frame with every column it names, a spec with the grid its field-name
+    """What the README's examples have built by the time a block runs: the
+    frames *Example data* builds, a spec with the grid its field-name
     examples assume, a fed bank, an output frame, and the files the doc
     examples read. A block that needs something not here fails with a
-    `NameError`, which is itself the finding -- the README would be using a
-    name it never showed the reader."""
+    `NameError`. That finds a name missing from this namespace, not one the
+    README never built: every block here gets `df` ready-made, so a README
+    that only described `df` passed for four rewrites (README-ITERATIONS,
+    C11). `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one`
+    checks the README itself."""
     n = 400
     rng = np.random.default_rng(0)
     df = pl.DataFrame(
@@ -810,21 +816,27 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         # The "one row per finished group" block's output, which the
         # "reading a correlation matrix" section reads.
         "closed": _closed_rows(df),
-        # The "series that tick at their own times" section's long input:
-        # three symbols, each at its own instants.
-        "ticks": pl.concat(
-            pl.DataFrame(
-                {
-                    "symbol": [s] * 100,
-                    "t": np.cumsum(rng.exponential(1.0, 100)),
-                    "px": rng.standard_normal(100),
-                }
-            )
-            for s in ("AAA", "BBB", "CCC")
-        ).sort("t"),
+        # The "series that tick at their own times" section's eight ticks, which
+        # its first block builds and its two-run block reads.
+        "ticks": pl.DataFrame(
+            {
+                "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],
+                "t": [0.4, 0.9, 1.3, 1.6, 2.2, 2.5, 2.8, 3.1],
+                "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],
+            }
+        ),
         # The "windowed means" section's stream: quotes with a mid, and
         # trades between them, for two symbols on the clock `ts`.
         "trades": _trades(),
+        # The "relative and look-ahead targets" section builds it in its first
+        # block, and its `po.target` block reuses it.
+        "flows": _trades()
+        .lazy()
+        .with_columns(
+            flow=pl.when(pl.col("side") == "buy")
+            .then(pl.col("quantity"))
+            .otherwise(-pl.col("quantity"))
+        ),
         "today": today,
         # The query form of `today`: the rows after the stream's.
         "later": today.lazy(),
@@ -869,6 +881,88 @@ class TestReadmeExamples:
         finally:
             os.environ.clear()
             os.environ.update(env)
+
+    def test_the_readme_builds_the_frames_its_examples_read(self, tmp_path, monkeypatch):
+        """*Example data* shows the code that builds `df`, `trades` and
+        `today`, and writes the files some examples scan, so a reader can run
+        any example. It must build exactly the frames the namespace above
+        gives every block, or the README would show one stream and test its
+        examples on another."""
+        monkeypatch.chdir(tmp_path)  # the block writes ticks.parquet and ticks/
+        text = (REPO / "README.md").read_text(encoding="utf-8")
+        start = text.index("\n### Example data\n")
+        section = text[start : text.index("\n## ", start)]
+        blocks = [code for _, _, code in README_BLOCKS if code in section]
+        assert len(blocks) == 1, f"Example data should hold one python block, not {len(blocks)}"
+        ns = _readme_namespace(tmp_path)
+        shown: dict[str, object] = {}
+        exec(compile(blocks[0], "README.md: Example data", "exec"), shown)
+        for name in ("df", "trades", "today"):
+            assert shown[name].equals(ns[name]), name
+        assert shown["lf"].collect().equals(ns["df"])
+        assert shown["later"].collect().equals(ns["today"])
+
+    def test_every_name_a_readme_example_reads_was_built_by_an_earlier_one(self):
+        """A reader starts with nothing and runs the examples in order. The
+        namespace above hands each block `df` and the rest ready-made, so a
+        block that reads a frame the README only describes still runs there.
+        I7's *The examples from here on read two frames* described `df` that
+        way for four rewrites before a reader found it out of context
+        (README-ITERATIONS, C11). So each block is parsed, not run, and every
+        name it reads must be one that a block before it, or the block itself,
+        assigns, imports or defines."""
+        known = set(dir(builtins))
+        unbuilt: dict[str, int] = {}
+        for _, line, code in (b for b in README_BLOCKS if b[0] == "README.md"):
+            stored: set[str] = set()
+            loaded: list[str] = []
+            for node in ast.walk(ast.parse(code)):
+                if isinstance(node, ast.Name):
+                    (loaded.append if isinstance(node.ctx, ast.Load) else stored.add)(node.id)
+                elif isinstance(node, ast.Import | ast.ImportFrom):
+                    stored.update((a.asname or a.name).split(".")[0] for a in node.names)
+                elif isinstance(node, ast.FunctionDef | ast.ClassDef):
+                    stored.add(node.name)
+                elif isinstance(node, ast.arg):
+                    stored.add(node.arg)
+            for name in loaded:
+                if name not in known and name not in stored:
+                    unbuilt.setdefault(name, line)
+            known |= stored
+        assert not unbuilt, (
+            "README examples read names that no example before them builds, "
+            f"each at the line of its first use: {unbuilt}"
+        )
+
+    def test_an_example_on_the_example_data_says_so_just_above_it(self):
+        """The user, 2026-10-05: when a code block reads the example data, the
+        line of prose just above it says so, with a link to *Example data*
+        (README-ITERATIONS, C15). A block reads it when it reads a name
+        *Example data* builds without assigning that name itself, or a file
+        *Example data* writes."""
+        text = (REPO / "README.md").read_text(encoding="utf-8").split("\n")
+        built = {"df", "lf", "trades", "today", "later"}
+        written = re.compile(r"[\"']ticks(/|\.parquet[\"'])")
+        missing = []
+        for path, line, code in README_BLOCKS:
+            if path != "README.md":
+                continue
+            names = [n for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Name)]
+            stored = {n.id for n in names if not isinstance(n.ctx, ast.Load)}
+            loaded = {n.id for n in names if isinstance(n.ctx, ast.Load)}
+            if stored >= built:  # Example data's own block, which builds them
+                continue
+            if not ((loaded - stored) & built or written.search(code)):
+                continue
+            above = line - 2  # the fence is at line - 1, counted from 0
+            while above >= 0 and not text[above].strip():
+                above -= 1
+            if "](#example-data)" not in text[above]:
+                missing.append(line)
+        assert not missing, (
+            "README blocks that read the example data with no line just above linking "
+            f"*Example data*, at the lines of their fences: {missing}"
+        )
 
     def test_there_are_shell_blocks_to_check(self):
         assert len(SHELL_BLOCKS) >= 4, SHELL_BLOCKS

@@ -7238,7 +7238,7 @@ tick, and that the series holding it up has a count near 1.
       and E10) for the next pass, I5, eleven rules in WRITING §2, §3 and
       §5, and the user's own rewrite of one paragraph beside its original
       in §8.
-- [ ] 157. **The README rewritten as a test of every rule -- requested
+- [x] 157. **The README rewritten as a test of every rule -- requested
       2026-10-04.** Size L. The user's words: "Write all the rules and the
       rewrite the readme as a test and show me the html". The rules are
       WRITING's nine principles (its preamble) and the rules I4's verdict
@@ -7287,6 +7287,31 @@ tick, and that the series holding it up has a count near 1.
       example the docstring-example test executes, and
       `tests/test_gram_module.py` holds every field of the merge to the
       whole stream, target side included, and the old recipe to its error.
+
+      *I7's verdict, and the commit (2026-10-05, on the user's word: "Commit
+      and push").* The user's notes on I7, each kept verbatim in
+      `docs/PHRASING.md` and recorded in `docs/README-ITERATIONS.md`:
+      *The examples from here on read two frames* was out of context, so
+      *Example data*, after *Install*, now builds every frame and file the
+      examples read (C11), and every example on it says so in the line
+      just above, with a link (C15). Asked why the reviews missed it, the
+      record gives the cause: every check ran from inside the project, the
+      README test with its namespace and the reviewers with what they
+      knew. Two checks now start where a reader starts:
+      `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one`
+      (V1) and a cold read (V2, WRITING §6 step 9), which ranked the
+      paragraph first unprompted. The `po.target` paragraph became an
+      example (C12), and the user's "How can we find more paragraphs that
+      should be code?" became a detector and a judging pass (V3), and 20
+      more examples (C13, C14), each run with its comments checked. The
+      tools of a pass are now in the repository, `scripts/doc_review.py`
+      (`measure`, `counts`, `account`, `run`, `render`), held by
+      `tests/test_doc_review.py`. Left for the user: E13 (a `with_windows`
+      resume after an unsliced save outputs a repeated row twice), the
+      docstrings of E14, the documents of E15, E9's wheel sizes, W14 (a
+      term used before its section), whether blocks on frames built from
+      the example data (`flows`, `by_block`) carry the line too, and a test
+      that runs the README's TOML through the command line.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

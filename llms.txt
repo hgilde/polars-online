@@ -89,9 +89,10 @@ Windows alike.
 
 - [README](https://github.com/hgilde/polars-online#readme): the guide — how a bank sees
   a stream, the three surfaces, every model with its update equations, performance
-- [Introduction](https://github.com/hgilde/polars-online#introduction): the four words
-  the README uses (spec, model bank, stream and chunk, state) and the smallest complete
-  example
+- [Introduction](https://github.com/hgilde/polars-online#introduction): a first fit
+  with its input and output tables (a fit over every row, a local fit, a target that
+  looks ahead), the points to remember, the terms the README uses, and the code that
+  builds the frames its other examples read
 - [How a bank sees a stream](https://github.com/hgilde/polars-online#how-a-bank-sees-a-stream):
   clock, decay, groups, weights, warm-up, nulls, row order — the semantics every model
   shares
