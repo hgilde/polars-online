@@ -33,7 +33,9 @@ half_life)``:
    * - :func:`ewm_sum`, :func:`rewm_sum`
      - ``sum lam**|t_j - tau_t| * x_j`` over the rows of the window, each
        counted once at its own time
-     - Polars' ``ewm_sum_by``
+     - Polars' ``ewm_sum_by`` on distinct stamps; at a repeated stamp every
+       row holds the stamp's whole window, so each carries the stamp's
+       total where ``ewm_sum_by``'s is a running sum
    * - :func:`ewm_rate`, :func:`rewm_rate`
      - the sum over the decayed time the window covers, ``integral_0^T lam**s
        ds = half_life / ln 2 * (1 - 2 ** (-T / half_life))``, ``T`` the
@@ -76,7 +78,9 @@ looking ahead the mirror holds:
 An edge between two rows is decided from the difference of their clocks,
 exact in nanoseconds on a temporal clock, as Polars decides it, at any age
 of the stream. ``min_samples`` (Polars' name) nulls a window holding fewer
-rows with a value. A row is in a window by its stamp, but a mean weighs it
+rows with a value. A value that is NaN, infinite or beyond 1e100 in
+magnitude is read as missing, as a null is (the library's input bound,
+docs/PLAN.md §3). A row is in a window by its stamp, but a mean weighs it
 by its held interval inside the window. So a row exactly one window old
 under ``"left"`` or ``"both"`` counts for ``min_samples`` and weighs
 nothing, since its interval ends at its row, and a mean with no other value
@@ -211,7 +215,9 @@ def ewm_sum(
 ) -> pl.Expr:
     """``sum lam ** (tau_t - t_j) * x_j`` over the rows at or before each row,
     less than ``window_size`` older: Polars' ``ewm_sum_by``, each value
-    counted once at its own time. Two sums make a weighted mean."""
+    counted once at its own time, on distinct stamps; at a repeated stamp
+    every row carries the stamp's total, where ``ewm_sum_by``'s is a running
+    sum. Two sums make a weighted mean."""
     return operator(
         "ewm_sum",
         input,

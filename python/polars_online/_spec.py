@@ -453,6 +453,14 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
             f"{who}: a target expression whose name would be an operator's needs a name: "
             f'give it with .alias("...")'
         )
+    if name in _formula.columns(tree):
+        # Unaliased, a positional expression is named after its leftmost
+        # column, here one the formula itself reads; the bank could never
+        # add the target beside it (task 159, P1).
+        raise ValueError(
+            f"{who}: target {name!r} is named after a column its formula reads, so it could "
+            f'never be added beside that column: give it a name of its own with .alias("...")'
+        )
     if not _formula.looks_ahead(tree):
         # Name the call that makes the column: with_windows for a formula over
         # operators looking back, Polars' with_columns for one of the row alone,
@@ -1011,8 +1019,11 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``columns``
         The pair an ``ew_cov`` statistic is over.
     ``dtype``
-        ``f64``, ``bool``, ``str`` or ``list[f64]``: the type the bank declares to
-        polars before the first row is read.
+        ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum`` (``withheld_reason``),
+        ``i32`` (a cluster or state index), ``i64`` (a count, a row index or an
+        id) or ``clock`` (``scored_clock`` and ``learned_clock``, in the clock
+        column's own type): the type the bank declares to polars before the
+        first row is read.
 
     This is how to reach a field without constructing its name; the string grammar
     (:mod:`polars_online.spec`, "What a spec writes") stays an implementation

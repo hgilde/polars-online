@@ -13,7 +13,7 @@
 //! Leaves are `["col", name]` and `["lit", value]`; the element-wise nodes
 //! are the binary operators `+ - * / ** == != < <= > >= & |`, the unary
 //! `neg abs exp sqrt is_null is_not_null`, `["log", x, base]`,
-//! `["clip", x, lo, hi]` (either bound `null`), `["fill_null", x, y]`,
+//! `["clip", x, lo, hi]` (either bound `["lit"]`, a bare `null` read too), `["fill_null", x, y]`,
 //! `["when", p, then, else]`, `["cast", x, "Float64"]` and
 //! `["alias", x, name]`. An operator is `[name, input, {params}]` for
 //! `ewm_mean`, `rewm_mean`, `ewm_sum`, `rewm_sum`, `ewm_rate` and
@@ -454,15 +454,10 @@ impl Node {
                             items.push(json!(s));
                         }
                     }
-                    "clip" => {
-                        items.push(args[0].to_json());
-                        for a in &args[1..] {
-                            items.push(match a {
-                                Node::Lit(Literal::Null) => Value::Null,
-                                other => other.to_json(),
-                            });
-                        }
-                    }
+                    // A bound left out is the null literal, `["lit"]`, the
+                    // form TOML can carry, as Python writes it; a bare
+                    // `null` is still read (task 159, F5).
+                    "clip" => items.extend(args.iter().map(Node::to_json)),
                     _ => items.extend(args.iter().map(Node::to_json)),
                 }
                 Value::Array(items)
@@ -718,8 +713,8 @@ mod tests {
             r#"["&",[">",["col","a"],["lit",0]],["is_null",["col","b"]]]"#,
             r#"["neg",["col","a"]]"#,
             r#"["log",["col","a"],["lit",2.718281828459045]]"#,
-            r#"["clip",["col","a"],["lit",0],null]"#,
-            r#"["clip",["col","a"],null,["lit",1]]"#,
+            r#"["clip",["col","a"],["lit",0],["lit"]]"#,
+            r#"["clip",["col","a"],["lit"],["lit",1]]"#,
             r#"["fill_null",["col","a"],["lit",0.0]]"#,
             r#"["when",[">",["col","a"],["lit",0]],["col","b"],["lit"]]"#,
             r#"["cast",["col","a"],"Float64"]"#,

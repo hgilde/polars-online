@@ -59,6 +59,8 @@ from polars_online._frame import (
     _plan_text,
     _read_state,
     _save_path,
+    _source_started,
+    _sources_ran_since,
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
@@ -798,6 +800,7 @@ def with_windows(
         n_rows: int | None,
         batch_size: int | None,
     ) -> Iterator[pl.DataFrame]:
+        this_run = _source_started()
         # Polars does not re-apply the three pushdowns after a Python source,
         # so each is honoured here (`_frame.py` explains the order). The
         # slice counts *output* rows, and the run reads the input only up to
@@ -844,7 +847,7 @@ def with_windows(
             w.save(save_path, w.consumed() if n_rows is not None else 0, not sliced)
         # As the bank warns (`ConsumedSourceWarning`): no rows at all from a
         # Python scan is the shape of a spent single-use stream.
-        if python_scan and read == 0 and n_rows != 0:
+        if python_scan and read == 0 and n_rows != 0 and not _sources_ran_since(this_run):
             warnings.warn(
                 ConsumedSourceWarning(
                     f"{who}: the plan yielded no rows, and its source is a Python scan -- "

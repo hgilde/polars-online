@@ -274,3 +274,19 @@ class TestPlumbing:
         # The last row processed is the last row of the frame, scored where it sat.
         assert last["scored_clock"][0] == out.field("scored_clock").to_list()[-1]
         assert last["learned_clock"][0] == out.field("learned_clock").to_list()[-1]
+
+
+def test_predict_without_a_clock_counts_each_row_in_its_group() -> None:
+    """Task 159 (B2): with no clock column ``predict`` wrote the stream's count
+    of rows fed as ``scored_clock`` on every row, where the docs say the row's
+    index in its group, which is what ``fit_predict`` writes. It counts on from
+    the rows learned, as ``fit_predict`` would."""
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame({"x": rng.standard_normal(6), "y": rng.standard_normal(6)})
+    spec = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0, emit_clocks=True)
+    bank = po.ModelBank([spec])
+    fitted = bank.fit_predict(df)
+    assert fitted["m"].struct.field("scored_clock").to_list() == [0, 1, 2, 3, 4, 5]
+    scored = bank.predict(df)
+    assert scored["m"].struct.field("scored_clock").to_list() == [6, 7, 8, 9, 10, 11]
+    assert scored["m"].struct.field("learned_clock").to_list() == [5] * 6

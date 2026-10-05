@@ -7484,7 +7484,7 @@ tick, and that the series holding it up has a count near 1.
       after one batch); ARROW-SOURCES §2 records it, and nothing goes
       upstream while reports are parked.
 
-- [ ] 159. **The code review of everything since `v0.13.0`, every finding
+- [x] 159. **The code review of everything since `v0.13.0`, every finding
       fixed -- requested 2026-10-05.** Size L. The user's words: "Code review
       changes since the last tag", then "Fix all". Six read-only reviewers
       over the 53 commits since the tag, one per area (the window core, the
@@ -11211,20 +11211,20 @@ low = a doc or an edge.
 | R2 | med | `seconds_of_ns` rounds a negative sub-second delta at the scale of a second, so on a `Datetime` clock a step back of exactly `restart_after_step_back` at 1-3 ms restarts the model instead of being a late row | `seconds_of_ns` takes the magnitude and mirrors the sign | `clock.rs::a_step_back_is_the_mirror_of_the_step_forward`, `test_renames.py::test_the_restart_edge_is_inclusive_at_a_millisecond_on_a_temporal_clock` |
 | W3 | med | on an f64 clock a window edge is decided from two origin-subtracted policy times, not the rows' raw clocks, so a row exactly one window back lands outside where Polars keeps it | a number clock's policy time is the clock itself; windows state 6, schema 26 | `test_windows.py::test_a_number_clock_decides_an_edge_from_the_two_rows_clocks` |
 | W2 | med | `KernelDef::mass` cancels at long half-lives: 6e-5 at `h/t = 1e12`, every mean null from 1e17 | `mass` by `exp_m1`, and both oracles with it | `windows.rs::mass_at_a_long_half_life_is_the_even_kernels`, `test_windows.py::test_a_long_half_life_agrees_with_the_definition_and_tends_to_the_even_one` |
-| F2 | med | group and session keys are the value's string form and the state carries no dtype, so an `Int64` file followed by a `Float64` one starts every group cold, and a session column's dtype change cuts the windows | batch C | batch C |
-| W1 | med | a stream restart discards every group's windows but not their clocks, so a group's next row within `restart_after_step_back` of its stale clock is refused as a late row | batch C | batch C |
-| P1 | med | a window target without `.alias()` named after its own input column passes the builder and can never run; the bank's refusal is worded for `with_windows` | batch C | batch C |
-| F4 | low | `inf` and `nan` serialize as `{"Dyn": {"Float": null}}`, so `clip(0, inf)` is refused as "this literal (…null)" | batch C | batch C |
+| F2 | med | group and session keys are the value's string form and the state carries no dtype, so an `Int64` file followed by a `Float64` one starts every group cold, and a session column's dtype change cuts the windows | the windows state carries the group and session columns' dtypes, by role, and a resumed input of another is refused by name (windows state 7, schema 27) | `windows_frame.rs::a_state_refuses_a_group_column_of_another_dtype`, `test_windows.py::test_a_state_refuses_a_group_or_session_column_of_another_dtype` |
+| W1 | med | a stream restart discards every group's windows but not their clocks, so a group's next row within `restart_after_step_back` of its stale clock is refused as a late row | a stream restart starts every group's clock over, the row's own group's from a fresh one; the brute force too | `windows_frame.rs::a_stream_restart_restarts_every_groups_clock`, `test_windows.py::test_a_restart_on_the_streams_clock_restarts_every_groups_clock` |
+| P1 | med | a window target without `.alias()` named after its own input column passes the builder and can never run; the bank's refusal is worded for `with_windows` | the builder refuses a target named after a column its formula reads, naming `.alias`; a bank's refusal of a formula target drops the core's `with_windows` prefix | `test_formula_targets.py::test_a_target_named_after_its_own_column_is_refused_at_the_builder` |
+| F4 | low | `inf` and `nan` serialize as `{"Dyn": {"Float": null}}`, so `clip(0, inf)` is refused as "this literal (…null)" | a null value under a float's type is refused as a literal that is not finite, naming inf and nan and the one-bound clip | `test_windows.py::test_a_literal_that_is_not_finite_is_refused_by_name` |
 | D2 | low | `bocpd`'s `prior_nu > 1` floor for `diag`/`robust` buys a finite mean; the message says variance | the message names the mean or the variance by emission | `bocpd.rs`, the floor test |
-| B2 | low | `predict` without a clock column writes the stream's fed-row count as `scored_clock`; the docs say the row's index in its group | batch C | batch C |
-| B3 | low | the unset-policy refusal advises setting `restart_after_step_back` "to the smallest one that does", where equal is a late row | batch C | batch C |
-| W4 | low | at a tied stamp `ewm_sum` gives every tied row the stamp's total, where Polars' `ewm_sum_by` is a running sum; four places say the latter | batch C | batch C |
+| B2 | low | `predict` without a clock column writes the stream's fed-row count as `scored_clock`; the docs say the row's index in its group | `predict` without a clock column writes the row's index in its group, counting on from the rows learned | `test_clocks.py::test_predict_without_a_clock_counts_each_row_in_its_group` |
+| B3 | low | the unset-policy refusal advises setting `restart_after_step_back` "to the smallest one that does", where equal is a late row | the message says to set it below the step | `test_renames.py::test_restart_after_step_back_is_one_rule` |
+| W4 | low | at a tied stamp `ewm_sum` gives every tied row the stamp's total, where Polars' `ewm_sum_by` is a running sum; four places say the latter | the four places say: on distinct stamps; at a repeated stamp every row carries the stamp's total | `test_windows.py::test_at_a_repeated_stamp_every_row_carries_the_stamps_total` |
 | W5 | low | a subnormal `half_life` passes `check` and emits `inf` rates | `check` refuses a half-life below `f64::MIN_POSITIVE` | `windows.rs::a_subnormal_half_life_is_refused`, `test_windows.py::test_a_subnormal_half_life_is_refused` |
-| W6 | low | an operator input that is NaN, ±inf or above 1e100 reads as missing; the docs say only a null is skipped | batch C | batch C |
-| F3 | low | a typed literal is rebuilt dynamic, so a formula's dtype and last bits can differ from Polars' | batch C | batch C |
-| F5 | low | the Rust tree writes a clip's absent bound as a bare `null`, where Python writes `["lit"]` | batch C | batch C |
-| P2 | low | a chain of two plan forms over an empty frame raises `ConsumedSourceWarning` | batch C | batch C |
-| P3 | low | `output_index`'s `dtype` vocabulary omits `enum`, `i32`, `i64` and `clock` | batch C | batch C |
+| W6 | low | an operator input that is NaN, ±inf or above 1e100 reads as missing; the docs say only a null is skipped | `ops.py` and the README say a NaN, infinite or beyond-1e100 value is read as missing | -- |
+| F3 | low | a typed literal is rebuilt dynamic, so a formula's dtype and last bits can differ from Polars' | a typed literal is carried as a cast of the plain one, so its dtype and bits are Polars' own | `test_windows.py::test_a_typed_literal_keeps_its_dtype` |
+| F5 | low | the Rust tree writes a clip's absent bound as a bare `null`, where Python writes `["lit"]` | the Rust tree writes `["lit"]`, reading a bare `null` still | `formula.rs::every_node_kind_round_trips`, `test_formula_targets.py::test_a_clip_bound_left_out_is_the_null_literal_in_a_saved_spec` |
+| P2 | low | a chain of two plan forms over an empty frame raises `ConsumedSourceWarning` | a source that got no rows from a Python scan warns only when none of this package's own sources ran under it | `test_consumed_source.py::test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn` |
+| P3 | low | `output_index`'s `dtype` vocabulary omits `enum`, `i32`, `i64` and `clock` | the docstring lists all eight | `test_model_registry.py::test_output_index_names_every_dtype_it_declares` |
 
 What held, measured: hard rules 2, 3, 8 and 9 across every model and
 both plan forms (chunk invariance bit-identical over 1,008 window

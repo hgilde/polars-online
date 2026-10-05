@@ -204,7 +204,7 @@ def test_restart_after_step_back_is_one_rule():
     smaller one is a late row, refused."""
     df = pl.DataFrame({"t": [0.0, 10.0, 20.0, 15.0, 30.0], "x": [1.0] * 5, "y": [1.0] * 5})
     base = dict(targets=["y"], features=["x"], half_life=10.0, clock="t", gap_cap=50.0)
-    with pytest.raises(ValueError, match="restart_after_step_back is unset"):
+    with pytest.raises(ValueError, match="restart_after_step_back is unset.*set .* below it"):
         po.ModelBank([po.spec.ewridge("m", **base)]).fit_predict(df)
     with pytest.raises(ValueError, match="no more than restart_after_step_back = 5"):
         po.ModelBank([po.spec.ewridge("m", restart_after_step_back=5.0, **base)]).fit_predict(df)

@@ -165,7 +165,7 @@ what each rule guarantees, and the test that holds it:
 | without a clock column, an input that does not begin with a new session | refused: a row-count clock steps forward at every row | `test_without_a_clock_the_next_file_begins_with_a_new_session` |
 | a state of another version, or a damaged file | refused by its version, or reported as damaged | `test_a_windows_state_of_another_version_is_refused_by_its_version`, `test_a_damaged_windows_state_says_so` |
 
-The windows state is version 6, and a bank file that carries one per window
+The windows state is version 7, and a bank file that carries one per window
 target moves its own schema with it, which a Rust test pairs. A state
 resumes only the call that saved it (`test_a_state_resumes_only_its_own_call`).
 Two limits remain, both stated in `with_windows`' docstring. A clock that

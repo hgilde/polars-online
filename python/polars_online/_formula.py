@@ -92,20 +92,34 @@ def _refuse(kind: str, detail: str = "") -> FormulaError:
     )
 
 
-def _literal(v: Any) -> Any:
-    """The JSON value of a serialized literal, or a refusal."""
+def _literal(v: Any) -> tuple[Any, str | None]:
+    """The JSON value of a serialized literal and, for a typed one
+    (``pl.lit(x, dtype=...)``, or a numpy scalar), its dtype's name; or a
+    refusal."""
     if v == "Null":
-        return None
+        return None, None
     if isinstance(v, dict) and len(v) == 1:
         ((kind, inner),) = v.items()
         if kind in ("Dyn", "Scalar") and isinstance(inner, dict) and len(inner) == 1:
             ((dtype, value),) = inner.items()
             if dtype == "Null":
-                return None
+                return None, None
+            if value is None:
+                # Polars serializes inf and nan alike, as a null value under
+                # the float's type, so a formula cannot carry either; a clip
+                # with one bound has a form of its own (task 159, F4).
+                raise _refuse(
+                    "a literal that is not finite (inf or nan, which Polars serializes as null)",
+                    "; a clip with one bound takes the other left out, not inf",
+                )
             if isinstance(value, (bool, int, float, str)):
-                if isinstance(value, float) and not math.isfinite(value):
-                    raise _refuse("a literal that is not finite")
-                return value
+                # A typed numeric literal keeps its type through a cast, so
+                # its dtype and last bits are Polars' own (task 159, F3). A
+                # string or a boolean is `Scalar` untyped too, and has one
+                # type to be.
+                numeric = dtype in _DTYPES and dtype not in ("String", "Boolean")
+                typed = dtype if kind == "Scalar" and numeric else None
+                return value, typed
     raise _refuse("this literal", f" ({json.dumps(v)[:60]})")
 
 
@@ -124,9 +138,10 @@ def _walk(node: Any) -> Any:
                 ) from None
         return ["col", body]
     if kind == "Literal":
-        value = _literal(body)
+        value, typed = _literal(body)
         # A null literal is `["lit"]`: TOML has no null (review R2, P3).
-        return ["lit"] if value is None else ["lit", value]
+        node = ["lit"] if value is None else ["lit", value]
+        return ["cast", node, typed] if typed else node
     if kind == "BinaryExpr":
         op = body.get("op")
         if op not in _BINARY:

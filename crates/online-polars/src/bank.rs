@@ -91,7 +91,7 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// bank holding a version-4 core failed late. A windows state version
 /// moves this number with it
 /// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
-const MIN_BANK_SCHEMA_VERSION: u32 = 26;
+const MIN_BANK_SCHEMA_VERSION: u32 = 27;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -1069,7 +1069,8 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
              input that overlaps it, drop the rows it has learned, with \
              ModelBank.skip_learned(frame) in Python or by filtering the command line's input \
              to the rows after them; or, if a step back this large starts the stream over, set \
-             restart_after_step_back to the smallest one that does.",
+             restart_after_step_back below it (a step back no larger than the setting is a \
+             late row).",
             spec.name, column, step, row
         ),
         Some(Disorder {

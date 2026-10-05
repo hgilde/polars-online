@@ -63,8 +63,9 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 6 since task 159 (W3): a number clock's policy time is the clock
-/// itself, where 5 measured it from the stretch's origin; 5 since review R6
+/// 7 since task 159 (F2): the group and session columns' dtypes, which a
+/// resumed input must match; 6 since task 159 (W3): a number clock's raw
+/// value rides in a row's `off`, where 5 left it 0; 5 since review R6
 /// (D1): the last row read, beside the rows held, as a
 /// sliced state's identity of its input; 4 since review R5 (C5): the skip
 /// a sliced state carries counts the rows of its input consumed so far,
@@ -74,7 +75,7 @@ const WINDOWS_MAGIC: &str = "polars-online windows";
 /// task 143: formulas over operators, where 1 held descriptions. An older
 /// state would load with defaults and misbehave. The bank's schema moves
 /// with this number (review R4, A2; R6, D5).
-const WINDOWS_VERSION: u32 = 6;
+const WINDOWS_VERSION: u32 = 7;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -97,6 +98,8 @@ struct FileOut<'a> {
     /// the rows held, the identity of a sliced state's input (review R6,
     /// D1); empty unless saved under a slice (R7, E3).
     last_row: &'a [u8],
+    /// The group and session columns' dtypes, by role (task 159, F2).
+    key_dtypes: &'a [(String, String)],
 }
 
 /// The rest of the file, after [`Header`]'s two fields.
@@ -119,6 +122,7 @@ struct FileIn {
     resume_first: Option<ClockValue>,
     resume_first_session: Option<u64>,
     last_row: Vec<u8>,
+    key_dtypes: Vec<(String, String)>,
 }
 
 /// The file's first two fields, read before the rest: a state another
@@ -501,6 +505,10 @@ pub struct WindowsRun {
     accept: Vec<String>,
     /// The input's schema, as the call was built against it.
     input: Schema,
+    /// The group and session columns' dtypes, by role: a key is its value's
+    /// text, so a column of another type on a resumed input would start
+    /// every key over, silently (task 159, F2).
+    key_dtypes: Vec<(String, String)>,
     /// The output's schema: the input's columns, then each formula.
     output: Schema,
     /// The rows the core holds, oldest first, as slices of the input with
@@ -650,6 +658,15 @@ impl WindowsRun {
         } else {
             p.inputs
         };
+        let key_dtypes: Vec<(String, String)> =
+            [("group", &config.group), ("session", &config.session)]
+                .into_iter()
+                .filter_map(|(role, c)| {
+                    let c = c.as_ref()?;
+                    let dtype = input.get(c.as_str()).map(ToString::to_string)?;
+                    Some((role.to_string(), dtype))
+                })
+                .collect();
         Ok(Self {
             config,
             core,
@@ -658,6 +675,7 @@ impl WindowsRun {
             increments: p.increments,
             accept,
             input: input.clone(),
+            key_dtypes,
             output,
             held: VecDeque::new(),
             incr_state: Vec::new(),
@@ -1587,6 +1605,7 @@ impl WindowsRun {
                 self.resume_first_session
             },
             last_row: &last_row,
+            key_dtypes: &self.key_dtypes,
         })
         .map_err(|e| e.to_string())
     }
@@ -1645,6 +1664,33 @@ impl WindowsRun {
             ));
         }
         let mut run = Self::new(config, input)?;
+        if file.key_dtypes != run.key_dtypes {
+            let name = |role: &str| {
+                if role == "group" {
+                    run.config.group.clone()
+                } else {
+                    run.config.session.clone()
+                }
+                .unwrap_or_default()
+            };
+            let saved: Vec<String> = file
+                .key_dtypes
+                .iter()
+                .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
+                .collect();
+            let now: Vec<String> = run
+                .key_dtypes
+                .iter()
+                .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
+                .collect();
+            return Err(format!(
+                "{WHO}: the state keyed its groups and sessions by {}, and this input has {}; \
+                 a key is its value's text, so a column of another type starts every key \
+                 over. Cast the column to the type the state was saved with",
+                saved.join(", "),
+                now.join(", ")
+            ));
+        }
         if file.core.kernels() != run.core.kernels()
             || file.core.ops() != run.core.ops()
             || file.core.clock_cfg() != run.core.clock_cfg()
@@ -2052,7 +2098,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 6)"),
+            err.contains("state version 2 not supported (this build reads 7)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2134,7 +2180,7 @@ mod tests {
     /// refuses an older form by number, not at a group's first chunk.
     #[test]
     fn a_windows_state_version_moves_the_banks_schema_with_it() {
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (6, 26));
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 27));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first
@@ -2425,6 +2471,53 @@ mod tests {
         assert_eq!(run.feed(&next, None).unwrap().height(), 3);
     }
 
+    /// Task 159 (W1): a restart on the stream's clock starts every group's
+    /// clock over with its windows, so a group's next row within
+    /// `restart_after_step_back` of its last is the first on a fresh clock,
+    /// not a late row: C at 52, 8 after C at 60, once B at 50 restarted the
+    /// stream after A at 100.
+    #[test]
+    fn a_stream_restart_restarts_every_groups_clock() {
+        const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 1e300}]}], "clock": "t", "gap_cap": 1e9, "group": "g",
+            "restart_after_step_back": 10}"#;
+        let df = df!(
+            "t" => [0.0, 60.0, 100.0, 50.0, 52.0],
+            "g" => ["A", "C", "A", "B", "C"],
+            "x" => [1.0; 5]
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(config(GROUPED), df.schema()).unwrap();
+        let fed = run.feed(&df, None).expect("every row taken").height();
+        let rest = run.finish().unwrap().height();
+        assert_eq!(fed + rest, 5);
+    }
+
+    /// Task 159 (F2): a key is its value's text, so a group column of another
+    /// dtype on a resumed input started every key over, silently. The state
+    /// carries the group and session columns' dtypes, and refuses another.
+    #[test]
+    fn a_state_refuses_a_group_column_of_another_dtype() {
+        const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1}]}], "clock": "t", "gap_cap": 100, "group": "g"}"#;
+        let df =
+            df!("t" => [0.0, 1.0, 2.0, 3.0], "x" => [1.0, 2.0, 3.0, 4.0], "g" => [1i64, 1, 2, 2])
+                .unwrap();
+        let mut run = WindowsRun::new(config(GROUPED), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let next = df!("t" => [4.0, 5.0], "x" => [5.0, 6.0], "g" => [1.0f64, 2.0]).unwrap();
+        let err = WindowsRun::load_bytes(&state, config(GROUPED), next.schema())
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains("group column \"g\": i64") && err.contains("f64"),
+            "{err}"
+        );
+        let same = df!("t" => [4.0, 5.0], "x" => [5.0, 6.0], "g" => [1i64, 2]).unwrap();
+        WindowsRun::load_bytes(&state, config(GROUPED), same.schema()).unwrap();
+    }
+
     /// Review R8, F1: on a row-count clock every row is a step forward, so
     /// a step forward says nothing; without a clock column the next file
     /// begins with a new session, and a hand slice starting in the session
@@ -2540,6 +2633,7 @@ mod tests {
             held: &file.held,
             increments: &file.increments,
             stream_clock: file.stream_clock,
+            key_dtypes: &file.key_dtypes,
             resume_skip: file.resume_skip,
             resume_first: file.resume_first,
             resume_first_session: file.resume_first_session,

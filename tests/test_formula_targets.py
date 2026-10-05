@@ -14,6 +14,7 @@ task 152, a state saved mid-window, the plan's projection, the TOML form.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -824,10 +825,49 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 26, state[i]
-    for before in (24, 25):
+    assert state[i] == 27, state[i]
+    for before in (25, 26):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 26"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 27"
         ):
             po.ModelBank.load_bytes(old)
+
+
+def test_a_target_named_after_its_own_column_is_refused_at_the_builder() -> None:
+    """Task 159 (P1): a window target without ``.alias()`` is named after its
+    leftmost column; where that is a column the formula reads, the bank could
+    never add the target beside it, yet the builder accepted it and the bank
+    refused it on the first chunk in ``with_windows``' words. The builder
+    refuses it, naming ``.alias``; and a bank's refusal of a formula target
+    names the spec, never ``with_windows``."""
+    with pytest.raises(ValueError, match=r"named after a column its formula reads.*\.alias"):
+        spec(pl.col("mid") - po.rewm_mean("mid", half_life=H, window_size=W))
+    # A refusal the core raises while the bank runs: a strict cast that
+    # overflows. The bank's words, not the operator layer's.
+    df = stream(60, 3).with_columns(mid=pl.col("mid") * 1e6)
+    s = spec((po.rewm_mean("mid", half_life=H, window_size=W).cast(pl.Int8) * 1.0).alias("fwd"))
+    with pytest.raises(ValueError, match="conversion from") as err:
+        po.ModelBank([s]).fit_predict(df)
+    assert "with_windows" not in str(err.value)
+
+
+def test_a_clip_bound_left_out_is_the_null_literal_in_a_saved_spec() -> None:
+    """Task 159 (F5): the Rust tree wrote a clip's absent bound as a bare
+    ``null``, where Python writes ``["lit"]``, the form TOML can carry; a
+    saved spec holds no bare null in a formula."""
+    target = (
+        po.rewm_mean("mid", half_life=H, window_size=W).clip(lower_bound=0) - pl.col("mid")
+    ).alias("fwd")
+    saved = json.loads(po.ModelBank([spec(target)]).to_json())
+    formula = saved["specs"][0]["targets"][0]["formula"]
+
+    def nodes(tree: Any) -> Any:
+        yield tree
+        if isinstance(tree, list):
+            for item in tree:
+                yield from nodes(item)
+
+    clips = [n for n in nodes(formula) if isinstance(n, list) and n and n[0] == "clip"]
+    assert clips and clips[0][3] == ["lit"], clips
+    assert None not in list(nodes(formula))

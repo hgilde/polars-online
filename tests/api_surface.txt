@@ -30,7 +30,7 @@
   target
   thread_pool_size
   unnest
-  schema_version = 26
+  schema_version = 27
 
 [common parameters]  # every constructor accepts these via **common
   targets

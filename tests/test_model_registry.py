@@ -308,3 +308,26 @@ def test_unsupervised_is_the_models_the_bank_fills_a_target_for():
             continue
         filled.add(name)
     assert filled == _spec.UNSUPERVISED
+
+
+def test_output_index_names_every_dtype_it_declares():
+    """Task 159 (P3): the ``dtype`` column's vocabulary over every model's
+    minimal spec, and one with the clock fields on, is the one
+    `output_index`'s docstring lists; it listed four of the eight."""
+    seen: set[str] = set()
+    for name in MINIMAL:
+        seen |= set(po.spec.output_index(_build(name))["dtype"].to_list())
+    clocks = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0"],
+        half_life=50.0,
+        clock="t",
+        gap_cap=1.0,
+        emit_clocks=True,
+    )
+    seen |= set(po.spec.output_index(clocks)["dtype"].to_list())
+    documented = {"f64", "bool", "str", "list[f64]", "enum", "i32", "i64", "clock"}
+    assert seen == documented, seen ^ documented
+    doc = po.spec.output_index.__doc__ or ""
+    assert all(f"``{d}``" in doc for d in documented)

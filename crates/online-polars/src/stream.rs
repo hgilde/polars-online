@@ -3458,9 +3458,13 @@ impl Stream {
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
                 elapsed: 0.0,
+                // Without a clock column, the row's index in its group: the
+                // rows learned, then this call's rows in order, as
+                // `fit_predict` counts them (task 159, B2: every scored row
+                // showed the count of rows fed).
                 clock: clock
                     .map(|c| c.at(i))
-                    .or(Some(ClockValue::F64(self.fed as f64))),
+                    .or(Some(ClockValue::F64((self.fed + ri as u64) as f64))),
                 reset: false,
                 blend: false,
                 session_changed: false,

@@ -161,7 +161,7 @@ impl TargetWindows {
                 Some(bytes) => WindowsRun::load_bytes(&bytes, config, schema),
             }
             .map_err(
-                |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
+                |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, without_who(&e)),
             )?;
             self.runs.insert(key.clone(), run);
         }
@@ -261,7 +261,7 @@ pub(crate) fn resolve_targets(
         };
         let run = resolver.run(key, spec, &sub)?;
         let out = run.feed_resolving(&sub, &rows).map_err(
-            |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, e),
+            |e| polars_err!(ComputeError: "spec {:?}: formula target: {}", spec.name, without_who(&e.to_string())),
         )?;
         let h = out.height();
         if h == 0 {
@@ -300,4 +300,13 @@ pub(crate) fn resolve_targets(
         seqs,
         groups: by_group,
     })
+}
+
+/// A core's message without its own caller's name: a bank's refusal names
+/// the bank's spec, not `with_windows` (task 159, P1).
+fn without_who(message: &str) -> &str {
+    message
+        .strip_prefix("with_windows: ")
+        .or_else(|| message.strip_prefix("with_windows "))
+        .unwrap_or(message)
 }

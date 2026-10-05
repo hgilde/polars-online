@@ -1340,7 +1340,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 6\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 7\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
@@ -1606,3 +1606,121 @@ def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) 
     assert pl.concat([head, rest]).equals(one)
     same = po.stream.with_windows(df, **y, load_state=state, **kw)
     assert pl.concat([head, same]).equals(po.stream.with_windows(df, **y, **kw))
+
+
+def test_a_restart_on_the_streams_clock_restarts_every_groups_clock() -> None:
+    """Task 159 (W1): a restart on the stream's clock discarded every group's
+    windows but left their clocks, so a group's next row within
+    ``restart_after_step_back`` of its last -- C at 52 after C at 60, 8 back,
+    once the stream restarted at row 3 -- was refused as a late row. Every
+    group starts over, clock included, so C's row is the first of its new
+    stretch, as it is when C's last row was at 70, 18 back."""
+
+    def run(c_at: float) -> list[float | None]:
+        df = pl.DataFrame(
+            {
+                "t": [0.0, c_at, 100.0, 50.0, 52.0],
+                "g": ["A", "C", "A", "B", "C"],
+                "x": [1.0] * 5,
+            }
+        )
+        y = po.ewm_sum("x", half_life=math.inf)
+        out = po.stream.with_windows(
+            df, y=y, clock="t", gap_cap=1e9, group="g", restart_after_step_back=10.0
+        )
+        return out["y"].to_list()
+
+    assert run(60.0) == run(70.0)
+    assert run(60.0)[4] == 1.0
+
+
+def test_a_state_refuses_a_group_or_session_column_of_another_dtype(tmp_path: Any) -> None:
+    """Task 159 (F2): a key is its value's text, so an Int64 group column
+    followed by a Float64 file keyed "1" then "1.0" and started every group
+    over, silently; a session column's dtype change cut the windows. The
+    state carries the two columns' dtypes and refuses another by name."""
+    y = {"y": po.ewm_mean("x", half_life=2.0)}
+    first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0], "g": [1, 1, 2, 2]})
+    second = pl.DataFrame({"t": [4.0, 5.0], "x": [5.0, 6.0], "g": [1.0, 2.0]})
+    state = tmp_path / "keys.state"
+    po.stream.with_windows(first, **y, save_state=state, group="g", **CLOCK)
+    with pytest.raises(ValueError, match='group column "g": i64.*this input has.*f64'):
+        po.stream.with_windows(second, **y, load_state=state, group="g", **CLOCK)
+    same = po.stream.with_windows(
+        second.with_columns(pl.col("g").cast(pl.Int64)), **y, load_state=state, group="g", **CLOCK
+    )
+    # The row the state held comes out first, then the new rows.
+    assert same["t"].to_list() == [3.0, 4.0, 5.0]
+    sessions = {**CLOCK, "session": "s", "session_gap": 1.0}
+    po.stream.with_windows(first.with_columns(s=pl.lit(1)), **y, save_state=state, **sessions)
+    with pytest.raises(ValueError, match='session column "s": i32.*this input has'):
+        po.stream.with_windows(
+            second.with_columns(s=pl.lit(1.0)), **y, load_state=state, **sessions
+        )
+
+
+def test_a_typed_literal_keeps_its_dtype() -> None:
+    """Task 159 (F3): ``pl.lit(x, dtype=...)``, or a numpy scalar, was rebuilt
+    as a dynamic literal, so a formula's dtype and last bits could differ from
+    Polars' own; it is carried through a cast, and the two agree."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 4.0, 8.0]})
+    mean = po.stream.with_windows(df, m=po.ewm_mean("x", half_life=5.0), **CLOCK)
+    forms = [
+        lambda c: c * pl.lit(0.1, dtype=pl.Float32),
+        lambda c: (
+            pl.when(c > 2).then(pl.lit(200, dtype=pl.UInt8)).otherwise(pl.lit(1, dtype=pl.UInt8))
+        ),
+        lambda c: c.cast(pl.Float32) * pl.lit(2.5, dtype=pl.Float64),
+        lambda c: c + pl.lit(np.float32(0.3)),
+    ]
+    for form in forms:
+        got = po.stream.with_windows(df, y=form(po.ewm_mean("x", half_life=5.0)), **CLOCK)["y"]
+        want = mean.select(form(pl.col("m")).alias("y"))["y"]
+        assert got.dtype == want.dtype, (got.dtype, want.dtype)
+        assert got.to_list() == want.to_list()
+
+
+def test_a_literal_that_is_not_finite_is_refused_by_name() -> None:
+    """Task 159 (F4): Polars serializes ``inf`` and ``nan`` alike, as a null
+    under the float's type, so ``clip(0, inf)`` was refused as "this literal
+    (...null)"; the refusal names the reason, and a clip with one bound has
+    its own form."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [-1.0, 2.0, 3.0]})
+    m = po.ewm_mean("x", half_life=5.0)
+    for bad in (m.clip(0, float("inf")), m.clip(float("nan"), 1)):
+        with pytest.raises(FormulaError, match="not finite .*inf or nan"):
+            po.stream.with_windows(df, y=bad, **CLOCK)
+    out = po.stream.with_windows(df, y=m.clip(lower_bound=0), **CLOCK)
+    assert out["y"].min() >= 0
+
+
+def test_at_a_repeated_stamp_every_row_carries_the_stamps_total() -> None:
+    """Task 159 (W4): ``ewm_sum`` is Polars' ``ewm_sum_by`` on distinct stamps
+    only. Rows at one stamp share a window, so each carries the stamp's total
+    where ``ewm_sum_by`` runs row by row; the docs say so now, and this holds
+    the sum to ``ewm_sum_by`` on each stamp's last row and to the stamp's
+    total on the others."""
+    df = ticks(600, 11, repeats=True).with_columns(
+        ts=pl.from_epoch((pl.col("t") * 1e9).cast(pl.Int64), time_unit="ns")
+    )
+    out = po.stream.with_windows(
+        df, s=po.ewm_sum("x", half_life="2s500ms"), clock="ts", gap_cap="1000s"
+    )
+    ref = df.select(pl.col("x").ewm_sum_by("ts", half_life="2s500ms"))["x"].to_list()
+    last = (df["ts"] != df["ts"].shift(-1)).fill_null(True).to_list()
+    valued = df["x"].is_not_null().to_list()
+    got = out["s"].to_list()
+    pairs = [
+        (g, r) for g, r, ok, is_last in zip(got, ref, valued, last, strict=True) if ok and is_last
+    ]
+    assert len(pairs) > 300
+    assert_close([g for g, _ in pairs], [r for _, r in pairs], "ewm_sum_by on a stamp's last row")
+    tied = 0
+    for i in range(len(got) - 1):
+        if not last[i] and valued[i] and valued[i + 1]:
+            j = i + 1
+            while not last[j]:
+                j += 1
+            assert got[i] == got[j], (i, j)
+            tied += 1
+    assert tied > 20

@@ -373,3 +373,24 @@ def test_the_warning_points_at_the_caller_not_the_library():
     with pytest.warns(po.ConsumedSourceWarning) as caught:
         bank.fit(lf)
     assert caught[0].filename == __file__, f"pointed at {caught[0].filename}, not the caller's file"
+
+
+def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
+    """Task 159 (P2): this package's own plan form is a Python scan, so a
+    plan form over another one, over an input with no rows, warned of a spent
+    stream. A source that got no rows tells the two apart by whether one of
+    our own sources ran under it."""
+    empty = _frame(4).clear()
+    feature = SPEC["features"][0]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        chained = (
+            empty.lazy()
+            .online.with_windows(f=po.ewm_mean(feature, half_life=5.0))
+            .online.fit_predict([SPEC])
+            .collect()
+        )
+        again = {**SPEC, "name": "again"}  # a second bank's column beside the first's
+        twice = empty.lazy().online.fit_predict([SPEC]).online.fit_predict([again]).collect()
+    assert chained.height == 0 and twice.height == 0
+    assert not [w for w in caught if issubclass(w.category, po.ConsumedSourceWarning)]

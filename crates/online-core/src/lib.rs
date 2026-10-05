@@ -366,11 +366,13 @@ pub use window::{
 ///   14.
 /// - 26 (2026-10-05, task 159): the window core a bank file carries per
 ///   formula target is in the windows state's version 6 form (a number
-///   clock's policy time is the clock itself, where 5 measured it from the
-///   stretch's origin, and a window's edge with it); the bank refuses one
-///   older than 26 by number. The models' own states are unchanged, and
-///   still load from 14.
-pub const SCHEMA_VERSION: u32 = 26;
+///   clock's raw value rides in a row's `off`, and a window's edge is
+///   decided from it); the bank refuses one older than 26 by number. The
+///   models' own states are unchanged, and still load from 14.
+/// - 27 (2026-10-05, task 159): the windows state's version 7 form, which
+///   carries the group and session columns' dtypes; the bank refuses one
+///   older than 27 by number. The models' own states are unchanged.
+pub const SCHEMA_VERSION: u32 = 27;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

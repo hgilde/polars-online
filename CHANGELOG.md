@@ -19,7 +19,8 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   `po.rewm_rate` and `po.increment` each return a `pl.Expr`. The
   time-weighted mean is Polars' `ewm_mean_by`, each value held from the
   operator's last valued row, as Polars skips a null; the first of a
-  stretch is held from before it. The sum is `ewm_sum_by`, and the rate is
+  stretch is held from before it. The sum is `ewm_sum_by` on distinct
+  stamps (at a repeated stamp every row carries the stamp's total), and the rate is
   the sum over the decayed time the window covers. The `rewm_` forms are
   their mirrors, looking ahead. A formula around them composes with
   `pl.col`, literals, arithmetic, comparisons,
@@ -72,10 +73,12 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   resumed run, sliced or not, refuses an input whose first row is at the
   last stamp the state read, unless that row starts a new session: a file
   boundary inside a tied stamp cannot be told from an input that repeats
-  rows the state read, which would come out twice (task 158). A refusal
+  rows the state read, which would come out twice (task 158). A group or
+  session column of another dtype than the state was saved with is refused
+  too, since a key is its value's text (task 159). A refusal
   while a query runs surfaces as `polars.exceptions.ComputeError` under
   py-polars 1.x and as `ValueError` under 2.0.
-  Windows state version 6; a state file that cannot be read is reported as
+  Windows state version 7; a state file that cannot be read is reported as
   damaged. Nine review rounds of the window operators, each finding pinned
   by a test, are in docs/PLAN.md §14.
 - **Window expressions as model targets** (task 104): a spec's `targets`
@@ -126,7 +129,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 26,
+- **Every saved bank must be refit.** A bank file now carries schema 27,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Three changes
   moved the layout: the stream's diagnostics (task 146), the names the

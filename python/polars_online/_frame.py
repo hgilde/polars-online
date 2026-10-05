@@ -32,10 +32,12 @@ as the first argument, visibly typed.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
 import sys
+import threading
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from types import FrameType
@@ -301,6 +303,30 @@ class ConsumedSourceWarning(UserWarning):
 #: Matching both keeps the behaviour the same on either polars rather than
 #: quietly different.
 _PYTHON_SCAN = re.compile(r"PYTHON(?:\[[^\]]*\])?\s+SCAN")
+
+
+#: Bumped at every run of one of this package's own sources. A source that
+#: got no rows from a Python scan tells a spent single-use stream from one of
+#: our own plan forms over an input that was simply empty by whether another
+#: of our sources ran during its collect (task 159, P2: a chain of two plan
+#: forms over an empty frame warned). Best-effort, as the warning is: a
+#: source running in another thread at the same time silences it too.
+_SOURCE_RUNS = itertools.count(1)
+_SOURCE_RUNS_LOCK = threading.Lock()
+_SOURCE_RUNS_LAST = 0
+
+
+def _source_started() -> int:
+    """This run's number; `_sources_ran_since(n)` says whether another ran."""
+    global _SOURCE_RUNS_LAST
+    with _SOURCE_RUNS_LOCK:
+        _SOURCE_RUNS_LAST = next(_SOURCE_RUNS)
+        return _SOURCE_RUNS_LAST
+
+
+def _sources_ran_since(run: int) -> bool:
+    with _SOURCE_RUNS_LOCK:
+        return run < _SOURCE_RUNS_LAST
 
 
 def _is_python_scan(lf: pl.LazyFrame, plan_text: str | None = None) -> bool:
@@ -688,6 +714,7 @@ def _source(
         n_rows: int | None,
         batch_size: int | None,
     ) -> Iterator[pl.DataFrame]:
+        this_run = _source_started()
         # Projection pushdown reaches the input: read only the columns the
         # bank needs plus the ones the query asked for. Polars does not
         # re-apply any of the three pushdowns after a Python source, so each
@@ -746,7 +773,7 @@ def _source(
         # Last, so a state file is written before anything is said about it.
         # `n_rows == 0` is a `head(0)` pushed into the scan, where no rows is
         # what the query asked for rather than a stream that is spent.
-        if python_scan and seen == 0 and n_rows != 0:
+        if python_scan and seen == 0 and n_rows != 0 and not _sources_ran_since(this_run):
             warnings.warn(
                 ConsumedSourceWarning(
                     f"{called}: the plan yielded no rows, and its source is a Python scan -- "

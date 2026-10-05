@@ -792,8 +792,8 @@ spec "m": clock column "t" goes backwards by 30 at row 6 (restart_after_step_bac
 every step back is refused); the bank was not updated. Sort each group by the clock; to resume a
 saved state on input that overlaps it, drop the rows it has learned, with
 ModelBank.skip_learned(frame) in Python or by filtering the command line's input to the rows after
-them; or, if a step back this large starts the stream over, set restart_after_step_back to the
-smallest one that does.
+them; or, if a step back this large starts the stream over, set restart_after_step_back below it
+(a step back no larger than the setting is a late row).
 ```
 
 ### Groups
@@ -1055,9 +1055,9 @@ again for every row ([Window operators](#window-operators)):
 
 | operator | the window of row *t* | what it computes |
 |---|---|---|
-| `po.ewm_mean(x, half_life=, window_size=)` | the rows at or before *t*, less than `window_size` older; with no `window_size`, every row since the last break | the time-weighted mean, as Polars' `ewm_mean_by` computes it: each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period. A row whose `x` is null is skipped, as `ewm_mean_by` skips a null |
+| `po.ewm_mean(x, half_life=, window_size=)` | the rows at or before *t*, less than `window_size` older; with no `window_size`, every row since the last break | the time-weighted mean, as Polars' `ewm_mean_by` computes it: each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period. A row whose `x` is null is skipped, as `ewm_mean_by` skips a null; so is one whose `x` is NaN, infinite or beyond 1e100 |
 | `po.rewm_mean(x, half_life=, window_size=)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
-| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it. A row whose `x` is null adds nothing |
+| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing |
 | `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
@@ -1700,7 +1700,7 @@ file:**
 | is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
 | holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
 | was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
-| was written under a state schema below 26, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
+| was written under a state schema below 27, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
 
 ### Serving without learning
 

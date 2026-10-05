@@ -21,7 +21,9 @@
 //!   row at a repeated stamp holds no interval, so it moves no mean -- as in
 //!   Polars.
 //! - `ewm_sum` / `rewm_sum`: `Σ λ^|t_j - t| x_j` over the rows of the window,
-//!   each counted once at its own time (`ewm_sum_by`).
+//!   each counted once at its own time (`ewm_sum_by` on distinct stamps; at
+//!   a repeated stamp every row holds the stamp's whole window, so each
+//!   carries the stamp's total where `ewm_sum_by`'s is a running sum).
 //! - `ewm_rate` / `rewm_rate`: the sum over the decayed time the window
 //!   covers, `∫_0^T λ^s ds = h/ln2 · (1 - 2^(-T/h))`, `T` the window's span
 //!   inside the stretch.
@@ -1281,7 +1283,16 @@ impl Windows {
         let mut shared = self.shared.clone();
         let adv = shared.advance(&self.clock_cfg, clock, stream_session, true);
         refuse_backwards(&adv, seq, self.shared.last_clock(), clock)?;
-        let mut own_clock = gi.map_or_else(ClockState::new, |g| self.groups[g].clock.clone());
+        // A restart on the stream's clock starts every group over, its clock
+        // included: this row is the first on a fresh clock of its group, not
+        // a step back on a stale one (task 159, W1: a group's next row within
+        // `restart_after_step_back` of its last was refused as a late row
+        // after the stream had restarted, where its windows had started over).
+        let mut own_clock = if adv.reset {
+            ClockState::new()
+        } else {
+            gi.map_or_else(ClockState::new, |g| self.groups[g].clock.clone())
+        };
         let prev = own_clock.last_clock();
         let own = own_clock.advance(&self.clock_cfg, clock, session, true);
         refuse_backwards(&own, seq, prev, clock)?;
@@ -1335,6 +1346,11 @@ impl Windows {
         // group's own clock would show it at that group's next row.
         if adv.reset {
             self.end_all(End::Discard);
+            // Every group's clock too (task 159, W1): the row's own group
+            // takes the fresh one stepped above.
+            for g in &mut self.groups {
+                g.clock = ClockState::new();
+            }
         } else if adv.session_changed || adv.capped {
             self.end_all(End::Cut);
         }
@@ -2383,9 +2399,14 @@ mod tests {
             let mut sc = shared.clone();
             let adv = sc.advance(&cfg, r.clock, if grouped { None } else { r.session }, true);
             refuse_backwards(&adv, seq, shared.last_clock(), r.clock)?;
-            let mut gc = groups
-                .get(&r.group)
-                .map_or_else(ClockState::new, |g| g.clock.clone());
+            // A stream restart starts every group's clock over (task 159, W1).
+            let mut gc = if adv.reset {
+                ClockState::new()
+            } else {
+                groups
+                    .get(&r.group)
+                    .map_or_else(ClockState::new, |g| g.clock.clone())
+            };
             let prev = gc.last_clock();
             let own = gc.advance(&cfg, r.clock, r.session, true);
             refuse_backwards(&own, seq, prev, r.clock)?;
@@ -2402,6 +2423,9 @@ mod tests {
                 let how = if adv.reset { End::Discard } else { End::Cut };
                 for g in groups.values_mut() {
                     end(g, how, &mut stretches, &mut live);
+                    if adv.reset {
+                        g.clock = ClockState::new();
+                    }
                 }
             }
             if let (Some(now), true) = (r.clock, cfg.gap_cap.is_finite()) {
