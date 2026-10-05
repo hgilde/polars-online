@@ -157,6 +157,7 @@ what each rule guarantees, and the test that holds it:
 | the input a resumed run is given | the run | held by |
 |---|---|---|
 | the next file, after an unsliced run | goes on, and first returns the rows the state held | `test_a_save_and_load_at_every_row_is_one_run`, `test_a_state_saved_under_a_slice_skips_nothing_of_another_input` |
+| an input whose first row is at the last stamp read, after an unsliced run, and starts no new session | refused by name, as after a sliced run: it may repeat rows the state read, which came out twice before task 158 (E13) | `test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row`, `an_unsliced_state_refuses_an_input_at_the_last_stamp_it_read` |
 | the same input, after a sliced run | skips the rows consumed, so any chain of sliced runs gives one run's output, at chunks of 1, 7 and 100,000 rows | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, `test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size` |
 | the next file, after a sliced run, its first row a step forward or a new start by the clock policy | skips nothing, the rows a previous file left held included | `test_a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held`, `test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file` |
 | an input whose first row is at the last stamp read, or steps back where the policy refuses it | refused by name: `another input` | `test_a_next_file_starts_after_the_last_stamp_the_state_read`, `test_a_state_saved_under_a_slice_refuses_another_input` |

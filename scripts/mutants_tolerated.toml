@@ -1,0 +1,271 @@
+# Survivors kept on purpose: a test could tell each from the original, but
+# only by a difference no caller can act on, or only where no test build can
+# go. scripts/mutants_report.py shows them apart from the survivors and fails
+# on none of them (task 158).
+#
+# An entry matches as an equivalent does (scripts/mutants_equivalent.toml):
+# by file, function, the mutation as cargo-mutants spells it, and code the
+# mutated line must contain. `columns`, where given, are the columns the
+# mutation may sit at, for a line holding the same operator at a column a
+# test does catch; a `line_has` over two lines takes in the line before,
+# for a line whose twin in the same function a test does catch. `kind` says why the survivor is kept:
+#
+#   rounding     the two differ only in a result's last bits
+#   below-error  the two differ by less than the computation's own error:
+#                its grid's, or its stopping tolerance
+#   tie          the two part only at an exact equality of two continuous
+#                statistics, which no input can be built to reach
+#   test-build   the line runs only after a debug_assert! has failed, which
+#                no test build gets past
+#   input-bound  the two part only past the documented input bound
+#   slow         the line runs only where one call costs about 30 s in a
+#                debug build, too slow for the suite
+#
+# tests/test_mutants_report.py checks every entry still finds its line. Add
+# one only with the measured size of the difference.
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace / with *"
+line_has = "let spread = (1.0 / (2.0 * c * c * kappa)).sqrt();"
+kind = "below-error"
+why = """`spread` only sets `t_end`, where the solve stops. Stopped earlier or \
+later once the absorbed mass has settled, the cdf moves by under 1e-7, most \
+by under 1e-13, where the solve's own grid error is 3e-5 to 4e-5 \
+(`the_solve_is_a_second_computation_of_the_law`)"""
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace * with +"
+line_has = "let spread = (1.0 / (2.0 * c * c * kappa)).sqrt();"
+columns = [30, 34, 38]
+kind = "below-error"
+why = "as `replace / with *` on this line: it moves only where a settled solve stops"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace * with /"
+line_has = "let spread = (1.0 / (2.0 * c * c * kappa)).sqrt();"
+columns = [30, 34]
+kind = "below-error"
+why = "as `replace / with *` on this line: it moves only where a settled solve stops"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace * with +"
+line_has = "let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;"
+kind = "below-error"
+why = "`t_end` is where a settled solve stops: as `spread`'s mutants above"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace * with /"
+line_has = "let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;"
+kind = "below-error"
+why = "`t_end` is where a settled solve stops: as `spread`'s mutants above"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace + with *"
+line_has = "let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;"
+kind = "below-error"
+why = "`t_end` is where a settled solve stops: as `spread`'s mutants above"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace / with %"
+line_has = "let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;"
+columns = [59]
+kind = "below-error"
+why = "`t_end` is where a settled solve stops: as `spread`'s mutants above"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_cdf"
+mutation = "replace / with *"
+line_has = "let t_end = (8.0 * spread).ln().max(0.0) / beta + 4.0 / kappa;"
+columns = [59]
+kind = "below-error"
+why = "`t_end` is where a settled solve stops: as `spread`'s mutants above"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with =="
+line_has = "while fhi < 0.0 {"
+kind = "slow"
+why = """the bracket widens only where `q0 + 1` is still below the quantile, \
+which takes γ of about 0.48 or more, where one quantile's solve costs about \
+30 s in a debug build"""
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace += with *="
+line_has = "hi += 2.0;"
+kind = "slow"
+why = "the bracket's widening, reached only as `while fhi < 0.0` above is"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace += with -="
+line_has = "hi += 2.0;"
+kind = "slow"
+why = """the bracket's widening, reached only as `while fhi < 0.0` above is; \
+reached, it would never end, so a test there would time it out"""
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with =="
+line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
+columns = [21, 48]
+kind = "below-error"
+why = """a variant of the stopping rule: the regula falsi runs on to the same \
+root, within 1e-11, inside the rule's own `(hi - lo) < 1e-9`"""
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace || with &&"
+line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
+kind = "below-error"
+why = "a variant of the stopping rule, as `replace < with ==` on this line"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace - with +"
+line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
+kind = "below-error"
+why = "a variant of the stopping rule, as `replace < with ==` on this line"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace - with /"
+line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
+kind = "below-error"
+why = "a variant of the stopping rule, as `replace < with ==` on this line"
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "boundary_quantile"
+mutation = "replace < with >"
+line_has = "if fm < 0.0 {"
+kind = "below-error"
+why = """the regula falsi's side test reversed; measured on the suite's \
+quantiles, the solve still stops at the same root, within 1e-11, inside \
+the rule's own `(hi - lo) < 1e-9`"""
+
+[[tolerated]]
+file = "crates/online-core/src/boundary.rs"
+function = "sup_abs_bm_quantile"
+mutation = "replace < with <="
+line_has = "if sup_abs_bm_cdf(mid) < p {"
+kind = "rounding"
+why = """200 bisection steps on a cdf flat at the last bit near its root: the \
+two part only where `cdf(mid) == p` exactly, and the quantiles differ by at \
+most 2.3e-14, relatively"""
+
+[[tolerated]]
+file = "crates/online-core/src/corrchange.rs"
+function = "kolmogorov_quantile"
+mutation = "replace < with <="
+line_has = "if kolmogorov_cdf(mid) < target {"
+kind = "rounding"
+why = "the same bisection as `sup_abs_bm_quantile`'s: at most 2.3e-14, relatively"
+
+[[tolerated]]
+file = "crates/online-core/src/constraint.rs"
+function = "Constraint::project_with"
+mutation = "replace > with >="
+line_has = "let j = breaks.partition_point(|&t| g(t) > 0.0);"
+kind = "rounding"
+why = """the two part only where `g` is exactly 0 at a breakpoint, where both \
+segments give the same projection in exact arithmetic; on a grid of 400,000 \
+inputs, 3,831 differ, each in its last bits"""
+
+[[tolerated]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::read"
+mutation = "replace > with >="
+line_has = "if q.is_finite() && (stat.is_nan() || q > stat) {"
+kind = "tie"
+why = """the two part only when two pairs' monitoring statistics are exactly \
+equal and their maxima fall on different rows: then `at` names the other \
+row"""
+
+[[tolerated]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::read"
+mutation = "replace > with >="
+line_has = """let crit = self.cfg.fixed_crit().unwrap_or(f64::NAN);
+                let flag = stat.is_finite() && crit.is_finite() && stat > crit;"""
+kind = "tie"
+why = """the two part only at a statistic exactly equal to the Kolmogorov \
+critical value, which is not configurable, so no input can be built to land \
+on it"""
+
+[[tolerated]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::score"
+mutation = "replace - with +"
+line_has = "ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q[j];"
+columns = [64]
+kind = "rounding"
+why = """`log_det` is one pooled determinant, the same for every class, so the \
+mutant shifts every class's score alike; the softmax and the argmax the \
+model reports cancel a common shift, up to rounding"""
+
+[[tolerated]]
+file = "crates/online-core/src/ewclass.rs"
+function = "EwClass::score"
+mutation = "replace * with +"
+line_has = "ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q[j];"
+columns = [70]
+kind = "rounding"
+why = "a shift common to every class, as `replace - with +` on this line"
+
+[[tolerated]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::flush"
+mutation = "replace || with &&"
+line_has = "if self.pending.x.len() != n * k || self.pending.w.len() != n {"
+kind = "test-build"
+why = """a release build's guard against a damaged state; the two \
+`debug_assert_eq!`s just above stop a test build first"""
+
+[[tolerated]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::flush"
+mutation = "replace || with &&"
+line_has = "if w_new <= 0.0 || w_new.is_nan() {"
+kind = "test-build"
+why = """a release build's guard against a damaged state; the `debug_assert!` \
+just above stops a test build first"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace && with ||"
+line_has = "if nudge.is_finite() && aged > 0.0 {"
+kind = "input-bound"
+why = """`aged` is 0 or `nudge` not finite only with weights near 5e-324, \
+past the input bound"""
+
+[[tolerated]]
+file = "crates/online-core/src/robust.rs"
+function = "<impl OnlineModel for Robust>::step"
+mutation = "replace > with >="
+line_has = "if nudge.is_finite() && aged > 0.0 {"
+kind = "input-bound"
+why = "as `replace && with ||` on this line"

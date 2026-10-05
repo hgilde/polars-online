@@ -68,8 +68,13 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   whatever `chunk_rows`. The state knows its input by the input's first
   row's clock and session, and by the last rows it read. Another input, the
   same input sliced by hand, or one shorter than the rows consumed is
-  refused by name (`another input`), with and without a clock column, and a
-  refusal while a query runs surfaces as `polars.exceptions.ComputeError`.
+  refused by name (`another input`), with and without a clock column. Any
+  resumed run, sliced or not, refuses an input whose first row is at the
+  last stamp the state read, unless that row starts a new session: a file
+  boundary inside a tied stamp cannot be told from an input that repeats
+  rows the state read, which would come out twice (task 158). A refusal
+  while a query runs surfaces as `polars.exceptions.ComputeError` under
+  py-polars 1.x and as `ValueError` under 2.0.
   Windows state version 5; a state file that cannot be read is reported as
   damaged. Nine review rounds of the window operators, each finding pinned
   by a test, are in docs/PLAN.md §14.

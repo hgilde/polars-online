@@ -342,9 +342,9 @@ def refresh_time(
 
     Rows must be in ``clock`` order within each ``group``, as a stream must
     be. A clock below the previous row's is refused naming the row, as a spec
-    refuses one with ``restart_after_step_back`` unset. The refusal arrives as
-    polars' ``ComputeError``, around a ``ValueError``, because the sampler
-    runs as a polars source, for a ``DataFrame`` too. A temporal
+    refuses one with ``restart_after_step_back`` unset. The refusal is a
+    ``ValueError``, which py-polars 1.x hands on inside its ``ComputeError``
+    because the sampler runs as a polars source, for a ``DataFrame`` too. A temporal
     clock is compared exactly, in integer nanoseconds. A null ``value`` is a
     tick that observed nothing, so it does not update the series. Feeding
     the input in one chunk or a thousand gives the same grid, since a point
@@ -660,22 +660,27 @@ def with_windows(
     still waiting, which the next run, given ``load_state``, emits first:
     feeding a stream in two runs gives what one run gives. Without it, a
     row whose window has not passed when the input ends is emitted
-    unresolved, null. Under a slice of the output (``.head(n)``) the input
+    unresolved, null. Any resumed run refuses by name an input whose first
+    row is at the last stamp the state read, unless that row starts a new
+    session: a file boundary inside a tied stamp cannot be told from an
+    input that repeats rows the state read, which would come out twice. So
+    cut a stream into files between stamps. Without a clock column there is
+    no stamp to compare, and a repeated row is not caught.
+
+    Under a slice of the output (``.head(n)``) the input
     is read only up to the row that resolved the *n*-th row, and the state
     records how many rows of the input were consumed so far. A run resumed
     with ``load_state`` on the *same input*, unsliced, skips those rows and
     goes on, so any chain of sliced runs gives what one run gives, whatever
-    the chunk size. The state knows its input by its first row's clock and
-    session, and by the last rows it read: the rows it holds that are the
-    input's, or the last row alone where it holds none. An input whose
+    the chunk size. Such a state knows its input by its first row's clock
+    and session, and by the last rows it read: the rows it holds that are
+    the input's, or the last row alone where it holds none. An input whose
     first row differs is the next file when the clock policy takes that
     row as a step forward or a new start, which is a step back past
     ``restart_after_step_back`` or a new session. The run then skips
-    nothing and first returns the rows the state held. Refused by name:
+    nothing and first returns the rows the state held. Besides the input
+    at the last stamp read, a state saved under a slice refuses by name:
 
-    - an input whose first row is at the last stamp the state read, since
-      a file boundary inside a tied stamp cannot be told from the same
-      input sliced inside it;
     - one that steps back where the policy refuses it: the same input
       sliced by hand, or an overlapping file (a hand slice that starts
       after the last clock read is taken as the next file);
@@ -698,9 +703,10 @@ def with_windows(
     ``ValueError`` for a formula, a clock policy or a column that cannot
     run, an output name that collides, and a ``load_state`` another call
     saved. What the run refuses once the plan is running -- a step back,
-    naming the row, or a sliced state resumed on another input -- surfaces
-    as ``polars.exceptions.ComputeError`` with the message inside, since
-    the rows come from a Python source. ``TypeError`` for something that
+    naming the row, or a state resumed on another input -- surfaces as
+    ``polars.exceptions.ComputeError`` with the message inside under
+    py-polars 1.x, since the rows come from a Python source, and as the
+    ``ValueError`` itself under 2.0. ``TypeError`` for something that
     is not an expression, or a clock keyword beside ``like=``.
     ``FileNotFoundError`` for a ``load_state`` that is not there, or a
     ``save_state`` whose directory is not.

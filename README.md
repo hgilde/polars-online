@@ -1296,15 +1296,23 @@ the saved input did, and passes for it. If the stream's rows can repeat, as
 a daily grid's can, resume only on the same input: another input that
 matches the state's rows where it was cut is taken for the same input.
 
+**Any resumed run refuses an input whose first row is at the last stamp
+the state read, unless that row starts a new session.** A file boundary
+inside a stamp that several rows share looks the same as an input that
+repeats rows the state read, which would come out twice. So cut a stream
+into files between stamps. Without a clock column there is no stamp to
+compare, and a repeated row is not caught.
+
 **A run resumed from a state saved under a slice decides from its input's
-first row whether to skip rows, go on or refuse.** A refusal arrives as
-`polars.exceptions.ComputeError`, with a message naming `another input`:
+first row whether to skip rows, go on or refuse.** A refusal names
+`another input`. It arrives as `polars.exceptions.ComputeError` under
+py-polars 1.x and as `ValueError` under 2.0:
 
 | the input a resumed run is given | the run |
 |---|---|
 | the input the state was saved from, unsliced | skips the rows the state consumed, then goes on |
 | the next file, whose first row is a step forward on the clock or a new start (a step back past `restart_after_step_back`, or a new session) | skips nothing, and returns the rows the state held before its own |
-| an input whose first row is at the last stamp the state read | refused: a file boundary inside a stamp that several rows share looks the same as the saved input sliced inside it |
+| an input whose first row is at the last stamp the state read | refused, as after any state: a file boundary inside a stamp that several rows share looks the same as the saved input sliced inside it |
 | an input that steps back where the clock policy refuses it, such as the same input sliced by hand, or an overlapping file | refused |
 | without a clock column, an input that does not begin with a new session | refused: a row-count clock steps forward at every row |
 | an input that starts as the saved one did but differs where the state was cut, or ends before the rows consumed | refused |

@@ -4,11 +4,13 @@
         [--fail-on-missed] [--expect-runs N] [--fail-on-incomplete]
 
 Reads each run's `outcomes.json` (several, for a sharded pass), drops the
-missed mutants `scripts/mutants_equivalent.toml` names, and prints a Markdown
-report: the counts, then every remaining survivor by file with the line it
-mutates. The report is also appended to `$GITHUB_STEP_SUMMARY` when that is
-set. `--fail-on-missed` exits 1 if a survivor remains; that is for the job on
-a change's own lines. The weekly pass reports its survivors and exits 0.
+missed mutants `scripts/mutants_equivalent.toml` names, sets apart those
+`scripts/mutants_tolerated.toml` names, and prints a Markdown report: the
+counts, then every remaining survivor by file with the line it mutates, then
+the tolerated ones by kind. The report is also appended to
+`$GITHUB_STEP_SUMMARY` when that is set. `--fail-on-missed` exits 1 if a
+survivor remains, never for a tolerated one; that is for the job on a
+change's own lines. The weekly pass reports its survivors and exits 0.
 
 It also says when a run did not finish (task 155). A run that writes
 `listed.txt` beside its outcomes, the mutants it was given one per line, is
@@ -17,9 +19,12 @@ finished when it is stopped. `--expect-runs N` counts a run that sent no
 directory at all. `--fail-on-incomplete` exits 1 on either, so a pass cut
 short at its time limit cannot read as a smaller clean one.
 
-An equivalent matches by file, function, the mutation as cargo-mutants names
-it, and code the mutated line must contain. So an entry follows its line when
-code above it moves, and lapses when the line itself changes.
+An entry of either list matches by file, function, the mutation as
+cargo-mutants names it, and code the mutated line must contain, and a
+tolerated entry by its `columns` where it gives them. A `line_has` with a
+newline in it is matched against the mutated line and the lines just before
+it, for a line whose twin elsewhere in the function is caught. So an entry follows its
+line when code above it moves, and lapses when the line itself changes.
 
 Standard library only, so a CI job runs it with the runner's own Python.
 """
@@ -27,6 +32,7 @@ Standard library only, so a CI job runs it with the runner's own Python.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -36,10 +42,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 EQUIVALENTS = REPO / "scripts" / "mutants_equivalent.toml"
+TOLERATED = REPO / "scripts" / "mutants_tolerated.toml"
 
 
 def load_equivalents(path: Path = EQUIVALENTS) -> list[dict]:
     return tomllib.loads(path.read_text(encoding="utf-8")).get("equivalent", [])
+
+
+def load_tolerated(path: Path = TOLERATED) -> list[dict]:
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("tolerated", [])
 
 
 def mutation_of(name: str) -> str:
@@ -48,22 +59,34 @@ def mutation_of(name: str) -> str:
     return text.rsplit(" in ", 1)[0]
 
 
-def source_line(root: Path, file: str, line: int) -> str:
+@functools.cache
+def _lines(path: Path) -> tuple[str, ...]:
+    """A source file's lines, read once a run: every entry reads them."""
     try:
-        lines = (root / file).read_text(encoding="utf-8").splitlines()
+        return tuple(path.read_text(encoding="utf-8").splitlines())
     except OSError:
+        return ()
+
+
+def source_line(root: Path, file: str, line: int, before: int = 0) -> str:
+    """Line `line` of the file, with the `before` lines above it, joined."""
+    lines = _lines(root / file)
+    if not 0 < line <= len(lines):
         return ""
-    return lines[line - 1] if 0 < line <= len(lines) else ""
+    return "\n".join(lines[max(line - 1 - before, 0) : line])
 
 
-def matching_equivalent(mutant: dict, equivalents: list[dict], root: Path) -> dict | None:
-    line = source_line(root, mutant["file"], mutant["span"]["start"]["line"])
-    for e in equivalents:
+def matching_entry(mutant: dict, entries: list[dict], root: Path) -> dict | None:
+    """The first entry of an equivalent or tolerated list that names the mutant."""
+    start = mutant["span"]["start"]
+    for e in entries:
+        before = e["line_has"].count("\n")
         if (
             e["file"] == mutant["file"]
             and e["function"] == mutant["function"]["function_name"]
             and e["mutation"] == mutation_of(mutant["name"])
-            and e["line_has"] in line
+            and e["line_has"] in source_line(root, mutant["file"], start["line"], before)
+            and start["column"] in e.get("columns", [start["column"]])
         ):
             return e
     return None
@@ -107,31 +130,39 @@ def report(
     root: Path = REPO,
     equivalents: list[dict] | None = None,
     expect_runs: int | None = None,
+    tolerated: list[dict] | None = None,
 ) -> tuple[str, int]:
-    """The Markdown report, and how many survivors are not equivalent."""
+    """The Markdown report, and how many survivors are neither equivalent nor
+    tolerated."""
     equivalents = load_equivalents() if equivalents is None else equivalents
+    tolerated = load_tolerated() if tolerated is None else tolerated
     results = outcomes(runs)
     short = incomplete(runs, expect_runs)
     counts = Counter(o["summary"] for o in results)
     survivors: dict[str, list[str]] = defaultdict(list)
     excused: list[str] = []
+    kept: dict[str, list[str]] = defaultdict(list)
     for o in results:
         if o["summary"] != "MissedMutant":
             continue
         m = o["scenario"]["Mutant"]
         where = f"`{m['name'].split(': ', 1)[0]}`"
         what = m["name"].split(": ", 1)[-1]
-        e = matching_equivalent(m, equivalents, root)
-        if e is None:
-            survivors[m["file"]].append(f"- {where} {what}")
-        else:
+        e = matching_entry(m, equivalents, root)
+        t = None if e is not None else matching_entry(m, tolerated, root)
+        if e is not None:
             excused.append(f"- {where} {what}: {' '.join(e['why'].split())}")
+        elif t is not None:
+            kept[t["kind"]].append(f"- {where} {what}: {' '.join(t['why'].split())}")
+        else:
+            survivors[m["file"]].append(f"- {where} {what}")
     missed = sum(len(v) for v in survivors.values())
+    n_kept = sum(len(v) for v in kept.values())
     lines = [
         "## Mutation testing",
         "",
         f"{len(results)} mutants: {counts['CaughtMutant']} caught, {missed} survived, "
-        f"{len(excused)} equivalent, {counts['Timeout']} timed out, "
+        f"{len(excused)} equivalent, {n_kept} tolerated, {counts['Timeout']} timed out, "
         f"{counts['Unviable']} unviable.",
     ]
     if not results and not short:
@@ -147,6 +178,10 @@ def report(
         lines += ["", "### Survivors: a change here would pass every test", ""]
         for file in sorted(survivors):
             lines += [f"**{file}** ({len(survivors[file])})", *sorted(survivors[file]), ""]
+    if kept:
+        lines += ["", "### Tolerated, not counted (scripts/mutants_tolerated.toml)", ""]
+        for kind in sorted(kept):
+            lines += [f"**{kind}** ({len(kept[kind])})", *sorted(kept[kind]), ""]
     if excused:
         lines += ["", "### Equivalent, not counted (scripts/mutants_equivalent.toml)", "", *excused]
     return "\n".join(lines).rstrip() + "\n", missed

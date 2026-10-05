@@ -824,6 +824,25 @@ impl WindowsRun {
                         )
                     }
                 }
+            } else if self.resume_skip == 0 && self.config.clock.is_some() {
+                // A state saved without a slice goes on with the next file,
+                // and refuses one that starts at the last stamp it read, as a
+                // sliced state does: a file boundary inside a tied stamp
+                // cannot be told from an input that repeats the rows read
+                // there, which would come out twice (task 158, E13). A fresh
+                // run has read no stamp, and a new session at that stamp is a
+                // new start; a step back is the policy's to refuse, below.
+                if let Ok(Peek::SameStamp) =
+                    self.core.peek(key.as_deref(), self.first_clock, session)
+                {
+                    polars_bail!(ComputeError:
+                        "{WHO}: this input starts at the last stamp the state read, so it may be \
+                         another input that repeats rows the state read: a file boundary inside \
+                         a tied stamp cannot be told from one, whose repeated rows would come \
+                         out twice. Resume on the next file, which starts after the last stamp \
+                         the state read"
+                    );
+                }
             }
         }
         let skipped: DataFrame;
@@ -2337,6 +2356,33 @@ mod tests {
             .err()
             .expect("refused");
         assert!(err.contains("the state's last row has columns"), "{err}");
+    }
+
+    /// Task 158, E13: a state saved without a slice refuses an input that
+    /// starts at the last stamp it read -- here one that repeats its last
+    /// row, which came out twice -- as a sliced state does, and goes on with
+    /// one that starts after it.
+    #[test]
+    fn an_unsliced_state_refuses_an_input_at_the_last_stamp_it_read() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let again = frame(&[3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), again.schema()).unwrap();
+        let err = run.feed(&again, None).expect_err("refused");
+        assert!(
+            err.to_string().contains("at the last stamp the state read"),
+            "{err}"
+        );
+        let next = frame(&[4.0, 5.0, 6.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), next.schema()).unwrap();
+        assert_eq!(run.feed(&next, None).unwrap().height(), 3);
+        // A fresh run has read no stamp.
+        let mut run = WindowsRun::new(config(LEFT), again.schema()).unwrap();
+        assert_eq!(run.feed(&again, None).unwrap().height(), 3);
     }
 
     /// Review R8, F1: on a row-count clock every row is a step forward, so

@@ -7326,7 +7326,7 @@ tick, and that the series holding it up has a count near 1.
       the example data (`flows`, `by_block`) carry the line too, and a test
       that runs the README's TOML through the command line.
 
-- [ ] 158. **The mutation survivors worked through, and the bug behind the
+- [x] 158. **The mutation survivors worked through, and the bug behind the
       scheduled pass's failure fixed -- requested 2026-10-05.** Size L. The
       user's words: "After the push, tick task 155 and commit, then work
       through all the survivors and fix the cause of the last task
@@ -7457,6 +7457,32 @@ tick, and that the series holding it up has a count near 1.
       before. A block that reads only a frame derived from the example data
       takes no example-data line, and W14 waits for the next README rewrite,
       both by the user's decision.
+
+      *The tolerated list and E13, the same day.* Of the 32 survivors left,
+      `rls`'s went with the line the `hypot` fix rewrote: cargo-mutants on
+      the new lines caught 13 of 14, and the fourteenth matches an
+      equivalent already listed. The other 31 are in
+      `scripts/mutants_tolerated.toml`, 27 entries, each with a kind
+      (`rounding`, `below-error`, `tie`, `test-build`, `input-bound`,
+      `slow`) and the measured size of the difference.
+      `scripts/mutants_report.py` lists them by kind and counts them apart,
+      so neither job fails on one. An entry may name the `columns` it covers,
+      and a `line_has` may take in the line before. Both tell a tolerated
+      mutant from a twin a test catches, on its line (`boundary`'s `t_end`)
+      or in its function (`corrchange`'s two `stat > crit` lines). Over the
+      workers' final outcomes the report sets 30 apart, the 31st being batch
+      A's. E13: any resumed `with_windows` run now refuses an input whose
+      first row is at the last stamp the state read and starts no new
+      session, as a sliced state did, so the row a resume repeated no longer
+      comes out twice. The canary of 2026-10-05 (run 37327376335) failed on
+      py-polars 2.0.0rc2 in seven `test_windows.py` tests: 2.0 lets a Python
+      source's `ValueError` through where 1.x wraps it in `ComputeError`.
+      Those tests now read either, as `test_frame.py` has since the 09-21
+      canary, and the docs name the exception for both majors. While
+      checking E15, closing an ADBC cursor just after a read of its stream
+      stopped early segfaulted in polars alone (`collect_batches()` stopped
+      after one batch); ARROW-SOURCES §2 records it, and nothing goes
+      upstream while reports are parked.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

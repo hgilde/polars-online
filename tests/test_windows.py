@@ -28,6 +28,13 @@ from polars_online._formula import FormulaError, from_tree, to_tree
 
 CLOCK = {"clock": "t", "gap_cap": 1e9}
 
+#: What a refusal raised while the plan runs arrives as. py-polars 1.x wraps
+#: an exception raised inside a Python IO source as its own `ComputeError`;
+#: 2.0.0rc2 lets it through unwrapped, so the run's `ValueError` arrives as
+#: itself (the canary of 2026-10-05). Both carry the same message, as in
+#: `test_frame._REFUSAL`.
+_REFUSAL = (pl.exceptions.ComputeError, ValueError)
+
 
 # --------------------------------------------------------------------------
 # The definitions, by hand
@@ -666,11 +673,9 @@ def test_a_gap_past_the_cap_and_a_session_change_cut_the_windows() -> None:
 
 def test_a_reset_discards_and_a_late_row_is_refused() -> None:
     df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 1.5, 2.5, 3.5], "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]})
-    with pytest.raises(pl.exceptions.ComputeError, match="goes backwards by 0.5 at row 3"):
+    with pytest.raises(_REFUSAL, match="goes backwards by 0.5 at row 3"):
         po.stream.with_windows(df, y=po.ewm_sum("x", half_life=1.0), **CLOCK)
-    with pytest.raises(
-        pl.exceptions.ComputeError, match="no more than restart_after_step_back = 1"
-    ):
+    with pytest.raises(_REFUSAL, match="no more than restart_after_step_back = 1"):
         po.stream.with_windows(
             df, y=po.ewm_sum("x", half_life=1.0), restart_after_step_back=1.0, **CLOCK
         )
@@ -896,7 +901,7 @@ def test_a_cast_is_strict_as_in_polars_unless_told_otherwise() -> None:
     """R1-B2: a formula's ``cast`` was rebuilt non-strict, so an overflow that
     Polars refuses became a silent null."""
     df = pl.DataFrame({"t": [0.0, 1.0], "x": [1000.0, 1.0]})
-    with pytest.raises(pl.exceptions.PolarsError, match="conversion from"):
+    with pytest.raises((pl.exceptions.PolarsError, ValueError), match="conversion from"):
         po.stream.with_windows(df, y=po.ewm_sum("x", half_life=1.0).cast(pl.Int8), **CLOCK)
     lax = po.ewm_sum("x", half_life=1.0).cast(pl.Int8, strict=False)
     assert po.stream.with_windows(df, y=lax, **CLOCK)["y"].to_list() == [None, None]
@@ -1339,16 +1344,16 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
         t=pl.when(pl.int_range(pl.len()) == 0).then(pl.col("t")).otherwise(pl.col("t") + 0.25),
         x=pl.col("x") * 3,
     )
-    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+    with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(other, **mixed(), load_state=state, **kw)
-    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+    with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(df.slice(5), **mixed(), load_state=state, **kw)
     # An input shorter than the rows consumed: refused at the input's end,
     # and at a save that says the input ended (R6: no test passed
     # ``input_ended`` before).
-    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+    with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(df.head(3), **mixed(), load_state=state, **kw)
-    with pytest.raises(pl.exceptions.ComputeError, match="ended after 3"):
+    with pytest.raises(_REFUSAL, match="ended after 3"):
         po.stream.with_windows(
             df.head(3), **mixed(), load_state=state, save_state=tmp_path / "short.state", **kw
         )
@@ -1369,7 +1374,7 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
         bare, f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
     )
     assert pl.concat([head, rest]).equals(one)
-    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+    with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(
             bare.slice(5), f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
         )
@@ -1433,7 +1438,7 @@ def test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row(
     head = df.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(3).collect()
     assert head.height == 3
     other = pl.DataFrame({"t": [0.0, 1.5, 2.5, 3.5, 4.5], "x": [1.0, 2.0, 4.0, 8.0, 16.0]})
-    with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+    with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(other, **y, load_state=state, **CLOCK)
     rest = po.stream.with_windows(df, **y, load_state=state, **CLOCK)
     assert pl.concat([head, rest]).equals(one)
@@ -1447,7 +1452,7 @@ def test_a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row(
     assert head.height == 4
     # Another input of the same length, differing where the state was cut
     # (R7-E5: a slice shorter than the skip was refused by the count alone).
-    with pytest.raises(pl.exceptions.ComputeError, match="rows it read are not this input"):
+    with pytest.raises(_REFUSAL, match="rows it read are not this input"):
         po.stream.with_windows(bare.with_columns(x=pl.col("x") * 3), **y, load_state=state)
     rest = po.stream.with_windows(bare, **y, load_state=state)
     assert pl.concat([head, rest]).equals(one)
@@ -1464,12 +1469,40 @@ def test_a_next_file_starts_after_the_last_stamp_the_state_read(tmp_path: Any) -
     a = first.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
     assert a.height == 1, "rows 1..4 wait for their windows"
     tied = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [5.0, 6.0, 7.0]})
-    with pytest.raises(pl.exceptions.ComputeError, match="at the last stamp the state read"):
+    with pytest.raises(_REFUSAL, match="at the last stamp the state read"):
         po.stream.with_windows(tied, **y, load_state=state, **CLOCK)
     second = pl.DataFrame({"t": [4.0, 5.0, 6.0], "x": [5.0, 6.0, 7.0]})
     c = po.stream.with_windows(second, **y, load_state=state, **CLOCK)
     one = po.stream.with_windows(pl.concat([first, second]), **y, **CLOCK)
     assert pl.concat([a, c]).equals(one)
+
+
+def test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row(tmp_path: Any) -> None:
+    """E13 (task 158): a state saved without a slice took an input whose first
+    row repeats the last row it read, and that row came out twice: the
+    README's `trades.head(2000)` saved, then `trades.slice(1999)` resumed,
+    gave 3,001 rows against one run's 3,000. It now refuses an input that
+    starts at the last stamp it read, as a sliced state does, unless that row
+    starts a new session; one that starts after it is the next file."""
+    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
+    state = tmp_path / "unsliced.state"
+    a = po.stream.with_windows(first, **y, save_state=state, **CLOCK)
+    again = pl.DataFrame({"t": [3.0, 4.0, 5.0], "x": [4.0, 5.0, 6.0]})
+    with pytest.raises(_REFUSAL, match="at the last stamp the state read"):
+        po.stream.with_windows(again, **y, load_state=state, **CLOCK)
+    second = again.slice(1)
+    c = po.stream.with_windows(second, **y, load_state=state, **CLOCK)
+    one = po.stream.with_windows(pl.concat([first, second]), **y, **CLOCK)
+    assert pl.concat([a, c]).equals(one)
+    # A new session at that stamp is a new start, which the policy takes.
+    days = {**CLOCK, "session": "s", "session_gap": 1.0}
+    first_day = first.with_columns(s=pl.lit("d1"))
+    next_day = again.with_columns(s=pl.lit("d2"))
+    a_day = po.stream.with_windows(first_day, **y, save_state=state, **days)
+    c_day = po.stream.with_windows(next_day, **y, load_state=state, **days)
+    one_day = po.stream.with_windows(pl.concat([first_day, next_day]), **y, **days)
+    assert pl.concat([a_day, c_day]).equals(one_day)
 
 
 def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
@@ -1503,7 +1536,7 @@ def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
             a = day1.lazy().online.with_windows(**y, save_state=state, **kw).head(100).collect()
             assert a.height < 7, "the last rows wait for their windows"
             if start == 0.0 and "session" not in extra:
-                with pytest.raises(pl.exceptions.ComputeError, match="another input"):
+                with pytest.raises(_REFUSAL, match="another input"):
                     po.stream.with_windows(day2, **y, load_state=state, **kw)
                 continue
             one = po.stream.with_windows(pl.concat([day1, day2]), **y, **kw)
@@ -1523,7 +1556,7 @@ def test_without_a_clock_the_next_file_begins_with_a_new_session(tmp_path: Any) 
     head = df.lazy().online.with_windows(**y, save_state=state, **kw).head(4).collect()
     assert head.height == 4
     for cut in (3, 5):
-        with pytest.raises(pl.exceptions.ComputeError, match="does not begin with a new session"):
+        with pytest.raises(_REFUSAL, match="does not begin with a new session"):
             po.stream.with_windows(df.slice(cut), **y, load_state=state, **kw)
     nxt = pl.DataFrame({"x": [7.0, 8.0], "s": ["c", "c"]})
     rest = po.stream.with_windows(nxt, **y, load_state=state, **kw)

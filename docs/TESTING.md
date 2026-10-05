@@ -626,10 +626,23 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file names 23
+`scripts/mutants_equivalent.toml` does not list. That file names 161
 equivalent mutants, each with the reason no input can tell it from the
 original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
+
+**A survivor a test could tell apart only by a difference no caller can act
+on is tolerated, and listed apart** (task 158).
+`scripts/mutants_tolerated.toml` names 31, in 27 entries, each with its kind and the
+measured size of the difference: last-bit rounding, a difference below the
+computation's own error (most are `boundary`'s solver stopping a settled
+solve, under 1e-7 where its grid error is 3e-5), an exact tie no input can
+be built to reach, a guard only a release build reaches past a
+`debug_assert!`, a weight past the input bound, or a path one call of which
+costs 30 s in a debug build. The report shows them by kind and fails on none
+of them, in either job. An entry matches as an equivalent does, and may name
+the `columns` it covers or take in the line before, so it cannot cover a
+twin on the same line or in the same function that a test catches.
 
 **Equivalent mutants are left alone deliberately: no test can kill them.**
 Two from the first passes show the kind. Flipping `Ftrl::weight`'s
