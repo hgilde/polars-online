@@ -766,12 +766,15 @@ impl WindowsRun {
         // input: one that starts elsewhere, the next file, skips nothing
         // (R4, B3). Without a clock column the rows are skipped either way.
         if !self.started && df.height() > 0 {
-            self.started = true;
-            self.first_clock = clock.as_ref().map(|c| c[0]);
+            // The verdict first, the run's record of its input after it: a
+            // refused first chunk leaves the run as it was, so fed again it
+            // is refused again, where a run marked started before the
+            // verdict took the same chunk whole on the next call (task 159,
+            // F1).
+            let first_clock = clock.as_ref().map(|c| c[0]);
             let (key, session) = self.first_key_session(df)?;
-            self.first_session = session;
             if self.resume_skip > 0
-                && (self.first_clock != self.resume_first || session != self.resume_first_session)
+                && (first_clock != self.resume_first || session != self.resume_first_session)
             {
                 // Not the same input from its start: its first row's clock or
                 // session is not the saved input's (review R7, E2: a clock
@@ -785,7 +788,7 @@ impl WindowsRun {
                 // inside it, which cannot be told apart; a step back the
                 // policy refuses is the same input sliced by hand or an
                 // overlapping file (review R5, C4; R6, D3 and D4).
-                match self.core.peek(key.as_deref(), self.first_clock, session) {
+                match self.core.peek(key.as_deref(), first_clock, session) {
                     Ok(Peek::NewStart) => self.resume_skip = 0,
                     Ok(Peek::Forward) if self.config.clock.is_some() => self.resume_skip = 0,
                     // A row-count clock steps forward at every row, so a step
@@ -824,7 +827,7 @@ impl WindowsRun {
                         )
                     }
                 }
-            } else if self.resume_skip == 0 && self.config.clock.is_some() {
+            } else if self.resume_skip == 0 && self.config.clock.is_some() && resolving.is_none() {
                 // A state saved without a slice goes on with the next file,
                 // and refuses one that starts at the last stamp it read, as a
                 // sliced state does: a file boundary inside a tied stamp
@@ -832,9 +835,12 @@ impl WindowsRun {
                 // there, which would come out twice (task 158, E13). A fresh
                 // run has read no stamp, and a new session at that stamp is a
                 // new start; a step back is the policy's to refuse, below.
-                if let Ok(Peek::SameStamp) =
-                    self.core.peek(key.as_deref(), self.first_clock, session)
-                {
+                // Not for a core the bank's resolver feeds (`resolving`): it
+                // gets the rows of one stream the bank's own clock has
+                // checked, so a chunk boundary inside a tied stamp is that
+                // stream going on, and the same words refused every bank
+                // with a window target saved there (task 159, B1).
+                if let Ok(Peek::SameStamp) = self.core.peek(key.as_deref(), first_clock, session) {
                     polars_bail!(ComputeError:
                         "{WHO}: this input starts at the last stamp the state read, so it may be \
                          another input that repeats rows the state read: a file boundary inside \
@@ -844,6 +850,9 @@ impl WindowsRun {
                     );
                 }
             }
+            self.started = true;
+            self.first_clock = first_clock;
+            self.first_session = session;
         }
         let skipped: DataFrame;
         let mut df = df;
@@ -2383,6 +2392,35 @@ mod tests {
         // A fresh run has read no stamp.
         let mut run = WindowsRun::new(config(LEFT), again.schema()).unwrap();
         assert_eq!(run.feed(&again, None).unwrap().height(), 3);
+    }
+
+    /// Task 159 (F1): a run marked itself started, and kept its input's
+    /// first row, before the identity verdict, so a refused first chunk was
+    /// taken whole on the next call. A refused first chunk leaves the run as
+    /// it was: fed again, it is refused again, with the same words.
+    #[test]
+    fn a_refused_first_chunk_is_refused_again() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let again = frame(&[3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), again.schema()).unwrap();
+        let first = run.feed(&again, None).expect_err("refused").to_string();
+        let second = run
+            .feed(&again, None)
+            .expect_err("refused again")
+            .to_string();
+        assert!(
+            first.contains("at the last stamp the state read"),
+            "{first}"
+        );
+        assert_eq!(first, second);
+        // And the run goes on with the next file as if nothing had been fed.
+        let next = frame(&[4.0, 5.0, 6.0]);
+        assert_eq!(run.feed(&next, None).unwrap().height(), 3);
     }
 
     /// Review R8, F1: on a row-count clock every row is a step forward, so

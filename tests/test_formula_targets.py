@@ -420,6 +420,53 @@ def test_a_state_saved_mid_window_resumes_as_one_run(tmp_path: Any) -> None:
     assert resumed.specs[0]["targets"][0]["formula"][0] == "-"
 
 
+def test_a_state_saved_inside_a_tied_stamp_resumes_as_one_run(tmp_path: Any) -> None:
+    """Task 159 (B1): the same-stamp refusal task 158's E13 put on every
+    resumed window run fired inside the bank's formula-target resolver, so a
+    bank saved between two rows at one stamp refused to resume, where the
+    column form resumed. The bank's own clock has refused any real step back
+    before a core is fed, so a chunk boundary inside a tied stamp is the
+    stream going on. Three rows share each stamp here, and the cut falls
+    between two of them; on the Date clock, four rows share each day."""
+    rng = np.random.default_rng(5)
+    n = 300
+    df = pl.DataFrame(
+        {
+            "t": np.repeat(np.arange(n // 3, dtype=float), 3),
+            "x": rng.standard_normal(n),
+            "mid": 100 + np.cumsum(rng.standard_normal(n) * 0.1),
+        }
+    )
+    cut = 100
+    assert df["t"][cut - 1] == df["t"][cut] == df["t"][cut + 1], "the cut is inside a stamp"
+    whole = native(df, spec(fwd()))
+    bank = po.ModelBank([spec(fwd())])
+    first = bank.fit_predict(df.slice(0, cut))
+    bank.save(tmp_path / "tied.state")
+    rest = po.ModelBank.load(tmp_path / "tied.state").fit_predict(df.slice(cut))
+    out = pl.concat([first, rest])
+    assert field(out, "pred_fwd") == field(whole, "pred_fwd")
+    assert field(out, "learned_clock") == field(whole, "learned_clock")
+    # A Date clock, grouped: the cut falls inside a day.
+    n = 240
+    dd = pl.DataFrame(
+        {
+            "t": pl.Series(np.repeat(np.arange(n // 4), 4)).cast(pl.Int32).cast(pl.Date),
+            "x": rng.standard_normal(n),
+            "mid": 100 + np.cumsum(rng.standard_normal(n) * 0.1),
+            "g": rng.choice(["a", "b"], n),
+        }
+    )
+    target = (po.rewm_mean("mid", half_life="5d", window_size="10d") - pl.col("mid")).alias("fwd")
+    s = spec(target, gap_cap="100d", half_life="50d", embargo="13d", group="g")
+    whole = native(dd, s)
+    bank = po.ModelBank([s])
+    first = bank.fit_predict(dd.slice(0, 50))
+    bank.save(tmp_path / "days.state")
+    rest = po.ModelBank.load(tmp_path / "days.state").fit_predict(dd.slice(50))
+    assert field(pl.concat([first, rest]), "pred_fwd") == field(whole, "pred_fwd")
+
+
 def test_the_plan_keeps_the_formulas_columns() -> None:
     """A projection after the bank that drops ``mid`` still reads it for the
     target; the bank's output is the same."""

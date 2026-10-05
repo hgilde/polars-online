@@ -7484,6 +7484,30 @@ tick, and that the series holding it up has a count near 1.
       after one batch); ARROW-SOURCES §2 records it, and nothing goes
       upstream while reports are parked.
 
+- [ ] 159. **The code review of everything since `v0.13.0`, every finding
+      fixed -- requested 2026-10-05.** Size L. The user's words: "Code review
+      changes since the last tag", then "Fix all". Six read-only reviewers
+      over the 53 commits since the tag, one per area (the window core, the
+      frame runner and formulas, the bank plumbing, the regression models
+      and clock, the detectors and covariance, the Python package), every
+      finding re-derived here from its reproduction and the code, and
+      pinned by a test that failed before its fix; §15 has the table. 21
+      findings: one high (`rcov`'s pre-averaged estimate forms one term
+      fewer than CKP's definition per stretch, and scales as if it had them
+      all); five silent (the sum-scale prior not decayed across a
+      zero-weight head row; a negative sub-second clock delta rounded at
+      the inclusive restart edge; an f64 window edge decided from policy
+      times; `mass` cancelling at long half-lives; group and session keys
+      by their string form across a dtype change); five loud (task 158's
+      same-stamp refusal inside the bank's resolver, the pushed regression,
+      and its single-shot verdict; group clocks surviving a stream restart;
+      a formula target named after its own column; a non-finite literal's
+      message); ten in docs and edges. Three of the numerical ones had
+      oracles written from the code, against `docs/TESTING.md`'s rule, which
+      is why nine review rounds and 1,272 mutation survivors left them.
+      Fixed in three gated batches: A, the regression (B1, F1); B, the
+      numbers (D1, R1, R2, W2, W3, W5, D2); C, the rest.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -11167,3 +11191,46 @@ became of it. Four more carry no section of their own:
   implementation (§4, corrected 2026-09-22; parked by the user on 2026-09-25),
   and a comparison with DuckDB's own statistics and learning extensions,
   which are broad but batch-first and keep no state between queries.
+
+## 15. Review of `v0.13.0..a7a8f3c` (2026-10-05): the 53 commits since the tag
+
+Six read-only reviewers, one per area of the production diff, each finding
+re-derived here and pinned by a test that failed before its fix (the review
+protocol of 2026-09-14). The reproductions are in the session's scratchpad
+(`review/<area>/`). Committed in three batches; the finding IDs are in the
+commit messages. Severity: high = wrong numbers silently; medium = wrong
+numbers in a narrow case, or a wrong refusal or broken contract, loudly;
+low = a doc or an edge.
+
+| ID | Sev | Finding | Fix | Test |
+|---|---|---|---|---|
+| B1 | med | task 158's same-stamp refusal (E13) fired inside the bank's formula-target resolver, so a bank with a window target saved between two rows at one stamp refused to resume, in every entry point; the column form resumed | the check runs only where `with_windows` feeds the core, not where the bank's resolver does (`resolving`): the bank's own clock has refused any real step back first | `test_formula_targets.py::test_a_state_saved_inside_a_tied_stamp_resumes_as_one_run` (an f64 clock, three rows a stamp; a `Date` clock, grouped, four rows a day) |
+| F1 | med | `feed_inner` marked the run started, and kept its input's first row, before the identity verdict, so a refused first chunk was taken whole on the next call; with two groups the retry wedged the bank | the record is written after the verdict | `windows_frame.rs::a_refused_first_chunk_is_refused_again` |
+| D1 | high | `rcov`'s pre-averaged estimate forms its first `Ȳ` from `Δ₂..Δ_{k}` (CKP's `Ȳ₁`), never `Ȳ₀`, one term fewer per stretch, and scales by `n/(n−k+2)` as if it had them all; every oracle shared the code's indexing | batch B | batch B |
+| R1 | med | `ewridge(ridge_scale="sum")`'s prior is not decayed across a zero-weight row while `w_sum == 0`: 6.8e-2 from its definition after two such rows, where `rls` matches | batch B | batch B |
+| R2 | med | `seconds_of_ns` rounds a negative sub-second delta at the scale of a second, so on a `Datetime` clock a step back of exactly `restart_after_step_back` at 1-3 ms restarts the model instead of being a late row | batch B | batch B |
+| W3 | med | on an f64 clock a window edge is decided from two origin-subtracted policy times, not the rows' raw clocks, so a row exactly one window back lands outside where Polars keeps it | batch B | batch B |
+| W2 | med | `KernelDef::mass` cancels at long half-lives: 6e-5 at `h/t = 1e12`, every mean null from 1e17 | batch B | batch B |
+| F2 | med | group and session keys are the value's string form and the state carries no dtype, so an `Int64` file followed by a `Float64` one starts every group cold, and a session column's dtype change cuts the windows | batch C | batch C |
+| W1 | med | a stream restart discards every group's windows but not their clocks, so a group's next row within `restart_after_step_back` of its stale clock is refused as a late row | batch C | batch C |
+| P1 | med | a window target without `.alias()` named after its own input column passes the builder and can never run; the bank's refusal is worded for `with_windows` | batch C | batch C |
+| F4 | low | `inf` and `nan` serialize as `{"Dyn": {"Float": null}}`, so `clip(0, inf)` is refused as "this literal (…null)" | batch C | batch C |
+| D2 | low | `bocpd`'s `prior_nu > 1` floor for `diag`/`robust` buys a finite mean; the message says variance | batch B | batch B |
+| B2 | low | `predict` without a clock column writes the stream's fed-row count as `scored_clock`; the docs say the row's index in its group | batch C | batch C |
+| B3 | low | the unset-policy refusal advises setting `restart_after_step_back` "to the smallest one that does", where equal is a late row | batch C | batch C |
+| W4 | low | at a tied stamp `ewm_sum` gives every tied row the stamp's total, where Polars' `ewm_sum_by` is a running sum; four places say the latter | batch C | batch C |
+| W5 | low | a subnormal `half_life` passes `check` and emits `inf` rates | batch B | batch B |
+| W6 | low | an operator input that is NaN, ±inf or above 1e100 reads as missing; the docs say only a null is skipped | batch C | batch C |
+| F3 | low | a typed literal is rebuilt dynamic, so a formula's dtype and last bits can differ from Polars' | batch C | batch C |
+| F5 | low | the Rust tree writes a clip's absent bound as a bare `null`, where Python writes `["lit"]` | batch C | batch C |
+| P2 | low | a chain of two plan forms over an empty frame raises `ConsumedSourceWarning` | batch C | batch C |
+| P3 | low | `output_index`'s `dtype` vocabulary omits `enum`, `i32`, `i64` and `clock` | batch C | batch C |
+
+What held, measured: hard rules 2, 3, 8 and 9 across every model and
+both plan forms (chunk invariance bit-identical over 1,008 window
+configurations and 198 pushdown cases; the embargo's release against an
+oracle from its definition; zero-weight first rows NaN-free in 18 kinds);
+every renamed name refused by name in builders, dicts and TOML; save/load
+at 159 cuts equal to one run; `bocpd`, the sequential `corrchange`,
+`kalman`, `holt` and `hmm` against oracles from their papers; the `.pyi`,
+`po.eval` and 99 docstring defaults.
