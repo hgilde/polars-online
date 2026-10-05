@@ -475,16 +475,42 @@ class TestMerge:
         # been aged by the 1200 clock units that passed after them.
         assert naive["weight_sum"] > 1.7 * whole["weight_sum"], "the early half is not yet aged"
 
-        # The recipe: the early part is `half` clock units older, so its
-        # weight sum decays by lam**half and its sum of squares by lam**(2*half).
+        # The recipe the docstring gives: the early part is `half` clock units
+        # older, so its `weight_sum` and its `target_weights` decay by
+        # lam**half. Nothing else moves: the means and co-moments are weighted
+        # means, and `n_kish` and `target_n_kish` are scale-free, so the sums of
+        # squared weights merge recovers from them decay by lam**(2*half).
+        decay = lam**half
         aged = dict(early)
-        aged["weight_sum"] = early["weight_sum"] * lam**half
-        aged["n_kish"] = early["n_kish"]  # scale-free: W and Q decay together
-        aged["target_weights"] = np.asarray(early["target_weights"]) * lam**half
+        aged["weight_sum"] = early["weight_sum"] * decay
+        aged["target_weights"] = np.asarray(early["target_weights"]) * decay
         fixed = pg.merge([aged, late])
-        assert fixed["weight_sum"] == pytest.approx(whole["weight_sum"], rel=1e-9)
-        assert fixed["means"] == pytest.approx(whole["means"], rel=1e-7)
-        assert fixed["comoments"] == pytest.approx(whole["comoments"], rel=1e-6)
+        for key in (
+            "weight_sum",
+            "means",
+            "comoments",
+            "n_kish",
+            "target_weights",
+            "target_means",
+            "target_vars",
+            "target_n_kish",
+            "cross_moments",
+            "means_by_target",
+            "cross_centred",
+        ):
+            assert np.asarray(fixed[key], dtype=float) == pytest.approx(
+                np.asarray(whole[key], dtype=float), rel=1e-9, abs=1e-12
+            ), key
+
+        # The docstring used to say `weight_sum` alone, and a sum of squared
+        # weights the Gram does not hold (docs/README-ITERATIONS.md, E12): that
+        # leaves every target moment pooled with the early part over-weighted.
+        weight_only = pg.merge([dict(early, weight_sum=early["weight_sum"] * decay), late])
+        for key in ("target_weights", "means_by_target", "cross_centred"):
+            got = np.asarray(weight_only[key], dtype=float)
+            want = np.asarray(whole[key], dtype=float)
+            live = want != 0.0  # cross_centred's intercept column is exactly 0 in both
+            assert np.max(np.abs(got[live] - want[live]) / np.abs(want[live])) > 0.01, key
 
     def test_it_pools_groups(self):
         """The everyday use: per-group accumulators combined into the pooled

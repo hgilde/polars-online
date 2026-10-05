@@ -7265,6 +7265,29 @@ tick, and that the series holding it up has a count near 1.
       `tests/test_formula_targets.py`, which also follows each piece of
       advice, and `targets::tests::a_formula_target_that_is_not_one_is_refused`.
 
+      *I6 and I7.* I6 applied I5's verdict to the passages it touched
+      (relative targets built both ways, *exception* and *raise* in their
+      Python sense). I6's verdict asked for procedural sentences (WRITING
+      P10, §5), and the user then asked: "Start the next readme and since
+      the latest instructions have a deep impact, ensure that you are
+      willing to completely rewrite phrasing based on the latest
+      instructions". I7 is that full pass, seven writers under
+      `docs/README-ITERATIONS.md`'s ideas, the README still uncommitted
+      until a verdict.
+
+      *E12, fixed 2026-10-04 on the user's word ("Fix e12 while the doc
+      writers are working").* I7's writer for *Reading the fit* found it
+      while turning the merge advice into steps. `po.gram.merge`'s docstring
+      said to decay only the earlier half's `weight_sum` (and a sum of
+      squared weights the Gram does not hold) before merging two halves of
+      a decayed stream; its `target_weights` need the same factor, or the
+      target moments pool with the early half over-weighted (measured:
+      `target_weights` 78% off, `means_by_target` 51%, `cross_centred` 8%).
+      The docstring now gives the procedure as steps, with a runnable
+      example the docstring-example test executes, and
+      `tests/test_gram_module.py` holds every field of the merge to the
+      whole stream, target side included, and the old recipe to its error.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

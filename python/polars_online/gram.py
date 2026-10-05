@@ -180,13 +180,36 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         Q = Q_a + Q_b
 
     Use it to pool accumulators that share a weighting: one per shard of a pass,
-    one per group being combined, one per worker. Not two halves of a decayed
-    stream in time order: each part's weights are relative to its own last row, so
-    the earlier part is over-weighted by exactly the decay between them. Either
-    run the parts under an infinite half-life, or scale the earlier part's
-    ``weight_sum`` by ``lam**dt`` and its ``sum(w**2)`` by ``lam**(2*dt)`` before
-    merging; the means and co-moments are unaffected, being weighted means
-    already.
+    one per group being combined, one per worker.
+
+    To merge two halves of a decayed stream in time order, decay the earlier
+    half to the later half's last row before merging. Each half's weights are
+    relative to its own last row, so the earlier half is over-weighted by
+    exactly the decay between them. Multiply the earlier half's ``weight_sum``
+    and ``target_weights`` by ``0.5 ** (dt / half_life)``, with ``dt`` the clock
+    from its last row to the later half's last row, each step capped at
+    ``gap_cap`` as the bank caps it. Leave every other field as it is: the
+    means and co-moments are weighted means, and ``n_kish`` and
+    ``target_n_kish`` are scale-free, so the sums of squared weights the merge
+    recovers from them decay with the weights. Halves run under
+    ``half_life=float("inf")`` merge as they are.
+
+    .. code-block:: python
+
+        halves = po.spec.ewridge("h", targets=["y"], features=["x0", "x1"],
+                                 clock="t", gap_cap=10.0, half_life=100.0)
+
+        def gram_of(rows):                               # a fresh bank's Gram after these rows
+            fitted = po.ModelBank([halves])
+            fitted.fit_predict(rows)
+            return fitted.gram("h")[0]
+
+        early, late = gram_of(df.head(200)), gram_of(df.tail(200))
+        dt = df["t"][399] - df["t"][199]                 # early half's last row to late half's
+        decay = 0.5 ** (dt / 100.0)
+        early = dict(early, weight_sum=early["weight_sum"] * decay,
+                     target_weights=early["target_weights"] * decay)
+        pooled = po.gram.merge([early, late])            # the Gram of one bank over all 400 rows
 
     Each target's ``means_by_target`` pools over its own rows, by its
     ``target_weights``, and its ``cross_centred`` as the co-moments do, with the
