@@ -3537,7 +3537,12 @@ average observations already in the state at close, and a product enters
 `k_n = floor(theta * sqrt(block_rows))` rows with the bias term subtracted,
 which was the more accurate on
 [docs/REGIMES.md §8](docs/REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth)'s
-streams. It is not always positive semi-definite, so keep the default where
+streams. The bias term is `b` times `sum(x x')`, where
+`b = psi1 / (2 psi2 k_n^2)` tends to `6 / k_n^2` as the window grows.
+That sum holds the block's covariance as well as the noise, so the term
+removes `b` of the covariance too. The balanced form divides its estimate by
+`1 - b` to restore it, as Christensen, Kinnebrock and Podolskij's footnote 1
+does. It is not always positive semi-definite, so keep the default where
 the matrix must be.
 
 **Fix the bandwidth `H` with `bandwidth=`; otherwise give `block_rows`, the

@@ -177,9 +177,14 @@ def test_the_preaveraged_estimate_is_its_definition():
     # CKP's bias term at the theta their Eq. 7 defines: k_n / sqrt(n), the window
     # run over this block's n rows.
     theta2 = kn**2 / n
-    want = n / (n - kn + 2) / (psi2 * kn) * sum(np.outer(y, y) for y in ybar) - psi1 / (
-        theta2 * psi2
-    ) / (2 * n) * sum(np.outer(x, x) for x in ret)
+    bias = psi1 / (theta2 * psi2) / (2 * n)
+    want = n / (n - kn + 2) / (psi2 * kn) * sum(np.outer(y, y) for y in ybar) - bias * sum(
+        np.outer(x, x) for x in ret
+    )
+    # And rescaled by 1 / (1 - psi1 / (theta^2 psi2) / (2n)), their footnote 1:
+    # sum(x x') holds the integrated covariance beside 2n Psi, so the bias term
+    # takes that share of it away too (review 2026-10-06, CE1).
+    want /= 1 - bias
     got = unvech(rows["rcov"][0].to_list(), 2)
     assert np.allclose(got, (want + want.T) / 2, rtol=1e-9, atol=1e-15)
     assert rows["rcov_n"][0] == len(ybar)

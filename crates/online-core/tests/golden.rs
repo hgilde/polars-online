@@ -878,7 +878,11 @@ const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761
 // Re-pinned 2026-10-05 (task 159, D1): the pre-averaged estimate now forms
 // CKP's first term, `Ȳ₀`, so a block has `n − k_n + 2` terms and the scale
 // counts the terms summed; the entries moved by 4e-4 to 3e-3.
-const GOLDEN_RCOV_PREAVG: &[f64] = &[7.978660961271573, -1.6354544255766184, 20.275069787152503];
+// Re-pinned 2026-10-06 (review CE1): the estimate is rescaled by `1/(1 −
+// ψ₁/(2ψ₂k_n²))`, CKP's footnote 1, which at `k_n = 6` is exactly 19/16
+// (`ψ₁ = 1`, `ψ₂ = 19/216`); each entry is the last pin times 19/16, to an ulp
+// (7.978660961271573, -1.6354544255766184, 20.275069787152503).
+const GOLDEN_RCOV_PREAVG: &[f64] = &[9.474659891509994, -1.9421021303722343, 24.0766453722436];
 const GOLDEN_DECO: &[f64] = &[
     -0.05328065158114557,
     -0.10464551302436545,

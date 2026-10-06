@@ -4791,7 +4791,22 @@ def rcov(
     True``) the window is the longer ``k_n = ceil(theta * block_rows^0.6)``
     and no bias term is subtracted, their positive semi-definite form.
     ``psd = False`` is the balanced ``k_n = floor(theta * sqrt(block_rows))``
-    with the residual bias subtracted.
+    with the residual bias subtracted, and rescaled as their footnote 1 says:
+
+    .. code-block:: text
+
+        Ybar_i = sum_{j=1}^{k_n - 1} g(j / k_n) x_{i+j}
+        MRC = n / rcov_n / (psi2 k_n) * sum_i Ybar_i Ybar_i'
+        b = psi1 / (2 psi2 k_n^2)
+        psd = True:   MRC
+        psd = False:  (MRC - b * sum_j x_j x_j') / (1 - b)
+
+    over the block's ``n`` returns and its ``rcov_n`` pre-averaged terms, with
+    their finite-sample ``psi1`` and ``psi2`` (1 and 1/12 in the limit).
+    ``sum(x x')`` holds the block's integrated covariance as well as the
+    noise, so subtracting ``b`` of it removes ``b`` of the covariance too.
+    Dividing by ``1 - b`` restores it, where the undivided estimate averages
+    0.84 of the covariance at ``k_n = 6``.
 
     .. rubric:: Parameters
 
@@ -4819,11 +4834,11 @@ def rcov(
         ``k_n`` instead of deriving it from ``block_rows``: at least 2, and at
         least 3 under ``psd = False``, where a window of 2 leaves nothing once
         the bias is subtracted.
-        ``theta`` sets the window and nothing else: the bias term reads theta
-        from the window actually run, ``k_n / sqrt(n)`` over the block's own
-        ``n`` rows (the paper's Eq. 7). A window ``theta`` derives is at least
-        2, at least 3 under ``psd = False``, and no longer than
-        ``block_rows``.
+        ``theta`` sets the window and nothing else: the bias term and its
+        rescaling read theta from the window actually run, ``k_n / sqrt(n)``
+        over the block's own ``n`` rows (the paper's Eq. 7). A window
+        ``theta`` derives is at least 2, at least 3 under ``psd = False``, and
+        no longer than ``block_rows``.
     ``noise_stride``, ``iv_stride``
         The two subsampled grids behind an automatic bandwidth (defaults 1 and
         20): the noise variance ``omega2`` from the dense one, deliberately biased

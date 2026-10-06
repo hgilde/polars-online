@@ -44,8 +44,22 @@
 //! true`, is their §3.4 one: the longer window `kₙ = ⌈θ·n^0.6⌉` and no bias
 //! term (their Eq. 16 and 17), so the estimate is positive semi-definite by
 //! construction. `psd = false` is the one of their Eq. 7: `kₙ = ⌊θ√n⌋`, with
-//! the residual bias subtracted at the θ the window itself gives, `kₙ/√n`.
-//! `n` is `block_rows`, which fixes the window before the first row.
+//! the residual bias subtracted at the θ the window itself gives, `kₙ/√n`,
+//! and the result rescaled as their footnote 1 says. In the window `n` is
+//! `block_rows`, which fixes it before the first row; in the estimate it is
+//! the block's own returns, and `N` its pre-averaged terms (`n − kₙ + 2` in
+//! one stretch):
+//!
+//! ```text
+//! Ȳᵢ = Σ_{j=1}^{kₙ−1} g(j/kₙ)·x_{i+j}      MRC = (n/N)·(1/(ψ₂kₙ))·Σᵢ ȲᵢȲᵢ'   (Eq. 9)
+//! b  = ψ₁/(θ²ψ₂)·1/(2n) = ψ₁/(2ψ₂kₙ²)                            (Theorem 1, Eq. 12)
+//! psd = true:   MRC
+//! psd = false:  (MRC − b·Σⱼ xⱼxⱼ') / (1 − b)                            (footnote 1)
+//! ```
+//!
+//! `Σ xⱼxⱼ'` is `2nΨ + ∫Σ` and an error of mean zero, so subtracting `b` of
+//! it removes `b·∫Σ` with the noise: undivided, the estimate averages
+//! `(1 − b)·∫Σ`, 0.84 of it at `kₙ = 6` (review 2026-10-06, CE1).
 //!
 //! What an estimate's `n` counts depends on the kind: the returns accepted
 //! for `plain`; for `kernel` the jittered returns, `n − 2m + 2` in a stretch
@@ -328,8 +342,8 @@ pub struct RcovCfg {
     /// Pre-averaging window scale: `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`, the
     /// default, and `⌊θ√block_rows⌋` without it ([`RcovCfg::window_for`]),
     /// at least 2 and 3 respectively, and no longer than `block_rows`.
-    /// It sets the window and nothing else: the bias term reads θ from the
-    /// window actually run, `kₙ/√n` over the block's own `n`.
+    /// It sets the window and nothing else: the bias term and its rescaling
+    /// read θ from the window actually run, `kₙ/√n` over the block's own `n`.
     pub theta: f64,
     /// Clip negative eigenvalues at close.
     pub psd: bool,
@@ -906,11 +920,20 @@ impl Rcov {
                     // on pure noise whose truth is 0 (docs/PLAN.md task 158).
                     p1 / (2.0 * p2 * knf * knf)
                 };
+                // CKP's footnote 1: `Σ x x'` is `2nΨ + ∫Σ` and an error of mean
+                // zero, so the bias term takes `bias·∫Σ` away with the noise and
+                // the difference estimates `(1 − bias)·∫Σ`; their simulations
+                // and empirical work rescale by `1/(1 − bias)`. It read 0.84 of
+                // `∫Σ` at `k_n = 6` (review 2026-10-06, CE1). The factor is 1/2
+                // at 3, the shortest window `validate` allows without `psd`, and
+                // 0 at 2, which it refuses; under `psd` there is no bias, and it
+                // is 1.
+                let rescale = 1.0 - bias;
                 let out = self
                     .pre_sum
                     .iter()
                     .zip(&self.raw)
-                    .map(|(p, r)| scale * p - bias * r)
+                    .map(|(p, r)| (scale * p - bias * r) / rescale)
                     .collect();
                 (out, self.pre_count as i64, None)
             }
@@ -1412,7 +1435,8 @@ mod tests {
         let scale = nf / count as f64 / (p2 * kn as f64);
         let bias = p1 / (2.0 * p2 * (kn * kn) as f64);
         for i in 0..k * k {
-            let want = scale * sum[i] - bias * raw[i];
+            // Rescaled by `1/(1 − bias)`, CKP's footnote 1 (CE1).
+            let want = (scale * sum[i] - bias * raw[i]) / (1.0 - bias);
             assert!(
                 (got[i] - want).abs() <= 1e-9 * want.abs().max(1e-12),
                 "entry {i}: {} vs {want}",
@@ -1473,12 +1497,17 @@ mod tests {
         // window run over this block's `n` rows.
         let theta2 = (kn * kn) as f64 / nf;
         let bias = p1 / (theta2 * p2) / (2.0 * nf);
+        // And the whole rescaled by `1/(1 − ψ₁/(θ²ψ₂)·1/(2n))`, their
+        // footnote 1: `Σ x x'` holds `∫Σ` beside `2nΨ`, so the bias term
+        // takes that share of `∫Σ` away too (review 2026-10-06, CE1).
+        let rescale = 1.0 - bias;
         assert_eq!(count as i64, model.estimate().n);
         for i in 0..k {
             for j in 0..k {
                 let w = 0.5
                     * ((scale * sum[i * k + j] - bias * raw[i * k + j])
-                        + (scale * sum[j * k + i] - bias * raw[j * k + i]));
+                        + (scale * sum[j * k + i] - bias * raw[j * k + i]))
+                    / rescale;
                 assert!(
                     (got[i * k + j] - w).abs() <= 1e-9 * (1.0 + w.abs()),
                     "[{i}][{j}]: {} vs {w}",
@@ -1486,6 +1515,73 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CKP's footnote 1: `Σ x x'` is `2nΨ + ∫Σ` and an error of mean zero, so
+    /// the bias term takes `ψ₁/(θ²ψ₂)·1/(2n)` of `∫Σ` away with the noise,
+    /// and the bias-corrected MRC "actually estimates (1 −
+    /// ψ₁/(θ²ψ₂)·1/(2n))·∫Σ and thus needs to be rescaled". Over a block of `n` returns of a
+    /// Brownian motion whose returns have covariance `S`, seen through
+    /// i.i.d. noise, `∫Σ = n·S`, so each entry over `n·S` averages 1 across
+    /// independent blocks. Unrescaled it averaged the footnote's factor
+    /// `1 − ψ₁/(2ψ₂k_n²)`: 0.50 at `k_n = 3`, 0.84 at 6, 0.94 at 10
+    /// (review 2026-10-06, CE1).
+    #[test]
+    fn the_balanced_estimate_is_rescaled_to_the_integrated_covariance() {
+        let (n, blocks, noise) = (400usize, 300usize, 0.0063);
+        let (s0, s1, rho) = (0.01, 0.015, 0.5);
+        let truth = [s0 * s0, rho * s0 * s1, s1 * s1].map(|v| v * n as f64);
+        // Box–Muller from the module's lcg, which is uniform on [−1, 1).
+        let gauss = |st: &mut u64| {
+            let (u1, u2) = (0.5 * (1.0 - lcg(st)), 0.5 * (1.0 + lcg(st)));
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        };
+        let mut off = Vec::new();
+        // Windows of 3 and 6, and the one `theta` sets: `⌊0.5·√400⌋ = 10`.
+        for (preavg_rows, theta) in [(Some(3), 1.0), (Some(6), 1.0), (None, 0.5)] {
+            let c = RcovCfg {
+                preavg_rows,
+                theta,
+                ..cfg(2, RcovKind::Preavg)
+            };
+            let kn = c.window_for().unwrap();
+            let mut st = 1000 + kn as u64;
+            let ratios: Vec<[f64; 3]> = (0..blocks)
+                .map(|_| {
+                    let mut m = Rcov::new(c.clone()).unwrap();
+                    let mut level = [0.0; 2];
+                    let mut prev = [noise * gauss(&mut st), noise * gauss(&mut st)];
+                    for _ in 0..n {
+                        let (z0, z1) = (gauss(&mut st), gauss(&mut st));
+                        level[0] += s0 * z0;
+                        level[1] += s1 * (rho * z0 + (1.0 - rho * rho).sqrt() * z1);
+                        let obs = level.map(|l| l + noise * gauss(&mut st));
+                        m.step(&[obs[0] - prev[0], obs[1] - prev[1]], &[], 1.0, 1.0);
+                        prev = obs;
+                    }
+                    let e = m.estimate().rcov.unwrap();
+                    [e[0] / truth[0], e[1] / truth[1], e[3] / truth[2]]
+                })
+                .collect();
+            let factor = 1.0 - psi1(kn) / (2.0 * psi2(kn) * (kn * kn) as f64);
+            for i in 0..3 {
+                let b = blocks as f64;
+                let mean = ratios.iter().map(|r| r[i]).sum::<f64>() / b;
+                let var = ratios.iter().map(|r| (r[i] - mean).powi(2)).sum::<f64>() / (b - 1.0);
+                let se = (var / b).sqrt();
+                if (mean - 1.0).abs() >= 4.0 * se {
+                    off.push(format!(
+                        "k_n = {kn}, entry {i}: {mean:.4} (standard error {se:.4}); the \
+                         footnote's factor is {factor:.4}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            off.is_empty(),
+            "estimate / ∫Σ, whose truth is 1:\n{}",
+            off.join("\n")
+        );
     }
 
     /// The `psi` and `Phi` constants converge to their published closed
@@ -2448,9 +2544,10 @@ mod tests {
     }
 
     /// Without `psd` the bias subtracted is CKP's `ψ₁/(θ²ψ₂)·RV/(2n)`, at a
-    /// `θ` other than 1. The block is `block_rows` long and `θ·√n` a whole
-    /// number, so `θ` is exactly `kₙ/√n` and the definition has no other
-    /// reading: `kₙ = 0.5·√400 = 10`.
+    /// `θ` other than 1, and the result is rescaled by `1/(1 −
+    /// ψ₁/(θ²ψ₂)/(2n))`, their footnote 1 (CE1). The block is `block_rows`
+    /// long and `θ·√n` a whole number, so `θ` is exactly `kₙ/√n` and the
+    /// definition has no other reading: `kₙ = 0.5·√400 = 10`.
     #[test]
     fn the_preaveraging_bias_carries_theta() {
         let (k, n, theta) = (2usize, 400usize, 0.5);
@@ -2489,7 +2586,7 @@ mod tests {
         for i in 0..k {
             for j in 0..k {
                 let raw: f64 = rows.iter().map(|x| x[i] * x[j]).sum();
-                let w = scale * sum[i * k + j] - bias * raw;
+                let w = (scale * sum[i * k + j] - bias * raw) / (1.0 - bias);
                 assert!(
                     (got[i * k + j] - w).abs() <= 1e-9 * (1.0 + w.abs()),
                     "[{i}][{j}]: {} vs {w}",
