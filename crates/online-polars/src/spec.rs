@@ -979,10 +979,16 @@ pub enum ModelKind {
         /// evicted, else the lightest potential one. Default 200.
         #[serde(default)]
         max_clusters: Option<usize>,
-        /// Learned rows between checkpoints (pruning, then linkage).
-        /// Default 100.
+        /// Clock units between checkpoints (pruning, then linkage), as
+        /// `solve_every` is the regressions': a number of the clock column's
+        /// units, or a duration on a temporal clock, `0` every row
+        /// (docs/PLAN.md task 163). With `max_rows_between_prunes` too,
+        /// whichever comes first; with neither, every 100 learned rows.
         #[serde(default)]
-        prune_every: Option<u32>,
+        prune_every: Option<Span>,
+        /// At most this many learned rows between checkpoints (task 163).
+        #[serde(default)]
+        max_rows_between_prunes: Option<u32>,
         /// Single-linkage threshold in units of `eps √p`; `0` links nothing.
         /// Default: derived from the spacing of the potential summaries at
         /// each checkpoint.
@@ -1662,6 +1668,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
     ("quantile", &["solve_every"]),
     ("ew_cov", &["pca_every", "window_size"]),
     ("holt", &["level_half_life", "trend_half_life"]),
+    ("micro", &["prune_every"]),
     ("ew_class", &["window_size"]),
     ("marginal", &["window_size"]),
 ];
@@ -1908,6 +1915,9 @@ impl Spec {
             } => {
                 put(&mut out, "level_half_life", level_half_life.as_ref());
                 put(&mut out, "trend_half_life", trend_half_life.as_ref());
+            }
+            ModelKind::Micro { prune_every, .. } => {
+                put(&mut out, "prune_every", prune_every.as_ref());
             }
             _ => {}
         }
@@ -3498,8 +3508,15 @@ impl Spec {
                 if max_clusters.is_some_and(|v| v == 0) {
                     return Err(format!("spec {:?}: max_clusters must be >= 1", self.name));
                 }
-                if prune_every.is_some_and(|v| v == 0) {
-                    return Err(format!("spec {:?}: prune_every must be >= 1", self.name));
+                if prune_every
+                    .as_ref()
+                    .is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite())
+                {
+                    return Err(format!(
+                        "spec {:?}: micro prune_every must be finite and >= 0 clock units (0 \
+                         checkpoints on every row)",
+                        self.name
+                    ));
                 }
                 if macro_link.is_some_and(|v| v < 0.0 || !v.is_finite()) {
                     return Err(format!(
@@ -4167,6 +4184,7 @@ mod clock_tests {
                     "kalman" if field != "coef_half_life" => r#", "coef_half_life": "1h""#,
                     "quantile" => r#", "quantile": 0.5"#,
                     "ew_class" => r#", "classes": ["a", "b"], "precision_prior": 1.0"#,
+                    "micro" => r#", "eps": 0.3"#,
                     _ => "",
                 };
                 format!(r#"{{"type": "{kind}", "{field}": "10m"{required}}}"#)

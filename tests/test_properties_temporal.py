@@ -450,6 +450,12 @@ def clock_specs(draw, model: str, step: int, cap: int):
         kw |= xy | maybe("solve_every", 1, 5) | ({"quantile": 0.5} if model == "quantile" else {})
     elif model == "marginal":
         kw |= xy | maybe("window_size", 1, 60)
+    elif model == "micro":
+        # Task 163: the checkpoint on the clock, the learned rows, or both.
+        kw |= dict(features=["x0", "x1"], eps=0.5, half_life=steps(1, 30))
+        kw |= maybe("prune_every", 1, 20)
+        if draw(st.booleans()):
+            kw["max_rows_between_prunes"] = draw(st.integers(1, 10))
     else:
         assert model == "rls", model
         kw |= xy | maybe("embargo", 1, 5)

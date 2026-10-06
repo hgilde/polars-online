@@ -94,8 +94,9 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
 /// **28 since task 161** (2026-10-06): `ew_cov`'s configuration and state
 /// changed shape (its PCA refreshes on the clock), and the encoding is
-/// positional, so a 27 file holding one would not decode.
-const MIN_BANK_SCHEMA_VERSION: u32 = 28;
+/// positional, so a 27 file holding one would not decode. **29 since task
+/// 163** (2026-10-06): `micro`'s, for its pruning on the clock.
+const MIN_BANK_SCHEMA_VERSION: u32 = 29;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

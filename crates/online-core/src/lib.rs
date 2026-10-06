@@ -378,7 +378,13 @@ pub use window::{
 ///   so an `ew_cov` state from before 28 does not decode; the bank refuses
 ///   a file older than 28 by number, and pre-1.0 no loader is written.
 ///   Every other model's state from 14 on still loads.
-pub const SCHEMA_VERSION: u32 = 28;
+/// - 29 (2026-10-06, task 163): `micro`'s configuration carries
+///   `prune_every` in clock units and `max_rows_between_prunes`, and its
+///   state the clock since the last checkpoint; a `micro` state from before
+///   29 does not decode, and the bank refuses a file older than 29 by
+///   number. Every other model's state from 14 on still loads, `ew_cov`'s
+///   from 28.
+pub const SCHEMA_VERSION: u32 = 29;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

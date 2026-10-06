@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timedelta
 
 import numpy as np
 import polars as pl
@@ -172,8 +173,21 @@ class TestOracle:
             dict(macro_link=8.0),
             dict(half_life=float("inf"), max_clusters=12),
             dict(half_life=30.0, prune_every=10),
+            # Task 163: the learned rows alone, and both with the clock.
+            dict(max_rows_between_prunes=7),
+            dict(prune_every=7.0, max_rows_between_prunes=5),
         ],
-        ids=["beta1", "beta6/every1", "cap6", "link0", "link8", "inf", "fast"],
+        ids=[
+            "beta1",
+            "beta6/every1",
+            "cap6",
+            "link0",
+            "link8",
+            "inf",
+            "fast",
+            "rows7",
+            "clock7/rows5",
+        ],
     )
     def test_every_knob_bit_for_bit(self, params):
         X, _ = blobs(n=2000, k=5, seed=2, scale=0.8, spread=6.0)
@@ -609,7 +623,10 @@ class TestEdgeCases:
             half_life=half_life,
             min_weight=0.0,
             beta_mu=beta_mu,
-            prune_every=10,
+            # Ten learned rows between checkpoints, the cadence this test's
+            # arithmetic counts: `prune_every` is clock units since task 163,
+            # and the first row's clock is 0.
+            max_rows_between_prunes=10,
             standardize=False,
         )
         out = unnested(po.ModelBank([s]).fit_predict(frame(np.array(rows))))
@@ -897,7 +914,8 @@ class TestRefusals:
             ({"eps": float("nan")}, "eps must not be NaN"),
             ({"beta_mu": 0.0}, "beta_mu must be finite and > 0"),
             ({"max_clusters": 0}, "max_clusters must be >= 1"),
-            ({"prune_every": 0}, "prune_every must be >= 1"),
+            # Clock units since task 163, 0 for every row.
+            ({"prune_every": -1.0}, "prune_every must be finite and >= 0 clock units"),
             ({"macro_link": -1.0}, "macro_link must be finite and >= 0"),
             ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
@@ -951,3 +969,71 @@ class TestRefusals:
         want = unnested(po.ModelBank([spec(prune_every=50)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)
         assert got["outlier"].dtype == pl.Boolean and got["micro_id"].dtype == pl.Int64
+
+
+class TestTheCheckpointClock:
+    """Task 163: a checkpoint every ``prune_every`` clock units or every
+    ``max_rows_between_prunes`` learned rows, whichever comes first, as the
+    regressions' solves; every 100 learned rows with neither."""
+
+    @staticmethod
+    def quiet_spell():
+        """Two blobs a second apart for 300 rows, then two hours of rows of
+        weight zero a minute apart: the summaries fade, and nothing learned
+        arrives to count."""
+        rng = np.random.default_rng(5)
+        n, quiet = 300, 120
+        centres = np.array([[0.0, 0.0], [3.0, 3.0]])
+        X = centres[rng.integers(0, 2, n)] + 0.1 * rng.standard_normal((n, 2))
+        X = np.vstack([X, np.full((quiet, 2), 1.5)])
+        t0 = datetime(2024, 1, 2, 9, 30)
+        ts = [t0 + timedelta(seconds=i) for i in range(n)]
+        ts += [ts[-1] + timedelta(minutes=j + 1) for j in range(quiet)]
+        return pl.DataFrame(
+            {"ts": ts, "x0": X[:, 0], "x1": X[:, 1], "w": [1.0] * n + [0.0] * quiet}
+        )
+
+    @staticmethod
+    def clocked(**kw):
+        d = dict(clock="ts", half_life="1m", gap_cap="10m", weight="w", min_weight=0.0)
+        d.update(kw)
+        return spec(eps=0.3, **d)
+
+    def test_a_quiet_spell_prunes_on_the_clock(self):
+        df = self.quiet_spell()
+        by_rows = unnested(po.ModelBank([self.clocked()]).fit_predict(df))
+        by_clock = unnested(po.ModelBank([self.clocked(prune_every="5m")]).fit_predict(df))
+        assert by_rows["n_micro"][299] >= 2 and by_clock["n_micro"][299] >= 2
+        # Learned rows alone never checkpoint again; the clock prunes the
+        # faded summaries within the spell.
+        assert by_rows["n_micro"][-1] == by_rows["n_micro"][300]
+        assert by_clock["n_micro"][-1] == 0, by_clock["n_micro"].to_list()[300:]
+
+    def test_the_checkpoints_do_not_depend_on_the_chunking_or_a_resume(self):
+        df = self.quiet_spell()
+        s = self.clocked(prune_every="45s", max_rows_between_prunes=40)
+        whole = unnested(po.ModelBank([s]).fit_predict(df))
+        for rows in (1, 7, 37):
+            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_rows=rows))
+            assert unnested(parts).select(FIELDS).equals(whole.select(FIELDS)), rows
+        for cut in (101, 250, 333):
+            first = po.ModelBank([s])
+            first.fit_predict(df.head(cut))
+            resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[s])
+            tail = unnested(resumed.fit_predict(df.slice(cut)))
+            assert tail.select(FIELDS).equals(whole.select(FIELDS).slice(cut)), cut
+
+    def test_the_state_exports_to_json_under_every_schedule(self):
+        """The default's clock cadence is infinite, which serde_json writes
+        as null and cannot read back without the tag (task 163)."""
+        df = self.quiet_spell()
+        for kw in ({}, {"prune_every": "5m"}, {"max_rows_between_prunes": 20}):
+            bank = po.ModelBank([self.clocked(**kw)])
+            bank.fit_predict(df.head(50))
+            assert '"prune_every"' in bank.to_json(), kw
+
+    def test_a_cadence_in_the_wrong_kind_or_below_zero_is_refused(self):
+        with pytest.raises(ValueError, match="prune_every is a plain number"):
+            self.clocked(prune_every=300.0)
+        with pytest.raises(ValueError, match="prune_every must be finite and >= 0 clock units"):
+            spec(prune_every=-1.0)

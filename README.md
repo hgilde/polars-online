@@ -3646,8 +3646,11 @@ The metric's variance is floored as
 [`kmeans`](#kmeans--exponentially-weighted-k-means)'s is (`scale_floor`), so
 the row on which a quiet feature moves again is not an outlier by that alone.
 
-**Every `prune_every` rows, the light summaries are dropped and the
-established ones linked.** Centres within `L` of each other share a label.
+**Every `prune_every` units of the clock, the light summaries are dropped
+and the established ones linked.** A temporal clock takes a duration, and
+`max_rows_between_prunes` caps the learned rows between checkpoints, as a
+regression's `solve_every` and `max_rows_between_solves` schedule a solve;
+with neither, every 100 learned rows. Centres within `L` of each other share a label.
 Give `macro_link=2` to link only summaries that touch. Left out, `L` is read
 from the spacing the summaries show. A cluster's label is the smallest id
 among its linked summaries, so it lasts as long as that summary does. A
@@ -3661,7 +3664,7 @@ mc = po.spec.micro(
     "mc", features=["x0", "x1"], clock="t", half_life=2000.0, gap_cap=300.0, min_weight=50.0,
     eps=0.1,                     # the spread the model reads as *one* cluster, per standardized coordinate
     beta_mu=5.0,                 # a summary holding this many rows of the mean weight is established (default 3)
-    prune_every=100,             # rows between pruning and linking
+    prune_every=100,             # units of t between pruning and linking
     macro_link=None,             # the linking distance L, read from the spacing unless given
     max_clusters=200,            # the default cap on live summaries
 )

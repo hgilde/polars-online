@@ -766,7 +766,10 @@ class MicroRef:
     min_weight: float = 0.0
     beta_mu: float = 3.0
     max_clusters: int = 200
-    prune_every: int = 100
+    # Clock units between checkpoints, and learned rows at most; the stream
+    # maps a spec onto them as `micro_ref` does (docs/PLAN.md task 163).
+    prune_every: float = math.inf
+    max_rows_between_prunes: float = 100
     macro_link: float | None = None
     standardize: bool = True
     scale_floor: float = 0.1
@@ -776,6 +779,7 @@ class MicroRef:
     mc: list[MicroCluster] = field(default_factory=list)
     next_id: int = 0
     since: int = 0
+    clock_since: float = 0.0
     n_clusters: int = 0
     link2: float = field(init=False)
     n_evicted: int = 0
@@ -868,9 +872,6 @@ class MicroRef:
                 m.potential = True
                 self.attach(target)
         self.since += 1
-        if self.since >= self.prune_every:
-            self.since = 0
-            self.checkpoint()
 
     def create(self, z: list[float], w: float) -> None:
         if len(self.mc) >= self.max_clusters:
@@ -998,6 +999,13 @@ class MicroRef:
             self.w_mean += (w - self.w_mean) / self.w_rows
             self.moments.absorb(x, w)
             self.learn_row(x, w, dec)
+        # The checkpoint, on the clock or the learned rows, whichever comes
+        # first, after the row and before the next row's metric.
+        self.clock_since += d
+        if self.clock_since >= self.prune_every or self.since >= self.max_rows_between_prunes:
+            self.since = 0
+            self.clock_since = 0.0
+            self.checkpoint()
         self.mw = self.moments.metric(self.standardize, self.scale_floor)
         return pred, n_before
 
@@ -1026,6 +1034,14 @@ def micro_ref(
     while there is none). Same stream plumbing as `kmeans_ref`.
     """
     p = len(rows[0])
+    # The stream's mapping of the spec's cadence (task 163): the clock, the
+    # learned rows, or, with neither, every 100 learned rows.
+    every = params.pop("prune_every", None)
+    cap = params.pop("max_rows_between_prunes", None)
+    params["prune_every"] = math.inf if every is None else float(every)  # type: ignore[arg-type]
+    if cap is None:
+        cap = 100 if every is None else math.inf
+    params["max_rows_between_prunes"] = cap
     model = MicroRef(p=p, eps=eps, **params)  # type: ignore[arg-type]
     out: dict[str, list] = {key: [] for key in (*MICRO_FIELDS, "weight_sum")}
     pending = 0.0

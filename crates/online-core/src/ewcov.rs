@@ -1232,8 +1232,10 @@ pub struct EwCovCfg {
     /// capped at `gap_cap` counts as the cap, a row of weight zero advances
     /// it, and without a clock column it is the row index. Between
     /// refreshes the loadings are frozen, so a row's scores do not depend
-    /// on how the stream was chunked.
-    #[serde(default)]
+    /// on how the stream was chunked. Infinite under a row cap alone, which
+    /// a JSON export writes as a tag (`crate::humanfloat`), where serde_json
+    /// would write null and not read it back.
+    #[serde(default, with = "crate::humanfloat::f64_or_tag")]
     pub pca_every: f64,
     /// At most this many rows between refreshes, as `max_rows_between_solves`
     /// is the regressions': counted on every row the model is stepped with,

@@ -144,14 +144,14 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 28,
+- **Every saved bank must be refit.** A bank file now carries schema 29,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Four changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
-  keeps (task 104, then review rounds R4 and R6), and `ew_cov`'s PCA
-  cadence (task 161). An `ew_cov` state with `mahal_quantiles` is refused
-  too.
+  keeps (task 104, then review rounds R4 and R6), and the PCA and pruning
+  cadences of `ew_cov` and `micro` (tasks 161 and 163). An `ew_cov` state
+  with `mahal_quantiles` is refused too.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -160,7 +160,21 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   whichever comes first refreshes. With neither, the components refresh
   every row, as before. A spec without a clock column is unchanged, its
   clock being the row's number; a clocked spec that gave `pca_every=N` now
-  refreshes every `N` clock units, not every `N` rows.
+  refreshes every `N` clock units, not every `N` rows. A spec with
+  `max_rows_between_pca` alone exports to JSON again; `to_json()` refused
+  it while it was unreleased.
+- **`micro` prunes on the clock** (task 163), as a regression's solve is
+  scheduled. `prune_every` counts the clock's units: a number of the clock
+  column's units, a duration on a temporal clock (`"10m"`), or `0` for
+  every row. `max_rows_between_prunes` caps the learned rows between
+  checkpoints, and whichever comes first checkpoints. With neither, every
+  100 learned rows, as before. A row of weight zero advances the clock, so a
+  quiet spell prunes faded summaries on time, where the learned rows alone
+  waited for the next learned row. DenStream checks every `Tp` clock units,
+  which `prune_every` can now follow. A spec that gave `prune_every=N`
+  counts clock units now: without a clock column the first checkpoint comes
+  a row later (the first row is at clock 0) and rows of weight zero count;
+  `max_rows_between_prunes=N` is the old cadence exactly.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec

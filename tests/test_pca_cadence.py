@@ -253,3 +253,14 @@ class TestRefusals:
             po.spec.ew_cov(
                 "c", features=FEATURES, half_life=100.0, stats=["mean"], pca=1, pca_every=-5.0
             )
+
+
+def test_the_state_exports_to_json_under_a_row_cap_alone():
+    """A row cap alone leaves the clock cadence infinite, which serde_json
+    writes as null and cannot read back: `to_json` refused every such bank
+    (task 161's miss, fixed in task 163)."""
+    df = frame(irregular())
+    for kw in ({"max_rows_between_pca": 12}, {"pca_every": "15m"}, {}):
+        bank = po.ModelBank([spec(**kw)])
+        bank.fit_predict(df.head(60))
+        assert '"pca_every"' in bank.to_json(), kw

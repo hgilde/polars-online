@@ -2,7 +2,8 @@
 //! (docs/CLUSTERING.md §6.5; docs/PLAN.md §11a, task 24): a bounded set of
 //! mean-form summaries, each absorbing a row only while its radius stays
 //! within `eps`, a new one opened where no summary can take the row, and a
-//! checkpoint every `prune_every` learned rows that prunes the faded ones
+//! checkpoint every `prune_every` clock units, or every `max_rows_between_prunes`
+//! learned rows, whichever comes first, that prunes the faded ones
 //! and links the potential ones into clusters by single linkage.
 //!
 //! ```text
@@ -20,7 +21,8 @@
 //! outputs     cluster = label(j_p),  dist = ‖z − c_j_p‖_mw,
 //!             micro = the id the row goes to,  outlier = not taken by a
 //!             potential summary,  n_clusters, n_micro
-//! checkpoint  every prune_every rows: drop a potential summary with
+//! checkpoint  every prune_every clock units or max_rows_between_prunes
+//!             learned rows, whichever first: drop a potential summary with
 //!             n < beta_mu w̄, and an outlier one with n < ξ(age) w̄
 //!             ξ(a) = (2^(−(a + Tp)/h) − 1) / (2^(−Tp/h) − 1),
 //!             Tp = ⌈h log2(beta_mu / (beta_mu − 1))⌉      (DenStream eq. 4.1–4.2)
@@ -108,8 +110,18 @@ pub struct MicroCfg {
     pub beta_mu: f64,
     /// Live summaries at most, `>= 1`.
     pub max_clusters: usize,
-    /// Learned rows between checkpoints, `>= 1`.
-    pub prune_every: u32,
+    /// Clock units between checkpoints, as `solve_every` is the
+    /// regressions' (docs/PLAN.md task 163): `0` checkpoints on every row,
+    /// `inf` never by the clock. DenStream checks every `Tp` clock units
+    /// (the module docs). A row of weight zero advances the clock, so a quiet
+    /// spell still checkpoints, and a gap capped at `gap_cap` counts as the
+    /// cap. Infinite under the row cap alone, the default, which a JSON
+    /// export writes as a tag (`crate::humanfloat`).
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
+    pub prune_every: f64,
+    /// At most this many learned rows between checkpoints, `u32::MAX` for
+    /// none; whichever of the two comes first checkpoints.
+    pub max_rows_between_prunes: u32,
     /// Linkage threshold in units of `eps √p`; `None` derives it from the
     /// observed spacing at each checkpoint, `0` links nothing.
     pub macro_link: Option<f64>,
@@ -145,8 +157,11 @@ impl MicroCfg {
         if self.max_clusters == 0 {
             return Err("micro: max_clusters must be >= 1".into());
         }
-        if self.prune_every == 0 {
-            return Err("micro: prune_every must be >= 1".into());
+        if self.prune_every.is_nan() || self.prune_every < 0.0 {
+            return Err(format!(
+                "micro: prune_every must be >= 0 clock units (0 checkpoints on every row), got {}",
+                self.prune_every
+            ));
         }
         if let Some(l) = self.macro_link
             && (!l.is_finite() || l < 0.0)
@@ -214,7 +229,9 @@ pub struct Micro {
     mc: Vec<MicroCluster>,
     next_id: u64,
     /// Learned rows since the last checkpoint.
-    since: u32,
+    rows_since_prune: u32,
+    /// Clock units since the last checkpoint (docs/PLAN.md task 163).
+    clock_since_prune: f64,
     /// Distinct labels among the potential summaries.
     n_clusters: usize,
     /// The linkage threshold² in force, from the last checkpoint.
@@ -246,7 +263,8 @@ impl Micro {
             eps2,
             mc: Vec::new(),
             next_id: 0,
-            since: 0,
+            rows_since_prune: 0,
+            clock_since_prune: 0.0,
             n_clusters: 0,
             link2,
             n_evicted: 0,
@@ -435,11 +453,7 @@ impl Micro {
             }
             None => self.create(z, w),
         }
-        self.since += 1;
-        if self.since >= self.cfg.prune_every {
-            self.since = 0;
-            self.checkpoint();
-        }
+        self.rows_since_prune += 1;
     }
 
     /// Open a summary at `z`; at the cap, evict the lightest outlier
@@ -654,6 +668,19 @@ impl OnlineModel for Micro {
             self.moments.absorb(x, weight);
             self.learn_row(x, weight, &dec);
         }
+        // The checkpoint, on the clock or the learned rows, whichever comes
+        // first (task 163). The clock passes on every row, so a quiet spell
+        // prunes on time, where the learned rows alone waited for the next
+        // learned row; it runs where it did, after the row and before the
+        // metric for the next one.
+        self.clock_since_prune += d_clock;
+        if self.clock_since_prune >= self.cfg.prune_every
+            || self.rows_since_prune >= self.cfg.max_rows_between_prunes
+        {
+            self.rows_since_prune = 0;
+            self.clock_since_prune = 0.0;
+            self.checkpoint();
+        }
         self.moments
             .metric(self.cfg.standardize, self.cfg.scale_floor, &mut self.mw);
 
@@ -763,10 +790,143 @@ mod tests {
             eps: 0.3,
             beta_mu: 3.0,
             max_clusters: 50,
-            prune_every: 50,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 50,
             macro_link: None,
             standardize: false,
             scale_floor: 0.0,
+        }
+    }
+
+    /// The checkpoint's schedule (task 163): every `prune_every` clock units
+    /// or every `max_rows_between_prunes` learned rows, whichever comes
+    /// first. Held to that rule written out over irregular clock steps with
+    /// rows of weight zero among them, which advance the clock and not the
+    /// row count. A checkpoint shows as both counters reset on a row that
+    /// moved one of them.
+    #[test]
+    fn checkpoints_follow_the_clock_or_the_learned_rows_whichever_comes_first() {
+        let mut g = crate::SplitMix64::new(4);
+        let rows: Vec<([f64; 2], f64, f64)> = (0..120)
+            .map(|i| {
+                let d = if i == 0 {
+                    0.0
+                } else {
+                    0.25 + g.uniform() * 2.0
+                };
+                let w = if i % 4 == 3 { 0.0 } else { 1.0 };
+                ([g.uniform(), g.uniform()], d, w)
+            })
+            .collect();
+        for (every, cap) in [(6.0, u32::MAX), (f64::INFINITY, 7), (6.0, 7)] {
+            let mut m = Micro::new(MicroCfg {
+                prune_every: every,
+                max_rows_between_prunes: cap,
+                ..cfg()
+            })
+            .unwrap();
+            let mut got = Vec::new();
+            for (i, (x, d, w)) in rows.iter().enumerate() {
+                let before = (m.rows_since_prune, m.clock_since_prune);
+                crate::OnlineModel::step(&mut m, x, &[], *d, *w);
+                let moved = before.0 + u32::from(*w > 0.0) > 0 || before.1 + d > 0.0;
+                if moved && (m.rows_since_prune, m.clock_since_prune) == (0, 0.0) {
+                    got.push(i);
+                }
+            }
+            let (mut want, mut clock, mut learned) = (Vec::new(), 0.0, 0u32);
+            for (i, (_, d, w)) in rows.iter().enumerate() {
+                clock += d;
+                learned += u32::from(*w > 0.0);
+                if clock >= every || learned >= cap {
+                    want.push(i);
+                    (clock, learned) = (0.0, 0);
+                }
+            }
+            assert_eq!(
+                got, want,
+                "prune_every {every}, max_rows_between_prunes {cap}"
+            );
+            assert!(want.len() >= 8, "{want:?}");
+        }
+    }
+
+    /// The reason for the clock (task 163): a summary that has faded is
+    /// pruned on time through a quiet spell of rows of weight zero, where a
+    /// cadence of learned rows alone waited for the next learned row.
+    #[test]
+    fn a_quiet_spell_still_prunes_on_the_clock() {
+        let run = |every: f64| {
+            let mut m = Micro::new(MicroCfg {
+                decay: Decay::Halflife(20.0),
+                prune_every: every,
+                max_rows_between_prunes: 100,
+                ..cfg()
+            })
+            .unwrap();
+            // Three summaries far apart, then 400 clock units of rows that
+            // teach nothing.
+            for (i, x) in [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]].iter().enumerate() {
+                crate::OnlineModel::step(&mut m, x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let opened = m.mc.len();
+            for _ in 0..400 {
+                crate::OnlineModel::step(&mut m, &[5.0, 5.0], &[], 1.0, 0.0);
+            }
+            (opened, m.mc.len())
+        };
+        assert_eq!(
+            run(f64::INFINITY),
+            (3, 3),
+            "learned rows alone never checkpoint here"
+        );
+        let (opened, left) = run(25.0);
+        assert_eq!(opened, 3);
+        assert_eq!(left, 0, "the clock prunes the faded summaries");
+    }
+
+    /// A save between checkpoints keeps the clock and the learned rows since
+    /// the last, so a resumed run checkpoints where the unbroken one does
+    /// (task 163).
+    #[test]
+    fn the_clock_since_the_last_checkpoint_survives_a_save() {
+        let mut g = crate::SplitMix64::new(9);
+        let rows: Vec<([f64; 2], f64, f64)> = (0..90)
+            .map(|i| {
+                let d = if i == 0 { 0.0 } else { 0.5 + g.uniform() };
+                let w = if i % 5 == 4 { 0.0 } else { 1.0 };
+                ([g.uniform(), g.uniform()], d, w)
+            })
+            .collect();
+        let c = MicroCfg {
+            prune_every: 4.0,
+            max_rows_between_prunes: 9,
+            ..cfg()
+        };
+        let mut a = Micro::new(c.clone()).unwrap();
+        let (mut want, mut mid) = (Vec::new(), Vec::new());
+        for (x, d, w) in &rows {
+            want.push(crate::OnlineModel::step(&mut a, x, &[], *d, *w).pred);
+            mid.push(a.clock_since_prune > 0.0);
+        }
+        let cuts: Vec<usize> = [10, 37, 61]
+            .iter()
+            .map(|&from| (from..rows.len()).find(|&i| mid[i - 1]).unwrap())
+            .collect();
+        for cut in cuts {
+            let mut b = Micro::new(c.clone()).unwrap();
+            for (i, (x, d, w)) in rows.iter().enumerate() {
+                if i == cut {
+                    let bytes = rmp_serde::to_vec(&b).unwrap();
+                    b = rmp_serde::from_slice(&bytes).unwrap();
+                }
+                let out = crate::OnlineModel::step(&mut b, x, &[], *d, *w).pred;
+                let same = out
+                    .iter()
+                    .zip(&want[i])
+                    .all(|(p, q)| p.to_bits() == q.to_bits());
+                assert!(same, "cut {cut}, row {i}");
+            }
         }
     }
 
@@ -937,7 +1097,8 @@ mod tests {
         let run = |scale: f64| {
             let mut m = Micro::new(MicroCfg {
                 decay: Decay::Halflife(30.0),
-                prune_every: 7,
+                prune_every: f64::INFINITY,
+                max_rows_between_prunes: 7,
                 ..cfg()
             })
             .unwrap();
@@ -1017,7 +1178,8 @@ mod tests {
     fn pruning_drops_a_faded_outlier_summary_by_the_xi_rule() {
         let mut m = Micro::new(MicroCfg {
             decay: Decay::Halflife(100.0),
-            prune_every: 10,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 10,
             ..cfg()
         })
         .unwrap();
@@ -1046,7 +1208,8 @@ mod tests {
         let mut m = Micro::new(MicroCfg {
             decay: Decay::Halflife(f64::INFINITY),
             max_clusters: 8,
-            prune_every: 5,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 5,
             ..cfg()
         })
         .unwrap();
@@ -1064,7 +1227,8 @@ mod tests {
     fn a_potential_summary_lighter_than_beta_mu_is_pruned_at_the_checkpoint() {
         let mut m = Micro::new(MicroCfg {
             decay: Decay::Halflife(20.0),
-            prune_every: 10,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 10,
             ..cfg()
         })
         .unwrap();
@@ -1088,7 +1252,8 @@ mod tests {
         let mut m = Micro::new(MicroCfg {
             max_clusters: 3,
             decay: Decay::Halflife(f64::INFINITY),
-            prune_every: 1000,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 1000,
             ..cfg()
         })
         .unwrap();
@@ -1108,7 +1273,8 @@ mod tests {
         let mut all_pot = Micro::new(MicroCfg {
             max_clusters: 2,
             decay: Decay::Halflife(f64::INFINITY),
-            prune_every: 1000,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 1000,
             ..cfg()
         })
         .unwrap();
@@ -1458,8 +1624,13 @@ mod tests {
                 max_clusters: 0,
                 ..cfg()
             },
+            // Clock units since task 163: a negative or NaN cadence is none.
             MicroCfg {
-                prune_every: 0,
+                prune_every: -1.0,
+                ..cfg()
+            },
+            MicroCfg {
+                prune_every: f64::NAN,
                 ..cfg()
             },
             MicroCfg {
@@ -1475,6 +1646,15 @@ mod tests {
             assert!(Micro::new(c.clone()).is_err(), "{c:?}");
         }
         assert!(Micro::new(cfg()).is_ok());
+        // 0 is every row by the clock, and a row cap of 0 or 1 every row.
+        for (every, cap) in [(0.0, u32::MAX), (f64::INFINITY, 0), (2.5, 1)] {
+            let c = MicroCfg {
+                prune_every: every,
+                max_rows_between_prunes: cap,
+                ..cfg()
+            };
+            assert!(Micro::new(c).is_ok(), "{every}, {cap}");
+        }
     }
 
     #[test]
@@ -1510,7 +1690,8 @@ mod tests {
     fn still() -> MicroCfg {
         MicroCfg {
             decay: Decay::Halflife(f64::INFINITY),
-            prune_every: 1000,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 1000,
             macro_link: Some(0.0),
             ..cfg()
         }
@@ -1744,7 +1925,8 @@ mod tests {
     #[test]
     fn the_checkpoint_keeps_a_summary_at_its_bound() {
         let mut m = Micro::new(MicroCfg {
-            prune_every: 3,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 3,
             ..still()
         })
         .unwrap();
@@ -1757,7 +1939,8 @@ mod tests {
         assert_eq!(m.events().1, 0, "nothing pruned");
 
         let mut m = Micro::new(MicroCfg {
-            prune_every: 1,
+            prune_every: f64::INFINITY,
+            max_rows_between_prunes: 1,
             decay: Decay::Halflife(100.0),
             ..still()
         })

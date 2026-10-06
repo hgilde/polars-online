@@ -30,7 +30,7 @@
   target
   thread_pool_size
   unnest
-  schema_version = 28
+  schema_version = 29
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -273,6 +273,7 @@
     beta_mu = None
     max_clusters = None
     prune_every = None
+    max_rows_between_prunes = None
     macro_link = None
     standardize = None
     scale_floor = None

@@ -7562,6 +7562,24 @@ tick, and that the series holding it up has a count near 1.
       to it over irregular steps and through a save mid-cadence (which fails
       if the clock since the last refresh is not saved). Schema 28.
 
+- [x] 163. **`micro` prunes on the clock, as the regressions' solves are
+      scheduled -- requested 2026-10-06.** Size S. The user's words, after
+      the audit of the parameters that count rows: "Do both these" (the
+      window snapshots, task 162, and this). DenStream checks every `Tp`
+      clock units, and the model's own `xi(age)` reads `Tp` in clock units,
+      but its checkpoint ran every `prune_every` learned rows, so a quiet
+      spell kept faded summaries and a burst checkpointed often. Now
+      `prune_every` is clock units, a number or a duration, `0` every row,
+      and `max_rows_between_prunes` caps the learned rows between
+      checkpoints; whichever comes first; with neither, every 100 learned
+      rows, as before. The checkpoint moved from `learn_row` to the step's
+      end, before the next row's metric, where it ran, so the row cap alone
+      is bit-identical to the old cadence (the transcription in
+      `tests/reference_cluster.py` follows, and the oracle runs both). Schema
+      29. Built 2026-10-06; the same commit gives `ew_cov`'s `pca_every` the
+      JSON tag its infinite value needs (task 161's miss: `to_json()`
+      refused a spec with `max_rows_between_pca` alone).
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

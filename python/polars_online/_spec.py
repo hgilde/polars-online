@@ -300,7 +300,6 @@ _AT_LEAST_ONE = frozenset(
         "window_every",
         "update_every",
         "split_merge_every",
-        "prune_every",
         "max_clusters",
         "resid_autocorr_lag",
         "k",
@@ -2954,7 +2953,8 @@ def micro(
     eps: float,
     beta_mu: float | None = None,
     max_clusters: int | None = None,
-    prune_every: int | None = None,
+    prune_every: float | Duration | None = None,
+    max_rows_between_prunes: int | None = None,
     macro_link: float | None = None,
     standardize: bool | None = None,
     scale_floor: float | None = None,
@@ -2991,8 +2991,9 @@ def micro(
     A summary is potential (established) once ``n >= beta_mu * w_bar`` and
     outlier below, ``w_bar`` the EW mean weight of the rows learned from. A
     new one is opened at the cap ``max_clusters`` by evicting the lightest
-    outlier summary, else the lightest potential one. Every ``prune_every``
-    learned rows a checkpoint prunes and links. It drops potential summaries
+    outlier summary, else the lightest potential one. A checkpoint prunes
+    and links, on the schedule ``prune_every`` and ``max_rows_between_prunes``
+    set (below). It drops potential summaries
     lighter than ``beta_mu * w_bar``, and outlier summaries lighter than
     DenStream's ``xi(age) * w_bar``, with ``xi(age) = sum_{i <= age / Tp} 2 **
     (-i Tp / h)``. That is the weight of a summary that had taken one row of
@@ -3038,8 +3039,17 @@ def micro(
         ``1.44 * s * v * h``.
     ``max_clusters``
         The cap on live summaries. Default 200.
-    ``prune_every``
-        Learned rows between checkpoints. Default 100.
+    ``prune_every``, ``max_rows_between_prunes``
+        A checkpoint every ``prune_every`` clock units or every
+        ``max_rows_between_prunes`` learned rows, whichever comes first, as
+        ``solve_every`` and ``max_rows_between_solves`` schedule a
+        regression's solve; with neither, every 100 learned rows.
+        ``prune_every`` is a number of the clock's units, a duration on a
+        temporal clock (``"10m"``), or ``0`` for every row; without a clock
+        column the clock is the row's number. A row of weight zero advances
+        the clock, so a quiet spell still prunes on time, and a gap capped at
+        ``gap_cap`` counts as the cap. DenStream checks every ``Tp`` clock
+        units (above): give ``prune_every`` that to follow the paper.
     ``macro_link``
         ``L`` as a multiple of ``eps sqrt(p)``: ``0`` links nothing, so each
         summary is its own cluster; ``2`` links summaries that touch. Left
@@ -3115,7 +3125,7 @@ def micro(
             min_weight=50.0,
             eps=0.3,             # the spread read as one cluster, per standardized coordinate
             beta_mu=5.0,         # a summary with at least this much weight is established
-            prune_every=100,     # every this many rows: prune the light summaries, link the rest
+            prune_every=100,     # every 100 units of t: prune the light summaries, link the rest
         )
         out = po.ModelBank([mc]).fit_predict(df).unnest("mc")
         churn = out.select("cluster", "outlier", "n_clusters", "n_micro").tail(3)
@@ -3131,6 +3141,7 @@ def micro(
         "beta_mu": beta_mu,
         "max_clusters": max_clusters,
         "prune_every": prune_every,
+        "max_rows_between_prunes": max_rows_between_prunes,
         "macro_link": macro_link,
         "standardize": standardize,
         "scale_floor": scale_floor,

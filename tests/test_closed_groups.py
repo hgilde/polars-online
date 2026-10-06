@@ -789,9 +789,10 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 28 since
-    2026-10-06 (task 161: `ew_cov`'s configuration and state carry its PCA
-    cadence on the clock); 27 since
+    """The version a bank file names, held to the library's: 29 since
+    2026-10-06 (task 163: `micro`'s pruning on the clock), after 28 the same
+    day (task 161: `ew_cov`'s configuration and state carry its PCA cadence
+    on the clock); 27 since
     2026-10-05 (task 159: the windows state carries the group and session
     columns' dtypes, windows state 7, after 6 the same day for a number
     clock's raw value in its rows); 25 since
@@ -812,7 +813,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 28
+    assert po.schema_version() == 29
     assert sys.version_info >= (3, 12)
 
 

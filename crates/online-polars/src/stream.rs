@@ -913,6 +913,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             beta_mu,
             max_clusters,
             prune_every,
+            max_rows_between_prunes,
             macro_link,
             standardize,
             scale_floor,
@@ -924,7 +925,14 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 eps: *eps,
                 beta_mu: beta_mu.unwrap_or(3.0),
                 max_clusters: max_clusters.unwrap_or(200),
-                prune_every: prune_every.unwrap_or(100),
+                // The regressions' schedule (task 163): the clock, the
+                // learned rows, or, with neither, every 100 learned rows.
+                prune_every: prune_every.as_ref().map_or(f64::INFINITY, Span::value),
+                max_rows_between_prunes: match (prune_every, max_rows_between_prunes) {
+                    (_, Some(r)) => *r,
+                    (None, None) => 100,
+                    (Some(_), None) => u32::MAX,
+                },
                 macro_link: *macro_link,
                 standardize: standardize.unwrap_or(true),
                 scale_floor: scale_floor.unwrap_or(0.1),
