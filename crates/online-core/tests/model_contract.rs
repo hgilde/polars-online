@@ -967,6 +967,18 @@ fn bocpd_cfg() -> BocpdCfg {
         prune_below: 1e-6,
         max_run: 200,
         min_weight: 0.0,
+        hazard_on_clock: false,
+    }
+}
+
+/// [`bocpd_cfg`] with its hazard on the clock: `τ = 20` clock units between
+/// changepoints, each step's chance of a break applied before the row it
+/// leads into (docs/PLAN.md task 179).
+fn bocpd_on_the_clock_cfg() -> BocpdCfg {
+    BocpdCfg {
+        hazard: 20.0,
+        hazard_on_clock: true,
+        ..bocpd_cfg()
     }
 }
 
@@ -2198,6 +2210,15 @@ fn bocpd_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Bocpd::new(bocpd_cfg()).unwrap(), 0, true);
 }
 
+/// On the clock `predict` applies the step's chance before it reads the
+/// row, as the step does; and the zero-weight contracts this runs hold a
+/// row of weight 0 to the stream without it, its step carried into the
+/// next row, which on the clock is a transition that composes.
+#[test]
+fn bocpd_on_the_clock_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Bocpd::new(bocpd_on_the_clock_cfg()).unwrap(), 0, true);
+}
+
 #[test]
 fn bocpd_recovers_from_bounded_extremes() {
     // A 1e100 row is a changepoint by any reading, and the posterior is
@@ -3205,6 +3226,11 @@ mod generated {
         #[test]
         fn bocpd(rows in stream(0, false), split in 0usize..60) {
             contract(|| Bocpd::new(bocpd_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn bocpd_on_the_clock(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Bocpd::new(bocpd_on_the_clock_cfg()).unwrap(), &rows, split)?;
         }
 
         #[test]

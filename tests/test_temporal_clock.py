@@ -413,9 +413,11 @@ class TestADurationSurvives:
         assert got.equals(_fit(df, spec), null_equal=True)
 
 
-def _tables() -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
-    fields, rates = spec_clock_fields()
-    return dict(fields), [(o, f) for o, fs in rates for f in fs]
+def _tables() -> tuple[dict[str, list[str]], list[tuple[str, str]], dict[str, list[str]]]:
+    """The clock parameters, the rates per clock unit, and the parameters
+    that take a duration or a number bound to no clock unit (task 179)."""
+    fields, rates, either = spec_clock_fields()
+    return dict(fields), [(o, f) for o, fs in rates for f in fs], dict(either)
 
 
 def _kind(builder: str) -> str:
@@ -433,7 +435,7 @@ class TestEveryClockParameterTakesADuration:
     is fitted, both ways, on a temporal clock."""
 
     def test_the_table_is_the_builders_annotations(self):
-        fields, rates = _tables()
+        fields, rates, either = _tables()
         rate_names = {f for _, f in rates}
         import typing
 
@@ -446,7 +448,10 @@ class TestEveryClockParameterTakesADuration:
             fn = getattr(po.spec, builder)
             hints = typing.get_type_hints(fn.__wrapped__)
             own = {k for k, v in hints.items() if _takes_duration(v)} - shared
-            assert own == set(fields.get(_kind(builder), [])), builder
+            kind = _kind(builder)
+            # A parameter of the second table takes a duration too, and a
+            # number that binds to no clock unit (task 179).
+            assert own == set(fields.get(kind, [])) | set(either.get(kind, [])), builder
             # The docstrings are the second opinion: a parameter documented
             # in clock units, or named as a half-life, takes a duration or
             # is a rate.
@@ -507,7 +512,7 @@ class TestEveryClockParameterTakesADuration:
     }
 
     def _cases(self):
-        fields, _ = _tables()
+        fields, _, _ = _tables()
         kinds = {builder: _kind(builder) for builder in MINIMAL}
         for owner, names in fields.items():
             builders = ["ewridge"] if owner == "*" else [b for b, k in kinds.items() if k == owner]
@@ -564,6 +569,30 @@ class TestEveryClockParameterTakesADuration:
                 po.ModelBank([fn("m", **plain)]).fit_predict(df)
             seen += 1
         assert seen >= 20, seen
+
+    def test_the_second_table_takes_a_duration_and_a_number_of_rows(self):
+        """The parameters that take a duration or a number bound to no clock
+        unit -- ``bocpd``'s ``hazard``, task 179 -- take both on a temporal
+        clock: the number counts rows there as anywhere, so it is no
+        mixture. A duration with no clock is refused by name, as a clock
+        parameter's is."""
+        _, _, either = _tables()
+        df = _temporal(_frame())
+        seen = 0
+        for owner, names in either.items():
+            builders = [b for b in MINIMAL if _kind(b) == owner]
+            assert builders, owner
+            for builder in builders:
+                fn = getattr(po.spec, builder)
+                kw = {k: v for k, v in self._base(builder).items() if v is not None}
+                for name in names:
+                    po.ModelBank([fn("m", **{**kw, name: "10m"})]).fit_predict(df)
+                    po.ModelBank([fn("m", **{**kw, name: 600.0})]).fit_predict(df)
+                    clockless = {k: v for k, v in kw.items() if k not in ("clock", "gap_cap")}
+                    with pytest.raises(ValueError, match=f"{name} is a duration, which needs"):
+                        fn("m", **{**clockless, name: "10m"})
+                    seen += 1
+        assert seen == 1, seen
 
 
 class TestADurationTheDataCannotHold:

@@ -1106,7 +1106,10 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
     };
     Ok(BocpdCfg {
         n_features: spec.k(),
-        hazard: hazard.unwrap_or(250.0),
+        // A number is the expected rows between changepoints; a duration,
+        // which only a temporal clock reads (`Spec::clock_scale`), the
+        // expected time between them, in the clock's seconds (task 179).
+        hazard: hazard.as_ref().map_or(250.0, Span::value),
         hazard_from_row: hazard_col.is_some(),
         emission: match emission.as_deref() {
             None | Some("diag") => BocpdEmission::Diag,
@@ -1134,6 +1137,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         prune_below: prune_below.unwrap_or(1e-6),
         max_run: max_run.unwrap_or(10_000),
         min_weight: spec.min_periods_or_default(),
+        hazard_on_clock: hazard.as_ref().is_some_and(Span::is_duration),
     })
 }
 

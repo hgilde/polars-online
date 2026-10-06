@@ -308,12 +308,18 @@ one value per slot is a `SpanList`. It goes into **`CLOCK_FIELDS`** under the mo
 `type`, and into the match in **`Spec::clock_spans`**, which the bank uses to
 refuse a number on a temporal clock and a duration on a numeric one. A rate
 *per* clock unit, such as `kalman`'s `q`, has no duration form: it goes into
-`CLOCK_RATES` and `Spec::clock_rate` instead.
+`CLOCK_RATES` and `Spec::clock_rate` instead. A parameter whose number means
+something other than clock units, and whose duration is a clock parameter --
+`bocpd`'s `hazard`, rows or a duration (task 179) -- goes into
+`DURATION_OR_UNIT_FREE_FIELDS`, and `clock_spans` reads it only when it is a
+duration.
 
 **Check:** `clock_fields_are_exactly_the_fields_that_take_a_duration` walks
 every field serde knows and fails on a `Span` missing from the table, or a
 table entry that refuses a duration; `every_clock_field_is_walked` fails on
-one `clock_spans` does not read.
+one `clock_spans` does not read, and
+`a_duration_or_a_count_is_read_only_as_a_duration` on a second-table entry
+it reads as a number.
 
 ### Step 7 — `src/stream.rs`
 

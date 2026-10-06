@@ -512,9 +512,41 @@ fn bocpd_golden() {
         prune_below: 1e-8,
         max_run: 100,
         min_weight: 0.0,
+        hazard_on_clock: false,
     })
     .unwrap();
     check("bocpd", &signature(&mut m, 0), GOLDEN_BOCPD);
+}
+
+/// `bocpd_golden` with the hazard on the clock, `τ = 30` clock units
+/// between changepoints (docs/PLAN.md task 179): the stream's steps of 1
+/// carry a chance of 0.033 each and its gap of 25 one of 0.565, applied
+/// before the row each leads into. Checked against the definition by the
+/// enumeration in `tests/test_bocpd.py`, and against the per-row hazard on
+/// regular steps by `bocpd.rs`'s tests.
+#[test]
+fn bocpd_on_the_clock_golden() {
+    let mut m = Bocpd::new(BocpdCfg {
+        n_features: 2,
+        hazard: 30.0,
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(2.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta: 0.0,
+        prune_below: 1e-8,
+        max_run: 100,
+        min_weight: 0.0,
+        hazard_on_clock: true,
+    })
+    .unwrap();
+    check(
+        "bocpd_on_the_clock",
+        &signature(&mut m, 0),
+        GOLDEN_BOCPD_ON_THE_CLOCK,
+    );
 }
 
 /// `corrchange` reports only where a span closes, so its signature is the
@@ -858,6 +890,15 @@ const GOLDEN_BOCPD: &[f64] = &[
     0.04617202802926437,
     0.05977980779859338,
     0.04295639028471272,
+];
+// Frozen 2026-10-06 (task 179), after a longhand of the clock form in plain
+// probabilities -- weighted runs two-pass, the step's chance moved to the
+// empty run before each row, pruned at 1e-8 -- gave the same three numbers
+// to 4e-14.
+const GOLDEN_BOCPD_ON_THE_CLOCK: &[f64] = &[
+    0.01304148203335747,
+    0.026769829077477554,
+    0.009878006501232724,
 ];
 // Re-frozen 2026-09-19 for the review's S3: the delta-method gradient of `ρ`
 // carried the wrong powers of `σ_x` and `σ_y`, so `D̂` and every `Q` moved

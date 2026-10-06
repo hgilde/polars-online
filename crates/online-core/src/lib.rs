@@ -445,7 +445,16 @@ pub use window::{
 ///   34 file's specs would read differently, so the bank refuses a file
 ///   older than 35 by number; pre-1.0 no loader is written. A model's own
 ///   state loads as it did at 34.
-pub const SCHEMA_VERSION: u32 = 35;
+/// - 36 (2026-10-06, task 179): `bocpd`'s configuration carries
+///   `hazard_on_clock`, under which `hazard` is the expected clock time
+///   between changepoints and each step's chance of a break is applied
+///   before the row it leads into. It is last and left out where it is
+///   false, so a state with a per-row hazard writes the bytes it did at 35
+///   and a 35 state reads as the per-row hazard it was: the bank still
+///   loads 35. A 36 file whose `hazard` is a duration is one a 35 build
+///   would read as a number of rows, so the version moves and a 35 build
+///   refuses it by number.
+pub const SCHEMA_VERSION: u32 = 36;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

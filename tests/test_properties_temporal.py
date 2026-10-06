@@ -398,12 +398,16 @@ def _instants(step: int):
 
 
 #: The models with clock parameters of their own besides the shared ones:
-#: every kind the Rust side's table lists (``spec_clock_fields``, which
+#: every kind the Rust side's tables list (``spec_clock_fields``, which
 #: `test_temporal_clock.py` holds to the builders), so a kind that gains one
 #: is drawn here the day it does -- `marginal`'s ``window_size`` was missed
-#: from a list written by hand (review 2026-10-05, TB5). And `rls`, which has
-#: none of its own, for the shared ``embargo`` the strategy draws for it.
-CLOCK_MODELS = sorted({b for b in MINIMAL if _kind(b) in _tables()[0]} | {"rls"})
+#: from a list written by hand (review 2026-10-05, TB5). The second table's
+#: kinds too, a duration or a number of rows (``bocpd``'s ``hazard``, task
+#: 179). And `rls`, which has none of its own, for the shared ``embargo`` the
+#: strategy draws for it.
+CLOCK_MODELS = sorted(
+    {b for b in MINIMAL if _kind(b) in _tables()[0] or _kind(b) in _tables()[2]} | {"rls"}
+)
 
 
 @st.composite
@@ -456,6 +460,11 @@ def clock_specs(draw, model: str, step: int, cap: int):
         kw |= maybe("prune_every", 1, 20)
         if draw(st.booleans()):
             kw["max_rows_between_prunes"] = draw(st.integers(1, 10))
+    elif model == "bocpd":
+        # Task 179: the hazard on the clock, each step's chance of a break
+        # applied before the row it leads into, ties and capped gaps among
+        # the steps drawn.
+        kw |= dict(features=["x0", "x1"], hazard=steps(1, 60), prior_nu=2.0, prior_scale=[1.0])
     else:
         assert model == "rls", model
         kw |= xy | maybe("embargo", 1, 5)

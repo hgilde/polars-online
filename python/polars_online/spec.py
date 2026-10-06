@@ -196,6 +196,14 @@ below, and in the models ``window_size``,
 ``select_half_life``, ``coef_half_life``,
 ``revert_half_life``, ``level_half_life`` and ``trend_half_life``.
 
+One parameter takes either form, with a meaning for each: ``bocpd``'s
+``hazard``. A number is the expected rows between changepoints, on any clock.
+It binds to no clock unit, so it stands beside durations on a temporal clock.
+A duration is the expected time between changepoints. It is a clock
+parameter like the rest, so it needs a temporal clock and refuses a plain
+number beside it. :func:`polars_online.spec.bocpd` says when each form's
+chance of a break applies.
+
 Each mixture is refused, naming the column, the parameter and the fix: a
 temporal clock with a clock parameter given as a plain number, a numeric clock
 with a duration, and one spec that gives both. A rate per clock unit has no

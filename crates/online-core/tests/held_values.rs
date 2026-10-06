@@ -1332,25 +1332,95 @@ fn no_weight_moves_nothing_unsupervised<M: OnlineModel>(name: &str, make: impl F
     }
 }
 
+/// The `bocpd` both checks below run: a per-row hazard of 50 rows, or `τ =
+/// 30` clock units between changepoints on the clock (docs/PLAN.md task
+/// 179).
+fn bocpd_held(on_clock: bool) -> Bocpd {
+    Bocpd::new(BocpdCfg {
+        n_features: 3,
+        hazard: if on_clock { 30.0 } else { 50.0 },
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(2.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta: 0.0,
+        prune_below: 1e-6,
+        max_run: 200,
+        min_weight: 0.0,
+        hazard_on_clock: on_clock,
+    })
+    .unwrap()
+}
+
+/// **The exception, named: `bocpd` with its hazard on the clock**
+/// (docs/PLAN.md task 179). Hard rule 9 says a row of weight 0 advances the
+/// clock and learns nothing. Under a per-row hazard the clock's advance
+/// means nothing to the run-length posterior, and such a row moves nothing,
+/// to the bit. On the clock the clock's advance *is* the step's chance of a
+/// break, so the row moves the posterior by exactly that, as decay moves a
+/// decaying model's sums, and grows no run. What it carries still moves
+/// nothing (the test above). `bocpd.rs`'s
+/// `two_steps_with_nothing_learned_between_compose_into_one` holds such a
+/// row to the step it folds into, to rounding.
+#[test]
+fn a_row_of_no_weight_on_the_clock_moves_the_run_lengths_by_its_step() {
+    let (gap, tau) = (4.0f64, 30.0f64);
+    for on_clock in [false, true] {
+        let mut m = bocpd_held(on_clock);
+        for (i, (x, _)) in stream_of(0.5, 60).iter().take(80).enumerate() {
+            m.step(x, &[], d(i), 1.0);
+        }
+        let (before, runs, n_eff) = (
+            m.run_posterior(),
+            serde_json::to_value(&m).unwrap()["runs"].clone(),
+            m.n_eff(),
+        );
+        m.step(&[9.0, -9.0, 9.0], &[], gap, 0.0);
+        let after = m.run_posterior();
+        assert_eq!(
+            serde_json::to_value(&m).unwrap()["runs"],
+            runs,
+            "{on_clock}"
+        );
+        assert_eq!(m.n_eff().to_bits(), n_eff.to_bits(), "{on_clock}");
+        if !on_clock {
+            let bits = |p: &[f64]| p.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(
+                bits(&after),
+                bits(&before),
+                "a per-row hazard moves nothing"
+            );
+            continue;
+        }
+        // From the definition: each run keeps `exp(-d/τ)` of its mass, and
+        // the empty run takes the rest.
+        let keep = (-gap / tau).exp();
+        let want0 = before[0] + (1.0 - keep) * (1.0 - before[0]);
+        assert!(
+            (after[0] - want0).abs() < 1e-14,
+            "{} against {want0}",
+            after[0]
+        );
+        for (j, (a, b)) in after.iter().zip(&before).enumerate().skip(1) {
+            assert!(
+                (a - keep * b).abs() < 1e-14,
+                "run {j}: {a} against {}",
+                keep * b
+            );
+        }
+        assert!(after[0] > before[0] + 0.1, "the time passed");
+    }
+}
+
 #[test]
 fn a_row_of_no_weight_moves_nothing_without_a_target() {
-    no_weight_moves_nothing_unsupervised("bocpd", || {
-        Bocpd::new(BocpdCfg {
-            n_features: 3,
-            hazard: 50.0,
-            hazard_from_row: false,
-            emission: BocpdEmission::Diag,
-            prior_mean: None,
-            prior_kappa: 1.0,
-            prior_nu: Some(2.0),
-            prior_scale: Some(vec![1.0]),
-            robust_beta: 0.0,
-            prune_below: 1e-6,
-            max_run: 200,
-            min_weight: 0.0,
-        })
-        .unwrap()
-    });
+    no_weight_moves_nothing_unsupervised("bocpd", || bocpd_held(false));
+    // On the clock a row of weight 0 still applies its step's chance of a
+    // break (the exception named below); what it carries moves nothing, to
+    // the bit, all the same.
+    no_weight_moves_nothing_unsupervised("bocpd on the clock", || bocpd_held(true));
     no_weight_moves_nothing_unsupervised("deco", || {
         Deco::new(DecoCfg {
             n_features: 3,

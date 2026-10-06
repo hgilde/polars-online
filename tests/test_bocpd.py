@@ -11,7 +11,9 @@ truncation, what the robust emission actually buys, and the arithmetic of
 `P(r = 0)` that is the reason the reported number is `P(r <= 1)`.
 """
 
-from math import lgamma
+import itertools
+from datetime import timedelta
+from math import expm1, inf, lgamma, log, pi
 
 import numpy as np
 import polars as pl
@@ -534,3 +536,336 @@ def test_three_features_are_a_product_of_student_ts():
     out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     _, scores = longhand(x, 40.0)
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
+
+
+# --- the hazard on the clock (task 179) --------------------------------------
+
+#: The prior the oracle below shares with the specs it is held against:
+#: ``prior_mean`` 0, ``prior_kappa`` 1, and ``prior_nu = 2a = 2``,
+#: ``prior_scale = 2b = 1`` in the gamma parametrisation.
+_MU0, _KAPPA0, _ALPHA0, _BETA0 = 0.0, 1.0, 1.0, 0.5
+
+#: 2024-01-02 09:30:00 UTC, in epoch seconds: where the clocks below start.
+_START = 1_704_187_800.0
+
+
+def _log_marginal(xs) -> float:
+    """``ln p(x_1..x_n)`` of one segment's rows under that normal-inverse-gamma
+    prior, in closed form (Murphy 2007, "Conjugate Bayesian analysis of the
+    Gaussian distribution", eq. 95). The model keeps runs and evaluates
+    Student-t predictives one row at a time; this does neither."""
+    xs = np.asarray(xs, dtype=float)
+    n = len(xs)
+    if n == 0:
+        return 0.0
+    xbar = xs.mean()
+    s = float(((xs - xbar) ** 2).sum())
+    kn, an = _KAPPA0 + n, _ALPHA0 + n / 2.0
+    bn = _BETA0 + s / 2.0 + _KAPPA0 * n * (xbar - _MU0) ** 2 / (2.0 * kn)
+    return (
+        lgamma(an)
+        - lgamma(_ALPHA0)
+        + _ALPHA0 * log(_BETA0)
+        - an * log(bn)
+        + 0.5 * log(_KAPPA0 / kn)
+        - 0.5 * n * log(2.0 * pi)
+    )
+
+
+def clock_oracle(x, secs, tau, w=None):
+    """What a hazard on the clock states, written from its definition and
+    nothing of the model's: breaks arrive in time at rate ``1 / tau``, so one
+    falls between two learned rows with probability ``1 - exp(-gap / tau)``,
+    independently of every other gap, and the rows between breaks are iid
+    normal under the prior above. Every segmentation is enumerated and
+    weighed by its prior and the closed-form marginal of its segments.
+
+    Per row ``k``, against the learned rows before it, returns
+
+    - ``A[k]``: the chance row ``k`` began a segment, given its own value too,
+      which is the bank's ``p_change``;
+    - ``B[k]``, ``M[k]``: the mean and the first mode of how many learned rows
+      of row ``k``'s segment came before it, given only the rows before:
+      ``run_mean`` and ``run_mode``.
+
+    A row of weight 0 is read as a learned row would be, which is what the
+    bank reports on it, and then left out of what follows: only its time
+    counts, so the gap it splits is one gap. ``expm1`` evaluates the
+    definition where ``1 - exp`` would cancel."""
+    x = np.asarray(x, dtype=float)
+    secs = np.asarray(secs, dtype=float)
+    learned = np.ones(len(x), bool) if w is None else np.asarray(w) > 0
+    a_out, b_out, m_out = [], [], []
+    for k in range(len(x)):
+        rows = [i for i in range(k) if learned[i]] + [k]
+        m = len(rows)
+        if m == 1:
+            a_out.append(1.0)
+            b_out.append(0.0)
+            m_out.append(0)
+            continue
+        gaps = [secs[rows[j + 1]] - secs[rows[j]] for j in range(m - 1)]
+        brk = [log(-expm1(-g / tau)) if g > 0 else -inf for g in gaps]
+        stay = [-g / tau for g in gaps]
+        xr = x[rows]
+        memo: dict[tuple[int, int], float] = {}
+
+        def seg(a: int, b: int, xr=xr, memo=memo) -> float:
+            """Rows at positions ``a..b`` of ``rows``, inclusive; none is 0."""
+            if a > b:
+                return 0.0
+            if (a, b) not in memo:
+                memo[(a, b)] = _log_marginal(xr[a : b + 1])
+            return memo[(a, b)]
+
+        num = den = -inf
+        runs: dict[int, float] = {}
+        for bits in itertools.product((0, 1), repeat=m - 1):
+            prior = sum(brk[j] if bit else stay[j] for j, bit in enumerate(bits))
+            if prior == -inf:
+                continue
+            starts = [0] + [j + 1 for j, bit in enumerate(bits) if bit]
+            ends = [s - 1 for s in starts[1:]] + [m - 1]
+            head = sum(seg(s, e) for s, e in zip(starts[:-1], ends[:-1], strict=True))
+            with_k = prior + head + seg(starts[-1], m - 1)
+            den = np.logaddexp(den, with_k)
+            if bits[-1]:
+                num = np.logaddexp(num, with_k)
+            before_k = prior + head + seg(starts[-1], m - 2)
+            run = (m - 1) - starts[-1]
+            runs[run] = np.logaddexp(runs.get(run, -inf), before_k)
+        a_out.append(0.0 if num == -inf else float(np.exp(num - den)))
+        total = np.logaddexp.reduce(list(runs.values()))
+        b_out.append(sum(r * float(np.exp(v - total)) for r, v in runs.items()))
+        top = max(runs.values())
+        m_out.append(min(r for r, v in runs.items() if v == top))
+    return np.array(a_out), np.array(b_out), np.array(m_out)
+
+
+def _clock_frame(x, secs, w=None, **cols) -> pl.DataFrame:
+    """``x0`` on a microsecond ``Datetime`` clock ``t`` at ``secs``."""
+    stamps = (np.asarray(secs, dtype=float) * 1e6).round().astype(np.int64)
+    df = pl.DataFrame(
+        {"t": pl.Series(stamps).cast(pl.Datetime("us")), "x0": np.asarray(x, dtype=float)}
+    )
+    if w is not None:
+        df = df.with_columns(pl.Series("w", np.asarray(w, dtype=float)))
+    return df.with_columns(**{k: pl.Series(v) for k, v in cols.items()})
+
+
+def run_clock(x, secs, hazard, w=None, **kw):
+    """The bank on that clock, with the oracle's prior, nothing pruned and
+    every row reported; returns the unnested output frame."""
+    df = _clock_frame(x, secs, w)
+    if w is not None:
+        kw["weight"] = "w"
+    kw = dict(dict(gap_cap="1d", prune_below=0.0, max_run=10_000, min_weight=0.0), **kw)
+    spec = po.spec.bocpd(
+        "b", features=["x0"], hazard=hazard, clock="t", prior_nu=2.0, prior_scale=[1.0], **kw
+    )
+    return po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+
+
+def _gap_case():
+    """Seven rows a minute apart, four quiet hours, seven more a minute
+    apart: the level moves by four sigma across the gap. ``tau`` = 1 h."""
+    rng = np.random.default_rng(179)
+    secs = np.concatenate([np.arange(7) * 60.0, 4 * 3600.0 + 360.0 + np.arange(7) * 60.0])
+    x = np.concatenate([rng.normal(0, 1, 7), rng.normal(4, 1, 7)])
+    return x, _START + secs, None, "1h", 3600.0
+
+
+def _duplicate_case():
+    """Rows a minute apart, but rows 5 and 6 share a stamp, and row 7 is a
+    20-sigma row a minute after them. ``tau`` = 10 min."""
+    rng = np.random.default_rng(1792)
+    secs = np.arange(12) * 60.0
+    secs[5] = secs[4]
+    secs[6:] = secs[4] + 60.0 * np.arange(1, 7)
+    x = rng.normal(0, 1, 12)
+    x[6] = 20.0
+    return x, _START + secs, None, "10m", 600.0
+
+
+def _weightless_case():
+    """The gap case with a row of weight 0 in the gap, a minute before the
+    first row after it."""
+    x, secs, _, text, tau = _gap_case()
+    x = np.concatenate([x[:7], [0.0], x[7:]])
+    secs = np.concatenate([secs[:7], [secs[7] - 60.0], secs[7:]])
+    w = np.concatenate([np.ones(7), [0.0], np.ones(7)])
+    return x, secs, w, text, tau
+
+
+def _first_step_case():
+    """The bank's first step is 0, and the chance of a break between the
+    first two rows is the second row's: three hours after the first, then
+    rows ten minutes apart. ``tau`` = 1 h."""
+    rng = np.random.default_rng(1793)
+    secs = np.concatenate([[0.0], 3 * 3600.0 + np.arange(11) * 600.0])
+    x = np.concatenate([[3.0], rng.normal(0, 1, 11)])
+    return x, _START + secs, None, "1h", 3600.0
+
+
+def _irregular_case():
+    """Fourteen rows at irregular whole seconds, one pair sharing a stamp,
+    and a level that moves halfway. ``tau`` = 30 min."""
+    rng = np.random.default_rng(1794)
+    gaps = rng.exponential(600.0, 14).round()
+    gaps[0] = 0.0
+    gaps[9] = 0.0
+    x = np.concatenate([rng.normal(0, 1, 7), rng.normal(2.5, 1, 7)])
+    return x, _START + np.cumsum(gaps), None, "30m", 1800.0
+
+
+CLOCK_CASES = {
+    "a break across a four-hour gap": _gap_case,
+    "a duplicate stamp, then a 20-sigma row": _duplicate_case,
+    "a row of weight 0 inside the gap": _weightless_case,
+    "the first step": _first_step_case,
+    "irregular steps": _irregular_case,
+}
+
+
+@pytest.mark.parametrize("case", list(CLOCK_CASES))
+def test_a_hazard_on_the_clock_is_the_model_it_states(case):
+    """The duration form against the enumeration above, at every row. The
+    step into row ``k`` of ``d`` clock units carries the chance ``1 -
+    exp(-d / tau)`` of a break, applied before row ``k`` is read; so
+    ``p_change`` is the chance that row ``k`` began a run, and ``run_mean``
+    and ``run_mode`` count the learned rows of its run before it.
+
+    Agreement measured over the five cases: ``p_change`` to 1.1e-14,
+    ``run_mean`` to 8e-14, ``run_mode`` exactly. Taking the chance from the
+    row's own step on the boundary after the row, as this was first briefed,
+    missed by 0.93 and 6.5 rows on the gap case and dated the break a row
+    late (task 179)."""
+    x, secs, w, text, tau = CLOCK_CASES[case]()
+    out = run_clock(x, secs, text, w)
+    a, b, m = clock_oracle(x, secs, tau, w)
+    assert out["p_change"].to_numpy() == pytest.approx(a, abs=1e-13, rel=0)
+    assert out["run_mean"].to_numpy() == pytest.approx(b, abs=1e-12, rel=0)
+    assert out["run_mode"].to_list() == m.tolist()
+    if case == "a break across a four-hour gap":
+        # The first row after the gap began a run, almost surely.
+        assert a[7] > 0.99 and a[8] < 0.01
+    if case == "a duplicate stamp, then a 20-sigma row":
+        # No time passed before row 6: it cannot begin a run, exactly.
+        assert out["p_change"][5] == 0.0
+        # And the wild row a minute later can: its chance, 0.095 before it is
+        # read, is lifted more than five times by what it holds.
+        assert a[6] > 5 * -expm1(-60.0 / tau)
+    if case == "a row of weight 0 inside the gap":
+        # What a weightless row leaves is its time: the learned rows read as
+        # the stream without it, the gap read whole.
+        x0, secs0, _, _, _ = _gap_case()
+        plain = run_clock(x0, secs0, text)
+        kept = out.filter(pl.Series(w > 0))
+        for col in ("p_change", "run_mean", "pred_x0", "loglik"):
+            assert kept[col].to_numpy() == pytest.approx(plain[col].to_numpy(), abs=1e-12), col
+        assert kept["run_mode"].to_list() == plain["run_mode"].to_list()
+    if case == "the first step":
+        assert a[1] > 0.9, "three hours before row two"
+
+
+def test_a_number_hazard_on_a_temporal_clock_is_still_per_row():
+    """A plain number keeps its meaning on any spec: the expected rows
+    between changepoints, whatever the clock says. The same stream with and
+    without a temporal clock reads the same."""
+    x, secs, _, _, _ = _irregular_case()
+    with_clock = run_clock(x, secs, 50.0)
+    spec = po.spec.bocpd(
+        "b",
+        features=["x0"],
+        hazard=50.0,
+        prior_nu=2.0,
+        prior_scale=[1.0],
+        prune_below=0.0,
+        max_run=10_000,
+        min_weight=0.0,
+    )
+    without = po.ModelBank([spec]).fit_predict(_clock_frame(x, secs))["b"].struct.unnest()
+    assert with_clock.equals(without)
+
+
+def test_each_way_of_writing_a_duration_is_the_same_hazard():
+    x, secs, _, _, _ = _irregular_case()
+    want = run_clock(x, secs, "30m")
+    for form in (timedelta(minutes=30), pl.duration(minutes=30), "1800s"):
+        assert run_clock(x, secs, form).equals(want), form
+
+
+def test_a_gap_past_gap_cap_counts_as_the_cap():
+    """The step a row's chance is read from is the decayed clock's: a gap
+    past ``gap_cap`` is the cap, as it is to every decay. A nine-hour gap
+    under a two-hour cap reads as a two-hour gap."""
+    x, secs, _, text, _ = _gap_case()
+    capped = run_clock(x, secs, text, gap_cap="2h")
+    short = secs.copy()
+    short[7:] -= secs[7] - secs[6] - 7200.0
+    at_the_cap = run_clock(x, short, text, gap_cap="2h")
+    assert capped.equals(at_the_cap)
+    assert not capped.equals(run_clock(x, secs, text, gap_cap="12h")), "the cap acted"
+
+
+def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
+    """1, 7 and 37 rows a chunk, and a save and a load at three rows, give the
+    stream fed whole, over irregular steps with stamps shared, gaps past the
+    cap, rows of weight 0 and two groups."""
+    rng = np.random.default_rng(1795)
+    n = 300
+    gaps = rng.exponential(120.0, n).round()
+    gaps[rng.random(n) < 0.08] = 0.0
+    gaps[rng.random(n) < 0.03] = 6 * 3600.0
+    secs = _START + np.cumsum(gaps)
+    x = np.where(np.arange(n) < 150, rng.normal(0, 1, n), rng.normal(3, 1, n))
+    w = np.where(rng.random(n) < 0.1, 0.0, 1.0)
+    g = np.where((np.arange(n) // 50) % 2 == 0, "a", "b")
+    df = _clock_frame(x, secs, w, g=g)
+    spec = po.spec.bocpd(
+        "b",
+        features=["x0"],
+        hazard="20m",
+        clock="t",
+        gap_cap="2h",
+        weight="w",
+        group="g",
+        prior_nu=2.0,
+        prior_scale=[1.0],
+    )
+    whole = po.ModelBank([spec]).fit_predict(df)
+    for size in (1, 7, 37):
+        bank = po.ModelBank([spec])
+        parts = [bank.fit_predict(df[i : i + size]) for i in range(0, n, size)]
+        assert pl.concat(parts).equals(whole), size
+    for at in (1, 100, 211):
+        warm = po.ModelBank([spec])
+        first = warm.fit_predict(df[:at])
+        second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
+        assert pl.concat([first, second]).equals(whole), at
+    # The stream did what it is here for: rows that could not begin a run
+    # (a stamp shared with the row before), and a break found.
+    p = whole["b"].struct.field("p_change")
+    assert (p == 0.0).sum() >= 5
+    assert p.max() > 0.5
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        (dict(hazard="1h"), "hazard is a duration, which needs a clock column"),
+        (
+            dict(hazard="1h", clock="t", gap_cap=300.0),
+            "hazard is a duration but gap_cap is a plain number",
+        ),
+        (dict(hazard="0s", clock="t", gap_cap="1h"), "hazard .* must be > 0"),
+        (dict(hazard="-5m", clock="t", gap_cap="1h"), "hazard .* must be > 0"),
+        (
+            dict(hazard=timedelta(hours=1), hazard_col="h", clock="t", gap_cap="1h"),
+            "hazard_col .* per-row hazard.* hazard is a duration",
+        ),
+    ],
+)
+def test_a_duration_hazard_is_refused_where_it_cannot_run(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        po.spec.bocpd("b", features=["x0"], **kwargs)

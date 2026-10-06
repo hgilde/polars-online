@@ -101,6 +101,63 @@
 //! the mean weight, and a constant multiple of every weight changes nothing.
 //! What the row reports, `P(r ≤ 1)` among it, is read as a row of the mean
 //! weight, which is what `predict`, never told a weight, can say.
+//!
+//! # The hazard on the clock (docs/PLAN.md task 179)
+//!
+//! By default `hazard` is the expected rows between changepoints. `H =
+//! 1/hazard`, the same on every row, enters at the end of each row's step,
+//! in the changepoint branch above. It is the chance of a break **after**
+//! the row, which is why the mass at `r = 0` is exactly `H`.
+//!
+//! With `hazard_on_clock` it is `τ`, the expected time between changepoints
+//! in clock units. Breaks then arrive in time at rate `1/τ`, so the step of
+//! `d` clock units into a row carries the chance `h = 1 − exp(−d/τ)` that a
+//! break fell inside it. That chance belongs to the boundary **before** the
+//! row, and a stream cannot know the step after a row until the next row
+//! arrives. So it is applied at the start of the row's step, before the row
+//! is read:
+//!
+//! ```text
+//! P(r = 0) ← P(r = 0) + h·Σ_{r≥1} P(r)     the empty run: the row begins a run
+//! P(r)     ← (1 − h)·P(r),  r ≥ 1          every run goes on
+//! ```
+//!
+//! Then the recursion above runs with `H = 0`, since no time has passed
+//! since the row and no break can follow it yet. After the row the mass at
+//! `r = 0` is 0, and `p_change = P(r ≤ 1)` is the chance that the row began
+//! a run; it is not "exactly `H`" plus that, as under a per-row hazard.
+//! On regular steps the per-row hazard `1/h` puts `h` on the boundary after
+//! each row and this form puts it on the boundary before the next. Every
+//! row is then read against the same posterior, the first included, whose
+//! step meets only the empty run it begins.
+//!
+//! `d` is the step the model is stepped with: the decayed clock, so a gap
+//! past `gap_cap` counts as the cap and a session change as its
+//! `session_gap`. A step of 0 has no chance of a break: the first row of a
+//! stream or a group, a row after a reset, a stamp shared with the row
+//! before. Then `ln h = −∞`, and the empty run gains nothing. Nothing breaks
+//! on it: `log_sum_exp` of an all-`−∞` vector is `−∞`, `prune` keeps slot 0
+//! whatever its mass, and a run of no mass grows into one of no mass. Under
+//! `prune_below = 0` each such step leaves one run of no mass in the vector
+//! for good, until `max_run` folds it; under any positive `prune_below` the
+//! next prune drops it.
+//!
+//! A row of weight 0 advances the clock and learns nothing (hard rule 9):
+//! its step's chance applies, as decay does elsewhere, and no run grows. The
+//! transition composes. Two steps `d_a` and `d_b` with nothing learned
+//! between them leave the posterior one step of `d_a + d_b` would, to
+//! rounding, since `(1 − h_a)(1 − h_b) = exp(−(d_a + d_b)/τ)`. A row whose
+//! predictive cannot be evaluated is the same: the time passes, and nothing
+//! is learned. A step that is no step (negative, NaN or infinite, which the
+//! plumbing never hands over) refuses the row, as an unusable hazard does.
+//!
+//! `ln(1 − h) = −d/τ` is a division: no libm, and exact where `(1 −
+//! h).ln()` would round away an `h` below `1e-16`. `ln h = ln(−expm1(−d/τ))`,
+//! with `expm1` for accuracy at small `d/τ`. Both enter the persisted log
+//! joint, as `ln H`, every run's log predictive and `log_sum_exp` already
+//! do: the joint is a log-space recursion and holds libm results by nature.
+//! [`Bocpd::prune`]'s rule, from the reverted B4, is against adding one that
+//! no output needs, and every output is read under this chance.
 
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +182,10 @@ use crate::solve::SpdFactor;
 /// the run in progress, the mass goes to it. `p_change = P(rₜ ≤ 1)` is
 /// therefore what is reported.
 ///
+/// Under a hazard on the clock the chance of a break is applied before the
+/// row instead (the module docs), so after the row the mass at `r = 0` is 0
+/// and `P(r ≤ 1)` is the chance that the row began a run.
+///
 /// It is an alarm and not the answer. Measured: a tenfold variance step
 /// takes it to 0.83 on the row of the break; a four-sigma mean shift under
 /// a diffuse prior barely lifts it; a change in the correlation alone never
@@ -147,12 +208,16 @@ pub enum BocpdEmission {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BocpdCfg {
     pub n_features: usize,
-    /// Expected rows between changepoints; `H = 1/hazard`.
+    /// Expected rows between changepoints, `H = 1/hazard` the chance of a
+    /// break after each row; under `hazard_on_clock`, the expected clock
+    /// time between them, `τ`.
     pub hazard: f64,
     /// Read the hazard from the row instead (it rides in `y[0]`, the way
     /// `ew_class`'s label does), falling back to `hazard` where the value
     /// is missing. Explicit, so a model without a hazard column can never
-    /// mistake a target for one.
+    /// mistake a target for one. The row's value is a per-row hazard, the
+    /// chance of a break after its row, and is refused beside
+    /// `hazard_on_clock`.
     #[serde(default)]
     pub hazard_from_row: bool,
     pub emission: BocpdEmission,
@@ -178,6 +243,14 @@ pub struct BocpdCfg {
     /// below it.
     pub max_run: usize,
     pub min_weight: f64,
+    /// `hazard` is `τ`, the expected clock time between changepoints: the
+    /// step of `d` clock units into a row carries the chance `1 −
+    /// exp(−d/τ)` of a break, applied before the row is read (the module
+    /// docs). Last, and left out where it is false, so a state with a
+    /// per-row hazard writes the bytes it always did; a state from before
+    /// it reads as a per-row hazard, which it was.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hazard_on_clock: bool,
 }
 
 impl BocpdCfg {
@@ -216,7 +289,25 @@ impl BocpdCfg {
         if d == 0 {
             return Err("bocpd: at least one column is required".into());
         }
-        if !(self.hazard > 1.0 && self.hazard.is_finite()) {
+        if self.hazard_on_clock {
+            // Any positive time is a rate of breaks; only a step of 0 has no
+            // chance of one, and that is the step's business, not `τ`'s.
+            if !(self.hazard > 0.0 && self.hazard.is_finite()) {
+                return Err(format!(
+                    "bocpd: hazard as a duration is the expected time between changepoints and \
+                     must be > 0 (got {} clock units)",
+                    self.hazard
+                ));
+            }
+            if self.hazard_from_row {
+                return Err(
+                    "bocpd: a hazard read from the row is a per-row hazard, the chance of a \
+                     break after its row, and cannot stand beside a hazard on the clock, the \
+                     chance of the step before each row"
+                        .into(),
+                );
+            }
+        } else if !(self.hazard > 1.0 && self.hazard.is_finite()) {
             return Err(
                 "bocpd: hazard is the expected rows between changepoints and must be finite and \
                  > 1"
@@ -455,6 +546,59 @@ fn is_zero(v: &u64) -> bool {
     *v == 0
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// The normalised run-length posterior of a log joint, shortest run first:
+/// uniform where the joint has no finite total.
+fn posterior_of(joint: &[f64]) -> Vec<f64> {
+    let z = log_sum_exp(joint);
+    if !z.is_finite() {
+        let k = joint.len();
+        return vec![1.0 / k as f64; k];
+    }
+    joint.iter().map(|l| (l - z).exp()).collect()
+}
+
+/// A chance of a break, as the recursion reads it: `ln H` into the empty
+/// run and `ln(1 − H)` into every run that goes on.
+#[derive(Debug, Clone, Copy)]
+struct Branches {
+    ln_break: f64,
+    ln_grow: f64,
+}
+
+impl Branches {
+    /// No chance of a break: what follows a row under a hazard on the
+    /// clock, since no time has passed since it (the module docs).
+    const NONE: Branches = Branches {
+        ln_break: f64::NEG_INFINITY,
+        ln_grow: 0.0,
+    };
+
+    /// A per-row hazard, `H = 1/hazard`, which must leave both branches a
+    /// probability: strictly inside `(0, 1)`, or `None`.
+    fn per_row(hazard: f64) -> Option<Self> {
+        let h = 1.0 / hazard;
+        (h > 0.0 && h < 1.0).then(|| Self {
+            ln_break: h.ln(),
+            ln_grow: (1.0 - h).ln(),
+        })
+    }
+
+    /// The step of `d` clock units under `τ`: `H = 1 − exp(−d/τ)`, with
+    /// `ln(1 − H) = −d/τ` exactly. A step of 0 has no chance, `ln H = −∞`.
+    /// `None` for a step that is no step: negative, NaN or infinite.
+    fn over(d: f64, tau: f64) -> Option<Self> {
+        let x = d / tau;
+        (x >= 0.0 && x.is_finite()).then(|| Self {
+            ln_break: (-(-x).exp_m1()).ln(),
+            ln_grow: -x,
+        })
+    }
+}
+
 /// What [`Bocpd::read`] hands the update: the new log joint over run
 /// lengths, and the weight each existing run takes the row at.
 type Update = (Vec<f64>, Vec<f64>);
@@ -525,12 +669,7 @@ impl Bocpd {
 
     /// The normalised run-length posterior as it stands, shortest run first.
     pub fn run_posterior(&self) -> Vec<f64> {
-        let z = log_sum_exp(&self.logjoint);
-        if !z.is_finite() {
-            let k = self.logjoint.len();
-            return vec![1.0 / k as f64; k];
-        }
-        self.logjoint.iter().map(|l| (l - z).exp()).collect()
+        posterior_of(&self.logjoint)
     }
 
     /// Output slot labels in emission order.
@@ -633,15 +772,52 @@ impl Bocpd {
         }
     }
 
-    /// The row's outputs, and what the update needs: the new log joint and
-    /// the per-run weights the row enters with.
-    fn read(&self, x: &[f64], hazard: f64, rel: f64) -> (Vec<f64>, Option<Update>) {
+    /// What a row is read against, and the chance of a break after it.
+    /// Under a per-row hazard: the log joint as it stands, and `H` from the
+    /// row's hazard. On the clock: the joint after the step into the row,
+    /// its chance of a break applied, and no chance after it, since no time
+    /// has passed since the row (the module docs). `(None, None)` for a step
+    /// the clock cannot read, which refuses the row.
+    fn before_row(&self, y: &[Option<f64>], d_clock: f64) -> (Option<Vec<f64>>, Option<Branches>) {
+        if !self.cfg.hazard_on_clock {
+            return (None, Branches::per_row(self.hazard_of(y)));
+        }
+        match Branches::over(d_clock, self.cfg.hazard) {
+            Some(step) => (Some(self.transition(step)), Some(Branches::NONE)),
+            None => (None, None),
+        }
+    }
+
+    /// The log joint after a step whose chance of a break is `step`: every
+    /// run goes on with `1 − H` of its mass, and `H` of it moves to the
+    /// empty run at slot 0, which keeps its own -- a break before a row that
+    /// begins a run anyway changes nothing. Mass is kept, and two steps
+    /// compose into one of their sum, `(1 − H_a)(1 − H_b) = 1 − H_ab`.
+    fn transition(&self, step: Branches) -> Vec<f64> {
+        let goes_on = &self.logjoint[1..];
+        let moved = log_sum_exp(goes_on) + step.ln_break;
+        let mut out = Vec::with_capacity(self.logjoint.len());
+        out.push(log_sum_exp(&[self.logjoint[0], moved]));
+        out.extend(goes_on.iter().map(|l| l + step.ln_grow));
+        out
+    }
+
+    /// The row's outputs, read against `joint` -- the log joint as it
+    /// stands before the row -- and what the update needs: the new log
+    /// joint, with `next`'s chance of a break after the row, and the per-run
+    /// weights the row enters with. No `next` refuses the row.
+    fn read(
+        &self,
+        x: &[f64],
+        joint: &[f64],
+        next: Option<Branches>,
+        rel: f64,
+    ) -> (Vec<f64>, Option<Update>) {
         let d = self.cfg.n_features;
         let nan = vec![f64::NAN; Self::n_outputs_for(d)];
-        let h = 1.0 / hazard;
-        if !(h > 0.0 && h < 1.0) {
+        let Some(next) = next else {
             return (nan, None);
-        }
+        };
         let r = self.runs.len();
         let mut logpi = Vec::with_capacity(r);
         let mut weights = Vec::with_capacity(r);
@@ -658,7 +834,7 @@ impl Bocpd {
         }
         // The pre-row run posterior, which `run_mode`, `run_mean` and the
         // predictive mean are read from.
-        let pre = self.run_posterior();
+        let pre = posterior_of(joint);
         let mut mode_at = 0;
         for i in 1..r {
             if pre[i] > pre[mode_at] {
@@ -694,13 +870,13 @@ impl Bocpd {
         // every joint by about 1, and the posterior does not move. That is
         // the robustness -- one wild row must not be a changepoint -- and
         // it is the same generalised-Bayes weight in both places.
-        let joint = |weights: &[f64]| {
+        let grow = |weights: &[f64]| {
             let mut new = vec![f64::NEG_INFINITY; r + 1];
             let mut cp = Vec::with_capacity(r);
             for i in 0..r {
-                let base = self.logjoint[i] + weights[i] * logpi[i];
-                new[i + 1] = base + (1.0 - h).ln();
-                cp.push(base + h.ln());
+                let base = joint[i] + weights[i] * logpi[i];
+                new[i + 1] = base + next.ln_grow;
+                cp.push(base + next.ln_break);
             }
             new[0] = log_sum_exp(&cp);
             new
@@ -709,14 +885,15 @@ impl Bocpd {
         // which is what `predict`, never told a weight, can say (the model
         // contract); what it teaches is at its own weight against that mean,
         // `rel` (task 147), in the runs and in the recursion alike.
-        let new = joint(&weights);
+        let new = grow(&weights);
         let z = log_sum_exp(&new);
         if !z.is_finite() {
             return (nan, None);
         }
         let mut out = Vec::with_capacity(Self::n_outputs_for(d));
-        // `P(rₜ ≤ 1)`: see the note above the emission enum. `r = 0` alone
-        // is exactly the hazard.
+        // `P(rₜ ≤ 1)`: see the note above the emission enum. Under a per-row
+        // hazard `r = 0` alone is exactly the hazard; on the clock it holds
+        // nothing, and this is the chance that the row began a run.
         let short = if new.len() > 1 {
             log_sum_exp(&new[..2])
         } else {
@@ -734,7 +911,7 @@ impl Bocpd {
             (new, weights)
         } else {
             let scaled: Vec<f64> = weights.iter().map(|w| rel * w).collect();
-            (joint(&scaled), scaled)
+            (grow(&scaled), scaled)
         };
         if self.n_eff < self.cfg.min_weight {
             return (nan, Some(update));
@@ -806,26 +983,37 @@ impl crate::OnlineModel for Bocpd {
         } else {
             (1.0, self.w_mean, self.w_rows)
         };
-        let (pred, extra) = self.read(x, self.hazard_of(y), rel);
+        let (moved, next) = self.before_row(y, d_clock);
+        let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
+        let (pred, extra) = self.read(x, joint, next, rel);
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
             extra: None,
         };
-        let _ = d_clock;
         if weight <= 0.0 {
-            // Advance the clock and learn nothing: the posterior does not
-            // move and no run sees the row. Nothing here decays, so `n_eff`
-            // -- the accumulated weight -- does not move either.
+            // Advance the clock and learn nothing: no run sees the row, and
+            // nothing here decays, so `n_eff` -- the accumulated weight --
+            // does not move. Under a per-row hazard the posterior does not
+            // move either; on the clock the clock's advance is the step's
+            // chance of a break, which applies all the same (hard rule 9).
+            if let Some(moved) = moved {
+                self.logjoint = moved;
+            }
             return out;
         }
         self.n_eff += weight;
         (self.w_mean, self.w_rows) = (w_mean, w_rows);
         let Some((new, weights)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
-            // and the posterior stands. Counted, so a run of them is
-            // visible in `diagnostics` rather than silent (B1).
+            // and no run sees it. Counted, so a run of them is visible in
+            // `diagnostics` rather than silent (B1). The time still passed:
+            // on the clock its chance of a break applies, as on a row of no
+            // weight.
             self.solve_failures += 1;
+            if let Some(moved) = moved {
+                self.logjoint = moved;
+            }
             return out;
         };
         let full = self.full();
@@ -850,19 +1038,20 @@ impl crate::OnlineModel for Bocpd {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
-        crate::Step {
-            pred: self.read(x, self.cfg.hazard, 1.0).0,
-            n_eff: self.n_eff,
-            extra: None,
-        }
+    /// Never told the row's hazard column, so a per-row hazard read from
+    /// the row falls back to the configured one.
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        self.predict_with(x, &[], d_clock)
     }
 
     /// The hazard rides in `y[0]` under `hazard_from_row`, so the answer
-    /// depends on it exactly as the step's does (C1).
-    fn predict_with(&self, x: &[f64], y: &[Option<f64>], _d_clock: f64) -> crate::Step {
+    /// depends on it exactly as the step's does (C1); on the clock it
+    /// depends on `d_clock` as the step's does.
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> crate::Step {
+        let (moved, next) = self.before_row(y, d_clock);
+        let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
         crate::Step {
-            pred: self.read(x, self.hazard_of(y), 1.0).0,
+            pred: self.read(x, joint, next, 1.0).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -985,6 +1174,7 @@ mod tests {
             prune_below: 0.0,
             max_run: 100_000,
             min_weight: 0.0,
+            hazard_on_clock: false,
         }
     }
 
@@ -2347,5 +2537,280 @@ mod tests {
         Bocpd::new(with(vec![1.0, 0.0, c, 1.0])).unwrap();
         Bocpd::new(with(vec![1e7, 1e6, 1e6 * (1.0 + 1e-13), 1e7])).unwrap();
         Bocpd::new(with(vec![1.0, 0.0, 5e-13, 1.0])).unwrap();
+    }
+
+    // The hazard on the clock (docs/PLAN.md task 179).
+
+    /// [`cfg`] with `hazard` the expected clock time between changepoints.
+    fn on_clock(d: usize, tau: f64) -> BocpdCfg {
+        BocpdCfg {
+            hazard: tau,
+            hazard_on_clock: true,
+            ..cfg(d)
+        }
+    }
+
+    /// Two numbers agree to rounding: relatively, or absolutely near 0, or
+    /// both NaN.
+    fn close(a: f64, b: f64, tol: f64) -> bool {
+        (a.is_nan() && b.is_nan()) || (a - b).abs() <= tol * (1.0 + a.abs().max(b.abs()))
+    }
+
+    /// On regular steps `d` a hazard on the clock and the per-row hazard it
+    /// stands for, `1/h` with `h = 1 − exp(−d/τ)`, read every row against
+    /// the same posterior, from the first row on: the per-row form puts `h`
+    /// on the boundary after each row and the clock form on the boundary
+    /// before the next, and the first row's step -- 0 here, as a stream's
+    /// first step is -- meets only the empty run that row begins. So
+    /// `run_mode` agrees exactly and `run_mean`, the predictive means and
+    /// the log score to rounding, under each emission and uneven weights.
+    /// `p_change` differs by the per-row form's mass at `r = 0`, which is
+    /// `H` exactly: `p_row = H + (1 − H)·p_clock`. (Rows of weight 0 are
+    /// left out: on the clock one applies its step, and under a per-row
+    /// hazard it is no row at all.)
+    #[test]
+    fn regular_steps_on_the_clock_are_the_per_row_hazard_from_row_one() {
+        let (d, tau) = (3.0f64, 120.0f64);
+        let h = -(-d / tau).exp_m1();
+        let emissions = [
+            ("diag", cfg(2)),
+            (
+                "gaussian",
+                BocpdCfg {
+                    emission: BocpdEmission::Gaussian,
+                    prior_nu: Some(5.0),
+                    ..cfg(3)
+                },
+            ),
+            (
+                "robust",
+                BocpdCfg {
+                    emission: BocpdEmission::Robust,
+                    robust_beta: 0.1,
+                    ..cfg(2)
+                },
+            ),
+        ];
+        for (name, base) in emissions {
+            let k = base.n_features;
+            let mut rows = Bocpd::new(BocpdCfg {
+                hazard: 1.0 / h,
+                ..base.clone()
+            })
+            .unwrap();
+            // What the per-row form reads its chance as.
+            let big_h = 1.0 / rows.cfg.hazard;
+            let mut clock = Bocpd::new(BocpdCfg {
+                hazard: tau,
+                hazard_on_clock: true,
+                ..base
+            })
+            .unwrap();
+            let mut n = Normals::new(61);
+            let mut moved = 0usize;
+            for t in 0..300 {
+                let shift = if t < 150 { 0.0 } else { 3.0 };
+                let x: Vec<f64> = (0..k).map(|_| shift + n.normal()).collect();
+                let w = 0.5 + 0.25 * (t % 4) as f64;
+                let step = if t == 0 { 0.0 } else { d };
+                let a = rows.step(&x, &[], step, w).pred;
+                let b = clock.step(&x, &[], step, w).pred;
+                assert_eq!(a[1], b[1], "{name} row {t}: run_mode");
+                for slot in 2..a.len() {
+                    assert!(
+                        close(a[slot], b[slot], 1e-11),
+                        "{name} row {t} slot {slot}: {} against {}",
+                        a[slot],
+                        b[slot]
+                    );
+                }
+                let want = (a[0] - big_h) / (1.0 - big_h);
+                assert!(
+                    close(b[0], want, 1e-11),
+                    "{name} row {t}: p_change {} against {want}",
+                    b[0]
+                );
+                moved += usize::from(b[0] > 0.5);
+            }
+            assert!(moved > 0, "{name}: the shift was never a break");
+            assert_eq!(clock.solve_failures, 0);
+        }
+    }
+
+    /// Hard rule 9 on the clock: a row of weight 0 advances the clock and
+    /// learns nothing, so its step's chance of a break applies and no run
+    /// grows. The transition composes: one, two or three rows of weight 0
+    /// and then a learned row leave the learned row's outputs, and the
+    /// posterior after it, as one step over their summed time would, to
+    /// rounding, and the runs to the bit. The rows of weight 0 move the
+    /// joint -- the time passed -- and nothing else. A learned row whose
+    /// predictive cannot be read lets the time pass the same way.
+    #[test]
+    fn two_steps_with_nothing_learned_between_compose_into_one() {
+        let mut base = Bocpd::new(on_clock(1, 30.0)).unwrap();
+        let mut n = Normals::new(71);
+        for t in 0..40 {
+            let x = if t < 25 { n.normal() } else { 2.5 + n.normal() };
+            base.step(&[x], &[], if t == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        for steps in [
+            vec![2.0, 1.0],
+            vec![0.5, 4.0, 1.5],
+            vec![3.0, 0.0, 7.5, 2.0],
+        ] {
+            let (mut split, mut whole) = (base.clone(), base.clone());
+            let (last, quiet) = steps.split_last().unwrap();
+            for &d in quiet {
+                let (runs, n_eff) = (split.runs.clone(), split.n_eff);
+                let before = split.logjoint.clone();
+                split.step(&[99.0], &[], d, 0.0);
+                assert_eq!(split.runs, runs, "{steps:?}: a row of weight 0 grew a run");
+                assert_eq!(split.n_eff, n_eff);
+                if d > 0.0 {
+                    assert_ne!(split.logjoint, before, "{steps:?}: the time did not pass");
+                }
+            }
+            let x = [2.4];
+            let a = split.step(&x, &[], *last, 1.0).pred;
+            let b = whole.step(&x, &[], steps.iter().sum(), 1.0).pred;
+            for (slot, (u, v)) in a.iter().zip(&b).enumerate() {
+                assert!(
+                    close(*u, *v, 1e-12),
+                    "{steps:?} slot {slot}: {u} against {v}"
+                );
+            }
+            assert_eq!(split.runs, whole.runs, "{steps:?}");
+            for (u, v) in split.run_posterior().iter().zip(whole.run_posterior()) {
+                assert!((u - v).abs() <= 1e-13, "{steps:?}: {u} against {v}");
+            }
+        }
+        // A learned row whose feature is not a number: a failure, no run
+        // sees it, and its step applies as a row of weight 0's would.
+        let (mut failed, mut quiet) = (base.clone(), base.clone());
+        failed.step(&[f64::NAN], &[], 5.0, 1.0);
+        quiet.step(&[f64::NAN], &[], 5.0, 0.0);
+        assert_eq!(failed.solve_failures, base.solve_failures + 1);
+        assert_eq!(failed.runs, base.runs);
+        assert_eq!(failed.logjoint, quiet.logjoint);
+        assert_ne!(failed.logjoint, base.logjoint);
+    }
+
+    /// A step of 0 has no chance of a break: no time passed, so the row
+    /// cannot begin a run, and it reports `p_change` 0 exactly whatever it
+    /// holds -- a 20-σ row included. Its `ln h` is `−∞`, which breaks
+    /// nothing: no NaN, no failure. Under `prune_below = 0` each such step
+    /// leaves one run of no mass in the vector for good; a positive
+    /// `prune_below` drops it. The first row's step of 0 is the first run's
+    /// beginning, and reports 1.
+    #[test]
+    fn a_step_of_zero_carries_no_chance_of_a_break() {
+        let zero = |t: usize| t == 0 || (15..18).contains(&t) || t == 30;
+        for prune_below in [0.0, 1e-6] {
+            let mut m = Bocpd::new(BocpdCfg {
+                prune_below,
+                ..on_clock(1, 20.0)
+            })
+            .unwrap();
+            let mut n = Normals::new(67);
+            for t in 0..50 {
+                let x = if t == 30 { 20.0 } else { n.normal() };
+                let out = m.step(&[x], &[], if zero(t) { 0.0 } else { 1.0 }, 1.0);
+                assert!(out.pred.iter().all(|v| v.is_finite()), "row {t}: {out:?}");
+                match t {
+                    0 => assert_eq!(out.pred[0], 1.0),
+                    _ if zero(t) => assert_eq!(out.pred[0], 0.0, "row {t}"),
+                    _ => assert!(out.pred[0] > 0.0, "row {t}: {}", out.pred[0]),
+                }
+            }
+            assert_eq!(m.solve_failures, 0);
+            let dead = m.logjoint[1..]
+                .iter()
+                .filter(|l| **l == f64::NEG_INFINITY)
+                .count();
+            assert_eq!(
+                dead,
+                if prune_below == 0.0 { 4 } else { 0 },
+                "{prune_below}"
+            );
+        }
+    }
+
+    /// `τ` is a rate of breaks, so any positive finite time is one, below a
+    /// row's worth included; 0, a negative or a non-finite one is refused by
+    /// name. And a hazard read from the row is a per-row hazard, the chance
+    /// of a break after its row: refused beside one on the clock.
+    #[test]
+    fn a_hazard_on_the_clock_is_refused_where_it_cannot_run() {
+        for tau in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let e = Bocpd::new(on_clock(1, tau)).unwrap_err();
+            assert!(
+                e.contains("hazard as a duration is the expected time between changepoints"),
+                "{tau}: {e}"
+            );
+        }
+        Bocpd::new(on_clock(1, 0.5)).unwrap();
+        let e = Bocpd::new(BocpdCfg {
+            hazard_from_row: true,
+            ..on_clock(1, 60.0)
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("cannot stand beside a hazard on the clock"),
+            "{e}"
+        );
+    }
+
+    /// A step that is no step -- negative, NaN or infinite, which no clock
+    /// hands over -- has no chance of a break to read: the row reports
+    /// nulls, a learned one counts a failure, and nothing moves.
+    #[test]
+    fn a_step_that_is_no_step_refuses_the_row() {
+        let mut m = Bocpd::new(on_clock(1, 30.0)).unwrap();
+        let mut n = Normals::new(73);
+        for t in 0..20 {
+            m.step(&[n.normal()], &[], if t == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        for (i, d) in [-1.0, f64::NAN, f64::INFINITY].into_iter().enumerate() {
+            let before = m.clone();
+            assert!(m.predict(&[0.3], d).pred.iter().all(|v| v.is_nan()), "{d}");
+            for w in [0.0, 1.0] {
+                let out = m.step(&[0.3], &[], d, w);
+                assert!(out.pred.iter().all(|v| v.is_nan()), "{d}: {out:?}");
+                assert_eq!(m.runs, before.runs, "{d}");
+                assert_eq!(m.logjoint, before.logjoint, "{d}");
+            }
+            assert_eq!(m.solve_failures, i as u64 + 1, "{d}");
+        }
+    }
+
+    /// The flag is the configuration's last field and is left out where it
+    /// is false, so a state with a per-row hazard writes the bytes it wrote
+    /// before it existed; one on the clock writes it. Both round-trip, named
+    /// and compact, mid-stream, and go on as the model that never stopped.
+    #[test]
+    fn the_clock_is_written_only_where_it_is_set() {
+        for c in [cfg(1), on_clock(1, 15.0)] {
+            let on = c.hazard_on_clock;
+            let mut m = Bocpd::new(c).unwrap();
+            let mut n = Normals::new(79);
+            for t in 0..30 {
+                m.step(&[n.normal()], &[], if t % 4 == 0 { 0.0 } else { 2.0 }, 1.0);
+            }
+            let v = serde_json::to_value(m.cfg()).unwrap();
+            assert_eq!(v.get("hazard_on_clock").is_some(), on, "{v}");
+            for bytes in [
+                rmp_serde::to_vec(&m).unwrap(),
+                rmp_serde::to_vec_named(&m).unwrap(),
+            ] {
+                let mut back: Bocpd = rmp_serde::from_slice(&bytes).unwrap();
+                assert_eq!(back, m);
+                let mut twin = m.clone();
+                for t in 0..10 {
+                    let x = [n.normal()];
+                    let d = if t % 3 == 0 { 0.0 } else { 1.5 };
+                    assert_eq!(back.step(&x, &[], d, 1.0), twin.step(&x, &[], d, 1.0));
+                }
+            }
+        }
     }
 }

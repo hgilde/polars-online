@@ -4057,7 +4057,7 @@ not only "something broke".
 
 `bocpd` refuses a `half_life` or `lam`, because the run-length posterior does
 the forgetting. Set how fast with `hazard`, the expected run length. With
-`H = 1/hazard` the per-row chance of a break, and `π_r` the posterior
+`H = 1/hazard` the chance of a break after each row, and `π_r` the posterior
 predictive of run length `r` for this row, their Algorithm 1 is:
 
 ```
@@ -4065,12 +4065,36 @@ growth:      P(r_t = r+1, x_{1:t}) = P(r_{t−1} = r, x_{1:t−1})·π_r·(1 −
 changepoint: P(r_t = 0,   x_{1:t}) = Σ_r P(r_{t−1} = r, x_{1:t−1})·π_r·H
 ```
 
+**Give `hazard` as a duration to make breaks follow time, not rows.** A
+number says breaks follow the row rate, so on irregular rows a weekend counts
+as one row. On a temporal clock, `hazard="1h"` is `τ`, the expected time
+between changepoints. The step of `d` into a row then carries the chance
+`h = 1 − exp(−d/τ)` that a break fell inside it. That chance belongs before
+the row, so `h` of every run's mass moves to the empty run before the row is
+read. The recursion above then runs with `H = 0`, since no time has passed
+since the row.
+
+| `hazard` | what it is | the chance of a break |
+|---|---|---|
+| a number, 250 by default | the expected rows between changepoints, on any clock | `1/hazard`, after every row |
+| a duration, such as `"1h"` | `τ`, the expected time between changepoints, on a temporal clock | `1 − exp(−d/τ)` for the step of `d` into each row, before the row is read |
+
+The duration form follows the clock's rules:
+
+| case | what happens |
+|---|---|
+| a gap past `gap_cap` | `d` is the step decay reads, so the gap counts as the cap |
+| a step of 0, a stamp shared with the row before | no chance of a break: the row cannot begin a run, and reports `p_change` 0 |
+| a row of weight 0 | its step's chance applies and it teaches nothing, so two steps with nothing learned between them read as one step of their sum |
+| `prune_below=0` | each step of 0 leaves one run of no mass among the runs kept, until `max_run` folds it |
+| no temporal clock, a plain-number clock parameter beside it, 0 or below, or `hazard_col` beside it | refused, naming the parameter |
+
 This code uses `df` from [Example data](#example-data):
 
 ```python
 runs = po.spec.bocpd(
     "regime", features=["ret"], group="stock_id",
-    hazard=250.0,                # the expected run length: H = 1/hazard is the per-row chance of a break
+    hazard=250.0,                # the expected run length: H = 1/hazard is the chance of a break after each row
     prior_nu=2.0,                # the prior on the variance, as 2a ...
     prior_scale=[2e-4],          # ... and 2b: the one prior to set from your data
     emission="diag",             # the default: a normal-inverse-gamma per feature
@@ -4109,9 +4133,11 @@ kinds of break:
 
 **`p_change` reports `P(r ≤ 1)`, because `P(r = 0)` equals `H` on every
 row:** the two branches share one predictive, so the normalised mass at
-`r = 0` is *exactly* `H`, whatever the data. Row one of a group reports
-nothing under the default `min_weight` of 1, since `P(r ≤ 1)` is 1 there
-however the row looks.
+`r = 0` is *exactly* `H`, whatever the data. Under a duration `hazard` that
+does not hold: the chance of a break comes before the row, nothing sits at
+`r = 0` after it, and `p_change` is the chance that the row began a run. Row
+one of a group reports nothing under the default `min_weight` of 1, since
+`P(r ≤ 1)` is 1 there however the row looks.
 
 Give `emission` to choose each run's model of the rows:
 
@@ -4132,7 +4158,7 @@ Two settings bound the runs kept, and a third sets the hazard row by row:
 |---|---|
 | `prune_below` | drops the runs holding less than this share of the mass |
 | `max_run` | 10,000 by default: folds every longer run into the last kept one. In a stream that seldom breaks, this is what bounds the runs kept |
-| `hazard_col` | reads the hazard per row from a column instead: a null falls back to `hazard`, and a value of 1 or less is an error naming the row |
+| `hazard_col` | reads a per-row hazard from a column instead: its value at a row sets the chance of a break after that row. A null falls back to `hazard`, a value of 1 or less is an error naming the row, and a duration `hazard` beside it is refused |
 
 #### `hmm` — which regime are we in
 

@@ -4048,7 +4048,7 @@ def bocpd(
     name: str,
     *,
     features: list[str],
-    hazard: float = 250.0,
+    hazard: float | Duration = 250.0,
     hazard_col: str | None = None,
     emission: str = "diag",
     prior_mean: list[float] | None = None,
@@ -4081,6 +4081,18 @@ def bocpd(
         growth:      P(r_t = r+1, x_1:t) = P(r_t-1 = r, x_1:t-1) pi_r (1 - H)
         changepoint: P(r_t = 0,   x_1:t) = sum_r P(r_t-1 = r, x_1:t-1) pi_r H
 
+    ``H`` there is the chance of a break after the row. A ``hazard`` given as
+    a duration ``tau`` is the expected time between breaks instead. The step
+    of ``d`` into a row then carries the chance ``h = 1 - exp(-d / tau)``
+    that a break fell inside it, which belongs before the row. So ``h`` of
+    every run's mass moves to the empty run before the row is read, and the
+    recursion above runs with ``H = 0``, since no time has passed since the
+    row:
+
+    .. code-block:: text
+
+        before the row:  P(r = 0) += h * sum_{r >= 1} P(r),   P(r) *= 1 - h for r >= 1
+
     Slot ``r`` keeps the conjugate statistics of exactly the ``r`` rows that
     hypothesis says preceded this one in the run. So slot 0 holds none and
     its predictive is the prior's, which is what makes "a new run starts
@@ -4103,13 +4115,42 @@ def bocpd(
     .. rubric:: Parameters
 
     ``hazard``
-        The expected run length: ``H = 1 / hazard`` is the per-row chance of
-        a break. Default 250.
+        How likely a break is, in one of two forms:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 26 36 38
+
+           * - ``hazard``
+             - what it is
+             - the chance of a break
+           * - a number, 250 by default
+             - the expected rows between changepoints, on any clock
+             - ``1 / hazard`` after every row
+           * - a duration, such as ``"1h"``
+             - ``tau``, the expected time between changepoints, on a
+               temporal clock
+             - ``1 - exp(-d / tau)`` for the step of ``d`` into each row,
+               before the row is read
+
+        A duration is a clock parameter like ``half_life``. It is refused
+        without a temporal clock, beside a clock parameter given as a plain
+        number, and at 0 or below. ``d`` is the step decay reads, so a gap
+        past ``gap_cap`` counts as the cap. A step of 0 has no chance of a
+        break: a row that shares the previous row's stamp cannot begin a
+        run. A row of weight 0 applies its step's chance, since time passed,
+        and teaches nothing, so two steps with nothing learned between them
+        read as one step of their sum. Under ``prune_below = 0`` each step of
+        0 leaves one run of no mass among the runs kept, until ``max_run``
+        folds it.
     ``hazard_col``
-        Read the hazard per row from a column instead, declared in the
-        targets slot the way a weight is. A null or non-finite value there
-        falls back to ``hazard``; a value of 1 or less is an error naming the
-        row, since a hazard is the expected rows between changepoints.
+        Read a per-row hazard from a column instead, declared in the targets
+        slot the way a weight is. The value at a row is the expected rows
+        between changepoints as of that row: ``1 / value`` is the chance of a
+        break after the row, between it and the next. A null or non-finite
+        value falls back to ``hazard``; a value of 1 or less is an error
+        naming the row. A duration ``hazard`` puts its chance before each
+        row, so the two are refused together.
         :meth:`polars_online.ModelBank.predict` reads the column too.
     ``emission``
         The predictive each run keeps, all exact conjugate updates:
@@ -4198,13 +4239,16 @@ def bocpd(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#bocpd>`_):
 
     ``p_change``
-        ``P(r_t <= 1)`` given this row: the alarm. It is ``P(r <= 1)`` and
-        not ``P(r = 0)`` because the changepoint branch and the growth branch
-        share the same predictive, which makes the normalised mass at ``r =
-        0`` exactly ``H`` on every row whatever the data. On row one of a
-        group ``P(r <= 1)`` is 1 however the row looks: the default
-        ``min_weight`` withholds the row, and at ``min_weight=0`` it reports
-        that 1.
+        ``P(r_t <= 1)`` given this row: the alarm. Under a number ``hazard``
+        it is ``P(r <= 1)`` and not ``P(r = 0)``: the changepoint branch and
+        the growth branch share the same predictive, which makes the
+        normalised mass at ``r = 0`` exactly ``H`` on every row whatever the
+        data. Under a duration it is not "exactly ``H``" plus anything: the
+        chance of a break is applied before the row, so nothing sits at ``r
+        = 0`` after it, and ``p_change`` is the chance that this row began a
+        run. A row whose step is 0 reports 0. On row one of a group ``P(r <=
+        1)`` is 1 however the row looks: the default ``min_weight`` withholds
+        the row, and at ``min_weight=0`` it reports that 1.
     ``run_mode``
         The most likely run length before the row, so ``t - run_mode`` is
         the row the current run began on. This is the answer, and
@@ -4259,8 +4303,10 @@ def bocpd(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, ``ValueError`` for ``half_life`` or ``lam``, and for a
-    ``prior_scale`` that is neither ``[s]`` nor ``d * d`` entries.
+    ``targets``, ``ValueError`` for ``half_life`` or ``lam``, for a
+    ``prior_scale`` that is neither ``[s]`` nor ``d * d`` entries, and for a
+    duration ``hazard`` with no clock, beside a plain-number clock
+    parameter, at 0 or below, or beside ``hazard_col``.
     """
     model: dict[str, Any] = {
         "type": "bocpd",

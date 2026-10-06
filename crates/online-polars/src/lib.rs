@@ -87,8 +87,8 @@ pub use runner::{
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
-    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, FloatOrList, ModelKind, Num, RENAMED,
-    RidgeScale, SessionGapSpec, ShardSpec, Spec, name_renamed,
+    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DURATION_OR_UNIT_FREE_FIELDS, FloatOrList,
+    ModelKind, Num, RENAMED, RidgeScale, SessionGapSpec, ShardSpec, Spec, name_renamed,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

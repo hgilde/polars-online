@@ -930,14 +930,15 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     models' window cadence, 31 since task 174, for `lasso`'s per-target
     thresholds, 32 since task 175, for their windows' stamps, 33 since task
     170, for the quantile fit's band systems, 34 since task 176, for the
-    embargo's elapsed clock, and 35 since task 178, for ``coef_every`` on the
-    clock, the windows state unchanged each time."""
+    embargo's elapsed clock, 35 since task 178, for ``coef_every`` on the
+    clock, and 36 since task 179, for ``bocpd``'s hazard on the clock (35
+    still loads), the windows state unchanged each time."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 35, state[i]
+    assert state[i] == 36, state[i]
     for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
