@@ -140,30 +140,37 @@ pub struct RobustCfg {
 /// columns kept and their scales: what a nudge reads its row's full leverage
 /// from (review 2026-10-05, TC1b). `factor` is `None` where no column was
 /// kept: a step then moves the intercept alone, and through the origin
-/// nothing.
-#[derive(Debug, Clone)]
+/// nothing. A scale of a column not kept can be infinite (a variance that
+/// overflowed), so the scales are written with [`crate::humanfloat`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct BandSystem {
     factor: Option<SpdFactor>,
     keep: Vec<usize>,
+    #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
     s: Vec<f64>,
 }
 
-/// Each target's [`BandSystem`] while its Gram is the one the system was
-/// built from: a row inside the band moves the Gram and drops it, decay
-/// moves neither its moments nor `A`, and the next nudge after a drop builds
-/// it again. Not state: rebuilt from the Gram, and equal whatever it holds.
-#[derive(Debug, Clone, Default)]
+/// Each target's [`BandSystem`], kept for the nudges between solves: decay
+/// moves neither the band Gram's moments nor `A`, and a row inside the band
+/// moves the Gram, and the system with it where the move is exact
+/// ([`Robust::move_band_system`]) or drops it, for the next nudge to build
+/// again (task 170). Only a quantile fit keeps one: its nudges are the one
+/// reader. State since schema 33: a system kept from a solve or built at a
+/// nudge holds the Gram's system to the bit, but one a band row moved holds
+/// it to rounding ([`SpdFactor::MAX_MOVES`]), and a model restored without
+/// it built a fresh one where the saved model read the moved one, so a
+/// resumed fit at `ridge = 0` parted from the uninterrupted one by a
+/// rounding (`1e-13`). Saved, a restored model reads the factor the saved
+/// one held, its moves and its cap with it, and two models with different
+/// systems are not equal. A model state written before 33 carries none,
+/// and its first nudge builds one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 struct BandSystems(Vec<Option<BandSystem>>);
 
-impl PartialEq for BandSystems {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
 impl BandSystems {
-    /// Target `j`'s slot among `n`, the slots made on first use (a state
-    /// loaded from a file carries none).
+    /// Target `j`'s slot among `n`, the slots made on first use (a model
+    /// state written before schema 33 carries none).
     fn slot(&mut self, n: usize, j: usize) -> &mut Option<BandSystem> {
         if self.0.len() != n {
             self.0 = vec![None; n];
@@ -301,18 +308,50 @@ pub struct Robust {
     pub solve_failures: u64,
     /// What each `ybar` leaves out: the mean is `ybar[j] + ybar_lo[j]`
     /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
-    /// before it. Before `zbuf`, which is skipped and so must stay last.
+    /// before it.
     #[serde(default)]
     ybar_lo: Vec<f64>,
-    #[serde(skip)]
-    zbuf: Vec<f64>,
-    /// Each target's band system, kept from its last solve for the nudges
-    /// that follow ([`BandSystems`]). Not state.
-    #[serde(skip)]
+    /// Each target's band system, kept from its last solve or nudge for the
+    /// nudges that follow ([`BandSystems`]): state since schema 33 (task
+    /// 170), empty in a state written before it. Before the two fields that
+    /// are skipped, which must stay last.
+    #[serde(default)]
     systems: BandSystems,
+    /// The row's augmented values ([`RowBuf`]). Not state.
+    #[serde(skip)]
+    zbuf: RowBuf,
     /// A nudge's working space ([`NudgeScratch`]). Not state.
     #[serde(skip)]
     nudge: NudgeScratch,
+}
+
+/// The row's augmented values, `[1, x]` with an intercept and `x` through
+/// the origin, written in full at the start of every row before anything
+/// reads them. Not state, and two models are equal whatever it holds -- a
+/// restored model's is zeros where the saved one's holds its last row -- as
+/// `EwCov`'s scratch is; it compared, and no restored model equalled the one
+/// saved (task 170).
+#[derive(Debug, Clone, Default)]
+struct RowBuf(Vec<f64>);
+
+impl PartialEq for RowBuf {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::ops::Deref for RowBuf {
+    type Target = Vec<f64>;
+
+    fn deref(&self) -> &Vec<f64> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for RowBuf {
+    fn deref_mut(&mut self) -> &mut Vec<f64> {
+        &mut self.0
+    }
 }
 
 impl Robust {
@@ -337,7 +376,7 @@ impl Robust {
             weight_since_solve: 0.0,
             solve_failures: 0,
             ybar_lo: vec![0.0; m],
-            zbuf: vec![0.0; k],
+            zbuf: RowBuf(vec![0.0; k]),
             systems: BandSystems(vec![None; m]),
             nudge: NudgeScratch::default(),
             cfg,
@@ -499,8 +538,58 @@ impl Robust {
         }
         out[0] = b0;
         self.solve_failures += u64::from(jitter);
-        *self.systems.slot(self.cfg.n_targets, j) = Some(BandSystem { factor, keep, s });
+        self.keep_band_system(j, BandSystem { factor, keep, s });
         Some(out)
+    }
+
+    /// Keep target `j`'s band system from its solve for the nudges that
+    /// follow. Only a quantile fit nudges, so only a quantile fit keeps
+    /// one; a Huber fit's would be state that nothing reads (task 170).
+    fn keep_band_system(&mut self, j: usize, sys: BandSystem) {
+        let kept = matches!(self.cfg.loss, RobustLoss::Quantile { .. }).then_some(sys);
+        *self.systems.slot(self.cfg.n_targets, j) = kept;
+    }
+
+    /// Whether the band systems a state holds fit the model (task 170):
+    /// none, as a state written before schema 33 holds, or one slot per
+    /// target. A system is built, kept or moved only from the Gram as it
+    /// stands, and only a band row moves the Gram, moving or dropping the
+    /// system with it, so a system's columns and scales are the ones
+    /// [`Self::band_scales`] gives from the Gram it is saved beside, to the
+    /// bit; and it holds a factor exactly when a column is kept, of their
+    /// number. Nothing is factorized: the factor's own entries are checked
+    /// where they are read ([`SpdFactor`]'s state form).
+    fn band_systems_fit(&self) -> Result<(), String> {
+        let n = self.cfg.n_targets;
+        if !self.systems.0.is_empty() && self.systems.0.len() != n {
+            return Err(format!(
+                "{} band systems for {n} targets",
+                self.systems.0.len()
+            ));
+        }
+        for (j, sys) in self.systems.0.iter().enumerate() {
+            let Some(sys) = sys else {
+                continue;
+            };
+            let (s, keep) = self.band_scales(j);
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            if keep != sys.keep || bits(&s) != bits(&sys.s) {
+                return Err(format!(
+                    "target {j}'s band system is not of its Gram's columns and scales"
+                ));
+            }
+            let fits = match &sys.factor {
+                Some(f) => !keep.is_empty() && f.order() == keep.len(),
+                None => keep.is_empty(),
+            };
+            if !fits {
+                return Err(format!(
+                    "target {j}'s band factor is not of its {} kept columns",
+                    keep.len()
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Target `j`'s band system as its solve factorizes it, from the band
@@ -537,7 +626,8 @@ impl Robust {
     /// centred deviations of the features under `standardize`, keeping the
     /// columns whose variance is usable; through the origin, the raw second
     /// moments' roots under `standardize`, keeping the columns with one;
-    /// unstandardized, scales of 1 and every column.
+    /// unstandardized, scales of 1 and every column. One rule for the
+    /// system a nudge builds and the one a band row moves.
     fn band_scales(&self, j: usize) -> (Vec<f64>, Vec<usize>) {
         let k = self.cfg.k_total();
         let cov = &self.cov[j];
@@ -581,12 +671,13 @@ impl Robust {
     /// 2,000, and the solve threw such a row 6 to 13 times its residual
     /// past its target, 30 to 127 times at 0.9999 (review 2026-10-05,
     /// TC1b). The factor is kept, from the last solve or the last nudge
-    /// that made one, until a row inside the band moves the Gram: a nudge
-    /// costs `O(k²)`, and the first nudge after such a row makes the
-    /// `O(k³)` factorization again. A kept feature with no spread in the
-    /// band, on which the row deviates, has no curvature to lean on: the
-    /// movement is unbounded and the step 0 (G2), as for a system no jitter
-    /// factorizes.
+    /// that made one, and a nudge costs `O(k²)`. A row inside the band moves
+    /// the Gram, and the factor with it in `O(k²)` where that is exact
+    /// ([`Self::move_band_system`]); elsewhere it drops the factor, and the
+    /// first nudge after it makes the `O(k³)` factorization again. A kept
+    /// feature with no spread in the band, on which the row deviates, has no
+    /// curvature to lean on: the movement is unbounded and the step 0 (G2),
+    /// as for a system no jitter factorizes.
     fn nudge_movement(&mut self, j: usize) -> f64 {
         let n = self.cfg.n_targets;
         if self.systems.slot(n, j).is_none() {
@@ -633,6 +724,76 @@ impl Robust {
         if intercept { 1.0 + q } else { q }
     }
 
+    /// The step a row inside the band makes to target `j`'s kept band
+    /// system, read before the Gram moves: `v` with `A' = a·A + v vᵀ` before
+    /// any rescaling, or `None` where no move is exact or wanted (task 170).
+    ///
+    /// The row moves the mean-form Gram as `EwCov::update` does, with the
+    /// row's `a` and `b` and its deviations `d` from the means before it:
+    /// the centred `C' = a·C + a·b·d dᵀ`, and through the origin, where the
+    /// system is the raw Gram `R = C + m mᵀ` and `m' = m + b·d`, `R' = a·R +
+    /// b·z zᵀ`, since `a + b = 1`. The scaled system is `A = D⁻¹ C D⁻¹ + r·I`
+    /// (`R` through the origin), `D` the scales, so with `ũ = D⁻¹d` (`D⁻¹z`)
+    /// `A' = E (a·(A − r·I) + v vᵀ) E + r·I` with `v = √(a·b)·ũ` (`√b·ũ`)
+    /// and `E = D'⁻¹D`, the scales' change, the identity unstandardized. A
+    /// ridge `r > 0` leaves a diagonal shift `(1 − a)·r·I` over the move,
+    /// which no `O(k²)` move makes, so the move is exact only at `r = 0`.
+    /// It is wanted only by the quantile loss, whose nudges read the system;
+    /// a Huber fit drops it, as every model did before.
+    fn band_step(&self, j: usize, a: f64, b: f64) -> Option<Vec<f64>> {
+        if self.cfg.ridge != 0.0 || !matches!(self.cfg.loss, RobustLoss::Quantile { .. }) {
+            return None;
+        }
+        let sys = self.systems.0.get(j)?.as_ref()?;
+        if !sys.factor.as_ref()?.can_move() {
+            return None;
+        }
+        let cov = &self.cov[j];
+        Some(if self.cfg.fit_intercept {
+            let root = (a * b).sqrt();
+            sys.keep
+                .iter()
+                .map(|&i| root * (cov.deviation(i + 1, self.zbuf[i + 1]) / sys.s[i]))
+                .collect()
+        } else {
+            let root = b.sqrt();
+            sys.keep
+                .iter()
+                .map(|&i| root * (self.zbuf[i] / sys.s[i]))
+                .collect()
+        })
+    }
+
+    /// Target `j`'s kept band system after a row inside the band moved its
+    /// Gram, the row's step read before by [`Self::band_step`]: moved in
+    /// `O(k²)` -- the factor updated by `a` and the step, then rescaled by
+    /// the scales' change under `standardize` -- where the move is exact,
+    /// else dropped for the next nudge to build again. Unstandardized the
+    /// scales and columns cannot change; standardized, a column the Gram
+    /// now keeps or no longer keeps changes the system's shape, which no
+    /// move makes. A factor that refuses its move -- jittered, at its cap of
+    /// moves, or left with a pivot that is not a positive number -- is
+    /// dropped too (`SpdFactor::updated`).
+    fn move_band_system(&mut self, j: usize, a: f64, step: Option<Vec<f64>>) {
+        let n = self.cfg.n_targets;
+        let moved = step.and_then(|mut v| {
+            let mut sys = self.systems.slot(n, j).take()?;
+            let mut factor = sys.factor.take()?.updated(a, &mut v)?;
+            if self.cfg.standardize {
+                let (s, keep) = self.band_scales(j);
+                if keep != sys.keep {
+                    return None;
+                }
+                let e: Vec<f64> = keep.iter().map(|&i| sys.s[i] / s[i]).collect();
+                factor = factor.congruent(&e)?;
+                sys.s = s;
+            }
+            sys.factor = Some(factor);
+            Some(sys)
+        });
+        *self.systems.slot(n, j) = moved;
+    }
+
     /// The solve through the origin, on the raw system: every slot is a
     /// slope and every slot is penalized, and the right-hand side is the
     /// uncentred `E[z·y] = c + m·ȳ`, one step from what is kept. Nothing is
@@ -669,7 +830,7 @@ impl Robust {
             factor = Some(f);
         }
         self.solve_failures += u64::from(jitter);
-        *self.systems.slot(self.cfg.n_targets, j) = Some(BandSystem { factor, keep, s });
+        self.keep_band_system(j, BandSystem { factor, keep, s });
         Some(out)
     }
 }
@@ -693,7 +854,7 @@ impl OnlineModel for Robust {
         let m = self.cfg.n_targets;
         let k = self.cfg.k_total();
         if self.zbuf.len() != k {
-            self.zbuf = vec![0.0; k];
+            self.zbuf = RowBuf(vec![0.0; k]);
         }
         let lam = self.cfg.decay.factor(d_clock);
         if self.cfg.fit_intercept {
@@ -706,6 +867,23 @@ impl OnlineModel for Robust {
         // ---- predict (state before the update) ----
         let out = self.predict(x, d_clock);
         let pred = &out.pred;
+
+        // ---- the solve schedule, decided before the targets learn the row:
+        // it reads nothing they move, and a band row whose system the solve
+        // at the end of the row rebuilds need not move it first (task 170) ----
+        self.w_raw = lam * self.w_raw + weight;
+        self.clock_since_solve += d_clock;
+        self.rows_since_solve += 1;
+        if weight.is_finite() && weight > 0.0 {
+            self.weight_since_solve += weight;
+        }
+        let by_cadence = match self.cfg.solve_share {
+            Some(share) => self.weight_since_solve >= share * self.w_raw,
+            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+        };
+        let due = by_cadence
+            || self.rows_since_solve >= self.cfg.max_rows_between_solves
+            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
         for j in 0..m {
@@ -762,7 +940,8 @@ impl OnlineModel for Robust {
                     );
                     let ab_dy = a * bb * dy;
                     let cov = &self.cov[j];
-                    for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                    for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(self.zbuf.iter()).enumerate()
+                    {
                         *ci = a * *ci + ab_dy * cov.deviation(i, zi);
                     }
                     crate::comp::add(
@@ -770,11 +949,15 @@ impl OnlineModel for Robust {
                         crate::comp::lo_slot(&mut self.ybar_lo, m, j),
                         bb * dy,
                     );
+                    // The Gram moves: the band system kept from the last
+                    // solve or nudge moves with it where that is exact, from
+                    // the row's step read before the means move, and is
+                    // dropped elsewhere, or where the solve at the end of
+                    // the row builds it afresh (task 170).
+                    let step = if due { None } else { self.band_step(j, a, bb) };
                     self.cov[j].update(&self.zbuf, lam, w);
                     self.wj[j] = wj_new;
-                    // The Gram moved: the band system kept from the last
-                    // solve is not this one's.
-                    *self.systems.slot(m, j) = None;
+                    self.move_band_system(j, a, step);
                 }
                 RowUpdate::Nudge { nudge } => {
                     // Outside the band a row is one term of the score and none
@@ -816,7 +999,9 @@ impl OnlineModel for Robust {
                         } else {
                             raw
                         };
-                        for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                        for (i, (ci, &zi)) in
+                            self.cross[j].iter_mut().zip(self.zbuf.iter()).enumerate()
+                        {
                             *ci += step * cov.deviation(i, zi);
                         }
                         // A step of nothing is not taken (`crate::comp::add`
@@ -846,20 +1031,6 @@ impl OnlineModel for Robust {
             }
         }
 
-        self.w_raw = lam * self.w_raw + weight;
-
-        self.clock_since_solve += d_clock;
-        self.rows_since_solve += 1;
-        if weight.is_finite() && weight > 0.0 {
-            self.weight_since_solve += weight;
-        }
-        let by_cadence = match self.cfg.solve_share {
-            Some(share) => self.weight_since_solve >= share * self.w_raw,
-            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
-        };
-        let due = by_cadence
-            || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
         if due {
             self.solve();
         }
@@ -916,10 +1087,16 @@ impl OnlineModel for Robust {
                         "robust: the accumulators have the wrong shape".into(),
                     ));
                 }
+                // The band systems are state (task 170), held as they were
+                // saved and never factorized again, so one that does not fit
+                // its Gram is refused rather than read.
+                if let Err(e) = m.band_systems_fit() {
+                    return Err(StateError::Invalid(format!("robust: {e}")));
+                }
                 // No window here: a state written before the runs' flag keeps
                 // none from here (review 2026-09-26, C4).
                 m.cov.iter_mut().for_each(crate::EwCov::set_runs_off);
-                m.zbuf = vec![0.0; k];
+                m.zbuf = RowBuf(vec![0.0; k]);
                 Ok(m)
             }
             other => Err(StateError::WrongModel {
@@ -1793,12 +1970,15 @@ mod tests {
         }
     }
 
-    /// The band systems are not state: the next nudge rebuilds them from the
-    /// Gram, so two models that differ only in them are equal -- a model
-    /// holding one and its copy with none, which is what a restore makes
-    /// ([`BandSystems`]).
+    /// The band systems are state (task 170; [`BandSystems`]): a model and
+    /// its copy without them are not equal, and a model restored from its
+    /// state -- msgpack named and compact, and JSON -- equals the one saved,
+    /// its band systems included. Until schema 33 they were not state, a
+    /// restore built them again at the first nudge, and any two models that
+    /// differed only in them compared equal (task 166).
     #[test]
-    fn models_that_differ_only_in_their_band_systems_are_equal() {
+    fn the_band_systems_are_state() {
+        use crate::OnlineModel;
         let mut m = Robust::new(cfg(3, 1, RobustLoss::Quantile { tau: 0.5 })).unwrap();
         let mut s = 7u64;
         for i in 0..50 {
@@ -1812,7 +1992,17 @@ mod tests {
         );
         let mut bare = m.clone();
         bare.systems = BandSystems::default();
-        assert_eq!(bare, m);
+        assert_ne!(bare, m, "the band systems are compared");
+        let state = m.state();
+        let named: crate::State =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&state).unwrap()).unwrap();
+        let compact: crate::State =
+            rmp_serde::from_slice(&rmp_serde::to_vec(&state).unwrap()).unwrap();
+        let json: crate::State =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        for (how, back) in [("named", named), ("compact", compact), ("json", json)] {
+            assert_eq!(Robust::restore(&back).unwrap(), m, "{how}");
+        }
     }
 
     #[test]
@@ -2315,7 +2505,7 @@ mod tests {
             let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
             m.cov[0].set_moments(&mean, &cen, w, q);
             m.systems.0[0] = None;
-            m.zbuf = vec![1.0, 1.1, -2.0, 0.9];
+            m.zbuf = RowBuf(vec![1.0, 1.1, -2.0, 0.9]);
             let ridge = 1e-6;
             let term = |i: usize| (m.zbuf[i] - mean[i]).powi(2);
             let with_ridge: f64 = 1.0
@@ -2373,5 +2563,466 @@ mod tests {
         off.step(&[2.0], &[Some(p2 + 0.5)], 1.0, 1e4);
         assert_eq!(off.wj[0], m.wj[0], "the row was a nudge");
         assert_eq!(off.coefficients(), m.coefficients(), "and moved nothing");
+    }
+
+    // --- task 170: the band factor moved where the move is exact ---------
+
+    /// The leverage a nudge would read for `probe` against target 0's band
+    /// system, from the system `m` keeps and from one built afresh from its
+    /// Gram: `(kept, fresh)`.
+    fn movement_kept_and_fresh(m: &Robust, probe: &[f64]) -> (f64, f64) {
+        let z: Vec<f64> = if m.cfg.fit_intercept {
+            std::iter::once(1.0).chain(probe.iter().copied()).collect()
+        } else {
+            probe.to_vec()
+        };
+        let (mut kept, mut fresh) = (m.clone(), m.clone());
+        fresh.systems = BandSystems::default();
+        kept.zbuf.copy_from_slice(&z);
+        fresh.zbuf.copy_from_slice(&z);
+        (kept.nudge_movement(0), fresh.nudge_movement(0))
+    }
+
+    /// Under `ridge = 0` a row inside the band moves the band system's
+    /// matrix by a scale and a rank-one step -- `A' = a·A + a·b·ũ ũᵀ` from the
+    /// centred Gram, `a·A + b·x̃ x̃ᵀ` from the raw one through the origin --
+    /// and under `standardize` by a rescaling after it, so the kept factor is
+    /// moved with it in `O(k²)` instead of dropped and rebuilt in `O(k³)` at
+    /// the next nudge (task 170, TC1b's cost). Held, after every such row a
+    /// solve did not follow, to a system built afresh from the Gram: the same
+    /// columns and scales to the bit, and the leverage a nudge reads -- on the
+    /// row itself, on a row against the features' correlation and on a third
+    /// -- within `1e-12` of the fresh system's (measured: 9.5e-15). With an
+    /// intercept and through the origin, standardized and not, under a
+    /// half-life and without one.
+    #[test]
+    fn without_a_ridge_a_band_row_moves_the_kept_factor() {
+        for (fit_intercept, standardize) in
+            [(true, false), (true, true), (false, false), (false, true)]
+        {
+            for hl in [200.0, f64::INFINITY] {
+                let case =
+                    format!("intercept {fit_intercept}, standardize {standardize}, half-life {hl}");
+                let mut c = cfg(3, 1, RobustLoss::Quantile { tau: 0.5 });
+                c.decay = Decay::Halflife(hl);
+                c.ridge = 0.0;
+                c.min_weight = 0.0;
+                c.quantile_eps = 0.2;
+                c.fit_intercept = fit_intercept;
+                c.standardize = standardize;
+                c.solve_every = f64::INFINITY;
+                c.max_rows_between_solves = 50;
+                let mut m = Robust::new(c).unwrap();
+                let mut s = 17u64;
+                let (mut moved, mut worst) = (0usize, 0.0f64);
+                for i in 0..3000usize {
+                    let a = lcg(&mut s);
+                    let x = [a, 0.9 * a + 0.4 * lcg(&mut s), lcg(&mut s)];
+                    let level = if fit_intercept { 1.0 } else { 0.0 };
+                    let y = level + x[0] - 0.5 * x[1] + 0.25 * x[2] + 0.5 * lcg(&mut s);
+                    m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                    let Some(sys) = m.systems.0.first().and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    // A factor no band row moved is fresh from a solve or a
+                    // nudge, the to-the-bit case of `solve.rs`.
+                    if sys.factor.as_ref().is_none_or(|f| f.moves() == 0) {
+                        continue;
+                    }
+                    moved += 1;
+                    let (_, keep, scales) = m.band_system(0);
+                    assert_eq!(keep, sys.keep, "{case}, row {i}");
+                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&scales), bits(&sys.s), "{case}, row {i}");
+                    for probe in [x, [1.0, -1.0, 0.5], [0.3, 0.2, -0.8]] {
+                        let (kept, fresh) = movement_kept_and_fresh(&m, &probe);
+                        assert!(fresh.is_finite() && fresh > 0.0, "{case}, row {i}: {fresh}");
+                        worst = worst.max((kept - fresh).abs() / fresh);
+                    }
+                }
+                assert!(moved > 300, "{case}: {moved} rows read a moved factor");
+                assert!(worst <= 1e-12, "{case}: the leverage parts by {worst:e}");
+            }
+        }
+    }
+
+    /// With a ridge on the band system, a band row moves `A` by a diagonal
+    /// shift as well, `(1 − a)·ridge·I`, which no `O(k²)` move makes, so the
+    /// kept factor is dropped and the next nudge factorizes afresh, as before
+    /// task 170: the default configuration (`ridge = 1e-6`) keeps TC1b's
+    /// numbers to the bit. A Huber fit drops it too: no nudge reads it.
+    #[test]
+    fn with_a_ridge_or_under_huber_a_band_row_drops_the_kept_factor() {
+        for (loss, ridge) in [
+            (RobustLoss::Quantile { tau: 0.5 }, 1e-6),
+            (RobustLoss::Huber { delta: 1.345 }, 0.0),
+        ] {
+            let mut c = cfg(3, 1, loss);
+            c.decay = Decay::Halflife(200.0);
+            c.ridge = ridge;
+            c.min_weight = 0.0;
+            c.quantile_eps = 0.2;
+            c.solve_every = f64::INFINITY;
+            c.max_rows_between_solves = 50;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 17u64;
+            let mut fits = 0;
+            for i in 0..3000usize {
+                let a = lcg(&mut s);
+                let x = [a, 0.9 * a + 0.4 * lcg(&mut s), lcg(&mut s)];
+                let y = 1.0 + x[0] - 0.5 * x[1] + 0.25 * x[2] + 0.5 * lcg(&mut s);
+                let wj = m.wj[0];
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                let fit = m.wj[0] > wj * 0.5f64.powf(1.0 / 200.0) * (1.0 + 1e-12);
+                if fit && m.rows_since_solve > 0 {
+                    fits += 1;
+                    assert!(m.systems.0[0].is_none(), "{loss:?}, row {i}");
+                }
+            }
+            assert!(fits > 300, "{loss:?}: {fits} fit rows");
+        }
+    }
+
+    /// A band row that gives a standardized fit a column it did not keep --
+    /// a feature that had held one value takes another -- changes the
+    /// system's shape, which no move makes: the kept factor is dropped, and
+    /// the next nudge builds the system over the new columns (task 170).
+    #[test]
+    fn a_band_row_that_changes_the_kept_columns_drops_the_factor() {
+        let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.ridge = 0.0;
+        c.standardize = true;
+        c.min_weight = 0.0;
+        c.quantile_eps = 0.2;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 1000;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 31u64;
+        for i in 0..300 {
+            let a = lcg(&mut s);
+            let y = 0.5 + a + 0.3 * lcg(&mut s);
+            m.step(&[a, 0.0], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        // A nudge, so that a system is kept.
+        let p = m.predict(&[0.1, 0.0], 1.0).pred[0];
+        m.step(&[0.1, 0.0], &[Some(p + 50.0)], 1.0, 1.0);
+        let sys = m.systems.0[0].as_ref().expect("the nudge kept a system");
+        assert_eq!(sys.keep, [0], "the feature without spread is not kept");
+        // A row at its prediction is inside the band, and moves feature 1.
+        let p = m.predict(&[0.1, 0.5], 1.0).pred[0];
+        let wj = m.wj[0];
+        m.step(&[0.1, 0.5], &[Some(p)], 1.0, 1.0);
+        assert!(m.wj[0] > wj, "the row was inside the band");
+        assert!(m.systems.0[0].is_none(), "the system's columns changed");
+        let p = m.predict(&[0.1, 0.0], 1.0).pred[0];
+        m.step(&[0.1, 0.0], &[Some(p + 50.0)], 1.0, 1.0);
+        assert_eq!(m.systems.0[0].as_ref().unwrap().keep, [0, 1]);
+    }
+
+    // --- task 170: the band systems are state ---------------------------
+
+    /// TC1b's stream: two features correlated at 0.999 and, from row 1000,
+    /// a row against the correlation every hundred rows, at (+1, −1), on
+    /// the true line, whose leverage is near 2,000 and whose nudge's bound
+    /// binds (`a_nudge_never_moves_its_row_past_its_residual`).
+    fn tc1b_rows(n: usize) -> Vec<([f64; 2], f64)> {
+        let mut s = 5u64;
+        (0..n)
+            .map(|i| {
+                let a = 3f64.sqrt() * lcg(&mut s);
+                let b = 0.999 * a + (1.0 - 0.999f64 * 0.999).sqrt() * 3f64.sqrt() * lcg(&mut s);
+                let glitch = i >= 1000 && i % 100 == 0;
+                let x = if glitch { [1.0, -1.0] } else { [a, b] };
+                let noise = if glitch { 0.4 } else { 0.5 * lcg(&mut s) };
+                (x, 1.0 + 0.8 * x[0] - 0.4 * x[1] + noise)
+            })
+            .collect()
+    }
+
+    /// A quantile fit on `tc1b_rows`' configuration, at `ridge`.
+    fn tc1b_cfg(ridge: f64, standardize: bool, share: bool) -> RobustCfg {
+        let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.decay = Decay::Halflife(500.0);
+        c.min_weight = 0.0;
+        c.ridge = ridge;
+        c.quantile_eps = 0.2;
+        c.standardize = standardize;
+        c.solve_every = 10.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_share = share.then_some(crate::DEFAULT_SOLVE_SHARE);
+        c
+    }
+
+    /// Target 0's kept factor's moves, if a factor is kept.
+    fn band_moves(m: &Robust) -> Option<u32> {
+        m.systems
+            .0
+            .first()?
+            .as_ref()?
+            .factor
+            .as_ref()
+            .map(SpdFactor::moves)
+    }
+
+    /// A quantile fit resumes to the bit at every save point (task 170):
+    /// saved -- named msgpack, as a bank writes it -- and restored at the 49
+    /// rows of the probe and at the three rows before each row against the
+    /// correlation, it goes on as the fit that never stopped, its band factor
+    /// read back as it was saved, the moves its band rows made since the
+    /// last solve included. Before the band systems were state, a restore
+    /// built a fresh factor where the saved fit read a moved one, and at
+    /// `ridge = 0` the probe's save point before row 1100 parted from the
+    /// uninterrupted fit by up to 7.5e-14 (1 of 49). Under both cadences,
+    /// standardized and not, and at the default ridge, whose kept factor
+    /// was already a fresh one. Each comparison runs the 300 rows after its
+    /// save point: a parting persists, and a solve comes within ten.
+    #[test]
+    fn a_quantile_fit_resumes_to_the_bit_at_every_save_point() {
+        use crate::OnlineModel;
+        let rows = tc1b_rows(3000);
+        let mut cuts: Vec<usize> = (1100..2900).step_by(37).collect();
+        assert_eq!(cuts.len(), 49);
+        cuts.extend((1100..2900).step_by(100).flat_map(|g| [g - 2, g - 1, g]));
+        let step = |m: &mut Robust, i: usize| {
+            let (x, y) = rows[i];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0)
+                .pred[0]
+                .to_bits()
+        };
+        for ridge in [0.0, 1e-6] {
+            for standardize in [false, true] {
+                for share in [false, true] {
+                    let case = format!("ridge {ridge}, standardize {standardize}, share {share}");
+                    let c = tc1b_cfg(ridge, standardize, share);
+                    let mut straight = Robust::new(c.clone()).unwrap();
+                    let mut saved = Vec::new();
+                    let mut preds = Vec::new();
+                    for i in 0..rows.len() {
+                        if cuts.contains(&i) {
+                            saved.push((i, rmp_serde::to_vec_named(&straight.state()).unwrap()));
+                        }
+                        preds.push(step(&mut straight, i));
+                    }
+                    let (mut off, mut moved) = (Vec::new(), 0);
+                    for (cut, bytes) in saved {
+                        let mut back = Robust::restore(&rmp_serde::from_slice(&bytes).unwrap())
+                            .unwrap_or_else(|e| panic!("{case}, cut {cut}: {e}"));
+                        moved += usize::from(band_moves(&back).is_some_and(|k| k > 0));
+                        if (cut..(cut + 300).min(rows.len()))
+                            .any(|i| step(&mut back, i) != preds[i])
+                        {
+                            off.push(cut);
+                        }
+                    }
+                    assert!(
+                        off.is_empty(),
+                        "{case}: {} save points off the bit: {off:?}",
+                        off.len()
+                    );
+                    if ridge == 0.0 {
+                        assert!(
+                            moved > 10,
+                            "{case}: {moved} save points held a moved factor"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A state holding a moved band factor goes through JSON and back as
+    /// itself (task 170): the restored fit equals the saved one, its factor
+    /// with the moves it had made, and goes on to the bit.
+    #[test]
+    fn a_moved_band_factor_survives_a_json_round_trip() {
+        use crate::OnlineModel;
+        let rows = tc1b_rows(1400);
+        for standardize in [false, true] {
+            let mut m = Robust::new(tc1b_cfg(0.0, standardize, true)).unwrap();
+            let mut i = 0;
+            while i < 1000 || band_moves(&m).is_none_or(|k| k == 0) {
+                let (x, y) = rows[i];
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                i += 1;
+            }
+            let json = serde_json::to_string(&m.state()).unwrap();
+            let mut back = Robust::restore(&serde_json::from_str(&json).unwrap()).unwrap();
+            assert_eq!(back, m, "standardize {standardize}");
+            assert_eq!(
+                band_moves(&back),
+                band_moves(&m),
+                "standardize {standardize}"
+            );
+            for (x, y) in &rows[i..] {
+                assert_eq!(
+                    back.step(x, &[Some(*y)], 1.0, 1.0).pred[0].to_bits(),
+                    m.step(x, &[Some(*y)], 1.0, 1.0).pred[0].to_bits(),
+                    "standardize {standardize}"
+                );
+            }
+        }
+    }
+
+    /// Each way a band system can be damaged in a state is refused on its
+    /// own (task 170), where the model would read a leverage from a system
+    /// that is not its Gram's: a slot too many, a column the Gram does not
+    /// keep, a scale an ulp off, no factor where columns are kept, one of
+    /// the wrong order, and one where none is kept. A factor that is not one
+    /// -- a pivot not positive, an entry not finite or missing, a jitter that
+    /// does not fit its rung, more moves than the cap, any on a jittered
+    /// factor -- is refused where the state is read; beside them a jittered
+    /// factor that made no move is read.
+    #[test]
+    fn each_damaged_band_system_is_refused_on_its_own() {
+        use crate::OnlineModel;
+        use serde_json::json;
+        let fitted = |constant: bool| {
+            let mut c = cfg(3, 1, RobustLoss::Quantile { tau: 0.5 });
+            c.standardize = true;
+            c.min_weight = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 7u64;
+            for i in 0..60 {
+                let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                let x = if constant { [1.0, 2.0, 3.0] } else { x };
+                let y = x[0] - x[2] + 0.3 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            assert!(m.systems.0[0].is_some(), "the case needs a system");
+            m.state()
+        };
+        let base = fitted(false);
+        let none_kept = fitted(true);
+        type Spoil = (&'static str, bool, fn(&mut BandSystems), &'static str);
+        let cases: [Spoil; 6] = [
+            (
+                "a slot too many",
+                false,
+                |b| b.0.push(None),
+                "band systems for",
+            ),
+            (
+                "a column the Gram does not keep",
+                false,
+                |b| {
+                    b.0[0].as_mut().unwrap().keep.pop();
+                },
+                "not of its Gram's",
+            ),
+            (
+                "a scale an ulp off",
+                false,
+                |b| {
+                    let s = &mut b.0[0].as_mut().unwrap().s;
+                    s[1] = f64::from_bits(s[1].to_bits() + 1);
+                },
+                "not of its Gram's",
+            ),
+            (
+                "no factor where columns are kept",
+                false,
+                |b| {
+                    b.0[0].as_mut().unwrap().factor = None;
+                },
+                "band factor is not of its 3",
+            ),
+            (
+                "a factor of the wrong order",
+                false,
+                |b| {
+                    b.0[0].as_mut().unwrap().factor = SpdFactor::of(&[1.0], 1);
+                },
+                "band factor is not of its 3",
+            ),
+            (
+                "a factor where no column is kept",
+                true,
+                |b| {
+                    b.0[0].as_mut().unwrap().factor = SpdFactor::of(&[1.0], 1);
+                },
+                "band factor is not of its 0",
+            ),
+        ];
+        for (what, constant, spoil, want) in cases {
+            let mut s = if constant {
+                none_kept.clone()
+            } else {
+                base.clone()
+            };
+            let ModelState::Robust(inner) = &mut s.model else {
+                unreachable!()
+            };
+            spoil(&mut inner.systems);
+            match Robust::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains(want), "{what}: {e}"),
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+        assert!(Robust::restore(&base).is_ok() && Robust::restore(&none_kept).is_ok());
+
+        let v = serde_json::to_value(&base).unwrap();
+        type JsonEdit = (&'static str, fn(&mut serde_json::Value));
+        type Edit = (&'static str, &'static [JsonEdit]);
+        let read = |edits: &[JsonEdit]| {
+            let mut v = v.clone();
+            for (key, edit) in edits {
+                crate::window::json_edit(&mut v, key, &mut |x| edit(x));
+            }
+            serde_json::from_value::<crate::State>(v)
+        };
+        let refused: [Edit; 7] = [
+            (
+                "a pivot that is not positive",
+                &[("lower", |x| x[0] = json!(-1.0))],
+            ),
+            (
+                "an entry that is not finite",
+                &[("lower", |x| x[1] = json!("nan"))],
+            ),
+            (
+                "an entry missing",
+                &[("lower", |x| {
+                    x.as_array_mut().unwrap().pop();
+                })],
+            ),
+            (
+                "a shift on the first rung",
+                &[("jitter", |x| *x = json!(0.5))],
+            ),
+            (
+                "a shift that is not finite",
+                &[
+                    ("attempts", |x| *x = json!(1)),
+                    ("jitter", |x| *x = json!("inf")),
+                ],
+            ),
+            ("more moves than the cap", &[("moves", |x| *x = json!(65))]),
+            (
+                "a move on a jittered factor",
+                &[
+                    ("attempts", |x| *x = json!(1)),
+                    ("jitter", |x| *x = json!(1e-12)),
+                    ("moves", |x| *x = json!(1)),
+                ],
+            ),
+        ];
+        for (what, edits) in refused {
+            assert!(read(edits).is_err(), "{what}");
+        }
+        assert!(
+            read(&[
+                ("attempts", |x| *x = json!(5)),
+                ("jitter", |x| *x = json!(1e-3))
+            ])
+            .is_err()
+        );
+        let jittered = read(&[
+            ("attempts", |x| *x = json!(1)),
+            ("jitter", |x| *x = json!(1e-12)),
+        ]);
+        assert!(
+            Robust::restore(&jittered.unwrap()).is_ok(),
+            "a jittered factor is read"
+        );
     }
 }

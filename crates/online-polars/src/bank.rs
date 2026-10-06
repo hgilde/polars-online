@@ -106,8 +106,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// day): a window's snapshots are keyed by each row's stamp beside the
 /// summed clock, so a 31 file's rings are another shape, and its streams
 /// keep no exact clock to stamp the next row from; pre-1.0, no loader is
-/// written, and a 31 file is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 32;
+/// written, and a 31 file is refit. **33 since task 170** (the same day): a
+/// quantile fit's state keeps its band systems, the factors its nudges read
+/// their leverage from, which a band row at `ridge = 0` moves in place; a
+/// 32 file holds none, and a bank loading it would build them afresh where
+/// the saved bank held moved ones, a rounding apart, so it is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 33;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

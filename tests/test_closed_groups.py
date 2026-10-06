@@ -789,9 +789,12 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 31 since
-    2026-10-06 (task 175: a model window's snapshots are keyed by each row's
-    stamp, its decayed clock held exactly), after 31 the same day (task 174:
+    """The version a bank file names, held to the library's: 33 since
+    2026-10-06 (task 170: a quantile fit's state keeps its band systems, the
+    factors its nudges read, which a band row at ``ridge = 0`` moves in
+    place), after 32 the same day (task 175: a model window's snapshots are
+    keyed by each row's stamp, its decayed clock held exactly), after 31 the
+    same day (task 174:
     `lasso` keeps each target's own `min_weight` for its selection), after 30
     the same day (task 162: a model window's snapshots are spaced on the
     clock, `window_every` in clock units beside `max_rows_between_snapshots`),
@@ -818,7 +821,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 32
+    assert po.schema_version() == 33
     assert sys.version_info >= (3, 12)
 
 

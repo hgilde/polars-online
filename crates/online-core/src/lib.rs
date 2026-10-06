@@ -417,7 +417,19 @@ pub use window::{
 ///   a 31 file lacks. The bank refuses a file older than 32 by number;
 ///   pre-1.0 no loader is written. A model without a window loads its state
 ///   as it did at 31.
-pub const SCHEMA_VERSION: u32 = 32;
+/// - 33 (2026-10-06, task 170): a quantile fit keeps each target's band
+///   system in its state -- the factor of the band Gram's system that its
+///   nudges read their leverage from, packed with its jitter rung and the
+///   moves made since it was factorized, and the columns kept and their
+///   scales. A band row at `ridge = 0` moves the factor in place, which
+///   holds the Gram's system to rounding where a factor made afresh holds
+///   it to the bit, so a restore that made one afresh parted from the fit
+///   that never stopped by a rounding; restored, the factor is the one
+///   saved, and `robust`'s restore refuses a system that is not of its
+///   Gram. A `robust` state from before 33 decodes with no systems, which
+///   its first nudge builds; the bank refuses a file older than 33 by
+///   number, and pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 33;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

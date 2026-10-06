@@ -1,5 +1,7 @@
 """Task 13: robust models - Huber and quantile (docs/PLAN.md section 4.5)."""
 
+import json
+
 import numpy as np
 import polars as pl
 import pytest
@@ -431,3 +433,96 @@ class TestTheQuantileFitsDefinition:
         worst = max((abs(coef[t] @ Z[t] - pred[t]) / abs(y[t] - pred[t]), t) for t in nudged)
         assert worst[0] <= 1.0, f"row {worst[1]} moved {worst[0]:.2f} times its residual"
         assert set(glitch) & set(nudged), "no glitch row was nudged"
+
+
+class TestTheBandFactorIsState:
+    """Task 170: a quantile fit at ``ridge = 0`` moves its band factor in
+    place at each row inside the band, which holds the band Gram's system
+    to rounding where a factor made afresh holds it to the bit. Until the
+    factor was part of the state, a bank saved and loaded built it afresh
+    where the saved bank read the moved one, and parted from the run that
+    never stopped by a rounding (saved after rows 997 to 999 of this
+    stream: 1,357 predictions, up to 3.4e-13). The README promises every
+    spec the same numbers, to the last bit, with a save and resume in the
+    middle; these hold the promise for the quantile fit on TC1b's stream:
+    two features correlated at 0.999 and, from row 1000, a row against the
+    correlation every hundred rows, whose nudge's bound binds."""
+
+    @staticmethod
+    def stream(n=1400):
+        rng = np.random.default_rng(5)
+        a = rng.standard_normal(n)
+        b = 0.999 * a + np.sqrt(1.0 - 0.999**2) * rng.standard_normal(n)
+        x = np.column_stack([a, b])
+        y = 1.0 + x @ np.array([0.8, -0.4]) + rng.standard_exponential(n) - 1.0
+        glitch = np.arange(1000, n, 100)
+        x[glitch] = [1.0, -1.0]
+        y[glitch] = 1.0 + 0.8 + 0.4
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+    @staticmethod
+    def spec(standardize):
+        return po.spec.quantile(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            quantile=0.5,
+            half_life=500.0,
+            quantile_eps=0.2,
+            ridge=0.0,
+            standardize=standardize,
+            coef_every=1,
+        )
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_a_bank_saved_at_any_row_resumes_to_the_bit(self, standardize):
+        """Saved and loaded at every row from 990 to 1010 -- the band rows
+        before the first row against the correlation move the factor, and
+        that row's nudge reads it -- a bank goes on as the one that never
+        stopped, every field to the bit."""
+        df, spec = self.stream(), self.spec(standardize)
+        whole = po.ModelBank([spec]).fit_predict(df)
+        for cut in range(990, 1011):
+            bank = po.ModelBank([spec])
+            head = bank.fit_predict(df.slice(0, cut))
+            loaded = po.ModelBank.load_bytes(bank.save_bytes(), specs=[spec])
+            tail = loaded.fit_predict(df.slice(cut))
+            assert pl.concat([head, tail]).equals(whole, null_equal=True), cut
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_one_chunk_or_a_thousand_give_one_run(self, standardize):
+        """Hard rule 3 with the factor moving: chunks of 1, 7 and 600 rows
+        give the one chunk's output to the bit (``coef`` on every row, so
+        the rows that carry it do not depend on the chunking)."""
+        df, spec = self.stream(), self.spec(standardize)
+        whole = po.ModelBank([spec]).fit_predict(df)
+        for rows in (1, 7, 600):
+            bank = po.ModelBank([spec])
+            parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
+            assert pl.concat(parts).equals(whole, null_equal=True), rows
+
+    def test_the_json_export_carries_the_moved_factor(self):
+        """A state saved after row 999 holds a factor its band rows moved;
+        the JSON export carries it -- its order, packed triangle, rung and
+        moves -- and reads back to the state's bytes, which ``to_json``
+        checks itself."""
+        df, spec = self.stream(), self.spec(False)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df.slice(0, 1000))
+        found: list = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if "systems" in node:
+                    found.extend(node["systems"])
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        walk(json.loads(bank.to_json()))
+        assert len(found) == 1, found
+        factor = found[0]["factor"]
+        assert factor["order"] == 2 and len(factor["lower"]) == 3, factor
+        assert factor["attempts"] == 0 and factor["moves"] > 0, factor

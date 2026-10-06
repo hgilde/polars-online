@@ -8,6 +8,7 @@ use faer::Conj;
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::llt;
 use faer::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// The diagonal jitters tried in turn, as multiples of `trace/k`: `A` as
 /// given first, then escalating.
@@ -103,8 +104,13 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
 /// a scale and a rank-one step, or by a rescaling of its rows and columns,
 /// can move the factor with it in `O(k²)` ([`Self::updated`],
 /// [`Self::congruent`]); a factor so moved holds the moved matrix to
-/// rounding, not to the bit of a fresh factorization of it.
-#[derive(Clone, Debug)]
+/// rounding, not to the bit of a fresh factorization of it. So a factor an
+/// owner moves is part of its state: written as its order, `L`'s packed
+/// lower triangle, its jitter rung and its moves, and read back as the same
+/// factor, never factorized again (`SpdFactorState`), so a model restored
+/// from it reads the factor the saved model held.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(into = "SpdFactorState", try_from = "SpdFactorState")]
 pub struct SpdFactor {
     /// `L`, lower triangular with a positive diagonal and zeros above it:
     /// `L Lᵀ` is the matrix factorized, jitter included.
@@ -269,16 +275,30 @@ impl SpdFactor {
     /// finite number and the pivots positive, or the factor is spent; the
     /// move counted; `ln det` taken again on its next read.
     fn moved(mut self) -> Option<Self> {
-        let k = self.l.nrows();
-        for j in 0..k {
-            let col = self.l.col(j).try_as_col_major()?.as_slice();
-            if !(col[j] > 0.0 && col[j..].iter().all(|x| x.is_finite())) {
-                return None;
-            }
+        if !self.is_a_factor() {
+            return None;
         }
         self.moves += 1;
         self.log_det = OnceLock::new();
         Some(self)
+    }
+
+    /// Whether `L` is a Cholesky factor at all: every pivot a positive
+    /// finite number and every entry below it finite. What a move must
+    /// leave and a factor read from a state must hold.
+    fn is_a_factor(&self) -> bool {
+        let k = self.l.nrows();
+        (0..k).all(|j| {
+            self.l.col(j).try_as_col_major().is_some_and(|col| {
+                let col = col.as_slice();
+                col[j] > 0.0 && col[j..].iter().all(|x| x.is_finite())
+            })
+        })
+    }
+
+    /// The factor's order, `k`: the size of the matrix it factors.
+    pub fn order(&self) -> usize {
+        self.l.nrows()
     }
 
     /// Solve `A X = B` from the kept factor, `B` column-major `k x m`, the
@@ -412,6 +432,115 @@ impl SpdFactor {
 /// caller reads between calls.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct QuadWork(Option<Mat<f64>>);
+
+/// Two factors are equal when they are one matrix with one history: the
+/// same entries of `L`, jitter and moves. `ln det` is a cache of the
+/// entries, taken on first read, and is not compared.
+impl PartialEq for SpdFactor {
+    fn eq(&self, other: &Self) -> bool {
+        let k = self.l.nrows();
+        k == other.l.nrows()
+            && self.attempts == other.attempts
+            && self.jitter == other.jitter
+            && self.moves == other.moves
+            && (0..k).all(|j| (j..k).all(|i| self.l[(i, j)] == other.l[(i, j)]))
+    }
+}
+
+/// An [`SpdFactor`] as a state holds it (task 170): its order, `L`'s lower
+/// triangle packed column by column, the jitter rung and the shift it put on
+/// the diagonal, and the moves made since the factorization. Read back, it
+/// is the same factor, never factorized again: the same matrix, a jittered
+/// one still refusing every move, a moved one with the moves it has left
+/// under [`SpdFactor::MAX_MOVES`]. `ln det` is a cache and is not written; a
+/// read takes it afresh (no logarithm reaches a state). The floats are
+/// written with [`crate::humanfloat`], which a state's JSON export reads
+/// back to the bit.
+#[derive(Serialize, Deserialize)]
+struct SpdFactorState {
+    order: usize,
+    #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
+    lower: Vec<f64>,
+    attempts: u32,
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
+    jitter: f64,
+    moves: u32,
+}
+
+impl From<SpdFactor> for SpdFactorState {
+    fn from(f: SpdFactor) -> Self {
+        let k = f.l.nrows();
+        let mut lower = Vec::with_capacity(k * (k + 1) / 2);
+        for j in 0..k {
+            for i in j..k {
+                lower.push(f.l[(i, j)]);
+            }
+        }
+        Self {
+            order: k,
+            lower,
+            attempts: f.attempts,
+            jitter: f.jitter,
+            moves: f.moves,
+        }
+    }
+}
+
+/// A factor read from a state is refused unless it is one this module could
+/// have made: `L`'s lower triangle complete for its order, every pivot a
+/// positive finite number and every entry finite; a jitter rung on the
+/// ladder, with a shift that is 0 exactly when the rung is the first; and
+/// no more moves than the cap, none at all on a jittered factor, which is
+/// never moved. A damaged one is refused by name rather than read as a
+/// matrix that is not positive definite.
+impl TryFrom<SpdFactorState> for SpdFactor {
+    type Error = String;
+
+    fn try_from(st: SpdFactorState) -> Result<Self, String> {
+        let k = st.order;
+        let packed = k.checked_mul(k + 1).map(|n| n / 2);
+        if packed != Some(st.lower.len()) {
+            return Err(format!(
+                "a factor of order {k} holds {} entries, not its triangle",
+                st.lower.len()
+            ));
+        }
+        if st.attempts as usize >= JITTER.len() {
+            return Err(format!("a factor names jitter rung {}", st.attempts));
+        }
+        if !(st.jitter >= 0.0 && st.jitter.is_finite()) || (st.attempts == 0) != (st.jitter == 0.0)
+        {
+            return Err(format!(
+                "a factor's jitter {} does not fit its rung {}",
+                st.jitter, st.attempts
+            ));
+        }
+        if st.moves > Self::MAX_MOVES || (st.moves > 0 && st.attempts > 0) {
+            return Err(format!(
+                "a factor of rung {} counts {} moves",
+                st.attempts, st.moves
+            ));
+        }
+        let mut l = Mat::zeros(k, k);
+        let mut entries = st.lower.iter();
+        for j in 0..k {
+            for i in j..k {
+                l[(i, j)] = *entries.next().expect("the length is checked above");
+            }
+        }
+        let f = Self {
+            l,
+            log_det: OnceLock::new(),
+            attempts: st.attempts,
+            jitter: st.jitter,
+            moves: st.moves,
+        };
+        if !f.is_a_factor() {
+            return Err("a factor's pivots are not all positive, or an entry is not finite".into());
+        }
+        Ok(f)
+    }
+}
 
 /// Quadratic forms `d_jᵀ A⁻¹ d_j` for the `m` column vectors of `d`
 /// (column-major `k x m`) together with `ln det A`, both from one Cholesky
@@ -1040,6 +1169,69 @@ mod tests {
         // The zero vector's form is exactly 0, as `quad_forms` gives it.
         let f = SpdFactor::of(&[4.0, 1.0, 1.0, 3.0], 2).unwrap();
         assert_eq!(f.quad_form(&[0.0, 0.0], &mut work), 0.0);
+    }
+
+    /// A factor read back from its state form is itself (task 170): fresh,
+    /// moved and jittered, through msgpack named and compact and through
+    /// JSON, it is equal, holds the same entries, rung and moves, and solves
+    /// to the bit what the saved one solves. Two factors that differ in any
+    /// one of entry, rung, shift or moves are not equal.
+    #[test]
+    fn a_factor_reads_back_from_its_state_as_itself() {
+        let mut s = 43u64;
+        let a = spd(5, 1e6, &mut s);
+        let fresh = SpdFactor::of(&a, 5).unwrap();
+        let mut v: Vec<f64> = (0..5).map(|_| draw(&mut s)).collect();
+        let moved = fresh
+            .clone()
+            .updated(0.9, &mut v)
+            .unwrap()
+            .congruent(&[1.1, 0.9, 1.0, 1.05, 0.95])
+            .unwrap();
+        let jittered = SpdFactor::of(&[4.0, 2.0, 2.0, 1.0], 2).unwrap();
+        assert!(moved.moves() == 2 && jittered.attempts() > 0);
+        for f in [&fresh, &moved, &jittered] {
+            let k = f.order();
+            let named: SpdFactor =
+                rmp_serde::from_slice(&rmp_serde::to_vec_named(f).unwrap()).unwrap();
+            let compact: SpdFactor = rmp_serde::from_slice(&rmp_serde::to_vec(f).unwrap()).unwrap();
+            let json: SpdFactor = serde_json::from_str(&serde_json::to_string(f).unwrap()).unwrap();
+            for back in [named, compact, json] {
+                assert_eq!(&back, f);
+                assert_eq!(
+                    (back.attempts(), back.jitter(), back.moves()),
+                    (f.attempts(), f.jitter(), f.moves())
+                );
+                for j in 0..k {
+                    for i in 0..k {
+                        assert_eq!(back.l[(i, j)].to_bits(), f.l[(i, j)].to_bits());
+                    }
+                }
+                let d: Vec<f64> = (0..2 * k).map(|_| draw(&mut s)).collect();
+                let bits = |q: Vec<f64>| q.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(
+                    bits(back.quad_forms(&d, k, 2)),
+                    bits(f.quad_forms(&d, k, 2))
+                );
+                assert_eq!(bits(back.solve(&d, k, 2)), bits(f.solve(&d, k, 2)));
+            }
+        }
+        // Each field on its own makes two factors different.
+        let state = |f: &SpdFactor| SpdFactorState::from(f.clone());
+        let read = |st: SpdFactorState| SpdFactor::try_from(st).unwrap();
+        assert_ne!(fresh, moved);
+        let mut entry = state(&moved);
+        entry.lower[3] = f64::from_bits(entry.lower[3].to_bits() + 1);
+        assert_ne!(read(entry), moved);
+        let mut moves = state(&moved);
+        moves.moves = 1;
+        assert_ne!(read(moves), moved);
+        let mut shift = state(&jittered);
+        shift.jitter *= 2.0;
+        assert_ne!(read(shift), jittered);
+        let mut rung = state(&jittered);
+        rung.attempts += 1;
+        assert_ne!(read(rung), jittered);
     }
 
     /// A factor that needed jitter holds `A + δI`, which no move of `A`
