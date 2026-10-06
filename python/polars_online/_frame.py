@@ -98,7 +98,10 @@ def _read_state(state: State) -> bytes:
 
 def _save_path(save_state: State | None) -> str | None:
     """The ``save_state`` path, checked while the plan is built: a directory
-    that is not there is reported now, not after the stream."""
+    that is not there, and a path that is itself a directory, are reported
+    now, not after the stream (review 2026-10-05, YB7: the second failed once
+    every row had been read). Raised here, so the error is the same on every
+    OS, where opening a directory raises a different one on Windows."""
     if save_state is None:
         return None
     path = os.fspath(save_state)
@@ -106,6 +109,9 @@ def _save_path(save_state: State | None) -> str | None:
     if not os.path.isdir(parent):
         msg = f"save_state: {parent!r} is not a directory"
         raise FileNotFoundError(msg)
+    if os.path.isdir(path):
+        msg = f"save_state: {path!r} is a directory; name a file in it"
+        raise IsADirectoryError(msg)
     return path
 
 
@@ -220,9 +226,11 @@ class OrderNotGuaranteedWarning(UserWarning):
     Best-effort by design. The plan's ``explain`` text is read first, and only
     when it names a join, an aggregation or a ``unique`` is the plan read
     through ``LazyFrame.serialize`` -- a format polars has deprecated -- and
-    walked. A plan polars cannot serialize is let through in silence: one
-    already holding a bank, for instance, so a join stacked *above* such a
-    plan is not reported, on any version. The inspection never fails a run.
+    walked. A plan polars cannot serialize is let through in silence. Polars
+    1.44.2 serializes a plan that already holds a bank, its Python source
+    included, so a join stacked *above* a bank is reported there; a polars
+    that cannot serialize it says nothing about it. The inspection never
+    fails a run.
     For a plan whose order is fixed by other means,
     ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
@@ -327,6 +335,14 @@ def _source_started() -> int:
 def _sources_ran_since(run: int) -> bool:
     with _SOURCE_RUNS_LOCK:
         return run < _SOURCE_RUNS_LAST
+
+
+def _source_runs() -> int:
+    """The last run's number, without starting one: what a reader of a plan
+    that is not itself a source -- a bank's ``fit`` -- hands
+    `_sources_ran_since` after reading it (review 2026-10-05, YB6)."""
+    with _SOURCE_RUNS_LOCK:
+        return _SOURCE_RUNS_LAST
 
 
 def _is_python_scan(lf: pl.LazyFrame, plan_text: str | None = None) -> bool:

@@ -19,6 +19,7 @@ frame has not got is polars' ``ColumnNotFoundError``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 
 import polars as pl
@@ -162,18 +163,37 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     return max(matches, key=len)
 
 
+def _scored(long: pl.DataFrame) -> pl.DataFrame:
+    """The rows of :func:`unpack`'s long form whose prediction and target are
+    both values the bank would learn from: not null, not NaN, not infinite and
+    not past its input bound (docs/PLAN.md section 3). The bank reads such a
+    target as missing and still predicts its row, so dropping nulls alone kept
+    the row, and ``r2``, ``ic`` and ``mse`` came out NaN while ``hit_rate``
+    was quietly lowered (review 2026-10-05, YB4)."""
+
+    def usable(column: str) -> pl.Expr:
+        value = pl.col(column).cast(pl.Float64)
+        return value.is_finite() & (value.abs() <= _INPUT_BOUND)
+
+    return long.filter(usable("pred") & usable("y"))
+
+
 def _metric_exprs(min_obs: int, *, binary: bool = False) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
-    ybar = pl.col("y").mean()
+    # The centred sums, as :func:`sums` keeps them: a metric is null where
+    # one it divides by is 0, as :func:`from_sums` gives it, where this gave
+    # -inf and NaN (review 2026-10-05, YB9).
+    m2_y = (pl.col("y") - pl.col("y").mean()).pow(2).sum()
+    m2_pred = (pl.col("pred") - pl.col("pred").mean()).pow(2).sum()
     exprs = [
         pl.len().alias("n"),
         # Out-of-sample R^2 against the realized mean of y in the window --
         # the Brier skill score when `binary` (`pred` a probability, `y` a
         # 0/1 label): same formula, different name (docs/PLAN.md task 76).
-        (1.0 - (resid.pow(2).sum() / (pl.col("y") - ybar).pow(2).sum())).alias("r2"),
+        pl.when(m2_y > 0).then(1.0 - resid.pow(2).sum() / m2_y).alias("r2"),
         # Correlation of prediction with target -- the point-biserial
         # correlation when `binary`, again the same formula.
-        pl.corr("pred", "y").alias("ic"),
+        pl.when(m2_y * m2_pred > 0).then(pl.corr("pred", "y")).alias("ic"),
     ]
     if binary:
         # Accuracy at a 0.5 threshold. Every row scores: 0 is one of the two
@@ -199,14 +219,11 @@ def _metric_exprs(min_obs: int, *, binary: bool = False) -> list[pl.Expr]:
         )
     else:
         # Fraction of rows where the sign of pred matches the sign of y
-        # (rows with y == 0 excluded: neither up nor down, not a class).
-        exprs.append(
-            (
-                ((pl.col("pred").sign() == pl.col("y").sign()) & (pl.col("y") != 0))
-                .sum()
-                .truediv((pl.col("y") != 0).sum())
-            ).alias("hit_rate")
-        )
+        # (rows with y == 0 excluded: neither up nor down, not a class), and
+        # null where no row has a sign.
+        signed = (pl.col("y") != 0).sum()
+        hits = ((pl.col("pred").sign() == pl.col("y").sign()) & (pl.col("y") != 0)).sum()
+        exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
     exprs.append(resid.pow(2).mean().alias("mse"))
     exprs.append(pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough"))
     return exprs
@@ -223,24 +240,31 @@ def metrics(
 ) -> pl.DataFrame:
     """Out-of-sample metrics per ``(slot, target, *by)``, over the whole frame.
 
-    Rows where the prediction or the target is null are dropped, so warm-up and
-    skipped rows never enter the numbers. A group with fewer than ``min_obs``
-    rows left is dropped from the result rather than reported on too little.
-    The columns:
+    Rows where the prediction or the target is missing are dropped, so warm-up
+    and skipped rows never enter the numbers. Missing is what the bank reads as
+    missing: null, NaN, infinite, or past its input bound of 1e100 in
+    magnitude, a target the bank still predicts the row of. A group with fewer
+    than ``min_obs`` rows left is dropped from the result rather than reported
+    on too little. The columns:
 
     ``slot``, ``target``, and the ``by`` columns
         The key.
     ``n``
         The rows counted.
     ``r2``
-        Out-of-sample R² against the realized mean of the target.
+        Out-of-sample R² against the realized mean of the target; null where
+        the target never varied.
     ``ic``
-        The correlation of prediction with target.
+        The correlation of prediction with target; null where either never
+        varied.
     ``hit_rate``
         The share of rows whose sign the prediction got right, rows with ``y ==
-        0`` excluded.
+        0`` excluded; null where every row is excluded.
     ``mse``
         The mean squared residual.
+
+    A metric that is undefined is null, as :func:`from_sums` gives it, rather
+    than an infinity or a NaN that reads as a number.
 
     ``binary=True`` reads ``pred`` as a probability and ``y`` as a 0/1 label, the
     output of a ``sgd`` or ``ftrl`` fit with ``loss = "logistic"``. ``hit_rate``
@@ -258,7 +282,7 @@ def metrics(
     Raises as :func:`unpack` does; a ``by`` column the frame has not got is
     polars' ``ColumnNotFoundError``.
     """
-    long = unpack(df, spec_name, targets=targets).drop_nulls(["pred", "y"])
+    long = _scored(unpack(df, spec_name, targets=targets))
     keys = ["slot", "target", *by]
     out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
@@ -291,8 +315,8 @@ def rolling_metrics(
 
     Raises as :func:`unpack` does, and:
 
-    - ``ValueError`` for a ``window_size`` that is not above 0 or of the
-      wrong kind for the clock;
+    - ``ValueError`` for a ``window_size`` that is not finite and above 0,
+      or of the wrong kind for the clock;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
       temporal;
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the
@@ -304,7 +328,14 @@ def rolling_metrics(
         raise pl.exceptions.ColumnNotFoundError(clock)
     ns = clock_nanoseconds(window_size, dtype, "rolling_metrics", "window_size", clock)
     if ns is None and not window_size > 0:  # type: ignore[operator]
-        msg = f"window_size must be > 0, got {window_size}"
+        msg = f"rolling_metrics: window_size must be > 0, got {window_size}"
+        raise ValueError(msg)
+    if ns is None and math.isinf(window_size):  # type: ignore[arg-type]
+        # One bucket, whose `window_start` was NaN (review 2026-10-05, YB11).
+        msg = (
+            f"rolling_metrics: window_size must be finite, got {window_size}; one window "
+            "over the whole frame is po.eval.metrics"
+        )
         raise ValueError(msg)
     if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
         msg = f"clock column {clock!r} must be numeric or temporal, got {dtype}"
@@ -317,7 +348,7 @@ def rolling_metrics(
         )
     else:
         start = pl.col(clock).dt.truncate(format_duration(ns))
-    long = unpack(df, spec_name, targets=targets).drop_nulls(["pred", "y"])
+    long = _scored(unpack(df, spec_name, targets=targets))
     long = long.with_columns(start.alias("window_start"))
     keys = ["slot", "target", *by, "window_start"]
     out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
@@ -563,8 +594,9 @@ def sums(
     settings must not be merged: :func:`merge_sums` sums whatever is in ``hits``
     and ``signed`` without knowing which reading produced it.
 
-    Rows where the prediction or the target is null are dropped, as
-    :func:`metrics` drops them. ``weight`` names a column to weight rows by;
+    Rows where the prediction or the target is missing are dropped, as
+    :func:`metrics` drops them: null, NaN, infinite or past the bank's input
+    bound. ``weight`` names a column to weight rows by;
     without it every row counts 1 and ``w`` equals ``n``. ``spec``, ``targets``
     and the errors are :func:`unpack`'s.
 
@@ -576,7 +608,7 @@ def sums(
         scores = po.eval.from_sums(running, min_obs=10)                # r2, ic, hit_rate, mse, rmse
 
     """
-    long = unpack(df, spec_name, spec=spec, targets=targets).drop_nulls(["pred", "y"])
+    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
     wexpr = pl.col(weight).cast(pl.Float64) if weight is not None else pl.lit(1.0)
     long = long.with_columns(wexpr.alias("__w"))
     w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")

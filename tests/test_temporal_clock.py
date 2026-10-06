@@ -267,6 +267,27 @@ class TestHowADurationIsWritten:
             _ridge("t", half_life=value, gap_cap="365d")
         assert says in str(e.value), str(e.value)
 
+    @pytest.mark.parametrize("value", ["inf", "+INF", "nan", "reset", "10"])
+    @pytest.mark.parametrize(
+        ("call", "who"),
+        [
+            (
+                lambda df, v: po.eval.rolling_metrics(df, "m", clock="t", window_size=v),
+                "rolling_metrics: window_size",
+            ),
+            (lambda df, v: po.stream.embargo(df.lazy(), clock="t", delay=v), "embargo: delay"),
+        ],
+        ids=["rolling_metrics", "embargo"],
+    )
+    def test_what_is_not_a_duration_is_refused_by_name_by_a_helper(self, value, call, who):
+        """Review 2026-10-05 (YA6): the words a spec's clock parameter takes
+        in place of a number passed the text check, and the parse after it
+        said '"inf" is not a duration' without naming the helper or the
+        parameter. A helper's duration has no word form, and is named."""
+        with pytest.raises(ValueError, match=f"^{who} ") as e:
+            call(_temporal(_frame()), value)
+        assert "is not a duration" in str(e.value), str(e.value)
+
 
 class TestEachMixtureIsRefused:
     def test_a_temporal_clock_refuses_a_plain_number(self):
@@ -353,9 +374,17 @@ class TestEachMixtureIsRefused:
 
 
 class TestADurationSurvives:
-    def test_save_load_and_the_specs_it_was_built_from(self, tmp_path):
+    # An infinity word is a number, not text: the spec holds the float, which
+    # a loaded bank's `specs` decode the Rust side's "inf" to, and the two
+    # compared unequal for `half_life="inf"` (review 2026-10-05, YA7).
+    @pytest.mark.parametrize("half_life", [None, "inf", "+INF", "infinity"])
+    def test_save_load_and_the_specs_it_was_built_from(self, tmp_path, half_life):
         df = _temporal(_frame())
-        spec = _ridge("t", session="s", **DURATIONS["pl.duration"])
+        durations = DURATIONS["pl.duration"]
+        if half_life is not None:
+            durations = {**durations, "half_life": half_life}
+        spec = _ridge("t", session="s", **durations)
+        assert po.ModelBank([spec]).specs == [spec]
         straight = po.ModelBank([spec]).fit_predict(df)
         bank = po.ModelBank([spec])
         first = bank.fit_predict(df.slice(0, 150))

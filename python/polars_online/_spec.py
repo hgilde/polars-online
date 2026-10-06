@@ -18,13 +18,13 @@ import math
 import numbers
 import types
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from typing import Any, NotRequired, TypedDict, Unpack
 
 import polars as pl
 
-from polars_online._duration import Duration, duration_text
+from polars_online._duration import Duration, duration_text, infinity_as_number
 from polars_online._kwargs import CommonKwargs
 from polars_online._polars_online import (
     spec_coef_fields,
@@ -39,7 +39,14 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
     a coefficient), so infinities are encoded as strings the Rust side
     understands. A NaN is never meaningful in a spec and is refused here, by
     parameter name, rather than by the JSON offset serde would report. NumPy
-    scalars are plain numbers here (``json`` alone refuses them)."""
+    scalars are plain numbers here (``json`` alone refuses them).
+
+    A raw dict may hold what a builder takes: a window expression in
+    ``targets`` is a formula target, and anywhere else an expression or a
+    ``timedelta`` is a duration, written as its text as the builders write it
+    (review 2026-10-05, YA11: an expression under any key was read as a
+    formula, so ``half_life=pl.duration(minutes=10)`` was refused as a formula
+    literal that named no key)."""
 
     def enc(v: Any, key: str, who: Any) -> Any:
         if isinstance(v, bool):
@@ -57,10 +64,17 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             return {k: enc(x, k, who) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [enc(x, key, who) for x in v]
-        if isinstance(v, pl.Expr):
+        if isinstance(v, pl.Expr) and key == "targets":
             # A window expression in `targets`, as the builders take one
             # (review R2, P5: every surface that writes a spec dict).
             return enc(formula_target(f"spec {json.dumps(who)}", v), key, who)
+        if isinstance(v, (pl.Expr, timedelta)):
+            if key in _CLOCK_KEYS:
+                return duration_text(v, f"spec {json.dumps(who)}", key)
+            raise TypeError(
+                f"spec {json.dumps(who)}: {key} takes no {type(v).__name__}; a duration is "
+                "a clock parameter's, and a window expression is a target's"
+            )
         return v
 
     def name(s: Any) -> Any:
@@ -109,7 +123,9 @@ def _matches(v: Any, hint: Any) -> bool:
         return any(_matches(v, a) for a in typing.get_args(hint))
     if hint is type(None):
         return v is None
-    if origin is list:
+    if origin in (list, Sequence):
+        # A list or a tuple: a str is a sequence of strs too, and never what
+        # a list parameter means.
         (inner,) = typing.get_args(hint)
         return isinstance(v, (list, tuple)) and all(_matches(x, inner) for x in v)
     if origin is dict:
@@ -262,6 +278,9 @@ _AT_LEAST_ONE = frozenset(
         "max_clusters",
         "resid_autocorr_lag",
         "k",
+        # A lasso of no sweeps never descends: every solve is a failure, and
+        # the coefficients read like a fit (review 2026-10-05, PB7).
+        "max_iter",
     }
 )
 
@@ -346,9 +365,10 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
         # A clock parameter's duration, however it was written, is kept as
-        # the text a TOML config writes and a state file stores (task 88).
+        # the text a TOML config writes and a state file stores (task 88),
+        # and an infinity word as the number it names (YA7).
         written = {
-            key: duration_text(value, who, key) if key in clock else value
+            key: infinity_as_number(duration_text(value, who, key)) if key in clock else value
             for key, value in kwargs.items()
         }
         return typing.cast(Callable[..., R], fn)(*args, **written)
@@ -405,9 +425,13 @@ class FormulaTarget(TypedDict):
 
 #: What a builder's ``targets`` takes: column names, with
 #: :func:`polars_online.target` tables and window expressions
-#: (:mod:`polars_online.ops`, looking ahead) among them. Two lists rather than
-#: one of the union, so a ``list[str]`` a caller already has type-checks.
-TargetList = list[str] | list[str | Target | FormulaTarget | pl.Expr]
+#: (:mod:`polars_online.ops`, looking ahead) among them, in a list or a tuple.
+#: A ``Sequence``, which is covariant, so a ``list[str]`` a caller already has
+#: type-checks, and so do a list of tables, a list of expressions and a mix:
+#: ``list`` is invariant, and a union of two lists refused all three (review
+#: 2026-10-05, YA4). A ``str`` is a sequence of strs to a type checker; the
+#: builders refuse one by name when they run.
+TargetList = Sequence[str | Target | FormulaTarget | pl.Expr]
 
 #: How a relative target is taken against its reference.
 _RELATIVE = ("difference", "ratio", "log_ratio")
@@ -642,6 +666,22 @@ def _common(
     }
     validate_spec(_json(spec))
     return spec
+
+
+def _mirror_target(
+    name: str, kind: str, features: list[str], common: Any, statistic: str
+) -> list[str]:
+    """The ``targets`` a model with no target hands the plumbing: its first
+    feature. ``targets=`` is refused by name, and so is an empty
+    ``features``, which the Rust side names for every other model and these
+    indexed before it could (review 2026-10-05, YA1 and YA5: an
+    ``IndexError``, and a ``TypeError`` naming ``_common()``)."""
+    if "targets" in common:
+        msg = f"spec {json.dumps(name)}: {kind}() takes no targets; {statistic} the features"
+        raise TypeError(msg)
+    if not features:
+        raise ValueError(f"spec {json.dumps(name)}: features must be non-empty")
+    return [features[0]]
 
 
 @_checked
@@ -899,12 +939,19 @@ def ewridge(
         null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per (target, ridge value, feature set) slot in the order the ``pred``
         fields declare them, the intercept then one entry per feature, zero
         for a feature outside the slot's set. :func:`coef_index` maps each
         position to its term, and :func:`coef_fields` names the column each
         becomes when the struct is unnested.
+    ``support_coef``
+        On ``coef``'s rows, each coefficient's data share, laid out like
+        ``coef``: how much of the fit after the row the data determined
+        rather than the ridge (:mod:`polars_online.spec`).
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. Under a grid each field is suffixed per instance. The sums
@@ -978,6 +1025,20 @@ def _numeric_keys() -> frozenset[str]:
             if float in leaves:
                 keys.add(key)
     return frozenset(keys)
+
+
+def _clock_keys() -> frozenset[str]:
+    """Every parameter, across the builders, whose annotation admits a
+    duration: the clock parameters, where a raw dict may hold an expression
+    or a ``timedelta`` as a builder takes one (:func:`_json`)."""
+    helpers = {"output_fields", "output_index", "coef_fields", "coef_index"}
+    builders = [globals()[name] for name in __all__ if name not in helpers]
+    return frozenset(
+        key
+        for fn in (_common, *builders)
+        for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items()
+        if _takes_duration(hint)
+    )
 
 
 def output_fields(spec: dict[str, Any]) -> list[str]:
@@ -1238,6 +1299,9 @@ def rls(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -1329,15 +1393,18 @@ def lasso(
         so the selection moves only by what the ageing forgets. The errors are
         the model's own predictions', from its first prediction for the target:
         rows the target's own ``min_weight`` still withholds from the output
-        count, since a threshold gates the output and not the model.
+        count, since a threshold gates the output and not the model. Before
+        the first scored row ``penalty_selected_<t>`` is the path's last
+        point, and a tie between points keeps the first in ``lasso_path``
+        order.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
-        100) or when no coefficient moves by more than ``tol`` (default
-        ``1e-10``). A descent that runs out of sweeps first is counted in
-        :meth:`polars_online.ModelBank.solve_failures`, one per target and path
-        point.
+        100, at least 1) or when no coefficient moves by more than ``tol``
+        (default ``1e-10``). A descent that runs out of sweeps first is
+        counted in :meth:`polars_online.ModelBank.solve_failures`, one per
+        target and path point.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
@@ -1367,6 +1434,9 @@ def lasso(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per (target, path point) slot, the intercept then one entry per feature
         (:func:`coef_index`).
@@ -1510,6 +1580,9 @@ def kalman(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature, in the original
         units (:func:`coef_index`).
@@ -1623,6 +1696,9 @@ def huber(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -1755,6 +1831,9 @@ def quantile(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -1892,6 +1971,9 @@ def ftrl(
         null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature
         (:func:`coef_index`).
@@ -2031,7 +2113,10 @@ def ew_cov(
             C_l' = a * C_l + a * b * (x_t - m) (x_{t-l} - m)'
 
         the same ``a`` and ``b`` the co-moments use, so lag 0 would be
-        ``comoments`` exactly. Lags are counted in learned rows within the
+        ``comoments`` exactly. The lagged statistics are defined by this
+        recursion, both legs centred at the mean before each row, not as a
+        batch EW lagged covariance about the final mean, which a frame in
+        memory would compute. Lags are counted in learned rows within the
         group, not clock units, and must be strictly increasing and ``>= 1``;
         the list order is the output order. The ring of past rows is emptied
         on a session change and on a clock gap beyond ``gap_cap``, one row's
@@ -2088,8 +2173,11 @@ def ew_cov(
 
         ``weight_sum`` becomes the weight inside the window, which stops
         growing once the window fills, so ``min_weight`` gates on a quantity
-        with a ceiling. A clock gap longer than ``window_size`` empties it
-        and the row reports nulls rather than stale numbers. ``mahal``,
+        with a ceiling. A clock gap longer than ``window_size`` empties it.
+        The row after the gap reads the window as the row before the gap
+        left it, since a row's fields are read before its own decay, as
+        ``weight_sum`` is; the rows after it report nulls rather than stale
+        numbers, until the window holds ``min_weight`` again. ``mahal``,
         ``partial_corr`` and the PCA read the window's moments too, and the
         PCA refresh is gated on the window's weight. ``window_size`` does not
         combine with ``lags`` or ``mahal_quantiles``, which accumulate over a
@@ -2103,10 +2191,14 @@ def ew_cov(
     .. rubric:: Output
 
     One struct column named after the spec, holding the statistics ``stats``
-    asks for, each named after its column or pair (``mean_x0``, ``std_x0``,
-    ``corr_x0_x1``; pairs are unordered, ``i < j``, except ``lagcorr``'s),
-    ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields, and ``weight_sum``.
-    All are null until ``min_weight``. The plain spec's fields are listed in
+    asks for, each named ``<stat>_<column>`` or, for a pair,
+    ``<stat>_<column>_<column>`` (``mean_x0``, ``std_x0``, ``corr_x0_x1``;
+    pairs are unordered, ``i < j``, except ``lagcorr``'s), ``mahal`` and
+    ``mahal_q<p>``, the ``pc<j>_*`` fields, ``weight_sum``, and
+    ``settled_frac`` and ``withheld_reason`` as everywhere. The statistics are
+    null until ``min_weight``, which the bank floors at 2: a variance needs two
+    rows, so a lower ``min_weight``, ``0`` included, is raised to 2 rather than
+    refused. The plain spec's fields are listed in
     `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
     The moments themselves are :meth:`polars_online.ModelBank.gram`'s
@@ -2151,14 +2243,8 @@ def ew_cov(
         "window_every": window_every,
         "window_budget": window_budget,
     }
-    if "targets" in common:
-        msg = (
-            f"spec {json.dumps(name)}: ew_cov() takes no targets; its statistics are over "
-            "the features"
-        )
-        raise TypeError(msg)
-    # `targets` is required by the common-parameter schema but unused here.
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "ew_cov", features, common, "its statistics are over")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 @_checked
@@ -2219,7 +2305,7 @@ def sgd(
          - 0 inside the tube, else ``sign(p - y)``
        * - ``poisson``
          - log
-         - ``exp(eta)``
+         - ``exp(clamp(eta, +/- 30))``
          - ``p - y``
        * - ``logistic``
          - sigmoid
@@ -2227,7 +2313,10 @@ def sgd(
          - ``p - y``
 
     then ``g_i = d * z_i * w + l2 * b_i`` for a slope, and ``g_0 = d * w`` for
-    the intercept, which is not penalised; then ``b_i -= lr_i * g_i``.
+    the intercept, which is not penalised; each ``g_i`` is clamped to ``+/-
+    clip_gradient``; then ``b_i -= lr_i * g_i``. The Poisson link clamps
+    ``eta`` to ``+/- 30`` before the ``exp``, so a Poisson prediction never
+    exceeds ``e ** 30``, about ``1.07e13``.
 
     .. rubric:: Parameters
 
@@ -2259,11 +2348,12 @@ def sgd(
         A ridge on every step, on the slopes only: the intercept is not
         penalised. Default 0.0.
     ``clip_gradient``
-        A cap on the gradient's magnitude. Default ``1e3``, not off, because
-        ``poisson`` needs it: ``p = exp(eta)``, so a row that pushes ``eta`` up
-        makes the next gradient exponentially larger and a constant rate diverges
-        within a few thousand rows. It does not bind at ordinary scales for an
-        identity-link fit.
+        A cap on each coordinate of the gradient, which clamps each ``g_i`` to
+        ``+/- clip_gradient``: a box, not a cap on the gradient's norm. Default
+        ``1e3``, not off, because ``poisson`` needs it: ``p = exp(eta)``, so a
+        row that pushes ``eta`` up makes the next gradient exponentially larger
+        and a constant rate diverges within a few thousand rows. It does not
+        bind at ordinary scales for an identity-link fit.
     ``standardize``
         Take the step in standardized coordinates, which is the difference between
         one learning rate for every column and one per scale. Default ``False``.
@@ -2315,6 +2405,9 @@ def sgd(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature, in the caller's
         units, the constraints satisfied after every learned row
@@ -2344,7 +2437,10 @@ def sgd(
 
     As every builder does (:mod:`polars_online.spec`); ``quantile`` is required
     for ``loss = "quantile"``, ``learning_rate`` refuses ``inf``, and the
-    constraints are checked as above.
+    constraints are checked as above. ``huber_delta``, ``quantile`` and ``eps``
+    belong to the losses ``"huber"``, ``"quantile"`` and
+    ``"epsilon_insensitive"``, and ``power`` to ``schedule = "inv_scaling"``:
+    each is refused beside another (``ValueError``), rather than ignored.
     """
     model: dict[str, Any] = {
         "type": "sgd",
@@ -2362,7 +2458,22 @@ def sgd(
         "coef_max": coef_max,
         "coef_sum": coef_sum,
     }
-    return _common(name, model, targets=targets, features=features, **common)
+    spec = _common(name, model, targets=targets, features=features, **common)
+    # A parameter of a loss or a schedule the spec does not use is refused, as
+    # a switch that is off is; each was taken and ignored (review 2026-10-05,
+    # YA8). After the Rust side's checks, so an unknown loss is named first.
+    for key, value, what, owner, chosen in (
+        ("huber_delta", huber_delta, "loss", "huber", loss),
+        ("quantile", quantile, "loss", "quantile", loss),
+        ("eps", eps, "loss", "epsilon_insensitive", loss),
+        ("power", power, "schedule", "inv_scaling", schedule),
+    ):
+        if value is not None and chosen != owner:
+            raise ValueError(
+                f"spec {json.dumps(name)}: sgd {key} is for {what} {json.dumps(owner)}; "
+                f"{what} {json.dumps(chosen)} does not use it"
+            )
+    return spec
 
 
 @_checked
@@ -2444,6 +2555,9 @@ def pa(
         Per target: the prediction, and ``y - pred`` where the target is not null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -2561,6 +2675,9 @@ def holt(
         null.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, and why the row's
+        predictions are null where they are, as everywhere.
     ``coef``
         ``[level, trend]`` per target, the whole state; :func:`coef_index`
         names the two. Null for a target not yet observed, which has no
@@ -2727,6 +2844,10 @@ def kmeans(
         1``), so ``dist2 - dist`` is the margin.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
     ``coef``
         The centres: ``k`` rows of ``len(features)``, flattened
         cluster-major. :func:`coef_index` lays it out, with ``target``
@@ -2766,14 +2887,8 @@ def kmeans(
         "standardize": standardize,
         "scale_floor": scale_floor,
     }
-    if "targets" in common:
-        msg = (
-            f"spec {json.dumps(name)}: kmeans() takes no targets; its clusters are over "
-            "the features"
-        )
-        raise TypeError(msg)
-    # `targets` is required by the common-parameter schema but unused here.
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "kmeans", features, common, "its clusters are over")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 @_checked
@@ -2927,6 +3042,10 @@ def micro(
         without diffing labels.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
     ``coef``
         The established summaries, one ``[id, label, n, radius, c_1, ...,
         c_p]`` row each, flattened -- as many rows as there are, so
@@ -2961,12 +3080,8 @@ def micro(
         "standardize": standardize,
         "scale_floor": scale_floor,
     }
-    if "targets" in common:
-        msg = (
-            f"spec {json.dumps(name)}: micro() takes no targets; its clusters are over the features"
-        )
-        raise TypeError(msg)
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "micro", features, common, "its clusters are over")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 @_checked
@@ -3094,6 +3209,10 @@ def ew_class(
         yet.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
     ``coef``
         The class means, one row per class in ``classes`` order, each one
         entry per feature; :func:`coef_index` lays the list out as ``(class,
@@ -3232,6 +3351,10 @@ def seqtest(
         nothing and counts nothing.
     ``weight_sum``
         As everywhere, decayed by nothing.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
 
     With ``a`` and ``b`` the fields read ``log_e_a_<t>``, ``log_e_b_<t>``,
     ``wins_a_<t>`` and ``wins_b_<t>`` instead.
@@ -3735,6 +3858,10 @@ def deco(
         that level.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
     ``coef``
         The correlation values, in the order of the ``u`` fields.
 
@@ -3775,7 +3902,8 @@ def deco(
         "beta": beta,
         "blocks": [[k, list(v)] for k, v in blocks.items()] if blocks else None,
     }
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "deco", features, common, "its equicorrelation is over")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 @_checked
@@ -3936,8 +4064,10 @@ def bocpd(
         ``P(r_t <= 1)`` given this row: the alarm. It is ``P(r <= 1)`` and
         not ``P(r = 0)`` because the changepoint branch and the growth branch
         share the same predictive, which makes the normalised mass at ``r =
-        0`` exactly ``H`` on every row whatever the data. Row one of a group
-        reports nothing: ``P(r <= 1)`` is 1 there however the row looks.
+        0`` exactly ``H`` on every row whatever the data. On row one of a
+        group ``P(r <= 1)`` is 1 however the row looks: the default
+        ``min_weight`` withholds the row, and at ``min_weight=0`` it reports
+        that 1.
     ``run_mode``
         The most likely run length before the row, so ``t - run_mode`` is
         the row the current run began on. This is the answer, and
@@ -3969,6 +4099,10 @@ def bocpd(
         The row's log predictive density under that mixture.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
 
     .. rubric:: Example
 
@@ -4004,7 +4138,8 @@ def bocpd(
         "prune_below": prune_below,
         "max_run": max_run,
     }
-    targets = [hazard_col] if hazard_col is not None else [features[0]]
+    mirror = _mirror_target(name, "bocpd", features, common, "its change points are in")
+    targets = [hazard_col] if hazard_col is not None else mirror
     return _common(name, model, targets=targets, features=features, **common)
 
 
@@ -4165,8 +4300,11 @@ def corrchange(
         the history ``"sequential"`` monitors against (at least 8), or each
         of ``"window"``'s two windows (at least 3).
     ``alpha``, ``alpha_adjust``
-        The level (default 0.05) and how it is spread over the pairs
-        (``"bonferroni"``, the default: ``alpha / npairs``).
+        The level (default 0.05) and, under ``"monitor"`` and
+        ``"sequential"``, how it is spread over the pairs (``"bonferroni"``,
+        the default: ``alpha / npairs``). Under ``"window"`` one permutation
+        statistic covers every pair at once, so there is nothing to spread,
+        and an ``alpha_adjust`` other than the default is refused.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
         ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left.
@@ -4182,9 +4320,11 @@ def corrchange(
         ``"sequential"``: the rows monitored after each history, the paper's
         ``floor(m T)``; default ``span_rows`` (``T = 1``). At least 2.
     ``boundary_gamma``
-        ``"sequential"``: the boundary's exponent, ``0 <= boundary_gamma <
-        0.5``; default 0, the straight boundary ``1 + k/m``. At 0.5 the
-        boundary would be crossed with probability 1.
+        ``"sequential"``: the boundary's exponent, ``0 <= boundary_gamma <=
+        0.49``; default 0, the straight boundary ``1 + k/m``. At 0.5 the
+        boundary would be crossed with probability 1, and the solve behind the
+        critical value costs time in proportion to ``1 / (1/2 -
+        boundary_gamma)`` on the way there, so a value above 0.49 is refused.
     ``crit``
         ``"window"``: a fixed threshold, in place of the permutation
         quantile. ``"sequential"``: replaces Wied & Galeano's critical value.
@@ -4235,6 +4375,10 @@ def corrchange(
         the second window (``"window"``). Null otherwise.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
 
     .. rubric:: Example
 
@@ -4242,7 +4386,7 @@ def corrchange(
 
         c = po.spec.corrchange(
             "break", features=["x0", "x1"],
-            kind="monitor",      # the constancy test; "window_size": how big the change is
+            kind="monitor",      # the constancy test; "window": how big the change is
             span_rows=100,       # nothing is reported until a span closes
         )
         out = po.ModelBank([c]).fit_predict(df).unnest("break")
@@ -4262,7 +4406,7 @@ def corrchange(
 
     - ``span_rows`` below the kind's minimum;
     - a parameter of another kind;
-    - ``boundary_gamma`` outside ``[0, 0.5)``;
+    - ``boundary_gamma`` outside ``[0, 0.49]``;
     - ``monitor_rows`` below 2;
     - ``half_life``/``lam`` without ``scalar``.
     """
@@ -4284,7 +4428,8 @@ def corrchange(
         "monitor_rows": monitor_rows,
         "boundary_gamma": boundary_gamma,
     }
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "corrchange", features, common, "its test is of")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 @_checked
@@ -4435,6 +4580,10 @@ def hmm(
         The row's surprise: its log-likelihood under the predicted mixture.
     ``weight_sum``
         As everywhere.
+    ``settled_frac``, ``withheld_reason``
+        How far the decay window had filled before the row, null where
+        nothing decays, and why the row's fields are null where they are, as
+        everywhere.
     ``coef``
         The state means, one row per state, each one entry per feature
         (:func:`coef_index`).
@@ -4478,7 +4627,8 @@ def hmm(
         "exog_tvtp": exog_tvtp,
         "tvtp_coef": tvtp_coef,
     }
-    targets = [exog_tvtp] if exog_tvtp is not None else [features[0]]
+    mirror = _mirror_target(name, "hmm", features, common, "its hidden states are over")
+    targets = [exog_tvtp] if exog_tvtp is not None else mirror
     return _common(name, model, targets=targets, features=features, **common)
 
 
@@ -4532,9 +4682,12 @@ def rcov(
     jittered by averaging the first and last ``jitter`` observations.
 
     ``"preavg"`` is Christensen, Kinnebrock & Podolskij's modulated realised
-    covariance: the returns are pre-averaged over ``k_n = floor(theta *
-    sqrt(block_rows))`` with ``g(x) = min(x, 1 - x)``, which averages the noise
-    away, and the residual bias is subtracted.
+    covariance: the returns are pre-averaged over ``k_n`` rows with ``g(x) =
+    min(x, 1 - x)``, which averages the noise away. By default (``psd =
+    True``) the window is the longer ``k_n = ceil(theta * block_rows^0.6)``
+    and no bias term is subtracted, their positive semi-definite form.
+    ``psd = False`` is the balanced ``k_n = floor(theta * sqrt(block_rows))``
+    with the residual bias subtracted.
 
     .. rubric:: Parameters
 
@@ -4559,7 +4712,9 @@ def rcov(
         PSD); ``psd = True`` (the default) is the longer window ``k_n =
         ceil(theta * block_rows^0.6)`` without the bias term, and clips any
         negative eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes
-        ``k_n`` (at least 2) instead of deriving it from ``block_rows``.
+        ``k_n`` instead of deriving it from ``block_rows``: at least 2, and at
+        least 3 under ``psd = False``, where a window of 2 leaves nothing once
+        the bias is subtracted.
         ``theta`` sets the window and nothing else: the bias term reads theta
         from the window actually run, ``k_n / sqrt(n)`` over the block's own
         ``n`` rows (the paper's Eq. 7).
@@ -4598,7 +4753,11 @@ def rcov(
         The covariance and correlation estimates, as ``vech`` of the upper
         triangle.
     ``rcov_n``, ``rcov_kind``, ``bandwidth_used``
-        The effective returns, the estimator, and the ``H`` used.
+        The effective returns, the estimator, and the ``H`` used. The
+        effective returns are the returns under ``"plain"``; the jittered
+        returns under ``"kernel"``, ``n - 2 * jitter + 2`` of a block of
+        ``n`` with no break; and the pre-averaged terms under ``"preavg"``,
+        ``n - k_n + 2`` per stretch.
     ``omega2``, ``iv_sparse``
         The noise variance and the sparse integrated variance behind an automatic
         bandwidth.
@@ -4628,8 +4787,9 @@ def rcov(
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``, ``ValueError`` for ``half_life``/``lam``, for a missing ``group``
-    or ``group_close``, for an automatic bandwidth without ``block_rows``, and for
-    a ``max_bandwidth`` below a fixed ``bandwidth``.
+    or ``group_close``, for an automatic bandwidth without ``block_rows``, for
+    a ``max_bandwidth`` below a fixed ``bandwidth``, and for a ``preavg_rows``
+    below 2, or below 3 under ``psd = False``.
     """
     model: dict[str, Any] = {
         "type": "rcov",
@@ -4645,7 +4805,8 @@ def rcov(
         "noise_stride": noise_stride,
         "iv_stride": iv_stride,
     }
-    return _common(name, model, targets=[features[0]], features=features, **common)
+    targets = _mirror_target(name, "rcov", features, common, "its covariance is of")
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 #: The model types with no target column: their outputs are read from the
@@ -4658,3 +4819,4 @@ UNSUPERVISED = frozenset(
 )
 
 _NUMERIC_KEYS = _numeric_keys()
+_CLOCK_KEYS = _clock_keys()

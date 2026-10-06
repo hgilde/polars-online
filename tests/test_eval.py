@@ -258,3 +258,52 @@ def test_rolling_metrics_names_a_missing_clock_before_reading_the_window():
     df = pl.DataFrame({"t": [0.0, 1.0], "m": [{"pred_y": 1.0, "resid_y": 0.5}] * 2})
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
         po.eval.rolling_metrics(df, "m", clock="nope", window_size="1h")
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1e101], ids=["nan", "inf", "bound"])
+def test_what_the_bank_reads_as_missing_is_missing_here_too(bad):
+    """Review 2026-10-05 (YB4): the bank reads a NaN target as missing, as it
+    does an infinity and a magnitude past its input bound, and still predicts
+    the row; the functions here dropped nulls alone, so ``r2``, ``ic`` and
+    ``mse`` came out NaN and ``hit_rate`` was quietly lowered. A target or a
+    prediction the bank would not learn from is missing here too: each
+    function gives what it gives on the frame without those rows."""
+    df, _ = synthetic(seed=51, n_groups=1, n_rows=300, k=3, null_frac=0.0)
+    bad_y, bad_pred = [40, 41, 150], [200]
+    marked = pl.int_range(pl.len())
+    df = df.with_columns(pl.when(marked.is_in(bad_y)).then(bad).otherwise(pl.col("y0")).alias("y0"))
+    spec = po.spec.ewridge(
+        "m", targets=["y0"], features=["x0", "x1", "x2"], half_life=200.0, min_weight=10.0
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    assert out["m"].struct.field("pred_y0").gather(bad_y).is_not_null().all(), (
+        "the bank scored them"
+    )
+    # And a prediction the bank would not learn from, which a frame that did
+    # not come from a bank can hold.
+    pred = pl.col("m").struct.field("pred_y0")
+    bad_field = pl.when(marked.is_in(bad_pred)).then(bad).otherwise(pred).alias("pred_y0")
+    fields = out.schema["m"].fields
+    out = out.with_columns(
+        pl.struct(
+            [bad_field if f.name == "pred_y0" else pl.col("m").struct.field(f.name) for f in fields]
+        ).alias("m")
+    )
+    assert out["m"].struct.fields == [f.name for f in fields]
+    kept = out.filter(~marked.is_in(bad_y + bad_pred))
+    for run in (
+        lambda f: po.eval.metrics(f, "m", min_obs=1),
+        lambda f: po.eval.rolling_metrics(f, "m", clock="t", window_size=800.0, min_obs=1),
+        lambda f: po.eval.sums(f, "m"),
+    ):
+        got, want = run(out), run(kept)
+        assert got.equals(want), (got, want)
+        assert got.height > 0
+
+
+def test_rolling_metrics_refuses_a_window_that_is_not_finite():
+    """Review 2026-10-05 (YB11): ``window_size=inf`` gave one bucket, whose
+    ``window_start`` was NaN."""
+    out = _fitted(n_groups=1, n_rows=50)
+    with pytest.raises(ValueError, match="^rolling_metrics: window_size must be finite"):
+        po.eval.rolling_metrics(out, "m", clock="t", window_size=float("inf"))

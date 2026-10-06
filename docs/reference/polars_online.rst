@@ -14,6 +14,8 @@
 
 .. autoclass:: polars_online.ConsumedSourceWarning
 
+.. autoclass:: polars_online.ReadinessWarning
+
 
 .. autofunction:: polars_online.fit_predict
 
@@ -24,6 +26,8 @@
 .. autofunction:: polars_online.target
 
 .. autoclass:: polars_online.Target
+
+.. autoclass:: polars_online.FormulaTarget
 
 
 .. autofunction:: polars_online.native_version

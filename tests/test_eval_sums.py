@@ -90,6 +90,37 @@ class TestItIsTheSameAnswer:
         assert got["r2"][0] is None, "no variance to explain"
         assert got["ic"][0] is None
 
+    @pytest.mark.parametrize(
+        ("y", "pred"),
+        [
+            ([3.0] * 40, list(np.linspace(-1.0, 1.0, 40))),
+            (list(np.linspace(-1.0, 1.0, 40)), [0.5] * 40),
+            ([0.0] * 40, list(np.linspace(-1.0, 1.0, 40))),
+            ([0.7], [0.5]),
+        ],
+        ids=["constant target", "constant prediction", "no signed row", "one row"],
+    )
+    def test_metrics_is_null_where_from_sums_is(self, y, pred):
+        """Review 2026-10-05 (YB9): where a metric is undefined -- a target
+        or a prediction that never varied, no row with a sign -- ``metrics``
+        gave ``r2 = -inf``, ``ic = nan`` and ``hit_rate = nan``, where
+        ``from_sums``, which promises its numbers, gives null and says why."""
+        out = pl.DataFrame({"y": y}).with_columns(
+            m=pl.struct(pl.Series("pred_y", pred), pl.Series("resid_y", [0.0] * len(y)))
+        )
+        want = po.eval.from_sums(po.eval.sums(out, "m"), min_obs=1).drop("rmse")
+        got = po.eval.metrics(out, "m", min_obs=1)
+        assert got.columns == want.columns
+        undefined = [c for c in ("r2", "ic", "hit_rate") if want[c][0] is None]
+        assert undefined, "a case where something is undefined"
+        for c in got.columns:
+            if c in undefined:
+                assert got[c][0] is None, (c, got[c][0])
+            elif got.schema[c] == pl.Float64:
+                assert got[c][0] == pytest.approx(want[c][0], rel=1e-12), c
+            else:
+                assert got[c][0] == want[c][0], c
+
 
 class TestMerging:
     @pytest.mark.parametrize("parts", [2, 5, 97])

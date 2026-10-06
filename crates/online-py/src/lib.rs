@@ -319,12 +319,24 @@ impl PyModelBank {
     }
 
     /// `Bank::save`: the filesystem's error becomes the `OSError` of its
-    /// kind, with the path.
+    /// kind, with the path. A bank that refuses to be saved -- one a refused
+    /// chunk left broken, or a state that cannot be written -- raises the
+    /// `ValueError` `save_bytes` and pickle raise, and the file is not
+    /// touched (review 2026-10-05, YA2: it raised a bare `OSError`).
+    ///
+    /// `Bank::save` serializes before it writes, so the refusal comes first,
+    /// wrapped in `io::Error::other`; `ErrorKind::Other` is a kind "not used
+    /// by the standard library" (the `ErrorKind` docs), so a filesystem's
+    /// error never carries it, and it tells the two apart without
+    /// serializing the state a second time to ask.
     fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
         let this = slf.try_borrow().map_err(|_| busy("save"))?;
         this.inner
             .save(std::path::Path::new(path))
-            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::Other => PyValueError::new_err(e.to_string()),
+                kind => os_err(kind, format!("{path}: {e}")),
+            })
     }
 
     fn save_bytes(slf: &Bound<'_, Self>) -> PyResult<Vec<u8>> {
@@ -333,10 +345,17 @@ impl PyModelBank {
     }
 
     /// The state as JSON, for reading. `ValueError` when the state holds a
-    /// value JSON cannot carry, rather than a quietly lossy export.
+    /// value JSON cannot carry, rather than a quietly lossy export, and for
+    /// a bank that refuses to be saved: a broken bank's state holds rows
+    /// whose output was never returned, and the export handed out what
+    /// `save` refuses (review 2026-10-05, YA2). `Bank::save_json_string`
+    /// does not ask, so the refusal is `save_bytes`'s own; the msgpack it
+    /// costs is beside the JSON export's, which encodes the state as
+    /// msgpack again to check itself.
     #[pyo3(signature = (pretty = true))]
     fn save_json_string(slf: &Bound<'_, Self>, pretty: bool) -> PyResult<String> {
         let this = slf.try_borrow().map_err(|_| busy("save_json_string"))?;
+        this.inner.save_bytes().map_err(PyValueError::new_err)?;
         this.inner
             .save_json_string(pretty)
             .map_err(PyValueError::new_err)
@@ -583,8 +602,6 @@ impl PyModelBank {
     }
 }
 
-/// The name of the format `path`'s extension says it is, or a `ValueError`
-/// naming the extensions the runner knows. One extension table, in Rust.
 /// Refresh-time sampling (`online_polars::RefreshTime`, E58): fed frames of
 /// the long input in stream order, it returns the grid points each chunk
 /// completed. State lives across calls, so any chunking gives one grid.
@@ -800,6 +817,8 @@ impl PyWindows {
     }
 }
 
+/// The name of the format `path`'s extension says it is, or a `ValueError`
+/// naming the extensions the runner knows. One extension table, in Rust.
 #[pyfunction]
 fn format_of_path(path: &str) -> PyResult<&'static str> {
     online_polars::Format::from_path(std::path::Path::new(path))

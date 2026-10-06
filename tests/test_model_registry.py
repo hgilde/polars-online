@@ -12,6 +12,7 @@ the release comparison's workload and ``_spec.UNSUPERVISED`` to it.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 import typing
 from pathlib import Path
@@ -331,3 +332,72 @@ def test_output_index_names_every_dtype_it_declares():
     assert seen == documented, seen ^ documented
     doc = po.spec.output_index.__doc__ or ""
     assert all(f"``{d}``" in doc for d in documented)
+
+
+def _literal_templates(text: str) -> list[str]:
+    """Each ``literal`` of ``text`` as a pattern a field name matches: a
+    ``<placeholder>`` or a ``{placeholder}`` stands for any run of characters,
+    and so does a ``*``."""
+    patterns = []
+    for lit in re.findall(r"``([^`]+)``", text):
+        parts = re.split(r"(<[^>]*>|\{[^}]*\}|\*)", lit)
+        patterns.append("".join(".+" if p and p[0] in "<{*" else re.escape(p) for p in parts if p))
+    return patterns
+
+
+def _rubric(doc: str, title: str) -> str:
+    # `cleandoc` first: CPython 3.13+ dedents a docstring at compile time
+    # and 3.12 does not, and the rubric's directive is matched at a line's
+    # start either way.
+    text = inspect.cleandoc(doc)
+    found = re.search(rf"^\.\. rubric:: {title}\n(.*?)(?=^\.\. rubric::|\Z)", text, re.S | re.M)
+    assert found, f"no {title} rubric"
+    return found.group(1)
+
+
+def test_every_builders_output_rubric_names_the_fields_its_plainest_spec_writes():
+    """Review 2026-10-05 (YA10): every model writes ``settled_frac`` and
+    ``withheld_reason``, and ``ewridge`` ``support_coef`` beside ``coef``, and
+    no builder's Output rubric said so. Each field of the plainest spec is
+    named in the rubric, literally or by a template such as ``pred_<t>``."""
+    gaps = {}
+    for name in MINIMAL:
+        rubric = _rubric(getattr(po.spec, name).__doc__ or "", "Output")
+        patterns = _literal_templates(rubric)
+        fields = po.spec.output_fields(_build(name))
+        missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
+        if missing:
+            gaps[name] = missing
+    assert not gaps, gaps
+
+
+def test_the_field_grammar_names_every_field_a_grid_writes():
+    """Review 2026-10-05 (YA10): the grammar block of
+    :mod:`polars_online.spec` left out the per-instance ``settled_frac``,
+    ``withheld_reason`` and ``support_coef`` a half-life grid writes."""
+    from polars_online import spec as spec_module
+
+    block = re.search(
+        r"^A grid writes one set of fields per instance.*?code-block:: text\n\n(.*?)\n\n",
+        inspect.cleandoc(spec_module.__doc__ or ""),
+        re.S | re.M,
+    )
+    assert block, "no grammar block"
+    names = [line.split()[0] for line in block.group(1).splitlines() if line.strip()]
+    patterns = [
+        "".join(".*" if p.startswith("{") else re.escape(p) for p in re.split(r"(\{[^}]*\})", n))
+        for n in names
+        if not n.startswith("|")
+    ]
+    grid = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        ridge=[1e-6, 0.5],
+        feature_sets={"a": ["x0"], "b": ["x0", "x1"]},
+        half_life=[10.0, 100.0],
+        emit_sigma=True,
+    )
+    fields = po.spec.output_fields(grid)
+    missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
+    assert not missing, (missing, names)

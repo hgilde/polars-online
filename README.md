@@ -243,7 +243,7 @@ These hold for every spec, however a bank is run:
 |---|---|
 | **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](#windows-as-a-models-inputs-and-target)) |
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
-| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients, `coef`, can change ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
+| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients, `coef` and `support_coef`, can change ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any thread count** | the thread count, set with `POLARS_ONLINE_MAX_THREADS`, changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
 | **tested** | 1,215 Rust tests and 3,840 Python cases (counted on 2026-10-03), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
@@ -4363,8 +4363,8 @@ whole = po.ModelBank([spec]).fit_predict(df)                                    
 parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_rows=100))   # the same frame, 100 rows at a time
 ```
 
-The chunk size changes only which rows carry `coef`: each group's last row
-of every chunk.
+The chunk size changes only which rows carry `coef` and `support_coef`:
+each group's last row of every chunk.
 
 **For a wide frame, use larger chunks, because each chunk carries a fixed
 overhead.** At 10,000 columns, handing a chunk across from Polars alone

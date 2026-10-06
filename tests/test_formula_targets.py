@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import timedelta
 from typing import Any
 
 import numpy as np
@@ -759,6 +760,25 @@ def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
     bank.fit_predict(stream(80, 45))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [raw])
     assert again.rows_seen() == 80
+
+
+def test_a_raw_dict_takes_a_duration_under_a_clock_parameter() -> None:
+    """Review 2026-10-05 (YA11): an expression under any key of a raw dict
+    was read as a formula target, so ``half_life=pl.duration(...)``, the form
+    a builder takes, was refused as a formula literal that named no key. An
+    expression is a formula under ``targets`` alone; under a clock parameter
+    it is a duration, written as the builders write it."""
+    df = stream(80, 45).with_columns(
+        ts=pl.from_epoch((pl.col("t") * 1e6).cast(pl.Int64), time_unit="us")
+    )
+    built = po.spec.ewridge(
+        "m", targets=["mid"], features=["x"], clock="ts", gap_cap="100s", half_life="50s"
+    )
+    raw = dict(built, half_life=pl.duration(seconds=50), gap_cap=timedelta(seconds=100))
+    assert po.spec.output_fields(raw) == po.spec.output_fields(built)
+    assert po.ModelBank([raw]).fit_predict(df).equals(po.ModelBank([built]).fit_predict(df))
+    with pytest.raises(TypeError, match='^spec "m": half_life must be a duration that reads no'):
+        po.ModelBank([dict(built, half_life=pl.col("x"))])
 
 
 def test_a_refused_chunk_leaves_every_specs_core_as_it_was() -> None:

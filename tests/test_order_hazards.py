@@ -178,10 +178,10 @@ def test_it_falls_silent_rather_than_raise_when_the_plan_cannot_be_read(monkeypa
     quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_rows=4))
 
 
-def test_a_plan_already_holding_a_bank_is_not_readable_and_still_runs():
-    """A plan with one of this library's own sources in it cannot be
-    serialized (its source is a Python callable); the outer bank runs, and says
-    nothing about an order it could not inspect."""
+def test_a_plan_already_holding_a_bank_still_runs_under_another():
+    """A plan with one of this library's own sources in it runs under an
+    outer bank, and with no node that reorders it says nothing, whether or
+    not polars can serialize the plan."""
     inner = left().online.fit_predict([SPEC])
     outer = po.spec.ewridge(
         "n",
@@ -195,6 +195,36 @@ def test_a_plan_already_holding_a_bank_is_not_readable_and_still_runs():
     bank = po.ModelBank([outer])
     quiet(lambda: bank.fit(inner))
     assert bank.rows_seen() == 9
+
+
+def _serializes(lf: pl.LazyFrame) -> bool:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            lf.serialize(format="json")
+    except Exception:
+        return False
+    return True
+
+
+def test_a_join_above_a_bank_is_reported_where_polars_serializes_the_plan():
+    """Review 2026-10-05 (YB14): the docs said a join stacked above a plan
+    that holds a bank is not reported, on any version. On 1.44.2 polars
+    serializes such a plan, Python source and all, and the join is reported;
+    where it cannot, the inspection is silent, as for any plan it cannot
+    read."""
+    from test_scaffold import BUILT_AGAINST
+
+    lf = left().online.fit_predict([SPEC]).join(right(), on="k")
+    outer = {**SPEC, "name": "n"}
+    # Measured on the version the wheel is built against, so there the
+    # reported branch is the one taken, not the silent one.
+    assert _serializes(lf) or pl.__version__ != BUILT_AGAINST
+    if _serializes(lf):
+        with pytest.warns(po.OrderNotGuaranteedWarning, match="a join without maintain_order"):
+            po.ModelBank([outer]).fit(lf)
+    else:
+        quiet(lambda: po.ModelBank([outer]).fit(lf))
 
 
 def test_the_prefilter_and_the_walk_cannot_drift_apart():

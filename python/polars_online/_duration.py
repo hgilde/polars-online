@@ -13,6 +13,7 @@ cannot disagree about it.
 
 from __future__ import annotations
 
+import math
 from datetime import timedelta
 from typing import Any
 
@@ -23,9 +24,33 @@ from polars_online._polars_online import format_duration, parse_duration
 #: What a clock parameter may be given as besides a number.
 Duration = timedelta | str | pl.Expr
 
+#: The infinity words, in lower case, and the number each names.
+_INFINITY = {
+    "inf": math.inf,
+    "+inf": math.inf,
+    "infinity": math.inf,
+    "+infinity": math.inf,
+    "-inf": -math.inf,
+    "-infinity": -math.inf,
+}
+
 # The words a clock parameter takes in place of a number, which are not
 # durations: infinity (no decay, no ceiling) and `session_gap`'s "reset".
-_WORDS = frozenset({"inf", "+inf", "-inf", "infinity", "+infinity", "-infinity", "nan", "reset"})
+_WORDS = frozenset({*_INFINITY, "nan", "reset"})
+
+
+def infinity_as_number(value: Any) -> Any:
+    """``value`` with each infinity word -- ``"inf"``, ``"+INF"``,
+    ``"infinity"`` and the rest, in any case -- as the number it names, and
+    anything else as it is; a list is taken value by value. A spec holds an
+    infinity as a number, which is what a bank's ``specs`` read the Rust
+    side's ``"inf"`` back as, so the two compare equal (review 2026-10-05,
+    YA7: ``half_life="inf"`` did not)."""
+    if isinstance(value, (list, tuple)):
+        return [infinity_as_number(v) for v in value]
+    if isinstance(value, str):
+        return _INFINITY.get(value.strip().lower(), value)
+    return value
 
 
 def duration_text(value: Any, who: str, key: str) -> Any:
@@ -119,7 +144,13 @@ def clock_nanoseconds(value: Any, dtype: pl.DataType, who: str, key: str, clock:
             f"got {value!r}"
         )
     text = duration_text(value, who, key)
-    ns = parse_duration(text)
+    try:
+        ns = parse_duration(text)
+    except ValueError as e:
+        # The words a spec's clock parameter takes in place of a number pass
+        # the text check, and none is a duration here: the parse says so,
+        # under the helper's name and the parameter's (review 2026-10-05, YA6).
+        raise ValueError(f"{who}: {key} {e}") from None
     if ns <= 0:
         raise ValueError(f"{who}: {key} must be > 0, got {text}")
     tick = _tick_ns(dtype)

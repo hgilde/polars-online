@@ -152,7 +152,10 @@ VALUES = [
         "cross_lags must be >= 1, got list [-1]",
     ),
     (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
-    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=-1), "max_iter must be >= 0"),
+    # No sweep is no descent: every solve a failure, and coefficients that
+    # read like a fit (review 2026-10-05, PB7).
+    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=-1), "max_iter must be >= 1, got -1"),
+    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=0), "max_iter must be >= 1, got 0"),
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
     (po.spec.rls, dict(ridge=-INF), "ridge must be finite, got float -inf"),
@@ -275,6 +278,44 @@ BUILDERS = {
     po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, span_rows=20),
     po.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
 }
+
+
+#: The models with no target, whose builders write ``features[0]`` as the
+#: target the plumbing needs.
+NO_TARGET = [
+    po.spec.ew_cov,
+    po.spec.kmeans,
+    po.spec.micro,
+    po.spec.deco,
+    po.spec.bocpd,
+    po.spec.corrchange,
+    po.spec.hmm,
+    po.spec.rcov,
+]
+
+
+@pytest.mark.parametrize("builder", NO_TARGET, ids=lambda b: b.__name__)
+def test_an_empty_features_list_is_named_by_a_model_with_no_target(builder):
+    """Review 2026-10-05 (YA1): these builders read ``features[0]`` before
+    anything checked the list, so ``features=[]`` raised ``IndexError`` and the
+    Rust side's own message was never reached; they say it first now."""
+    merged = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
+    with pytest.raises(ValueError, match='^spec "m": features must be non-empty'):
+        builder("m", **{**merged, "features": []})
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [po.spec.deco, po.spec.bocpd, po.spec.corrchange, po.spec.hmm, po.spec.rcov],
+    ids=lambda b: b.__name__,
+)
+def test_a_model_with_no_target_refuses_targets_by_name(builder):
+    """Review 2026-10-05 (YA5): five builders passed ``targets=`` on to
+    ``_common`` beside their own, and the ``TypeError`` named ``_common()``
+    with "multiple values"; they refuse it as ``ew_cov`` does."""
+    merged = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
+    with pytest.raises(TypeError, match=rf'^spec "m": {builder.__name__}\(\) takes no targets'):
+        builder("m", **merged, targets=["y"])
 
 
 def test_the_float_sweeps_name_every_builder():

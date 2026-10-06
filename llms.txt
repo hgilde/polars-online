@@ -45,9 +45,10 @@ bank.save("bank.state")
   state as it stands *before* the update that uses that row's target. Never fit a row
   and then score it: the `pred` the library returns is already out-of-sample.
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
-  gives identical output, bit for bit, and a test enforces it. The one exception is the
-  `coef` field: it is filled on each group's last row in every chunk, and every
-  `coef_every` learned rows, so its schedule follows the chunking.
+  gives identical output, bit for bit, and a test enforces it. The exceptions are the
+  `coef` field and `support_coef`, which sits on `coef`'s rows: they are filled on each
+  group's last row in every chunk, and every `coef_every` learned rows, so their
+  schedule follows the chunking.
 - **Decay runs on the clock, not on row count.** A `Datetime`, `Date` or `Duration`
   clock takes its clock parameters (`half_life`, `gap_cap`, `window_size`, ...) as
   durations: `pl.duration(minutes=10)`, a `timedelta` or `"10m"`. A numeric clock takes
@@ -56,10 +57,14 @@ bank.save("bank.state")
   across a gap, a session boundary or a clock that goes backwards. A step back is
   refused unless `restart_after_step_back` is set and the step is larger, which starts
   the model over; a smaller one is a late row, refused.
-- **The clock need not be a time.** Sort by a feature, clock on it, and the half-life is
-  a bandwidth in that feature's units. The fit is then a local regression in it (LOESS
-  with a one-sided exponential kernel), and `ew_cov` clocked the same way gives local
-  moments.
+- **A `clock` needs a `gap_cap`.** A spec that names a clock and no cap is refused:
+  "gap_cap is required when clock is given". The cap is the most one step between two
+  rows can age the state, in the clock's units, so a gap such as a weekend does not
+  forget everything at once.
+- **The clock need not be a time.** Sort by a feature, clock on it with a `gap_cap` in
+  its units, and the half-life is a bandwidth in that feature's units. The fit is then
+  a local regression in it (LOESS with a one-sided exponential kernel), and `ew_cov`
+  clocked the same way gives local moments.
 - **`weight_sum` is accumulated weight**, before this row's update and before its own decay —
   the same definition in every model. `min_weight` is in those units, so it is a
   weight, not a number of rows.

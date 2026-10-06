@@ -241,6 +241,10 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     if not parts:
         msg = "merge() needs at least one Gram"
         raise ValueError(msg)
+    if len(parts) == 1:
+        # Nothing to pool: the part is its own union, its group, instance and
+        # lags included, which the pooled form drops (review 2026-10-05, YB8).
+        return dict(parts[0])
     cols = _columns(parts[0])
     targets = list(parts[0].get("targets") or [])
     for p in parts[1:]:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, time, timedelta
 from typing import Any
 
 import numpy as np
@@ -570,7 +570,8 @@ def test_what_is_not_element_wise_is_refused_by_name() -> None:
         (po.ewm_mean("x", half_life=2.0).mean(), "Agg"),
         (po.ewm_mean("x", half_life=2.0).rolling_mean(3), "Rolling"),
         (po.ewm_mean("x", half_life=2.0).over("g"), "Over"),
-        (po.ewm_mean("x", half_life=2.0).cast(pl.Date), "cast"),
+        # `Date` is read since review 2026-10-05 (YB1), a date literal's dtype.
+        (po.ewm_mean("x", half_life=2.0).cast(pl.Datetime("us")), "a cast to Datetime"),
         (~(po.ewm_mean("x", half_life=2.0) > 0), "Not"),
     ]:
         with pytest.raises(FormulaError, match=says):
@@ -1678,6 +1679,73 @@ def test_a_typed_literal_keeps_its_dtype() -> None:
         want = mean.select(form(pl.col("m")).alias("y"))["y"]
         assert got.dtype == want.dtype, (got.dtype, want.dtype)
         assert got.to_list() == want.to_list()
+
+
+def test_a_date_literal_keeps_its_dtype() -> None:
+    """Review 2026-10-05 (YB1): a ``Date`` or ``Time`` literal was read as its
+    bare integer, so ``pl.lit(date).cast(pl.String) == "2024-01-03"`` came out
+    false where Polars says true, and ``pl.col("d") - pl.lit(date)`` was
+    refused when the plan ran. Each is carried through a cast to its own
+    dtype, and the formula gives Polars' own numbers."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 4.0, 8.0]}).with_columns(
+        d=pl.lit(date(2024, 1, 1)) + pl.duration(days=pl.col("t").cast(pl.Int64))
+    )
+    mean = po.stream.with_windows(df, m=po.ewm_mean("x", half_life=5.0), **CLOCK)
+    forms = [
+        lambda c: (
+            pl.when(pl.lit(date(2024, 1, 3)).cast(pl.String) == pl.lit("2024-01-03"))
+            .then(c)
+            .otherwise(-1.0)
+        ),
+        lambda c: (pl.col("d") - pl.lit(date(2024, 1, 1))).cast(pl.Int64) + c,
+        lambda c: pl.when(pl.col("d") > pl.lit(date(2024, 1, 2))).then(c).otherwise(-1.0),
+        lambda c: (
+            pl.when(pl.lit(time(12, 30)).cast(pl.String) == pl.lit("12:30:00"))
+            .then(c)
+            .otherwise(-1.0)
+        ),
+    ]
+    for i, form in enumerate(forms):
+        expr = form(po.ewm_mean("x", half_life=5.0))
+        got = po.stream.with_windows(df, y=expr, **CLOCK)["y"]
+        want = mean.select(form(pl.col("m")).alias("y"))["y"]
+        assert got.dtype == want.dtype, (i, got.dtype, want.dtype)
+        assert got.to_list() == want.to_list(), i
+        assert want.to_list() != [-1.0] * 4, i
+
+
+@pytest.mark.parametrize(
+    ("dtype", "name"),
+    [
+        (pl.Datetime("us"), "Datetime"),
+        (pl.Duration("ms"), "Duration"),
+        (pl.Decimal(10, 2), "Decimal"),
+        (pl.List(pl.Float64), "List"),
+        (pl.Array(pl.Float64, 2), "Array"),
+        (pl.Categorical, "Categorical"),
+        (pl.Enum(["a"]), "Enum"),
+        (pl.Struct({"a": pl.Float64}), "Struct"),
+    ],
+    ids=lambda v: v if isinstance(v, str) else "",
+)
+def test_a_cast_to_a_parametrized_dtype_is_refused_by_name(dtype: Any, name: str) -> None:
+    """Review 2026-10-05 (YB2): a dtype with parameters serializes as a
+    mapping, which the refusal's lookup could not hash, so the cast died in a
+    ``TypeError`` before it was named."""
+    with pytest.raises(FormulaError, match=f"a cast to {name} is not read"):
+        to_tree(po.ewm_mean("x", half_life=5.0).cast(dtype))
+
+
+def test_partial_needs_a_window_size() -> None:
+    """Review 2026-10-05 (YB5): ``partial`` says what a window cut short by a
+    gap or a session change gives, and with no ``window_size`` nothing is cut
+    short: it was taken and did nothing. It is refused, as a forward
+    operator without a window is."""
+    for op in (po.ewm_mean, po.ewm_sum, po.ewm_rate):
+        for partial in ("keep", "null", "drop"):
+            with pytest.raises(ValueError, match=rf"^po\.{op.__name__}: partial needs window_size"):
+                op("x", half_life=2.0, partial=partial)
+    po.ewm_mean("x", half_life=2.0, window_size=5.0, partial="drop")
 
 
 def test_a_literal_that_is_not_finite_is_refused_by_name() -> None:

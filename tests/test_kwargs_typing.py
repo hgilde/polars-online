@@ -90,6 +90,46 @@ def test_the_typed_dicts_change_nothing_at_runtime():
         po.spec.lasso("m", targets=["y"], features=["x0"], half_life=2.0)
 
 
+#: Every form of ``targets`` the docs show, as a caller writes it. A builder's
+#: ``targets`` was a union of two ``list`` types, and ``list`` is invariant, so
+#: mypy refused a list of tables, a list of expressions, a mix and a dict
+#: target (review 2026-10-05, YA4).
+_TARGET_FORMS = """
+import polars as pl
+
+import polars_online as po
+
+t = po.target("y", relative_to="m")
+cols: list[str] = ["y"]
+mixed: list[str | po.Target] = ["y", t]
+forward = (po.rewm_mean("y", half_life="1m", window_size="1m") - pl.col("y")).alias("f")
+po.spec.ewridge("m", targets=["y"], features=["x"])
+po.spec.ewridge("m", targets=cols, features=cols)
+po.spec.ewridge("m", targets=[t], features=["x"])
+po.spec.ewridge("m", targets=[forward], features=["x"], embargo="1m", clock="t", gap_cap="1m")
+po.spec.ewridge("m", targets=["y", t], features=["x"])
+po.spec.ewridge("m", targets=mixed, features=["x"])
+po.spec.ewridge("m", targets=["ret", {"column": "p", "relative_to": "mid"}], features=["x"])
+po.spec.rls("m", targets=("y", t), features=["x"])
+"""
+
+
+def test_every_documented_target_form_type_checks(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from mypy import api
+
+    snippet = tmp_path / "forms.py"
+    snippet.write_text(_TARGET_FORMS)
+    # The package's own source and stub, as `uv run mypy` reads them, so
+    # nothing built is needed.
+    monkeypatch.setenv("MYPYPATH", str(Path(_spec.__file__).parents[1]))
+    out, err, status = api.run(
+        [str(snippet), "--cache-dir", str(tmp_path / "cache"), "--python-version", "3.12"]
+    )
+    assert status == 0, out + err
+
+
 def test_the_native_stub_names_the_built_module():
     # `_polars_online.pyi` is what a type checker sees of the pyo3 module; it
     # went stale once (no gram, no spec_output_index), so it is checked
@@ -122,3 +162,19 @@ def test_the_native_stub_names_the_built_module():
         assert not missing, (
             f"{name}: the stub declares {sorted(missing)}, which the class has not got"
         )
+
+
+def test_each_native_item_carries_its_own_docstring():
+    """Review 2026-10-05 (YA9): ``format_of_path``'s doc comment sat above the
+    ``RefreshTime`` class in ``lib.rs``, so the class's docstring opened with
+    the function's text and the function had none."""
+    from polars_online import _polars_online as native
+
+    undocumented = [
+        n for n in dir(native) if not n.startswith("_") and not getattr(native, n).__doc__
+    ]
+    assert not undocumented, undocumented
+    assert "extension" in native.format_of_path.__doc__
+    assert native.RefreshTime.__doc__.startswith("Refresh-time sampling"), (
+        native.RefreshTime.__doc__[:80]
+    )

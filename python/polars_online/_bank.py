@@ -521,12 +521,17 @@ class ModelBank:
         # Arrow stream, which yields nothing the second time and says nothing
         # about it. Decided here, before a row moves, because `explain` must
         # be read off the plan the caller gave.
-        from polars_online._frame import _is_python_scan
+        from polars_online._frame import _is_python_scan, _source_runs
 
         guard = (
             f"ModelBank.{what}" if plan is not None and _is_python_scan(plan, plan_text) else None
         )
-        return self._feed(self._chunks(batches, chunk_rows), path, guard, what == "fit")
+        # Read before the plan is: one of this package's own plan forms over
+        # an empty input is a Python scan with no rows too, and the run
+        # counter is how it is told from a spent stream (task 159, P2), here
+        # as in the sources (review 2026-10-05, YB6).
+        started = _source_runs()
+        return self._feed(self._chunks(batches, chunk_rows), path, guard, what == "fit", started)
 
     def _feed(
         self,
@@ -534,14 +539,22 @@ class ModelBank:
         path: str | None,
         guard: str | None = None,
         learn_only: bool = False,
+        started: int | None = None,
     ) -> Iterable[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
         checked: a generator, so nothing here runs until a caller asks.
 
         ``guard`` names the calling method when the source is a plan that might
         be reading a single-use Arrow stream; a run that then sees no rows at
-        all is reported rather than passed off as a finished fit."""
-        from polars_online._frame import ConsumedSourceWarning, _user_stacklevel, _write_closed
+        all is reported rather than passed off as a finished fit, unless one of
+        this package's own sources ran since ``started``: then the plan is
+        one of its plan forms over an input that was empty."""
+        from polars_online._frame import (
+            ConsumedSourceWarning,
+            _sources_ran_since,
+            _user_stacklevel,
+            _write_closed,
+        )
 
         drained: list[pl.DataFrame] = []
         rows_seen = 0
@@ -559,7 +572,8 @@ class ModelBank:
                 _write_closed(path, drained, self.closed_groups(drop=False).clear())
         # After the loop and outside the `finally`, so an error on the way
         # through is the thing the caller hears about, not this.
-        if guard is not None and rows_seen == 0:
+        ours = started is not None and _sources_ran_since(started)
+        if guard is not None and rows_seen == 0 and not ours:
             warnings.warn(
                 ConsumedSourceWarning(
                     f"{guard}: the plan yielded no rows, and its source is a Python scan -- "

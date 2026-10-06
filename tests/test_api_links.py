@@ -97,3 +97,41 @@ def test_every_model_section_links_its_builder_and_its_source():
         assert (
             ROOT / re.search(r"\((crates/online-core/src/[\w/]+\.rs)\)", body).group(1)
         ).exists()
+
+
+def _documented() -> set[str]:
+    """Every object a reference page documents, by its dotted path: each
+    ``auto*`` directive's target, and every name in the ``__all__`` of a
+    module documented with ``:members:``."""
+    found: set[str] = set()
+    directive = re.compile(r"^\.\. auto(\w+)::\s+([\w.]+)\n((?:[ \t]+:[^\n]*\n)*)", re.M)
+    for page in REFERENCE.glob("*.rst"):
+        text = page.read_text(encoding="utf-8") + "\n"
+        for kind, target, options in directive.findall(text):
+            if kind != "module":
+                found.add(target)
+            elif ":members:" in options:
+                found |= {f"{target}.{n}" for n in importlib.import_module(target).__all__}
+    return found
+
+
+def test_every_name_the_package_exports_is_in_the_reference():
+    """Review 2026-10-05 (CI5): ``po.ReadinessWarning`` and ``po.FormulaTarget``
+    were in ``po.__all__`` and on no page. Each name the package exports, but
+    its modules (each a page of its own) and ``__version__``, is documented
+    under the package or under the module that defines it."""
+    import types
+
+    import polars_online as po
+
+    documented = _documented()
+    assert "polars_online.ModelBank" in documented, "the reader found nothing"
+    missing = []
+    for name in po.__all__:
+        obj = getattr(po, name)
+        if isinstance(obj, types.ModuleType) or name.startswith("__"):
+            continue
+        where = {f"polars_online.{name}", f"{getattr(obj, '__module__', '')}.{name}"}
+        if not where & documented:
+            missing.append(name)
+    assert not missing, missing

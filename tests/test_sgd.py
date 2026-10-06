@@ -143,7 +143,9 @@ class TestSchedules:
         ("schedule", "lr"), [("constant", 0.05), ("adagrad", 0.5), ("inv_scaling", 0.5)]
     )
     def test_all_schedules_converge(self, schedule, lr):
-        c, _ = _fit(_linear(n=30000), schedule=schedule, learning_rate=lr, power=0.25)
+        # `power` is inv_scaling's alone, and refused beside another schedule.
+        power = {"power": 0.25} if schedule == "inv_scaling" else {}
+        c, _ = _fit(_linear(n=30000), schedule=schedule, learning_rate=lr, **power)
         assert c[1] == pytest.approx(1.5, abs=0.15), f"{schedule}: {c}"
         assert c[2] == pytest.approx(-0.5, abs=0.15), f"{schedule}: {c}"
 
@@ -203,6 +205,40 @@ class TestPlumbing:
             _spec(learning_rate=0.0)
         with pytest.raises(ValueError, match="needs a .quantile. level"):
             _spec(loss="quantile")
+
+    @pytest.mark.parametrize(
+        ("kw", "says"),
+        [
+            (dict(huber_delta=0.5), 'sgd huber_delta is for loss "huber"; loss "squared"'),
+            (dict(huber_delta=0.5, loss="logistic"), 'huber_delta is for loss "huber"; loss "log'),
+            (dict(quantile=0.9), 'sgd quantile is for loss "quantile"; loss "squared"'),
+            (dict(quantile=0.9, loss="huber"), 'quantile is for loss "quantile"; loss "huber"'),
+            (dict(eps=5.0), 'sgd eps is for loss "epsilon_insensitive"; loss "squared"'),
+            (dict(eps=5.0, loss="poisson"), 'eps is for loss "epsilon_insensitive"; loss "poi'),
+            (dict(power=0.9), 'sgd power is for schedule "inv_scaling"; schedule "constant"'),
+            (dict(power=0.9, schedule="adagrad"), 'is for schedule "inv_scaling"; schedule "ada'),
+        ],
+    )
+    def test_a_parameter_of_another_loss_or_schedule_is_refused_by_name(self, kw, says):
+        """Review 2026-10-05 (YA8): each of these went through and was ignored,
+        the output equal to the spec without it, where a parameter whose
+        switch is off is refused (:mod:`polars_online.spec`)."""
+        with pytest.raises(ValueError, match='^spec "m": sgd ') as e:
+            _spec(**kw)
+        assert says in str(e.value), str(e.value)
+        assert "does not use it" in str(e.value), str(e.value)
+
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            dict(loss="huber", huber_delta=0.5),
+            dict(loss="quantile", quantile=0.9),
+            dict(loss="epsilon_insensitive", eps=0.2),
+            dict(schedule="inv_scaling", power=0.25),
+        ],
+    )
+    def test_each_parameter_is_taken_by_the_loss_or_schedule_it_belongs_to(self, kw):
+        assert {k: _spec(**kw)["model"][k] for k in kw} == kw
 
 
 class TestFeatureScaling:

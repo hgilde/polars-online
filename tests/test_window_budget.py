@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import pickle
 
 import numpy as np
 import polars as pl
@@ -95,7 +96,7 @@ def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
         whole.fit_predict(df.slice(reached[0], 1))
 
 
-def test_a_broken_bank_names_itself_before_a_bad_column():
+def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
     """docs/REVIEW-2026-09-17.md S3 moved the broken-bank refusal ahead of
     the frame's columns in both polars entry points, and left the order
     untested. A frame that is itself bad -- here missing the feature --
@@ -120,6 +121,24 @@ def test_a_broken_bank_names_itself_before_a_bad_column():
         bank.fit_predict(df.slice(1))
     with pytest.raises(ValueError, match="cannot go on.*window_budget"):
         bank.save_bytes()
+    # Every way out of the bank refuses it the same way. `save` raised a bare
+    # OSError, and `to_json` exported the state `save` refuses (review
+    # 2026-10-05, YA2); the file a save would replace is left as it was.
+    state = tmp_path / "b.state"
+    state.write_bytes(b"the last good state")
+    with pytest.raises(ValueError, match="cannot go on.*window_budget") as exc:
+        bank.save(state)
+    assert not isinstance(exc.value, OSError)
+    assert state.read_bytes() == b"the last good state"
+    for export in (bank.to_json, lambda: bank.save_json(tmp_path / "b.json")):
+        with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+            export()
+    assert not (tmp_path / "b.json").exists()
+    with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+        pickle.dumps(bank)
+    # A filesystem's refusal is still the OSError of its kind.
+    with pytest.raises(FileNotFoundError, match="nowhere"):
+        po.ModelBank([_spec()]).save(tmp_path / "nowhere" / "b.state")
     bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
     # The frame is bad on its own: a healthy bank refuses it for the column.
     with pytest.raises(ValueError, match='"x0" has dtype str; it must be numeric'):

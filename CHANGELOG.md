@@ -133,6 +133,15 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   runs a fit, a saved and resumed state, and the streaming plan on it; the
   musl wheel runs in Alpine.
 
+- **A raw spec dict takes a duration under a clock parameter, and a formula
+  keeps a date's dtype** (task 160). A `pl.duration(...)` expression or a
+  `timedelta` under `half_life`, `gap_cap` or another clock parameter of a
+  raw dict is converted as the builders convert it; an expression anywhere
+  but `targets` is refused by name. In a window formula a `Date` or `Time`
+  literal keeps its dtype, and a formula may cast to `Date` or `Time`. A
+  builder's `targets` is typed as a `Sequence`, so mypy accepts a list of
+  `po.target` tables, of window expressions, or a mix.
+
 ### Changed
 
 - **Every saved bank must be refit.** A bank file now carries schema 27,
@@ -267,6 +276,32 @@ The output names task 144 renamed:
 | `hmm`'s `p_<k>` and `p1_<k>` | `filtered_<k>` and `predicted_<k>` |
 | `micro`'s field `micro` | `micro_id` |
 
+- **Builders and helpers refuse what they ignored or crashed on** (task
+  160). The eight builders of models with no target (`ew_cov`, `kmeans`,
+  `micro`, `deco`, `bocpd`, `corrchange`, `hmm` and `rcov`) refuse
+  `features=[]` by name, where it raised `IndexError`, and the five that took
+  `targets=` refuse it as `ew_cov` does. `po.spec.sgd` refuses `huber_delta`,
+  `quantile` or `eps` beside a loss that does not read it, and `power` beside
+  a schedule other than `"inv_scaling"`. `po.spec.lasso` refuses
+  `max_iter=0`. A window operator refuses `partial` without a `window_size`,
+  and a formula refuses a cast to a parametrized dtype, such as `Datetime`
+  or `List`, by name. A `save_state` that is a directory is refused when the
+  plan is built, not after the stream.
+- **A broken bank refuses every export** (task 160). `save(path)` raises
+  `ValueError`, as `save_bytes` does, and leaves the file untouched, where it
+  raised `OSError`; `to_json()` and `save_json()` refuse it too.
+- **`po.stream.embargo` keeps an integer clock's dtype** (task 160). A whole
+  delay, `5.0` as well as `5`, is added in the clock's dtype, where merging
+  the two copies died in a `SchemaError`. A fractional delay on an integer
+  clock is refused, and so is a frame that already holds the
+  `role + "_weight"` column.
+- **`po.eval` reads as missing what the bank reads as missing** (task 160).
+  `metrics`, `rolling_metrics` and `sums` drop rows whose target or
+  prediction is NaN, infinite or beyond 1e100, where `r2`, `ic` and `mse`
+  came out NaN. `metrics` reports `r2`, `ic` and `hit_rate` as null where they
+  are undefined, as `from_sums` does, not as an infinity or a NaN.
+  `rolling_metrics` refuses a window that is not finite.
+
 ### Performance
 
 - The nanosecond clock's conversion to seconds takes a 64-bit road when the
@@ -352,6 +387,13 @@ The output names task 144 renamed:
 - `ModelBank.to_json`'s docstring said the export refuses a NaN or an
   infinity. It writes each as a string, `"nan"`, `"inf"` or `"-inf"`, and
   the docstring now says so (task 154).
+- **An infinity word in a clock parameter is kept as the number** (task
+  160). `half_life="inf"`, `"+INF"` or `"infinity"` is held as
+  `float("inf")`, so a bank's `specs` equal the dicts it was built from.
+- `ModelBank.fit` and `fit_predict_batches` over this package's own plan form
+  on an empty input no longer warn `ConsumedSourceWarning`, and
+  `po.gram.merge([g])` returns `g` with its group, instance and lags, which
+  it dropped (task 160).
 
 ## [0.13.0] — 2026-09-30
 

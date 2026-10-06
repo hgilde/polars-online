@@ -662,6 +662,36 @@ class TestRefusals:
         with pytest.raises(ValueError, match="already has a column named 'x'"):
             stream.embargo(df, clock="t", delay=1.0, role="x")
 
+    def test_embargo_names_the_weight_column_it_would_add(self):
+        """Review 2026-10-05 (YB10): the role column was checked against the
+        frame and the weight column added beside it was not, so a frame that
+        already held it died in polars' DuplicateError."""
+        df = frame(n=10).with_columns(_online_role_weight=pl.lit(2.0))
+        with pytest.raises(ValueError, match="already has a column named '_online_role_weight'"):
+            stream.embargo(df, clock="t", delay=1.0)
+        # With a weight of its own the column is not added, so it is no clash.
+        out = stream.embargo(df.with_columns(w=pl.lit(1.0)), clock="t", delay=1.0, weight="w")
+        assert out["_online_role_weight"].to_list() == [2.0] * 20
+
+    @pytest.mark.parametrize("dtype", [pl.Int64, pl.Int32, pl.UInt16])
+    def test_a_whole_delay_keeps_an_integer_clocks_dtype(self, dtype):
+        """Review 2026-10-05 (YB3): the docstring's own ``delay=5.0`` on an
+        integer clock made the learn copy's clock a float, and the merge of
+        the two copies died in a SchemaError. A whole delay is the clock's
+        own number."""
+        df = pl.DataFrame({"t": [0, 1, 2], "x": [1.0, 2.0, 3.0]}, schema_overrides={"t": dtype})
+        floats = stream.embargo(df.with_columns(pl.col("t").cast(pl.Float64)), clock="t", delay=2.0)
+        for delay in (2, 2.0, np.float32(2.0)):
+            out = stream.embargo(df, clock="t", delay=delay)
+            assert out["t"].dtype == dtype, delay
+            assert out.with_columns(pl.col("t").cast(pl.Float64)).equals(floats), delay
+
+    def test_a_delay_an_integer_clock_cannot_hold_is_refused_by_name(self):
+        df = pl.DataFrame({"t": [0, 1, 2], "x": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValueError, match="^embargo: delay 2.5 is not a whole number") as e:
+            stream.embargo(df, clock="t", delay=2.5)
+        assert "clock column 't' is Int64" in str(e.value), str(e.value)
+
 
 class TestEmbargoItself:
     def test_the_shape_and_the_order(self):

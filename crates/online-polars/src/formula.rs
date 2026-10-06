@@ -170,7 +170,11 @@ const CALLS: &[(&str, usize)] = &[
     ("alias", 2),
 ];
 
-/// The dtypes a `cast` may name, as Polars spells them.
+/// The dtypes a `cast` may name, as Polars spells them. `Date` and `Time`
+/// are how a date or time-of-day literal keeps its dtype: Python carries one
+/// as `["cast", ["lit", n], "Date"]`, `n` the days since 1970 (for `Time`,
+/// the nanoseconds since midnight), where it was read as the bare integer
+/// (review 2026-10-05, YB1).
 const DTYPES: &[(&str, DataType)] = &[
     ("Float64", DataType::Float64),
     ("Float32", DataType::Float32),
@@ -184,6 +188,8 @@ const DTYPES: &[(&str, DataType)] = &[
     ("UInt8", DataType::UInt8),
     ("Boolean", DataType::Boolean),
     ("String", DataType::String),
+    ("Date", DataType::Date),
+    ("Time", DataType::Time),
 ];
 
 fn dtype_of(name: &str) -> Result<DataType, String> {
@@ -794,6 +800,48 @@ mod tests {
         }
     }
 
+    /// Review 2026-10-05 (YB1): a date or a time-of-day literal arrives as
+    /// `["cast", ["lit", n], "Date"]` (`"Time"`), and is that dtype, as
+    /// Polars' own literal is: its text is the day's (the time's), and a date
+    /// column less it is a duration, where the bare integer was refused.
+    #[test]
+    fn a_date_or_time_literal_is_its_own_dtype() {
+        let df = df!("d" => [19723i32, 19725])
+            .unwrap()
+            .lazy()
+            .with_columns([col("d").cast(DataType::Date)])
+            .collect()
+            .unwrap();
+        let run = |text: &str| {
+            let e = tree(text)
+                .to_expr(&|_| unreachable!("no operator here"))
+                .alias("out");
+            let got = df.clone().lazy().select([e]).collect().unwrap();
+            got.column("out").unwrap().clone()
+        };
+        let day = run(r#"["cast",["cast",["lit",19725],"Date"],"String"]"#);
+        assert_eq!(day.str().unwrap().get(0), Some("2024-01-03"));
+        let time = run(r#"["cast",["cast",["lit",45000000000000],"Time"],"String"]"#);
+        assert_eq!(time.str().unwrap().get(0), Some("12:30:00"));
+        let gap = run(r#"["-",["col","d"],["cast",["lit",19723],"Date"]]"#);
+        let DataType::Duration(unit) = gap.dtype() else {
+            panic!("a date less a date is a duration, got {}", gap.dtype());
+        };
+        let per_day: i64 = match unit {
+            TimeUnit::Milliseconds => 86_400_000,
+            TimeUnit::Microseconds => 86_400_000_000,
+            TimeUnit::Nanoseconds => 86_400_000_000_000,
+        };
+        let stored = gap.cast(&DataType::Int64).unwrap();
+        let days: Vec<Option<i64>> = stored
+            .i64()
+            .unwrap()
+            .iter()
+            .map(|v| v.map(|v| v / per_day))
+            .collect();
+        assert_eq!(days, vec![Some(0), Some(2)]);
+    }
+
     /// An operator is resolved to whatever the caller hands over, so a run
     /// can stand a hidden column in for it.
     #[test]
@@ -836,8 +884,8 @@ mod tests {
             (r#"["col",1]"#, "names a column"),
             (r#"["+",["col","a"]]"#, "\"+\" takes 2 arguments, got 1"),
             (
-                r#"["cast",["col","a"],"Date"]"#,
-                "cast to \"Date\" is not read",
+                r#"["cast",["col","a"],"Datetime"]"#,
+                "cast to \"Datetime\" is not read",
             ),
             (r#"["lit",[1,2]]"#, "a literal must be a scalar"),
             (r#"["ewm_mean",["col","a"],{}]"#, "half_life is required"),

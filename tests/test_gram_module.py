@@ -447,6 +447,27 @@ class TestMerge:
         # lose a digit or more over the same split.
         assert max(worst.values()) < 1e-8, worst
 
+    def test_merging_one_gram_returns_it_unchanged(self):
+        """Review 2026-10-05 (YB8): the docstring says so, and the merge of one
+        part came back with ``group`` and ``instance`` None and without its
+        ``lags`` and ``lag_comoments``, which only a pool of several parts has
+        reason to lose."""
+        df, _ = stream(n=600, k=2, seed=8)
+        spec = po.spec.ew_cov(
+            "c", features=["x0", "x1"], stats=["corr"], lags=[1, 2], half_life=50.0, group="g"
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df.with_columns(g=pl.lit("a")))
+        (g,) = bank.gram("c")
+        assert g["group"] == "a" and g["lags"] == [1, 2], "what the merge used to drop is there"
+        merged = pg.merge([g])
+        assert merged.keys() == g.keys()
+        for key, value in g.items():
+            if isinstance(value, np.ndarray):
+                assert np.array_equal(merged[key], value), key
+            else:
+                assert merged[key] == value, key
+
     def test_a_merged_gram_solves_to_the_whole_streams_fit(self):
         df, _ = stream(n=2400, k=3, seed=7)
         whole = fit(df, ridge=1e-9, standardize=False, max_rows_between_solves=1)

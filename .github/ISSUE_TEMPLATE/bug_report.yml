@@ -9,7 +9,7 @@ body:
         is a bug rather than a question — please say so if you have hit one:
         **out-of-sample predictions** (a row is predicted before its own target
         is used) and **chunk invariance** (chunking never changes the output,
-        `coef` excepted).
+        `coef` and `support_coef`, which sits on `coef`'s rows, excepted).
   - type: textarea
     id: what
     attributes:

@@ -162,12 +162,14 @@ clock column decides which:
 A duration is a polars expression that reads no column, such as
 ``pl.duration(minutes=10)``, or a :class:`datetime.timedelta`. It may also be
 polars' duration text, such as ``"10m"`` or ``"1h30m"``: whole numbers of
-``ns``, ``us``, ``ms``, ``s``, ``m``, ``h``, ``d`` or ``w``, largest first. A
-month, a quarter and a year have no fixed length, so ``"1mo"``, ``"1q"`` and
-``"1y"`` are refused. The spec keeps a duration as text, the form the command
-line's TOML takes. A ``half_life`` grid names its instances by it (``@h10m``).
-``0`` and ``inf`` mean the same in every unit, so they may stay numbers beside
-durations.
+``ns``, ``us``, ``ms``, ``s``, ``m``, ``h``, ``d`` or ``w``, added up in any
+order, as polars reads them (``"30m1h"`` is ``"1h30m"``). A month, a quarter
+and a year have no fixed length, so ``"1mo"``, ``"1q"`` and ``"1y"`` are
+refused. The spec keeps a duration as text, the form the command line's TOML
+takes. A ``half_life`` grid names its instances by it (``@h10m``). ``0`` and
+``inf`` mean the same in every unit, so they may stay numbers beside
+durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
+number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
 ``session_gap`` and ``embargo`` above, and in the models ``window_size``,
@@ -201,10 +203,12 @@ at midnight.
 
 .. rubric:: What a spec writes
 
-A bank adds one struct column per spec, named after the spec. Every field is
-computed from the state *before* the row updates it, so a prediction is
-out-of-sample and a diagnostic never sees the row it describes. A regression
-writes, with ``<t>`` a target:
+A bank adds one struct column per spec, named after the spec. Every field but
+``coef`` and ``support_coef`` is computed from the state *before* the row
+updates it, so a prediction is out-of-sample and a diagnostic never sees the
+row it describes. ``coef`` and ``support_coef`` report the fit *after* the
+row: ``coef`` on row *t* is the fit row *t + 1* is predicted with. A
+regression writes, with ``<t>`` a target:
 
 ``pred_<t>``
     The prediction. Null until ``min_weight`` is reached, and on a row the
@@ -219,12 +223,13 @@ writes, with ``<t>`` a target:
     weight, not a count of rows: at a half-life of 600 with rows 0.1 apart it
     settles near 8,657, and Kish's ``n_kish`` is the sample size.
 ``coef``
-    The coefficients behind the fit, as one flat list: per (target, grid
-    combination) slot in the order the ``pred`` fields declare them, the
-    intercept and then one entry per feature. Null on rows where it is not
-    filled (``coef_every``). :func:`coef_index` maps each position to its
-    term. :func:`coef_fields` names the column each becomes when the struct
-    is unnested.
+    The coefficients of the fit after the row's update, the ones the next
+    row is predicted with, as one flat list: per (target, grid combination)
+    slot in the order the ``pred`` fields declare them, the intercept and
+    then one entry per feature. Null on rows where it is not filled
+    (``coef_every``). :func:`coef_index` maps each position to its term.
+    :func:`coef_fields` names the column each becomes when the struct is
+    unnested.
 ``settled_frac``
     How far the decay window had filled toward steady state before this row:
     ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have
@@ -240,11 +245,12 @@ writes, with ``<t>`` a target:
     than a string, because a string column costs sixteen bytes a row even
     when every value is null.
 ``support_coef``
-    On ``coef``'s rows, for ``ewridge``: each coefficient's data share,
-    ``1 - ridge * (S^-1)_jj`` in ``[0, 1]``, laid out like ``coef`` -- how
-    much of it the data determined rather than the ridge. A duplicated pair
-    reads ``0.5`` each, a clean design ``1``, a column the standardiser
-    dropped ``0``; the intercept is not a share and is null.
+    On ``coef``'s rows, for ``ewridge``, and of the same fit after the row:
+    each coefficient's data share, ``1 - ridge * (S^-1)_jj`` in ``[0, 1]``,
+    laid out like ``coef`` -- how much of it the data determined rather than
+    the ridge. A duplicated pair reads ``0.5`` each, a clean design ``1``, a
+    column the standardiser dropped ``0``; the intercept is not a share and
+    is null.
 
 A model that is not a regression writes fields of its own, which its builder
 describes. Per model, the fields of the plainest spec are listed in
@@ -260,9 +266,11 @@ half-lives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``:
     pred_{target}{combo}{instance}     combo    = ""             single ridge, no feature sets
     resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
-    weight_sum{instance}                             | __{set}_r{ridge}
-    coef{instance}                     instance = ""             single half-life
-                                                | @h{half-life}    half-life grid (@h600, @h10m)
+    weight_sum{instance}                        | __{set}_r{ridge}
+    settled_frac{instance}
+    withheld_reason{instance}          instance = ""             single half-life
+    coef{instance}                              | @h{half-life}    half-life grid (@h600, @h10m)
+    support_coef{instance}
 
 ``<slot>`` below is a target with its suffix. :func:`output_index` gives every
 field with the values its name encodes, so a field is reached without building
@@ -343,9 +351,10 @@ The diagnostics add, per slot:
        has delivered. ``q`` is a tracked quantile of ``|resid|``: it grows
        by ``conformal_rate * sigma * coverage`` on a miss and shrinks by
        ``conformal_rate * sigma * (1 - coverage)`` on a hit. Each step is
-       times the row's weight over the scored rows' EW mean weight, so the
-       long-run coverage is the number asked for whatever the residuals do,
-       and the weights' scale does not reach it. Null until the first
+       times the row's weight over the EW mean weight of every row with a
+       residual the layer has seen, scored or not, so the long-run
+       coverage is the number asked for whatever the residuals do, and the
+       weights' scale does not reach it. Null until the first
        ``sigma`` exists. The step is taken once per scored row, so ``q``
        moves faster in clock time where rows are denser; the delivered
        coverage decays on the clock.
@@ -386,7 +395,7 @@ A builder raises ``TypeError`` for a name that is not a str, a keyword it has
 not got, or a value of the wrong shape, naming the parameter and what it
 takes::
 
-    spec "m": half-life must be a number or a list of numbers, got str '10'
+    spec "m": coef_every must be an int, got float 1.5
 
 It raises ``ValueError``, naming the spec and the parameter, for a value the
 model refuses:
@@ -411,6 +420,9 @@ A parameter whose switch is off is refused rather than ignored:
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
 - ``restart_after_step_back`` without ``clock``;
+- ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
+  not use it, and its ``power`` beside a schedule other than
+  ``"inv_scaling"``;
 - and ``coef_every`` on a model that reports no coefficients.
 
 Names are checked too: a feature set named twice, a column twice in one set,

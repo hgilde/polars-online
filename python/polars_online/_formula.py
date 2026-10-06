@@ -74,6 +74,12 @@ _DTYPES = {
     "UInt8": pl.UInt8,
     "Boolean": pl.Boolean,
     "String": pl.String,
+    # A date or a time-of-day literal serializes as its integer under the
+    # dtype's name, and is carried through a cast to it: read as the bare
+    # integer, its text and its arithmetic were not Polars' (review
+    # 2026-10-05, YB1).
+    "Date": pl.Date,
+    "Time": pl.Time,
 }
 
 
@@ -114,9 +120,9 @@ def _literal(v: Any) -> tuple[Any, str | None]:
                 )
             if isinstance(value, (bool, int, float, str)):
                 # A typed numeric literal keeps its type through a cast, so
-                # its dtype and last bits are Polars' own (task 159, F3). A
-                # string or a boolean is `Scalar` untyped too, and has one
-                # type to be.
+                # its dtype and last bits are Polars' own (task 159, F3), and
+                # so does a date's or a time's integer (YB1). A string or a
+                # boolean is `Scalar` untyped too, and has one type to be.
                 numeric = dtype in _DTYPES and dtype not in ("String", "Boolean")
                 typed = dtype if kind == "Scalar" and numeric else None
                 return value, typed
@@ -152,8 +158,13 @@ def _walk(node: Any) -> Any:
     if kind == "Cast":
         dtype = body.get("dtype")
         name = dtype.get("Literal") if isinstance(dtype, dict) else dtype
-        if name not in _DTYPES:
-            raise _refuse(f"a cast to {json.dumps(dtype)}")
+        if isinstance(name, dict) and len(name) == 1:
+            # A dtype with parameters -- Datetime, Duration, Decimal, List,
+            # Categorical, Enum, Struct -- is a mapping under its name, which
+            # the lookup below could not hash (review 2026-10-05, YB2).
+            raise _refuse(f"a cast to {next(iter(name))}")
+        if not isinstance(name, str) or name not in _DTYPES:
+            raise _refuse(f"a cast to {json.dumps(name if isinstance(name, str) else dtype)[:60]}")
         # Strict, Polars' default, unless the cast says otherwise; a wrapping
         # cast (`wrap_numerical=True`) has no form here.
         options = body.get("options", "Strict")
@@ -409,5 +420,12 @@ def operator(
     if partial is not None:
         if partial not in ("keep", "null", "drop"):
             raise ValueError(f'{who}: partial must be "keep", "null" or "drop", got {partial!r}')
+        if window_size is None:
+            # What a window cut short gives needs a window to cut; without
+            # one it was taken and did nothing (review 2026-10-05, YB5).
+            raise ValueError(
+                f"{who}: partial needs window_size; it says what a window that a gap or a "
+                "session change cuts short gives, and with no window_size nothing is cut short"
+            )
         params["partial"] = partial
     return operator_column([name, tree, params])

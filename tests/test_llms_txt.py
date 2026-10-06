@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LLMS = ROOT / "llms.txt"
 CONF = ROOT / "docs" / "reference" / "conf.py"
 TEXT = LLMS.read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 # The builders a caller writes, and the `type` strings a spec dict or TOML uses.
 BUILDERS = {n for n in dir(po.spec) if not n.startswith("_")} - {
@@ -88,3 +89,34 @@ def test_the_docs_build_carries_it():
 def test_it_stays_an_index():
     """An index an agent reads in one gulp, not a second copy of the README."""
     assert len(TEXT.encode("utf-8")) < 12_000, "llms.txt is growing into a document"
+
+
+def test_it_names_every_field_whose_schedule_follows_the_chunking():
+    """Review 2026-10-05 (CI6): the chunk-invariance rule named ``coef`` as
+    the one exception, and ``support_coef`` sits on ``coef``'s rows, so it
+    follows the chunking too. The bug report template and the Pathway
+    example say the same, and each names both."""
+    rule = re.search(r"\*\*Chunk invariance is a guarantee\.\*\*(.*?)\n- \*\*", TEXT, re.S)
+    assert rule, "llms.txt no longer states the chunk-invariance rule"
+    for text in (
+        rule.group(1),
+        (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8"),
+        (ROOT / "examples" / "pathway_integration.py").read_text(encoding="utf-8"),
+        # And every sentence of the README's that says which rows carry them.
+        *re.findall(r"[^.]*which rows carry[^.]*\.", README),
+    ):
+        assert "`coef`" in text and "`support_coef`" in text, text[:300]
+
+
+def test_it_says_a_clock_needs_a_gap_cap():
+    """Review 2026-10-05 (CI7): the file showed a clock on a feature and never
+    said that a ``clock`` needs a ``gap_cap``, which the bank refuses without:
+    a spec built from the map alone was refused."""
+    rules = TEXT.split("**Rules that are easy to get wrong.**", 1)[1].split("\n\n", 2)[1]
+    assert "gap_cap is required when clock is given" in rules
+    try:
+        po.spec.ewridge("m", targets=["y"], features=["x"], clock="t", half_life=10.0)
+    except ValueError as e:
+        assert "gap_cap is required when clock is given" in str(e)
+    else:
+        raise AssertionError("a clock without a gap_cap is taken; the rule is stale")

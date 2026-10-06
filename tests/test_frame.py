@@ -484,3 +484,21 @@ def test_save_state_is_checked_when_the_plan_is_built(tmp_path):
     # `predict` moves no state and so has nothing to save.
     with pytest.raises(TypeError, match="save_state"):
         df.lazy().online.predict(tmp_path / "nope.state", save_state=tmp_path / "s")  # type: ignore[call-arg]
+
+
+def test_a_save_state_that_is_a_directory_is_refused_before_the_stream(tmp_path):
+    """Review 2026-10-05 (YB7): only the directory a ``save_state`` sits in was
+    checked, so a path that is itself a directory failed after the whole
+    stream had run. It is refused when the plan is built, by every plan form
+    that saves; the error is raised here, the same on every OS."""
+    df = _frame(n=100)
+    where = tmp_path / "a_directory"
+    where.mkdir()
+    for build in (
+        lambda: df.lazy().online.fit_predict([_spec()], save_state=where),
+        lambda: df.lazy().online.with_windows(
+            f=po.ewm_mean("x0", half_life=5.0), clock="t", gap_cap=10.0, save_state=where
+        ),
+    ):
+        with pytest.raises(IsADirectoryError, match="save_state: .* is a directory"):
+            build()

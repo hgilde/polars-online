@@ -167,13 +167,18 @@ def embargo(
     delay: a ``Date`` clock takes whole days, where ``"12h"`` would be cut to
     nothing.
 
+    On an integer clock a whole ``delay``, ``5.0`` as well as ``5``, keeps the
+    clock's dtype.
+
     ``ValueError`` for:
 
     - a ``delay`` that is not finite and positive (``0`` would be the
       undoubled stream, and negative a label from the past);
-    - a ``delay`` of the wrong kind for the clock;
+    - a ``delay`` of the wrong kind for the clock, or one that is not a whole
+      number on an integer clock;
     - a ``clock`` or ``weight`` column the frame has not got;
-    - a frame that already has a column named ``role``.
+    - a frame that already has a column named ``role``, or, without
+      ``weight``, one named ``role + "_weight"``.
     """
     lazy = lf.lazy()
     schema = lazy.collect_schema()
@@ -186,6 +191,18 @@ def embargo(
             msg = f"embargo: delay must be finite and > 0, got {delay!r}"
             raise ValueError(msg)
         later = pl.col(clock) + delay
+        if schema[clock].is_integer():
+            # The learn copy's clock must keep the column's dtype, or the
+            # merge of the two copies dies in a SchemaError; `delay=5.0`, the
+            # example above, did (review 2026-10-05, YB3).
+            if not float(delay).is_integer():  # type: ignore[arg-type]
+                msg = (
+                    f"embargo: delay {delay!r} is not a whole number, and clock column "
+                    f"{clock!r} is {schema[clock]}, which holds whole numbers; give a whole "
+                    "delay, or cast the clock to a float"
+                )
+                raise ValueError(msg)
+            later = (pl.col(clock) + int(delay)).cast(schema[clock])  # type: ignore[arg-type]
     else:
         # Exact: the delay is whole steps of the column, so the cast back to
         # its own dtype drops nothing.
@@ -198,6 +215,14 @@ def embargo(
         raise ValueError(msg)
 
     wcol = weight if weight is not None else f"{role}_weight"
+    if weight is None and wcol in schema:
+        # The weight column added beside the role, which polars refused as a
+        # duplicate (review 2026-10-05, YB10).
+        msg = (
+            f"embargo: the frame already has a column named {wcol!r}, the weight column this "
+            "adds; pass another `role=`, or name that column as the `weight=` to zero"
+        )
+        raise ValueError(msg)
     # `merge_sorted` needs both halves sorted on the key it merges by. Each
     # half is the input in its own order, so a single key sorts both: the
     # clock, with the learn copy first at a tie.

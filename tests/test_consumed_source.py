@@ -392,5 +392,13 @@ def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
         )
         again = {**SPEC, "name": "again"}  # a second bank's column beside the first's
         twice = empty.lazy().online.fit_predict([SPEC]).online.fit_predict([again]).collect()
+        # A bank's own `fit` and `fit_predict_batches` over one of our plan
+        # forms read it the same way, and missed the same counter (review
+        # 2026-10-05, YB6).
+        fitted = po.ModelBank([again])
+        fitted.fit(empty.lazy().online.fit_predict([SPEC]))
+        windowed = empty.lazy().online.with_windows(f=po.ewm_mean(feature, half_life=5.0))
+        batches = list(po.ModelBank([SPEC]).fit_predict_batches(windowed))
     assert chained.height == 0 and twice.height == 0
+    assert fitted.rows_seen() == 0 and sum(b.height for b in batches) == 0
     assert not [w for w in caught if issubclass(w.category, po.ConsumedSourceWarning)]
