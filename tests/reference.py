@@ -564,7 +564,12 @@ def kalman_ref(
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
     - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
-      only on rows where a prediction was emitted;
+      only on rows where a prediction was emitted. Its weight ages on every
+      row the filter sees: a null target and a zero weight (review
+      2026-09-12, S9), and a row with a target, a weight and no prediction,
+      such as one after rows of weight 0 have taken the weight under
+      ``min_weight`` (N6). That last row aged nothing here until task 177,
+      1.75e-3 from the bank on a stream that withholds predictions;
     - before a target has a ``sigma2_j`` above 0, its noise (``R`` and the
       ``sigma2`` of ``Q``) is the row's own innovation squared, ``(y_j -
       z' b_j) ** 2`` before the update; under ``share_p``, while the mean
@@ -710,10 +715,14 @@ def kalman_ref(
                 err = Y[i, j] - zs @ st["beta"][j]
                 st["beta"][j] = st["beta"][j] + gain * err
                 st["P"][pi] = st["P"][pi] - np.outer(gain, pz)
+            # sigma2's weight ages on this row whether or not it has a
+            # prediction to add a squared residual from (N6, as kalman.rs).
+            aged = lam * st["wsig"][j]
+            st["wsig"][j] = aged
             if not np.isnan(p_own[j]):
                 r = Y[i, j] - p_own[j]
-                ws_new = lam * st["wsig"][j] + w[i]
-                st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * r * r) / ws_new
+                ws_new = aged + w[i]
+                st["sig2"][j] = (aged * st["sig2"][j] + w[i] * r * r) / ws_new
                 st["wsig"][j] = ws_new
             st["wj"][j] = lam * st["wj"][j] + w[i]
 

@@ -76,10 +76,38 @@ class TestKalmanOracle:
             ref["weight_sum"],
             what="weight_sum",
         )
+        return out
 
     def test_scalar_coef_halflife(self):
         df, _ = synthetic(seed=71, n_groups=1, n_rows=300, k=3, null_frac=0.0)
         self._compare(df)
+
+    @pytest.mark.parametrize(
+        ("targets", "share_p"),
+        [(("y0",), False), (("y0", "y1"), True)],
+        ids=["one target", "two targets, shared P"],
+    )
+    def test_a_row_with_no_prediction_ages_sigma2s_weight(self, targets, share_p):
+        """sigma2's weight ages on every row the filter sees, a row with a
+        target, a weight and no prediction included: one that comes after a
+        run of rows of weight 0 has taken the weight under ``min_weight``
+        (review 2026-09-12, N6; ``kalman.rs``). No other case withholds a
+        prediction once they have begun, and kalman_ref aged the weight on
+        such a row by nothing, so its sigma2 forgot less across it than the
+        core's: 1.75e-3 from the bank on one target (task 177). The run of
+        230 rows of weight 0 holds the predictions back on the rows at its
+        end and just after it (asserted)."""
+        df, _ = synthetic(
+            seed=71, n_groups=1, n_rows=420, k=3, n_targets=len(targets), null_frac=0.0
+        )
+        w = df["w"].to_numpy().copy()
+        w[100:330] = 0.0
+        df = df.with_columns(pl.Series("w", w))
+        out = self._compare(df, targets=targets, share_p=share_p)
+        for t in targets:
+            pred = out["m"].struct.field(f"pred_{t}").to_numpy().astype(float)
+            withheld = np.isnan(pred[330:])
+            assert withheld.any() and not withheld.all(), f"{t}: none withheld after the run"
 
     def test_per_factor_halflife_with_pinning(self):
         df, _ = synthetic(seed=72, n_groups=1, n_rows=300, k=3, null_frac=0.0)
