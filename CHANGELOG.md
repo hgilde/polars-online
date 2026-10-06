@@ -576,6 +576,16 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **Four more ways a NaN feature reached a state, closed** (task 182;
+  Rust API only, the bank passes no NaN feature). `hmm` refuses a row that
+  is not finite before its states are seeded, where it buffered the row and
+  seeding replayed it into a state, after which every row failed; `deco`
+  learns such a row as a row of no weight, where its standardiser learned
+  the NaN and `loglik` was NaN ever after; `huber` and `quantile` do not
+  learn one (it still counts in `n_eff` and the target's present weight),
+  where it froze the fit and failed every later solve; and a NaN variance
+  in `EwCov` and `EwDiag` reads NaN where it read 0, so `ew_cov` emits NaN
+  `var` and `std` for such a column. Finite inputs move nothing.
 - **`solve_every`, `pca_every` and `prune_every` are decided on the exact
   clock** (task 180), as `window_every` and `coef_every` are. Each summed
   its clock in doubles, so on a temporal clock `"2s"` on rows 1 ms apart

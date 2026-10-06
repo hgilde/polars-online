@@ -7984,7 +7984,7 @@ tick, and that the series holding it up has a count near 1.
       Tests in `solve.rs`, `hmm`, `ew_class`, `ewridge` and `robust`, each
       failing on the old code but the rounding guard (a factor built by hand
       to give a raw form of exactly −0.125). Finite inputs move nothing.
-- [ ] 182. **Four older NaN gaps, outside the core's stated contract (every
+- [x] 182. **Four older NaN gaps, outside the core's stated contract (every
       input finite) -- found 2026-10-06 by task 181.** None goes through a
       quadratic form, and the bank never passes a NaN feature, so each is
       reachable only through the Rust API: `hmm`'s warm-up buffer keeps a
@@ -7995,7 +7995,25 @@ tick, and that the series holding it up has a count near 1.
       fails, the fit frozen while predictions look finite); `EwCov::var` and
       `EwDiag`'s variance turn a NaN into 0 with `.max(0.0)`. Reproduction:
       the session scratchpad's `review3/fixwork/nan_clamp/zz_probe_nan_paths.rs`.
-      Awaits the user's word.
+      *Built 2026-10-06 on the user's word ("Fix the older nan bugs").*
+      `hmm` refuses a non-finite row before seeding and does not buffer it
+      (the buffered rows, the counts and the states age by its `lam`);
+      `deco` learns such a row at weight 0, so its standardiser reads no
+      moment (the state equals a zero-weight row's); `robust` routes a
+      row with a non-finite feature to its branch for a row the loss cannot
+      learn from (counted in `n_eff`, the Gram aged, the cross-moment, mean
+      and σ² untouched); `clamp_rounding` (`pub(crate)`, `v <= 0.0` so a
+      `-0.0` becomes `+0.0`) serves `EwCov::var`, `EwDiag::var` and
+      `EwDiag`'s `including().moments()`. Each variance caller read: most
+      take the branch 0 took; `ew_cov`'s emitted `var`/`std` and the
+      ewridge/lasso windowed Gram view can see NaN, from a row those models
+      still learn (task 183). Tests in `hmm`, `deco`, `robust`, `ewcov` and
+      `ewdiag`, each failing on the old code. Finite inputs move nothing.
+- [ ] 183. **`ew_cov`, `sgd`, `ewridge` and `lasso` still learn a row with a
+      non-finite feature -- found 2026-10-06 by task 182.** Through the Rust
+      API only, outside `OnlineModel`'s contract (every input finite); the
+      bank never sends such a row. Other models were not all checked. Awaits
+      the user's word.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
