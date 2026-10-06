@@ -1,10 +1,12 @@
 //! Shared dense solves: Cholesky via `faer` with a jittered-diagonal fallback
 //! (docs/PLAN.md §7). Never NaN silently; callers count `solve_failures`.
 
+use std::cmp::Ordering;
 use std::sync::OnceLock;
 
-use faer::Side;
-use faer::linalg::solvers::Llt;
+use faer::Conj;
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::cholesky::llt;
 use faer::prelude::*;
 
 /// The diagonal jitters tried in turn, as multiples of `trace/k`: `A` as
@@ -13,24 +15,63 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 
 /// The jitter ladder, once for every solve here: factorize `A` (row-major
 /// `k*k`) as given, then with `eps · trace/k` added to the diagonal for each
-/// `eps` in [`JITTER`], returning the factor and the attempts it took, or
-/// `None` if every rung fails. It was written out twice, in [`solve_spd`] and
-/// [`SpdFactor::of`], identical and free to drift apart (review 2026-09-12,
-/// D2).
-fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32, f64)> {
+/// `eps` in [`JITTER`], returning the lower factor `L` (`L Lᵀ` the matrix
+/// factorized, zeros above the diagonal), the attempts it took and the
+/// jitter, or `None` if every rung fails. It was written out twice, in
+/// [`solve_spd`] and [`SpdFactor::of`], identical and free to drift apart
+/// (review 2026-09-12, D2).
+///
+/// Each rung is `faer`'s `Mat::llt(Side::Lower)` step for step -- the lower
+/// triangle of the matrix copied over zeros, factorized in place at the
+/// global parallelism, the strict upper triangle zeroed -- so the factor is
+/// that one's to the bit; it is held as a matrix of its own so that
+/// [`SpdFactor::updated`] can move it in place, which `faer`'s `Llt` does
+/// not allow.
+fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
     debug_assert_eq!(a.len(), k * k);
     let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
+    let par = faer::get_global_parallelism();
     for (attempts, &eps) in JITTER.iter().enumerate() {
         let jitter = base * eps;
-        let mat = Mat::from_fn(k, k, |i, j| {
-            a[i * k + j] + if i == j { jitter } else { 0.0 }
+        let mut l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
+            Ordering::Less => 0.0,
+            _ => a[i * k + j] + if i == j { jitter } else { 0.0 },
         });
-        if let Ok(llt) = mat.llt(Side::Lower) {
-            return Some((llt, attempts as u32, jitter));
+        let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
+            k,
+            par,
+            Default::default(),
+        ));
+        let factored = llt::factor::cholesky_in_place(
+            l.as_mut(),
+            Default::default(),
+            par,
+            MemStack::new(&mut mem),
+            Default::default(),
+        );
+        if factored.is_ok() {
+            for j in 1..k {
+                for i in 0..j {
+                    l[(i, j)] = 0.0;
+                }
+            }
+            return Some((l, attempts as u32, jitter));
         }
     }
     None
+}
+
+/// `X ← A⁻¹ X` from the lower factor `L` of `A`: the two triangular solves
+/// `faer`'s `Llt::solve_in_place` makes, at the same parallelism.
+fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
+    let par = faer::get_global_parallelism();
+    let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
+        l.nrows(),
+        rhs.ncols(),
+        par,
+    ));
+    llt::solve::solve_in_place_with_conj(l.as_ref(), Conj::No, rhs, par, MemStack::new(&mut mem));
 }
 
 /// Solve `A x = B` for symmetric positive definite `A` (row-major `k*k`),
@@ -39,8 +80,9 @@ fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32, f64)> {
 /// `(solution, jitter_attempts)`. Returns `None` if even the largest jitter fails.
 pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, u32)> {
     debug_assert_eq!(b.len(), k * m);
-    let (llt, attempts, _) = factorize(a, k)?;
-    let x = llt.solve(Mat::from_fn(k, m, |i, j| b[j * k + i]));
+    let (l, attempts, _) = factorize(a, k)?;
+    let mut x = Mat::from_fn(k, m, |i, j| b[j * k + i]);
+    solve_in_place(&l, x.as_mut());
     let mut out = vec![0.0; k * m];
     for j in 0..m {
         for i in 0..k {
@@ -57,33 +99,64 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
 /// rows -- `ew_class`'s classes that did not learn the row -- keeps this and
 /// pays the O(k³) factorization once instead of on every row; the solves it
 /// serves are the ones [`quad_forms_logdet`] does, so the numbers are the
-/// same to the bit (docs/PERFORMANCE.md §13).
+/// same to the bit (docs/PERFORMANCE.md §13). A caller whose matrix moves by
+/// a scale and a rank-one step, or by a rescaling of its rows and columns,
+/// can move the factor with it in `O(k²)` ([`Self::updated`],
+/// [`Self::congruent`]); a factor so moved holds the moved matrix to
+/// rounding, not to the bit of a fresh factorization of it.
 #[derive(Clone, Debug)]
 pub struct SpdFactor {
-    llt: Llt<f64>,
+    /// `L`, lower triangular with a positive diagonal and zeros above it:
+    /// `L Lᵀ` is the matrix factorized, jitter included.
+    l: Mat<f64>,
     /// `ln det`, taken on the first read: `ewridge`'s solves never read it,
     /// and at one solve a row its `k` logarithms were 1% of the row.
     log_det: OnceLock<f64>,
     attempts: u32,
     jitter: f64,
+    /// In-place moves since the factorization ([`SpdFactor::MAX_MOVES`]).
+    moves: u32,
 }
 
 impl SpdFactor {
+    /// In-place moves a factor takes ([`Self::updated`], [`Self::congruent`])
+    /// before it refuses the next, and its owner factorizes afresh: how the
+    /// rounding the moves leave is bounded (task 170). Each move is backward
+    /// stable -- the factor it leaves is that of the moved matrix to a few
+    /// units of rounding in that matrix's size -- and the errors add, so a
+    /// factor moved `n` times carries `n` of them where a fresh one carries
+    /// one. Under a mean form each update's scale `c < 1` also shrinks the
+    /// older ones, but without decay `c` tends to 1 and they stay. A count
+    /// bounds that drift without reading the matrix, which a check would do
+    /// at `O(k²)` a move, the cost of the move itself, and it is a function
+    /// of the moves alone, so where the refactorizations fall does not depend
+    /// on how a stream is chunked. Measured over positive definite matrices
+    /// conditioned up to `1e12` (`a_factor_moved_to_its_cap_still_holds_
+    /// its_matrix_and_moves_no_more`), the error grows about as the square
+    /// root of the moves: after 64 to 127 of them `L Lᵀ` was off its matrix
+    /// by at most 17 units of rounding in the matrix's size, after 256 to 511
+    /// by at most 35, where a fresh factorization was off by at most 2. At
+    /// this cap, within an order of magnitude of a fresh factorization, the
+    /// refactorization it forces costs `O(k³)/64` a move, a fraction of the
+    /// move.
+    pub const MAX_MOVES: u32 = 64;
+
     /// Factorize `A` (row-major `k*k`), or `None` if every jitter fails.
     pub fn of(a: &[f64], k: usize) -> Option<Self> {
-        let (llt, attempts, jitter) = factorize(a, k)?;
+        let (l, attempts, jitter) = factorize(a, k)?;
         Some(Self {
-            llt,
+            l,
             log_det: OnceLock::new(),
             attempts,
             jitter,
+            moves: 0,
         })
     }
 
     /// `ln det` of the matrix factorized (jitter included).
     pub fn log_det(&self) -> f64 {
         *self.log_det.get_or_init(|| {
-            let l = self.llt.L();
+            let l = &self.l;
             2.0 * (0..l.nrows()).map(|i| l[(i, i)].ln()).sum::<f64>()
         })
     }
@@ -101,16 +174,123 @@ impl SpdFactor {
         self.jitter
     }
 
+    /// In-place moves since the factorization: 0 for a factor fresh from
+    /// [`Self::of`], whose numbers are a one-shot factorization's to the bit.
+    pub fn moves(&self) -> u32 {
+        self.moves
+    }
+
+    /// Whether [`Self::updated`] and [`Self::congruent`] would take a step:
+    /// the factorization needed no jitter and the factor has room under
+    /// [`Self::MAX_MOVES`]. A caller with work to do to form a move's arguments
+    /// asks this first.
+    pub fn can_move(&self) -> bool {
+        self.attempts == 0 && self.moves < Self::MAX_MOVES
+    }
+
+    /// The factor of `A' = c·A + v vᵀ`, made from this one in `O(k²)` rather
+    /// than by factorizing `A'` in `O(k³)`. `√c·L` factors `c·A`, and `v vᵀ`
+    /// is added by plane rotations, column by column (LINPACK's `dchud`):
+    /// with `d` the pivot and `p` the step's entry there, `r = √(d² + p²)`
+    /// replaces the pivot, and each later entry of the column and of the step
+    /// is rotated by `cos = d/r`, `sin = p/r`. `[√c·Lᵀ; vᵀ]` is rotated to
+    /// `[L'ᵀ; 0]`, so `L' L'ᵀ = c·A + v vᵀ`, and both factors are at most 1,
+    /// so a step far larger than a pivot costs no accuracy: the update is
+    /// backward stable. `faer`'s `rank_r_update_clobber` forms the same
+    /// column as a difference of two terms of size `r/d`, and lost three
+    /// digits where the step dominated a pivot (a 2x2 at condition `1e6`:
+    /// `L Lᵀ` off the matrix by 1415 units of rounding, where a fresh
+    /// factorization was off by 1.9; task 170). `r` is taken over the
+    /// larger of `d` and `p`, so neither overflows nor underflows in the
+    /// square. `v` is the update's working space and is left holding nothing
+    /// of use.
+    ///
+    /// Allowed only where the step is the factor's own matrix moving exactly:
+    /// `c` finite and `> 0`, `v` of the factor's size and finite, and the
+    /// factor one that needed no jitter. A jittered factor holds `A + δI`,
+    /// and `c·(A + δI) + v vᵀ` is not the factor of `A'` nor of `A'` with the
+    /// jitter a fresh factorization of it would choose (likely none), so its
+    /// owner factorizes `A'` afresh. So it does after [`Self::MAX_MOVES`] moves,
+    /// which bound the rounding the moves accumulate. `None` refuses the step,
+    /// or reports a factor the step left with a pivot or an entry that is not
+    /// a positive finite number: either way the factor is spent, and its
+    /// owner factorizes `A'`.
+    pub fn updated(mut self, c: f64, v: &mut [f64]) -> Option<Self> {
+        let k = self.l.nrows();
+        if !(self.can_move() && c > 0.0 && c.is_finite())
+            || v.len() != k
+            || !v.iter().all(|x| x.is_finite())
+        {
+            return None;
+        }
+        let root = c.sqrt();
+        for j in 0..k {
+            let col = &mut self.l.col_mut(j).try_as_col_major_mut()?.as_slice_mut()[j..];
+            let (d, p) = (root * col[0], v[j]);
+            // Over the larger of the two, so that neither square overflows
+            // nor underflows. A pivot and a step both 0 -- the pivot
+            // underflowed under `√c` -- give `0/0`, a pivot that is not a
+            // number, which spends the factor (`Self::moved`).
+            let big = d.abs().max(p.abs());
+            let (dd, pp) = (d / big, p / big);
+            let r = big * (dd * dd + pp * pp).sqrt();
+            let (cos, sin) = (d / r, p / r);
+            col[0] = r;
+            for (li, xi) in col[1..].iter_mut().zip(&mut v[j + 1..]) {
+                let l = root * *li;
+                *li = cos * l + sin * *xi;
+                *xi = cos * *xi - sin * l;
+            }
+        }
+        self.moved()
+    }
+
+    /// The factor of `E·A·E` with `E = diag(e)`, every `e_i` finite and
+    /// `> 0` -- `A`'s rows and columns rescaled, as a correlation matrix
+    /// moves when the scales it is taken in do -- made from this one in
+    /// `O(k²)`: `E·L` is lower triangular with a positive diagonal and
+    /// `(E·L)(E·L)ᵀ = E·A·E`, so each entry of `L` is multiplied by its row's
+    /// `e_i`, one rounding each. Allowed, and `None`, as [`Self::updated`].
+    pub fn congruent(mut self, e: &[f64]) -> Option<Self> {
+        let k = self.l.nrows();
+        if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 && x.is_finite()) {
+            return None;
+        }
+        for j in 0..k {
+            let col = self.l.col_mut(j).try_as_col_major_mut()?.as_slice_mut();
+            for (x, &ei) in col[j..].iter_mut().zip(&e[j..]) {
+                *x *= ei;
+            }
+        }
+        self.moved()
+    }
+
+    /// The bookkeeping of a move: every pivot and every entry below it a
+    /// finite number and the pivots positive, or the factor is spent; the
+    /// move counted; `ln det` taken again on its next read.
+    fn moved(mut self) -> Option<Self> {
+        let k = self.l.nrows();
+        for j in 0..k {
+            let col = self.l.col(j).try_as_col_major()?.as_slice();
+            if !(col[j] > 0.0 && col[j..].iter().all(|x| x.is_finite())) {
+                return None;
+            }
+        }
+        self.moves += 1;
+        self.log_det = OnceLock::new();
+        Some(self)
+    }
+
     /// Solve `A X = B` from the kept factor, `B` column-major `k x m`, the
     /// answer laid out the same way: the numbers [`solve_spd`] gives, to the
-    /// bit, since both are this factor's `solve`.
+    /// bit, since both are this factor's two triangular solves.
     pub fn solve(&self, b: &[f64], k: usize, m: usize) -> Vec<f64> {
         debug_assert_eq!(b.len(), k * m);
         // faer's `solve` is a zeroed copy of its right-hand side solved in
         // place; this is that, on the right-hand side's own matrix, with one
         // allocation and one copy fewer.
         let mut x = Mat::from_fn(k, m, |i, j| b[j * k + i]);
-        self.llt.solve_in_place(&mut x);
+        solve_in_place(&self.l, x.as_mut());
         let mut out = vec![0.0; k * m];
         for j in 0..m {
             for i in 0..k {
@@ -127,7 +307,7 @@ impl SpdFactor {
     /// (docs/WARMUP-AND-CONVERGENCE.md §2.2).
     pub fn inverse_diagonal(&self, k: usize) -> Vec<f64> {
         let mut x = Mat::<f64>::identity(k, k);
-        self.llt.solve_in_place(&mut x);
+        solve_in_place(&self.l, x.as_mut());
         (0..k).map(|i| x[(i, i)]).collect()
     }
 
@@ -153,7 +333,7 @@ impl SpdFactor {
     /// its own: `z_i > 0`, so it makes its row's `z` infinite or NaN, which
     /// the check on each `z` refuses.
     pub fn inverse_is_finite(&self) -> bool {
-        let l = self.llt.L();
+        let l = self.l.as_ref();
         let k = l.nrows();
         let mut z = vec![1.0f64; k];
         let mut l_max = 1.0f64;
@@ -189,7 +369,7 @@ impl SpdFactor {
     pub fn quad_forms(&self, d: &[f64], k: usize, m: usize) -> Vec<f64> {
         debug_assert_eq!(d.len(), k * m);
         let mut x = Mat::from_fn(k, m, |i, j| d[j * k + i]);
-        self.llt.solve_in_place(&mut x);
+        solve_in_place(&self.l, x.as_mut());
         let mut q = vec![0.0; m];
         for (j, qj) in q.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -300,6 +480,10 @@ mod tests {
         assert!((q[0] - (x[0] + 2.0 * x[1])).abs() < 1e-14);
     }
 
+    /// A factor fresh from [`SpdFactor::of`] -- never moved -- gives the
+    /// one-shot numbers to the bit. A moved one does not: it holds the moved
+    /// matrix to rounding, as `a_moved_factor_is_a_fresh_factorization_of_
+    /// the_moved_matrix` measures (task 170).
     #[test]
     fn a_kept_factor_gives_the_one_shot_numbers_to_the_bit() {
         let k = 4;
@@ -320,6 +504,7 @@ mod tests {
             }
         }
         let f = SpdFactor::of(&a, k).unwrap();
+        assert_eq!(f.moves(), 0, "a fresh factor");
         for _ in 0..5 {
             let d: Vec<f64> = (0..k * 2).map(|_| lcg()).collect();
             let (q, ld, jit) = quad_forms_logdet(&a, &d, k, 2).unwrap();
@@ -427,7 +612,7 @@ mod tests {
     /// below it), `b = max(max z, 1)`, `l = max(max |l_ij|, 1)`, and the
     /// quantity `k² · l · b²` it holds to `1e300`.
     fn certificate(f: &SpdFactor) -> f64 {
-        let l = f.llt.L();
+        let l = f.l.as_ref();
         let k = l.nrows();
         let m = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
             std::cmp::Ordering::Equal => l[(i, i)].abs(),
@@ -500,7 +685,7 @@ mod tests {
                     );
                     assert_eq!(f.inverse_is_finite(), q <= 1e300, "k {k}, top {top}, r {r}");
                     if top > 1.0 {
-                        assert!(f.llt.L()[(0, 0)] > 1e5, "l > 1 on this case");
+                        assert!(f.l[(0, 0)] > 1e5, "l > 1 on this case");
                     }
                     certified += usize::from(q <= 1e300);
                     refused += usize::from(q > 1e300);
@@ -516,10 +701,352 @@ mod tests {
     #[test]
     fn a_pivot_exactly_at_the_cut_is_certified() {
         let f = SpdFactor::of(&[1e-300], 1).unwrap();
-        assert_eq!(1.0 / f.llt.L()[(0, 0)], 1e150, "z_0 lands on the cut");
+        assert_eq!(1.0 / f.l[(0, 0)], 1e150, "z_0 lands on the cut");
         assert!(certificate(&f) <= 1e300);
         assert!(f.inverse_is_finite());
         let inv = f.inverse_diagonal(1)[0];
         assert!((inv / 1e300 - 1.0).abs() < 1e-15, "{inv:e}");
+    }
+
+    // ---- task 170: the moves, against faer ------------------------------
+
+    /// A uniform draw in `[-1, 1)` from a seeded LCG, the suite's generator.
+    fn draw(s: &mut u64) -> f64 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// `A = Q diag(λ) Qᵀ`, row-major, with `Q` the orthogonal factor of a
+    /// random matrix (faer's QR) and `λ` geometric from 1 to `cond`, exactly
+    /// symmetric: a positive definite matrix of condition number `cond`.
+    fn spd(k: usize, cond: f64, s: &mut u64) -> Vec<f64> {
+        let g = Mat::from_fn(k, k, |_, _| draw(s));
+        let q = g.qr().compute_Q();
+        let lam = |i: usize| {
+            if k == 1 {
+                1.0
+            } else {
+                cond.powf(i as f64 / (k - 1) as f64)
+            }
+        };
+        let mut a = vec![0.0; k * k];
+        for i in 0..k {
+            for j in 0..k {
+                a[i * k + j] = (0..k).map(|r| q[(i, r)] * lam(r) * q[(j, r)]).sum();
+            }
+        }
+        for i in 0..k {
+            for j in 0..i {
+                let v = 0.5 * (a[i * k + j] + a[j * k + i]);
+                a[i * k + j] = v;
+                a[j * k + i] = v;
+            }
+        }
+        a
+    }
+
+    /// faer's own factor of `A` (row-major), from scratch: the oracle.
+    fn faer_factor(a: &[f64], k: usize) -> Mat<f64> {
+        Mat::from_fn(k, k, |i, j| a[i * k + j])
+            .llt(faer::Side::Lower)
+            .expect("the oracle factorizes")
+            .L()
+            .to_owned()
+    }
+
+    /// `‖X‖_F` of a row-major matrix.
+    fn frob(a: &[f64]) -> f64 {
+        a.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    /// `‖L Lᵀ − A‖_F`, the product by faer.
+    fn residual(l: MatRef<'_, f64>, a: &[f64]) -> f64 {
+        let k = l.nrows();
+        let llt = l * l.transpose();
+        let d: Vec<f64> = (0..k * k).map(|ij| llt[(ij / k, ij % k)] - a[ij]).collect();
+        frob(&d)
+    }
+
+    /// `κ₂(A)` from faer's eigenvalues.
+    fn kappa(a: &[f64], k: usize) -> f64 {
+        let ev = Mat::from_fn(k, k, |i, j| a[i * k + j])
+            .self_adjoint_eigenvalues(faer::Side::Lower)
+            .unwrap();
+        ev[k - 1] / ev[0]
+    }
+
+    /// `uᵀA⁻¹u` and `ln det A` by faer from scratch: the oracle's numbers.
+    fn faer_quad_and_log_det(a: &[f64], k: usize, u: &[f64]) -> (f64, f64) {
+        let llt = Mat::from_fn(k, k, |i, j| a[i * k + j])
+            .llt(faer::Side::Lower)
+            .expect("the oracle factorizes");
+        let x = llt.solve(Mat::from_fn(k, 1, |i, _| u[i]));
+        let q = (0..k).map(|i| u[i] * x[(i, 0)]).sum();
+        let l = llt.L();
+        (q, 2.0 * (0..k).map(|i| l[(i, i)].ln()).sum::<f64>())
+    }
+
+    /// `c·A + v vᵀ`, row-major: the matrix an update moves to.
+    fn stepped(a: &[f64], k: usize, c: f64, v: &[f64]) -> Vec<f64> {
+        (0..k * k)
+            .map(|ij| c * a[ij] + v[ij / k] * v[ij % k])
+            .collect()
+    }
+
+    /// `E·A·E` with `E = diag(e)`, row-major: the matrix a congruence moves to.
+    fn rescaled(a: &[f64], k: usize, e: &[f64]) -> Vec<f64> {
+        (0..k * k).map(|ij| e[ij / k] * a[ij] * e[ij % k]).collect()
+    }
+
+    /// The factor is `faer`'s own `Mat::llt(Side::Lower)` to the bit, held as
+    /// a matrix of its own so that it can be moved, and its solve is faer's
+    /// `Llt::solve` to the bit (task 170): over matrices conditioned from 1
+    /// to `1e12`, and over a singular one, whose rung the factor took is
+    /// faer's factor of the matrix with that jitter on its diagonal.
+    #[test]
+    fn the_factor_is_faers_own_to_the_bit() {
+        let mut s = 3u64;
+        let mut cases: Vec<(Vec<f64>, usize)> = Vec::new();
+        for cond in [1.0, 1e4, 1e8, 1e12] {
+            for k in [1usize, 2, 5, 10, 17] {
+                cases.push((spd(k, cond, &mut s), k));
+            }
+        }
+        cases.push((vec![4.0, 2.0, 2.0, 1.0], 2));
+        for (a, k) in cases {
+            let f = SpdFactor::of(&a, k).unwrap();
+            let jittered: Vec<f64> = (0..k * k)
+                .map(|ij| a[ij] + if ij / k == ij % k { f.jitter() } else { 0.0 })
+                .collect();
+            let llt = Mat::from_fn(k, k, |i, j| jittered[i * k + j])
+                .llt(faer::Side::Lower)
+                .unwrap();
+            for i in 0..k {
+                for j in 0..k {
+                    assert_eq!(f.l[(i, j)].to_bits(), llt.L()[(i, j)].to_bits(), "k {k}");
+                }
+            }
+            let b: Vec<f64> = (0..2 * k).map(|_| draw(&mut s)).collect();
+            let want = llt.solve(Mat::from_fn(k, 2, |i, j| b[j * k + i]));
+            let got = f.solve(&b, k, 2);
+            for j in 0..2 {
+                for i in 0..k {
+                    assert_eq!(got[j * k + i].to_bits(), want[(i, j)].to_bits(), "k {k}");
+                }
+            }
+        }
+    }
+
+    /// A factor moved by [`SpdFactor::updated`] or [`SpdFactor::congruent`]
+    /// is a factorization of the moved matrix, held to faer's factorization
+    /// of that matrix from scratch, the oracle (task 170). Over matrices
+    /// conditioned from 1 to `1e12`, `k` from 1 to 10, scales `c` from
+    /// `1e-3` to 1 and steps at the matrix's own scale, and rescalings
+    /// spread over up to six orders of magnitude (as far as keeps the
+    /// rescaled matrix's condition under `1e13`), each move's reconstruction is
+    /// within `8 ε` of the matrix's size (measured: 2.6), its factor within
+    /// `4 ε κ` of faer's (1.2), the quadratic form it serves within `8 ε κ`
+    /// (3.4) and `ln det` within `8 k ε κ`: the bounds a backward stable
+    /// factorization of the moved matrix meets, which a fresh one meets at
+    /// 1.9, 1 and 1. `ln det` is read before the move, so it is taken again
+    /// after it.
+    #[test]
+    fn a_moved_factor_is_a_fresh_factorization_of_the_moved_matrix() {
+        let eps = f64::EPSILON;
+        let mut s = 11u64;
+        let (mut updates, mut congruences) = (0, 0);
+        for cond in [1.0, 1e4, 1e8, 1e12] {
+            for k in [1usize, 2, 5, 10] {
+                for trial in 0..12 {
+                    let a = spd(k, cond, &mut s);
+                    let f = SpdFactor::of(&a, k).unwrap();
+                    assert_eq!(f.attempts(), 0, "cond {cond:e}, k {k}");
+                    let _ = f.log_det();
+                    let (moved, matrix) = if trial % 3 < 2 {
+                        let c = match trial {
+                            0 => 1.0,
+                            1 => 1e-3,
+                            _ => 0.5 * (draw(&mut s) + 1.0) + 1e-3,
+                        };
+                        let scale = frob(&a).sqrt() / (k as f64).sqrt();
+                        let v: Vec<f64> = (0..k).map(|_| scale * draw(&mut s)).collect();
+                        let mut work = v.clone();
+                        updates += 1;
+                        (f.updated(c, &mut work).unwrap(), stepped(&a, k, c, &v))
+                    } else {
+                        // `κ(E·A·E)` is up to `κ(A)` times the square of the
+                        // spread of `e`: kept under `1e13`, which `f64` holds.
+                        let spread = ((13.0 - cond.log10()) / 4.0).min(3.0);
+                        let e: Vec<f64> =
+                            (0..k).map(|_| 10f64.powf(spread * draw(&mut s))).collect();
+                        congruences += 1;
+                        (f.congruent(&e).unwrap(), rescaled(&a, k, &e))
+                    };
+                    let case = format!("cond {cond:e}, k {k}, trial {trial}");
+                    assert_eq!(moved.moves(), 1, "{case}");
+                    let size = frob(&matrix);
+                    let back = residual(moved.l.as_ref(), &matrix);
+                    assert!(
+                        back <= 8.0 * eps * size,
+                        "{case}: {:.2} eps",
+                        back / (eps * size)
+                    );
+                    let kap = kappa(&matrix, k);
+                    let lf = faer_factor(&matrix, k);
+                    let dl: Vec<f64> = (0..k * k)
+                        .map(|ij| moved.l[(ij / k, ij % k)] - lf[(ij / k, ij % k)])
+                        .collect();
+                    let lf_size: Vec<f64> = (0..k * k).map(|ij| lf[(ij / k, ij % k)]).collect();
+                    assert!(
+                        frob(&dl) <= 4.0 * eps * kap * frob(&lf_size),
+                        "{case}: factor off by {:.2} eps kappa",
+                        frob(&dl) / (eps * kap * frob(&lf_size))
+                    );
+                    let u: Vec<f64> = (0..k).map(|_| draw(&mut s)).collect();
+                    let (q, ld) = faer_quad_and_log_det(&matrix, k, &u);
+                    let got = moved.quad_forms(&u, k, 1)[0];
+                    assert!(
+                        (got - q).abs() <= 8.0 * eps * kap * q,
+                        "{case}: quadratic form {got:e} against {q:e}"
+                    );
+                    assert!(
+                        (moved.log_det() - ld).abs()
+                            <= 8.0 * k as f64 * eps * kap * (1.0 + ld.abs()),
+                        "{case}: ln det {} against {ld}",
+                        moved.log_det()
+                    );
+                }
+            }
+        }
+        assert!(
+            updates > 100 && congruences > 50,
+            "{updates} updates, {congruences} congruences"
+        );
+    }
+
+    /// A factor moved to its cap, [`SpdFactor::MAX_MOVES`], still holds its matrix,
+    /// and moves no more: the next update or congruence is refused, and its
+    /// owner factorizes afresh (task 170). Pairs of moves as `robust`'s
+    /// standardized band rows make them -- a mean-form update `c = W/(W+1)`
+    /// with or without decay, then a rescaling by up to 5% -- over matrices
+    /// conditioned from 1 to `1e12`: the reconstruction stays within `64 ε`
+    /// of the matrix's size, the matrix itself tracked by the same
+    /// recursion in `f64` (measured: 17 ε at up to 127 moves, 35 ε at up to
+    /// 511, against a fresh factorization's 2 ε; the error grows about as
+    /// the square root of the moves).
+    #[test]
+    fn a_factor_moved_to_its_cap_still_holds_its_matrix_and_moves_no_more() {
+        let eps = f64::EPSILON;
+        let mut s = 29u64;
+        for cond in [1.0, 1e4, 1e8, 1e12] {
+            for k in [2usize, 10] {
+                for decay in [0.999, 1.0] {
+                    let case = format!("cond {cond:e}, k {k}, decay {decay}");
+                    let mut a = spd(k, cond, &mut s);
+                    let mut f = SpdFactor::of(&a, k).unwrap();
+                    assert!(f.can_move() && f.moves() == 0, "{case}");
+                    let mut w_sum = 100.0f64;
+                    while f.moves() < SpdFactor::MAX_MOVES {
+                        let c = decay * w_sum / (decay * w_sum + 1.0);
+                        w_sum = decay * w_sum + 1.0;
+                        let scale = frob(&a).sqrt() / (k as f64).sqrt();
+                        let v: Vec<f64> = (0..k)
+                            .map(|_| (c / w_sum).sqrt() * scale * draw(&mut s))
+                            .collect();
+                        a = stepped(&a, k, c, &v);
+                        let mut work = v.clone();
+                        f = f.updated(c, &mut work).unwrap();
+                        let e: Vec<f64> = (0..k).map(|_| 1.0 + 0.05 * draw(&mut s)).collect();
+                        a = rescaled(&a, k, &e);
+                        f = f.congruent(&e).unwrap();
+                    }
+                    assert_eq!(f.moves(), SpdFactor::MAX_MOVES, "{case}");
+                    let back = residual(f.l.as_ref(), &a);
+                    assert!(
+                        back <= 64.0 * eps * frob(&a),
+                        "{case}: {:.1} eps after {} moves",
+                        back / (eps * frob(&a)),
+                        SpdFactor::MAX_MOVES
+                    );
+                    assert!(!f.can_move(), "{case}");
+                    let mut v = vec![0.1; k];
+                    assert!(f.clone().updated(0.9, &mut v).is_none(), "{case}");
+                    assert!(f.congruent(&vec![1.0; k]).is_none(), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A factor that needed jitter holds `A + δI`, which no move of `A`
+    /// keeps: it is never moved (task 170).
+    #[test]
+    fn a_factor_that_needed_jitter_is_never_moved() {
+        let a = [1.0, 1.0, 1.0, 1.0];
+        let f = SpdFactor::of(&a, 2).unwrap();
+        assert!(f.attempts() > 0 && !f.can_move());
+        assert!(f.clone().updated(0.5, &mut [1.0, -1.0]).is_none());
+        assert!(f.congruent(&[2.0, 0.5]).is_none());
+    }
+
+    /// A move that leaves a pivot of 0, or an entry that is not finite,
+    /// spends the factor: `L Lᵀ` would not be positive definite, or not a
+    /// number (task 170). A rescaling by `1e-300` takes a pivot of `1e-30`
+    /// to 0 where one by `1e-200` keeps it; one by `1e300` takes an entry of
+    /// `1e10` past the largest double where one by `1e290` does not; and an
+    /// update whose pivot, `1e154` scaled by `√c` to `1.3e308`, meets a step
+    /// of `1.3e308` rotates to `r = 1.84e308`, past it.
+    #[test]
+    fn a_move_that_leaves_a_zero_pivot_or_an_overflow_spends_the_factor() {
+        let small = SpdFactor::of(&[1e-60, 0.0, 0.0, 1.0], 2).unwrap();
+        assert_eq!(small.l[(0, 0)], 1e-30);
+        assert!(small.clone().congruent(&[1e-300, 1.0]).is_none());
+        assert!(small.congruent(&[1e-200, 1.0]).is_some());
+        let big = SpdFactor::of(&[1e20, 0.0, 0.0, 1.0], 2).unwrap();
+        assert!(big.clone().congruent(&[1e300, 1.0]).is_none());
+        assert!(big.congruent(&[1e290, 1.0]).is_some());
+        let huge = SpdFactor::of(&[1e308, 0.0, 0.0, 1.0], 2).unwrap();
+        assert_eq!(huge.l[(0, 0)], 1e154);
+        assert!(
+            huge.clone()
+                .updated(1.69e308, &mut [1.3e308, 0.0])
+                .is_none()
+        );
+        assert!(huge.updated(1.69e308, &mut [1e307, 0.0]).is_some());
+    }
+
+    /// Each argument a move cannot take is refused on its own: a scale that
+    /// is not a positive number, a step of the wrong size or with an entry
+    /// that is not finite, a rescaling of the wrong size or with an entry
+    /// that is not a positive finite number. Beside each, the same move with
+    /// good arguments is taken.
+    #[test]
+    fn a_move_with_an_argument_it_cannot_take_is_refused() {
+        let a = [4.0, 1.0, 1.0, 3.0];
+        let f = SpdFactor::of(&a, 2).unwrap();
+        assert!(f.clone().updated(0.5, &mut [1.0, -1.0]).is_some());
+        for c in [0.0, -0.5, f64::NAN, f64::INFINITY] {
+            assert!(f.clone().updated(c, &mut [1.0, -1.0]).is_none(), "c {c}");
+        }
+        for v in [
+            vec![1.0],
+            vec![1.0, 2.0, 3.0],
+            vec![f64::NAN, 1.0],
+            vec![1.0, f64::INFINITY],
+        ] {
+            assert!(f.clone().updated(0.5, &mut v.clone()).is_none(), "{v:?}");
+        }
+        assert!(f.clone().congruent(&[2.0, 0.5]).is_some());
+        for e in [
+            vec![2.0],
+            vec![2.0, 0.5, 1.0],
+            vec![0.0, 1.0],
+            vec![1.0, -1.0],
+            vec![f64::NAN, 1.0],
+            vec![1.0, f64::INFINITY],
+        ] {
+            assert!(f.clone().congruent(&e).is_none(), "{e:?}");
+        }
     }
 }
