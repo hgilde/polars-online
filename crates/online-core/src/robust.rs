@@ -94,7 +94,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::dot_aug;
+use crate::solve::{QuadWork, dot_aug};
 use crate::{Decay, EwCov, SpdFactor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -169,6 +169,22 @@ impl BandSystems {
             self.0 = vec![None; n];
         }
         &mut self.0[j]
+    }
+}
+
+/// A nudge's working space, kept between rows so that reading a row's
+/// leverage allocates nothing ([`Robust::nudge_movement`]; task 170): the
+/// row's scaled deviations, and the column their quadratic form is solved
+/// in. Not state, and equal whatever it holds.
+#[derive(Debug, Clone, Default)]
+struct NudgeScratch {
+    u: Vec<f64>,
+    work: QuadWork,
+}
+
+impl PartialEq for NudgeScratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
     }
 }
 
@@ -294,6 +310,9 @@ pub struct Robust {
     /// that follow ([`BandSystems`]). Not state.
     #[serde(skip)]
     systems: BandSystems,
+    /// A nudge's working space ([`NudgeScratch`]). Not state.
+    #[serde(skip)]
+    nudge: NudgeScratch,
 }
 
 impl Robust {
@@ -320,6 +339,7 @@ impl Robust {
             ybar_lo: vec![0.0; m],
             zbuf: vec![0.0; k],
             systems: BandSystems(vec![None; m]),
+            nudge: NudgeScratch::default(),
             cfg,
         })
     }
@@ -492,34 +512,51 @@ impl Robust {
     /// by the raw second moments under `standardize` and keeping the columns
     /// with one. The ridge is on `A`'s diagonal either way.
     fn band_system(&self, j: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
+        let cov = &self.cov[j];
+        let (s, keep) = self.band_scales(j);
+        // Read straight from the Gram, where the centred block was copied
+        // out first, one allocation and `k²` copies a system (task 170).
+        let kk = keep.len();
+        let mut asub = vec![0.0; kk * kk];
+        for (i2, &i) in keep.iter().enumerate() {
+            for (j2, &jj) in keep.iter().enumerate() {
+                let g = if self.cfg.fit_intercept {
+                    cov.cov(i + 1, jj + 1)
+                } else {
+                    cov.raw(i, jj)
+                };
+                asub[i2 * kk + j2] = g / (s[i] * s[jj]);
+            }
+            asub[i2 * kk + i2] += self.cfg.ridge;
+        }
+        (asub, keep, s)
+    }
+
+    /// Target `j`'s band system's scales and kept columns, from the band
+    /// Gram as it stands ([`Self::band_system`]): with an intercept, the
+    /// centred deviations of the features under `standardize`, keeping the
+    /// columns whose variance is usable; through the origin, the raw second
+    /// moments' roots under `standardize`, keeping the columns with one;
+    /// unstandardized, scales of 1 and every column.
+    fn band_scales(&self, j: usize) -> (Vec<f64>, Vec<usize>) {
         let k = self.cfg.k_total();
         let cov = &self.cov[j];
         if self.cfg.fit_intercept {
             let kf = k - 1;
-            let mut c = vec![0.0; kf * kf];
-            for i in 0..kf {
-                for jj in 0..kf {
-                    c[i * kf + jj] = cov.cov(i + 1, jj + 1);
-                }
-            }
-            let (s, keep): (Vec<f64>, Vec<usize>) = if self.cfg.standardize {
-                let s = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
+            if self.cfg.standardize {
+                let s = (0..kf)
+                    .map(|i| cov.cov(i + 1, i + 1).max(0.0).sqrt())
+                    .collect();
                 let keep = (0..kf)
-                    .filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))
+                    .filter(|&i| {
+                        let var = cov.cov(i + 1, i + 1);
+                        crate::variance_is_usable(var, cov.raw(i + 1, i + 1))
+                    })
                     .collect();
                 (s, keep)
             } else {
                 (vec![1.0; kf], (0..kf).collect())
-            };
-            let kk = keep.len();
-            let mut asub = vec![0.0; kk * kk];
-            for (i2, &i) in keep.iter().enumerate() {
-                for (j2, &jj) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = c[i * kf + jj] / (s[i] * s[jj]);
-                }
-                asub[i2 * kk + i2] += self.cfg.ridge;
             }
-            (asub, keep, s)
         } else {
             let s: Vec<f64> = if self.cfg.standardize {
                 (0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()).collect()
@@ -528,16 +565,8 @@ impl Robust {
             };
             // No centering here, so no cancellation: any strictly positive raw
             // moment is usable.
-            let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
-            let kk = keep.len();
-            let mut asub = vec![0.0; kk * kk];
-            for (i2, &i) in keep.iter().enumerate() {
-                for (j2, &jj) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = cov.raw(i, jj) / (s[i] * s[jj]);
-                }
-                asub[i2 * kk + i2] += self.cfg.ridge;
-            }
-            (asub, keep, s)
+            let keep = (0..k).filter(|&i| s[i] > 0.0).collect();
+            (s, keep)
         }
     }
 
@@ -578,7 +607,11 @@ impl Robust {
             .expect("the system is built above");
         let cov = &self.cov[j];
         let intercept = self.cfg.fit_intercept;
-        let mut u = Vec::with_capacity(sys.keep.len());
+        // The deviations and their form in the kept working space: a nudge
+        // allocated both, and the form's matrix and vector, every row (task
+        // 170).
+        let u = &mut self.nudge.u;
+        u.clear();
         for &i in &sys.keep {
             let (d, spread) = if intercept {
                 (
@@ -594,7 +627,7 @@ impl Robust {
             u.push(d / sys.s[i]);
         }
         let q = match &sys.factor {
-            Some(f) => f.quad_forms(&u, u.len(), 1)[0],
+            Some(f) => f.quad_form(u, &mut self.nudge.work),
             None => 0.0,
         };
         if intercept { 1.0 + q } else { q }

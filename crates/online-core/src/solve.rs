@@ -380,7 +380,38 @@ impl SpdFactor {
         }
         q
     }
+
+    /// `dᵀ A⁻¹ d` for one vector `d` of the factor's order, clamped at zero:
+    /// `quad_forms(d, k, 1)[0]` to the bit -- the same column, solved by the
+    /// same two triangular solves, summed in the same order -- but solved in
+    /// `work`, a column kept between calls, where `quad_forms` allocates a
+    /// matrix and a vector for each. A caller reading one form a row, as a
+    /// quantile nudge does, allocates nothing for it (task 170).
+    pub(crate) fn quad_form(&self, d: &[f64], work: &mut QuadWork) -> f64 {
+        let k = self.l.nrows();
+        debug_assert_eq!(d.len(), k);
+        if work.0.as_ref().is_none_or(|x| x.nrows() != k) {
+            work.0 = Some(Mat::zeros(k, 1));
+        }
+        let x = work.0.as_mut().expect("the column is made above");
+        for (i, &di) in d.iter().enumerate() {
+            x[(i, 0)] = di;
+        }
+        solve_in_place(&self.l, x.as_mut());
+        let mut acc = 0.0;
+        for (i, &di) in d.iter().enumerate() {
+            acc += di * x[(i, 0)];
+        }
+        acc.max(0.0)
+    }
 }
+
+/// The working space of [`SpdFactor::quad_form`]: one column, faer's own
+/// matrix as `quad_forms` makes it, made on first use, kept between calls
+/// and made again when the factor's order differs. It holds nothing a
+/// caller reads between calls.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct QuadWork(Option<Mat<f64>>);
 
 /// Quadratic forms `d_jᵀ A⁻¹ d_j` for the `m` column vectors of `d`
 /// (column-major `k x m`) together with `ln det A`, both from one Cholesky
@@ -977,6 +1008,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `quad_form` is `quad_forms`' single form to the bit, its column kept
+    /// in one working space across factors of every order, the order
+    /// changing up and down between calls, a jittered factor among them
+    /// (task 170).
+    #[test]
+    fn one_quadratic_form_in_a_kept_column_is_quad_forms_to_the_bit() {
+        let mut s = 41u64;
+        let mut work = QuadWork::default();
+        let mut cases: Vec<(Vec<f64>, usize)> = Vec::new();
+        for k in [1usize, 2, 5, 10, 17, 5, 1, 10] {
+            for cond in [1.0, 1e6, 1e12] {
+                cases.push((spd(k, cond, &mut s), k));
+            }
+        }
+        cases.push((vec![4.0, 2.0, 2.0, 1.0], 2));
+        for (a, k) in cases {
+            let f = SpdFactor::of(&a, k).unwrap();
+            for _ in 0..4 {
+                let d: Vec<f64> = (0..k).map(|_| draw(&mut s)).collect();
+                let want = f.quad_forms(&d, k, 1)[0];
+                assert_eq!(
+                    f.quad_form(&d, &mut work).to_bits(),
+                    want.to_bits(),
+                    "k {k}"
+                );
+            }
+        }
+        // The zero vector's form is exactly 0, as `quad_forms` gives it.
+        let f = SpdFactor::of(&[4.0, 1.0, 1.0, 3.0], 2).unwrap();
+        assert_eq!(f.quad_form(&[0.0, 0.0], &mut work), 0.0);
     }
 
     /// A factor that needed jitter holds `A + δI`, which no move of `A`

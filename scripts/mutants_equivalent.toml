@@ -835,12 +835,15 @@ alike"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
-function = "Robust::band_system"
+function = "Robust::band_scales"
 mutation = "replace + with *"
-line_has = ".filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))"
+line_has = "crate::variance_is_usable(var, cov.raw(i + 1, i + 1))"
 why = """as `EwRidge::solve_centred`'s: both mutants are inside the second \
 argument, which `variance_is_usable` ignores; `cov.raw(i * 1, ..)` is still \
-in range. The line moved here from `Robust::solve_centred` (task 160, TC1b)"""
+in range. The line moved here from `Robust::solve_centred` (task 160, TC1b), \
+then from `Robust::band_system`, which tested a copy of the Gram; the first \
+argument, `var`, is read on the line above, whose mutants three tests \
+catch (task 170)"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
