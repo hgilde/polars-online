@@ -28,6 +28,7 @@
 //!     target_gaps: online_core::TargetGaps::OwnRows,
 //!     window: None,
 //!     window_every: None,
+//!     max_rows_between_snapshots: None,
 //! })?;
 //!
 //! let mut pred = f64::NAN;
@@ -147,8 +148,8 @@ pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, SlotMetrics};
 pub use window::{
-    Bytes, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated, truncated_mean,
-    truncated_scalar,
+    Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated,
+    truncated_mean, truncated_scalar,
 };
 
 /// Version of the serialized model-state layout.
@@ -384,7 +385,16 @@ pub use window::{
 ///   29 does not decode, and the bank refuses a file older than 29 by
 ///   number. Every other model's state from 14 on still loads, `ew_cov`'s
 ///   from 28.
-pub const SCHEMA_VERSION: u32 = 29;
+/// - 30 (2026-10-06, task 162): a window's snapshots are spaced on the clock
+///   ([`Cadence`]): the ring keeps its clock spacing beside its row cap, and
+///   the five windowed models' configurations carry `window_every` in clock
+///   units and `max_rows_between_snapshots`, with `window` and
+///   `window_every` written as nil where absent so that only the row cap,
+///   the last, skips. A windowed state from before 30 does not decode
+///   compactly; named, as a bank file is, it decodes with no spacing and
+///   its rows, but its `window_every` counted rows, so the bank refuses a
+///   file older than 30 by number, and pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

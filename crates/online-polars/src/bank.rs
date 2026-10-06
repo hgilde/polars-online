@@ -65,7 +65,7 @@ impl std::fmt::Display for GroupKey {
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable; a
 /// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
-/// as every file written before schema 28 is. Version 3 lets a spec
+/// as every file written before schema 29 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -95,8 +95,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// **28 since task 161** (2026-10-06): `ew_cov`'s configuration and state
 /// changed shape (its PCA refreshes on the clock), and the encoding is
 /// positional, so a 27 file holding one would not decode. **29 since task
-/// 163** (2026-10-06): `micro`'s, for its pruning on the clock.
-const MIN_BANK_SCHEMA_VERSION: u32 = 29;
+/// 163** (2026-10-06): `micro`'s, for its pruning on the clock. **30 since
+/// task 162** (the same day): a window's snapshots are spaced on the clock,
+/// so `window_every` in a 29 file's spec counts rows where this build reads
+/// clock units, and its rings carry no spacing; the five windowed models'
+/// configurations changed shape with them.
+const MIN_BANK_SCHEMA_VERSION: u32 = 30;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -881,8 +885,8 @@ fn process(
                         Ok(()) => {
                             stream.remember_last(&out);
                             outs.push((si, Ok(out)));
-                            if let Some((bytes, every)) = stream.window_over_budget() {
-                                outs.push((si, Err(over_budget(spec, key, bytes, every))));
+                            if let Some((bytes, cadence)) = stream.window_over_budget() {
+                                outs.push((si, Err(over_budget(spec, key, bytes, cadence))));
                                 break 'segments;
                             }
                         }
@@ -1019,8 +1023,51 @@ fn compare_targets(
 /// after the run of rows in which the ring stopped at the budget -- so the
 /// bank that raises it has learned part of the chunk, and marks itself
 /// `broken`.
-fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> PolarsError {
-    polars_err!(ComputeError: "{}", over_budget_message(spec, key, bytes, every))
+fn over_budget(
+    spec: &Spec,
+    key: &GroupKey,
+    bytes: usize,
+    cadence: online_core::Cadence,
+) -> PolarsError {
+    polars_err!(ComputeError: "{}", over_budget_message(spec, key, bytes, cadence))
+}
+
+/// A clock spacing as the spec writes `window_every`: its own text where the
+/// ring runs at it, otherwise in the same form -- a duration on a temporal
+/// spec, a number of clock units on any other.
+fn spacing_label(spec: &Spec, spacing: f64) -> String {
+    match spec.model.window_cadence().and_then(|(every, _)| every) {
+        Some(every) if every.value() == spacing => every.label(),
+        Some(crate::span::Span::Duration(_)) => {
+            crate::span::format_duration((spacing * 1e9).round() as i64)
+        }
+        _ => crate::spec::num_label(spacing),
+    }
+}
+
+/// How the refusal says to keep fewer snapshots, from the cadence the ring
+/// ran at (docs/PLAN.md task 162): raise what is in force -- the clock
+/// spacing, the row cap, or both, since whichever comes first takes a
+/// snapshot -- and at every row, give either one.
+fn sparser_ring(spec: &Spec, cadence: online_core::Cadence) -> String {
+    match (cadence.clock(), cadence.row_cap()) {
+        (Some(spacing), Some(rows)) => format!(
+            "raise window_every ({} now) and max_rows_between_snapshots ({rows} now), since \
+             whichever comes first takes a snapshot",
+            spacing_label(spec, spacing)
+        ),
+        (Some(spacing), None) => {
+            format!("raise window_every ({} now)", spacing_label(spec, spacing))
+        }
+        (None, Some(1)) => "set window_every to the clock between snapshots, or \
+                            max_rows_between_snapshots to the rows between them (every row now)"
+            .to_string(),
+        (None, Some(rows)) => format!(
+            "raise max_rows_between_snapshots ({rows} now), or give window_every, the clock \
+             between snapshots, in its place"
+        ),
+        (None, None) => "set window_every or max_rows_between_snapshots".to_string(),
+    }
 }
 
 /// The words of [`over_budget`]: how far past which budget, and each way
@@ -1028,7 +1075,12 @@ fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> Polar
 /// 2026-09-28: "on failure it should explain how to raise it"), a sparser
 /// ring, or thinning in place of refusing. A spec that sets no budget is
 /// told it ran under the default, which it never wrote.
-fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> String {
+fn over_budget_message(
+    spec: &Spec,
+    key: &GroupKey,
+    bytes: usize,
+    cadence: online_core::Cadence,
+) -> String {
     let mib = spec.model.window_budget().map_or(0.0, |b| b.mib());
     let group = key
         .0
@@ -1044,10 +1096,11 @@ fn over_budget_message(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) 
         "spec {:?}{group}: the window's snapshots hold {:.3} MiB, past {which}. To allow more, \
          set window_budget = {{\"refuse\": MiB}} with a larger number of MiB, or \
          {{\"refuse\": inf}} for no bound (in Python, float(\"inf\")); to keep fewer \
-         snapshots, raise window_every ({every} now); or to thin them rather than refuse, set \
-         window_budget = {{\"thin\": MiB}}.",
+         snapshots, {}; or to thin them rather than refuse, set window_budget = \
+         {{\"thin\": MiB}}.",
         spec.name,
-        bytes as f64 / (1024.0 * 1024.0)
+        bytes as f64 / (1024.0 * 1024.0),
+        sparser_ring(spec, cadence)
     )
 }
 
@@ -3017,7 +3070,7 @@ impl Bank {
     /// `restart_after_step_back` unset; `Duplicate` for a spec named like an
     /// input column, which its struct would replace; and a window whose
     /// snapshots the chunk would take past a refusing `window_budget`
-    /// (`ComputeError`, naming the ring's size and `window_every`), found by
+    /// (`ComputeError`, naming the ring's size and its cadence), found by
     /// replaying the chunk's clock schedule on the rings before any row is
     /// learned. A refused chunk leaves the bank exactly as it was -- no state
     /// is updated, no new group is kept -- so the corrected chunk can be
@@ -3372,7 +3425,7 @@ impl Bank {
                             spare.insert(Stream::new(spec).ok()?)
                         };
                         let run = &idx[start..end];
-                        if let Some((bytes, every)) = s.window_prepass(
+                        if let Some((bytes, cadence)) = s.window_prepass(
                             spec,
                             &cfgs[*si],
                             &sc.features,
@@ -3384,7 +3437,7 @@ impl Bank {
                             *base + start,
                             formulas[*si].as_ref().map(|b| b.targets(key)),
                         ) {
-                            return Some(over_budget(spec, key, bytes, every));
+                            return Some(over_budget(spec, key, bytes, cadence));
                         }
                     }
                     None

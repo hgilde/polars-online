@@ -107,14 +107,22 @@ pub struct EwClassCfg {
     /// one `O(k^3)` factorization per class per row. `"diagonal"` and
     /// `"shared"` do not factorize per class and are unaffected.
     ///
-    /// **Last, with `window_every`, and they must stay last**: the compact
-    /// msgpack encoding writes a struct as an array.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
+    /// they must stay last**: the compact msgpack encoding writes a struct
+    /// as an array, so only the last, the row cap, skips when absent.
+    #[serde(default)]
     pub window: Option<f64>,
-    /// Rows between the window's snapshots, counted on every row the model
-    /// is stepped with, rows of weight zero included.
+    /// Clock units between the window's snapshots, `0` every row; with
+    /// `max_rows_between_snapshots` too, whichever comes first, and with
+    /// neither, every row (`EwRidgeCfg::window_every`; docs/PLAN.md task
+    /// 162).
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, counted on
+    /// every row the model is stepped with, rows of weight zero included;
+    /// `0` or `1` is every row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_every: Option<usize>,
+    pub max_rows_between_snapshots: Option<usize>,
 }
 
 impl EwClassCfg {
@@ -134,10 +142,12 @@ impl EwClassCfg {
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
             return Err("ew_class: min_weight must be >= 0".into());
         }
-        if self.window.is_none() && self.window_every.is_some() {
-            return Err("ew_class: window_every needs `window_size`".into());
-        }
-        Ok(())
+        crate::window::check_cadence(
+            "ew_class",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        )
     }
 }
 
@@ -272,10 +282,11 @@ impl EwClass {
                     .map(|c| if windowed { c } else { c.without_runs() })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let cadence = crate::Cadence::of(cfg.window_every, cfg.max_rows_between_snapshots);
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
-                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+                snaps: crate::Snapshots::with_cadence(w, cadence)?,
             }),
             None => None,
         };
@@ -566,7 +577,7 @@ impl OnlineModel for EwClass {
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
@@ -741,7 +752,7 @@ mod tests {
         let mut c = cfg(2, 2, Covariance::Diagonal);
         c.decay = Decay::Halflife(25.0);
         c.window = Some(70.0);
-        c.window_every = Some(1);
+        c.max_rows_between_snapshots = Some(1);
         let mut m = EwClass::new(c).unwrap();
         let mut s = 11u64;
         for i in 0..40 {
@@ -803,6 +814,7 @@ mod tests {
             precision_prior: 0.1,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         }
     }
 
@@ -1513,7 +1525,7 @@ mod tests {
         let mut c = cfg(2, 2, Covariance::Diagonal);
         c.decay = Decay::Halflife(25.0);
         c.window = Some(30.0);
-        c.window_every = Some(1);
+        c.max_rows_between_snapshots = Some(1);
         let decay = c.decay;
         let mut m = EwClass::new(c).unwrap();
         let mut s = 17u64;
@@ -1577,7 +1589,7 @@ mod tests {
             let mut c = cfg(2, 2, Covariance::Diagonal);
             c.decay = Decay::Halflife(4.0);
             c.window = Some(70.0);
-            c.window_every = Some(1);
+            c.max_rows_between_snapshots = Some(1);
             let mut m = EwClass::new(c).unwrap();
             let mut s = 11u64;
             for i in 0..40 {
@@ -1704,7 +1716,7 @@ mod tests {
         assert!(plain.window_shadow().is_none());
         let mut c = cfg(2, 2, Covariance::Diagonal);
         c.window = Some(40.0);
-        c.window_every = Some(2);
+        c.max_rows_between_snapshots = Some(2);
         let mut m = EwClass::new(c).unwrap();
         let mut s = 21u64;
         let mut row = |m: &mut EwClass, d: f64| {
@@ -1720,7 +1732,7 @@ mod tests {
         match m.window_over_budget() {
             Some((bytes, every)) => {
                 assert!(bytes > 1, "{bytes}");
-                assert_eq!(every, 2);
+                assert_eq!(every, crate::Cadence::of(None, Some(2)));
             }
             None => panic!("a ring of snapshots is past a budget of one byte"),
         }

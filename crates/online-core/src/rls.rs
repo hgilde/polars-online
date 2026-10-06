@@ -532,6 +532,7 @@ mod tests {
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
 
@@ -584,6 +585,7 @@ mod tests {
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         };
         let mut own = EwRidge::new(cfg.clone()).unwrap();
         let mut pairwise = EwRidge::new(EwRidgeCfg {
@@ -654,6 +656,7 @@ mod tests {
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
 

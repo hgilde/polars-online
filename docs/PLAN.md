@@ -7562,6 +7562,30 @@ tick, and that the series holding it up has a count near 1.
       to it over irregular steps and through a save mid-cadence (which fails
       if the clock since the last refresh is not saved). Schema 28.
 
+- [x] 162. **A model window's snapshots are spaced on the clock, as the
+      regressions' solves are scheduled -- requested 2026-10-06.** Size M.
+      The user's words, after the audit of the parameters that count rows:
+      "Do both these" (this and task 163). The window is clock time
+      (`window_size`), but its snapshots were spaced in rows, so the
+      boundary's error varied in time with the row rate and a burst
+      inflated the ring. Now `window_every` is clock units, a number or a
+      duration, `0` every row, and `max_rows_between_snapshots` caps the rows
+      between snapshots; whichever comes first; with neither, every row, as
+      before. `window.rs` keeps a `Cadence` (a clock spacing beside the row
+      cap) and one due rule for `takes` and `offer`; thinning doubles
+      whichever is in force; the stream's `ResidWindow` takes the model's
+      cadence, so the spread's boundary stays the fit's; the over-budget
+      refusal names the cadence in force. Two choices to know: `window` and
+      `window_every` are written as nil where absent, so that only the row
+      cap, the last field, skips in the positional encoding; and `marginal`'s
+      `shards="auto"` sizes a flush by the batch under a clock spacing alone,
+      which bounds no number of rows (speed only; the numbers are the same at
+      any shard count). Built 2026-10-06 by a worker in a worktree:
+      `tests/test_window_cadence.py` (44, against oracles from the
+      definition, scikit-learn's `Ridge` on the window's rows among them; 43
+      fail on the old code), six `window.rs` tests and an `ewcov.rs` resume
+      test, each save test shown failing when the spacing or the window's
+      clock is not saved. Schema 30.
 - [x] 163. **`micro` prunes on the clock, as the regressions' solves are
       scheduled -- requested 2026-10-06.** Size S. The user's words, after
       the audit of the parameters that count rows: "Do both these" (the
@@ -7584,8 +7608,8 @@ tick, and that the series holding it up has a count near 1.
       reviewed -- requested 2026-10-06.** Size S. The user's words: "Find
       more example where a parameter references only rows when it should
       also be a clock", then "Do both these and document the rest for
-      review". Task 163 built `micro`'s pruning and task 162 builds the
-      window snapshots; §17 lists the rest with a
+      review". Task 163 built `micro`'s pruning and task 162 the window
+      snapshots; §17 lists the rest with a
       recommendation each, and the decisions they need (task 165). Found on
       the way and fixed here: `coef_every`'s doc said learned rows, where it
       counts each group's accepted rows (measured: `coef_every = 3` filled
@@ -11515,7 +11539,7 @@ the rest for review". Every integer parameter of every builder was read
 against what it counts (`_spec.py`, `spec.rs`, the models). Two are built on
 the regressions' pattern -- clock units in the parameter, a row cap beside
 it, whichever comes first, the old default kept: `micro`'s pruning (task 163)
-and the window snapshots (task 162, in progress as this is written). The rest are listed here for the
+and the window snapshots (task 162). The rest are listed here for the
 user's review, each with what it counts, what a clock form would mean, and a
 recommendation. Nothing below is built.
 

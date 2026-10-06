@@ -1263,6 +1263,7 @@ mod tests {
             feature_moments: FeatureMomentLayout::Shared,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         };
         let mut m = Marginal::new(cfg).unwrap();
         for i in 0..10 {

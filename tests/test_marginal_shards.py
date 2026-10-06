@@ -70,13 +70,19 @@ SHAPES = {
     "moments": {},
     "lags": {"lags": [1, 3, 7], "cross_lags": [1], "serial_rule": "geometric"},
     "bins": {"bins": 6, "bin_warm_rows": 50},
-    "window": {"window_size": 40.0, "window_every": 4},
+    "window": {"window_size": 40.0, "max_rows_between_snapshots": 4},
+    # Snapshots on the clock, four units apart (docs/PLAN.md task 162): the
+    # flush before each must come where the clock says, in every group.
+    "window_clock": {"window_size": 40.0, "window_every": 4.0},
 }
 
 #: The shapes for the ``"auto"`` legs: a window flushes before every snapshot,
-#: so its cadence is what "auto" sizes by, and a snapshot every four rows is
+#: so its row cap is what "auto" sizes by, and a snapshot every four rows is
 #: never worth a split (review 2026-09-26, A1); every 128 rows is.
-AUTO_SHAPES = {**SHAPES, "window": {"window_size": 400.0, "window_every": 128}}
+AUTO_SHAPES = {
+    **{k: v for k, v in SHAPES.items() if k != "window_clock"},
+    "window": {"window_size": 400.0, "max_rows_between_snapshots": 128},
+}
 
 
 def spec(shape: str, shards, p: int = P, shapes=SHAPES, **kw):
@@ -140,7 +146,10 @@ EXTRAS = {
     "embargo": ("lags", dict(embargo=7.0)),
     "grid": ("lags", dict(half_life=[40.0, 80.0])),
     # A window keeps no lags, so the reset under one is on the moments.
-    "reset_window": ("moments", dict(session_gap=10.0, window_size=40.0, window_every=4)),
+    "reset_window": (
+        "moments",
+        dict(session_gap=10.0, window_size=40.0, max_rows_between_snapshots=4),
+    ),
 }
 
 
@@ -229,12 +238,12 @@ def test_a_save_inside_the_bin_warm_up_resumes_under_shards(tmp_path):
     assert resumed.marginal("m").equals(pairs, null_equal=True)
 
 
-def test_a_large_window_every_flushes_on_the_batch_alone():
+def test_a_large_snapshot_cadence_flushes_on_the_batch_alone():
     """A snapshot cadence longer than a batch: the flushes are the batch's,
     with a snapshot's flush now and then between (review 2026-09-26, E
     missing 7)."""
     df = frame()
-    kw = dict(window_size=40.0, window_every=300)
+    kw = dict(window_size=40.0, max_rows_between_snapshots=300)
     out, pairs = run("moments", None, df, **kw)
     got_out, got_pairs = run("moments", 4, df, 2, **kw)
     assert got_out.equals(out, null_equal=True)

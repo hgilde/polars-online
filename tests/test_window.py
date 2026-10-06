@@ -145,7 +145,11 @@ def test_the_window_shrinks_n_eff_to_what_it_covers():
         ({"window_size": -1.0}, "window_size must be finite and > 0"),
         ({"window_size": float("inf")}, "window_size must be finite"),
         ({"window_every": 5}, "window_every needs"),
-        ({"window_size": 10.0, "window_every": 0}, "window_every must be >= 1"),
+        ({"max_rows_between_snapshots": 5}, "max_rows_between_snapshots needs"),
+        (
+            {"window_size": 10.0, "window_every": -1.0},
+            "window_every must be finite and >= 0 clock units",
+        ),
         ({"window_size": 10.0, "lags": [1]}, "window_size and lags do not combine"),
         ({"window_size": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
     ],

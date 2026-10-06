@@ -1338,6 +1338,7 @@ mod tests {
             target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let mut s = 77u64;

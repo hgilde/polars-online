@@ -42,6 +42,7 @@ fn cfg(p: usize, t: usize) -> MarginalCfg {
         feature_moments: FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -447,6 +448,7 @@ fn the_windowed_kish_size_is_ew_covs() {
         lags: Vec::new(),
         window: Some(window),
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     let mut s = 5u64;
@@ -744,6 +746,7 @@ fn lagged_pair_moments_are_ew_covs_to_the_bit() {
         lags: lags.clone(),
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
 
@@ -810,6 +813,7 @@ fn lagged_pair_moments_are_ew_covs_for_every_feature_and_target() {
         lags: lags.clone(),
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     let mut seed = 23u64;
@@ -1545,6 +1549,7 @@ fn a_pair_is_the_ew_cov_of_the_two_columns_to_the_bit() {
         lags: Vec::new(),
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     let mut s = 99u64;
@@ -1721,6 +1726,7 @@ fn state_round_trips_and_continues_identically() {
             lags: Vec::new(),
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
         .state(),
@@ -1772,6 +1778,7 @@ fn marginal_with(bins: Option<Box<crate::BinCfg>>) -> Marginal {
         feature_moments: FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap()
 }
@@ -1853,6 +1860,7 @@ fn learned_edges_lose_no_row_across_targets() {
             feature_moments: FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     };
@@ -2060,6 +2068,7 @@ fn bins_before_and_beyond_what_it_can_do() {
             feature_moments: FeatureMomentLayout::PerTarget,
             window: Some(100.0),
             window_every: None,
+            max_rows_between_snapshots: None,
         })
     };
     let err = with_window(Some(bins_cfg(4, 100))).unwrap_err();
@@ -2078,6 +2087,7 @@ fn bins_before_and_beyond_what_it_can_do() {
         feature_moments: FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap_err();
     assert!(too_few.contains("bin_warm_rows"), "{too_few}");
@@ -2099,6 +2109,7 @@ fn degenerate_features_keep_the_bins_they_can_support() {
         feature_moments: FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     let mut seed = 3u64;
@@ -2472,7 +2483,24 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
             "window every 3",
             with(&|c| {
                 c.window = Some(25.0);
-                c.window_every = Some(3);
+                c.max_rows_between_snapshots = Some(3);
+            }),
+        ),
+        // On the clock, alone and with a row cap (docs/PLAN.md task 162):
+        // `takes` must say when the clock is due for the flush before it.
+        (
+            "window every 2.5 clock units",
+            with(&|c| {
+                c.window = Some(25.0);
+                c.window_every = Some(2.5);
+            }),
+        ),
+        (
+            "window every 2.5 clock units or 2 rows",
+            with(&|c| {
+                c.window = Some(25.0);
+                c.window_every = Some(2.5);
+                c.max_rows_between_snapshots = Some(2);
             }),
         ),
     ]
@@ -2901,14 +2929,21 @@ fn auto_does_not_split_a_window_snapshotted_every_row() {
     let mut c = cfg(10_000, 9);
     c.window = Some(40.0);
     assert_eq!(c.auto_shards(14), 1, "a snapshot every row");
-    c.window_every = Some(64);
+    c.max_rows_between_snapshots = Some(64);
     assert!(c.auto_shards(14) > 1);
-    c.window_every = Some(1_000);
+    c.max_rows_between_snapshots = Some(1_000);
     assert_eq!(
         c.auto_shards(14),
         cfg(10_000, 9).auto_shards(14),
         "the batch bounds it"
     );
+    // A clock spacing bounds no count of rows, so alone it is the batch's;
+    // at 0 it is every row (docs/PLAN.md task 162).
+    c.max_rows_between_snapshots = None;
+    c.window_every = Some(64.0);
+    assert_eq!(c.auto_shards(14), cfg(10_000, 9).auto_shards(14));
+    c.window_every = Some(0.0);
+    assert_eq!(c.auto_shards(14), 1, "a snapshot every row");
 }
 
 /// `"auto"` at the Python suite's widths (`tests/test_marginal_shards.py`):
@@ -2927,7 +2962,7 @@ fn auto_shards_at_the_python_suites_widths() {
         bins.bins = Some(bins_cfg(6, 50));
         let mut window = cfg(p, 3);
         window.window = Some(40.0);
-        window.window_every = Some(every);
+        window.max_rows_between_snapshots = Some(every);
         [cfg(p, 3), lags, bins, window]
     };
     let at_60: Vec<usize> = shapes(60, 4).iter().map(|c| c.auto_shards(14)).collect();
@@ -2952,13 +2987,18 @@ fn auto_shards_at_the_python_suites_widths() {
 }
 
 /// A windowed model flushes before every snapshot: every row at the
-/// default cadence, one row in eight at `window_every = 8`. Counted with
-/// a runner of its own, so the regime is a fact and not an inference.
+/// default cadence, one row in eight at a row cap of 8, and at eight clock
+/// units, a unit a row here (docs/PLAN.md task 162). Counted with a runner
+/// of its own, so the regime is a fact and not an inference.
 #[test]
 fn a_window_snapshotted_every_row_flushes_every_row() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let rows = shard_stream(100, 3);
-    for (every, at_least, at_most) in [(1usize, 100, 100), (8, 12, 14)] {
+    for (every, rows_cap, at_least, at_most) in [
+        (None, Some(1usize), 100, 100),
+        (None, Some(8), 12, 14),
+        (Some(8.0), None, 12, 14),
+    ] {
         let flushes = AtomicUsize::new(0);
         let run = |s: &mut [MarginalShard<'_>]| {
             flushes.fetch_add(1, Ordering::Relaxed);
@@ -2970,7 +3010,8 @@ fn a_window_snapshotted_every_row_flushes_every_row() {
         };
         let mut c = cfg(3, 3);
         c.window = Some(30.0);
-        c.window_every = Some(every);
+        c.window_every = every;
+        c.max_rows_between_snapshots = rows_cap;
         let mut m = Marginal::new(c).unwrap();
         for r in &rows {
             m.step_sharded(&r.x, &r.y, 1.0, r.w, &shards);
@@ -2979,7 +3020,7 @@ fn a_window_snapshotted_every_row_flushes_every_row() {
         let n = flushes.load(Ordering::Relaxed);
         assert!(
             (at_least..=at_most).contains(&n),
-            "every {every}: {n} flushes"
+            "{every:?}, {rows_cap:?}: {n} flushes"
         );
     }
 }
@@ -3881,7 +3922,10 @@ fn the_windows_shadow_foresees_its_overrun() {
         assert_eq!(shadow.over_budget(), m.window_over_budget(), "row {i}");
     }
     let (bytes, every) = m.window_over_budget().expect("the budget was crossed");
-    assert!(bytes > 0 && every == 1, "{bytes} {every}");
+    assert!(
+        bytes > 0 && every == crate::Cadence::EVERY_ROW,
+        "{bytes} {every:?}"
+    );
     let plain = Marginal::new(cfg(2, 1)).unwrap();
     assert!(plain.window_shadow().is_none());
     assert_eq!(plain.window_over_budget(), None);
@@ -3996,7 +4040,15 @@ fn a_sharded_step_is_the_unsplit_step_on_finite_rows() {
         "a window shorter than its cadence",
         MarginalCfg {
             window: Some(2.5),
-            window_every: Some(5),
+            max_rows_between_snapshots: Some(5),
+            ..base.clone()
+        },
+    ));
+    cfgs.push((
+        "a window shorter than its clock spacing",
+        MarginalCfg {
+            window: Some(2.5),
+            window_every: Some(5.0),
             ..base
         },
     ));

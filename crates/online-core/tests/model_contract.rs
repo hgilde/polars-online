@@ -247,6 +247,7 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -291,6 +292,7 @@ fn lasso_cfg() -> LassoCfg {
         solve_share: None,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
         max_iter: 100,
         tol: 1e-10,
         target_gaps: online_core::TargetGaps::OwnRows,
@@ -493,6 +495,7 @@ fn ew_cov_model_cfg() -> EwCovCfg {
         lags: vec![1, 3],
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -702,6 +705,7 @@ fn ew_class_cfg() -> EwClassCfg {
         precision_prior: 0.1,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -772,6 +776,7 @@ fn marginal_cfg() -> MarginalCfg {
         feature_moments: online_core::FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -2726,7 +2731,7 @@ fn a_schema_16_state_of_offsets_loads_as_own_means() {
         let ridge = || {
             let mut c = ew_ridge_cfg();
             c.window = Some(30.0);
-            c.window_every = Some(4);
+            c.max_rows_between_snapshots = Some(4);
             c.target_gaps = gaps;
             EwRidge::new(c).unwrap()
         };
@@ -2736,7 +2741,7 @@ fn a_schema_16_state_of_offsets_loads_as_own_means() {
     let lasso = || {
         let mut c = lasso_cfg();
         c.window = Some(30.0);
-        c.window_every = Some(4);
+        c.max_rows_between_snapshots = Some(4);
         c.target_gaps = TargetGaps::Pairwise;
         Lasso::new(c).unwrap()
     };
@@ -3056,7 +3061,7 @@ mod generated {
             contract(|| {
                 let mut c = ew_ridge_cfg();
                 c.window = Some(7.0);
-                c.window_every = [None, Some(3)][every];
+                c.max_rows_between_snapshots = [None, Some(3)][every];
                 EwRidge::new(c).unwrap()
             }, &rows, split)?;
         }
@@ -3089,7 +3094,7 @@ mod generated {
             contract(|| {
                 let mut c = lasso_cfg();
                 c.window = Some(7.0);
-                c.window_every = [None, Some(3)][every];
+                c.max_rows_between_snapshots = [None, Some(3)][every];
                 Lasso::new(c).unwrap()
             }, &rows, split)?;
         }
@@ -3143,7 +3148,7 @@ mod generated {
                 c.lags = vec![];
                 c.stats.retain(|s| *s != EwCovStat::LagCorr);
                 c.window = Some(7.0);
-                c.window_every = [None, Some(3)][every];
+                c.max_rows_between_snapshots = [None, Some(3)][every];
                 EwCovModel::new(c).unwrap()
             }, &rows, split)?;
         }
@@ -3161,7 +3166,7 @@ mod generated {
                 let mut c = marginal_cfg();
                 c.lags = vec![];
                 c.window = Some(7.0);
-                c.window_every = [None, Some(3)][every];
+                c.max_rows_between_snapshots = [None, Some(3)][every];
                 Marginal::new(c).unwrap()
             }, &rows, split)?;
         }
@@ -3186,7 +3191,7 @@ mod generated {
             contract(|| {
                 let mut c = ew_class_cfg();
                 c.window = Some(7.0);
-                c.window_every = [None, Some(3)][every];
+                c.max_rows_between_snapshots = [None, Some(3)][every];
                 EwClass::new(c).unwrap()
             }, &rows, split)?;
         }

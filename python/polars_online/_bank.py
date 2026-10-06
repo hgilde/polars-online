@@ -294,9 +294,10 @@ class ModelBank:
           drops the overlap.
 
         A chunk that would take a window past a refusing ``window_budget``
-        is refused too (``ValueError``, naming the ring's size and
-        ``window_every``), found by replaying the chunk's clock schedule on
-        the rings before any row is learned. A refused chunk leaves the bank
+        is refused too (``ValueError``, naming the ring's size and its
+        cadence, ``window_every`` and ``max_rows_between_snapshots``), found
+        by replaying the chunk's clock schedule on the rings before any row
+        is learned. A refused chunk leaves the bank
         exactly as it was, so the corrected chunk can be fed. The exception
         is a window past its budget under ``drift_action="reset"``, whose
         resets the replay cannot foresee. That is found as the rows are

@@ -540,6 +540,7 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "window_size": (None,),
     "window_budget": (None,),
     "window_every": (None,),
+    "max_rows_between_snapshots": (None,),
     "embargo": (None,),
     "gram_block_rows": (None,),
     "drift_action": ("flag",),

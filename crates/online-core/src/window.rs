@@ -12,24 +12,35 @@
 //! so the part to discard is the accumulator's own earlier value, decayed
 //! forward, and truncation is a subtraction rather than a recomputation.
 //! What a model has to keep is therefore not the rows but a ring of past
-//! *snapshots*, one per row (or one per `every` rows), which is what
-//! this module holds.
+//! *snapshots*, which is what this module holds.
+//!
+//! **The snapshots are spaced on the clock, as the window is**
+//! ([`Cadence`]; docs/PLAN.md task 162): one once `spacing` clock units
+//! have passed since the newest, or once `every` rows have, whichever comes
+//! first -- the schedule `solve_every` and `max_rows_between_solves` give a
+//! regression's solves. Every row is a row cap of one. Spaced in rows
+//! alone, the boundary's slack (below) varied in time with the arrival rate,
+//! and a burst of rows filled the ring; spaced on the clock, a burst inside
+//! one spacing takes no snapshot of its own, and a ring on the clock alone
+//! holds at most `window / spacing + 2` whatever the rate.
 //!
 //! **The boundary is chosen conservatively, and the direction matters.** A
 //! snapshot taken before the row at `t_j` carries everything strictly older
 //! than `t_j`; subtracting it retains rows at `t_j` and after. Honouring
 //! "nothing older than `window`" therefore needs `t_j >= t - window`, so the
 //! boundary is the *oldest snapshot still inside the window* and a coarse
-//! `every` discards slightly more than asked, never less. Rounding the other
-//! way would keep rows the window promised to exclude, which is the one
-//! failure this design refuses to have.
+//! cadence discards slightly more than asked, never less: under a clock
+//! spacing every row at most `window - spacing` old is kept, and none older
+//! than `window`. Rounding the other way would keep rows the window promised
+//! to exclude, which is the one failure this design refuses to have.
 //!
-//! That needs a snapshot inside the window. With a coarse `every` there was
-//! none after a clock gap longer than the window, or wherever `every` rows
-//! span more clock than it: the newest snapshot was older than the window,
-//! it stayed the boundary, and rows the window excludes stayed in the fit.
-//! So a row that finds the newest snapshot outside the window is
-//! snapshotted whatever the cadence (review 2026-09-12, S6).
+//! That needs a snapshot inside the window. With a coarse cadence there was
+//! none after a clock gap longer than the window, or wherever the rows
+//! between two snapshots span more clock than it: the newest snapshot was
+//! older than the window, it stayed the boundary, and rows the window
+//! excludes stayed in the fit. So a row that finds the newest snapshot
+//! outside the window is snapshotted whatever the cadence (review
+//! 2026-09-12, S6).
 
 use std::collections::VecDeque;
 
@@ -40,11 +51,11 @@ use crate::EwCov;
 /// What a window does when its snapshots pass a memory budget, and the
 /// budget in MiB (review 2026-09-12, P4; the user's decision of
 /// 2026-09-15). Past it the ring either thins -- every other snapshot
-/// dropped and the spacing doubled, as often as it takes, so the boundary
-/// grows coarser and never keeps an older row -- or stops: the snapshot that
-/// would cross is not kept, none is made after it, and the overrun is
-/// recorded for the caller to refuse the run on, naming the size and
-/// `window_every`.
+/// dropped and the [`Cadence`] in force doubled, as often as it takes, so
+/// the boundary grows coarser and never keeps an older row -- or stops: the
+/// snapshot that would cross is not kept, none is made after it, and the
+/// overrun is recorded for the caller to refuse the run on, naming the size
+/// and the cadence.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowBudget {
@@ -67,6 +78,91 @@ impl WindowBudget {
     fn bytes(&self) -> f64 {
         self.mib() * 1024.0 * 1024.0
     }
+}
+
+/// When a ring takes its next snapshot (docs/PLAN.md task 162): once
+/// `spacing` clock units have passed since its newest, or once `rows` rows
+/// have, whichever comes first -- as `solve_every` and
+/// `max_rows_between_solves` schedule a regression's solve. A row whose
+/// newest snapshot has left the window is snapshotted whatever the cadence
+/// (the module docs).
+///
+/// Every row is a row cap of one and no spacing, so a thinning budget
+/// always has a spacing in force to double ([`WindowBudget`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cadence {
+    /// Clock units between snapshots; `f64::INFINITY` for none.
+    pub spacing: f64,
+    /// Rows between snapshots at most, counted on every row the model is
+    /// stepped with, rows of weight zero included (review 2026-09-26, C7);
+    /// `usize::MAX` for none, `1` for every row.
+    pub rows: usize,
+}
+
+impl Cadence {
+    /// A snapshot on every row: a row cap of one, no clock spacing.
+    pub const EVERY_ROW: Cadence = Cadence {
+        spacing: f64::INFINITY,
+        rows: 1,
+    };
+
+    /// A windowed model's `window_every` -- clock units, `0` every row --
+    /// and `max_rows_between_snapshots` -- `0` or `1` every row -- as the
+    /// cadence its ring runs by: whichever comes first, and every row with
+    /// neither.
+    pub fn of(every: Option<f64>, max_rows: Option<usize>) -> Cadence {
+        if every == Some(0.0) || matches!(max_rows, Some(0 | 1)) {
+            return Cadence::EVERY_ROW;
+        }
+        match (every, max_rows) {
+            (None, None) => Cadence::EVERY_ROW,
+            (every, rows) => Cadence {
+                spacing: every.unwrap_or(f64::INFINITY),
+                rows: rows.unwrap_or(usize::MAX),
+            },
+        }
+    }
+
+    /// The clock spacing in force, if any.
+    pub fn clock(&self) -> Option<f64> {
+        self.spacing.is_finite().then_some(self.spacing)
+    }
+
+    /// The row cap in force, if any: `1` is every row.
+    pub fn row_cap(&self) -> Option<usize> {
+        (self.rows != usize::MAX).then_some(self.rows)
+    }
+}
+
+/// The checks every windowed model makes of its configuration's cadence
+/// (docs/PLAN.md task 162): `window_every` is a finite number of clock
+/// units, `0` for every row, and it and `max_rows_between_snapshots` each
+/// need a window to space.
+pub(crate) fn check_cadence(
+    model: &str,
+    window: Option<f64>,
+    every: Option<f64>,
+    max_rows: Option<usize>,
+) -> Result<(), String> {
+    if window.is_none() {
+        if every.is_some() {
+            return Err(format!("{model}: window_every needs `window_size`"));
+        }
+        if max_rows.is_some() {
+            return Err(format!(
+                "{model}: max_rows_between_snapshots needs `window_size`"
+            ));
+        }
+    }
+    if let Some(e) = every
+        && !(e.is_finite() && e >= 0.0)
+    {
+        return Err(format!(
+            "{model}: window_every must be finite and >= 0 clock units (0 snapshots every row), \
+             got {e}"
+        ));
+    }
+    Ok(())
 }
 
 /// The heap a snapshot holds, in bytes: what a window's budget counts.
@@ -114,6 +210,7 @@ impl WindowShadow {
             ring: Snapshots {
                 window: ring.window,
                 every: ring.every,
+                spacing: ring.spacing,
                 since: ring.since,
                 ring: ring
                     .ring
@@ -137,7 +234,7 @@ impl WindowShadow {
     }
 
     /// What the ring would report: [`Snapshots::over_budget`].
-    pub fn over_budget(&self) -> Option<(usize, usize)> {
+    pub fn over_budget(&self) -> Option<(usize, Cadence)> {
         self.ring.over_budget()
     }
 
@@ -295,10 +392,20 @@ pub(crate) fn assert_footprint_counts_every_vector<S: Footprint + Serialize>(
 pub struct Snapshots<S> {
     /// Clock units of history the window keeps.
     window: f64,
-    /// Snapshot every `every` rows; `1` snapshots them all and makes the
-    /// boundary as tight as the data allows. A row whose newest snapshot has
-    /// left the window is snapshotted whatever the count.
+    /// A snapshot at most every `every` rows; `1` snapshots them all and
+    /// makes the boundary as tight as the data allows, `usize::MAX` leaves
+    /// the cadence to `spacing`. A row whose newest snapshot has left the
+    /// window is snapshotted whatever the count.
     every: usize,
+    /// A snapshot once the clock is this many units past the newest's, if
+    /// `every` rows have not come first ([`Cadence`]; docs/PLAN.md task
+    /// 162); `inf` for none. The clock it is measured from is the newest
+    /// snapshot's, which the ring holds, so a resumed ring goes on where it
+    /// stopped. A state saved before task 162 has none, and keeps its rows.
+    /// Written as `"inf"` in a human-readable encoding, whose `null` would
+    /// not read back (`crate::humanfloat`; the bank's JSON export checks).
+    #[serde(default = "no_spacing", with = "crate::humanfloat::f64_or_tag")]
+    spacing: f64,
     /// Rows since the last snapshot, so the cadence is counted in the
     /// *stream* and never in the chunk (hard rule 3).
     since: usize,
@@ -326,18 +433,47 @@ impl PartialEq for Limit {
     }
 }
 
+/// No clock spacing: what a ring saved before task 162 read its cadence
+/// as, its rows alone.
+fn no_spacing() -> f64 {
+    f64::INFINITY
+}
+
 impl<S> Snapshots<S> {
-    /// `window` in clock units, `every` rows between snapshots.
+    /// `window` in clock units, a snapshot every `every` rows and on no
+    /// clock spacing.
     pub fn new(window: f64, every: usize) -> Result<Self, String> {
+        Self::with_cadence(
+            window,
+            Cadence {
+                spacing: f64::INFINITY,
+                rows: every,
+            },
+        )
+    }
+
+    /// `window` in clock units, a snapshot on `cadence`: `spacing` clock
+    /// units past the newest or `rows` rows, whichever comes first
+    /// (docs/PLAN.md task 162). A spacing must be a positive number of
+    /// clock units or none, and a cap at least one row; [`Cadence::of`]
+    /// gives every row as a cap of one.
+    pub fn with_cadence(window: f64, cadence: Cadence) -> Result<Self, String> {
         if !window.is_finite() || window <= 0.0 {
             return Err(format!("window_size must be > 0 (got {window})"));
         }
-        if every == 0 {
-            return Err("window_every must be >= 1".into());
+        if cadence.rows == 0 {
+            return Err("the rows between a window's snapshots must be >= 1".into());
+        }
+        if cadence.spacing.is_nan() || cadence.spacing <= 0.0 {
+            return Err(format!(
+                "the clock between a window's snapshots must be > 0 units, or none (got {})",
+                cadence.spacing
+            ));
         }
         Ok(Self {
             window,
-            every,
+            every: cadence.rows,
+            spacing: cadence.spacing,
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
             limit: Limit::default(),
@@ -346,6 +482,25 @@ impl<S> Snapshots<S> {
 
     pub fn window(&self) -> f64 {
         self.window
+    }
+
+    /// The cadence the ring takes its snapshots on: the one it was given,
+    /// doubled by any thinning ([`WindowBudget`]).
+    pub fn cadence(&self) -> Cadence {
+        Cadence {
+            spacing: self.spacing,
+            rows: self.every,
+        }
+    }
+
+    /// Whether a row at `clock`, `since` rows after the newest snapshot,
+    /// takes one: the clock `spacing` past the newest's or the rows at
+    /// `every`, whichever comes first, and whatever the cadence when the
+    /// newest has left the window or there is none (the module docs).
+    fn due(&self, since: usize, clock: f64) -> bool {
+        self.newest().is_none_or(|t| {
+            since >= self.every || clock - t >= self.spacing || t < clock - self.window
+        })
     }
 
     /// The snapshots, oldest first.
@@ -362,6 +517,12 @@ impl<S> Snapshots<S> {
     /// The snapshot to subtract, and the clock it is referenced at.
     pub fn boundary(&self) -> Option<&(f64, S)> {
         self.ring.front()
+    }
+
+    /// The newest snapshot's clock, which the clock spacing is measured
+    /// from.
+    pub(crate) fn newest(&self) -> Option<f64> {
+        self.ring.back().map(|(t, _)| *t)
     }
 
     pub fn len(&self) -> usize {
@@ -396,33 +557,23 @@ impl<S: Footprint> Snapshots<S> {
     /// then keep none of what it formed, and the work finished early was
     /// harmless.
     pub fn takes(&self, clock: f64) -> bool {
-        if self.limit.over.is_some() {
-            return false;
-        }
-        let stale = self
-            .ring
-            .back()
-            .is_none_or(|&(t, _)| t < clock - self.window);
-        self.since.saturating_add(1) >= self.every || stale
+        self.limit.over.is_none() && self.due(self.since.saturating_add(1), clock)
     }
 
     /// Offer a snapshot of the state *as it stands before* the row at
-    /// `clock`, already decayed to that row. Taken when the cadence is due,
-    /// and whatever the cadence when the newest snapshot is older than the
-    /// window, so the boundary is always inside it (the module docs); `make`
-    /// is not called otherwise. Past a thinning budget the ring then thins;
-    /// a refusing one keeps no snapshot that would cross it, and makes none
-    /// after ([`WindowBudget`]).
+    /// `clock`, already decayed to that row. Taken when the cadence is due
+    /// -- the clock `spacing` past the newest snapshot's, or `every` rows
+    /// since it, whichever comes first -- and whatever the cadence when the
+    /// newest snapshot is older than the window, so the boundary is always
+    /// inside it (the module docs); `make` is not called otherwise. Past a
+    /// thinning budget the ring then thins; a refusing one keeps no snapshot
+    /// that would cross it, and makes none after ([`WindowBudget`]).
     pub fn offer(&mut self, clock: f64, make: impl FnOnce() -> S) {
         self.since = self.since.saturating_add(1);
         if self.limit.over.is_some() {
             return;
         }
-        let stale = self
-            .ring
-            .back()
-            .is_none_or(|&(t, _)| t < clock - self.window);
-        if self.since >= self.every || stale {
+        if self.due(self.since, clock) {
             self.since = 0;
             let snap = make();
             let held = self.limit.held + snap.footprint();
@@ -454,9 +605,11 @@ impl<S: Footprint> Snapshots<S> {
     }
 
     /// A refusing budget's overrun: the bytes the ring reached, and the
-    /// spacing it reached them at (`window_every`, doubled by any thinning).
-    pub fn over_budget(&self) -> Option<(usize, usize)> {
-        self.limit.over.map(|bytes| (bytes, self.every))
+    /// cadence it reached them at (`window_every` and
+    /// `max_rows_between_snapshots`, doubled by any thinning), which the
+    /// caller's refusal names.
+    pub fn over_budget(&self) -> Option<(usize, Cadence)> {
+        self.limit.over.map(|bytes| (bytes, self.cadence()))
     }
 
     /// The bytes the ring's snapshots hold.
@@ -478,9 +631,13 @@ impl<S: Footprint> Snapshots<S> {
             WindowBudget::Refuse(_) => self.limit.over = Some(self.limit.held),
             WindowBudget::Thin(_) => {
                 // Keep the newest and every second one before it, and take
-                // them half as often, until the ring fits. The front snapshot
-                // is the boundary, so losing it moves the boundary later: the
-                // window drops more rows, and never keeps an older one.
+                // them half as often, until the ring fits: whichever of the
+                // clock spacing and the row cap is in force doubles, both
+                // where both are (none stays none, and every row is a cap
+                // of one). The front snapshot is the boundary, so losing it
+                // moves the boundary later: the window drops more rows, and
+                // never keeps an older one. The newest stays, and the clock
+                // spacing is measured from it.
                 while self.limit.held as f64 > limit && self.ring.len() > 1 {
                     let n = self.ring.len();
                     self.ring = std::mem::take(&mut self.ring)
@@ -490,6 +647,7 @@ impl<S: Footprint> Snapshots<S> {
                         .map(|(_, e)| e)
                         .collect();
                     self.every = self.every.saturating_mul(2);
+                    self.spacing *= 2.0;
                     self.limit.held = self.bytes();
                 }
             }
@@ -783,7 +941,7 @@ mod tests {
             assert_eq!(snaps.over_budget(), None, "row {i}: ten fit");
         }
         snaps.offer(10.0, || 10);
-        assert_eq!(snaps.over_budget(), Some((88, 1)));
+        assert_eq!(snaps.over_budget(), Some((88, Cadence::EVERY_ROW)));
         assert_eq!(snaps.bytes(), 80, "the snapshot that crossed is not kept");
         let mut made = 0;
         for i in 11..1000u32 {
@@ -796,7 +954,11 @@ mod tests {
             assert_eq!(snaps.limit.held, snaps.bytes(), "row {i}: the count");
         }
         assert_eq!(made, 0, "no snapshot is made past a refusal");
-        assert_eq!(snaps.over_budget(), Some((88, 1)), "the first overrun");
+        assert_eq!(
+            snaps.over_budget(),
+            Some((88, Cadence::EVERY_ROW)),
+            "the first overrun"
+        );
     }
 
     /// The module doc's boundary, which `trim`'s comment had the other way
@@ -1411,7 +1573,11 @@ mod tests {
             }
             assert_eq!(tripped, trips_at, "window {window}, from {start}");
             if trips_at.is_some() {
-                assert_eq!(shadow.over_budget(), Some((88, 1)), "eleven snapshots");
+                assert_eq!(
+                    shadow.over_budget(),
+                    Some((88, Cadence::EVERY_ROW)),
+                    "eleven snapshots"
+                );
             }
         }
     }
@@ -1434,7 +1600,11 @@ mod tests {
             assert!(!shadow.could_refuse(1000), "{budget:?}");
         }
         let over = ring_of(12, 1e9, refuse);
-        assert_eq!(over.over_budget(), Some((96, 1)), "the fixture");
+        assert_eq!(
+            over.over_budget(),
+            Some((96, Cadence::EVERY_ROW)),
+            "the fixture"
+        );
         assert!(WindowShadow::new(11.0, &over, || 0).could_refuse(0));
     }
 
@@ -1464,7 +1634,11 @@ mod tests {
         r.offer(0.0, || 0);
         r.trim(0.0);
         r.offer(100.0, || 1);
-        assert_eq!(r.over_budget(), Some((16, 1)), "the second is refused");
+        assert_eq!(
+            r.over_budget(),
+            Some((16, Cadence::EVERY_ROW)),
+            "the second is refused"
+        );
         r.trim(100.0);
         assert_eq!(r.len(), 1);
         assert_eq!(r.boundary().map(|b| b.0), Some(0.0));
@@ -1511,6 +1685,323 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("thinning a ring of one snapshot did not end");
         assert_eq!(kept, vec![7]);
+    }
+
+    /// The cadence rule written out (docs/PLAN.md task 162), over a stream's
+    /// clocks: the first row; then a row whose clock is `spacing` past the
+    /// newest snapshot's, or `rows` rows past it, whichever comes first; and,
+    /// whatever the cadence, a row whose newest snapshot is older than the
+    /// window (the module docs). The rows it picks, oldest first.
+    fn rule(clocks: &[f64], window: f64, spacing: f64, rows: usize) -> Vec<usize> {
+        let mut picked: Vec<usize> = Vec::new();
+        for (i, &c) in clocks.iter().enumerate() {
+            let due = match picked.last() {
+                None => true,
+                Some(&j) => c - clocks[j] >= spacing || i - j >= rows || clocks[j] < c - window,
+            };
+            if due {
+                picked.push(i);
+            }
+        }
+        picked
+    }
+
+    /// Clocks from irregular steps: a stretch too close together for the
+    /// spacing, rows at one stamp, steps longer than a window of 6, and a
+    /// burst of rows a hundredth apart.
+    fn irregular_clocks() -> Vec<f64> {
+        let mut steps = vec![
+            0.0, 1.0, 0.5, 2.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 3.0, 0.2, 1.4, 1.0, 0.0, 0.0,
+            2.6, 0.3, 0.3, 9.0, 0.4, 7.5, 1.1, 2.4, 2.5, 0.6,
+        ];
+        steps.extend([0.01; 40]);
+        steps.extend([1.7, 0.9, 13.0, 0.2, 2.5, 2.5, 2.5, 0.0, 4.0]);
+        steps
+            .iter()
+            .scan(0.0, |t, d| {
+                *t += d;
+                Some(*t)
+            })
+            .collect()
+    }
+
+    /// The clocks of a ring's snapshots, oldest first.
+    fn clocks_of<S>(r: &Snapshots<S>) -> Vec<f64> {
+        r.ring.iter().map(|(t, _)| *t).collect()
+    }
+
+    /// A ring fed `clocks`, a snapshot offered and the ring trimmed at each
+    /// as a model's step does, and the rows a snapshot was formed at.
+    fn snapshot_rows(ring: &mut Snapshots<usize>, clocks: &[f64]) -> Vec<usize> {
+        let mut formed = Vec::new();
+        for (i, &t) in clocks.iter().enumerate() {
+            let said = ring.takes(t);
+            let mut made = false;
+            ring.offer(t, || {
+                made = true;
+                i
+            });
+            assert_eq!(said, made, "row {i}: `takes` and `offer` disagree");
+            ring.trim(t);
+            if made {
+                formed.push(i);
+            }
+        }
+        formed
+    }
+
+    /// Snapshots are taken exactly where the rule written out picks them:
+    /// on the clock, on the rows, on both whichever comes first, on every
+    /// row, and on the stale rule wherever a cadence leaves the newest
+    /// snapshot outside the window (docs/PLAN.md task 162).
+    #[test]
+    fn snapshots_follow_the_clock_the_rows_or_both_whichever_comes_first() {
+        let (window, clocks) = (6.0, irregular_clocks());
+        let mut stale = 0;
+        for (spacing, rows) in [
+            (2.5, usize::MAX),
+            (f64::INFINITY, 4),
+            (2.5, 4),
+            (0.7, 3),
+            (f64::INFINITY, 1),
+            (8.0, usize::MAX),
+        ] {
+            let mut ring = Snapshots::with_cadence(window, Cadence { spacing, rows }).unwrap();
+            let got = snapshot_rows(&mut ring, &clocks);
+            let want = rule(&clocks, window, spacing, rows);
+            assert_eq!(got, want, "spacing {spacing}, rows {rows}");
+            // The stale rule is what picked a row the cadence alone would not.
+            let alone = rule(&clocks, f64::INFINITY, spacing, rows);
+            stale += usize::from(alone != want);
+            assert!(want.len() >= 6, "spacing {spacing}, rows {rows}: {want:?}");
+        }
+        assert!(stale >= 2, "the stale rule must decide a case");
+    }
+
+    /// A burst of rows inside one spacing takes no snapshot of its own, so
+    /// a ring on the clock holds at most `window / spacing + 2` snapshots
+    /// whatever the row rate -- one more than the window's span can fit
+    /// spaced apart, and one more between an `offer` and its `trim`. A ring
+    /// that takes every row grows with the burst.
+    #[test]
+    fn a_burst_inside_a_spacing_takes_no_snapshot_of_its_own() {
+        let (window, spacing) = (30.0, 2.0);
+        let cadence = Cadence {
+            spacing,
+            rows: usize::MAX,
+        };
+        let mut on_clock: Snapshots<usize> = Snapshots::with_cadence(window, cadence).unwrap();
+        let mut every_row: Snapshots<usize> = Snapshots::new(window, 1).unwrap();
+        let bound = (window / spacing) as usize + 2;
+        let mut t = 0.0;
+        // Rows three units apart, each a snapshot; one apart, every second;
+        // a thousand to a unit, two or three in five units; half a unit
+        // apart, every fourth; and three thousand at one stamp, none.
+        for (rows, step, at_least, at_most) in [
+            (50, 3.0, 50, 50),
+            (100, 1.0, 50, 50),
+            (5000, 0.001, 2, 3),
+            (200, 0.5, 49, 51),
+            (3000, 0.0, 0, 0),
+        ] {
+            let mut made = 0;
+            for _ in 0..rows {
+                t += step;
+                on_clock.offer(t, || {
+                    made += 1;
+                    0
+                });
+                assert!(on_clock.len() <= bound, "{} snapshots", on_clock.len());
+                on_clock.trim(t);
+                every_row.offer(t, || 0);
+                every_row.trim(t);
+            }
+            assert!(
+                (at_least..=at_most).contains(&made),
+                "{rows} rows {step} apart took {made} snapshots"
+            );
+        }
+        assert!(
+            every_row.len() > 10 * bound,
+            "the every-row ring grew with the burst: {}",
+            every_row.len()
+        );
+    }
+
+    /// Past a thinning budget the ring doubles whichever spacing is in
+    /// force -- the clock's, the rows', or both -- as often as it thins;
+    /// every row is a row cap of one, which doubles, and a spacing of none
+    /// stays none. The boundary stays inside the window throughout.
+    #[test]
+    fn thinning_doubles_the_cadence_in_force() {
+        for (spacing, rows) in [(1.0, usize::MAX), (1.0, 3), (f64::INFINITY, 1)] {
+            let mut r: Snapshots<usize> =
+                Snapshots::with_cadence(100.0, Cadence { spacing, rows }).unwrap();
+            r.set_budget(Some(WindowBudget::Thin(TEN)));
+            for i in 0..400u32 {
+                let t = f64::from(i) * 0.5;
+                r.offer(t, || i as usize);
+                r.trim(t);
+                assert!(r.bytes() <= 80, "row {i}: {} bytes", r.bytes());
+                let &(b, _) = r.boundary().unwrap();
+                assert!(b >= t - 100.0, "row {i}: bounded at {b}");
+            }
+            let now = r.cadence();
+            let times = if rows == usize::MAX {
+                now.spacing / spacing
+            } else {
+                (now.rows / rows) as f64
+            };
+            assert!(
+                times >= 2.0 && times.log2().fract() == 0.0,
+                "{spacing}, {rows}: {now:?}"
+            );
+            if spacing.is_finite() {
+                assert_eq!(now.spacing, spacing * times, "{rows}: the clock doubled");
+            } else {
+                assert_eq!(now.spacing, f64::INFINITY, "none stays none");
+            }
+            if rows == usize::MAX {
+                assert_eq!(now.rows, usize::MAX, "{spacing}: no cap stays none");
+            } else {
+                assert_eq!(
+                    now.rows,
+                    rows * times as usize,
+                    "{spacing}: the rows doubled"
+                );
+            }
+        }
+    }
+
+    /// A shadow on the clock takes its snapshots where its ring does, row
+    /// by row over irregular steps, and reports the overrun the ring
+    /// reaches when it reaches it: it carries the spacing (docs/PLAN.md
+    /// task 162).
+    #[test]
+    fn a_shadow_on_the_clock_agrees_with_its_ring() {
+        let clocks = irregular_clocks();
+        for (spacing, rows) in [(2.5, usize::MAX), (f64::INFINITY, 4), (2.5, 4)] {
+            let cadence = Cadence { spacing, rows };
+            for budget in [WindowBudget::Refuse(TEN), WindowBudget::Refuse(1e3)] {
+                let mut ring: Snapshots<usize> = Snapshots::with_cadence(12.0, cadence).unwrap();
+                ring.set_budget(Some(budget));
+                ring.offer(clocks[0], || 0);
+                ring.trim(clocks[0]);
+                let mut shadow = WindowShadow::new(clocks[0], &ring, || 0);
+                for (i, w) in clocks.windows(2).enumerate() {
+                    ring.offer(w[1], || i + 1);
+                    ring.trim(w[1]);
+                    shadow.learn(w[1] - w[0]);
+                    let case = format!("{cadence:?}, {budget:?}, row {}", i + 1);
+                    assert_eq!(clocks_of(&shadow.ring), clocks_of(&ring), "{case}");
+                    assert_eq!(shadow.over_budget(), ring.over_budget(), "{case}");
+                }
+            }
+        }
+    }
+
+    /// A ring saved part of a spacing after its newest snapshot, through
+    /// either msgpack encoding, takes its next snapshots where the unbroken
+    /// one does and ends equal to it: the spacing is in the state, and so
+    /// is the clock it is measured from, the newest snapshot's (docs/PLAN.md
+    /// task 162).
+    #[test]
+    fn a_ring_saved_mid_spacing_resumes_identically() {
+        let cadence = Cadence {
+            spacing: 2.5,
+            rows: 7,
+        };
+        let clocks = irregular_clocks();
+        let mut whole: Snapshots<usize> = Snapshots::with_cadence(6.0, cadence).unwrap();
+        let want = snapshot_rows(&mut whole, &clocks);
+        let mid = |r: &Snapshots<usize>, t: f64| {
+            r.ring
+                .back()
+                .is_some_and(|&(u, _)| t - u > 0.0 && t - u < cadence.spacing)
+        };
+        // Cuts where the last row learned is part of a spacing past the
+        // newest snapshot, and the next row takes none.
+        let newest = |c: usize| *want.iter().rev().find(|&&j| j < c).unwrap();
+        let cuts: Vec<usize> = [3, 14, 30, 60]
+            .iter()
+            .map(|&from| {
+                (from..clocks.len())
+                    .find(|&c| {
+                        let d = clocks[c - 1] - clocks[newest(c)];
+                        d > 0.0 && d < cadence.spacing && !want.contains(&c)
+                    })
+                    .expect("a cut between snapshots")
+            })
+            .collect();
+        type Codec = (fn(&Snapshots<usize>) -> Vec<u8>, &'static str);
+        let codecs: [Codec; 2] = [
+            (|r| rmp_serde::to_vec(r).unwrap(), "compact"),
+            (|r| rmp_serde::to_vec_named(r).unwrap(), "named"),
+        ];
+        for cut in cuts {
+            for (encode, how) in codecs {
+                let mut ring: Snapshots<usize> = Snapshots::with_cadence(6.0, cadence).unwrap();
+                let mut got = snapshot_rows(&mut ring, &clocks[..cut]);
+                assert!(
+                    mid(&ring, clocks[cut - 1]),
+                    "cut {cut}: not between snapshots"
+                );
+                ring = rmp_serde::from_slice(&encode(&ring)).unwrap();
+                let rest = snapshot_rows(&mut ring, &clocks[cut..]);
+                got.extend(rest.iter().map(|i| i + cut));
+                assert_eq!(got, want, "cut {cut}, {how}");
+                assert_eq!(
+                    clocks_of(&ring),
+                    clocks_of(&whole),
+                    "cut {cut}, {how}: the ring"
+                );
+                assert_eq!(ring.cadence(), whole.cadence(), "cut {cut}, {how}");
+            }
+        }
+    }
+
+    /// A model configuration's `window_every` and
+    /// `max_rows_between_snapshots`, as the cadence a ring runs by: the
+    /// clock, the rows, both, and every row -- with neither, at a spacing of
+    /// 0, and at a cap of 0 or 1 -- as a cap of one and no spacing.
+    #[test]
+    fn a_cadence_is_the_clock_the_rows_both_or_every_row() {
+        let every_row = Cadence {
+            spacing: f64::INFINITY,
+            rows: 1,
+        };
+        for (every, rows, want) in [
+            (Some(2.5), None, (2.5, usize::MAX)),
+            (None, Some(7), (f64::INFINITY, 7)),
+            (Some(2.5), Some(7), (2.5, 7)),
+            (None, None, (f64::INFINITY, 1)),
+            (Some(0.0), None, (f64::INFINITY, 1)),
+            (Some(0.0), Some(7), (f64::INFINITY, 1)),
+            (None, Some(0), (f64::INFINITY, 1)),
+            (Some(2.5), Some(1), (f64::INFINITY, 1)),
+        ] {
+            let got = Cadence::of(every, rows);
+            assert_eq!((got.spacing, got.rows), want, "{every:?}, {rows:?}");
+        }
+        assert_eq!(Cadence::of(None, None), every_row);
+        assert_eq!(Cadence::of(Some(2.5), None).clock(), Some(2.5));
+        assert_eq!(Cadence::of(None, Some(7)).clock(), None);
+        assert_eq!(Cadence::of(None, Some(7)).row_cap(), Some(7));
+        assert_eq!(Cadence::of(Some(2.5), None).row_cap(), None);
+        // A ring takes no spacing that is not a positive number of clock
+        // units or none, and no cap of no rows.
+        for bad in [0.0, -1.0, f64::NAN] {
+            let c = Cadence {
+                spacing: bad,
+                rows: usize::MAX,
+            };
+            assert!(Snapshots::<usize>::with_cadence(5.0, c).is_err(), "{bad}");
+        }
+        let none = Cadence {
+            spacing: f64::INFINITY,
+            rows: 0,
+        };
+        assert!(Snapshots::<usize>::with_cadence(5.0, none).is_err());
     }
 
     /// What a `Moments` snapshot counts toward a budget: eight bytes for

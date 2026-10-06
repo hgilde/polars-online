@@ -35,7 +35,8 @@ fn ridge(k: usize, window: Option<f64>) -> EwRidgeCfg {
         gram_block_rows: 0,
         target_gaps: TargetGaps::OwnRows,
         window,
-        window_every: window.map(|_| 25),
+        window_every: None,
+        max_rows_between_snapshots: window.map(|_| 25),
     }
 }
 
@@ -54,7 +55,8 @@ fn cov(k: usize, window: Option<f64>) -> EwCovCfg {
         max_rows_between_pca: u32::MAX,
         lags: vec![],
         window,
-        window_every: window.map(|_| 25),
+        window_every: None,
+        max_rows_between_snapshots: window.map(|_| 25),
     }
 }
 

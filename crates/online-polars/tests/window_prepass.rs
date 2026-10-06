@@ -133,11 +133,33 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
             &df,
             true,
         ),
+        // A snapshot cadence on the clock, on the rows, and both
+        // (docs/PLAN.md task 162): the shadow carries the spacing.
         (
-            "ewridge every 3",
+            "ewridge every 3 clock units",
             spec(
                 r#"{"type": "ew_ridge", "window_size": 600.0, "window_every": 3,
                     "window_budget": {"refuse": 0.004}}"#,
+                r#", "targets": ["y"]"#,
+            ),
+            &df,
+            true,
+        ),
+        (
+            "ewridge every 3 rows",
+            spec(
+                r#"{"type": "ew_ridge", "window_size": 600.0, "max_rows_between_snapshots": 3,
+                    "window_budget": {"refuse": 0.004}}"#,
+                r#", "targets": ["y"]"#,
+            ),
+            &df,
+            true,
+        ),
+        (
+            "ewridge every 8 clock units or 2 rows",
+            spec(
+                r#"{"type": "ew_ridge", "window_size": 600.0, "window_every": 8,
+                    "max_rows_between_snapshots": 2, "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
             &df,

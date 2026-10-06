@@ -144,14 +144,14 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 29,
+- **Every saved bank must be refit.** A bank file now carries schema 30,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Four changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
-  keeps (task 104, then review rounds R4 and R6), and the PCA and pruning
-  cadences of `ew_cov` and `micro` (tasks 161 and 163). An `ew_cov` state
-  with `mahal_quantiles` is refused too.
+  keeps (task 104, then review rounds R4 and R6), and the PCA, pruning and
+  window cadences of `ew_cov`, `micro` and the windowed models (tasks 161,
+  163 and 162). An `ew_cov` state with `mahal_quantiles` is refused too.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -175,6 +175,20 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   counts clock units now: without a clock column the first checkpoint comes
   a row later (the first row is at clock 0) and rows of weight zero count;
   `max_rows_between_prunes=N` is the old cadence exactly.
+- **A window's snapshots are spaced on the clock** (task 162), in
+  `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`, as a regression's
+  solve is scheduled. `window_every` counts the clock's units: a number of
+  the clock column's units, a duration on a temporal clock (`"1m"`), or `0`
+  for every row. `max_rows_between_snapshots` caps the rows between
+  snapshots, and whichever comes first takes one; with neither, every row,
+  as before. Under a clock spacing the effective window is within
+  `window_every` of `window_size`, in clock units, and a burst of rows inside
+  one spacing takes no snapshot of its own, so the ring holds about
+  `window_size / window_every` snapshots whatever the row rate. A thinning
+  `window_budget` doubles whichever cadence is in force, and the refusal
+  past a budget names it. A spec without a clock column is unchanged; a
+  clocked spec that gave `window_every=N` now means `N` clock units, and
+  `max_rows_between_snapshots=N` is the old cadence exactly.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec

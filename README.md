@@ -603,15 +603,22 @@ newest row counts most.** For a flat rolling fit with equal weights, give
 **The cut is exact.** At time `t`, the rows learned at or before a time `u`
 contribute `0.5 ** ((t − u) / half_life)` times the running sum as it stood
 at `u`. Subtracting that leaves exactly the rest. The model keeps a ring
-of snapshots for this, one every `window_every` rows. The edge is the
-oldest snapshot inside the window, so a coarse spacing discards a little
-more than asked, never less.
+of snapshots for this, one every row by default. The edge is the oldest
+snapshot inside the window, so a coarse spacing discards a little more
+than asked, never less.
+
+**`window_every` spaces the snapshots on the clock, as `solve_every`
+spaces a regression's solves.** It takes a number of clock units, or a
+duration such as `"1m"` on a temporal clock. `max_rows_between_snapshots`
+caps the rows between them, and whichever comes first takes a snapshot.
+Under `window_every` the effective window is in
+`[window_size − window_every, window_size]`, whatever the row rate.
 
 ```python
 cut = po.spec.ew_cov(
     "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
     window_size=1500.0,            # a row older than this many clock units contributes exactly nothing
-    window_every=10,               # a snapshot every 10 rows
+    window_every=10,               # a snapshot every 10 units of t
     window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
 )
 ```
@@ -638,7 +645,8 @@ What the window truncates depends on the model:
 
 **`window_budget` caps the snapshots' memory, per ring, in MiB.** The
 ring's memory grows with the window: for an `ew_cov` over 20 columns, a
-1,000-row window holds about 3 MB per group, divided by `window_every`. A
+1,000-row window holds about 3 MB per group, divided by the rows between
+snapshots. A
 refusal comes before the bank learns any of the chunk, except for two
 overruns found only as the rows go in. One is under
 `drift_action="reset"`. The other is a snapshot that grows within the
@@ -649,8 +657,8 @@ follows, so rebuild it from its last save with `po.ModelBank.load`.
 | `window_budget` | when a chunk would take a ring past the cap |
 |---|---|
 | not given | the chunk is refused past 256 MiB |
-| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the bank goes on as it was. The error names the ring's size, `window_every` and the ways to lift the cap |
-| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, which, like `window_every`, only ever shortens the window |
+| `{"refuse": 64}` | the chunk is refused before any of it is learned, and the bank goes on as it was. The error names the ring's size, its snapshot cadence and the ways to lift the cap |
+| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `window_every`, only ever shortens the window |
 | `{"refuse": float("inf")}` | nothing: no cap |
 
 ### A local fit along any feature
@@ -3368,8 +3376,8 @@ runs groups and specs in parallel ([Parallelism](#parallelism)), so a wide
 `marginal` on one group is otherwise one thread's work. `shards=10` splits
 its pairs into ten ranges of features, each run on a thread of its own, a
 batch of rows at a time. `"auto"` sizes the split to the width and the pool,
-and leaves whole a narrow spec, or a windowed one at the default
-`window_every` of one, whose batch is a single row. The numbers are the same
+and leaves whole a narrow spec, or a windowed one that snapshots every
+row, the default, whose batch is a single row. The numbers are the same
 to the bit at any count, so a saved bank resumes under any count. On 14
 threads
 ([PERFORMANCE §25](docs/PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)):

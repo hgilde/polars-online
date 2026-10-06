@@ -1522,6 +1522,7 @@ mod tests {
                     target_gaps: TargetGaps::OwnRows,
                     window: Some(window),
                     window_every: None,
+                    max_rows_between_snapshots: None,
                 })
                 .unwrap();
                 let n = 300 + held;

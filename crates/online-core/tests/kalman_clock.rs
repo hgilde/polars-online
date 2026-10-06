@@ -61,6 +61,7 @@ fn ew_ridge() -> EwRidge {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap()
 }

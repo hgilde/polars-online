@@ -168,18 +168,28 @@ pub struct EwRidgeCfg {
     /// exponential. A half-life grid is one model instance per entry, so each
     /// carries its own ring.
     ///
-    /// **Last, with `window_every`, and they must stay last.** The compact
-    /// msgpack encoding writes a struct as an *array*, so a
-    /// `skip_serializing_if` field anywhere but the end shifts every field
-    /// after it when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
+    /// they must stay last.** The compact msgpack encoding writes a struct as
+    /// an *array*, so a `skip_serializing_if` field anywhere but the end
+    /// shifts every field after it when absent: only the row cap skips, and
+    /// `window` and `window_every` are written as nil.
+    #[serde(default)]
     pub window: Option<f64>,
-    /// Rows between the snapshots the window is computed from, counted on
-    /// every row the model is stepped with, rows of weight zero included; `1`
-    /// (the default) is the tightest boundary, larger divides the memory and
-    /// only ever shortens the effective window.
+    /// Clock units between the snapshots the window is computed from, as
+    /// `solve_every` is between solves (docs/PLAN.md task 162): `0` is every
+    /// row. With `max_rows_between_snapshots` too, whichever comes first;
+    /// with neither, every row, the tightest boundary. A coarser cadence
+    /// divides the memory and only ever shortens the effective window, to
+    /// no less than `window - window_every`. The clock is the one the model
+    /// is stepped on, so a gap capped at `gap_cap` counts as the cap.
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, as
+    /// `max_rows_between_solves` is between solves, counted on every row the
+    /// model is stepped with, rows of weight zero included; `0` or `1` is
+    /// every row (docs/PLAN.md task 162).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_every: Option<usize>,
+    pub max_rows_between_snapshots: Option<usize>,
 }
 
 /// The most a held Gram block may take before the model refuses to build,
@@ -227,9 +237,6 @@ impl EwRidgeCfg {
                      history to keep"
                 ));
             }
-            if self.window_every.is_some_and(|e| e == 0) {
-                return Err("ewridge: window_every must be >= 1".into());
-            }
             if self.ridge_scale {
                 return Err(
                     "ewridge: window_size and ridge_scale do not combine; the decaying prior's scale \
@@ -246,9 +253,13 @@ impl EwRidgeCfg {
                         .into(),
                 );
             }
-        } else if self.window_every.is_some() {
-            return Err("ewridge: window_every needs `window_size`".into());
         }
+        crate::window::check_cadence(
+            "ewridge",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        )?;
         if self.gram_block_rows > 0 {
             if self.window.is_some() {
                 return Err(
@@ -439,10 +450,11 @@ impl EwRidge {
         let windowed = cfg.window.is_some();
         let acc = move || Acc::new(m, k_total, block, windowed);
         let slow = cfg.session_shrink.map(|_| Box::new(acc()));
+        let cadence = crate::Cadence::of(cfg.window_every, cfg.max_rows_between_snapshots);
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
-                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+                snaps: crate::Snapshots::with_cadence(w, cadence)?,
             }),
             None => None,
         };
@@ -1614,7 +1626,7 @@ impl OnlineModel for EwRidge {
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
@@ -1746,7 +1758,7 @@ impl OnlineModel for EwRidge {
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
             // Built inside the closure, so the O(k²) snapshot is only formed
-            // on the rows `offer` actually keeps -- one in `window_every` --
+            // on the rows `offer` actually keeps -- the cadence's --
             // rather than on every row and then dropped (review 2026-09-18,
             // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
             // `win`, so the borrows do not collide.

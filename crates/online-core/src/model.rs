@@ -283,9 +283,10 @@ pub trait OnlineModel: Sized {
     }
 
     /// What a refusing budget saw the window reach: its snapshots' bytes,
-    /// and its spacing (`window_every`, doubled by any thinning). `None`
-    /// while under budget, and for a model without a window.
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    /// and its cadence (`window_every` and `max_rows_between_snapshots`,
+    /// doubled by any thinning). `None` while under budget, and for a model
+    /// without a window.
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         None
     }
 

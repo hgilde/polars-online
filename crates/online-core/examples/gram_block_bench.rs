@@ -49,6 +49,7 @@ fn cfg(k: usize, block: usize, solve_rows: u32) -> EwRidgeCfg {
         target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 

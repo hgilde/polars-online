@@ -297,7 +297,6 @@ _AT_LEAST_ONE = frozenset(
         "lags",
         "cross_lags",
         "shards",
-        "window_every",
         "update_every",
         "split_merge_every",
         "max_clusters",
@@ -727,7 +726,8 @@ def ewridge(
     gram_block_rows: int | None = None,
     target_gaps: str = "own_rows",
     window_size: float | Duration | None = None,
-    window_every: int | None = None,
+    window_every: float | Duration | None = None,
+    max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -895,7 +895,7 @@ def ewridge(
 
         ``weight_sum`` counts every row either way, and a null target is
         still predicted.
-    ``window_size``, ``window_every``, ``window_budget``
+    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the fit is solved from, in clock units:
         a row older than ``window_size`` is not in the sums at all, where the
         exponential weight alone would leave ``0.5 ** (age / half_life)`` of
@@ -907,8 +907,21 @@ def ewridge(
         model keeps a ring of snapshots to do it, which is the one place here
         where memory grows with a window rather than with the state. A
         half-life grid is one instance per entry, each with its own ring.
-        ``window_every`` snapshots every ``n`` rows instead, which divides the
-        memory and can only shorten the effective window.
+
+        The ring takes a snapshot on every row unless told otherwise.
+        ``window_every`` spaces them on the clock, as ``solve_every`` spaces
+        solves: a number of the clock's units, a duration on a temporal clock
+        (``"1m"``), or ``0`` for every row. ``max_rows_between_snapshots``
+        caps the rows between them, as ``max_rows_between_solves`` caps the
+        rows between solves, and whichever comes first takes a snapshot. A
+        row of weight zero counts, a gap capped at ``gap_cap`` counts as the
+        cap, and without a clock column the clock is the row's number. A
+        coarser cadence divides the memory and can only shorten the effective
+        window. Under a clock spacing, every row at most
+        ``window_size - window_every`` old is kept and none older than
+        ``window_size``. So the effective window is in
+        ``[window_size - window_every, window_size]`` in clock units, exactly.
+        A burst of rows inside one spacing takes no snapshot of its own.
 
         ``window_budget`` bounds each ring in MiB, and says what happens when
         a ring reaches the bound:
@@ -921,10 +934,10 @@ def ewridge(
              - at the bound
            * - ``{"thin": mib}``
              - drops every other snapshot and doubles the spacing between the
-               rest, as often as it takes; like ``window_every``, that can
-               only shorten the window
+               rest, the clock's or the rows' or both, as often as it takes;
+               like ``window_every``, that can only shorten the window
            * - ``{"refuse": mib}``
-             - refuses the chunk, naming the ring's size and ``window_every``
+             - refuses the chunk, naming the ring's size and its cadence
            * - unset
              - refuses past 256 MiB per ring; ``{"refuse": float("inf")}`` is
                no bound
@@ -1023,6 +1036,7 @@ def ewridge(
         "target_gaps": target_gaps,
         "window_size": window_size,
         "window_every": window_every,
+        "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
     if ridge_scale not in ("mean", "sum"):
@@ -1382,7 +1396,8 @@ def lasso(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     window_size: float | Duration | None = None,
-    window_every: int | None = None,
+    window_every: float | Duration | None = None,
+    max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
     max_iter: int | None = None,
     tol: float | None = None,
@@ -1452,11 +1467,13 @@ def lasso(
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
         :func:`ewridge`. The cross-correlations are centred at the target's own
         means either way.
-    ``window_size``, ``window_every``, ``window_budget``
+    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the path is fitted from, in clock units, as
-        for :func:`ewridge`. A row older than ``window_size`` is not in the sums;
-        ``window_every`` is the snapshot cadence, and ``window_budget`` bounds
-        each ring in MiB and thins or refuses past the bound. The selection error
+        for :func:`ewridge`. A row older than ``window_size`` is not in the sums.
+        ``window_every`` spaces the snapshots on the clock and
+        ``max_rows_between_snapshots`` caps the rows between them, whichever
+        comes first, as for :func:`ewridge`; ``window_budget`` bounds each ring
+        in MiB and thins or refuses past the bound. The selection error
         is truncated with the sums, so the ``lambda`` chosen is the one that fits
         the window rather than rows the fit has dropped. So a window can change
         the support, not just the coefficients: a feature with no evidence inside
@@ -1518,6 +1535,7 @@ def lasso(
         "target_gaps": target_gaps,
         "window_size": window_size,
         "window_every": window_every,
+        "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
     return _common(name, model, targets=targets, features=features, **common)
@@ -2070,7 +2088,8 @@ def ew_cov(
     max_rows_between_pca: int | None = None,
     lags: list[int] | None = None,
     window_size: float | Duration | None = None,
-    window_every: int | None = None,
+    window_every: float | Duration | None = None,
+    max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -2153,9 +2172,10 @@ def ew_cov(
         ``pca_every`` is a number of the clock's units, a duration on a
         temporal clock (``"5m"``), or ``0`` for every row; without a clock
         column the clock is the row's number. With neither given, every row.
-        A row of weight zero advances both, as ``window_every`` counts it,
-        and a gap capped at ``gap_cap`` counts as the cap. Between refreshes
-        the loadings are frozen, so a row's scores never depend on chunking.
+        A row of weight zero advances both, as the window's snapshot cadence
+        counts it, and a gap capped at ``gap_cap`` counts as the cap. Between
+        refreshes the loadings are frozen, so a row's scores never depend on
+        chunking.
     ``lags``
         Lagged cross-moments beside the contemporaneous ones. With ``W`` and
         ``m`` the weight and mean before the row, and both deviations against
@@ -2181,7 +2201,7 @@ def ew_cov(
         auto terms included. That is ``k²`` slots a lag, since a lagged
         matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
-    ``window_size``, ``window_every``, ``window_budget``
+    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history, in clock units: a row older than
         ``window_size`` contributes nothing at all, where the exponential
         weight alone would still leave ``0.5 ** (age / half_life)`` of it --
@@ -2191,13 +2211,17 @@ def ew_cov(
         an exponentially weighted sum contains its own past. Everything at or
         before a time ``u`` is ``lam ** (t - u)`` times the accumulator as it
         stood at ``u``, so subtracting that leaves precisely the rest. What
-        the model keeps is a ring of snapshots, one per learned row: the one
-        place in this library where memory grows with a window rather than
-        with the state. A snapshot is ``k² + k + 2`` doubles, so a 1,000-row
-        window over 20 columns is about 3 MB per group. ``window_every``
-        snapshots every ``n`` rows instead and divides that by ``n``.
-        ``window_budget`` bounds each ring in MiB and thins or refuses past
-        the bound, as for :func:`ewridge`.
+        the model keeps is a ring of snapshots, one per row by default: the
+        one place in this library where memory grows with a window rather
+        than with the state. A snapshot is ``k² + k + 2`` doubles, so a
+        1,000-row window over 20 columns is about 3 MB per group.
+        ``window_every`` spaces the snapshots on the clock (``"1m"``, or a
+        number of the clock's units) and ``max_rows_between_snapshots`` caps
+        the rows between them, whichever comes first, as for :func:`ewridge`.
+        Either divides the memory, and a clock spacing alone holds a ring to
+        at most ``window_size / window_every + 2`` snapshots whatever the row
+        rate. ``window_budget`` bounds each ring in MiB and thins or refuses
+        past the bound, as for :func:`ewridge`.
 
         Four things to know before reading windowed numbers:
 
@@ -2210,9 +2234,10 @@ def ew_cov(
            * - the guarantee is one-sided
              - the boundary is the oldest snapshot still inside the window,
                so what is dropped is always a superset of what the window
-               excludes; with ``window_every`` above 1 the effective window
-               is shorter than asked by at most one snapshot's spacing, never
-               longer
+               excludes; under a coarser cadence the effective window is
+               shorter than asked by at most one snapshot's spacing, never
+               longer: in ``[window_size - window_every, window_size]`` in
+               clock units, exactly, under a clock spacing
            * - the clock is the decayed one
              - ``window_size`` is measured on the clock the decay uses, after
                ``gap_cap`` caps a gap and after a ``session_gap`` is applied
@@ -2295,6 +2320,7 @@ def ew_cov(
         "lags": lags,
         "window_size": window_size,
         "window_every": window_every,
+        "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
     targets = _mirror_target(name, "ew_cov", features, common, "its statistics are over")
@@ -3160,7 +3186,8 @@ def ew_class(
     covariance: str | None = None,
     precision_prior: float,
     window_size: float | Duration | None = None,
-    window_every: int | None = None,
+    window_every: float | Duration | None = None,
+    max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -3244,14 +3271,16 @@ def ew_class(
         ``lam * n_c / (lam * n_c + w)`` on every row the class learns. So the
         ridge washes out as the class fills in, exactly as :func:`ew_cov`'s
         ``precision_prior`` does.
-    ``window_size``, ``window_every``, ``window_budget``
+    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history each class's moments are computed from,
         in clock units, as for :func:`ewridge`: a row older than
         ``window_size`` contributes to no class. That is what lets a
         classifier follow class means that move; over a long history two
         regimes average together and the labels go to chance.
-        ``window_every`` is the snapshot cadence and ``window_budget`` bounds
-        each ring in MiB. ``weight_sum`` is the weight inside the window, in
+        ``window_every`` spaces the snapshots on the clock and
+        ``max_rows_between_snapshots`` caps the rows between them, whichever
+        comes first, as for :func:`ewridge`; ``window_budget`` bounds each
+        ring in MiB. ``weight_sum`` is the weight inside the window, in
         the struct and in the ``min_weight`` gate, and the class moments a
         row is scored against are the window's.
 
@@ -3313,6 +3342,7 @@ def ew_class(
         "precision_prior": precision_prior,
         "window_size": window_size,
         "window_every": window_every,
+        "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
     if "targets" in common:
@@ -3470,7 +3500,8 @@ def marginal(
     bin_budget: float | None = None,
     shards: int | str | None = None,
     window_size: float | Duration | None = None,
-    window_every: int | None = None,
+    window_every: float | Duration | None = None,
+    max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
     window_lags: bool = False,
     feature_moments: str = "per_target",
@@ -3657,7 +3688,7 @@ def marginal(
         threads, ``"auto"`` ran 1.2 times as fast at one target and 4.9 times
         with nine targets, lags and bins; the bank's own work on each row
         does not split (``docs/PERFORMANCE.md`` §25).
-    ``window_size``, ``window_every``, ``window_budget``
+    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the pairs are computed from, in
         clock units, as for :func:`ewridge`: a row older than ``window_size``
         contributes nothing, and inside the window the weights are still
@@ -3665,8 +3696,10 @@ def marginal(
         weight, both means and the three centred second moments), so
         ``corr``, ``beta`` and ``t`` describe the window and nothing else.
         That matters most for a screen: two regimes of opposite sign average
-        to nothing over a long history. ``window_every`` is the snapshot
-        cadence, and ``window_budget`` bounds each ring in MiB. The
+        to nothing over a long history. ``window_every`` spaces the snapshots
+        on the clock and ``max_rows_between_snapshots`` caps the rows between
+        them, whichever comes first, as for :func:`ewridge`;
+        ``window_budget`` bounds each ring in MiB. The
         ``weight_sum`` the struct writes and the one the table reports are
         the weight inside the window. ``lags`` under a window take
         ``window_lags=True``, below. ``bins`` and ``window_size`` are refused
@@ -3805,6 +3838,7 @@ def marginal(
         "shards": shards,
         "window_size": window_size,
         "window_every": window_every,
+        "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
         "window_lags": window_lags or None,
         "feature_moments": None if feature_moments == "per_target" else feature_moments,

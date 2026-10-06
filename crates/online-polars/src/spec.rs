@@ -630,9 +630,18 @@ pub enum ModelKind {
         /// half-life grid is one instance per entry, each with its own ring.
         #[serde(default)]
         window_size: Option<Span>,
-        /// Learned rows between the snapshots the window is computed from.
+        /// Clock units between the snapshots the window is computed from, as
+        /// `solve_every` is between solves: a number of the clock column's
+        /// units, or a duration on a temporal clock, `0` every row
+        /// (docs/PLAN.md task 162). With `max_rows_between_snapshots` too,
+        /// whichever comes first; with neither, every row.
         #[serde(default)]
-        window_every: Option<usize>,
+        window_every: Option<Span>,
+        /// At most this many rows between the window's snapshots, as
+        /// `max_rows_between_solves` is between solves; `0` or `1` is every
+        /// row (task 162).
+        #[serde(default)]
+        max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
         /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
         /// MiB (review 2026-09-12, P4).
@@ -666,9 +675,14 @@ pub enum ModelKind {
         /// window, so the chosen `lambda` fits the rows the model reports on.
         #[serde(default)]
         window_size: Option<Span>,
-        /// Learned rows between the window's snapshots.
+        /// Clock units between the window's snapshots, `0` every row, as
+        /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<usize>,
+        window_every: Option<Span>,
+        /// At most this many rows between the window's snapshots; `0` or `1`
+        /// is every row (task 162).
+        #[serde(default)]
+        max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
         /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
         /// MiB (review 2026-09-12, P4).
@@ -808,12 +822,17 @@ pub enum ModelKind {
         /// window (docs/PLAN.md §13).
         #[serde(default)]
         window_size: Option<Span>,
-        /// Learned rows between the snapshots the window is computed from;
-        /// `1` (the default) is the tightest boundary, larger divides the
-        /// memory by the same factor and shortens the effective window by at
-        /// most one snapshot's spacing -- never lengthens it.
+        /// Clock units between the snapshots the window is computed from, as
+        /// for `EwRidge`, `0` every row (docs/PLAN.md task 162). Every row,
+        /// the default, is the tightest boundary; a coarser cadence divides
+        /// the memory and shortens the effective window by at most one
+        /// spacing -- never lengthens it.
         #[serde(default)]
-        window_every: Option<usize>,
+        window_every: Option<Span>,
+        /// At most this many rows between the window's snapshots; `0` or `1`
+        /// is every row (task 162).
+        #[serde(default)]
+        max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
         /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
         /// MiB (review 2026-09-12, P4).
@@ -1028,9 +1047,14 @@ pub enum ModelKind {
         /// not; the other shapes are unaffected.
         #[serde(default)]
         window_size: Option<Span>,
-        /// Learned rows between the window's snapshots.
+        /// Clock units between the window's snapshots, `0` every row, as
+        /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<usize>,
+        window_every: Option<Span>,
+        /// At most this many rows between the window's snapshots; `0` or `1`
+        /// is every row (task 162).
+        #[serde(default)]
+        max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
         /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
         /// MiB (review 2026-09-12, P4).
@@ -1156,9 +1180,14 @@ pub enum ModelKind {
         /// exponential.
         #[serde(default)]
         window_size: Option<Span>,
-        /// Learned rows between the window's snapshots.
+        /// Clock units between the window's snapshots, `0` every row, as
+        /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<usize>,
+        window_every: Option<Span>,
+        /// At most this many rows between the window's snapshots; `0` or `1`
+        /// is every row (task 162).
+        #[serde(default)]
+        max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
         /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
         /// MiB (review 2026-09-12, P4).
@@ -1558,22 +1587,66 @@ impl ModelKind {
         })
     }
 
-    /// The `window_size` and `window_every` (1 unless given, as the models take
-    /// it) of a windowed model that predicts a target: what the stream cuts
-    /// its residual spread with (review 2026-09-12, S1). The other windowed
-    /// models predict none, so the stream keeps no spread for them.
-    pub fn window_and_every(&self) -> Option<(f64, usize)> {
+    /// A windowed kind's `window_every` and `max_rows_between_snapshots`, as
+    /// the spec gives them; `None` for a kind with no window (docs/PLAN.md
+    /// task 162).
+    pub fn window_cadence(&self) -> Option<(Option<&Span>, Option<u32>)> {
+        match self {
+            ModelKind::EwRidge {
+                window_every,
+                max_rows_between_snapshots,
+                ..
+            }
+            | ModelKind::Lasso {
+                window_every,
+                max_rows_between_snapshots,
+                ..
+            }
+            | ModelKind::EwCov {
+                window_every,
+                max_rows_between_snapshots,
+                ..
+            }
+            | ModelKind::EwClass {
+                window_every,
+                max_rows_between_snapshots,
+                ..
+            }
+            | ModelKind::Marginal {
+                window_every,
+                max_rows_between_snapshots,
+                ..
+            } => Some((window_every.as_ref(), *max_rows_between_snapshots)),
+            _ => None,
+        }
+    }
+
+    /// The cadence a windowed model's ring takes its snapshots on, as the
+    /// model maps its configuration ([`online_core::Cadence::of`]): every
+    /// row unless given (docs/PLAN.md task 162).
+    pub fn snapshot_cadence(&self) -> Option<online_core::Cadence> {
+        let (every, rows) = self.window_cadence()?;
+        Some(online_core::Cadence::of(
+            every.map(Span::value),
+            rows.map(|r| r as usize),
+        ))
+    }
+
+    /// The `window_size` and snapshot cadence of a windowed model that
+    /// predicts a target: what the stream cuts its residual spread with
+    /// (review 2026-09-12, S1), the model's own cadence, so the spread's
+    /// boundary is the fit's. The other windowed models predict none, so
+    /// the stream keeps no spread for them.
+    pub fn window_and_cadence(&self) -> Option<(f64, online_core::Cadence)> {
         match self {
             ModelKind::EwRidge {
                 window_size: Some(w),
-                window_every,
                 ..
             }
             | ModelKind::Lasso {
                 window_size: Some(w),
-                window_every,
                 ..
-            } => Some((w.value(), window_every.unwrap_or(1))),
+            } => Some((w.value(), self.snapshot_cadence()?)),
             _ => None,
         }
     }
@@ -1660,17 +1733,30 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
     ),
     (
         "ew_ridge",
-        &["long_half_life", "solve_every", "window_size"],
+        &[
+            "long_half_life",
+            "solve_every",
+            "window_size",
+            "window_every",
+        ],
     ),
-    ("lasso", &["select_half_life", "solve_every", "window_size"]),
+    (
+        "lasso",
+        &[
+            "select_half_life",
+            "solve_every",
+            "window_size",
+            "window_every",
+        ],
+    ),
     ("kalman", &["coef_half_life", "revert_half_life"]),
     ("huber", &["solve_every"]),
     ("quantile", &["solve_every"]),
-    ("ew_cov", &["pca_every", "window_size"]),
+    ("ew_cov", &["pca_every", "window_size", "window_every"]),
     ("holt", &["level_half_life", "trend_half_life"]),
     ("micro", &["prune_every"]),
-    ("ew_class", &["window_size"]),
-    ("marginal", &["window_size"]),
+    ("ew_class", &["window_size", "window_every"]),
+    ("marginal", &["window_size", "window_every"]),
 ];
 
 /// The parameters that are a rate *per* clock unit: a decay factor per unit
@@ -1863,21 +1949,25 @@ impl Spec {
                 long_half_life,
                 solve_every,
                 window_size: window,
+                window_every,
                 ..
             } => {
                 put(&mut out, "long_half_life", long_half_life.as_ref());
                 put(&mut out, "solve_every", solve_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
+                put(&mut out, "window_every", window_every.as_ref());
             }
             ModelKind::Lasso {
                 select_half_life,
                 solve_every,
                 window_size: window,
+                window_every,
                 ..
             } => {
                 put(&mut out, "select_half_life", select_half_life.as_ref());
                 put(&mut out, "solve_every", solve_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
+                put(&mut out, "window_every", window_every.as_ref());
             }
             ModelKind::Kalman {
                 coef_half_life,
@@ -1893,20 +1983,25 @@ impl Spec {
             ModelKind::EwCov {
                 pca_every,
                 window_size: window,
+                window_every,
                 ..
             } => {
                 put(&mut out, "pca_every", pca_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
+                put(&mut out, "window_every", window_every.as_ref());
             }
             ModelKind::EwClass {
                 window_size: window,
+                window_every,
                 ..
             }
             | ModelKind::Marginal {
                 window_size: window,
+                window_every,
                 ..
             } => {
                 put(&mut out, "window_size", window.as_ref());
+                put(&mut out, "window_every", window_every.as_ref());
             }
             ModelKind::Holt {
                 level_half_life,
@@ -3084,6 +3179,29 @@ impl Spec {
                 self.name
             ));
         }
+        // The snapshot cadence spaces a window's snapshots, so each part of
+        // it needs a window; the clock spacing is clock units, finite and
+        // `>= 0` as `solve_every` is, `0` for every row (docs/PLAN.md task
+        // 162). A negative value would have meant every row unsaid, NaN never.
+        if let (Some((window, _)), Some((every, rows))) =
+            (self.model.window_parts(), self.model.window_cadence())
+        {
+            for (key, given) in [
+                ("window_every", every.is_some()),
+                ("max_rows_between_snapshots", rows.is_some()),
+            ] {
+                if given && window.is_none() {
+                    return Err(format!("spec {:?}: {key} needs `window_size`", self.name));
+                }
+            }
+            if every.is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite()) {
+                return Err(format!(
+                    "spec {:?}: window_every must be finite and >= 0 clock units (0 snapshots \
+                     every row)",
+                    self.name
+                ));
+            }
+        }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).
         if let Some((window, Some(budget))) = self.model.window_parts() {
@@ -3300,25 +3418,19 @@ impl Spec {
                 max_rows_between_pca,
                 lags,
                 window_size: window,
-                window_every,
+                // Checked with every windowed kind's (`window_cadence`).
+                window_every: _,
+                max_rows_between_snapshots: _,
                 window_budget: _,
             } => {
-                if let Some(w) = window {
-                    if !w.value().is_finite() || w.value() <= 0.0 {
-                        return Err(format!(
-                            "spec {:?}: window_size must be finite and > 0 (got {w}); it is clock \
-                             units of history to keep",
-                            self.name
-                        ));
-                    }
-                } else if window_every.is_some() {
+                if let Some(w) = window
+                    && (!w.value().is_finite() || w.value() <= 0.0)
+                {
                     return Err(format!(
-                        "spec {:?}: window_every needs `window_size`",
+                        "spec {:?}: window_size must be finite and > 0 (got {w}); it is clock \
+                         units of history to keep",
                         self.name
                     ));
-                }
-                if window_every.is_some_and(|e| e == 0) {
-                    return Err(format!("spec {:?}: window_every must be >= 1", self.name));
                 }
                 const OK: [&str; 8] = [
                     "mean",
@@ -3536,19 +3648,16 @@ impl Spec {
                 covariance,
                 precision_prior,
                 window_size: window,
-                window_every,
+                // Checked with every windowed kind's (`window_cadence`).
+                window_every: _,
+                max_rows_between_snapshots: _,
                 window_budget: _,
             } => {
-                if let Some(w) = window {
-                    if !w.value().is_finite() || w.value() <= 0.0 {
-                        return Err(format!(
-                            "spec {:?}: window_size must be finite and > 0 (got {w})",
-                            self.name
-                        ));
-                    }
-                } else if window_every.is_some() {
+                if let Some(w) = window
+                    && (!w.value().is_finite() || w.value() <= 0.0)
+                {
                     return Err(format!(
-                        "spec {:?}: window_every needs `window_size`",
+                        "spec {:?}: window_size must be finite and > 0 (got {w})",
                         self.name
                     ));
                 }

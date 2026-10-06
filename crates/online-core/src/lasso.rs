@@ -76,15 +76,23 @@ pub struct LassoCfg {
     /// error follows the same window, so the chosen `lambda` is chosen on the
     /// rows the fit uses.
     ///
-    /// **Last, with `window_every`, and they must stay last**: the compact
-    /// msgpack encoding writes a struct as an array, so a
-    /// `skip_serializing_if` field anywhere else shifts the fields after it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
+    /// they must stay last**: the compact msgpack encoding writes a struct
+    /// as an array, so a `skip_serializing_if` field anywhere else shifts
+    /// the fields after it. Only the row cap skips.
+    #[serde(default)]
     pub window: Option<f64>,
-    /// Rows between the window's snapshots, counted on every row the model
-    /// is stepped with, rows of weight zero included.
+    /// Clock units between the window's snapshots, `0` every row; with
+    /// `max_rows_between_snapshots` too, whichever comes first, and with
+    /// neither, every row (`EwRidgeCfg::window_every`; docs/PLAN.md task
+    /// 162).
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, counted on
+    /// every row the model is stepped with, rows of weight zero included;
+    /// `0` or `1` is every row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_every: Option<usize>,
+    pub max_rows_between_snapshots: Option<usize>,
 }
 
 impl LassoCfg {
@@ -131,10 +139,12 @@ impl LassoCfg {
                     .into(),
             );
         }
-        if self.window.is_none() && self.window_every.is_some() {
-            return Err("lasso: window_every needs `window_size`".into());
-        }
-        Ok(())
+        crate::window::check_cadence(
+            "lasso",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        )
     }
 }
 
@@ -215,10 +225,11 @@ impl Lasso {
         cfg.validate()?;
         let k_total = cfg.k_total();
         let (m, np) = (cfg.n_targets, cfg.n_lambdas());
+        let cadence = crate::Cadence::of(cfg.window_every, cfg.max_rows_between_snapshots);
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
-                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+                snaps: crate::Snapshots::with_cadence(w, cadence)?,
             }),
             None => None,
         };
@@ -633,7 +644,7 @@ impl OnlineModel for Lasso {
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
@@ -962,6 +973,7 @@ mod tests {
             solve_share: None,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
             target_gaps: TargetGaps::OwnRows,
             max_iter: 200,
             tol: 1e-12,
@@ -1259,7 +1271,7 @@ mod tests {
             c.decay = Decay::Halflife(20.0);
             c.select_half_life = select;
             c.window = Some(window);
-            c.window_every = Some(1);
+            c.max_rows_between_snapshots = Some(1);
             c.min_weight = 2.0;
             let sel_h = select.unwrap_or(20.0);
             let mut m = Lasso::new(c).unwrap();
@@ -1345,7 +1357,7 @@ mod tests {
         let mut c = cfg(2, 2, vec![0.1, 0.0]);
         c.decay = Decay::Halflife(15.0);
         c.window = Some(12.0);
-        c.window_every = Some(3);
+        c.max_rows_between_snapshots = Some(3);
         c.min_weight = 3.0;
         let mut m = Lasso::new(c).unwrap();
         let mut s = 73u64;
@@ -1389,7 +1401,7 @@ mod tests {
         let mut c = cfg(2, 1, vec![0.3, 0.03, 0.003]);
         c.decay = Decay::Halflife(40.0);
         c.window = Some(24.0);
-        c.window_every = Some(1);
+        c.max_rows_between_snapshots = Some(1);
         c.min_weight = 3.0;
         let mut m = Lasso::new(c).unwrap();
         let mut s = 11u64;
@@ -1883,7 +1895,7 @@ mod tests {
         use crate::OnlineModel;
         let mut c = cfg(2, 1, vec![0.01]);
         c.window = Some(40.0);
-        c.window_every = Some(2);
+        c.max_rows_between_snapshots = Some(2);
         c.decay = Decay::Halflife(30.0);
         c.min_weight = 0.0;
         let rows = weighted_rows(2, 100, 19);
@@ -1893,7 +1905,7 @@ mod tests {
         match m.window_over_budget() {
             Some((bytes, every)) => {
                 assert!(bytes > 1, "{bytes}");
-                assert_eq!(every, 2);
+                assert_eq!(every, crate::Cadence::of(None, Some(2)));
             }
             None => panic!("a ring of snapshots is past a budget of one byte"),
         }
@@ -2202,7 +2214,7 @@ mod tests {
         assert!(plain.window_shadow().is_none());
         let mut c = cfg(2, 1, vec![0.01]);
         c.window = Some(40.0);
-        c.window_every = Some(2);
+        c.max_rows_between_snapshots = Some(2);
         c.decay = Decay::Halflife(30.0);
         c.min_weight = 0.0;
         let rows = weighted_rows(2, 30, 117);

@@ -26,6 +26,7 @@ fn cfg(k: usize, m: usize) -> EwRidgeCfg {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -936,15 +937,23 @@ fn a_blend_keeps_the_decaying_prior_with_the_weight() {
 
 /// The window's boundary across a clock gap longer than the window,
 /// through the model: the row after the gap is the only one inside, so
-/// the window's weight is that row's, at every `window_every`. With a
-/// cadence of 5 the boundary stayed at the last snapshot before the gap,
-/// and the rows since it stayed in (found testing review 2026-09-12, S6).
+/// the window's weight is that row's, at every cadence -- every row, five
+/// rows, five clock units, and thirty, longer than the window. With a
+/// cadence of 5 rows the boundary stayed at the last snapshot before the
+/// gap, and the rows since it stayed in (found testing review 2026-09-12,
+/// S6).
 #[test]
 fn a_window_holds_nothing_from_before_a_gap_longer_than_it() {
-    for every in [1, 5] {
+    for (every, rows) in [
+        (None, None),
+        (None, Some(5)),
+        (Some(5.0), None),
+        (Some(30.0), None),
+    ] {
         let mut c = cfg(1, 1);
         c.window = Some(20.0);
-        c.window_every = Some(every);
+        c.window_every = every;
+        c.max_rows_between_snapshots = rows;
         c.min_weight = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 67u64;
@@ -952,12 +961,12 @@ fn a_window_holds_nothing_from_before_a_gap_longer_than_it() {
             let x = [lcg(&mut s)];
             m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
-        for (rows, d) in [(1.0, 100.0), (2.0, 1.0)] {
+        for (inside, d) in [(1.0, 100.0), (2.0, 1.0)] {
             let x = [lcg(&mut s)];
             m.step(&x, &[Some(x[0])], d, 1.0);
             assert!(
-                (m.n_eff() - rows).abs() < 1e-9,
-                "window_every {every}: a weight of {} in the window, {rows} rows inside it",
+                (m.n_eff() - inside).abs() < 1e-9,
+                "{every:?}, {rows:?}: a weight of {} in the window, {inside} rows inside it",
                 m.n_eff()
             );
         }
@@ -973,7 +982,7 @@ fn the_window_weights_are_the_views_to_the_bit() {
     let mut c = cfg(2, 2);
     c.decay = Decay::Halflife(15.0);
     c.window = Some(12.0);
-    c.window_every = Some(3);
+    c.max_rows_between_snapshots = Some(3);
     c.min_weight = 0.0;
     let mut m = EwRidge::new(c).unwrap();
     let mut s = 71u64;
@@ -3218,7 +3227,7 @@ fn a_window_budget_reports_its_overrun_and_clears() {
     let mut c = cfg(2, 1);
     c.decay = Decay::Halflife(30.0);
     c.window = Some(40.0);
-    c.window_every = Some(2);
+    c.max_rows_between_snapshots = Some(2);
     c.min_weight = 0.0;
     let (mut m, _) = fitted(c, 100, 21);
     assert_eq!(m.window_over_budget(), None, "no budget, no overrun");
@@ -3226,7 +3235,7 @@ fn a_window_budget_reports_its_overrun_and_clears() {
     match m.window_over_budget() {
         Some((bytes, every)) => {
             assert!(bytes > 1, "{bytes}");
-            assert_eq!(every, 2);
+            assert_eq!(every, crate::Cadence::of(None, Some(2)));
         }
         None => panic!("a ring of snapshots is past a budget of one byte"),
     }
@@ -4106,7 +4115,7 @@ fn the_window_shadow_follows_the_ring() {
     let mut c = cfg(2, 1);
     c.decay = Decay::Halflife(30.0);
     c.window = Some(40.0);
-    c.window_every = Some(2);
+    c.max_rows_between_snapshots = Some(2);
     c.min_weight = 0.0;
     let (mut m, rows) = fitted(c, 10, 115);
     m.set_window_budget(Some(crate::WindowBudget::Refuse(0.002)));

@@ -201,11 +201,18 @@ REJECTED = [
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=INF),
         "session_gap must be finite",
     ),
-    # The eight counts whose floor is 1 say so in the builder (D8).
+    # The window's cadence (docs/PLAN.md task 162): the clock spacing is
+    # clock units, finite and >= 0, and the row cap a count of rows; `0` of
+    # either is every row, below.
     (
         po.spec.ewridge,
-        dict(half_life=10.0, window_size=5.0, window_every=0),
-        "window_every must be >= 1, got 0",
+        dict(half_life=10.0, window_size=5.0, window_every=-1.0),
+        "window_every must be finite and >= 0 clock units",
+    ),
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=-1),
+        "max_rows_between_snapshots must be >= 0, got -1",
     ),
 ]
 
@@ -217,6 +224,9 @@ ACCEPTED = [
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=0.0),
     ),
     (po.spec.ewridge, dict(half_life=10.0, solve_every=0.0)),
+    # Every row, as `solve_every = 0` solves on every row (task 162).
+    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, window_every=0)),
+    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=0)),
     (po.spec.ewridge, dict(half_life=INF)),
     (po.spec.ewridge, dict(half_life=[10.0, 20.0])),
     (po.spec.huber, dict(half_life=10.0, ridge=0.0)),

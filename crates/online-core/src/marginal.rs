@@ -130,15 +130,23 @@ pub struct MarginalCfg {
     /// cutoff: a row older than this contributes nothing (docs/PLAN.md §13).
     /// Inside the window the weights are still exponential.
     ///
-    /// **Last, with `window_every`, and they must stay last**: the compact
-    /// msgpack encoding writes a struct as an array, so a
-    /// `skip_serializing_if` field anywhere else shifts what follows it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
+    /// they must stay last**: the compact msgpack encoding writes a struct
+    /// as an array, so a `skip_serializing_if` field anywhere else shifts
+    /// what follows it. Only the row cap, the last, skips.
+    #[serde(default)]
     pub window: Option<f64>,
-    /// Rows between the window's snapshots, counted on every row the model
-    /// is stepped with, rows of weight zero included.
+    /// Clock units between the window's snapshots, `0` every row; with
+    /// `max_rows_between_snapshots` too, whichever comes first, and with
+    /// neither, every row (`EwRidgeCfg::window_every`; docs/PLAN.md task
+    /// 162).
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, counted on
+    /// every row the model is stepped with, rows of weight zero included;
+    /// `0` or `1` is every row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_every: Option<usize>,
+    pub max_rows_between_snapshots: Option<usize>,
 }
 
 /// How the serial-dependence correction behind `n_serial` is formed.
@@ -190,6 +198,12 @@ pub enum FeatureMomentLayout {
 }
 
 impl MarginalCfg {
+    /// The cadence the window's snapshots are taken on
+    /// ([`crate::Cadence::of`]; docs/PLAN.md task 162).
+    pub fn cadence(&self) -> crate::Cadence {
+        crate::Cadence::of(self.window_every, self.max_rows_between_snapshots)
+    }
+
     /// Whether the feature moments are one per feature.
     pub fn shared(&self) -> bool {
         self.feature_moments == FeatureMomentLayout::Shared
@@ -251,9 +265,12 @@ impl MarginalCfg {
                     .into(),
             );
         }
-        if self.window.is_none() && self.window_every.is_some() {
-            return Err("marginal: window_every needs `window_size`".into());
-        }
+        crate::window::check_cadence(
+            "marginal",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        )?;
         if self.shared() && self.window.is_some() {
             return Err(
                 "marginal: feature_moments = \"shared\" takes no window. The window subtracts \
@@ -710,7 +727,7 @@ impl Marginal {
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
-                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+                snaps: crate::Snapshots::with_cadence(w, cfg.cadence())?,
             }),
             None => None,
         };
@@ -1871,9 +1888,10 @@ impl MarginalCfg {
         let per_pair = PAIR_NS * (1.0 + LAG_UNITS * (lags + 2 * cross) as f64 + bins);
         // A windowed row flushes before every snapshot, so a flush holds at
         // most the snapshot cadence's rows: every row at the default, which
-        // no width can keep busy (review 2026-09-26, A1).
+        // no width can keep busy (review 2026-09-26, A1). A clock spacing
+        // bounds no count of rows, so under one alone it is the batch's.
         let rows = match self.window {
-            Some(_) => batch_rows(p).min(self.window_every.unwrap_or(1)),
+            Some(_) => batch_rows(p).min(self.cadence().rows),
             None => batch_rows(p),
         };
         let flush = rows as f64 * (p * t) as f64 * per_pair;
@@ -2190,7 +2208,7 @@ impl OnlineModel for Marginal {
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 

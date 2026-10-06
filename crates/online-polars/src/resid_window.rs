@@ -9,13 +9,17 @@
 //! the way the models cut theirs ([`online_core::Snapshots`]): a ring of the
 //! spread as it stood before each learned row, decayed to that row,
 //! subtracted at the oldest snapshot still inside the window. It is taken on
-//! the rows the model learns, with its `window` and `window_every`, keyed by
-//! a clock summed from the deltas the model was stepped with, and read
-//! before the row, where the model reads its window -- so its boundary is
-//! the fit's. A thinning budget can move the two boundaries apart, each
+//! the rows the model learns, with its `window` and its snapshot cadence
+//! (`window_every` clock units or `max_rows_between_snapshots` rows,
+//! whichever comes first: [`online_core::Cadence`], docs/PLAN.md task 162),
+//! keyed by a clock summed from the deltas the model was stepped with, and
+//! read before the row, where the model reads its window -- so its boundary
+//! is the fit's. A thinning budget can move the two boundaries apart, each
 //! still inside the window, which is the promise.
 
-use online_core::{Decay, Footprint, Snapshots, WindowBudget, WindowShadow, truncated_scalar};
+use online_core::{
+    Cadence, Decay, Footprint, Snapshots, WindowBudget, WindowShadow, truncated_scalar,
+};
 use serde::{Deserialize, Serialize};
 
 /// The spread before a learned row, decayed to it: per slot, the weight and
@@ -41,8 +45,15 @@ pub struct ResidWindow {
 }
 
 impl ResidWindow {
-    pub fn new(window: f64, every: usize, budget: Option<WindowBudget>) -> Result<Self, String> {
-        let mut snaps = Snapshots::new(window, every)?;
+    /// The model's `window` and snapshot `cadence`
+    /// ([`crate::spec::ModelKind::window_and_cadence`]), so the spread's
+    /// boundary is the fit's.
+    pub fn new(
+        window: f64,
+        cadence: Cadence,
+        budget: Option<WindowBudget>,
+    ) -> Result<Self, String> {
+        let mut snaps = Snapshots::with_cadence(window, cadence)?;
         snaps.set_budget(budget);
         Ok(Self { clock: 0.0, snaps })
     }
@@ -94,8 +105,8 @@ impl ResidWindow {
         })
     }
 
-    /// A refusing budget's overrun: the ring's bytes and its spacing.
-    pub fn over_budget(&self) -> Option<(usize, usize)> {
+    /// A refusing budget's overrun: the ring's bytes and its cadence.
+    pub fn over_budget(&self) -> Option<(usize, Cadence)> {
         self.snaps.over_budget()
     }
 }
@@ -128,7 +139,7 @@ mod tests {
     fn the_spread_inside_is_the_direct_sum_over_the_window() {
         let (h, window) = (7.0, 10.0);
         let decay = Decay::Halflife(h);
-        let mut ring = ResidWindow::new(window, 1, None).unwrap();
+        let mut ring = ResidWindow::new(window, Cadence::EVERY_ROW, None).unwrap();
         let (mut w, mut var) = (vec![0.0], vec![0.0]);
         let mut rows: Vec<(f64, f64)> = Vec::new();
         let mut clock = 0.0;

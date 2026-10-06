@@ -40,12 +40,23 @@ where
     assert_eq!(&from_named, m, "{what}: named round-trip changed the state");
 }
 
+/// A window's cadence each way (docs/PLAN.md task 162): every row, the
+/// clock, the rows, and both -- with no spacing and a row cap the shape a
+/// skipped `window_every` would read into the wrong slot -- and no window.
+const WINDOWS: [(Option<f64>, Option<f64>, Option<usize>); 5] = [
+    (None, None, None),
+    (Some(50.0), None, None),
+    (Some(50.0), Some(2.5), None),
+    (Some(50.0), None, Some(3)),
+    (Some(50.0), Some(2.5), Some(3)),
+];
+
 #[test]
 fn marginal_round_trips_with_every_optional_part_present_or_absent() {
     // `cross_lags` (E70) three ways: absent, one of the lags, and none.
     let crosses = [None, Some(vec![2usize]), Some(vec![])];
     for lags in [vec![], vec![1usize, 2]] {
-        for window in [None, Some(50.0)] {
+        for (window, every, rows) in WINDOWS {
             for bins in [None, Some(4usize)] {
                 for cross_lags in crosses.clone() {
                     // A window and bins are refused together (a snapshot of the
@@ -78,7 +89,8 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                             })
                         }),
                         window,
-                        window_every: window.map(|_| 1),
+                        window_every: every,
+                        max_rows_between_snapshots: rows,
                         feature_moments: online_core::FeatureMomentLayout::PerTarget,
                     };
                     let mut m = online_core::Marginal::new(cfg).unwrap();
@@ -92,7 +104,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                     }
                     let what = format!(
                         "marginal lags={lags:?} cross_lags={cross_lags:?} window={window:?} \
-                     bins={bins:?}"
+                     every={every:?} rows={rows:?} bins={bins:?}"
                     );
                     roundtrip(&m, &format!("{what} (held)"));
                     for i in 3..8 {
@@ -117,7 +129,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
 #[test]
 fn ew_cov_round_trips_with_every_optional_part_present_or_absent() {
     for lags in [vec![], vec![1usize]] {
-        for window in [None, Some(50.0)] {
+        for (window, every, rows) in WINDOWS {
             // A window and lags are refused together (the lag ring keeps no
             // snapshot; review 2026-09-12, C18).
             if window.is_some() && !lags.is_empty() {
@@ -135,14 +147,18 @@ fn ew_cov_round_trips_with_every_optional_part_present_or_absent() {
                 max_rows_between_pca: u32::MAX,
                 lags: lags.clone(),
                 window,
-                window_every: window.map(|_| 1),
+                window_every: every,
+                max_rows_between_snapshots: rows,
             };
             let mut m = online_core::EwCovModel::new(cfg).unwrap();
             for i in 0..10 {
                 let v = i as f64;
                 OnlineModel::step(&mut m, &[v, -0.5 * v + 1.0], &[], v, 1.0);
             }
-            roundtrip(&m, &format!("ew_cov lags={lags:?} window={window:?}"));
+            roundtrip(
+                &m,
+                &format!("ew_cov lags={lags:?} window={window:?} every={every:?} rows={rows:?}"),
+            );
         }
     }
 }
@@ -283,6 +299,7 @@ fn a_bins_budget_round_trips_in_both_encodings() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         };
         let mut m = online_core::Marginal::new(cfg).unwrap();
         for i in 0..8 {

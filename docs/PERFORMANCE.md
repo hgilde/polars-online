@@ -74,7 +74,7 @@ number is not what you expected, find what you see here:
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
 | one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, and `shards` for a wide `marginal` | §12, §25, §31 |
-| a window's memory | its ring of snapshots, capped per ring | `window_every`, `window_budget` | §16 |
+| a window's memory | its ring of snapshots, capped per ring | `window_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` | §22–§25, §27 |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
 | a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel | §33, §35 |
@@ -2916,7 +2916,8 @@ is `O(state)`. The settings that bound it:
 
 | setting | effect on the window's memory |
 |---|---|
-| `window_every = m` | divides it by `m`, and shortens the effective window by at most one snapshot's spacing; it never lengthens it |
+| `max_rows_between_snapshots = m` | divides it by `m`, and shortens the effective window by at most one snapshot's spacing; it never lengthens it (`window_every = m` counted rows until task 162) |
+| `window_every = s`, in clock units | holds a ring to at most `window_size / s + 2` snapshots whatever the row rate, and keeps the effective window in `[window_size - s, window_size]` (task 162) |
 | `window_budget`, as `{"refuse": mib}` | a bound per ring, in MiB: the chunk that crosses it is refused |
 | `window_budget`, as `{"thin": mib}` | a bound per ring, in MiB: every other snapshot is dropped and the spacing doubled, as often as it takes, which shortens the window the same way |
 | no `window_budget` | a window refuses past 256 MiB |

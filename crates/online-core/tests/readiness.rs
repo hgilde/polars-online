@@ -29,6 +29,7 @@ fn cfg(k: usize, half_life: f64) -> EwRidgeCfg {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 

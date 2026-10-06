@@ -222,7 +222,7 @@ impl AnyModel {
     }
 
     /// A refusing budget's overrun ([`OnlineModel::window_over_budget`]).
-    pub fn window_over_budget(&self) -> Option<(usize, usize)> {
+    pub fn window_over_budget(&self) -> Option<(usize, online_core::Cadence)> {
         dispatch!(self, m => m.window_over_budget())
     }
 
@@ -464,14 +464,14 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 /// the drift detector or the conformal band. Without a reader it would be
 /// memory, and a budget to fail, for nothing.
 fn resid_window(spec: &Spec) -> Result<Option<ResidWindow>, String> {
-    let Some((window, every)) = spec.model.window_and_every() else {
+    let Some((window, cadence)) = spec.model.window_and_cadence() else {
         return Ok(None);
     };
     let read = Buffers::of(spec).extras || spec.emit_drift || spec.conformal.is_some();
     if spec.model.predicts_no_target() || !read {
         return Ok(None);
     }
-    ResidWindow::new(window, every, spec.model.window_budget()).map(Some)
+    ResidWindow::new(window, cadence, spec.model.window_budget()).map(Some)
 }
 
 fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
@@ -490,6 +490,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             target_gaps,
             window_size: window,
             window_every,
+            max_rows_between_snapshots,
             window_budget: _,
         } => {
             let fs = feature_sets
@@ -538,7 +539,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 gram_block_rows: gram_block_rows.unwrap_or(0),
                 target_gaps: *target_gaps,
                 window: window.as_ref().map(Span::value),
-                window_every: *window_every,
+                window_every: window_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             let mut m = EwRidge::new(cfg)?;
             // The per-row leverage needs the factors kept (§2.1).
@@ -568,6 +570,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             target_gaps,
             window_size: window,
             window_every,
+            max_rows_between_snapshots,
             window_budget: _,
         } => {
             let cfg = LassoCfg {
@@ -585,7 +588,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),
-                window_every: *window_every,
+                window_every: window_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
                 max_iter: max_iter.unwrap_or(100),
                 tol: tol.unwrap_or(1e-10),
                 target_gaps: *target_gaps,
@@ -714,6 +718,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             lags,
             window_size: window,
             window_every,
+            max_rows_between_snapshots,
             window_budget: _,
         } => {
             let names = stats
@@ -755,7 +760,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_pca: max_rows_between_pca.unwrap_or(u32::MAX),
                 lags: lags.clone().unwrap_or_default(),
                 window: window.as_ref().map(Span::value),
-                window_every: *window_every,
+                window_every: window_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }
@@ -945,6 +951,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             precision_prior,
             window_size: window,
             window_every,
+            max_rows_between_snapshots,
             window_budget: _,
         } => {
             let cfg = EwClassCfg {
@@ -958,7 +965,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 },
                 precision_prior: *precision_prior,
                 window: window.as_ref().map(Span::value),
-                window_every: *window_every,
+                window_every: window_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
         }
@@ -973,6 +981,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::Marginal {
             window_size: window,
             window_every,
+            max_rows_between_snapshots,
             window_budget: _,
             // A spec-level acceptance of the price, checked in `validate`.
             window_lags: _,
@@ -1040,7 +1049,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     }
                 },
                 window: window.as_ref().map(Span::value),
-                window_every: *window_every,
+                window_every: window_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
         }
@@ -1989,9 +1999,10 @@ pub struct Stream {
 
 impl Stream {
     /// The first of this stream's windows to pass a refusing budget -- a
-    /// model instance's, or a spread's ring (S1): its ring's bytes and
-    /// `window_every` (review 2026-09-12, P4).
-    pub fn window_over_budget(&self) -> Option<(usize, usize)> {
+    /// model instance's, or a spread's ring (S1): its ring's bytes and its
+    /// cadence, `window_every` and `max_rows_between_snapshots` (review
+    /// 2026-09-12, P4; docs/PLAN.md task 162).
+    pub fn window_over_budget(&self) -> Option<(usize, online_core::Cadence)> {
         self.models
             .iter()
             .find_map(|(_, m)| m.window_over_budget())
@@ -2927,7 +2938,7 @@ impl Stream {
     }
 
     /// The first overrun a chunk's rows would give a window's ring past a
-    /// refusing budget -- the bytes and the spacing, as the ring would report
+    /// refusing budget -- the bytes and the cadence, as the ring would report
     /// them -- found by replaying the chunk's schedule on shadows of every
     /// ring ([`online_core::WindowShadow`]) before any model is touched
     /// (docs/PLAN.md task 115 (d)). The bank refuses such a chunk whole; the
@@ -2950,7 +2961,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         formulas: Option<FormulaTargets<'_>>,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<(usize, online_core::Cadence)> {
         let mut live = self.window_shadows();
         // A learned row adds at most one snapshot to a ring, and the rows a
         // `embargo` holds are learned in this chunk at the most.

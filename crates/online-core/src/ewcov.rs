@@ -1239,10 +1239,10 @@ pub struct EwCovCfg {
     pub pca_every: f64,
     /// At most this many rows between refreshes, as `max_rows_between_solves`
     /// is the regressions': counted on every row the model is stepped with,
-    /// rows of weight zero included -- the cadence rule `window_every` keeps
-    /// (review 2026-09-26, C7; review 2026-10-05, CB3). `u32::MAX` for none;
-    /// `0` or `1` refreshes on every row. Whichever of the two comes first
-    /// refreshes.
+    /// rows of weight zero included -- the cadence rule the window's
+    /// snapshots keep (review 2026-09-26, C7; review 2026-10-05, CB3).
+    /// `u32::MAX` for none; `0` or `1` refreshes on every row. Whichever of
+    /// the two comes first refreshes.
     #[serde(default = "no_row_cap")]
     pub max_rows_between_pca: u32,
     /// Lags to accumulate cross-moments at, in output order
@@ -1257,16 +1257,29 @@ pub struct EwCovCfg {
     /// (docs/PLAN.md §13). Inside the window the weights are still
     /// exponential -- this is not a flat window. Absent for the ordinary
     /// accumulator, which is what every state written before task 63 has.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// **Last, with `window_every` and `max_rows_between_snapshots`**: the
+    /// compact encoding is positional, so only the row cap, the last, skips
+    /// when absent, and these two are written as nil.
+    #[serde(default)]
     pub window: Option<f64>,
-    /// Rows between the snapshots the window is computed from, counted on
-    /// every row the model is stepped with, rows of weight zero included; `1`
-    /// (the default) snapshots every row and puts the boundary as close to
-    /// `window` as the data allows. Larger divides the memory by the same
-    /// factor and moves the boundary *inward*, so the effective window is in
-    /// `[window - the snapshot spacing, window]` -- never longer than asked.
+    /// Clock units between the snapshots the window is computed from, as
+    /// `solve_every` is between a regression's solves (docs/PLAN.md task
+    /// 162): `0` snapshots every row. With `max_rows_between_snapshots`
+    /// too, whichever comes first; with neither, every row, which puts the
+    /// boundary as close to `window` as the data allows. A coarser cadence
+    /// divides the memory and moves the boundary *inward*: under a clock
+    /// spacing the effective window is in `[window - window_every, window]`
+    /// in clock units, exactly -- never longer than asked. The clock is the
+    /// one the model is stepped on, so a gap capped at `gap_cap` counts as
+    /// the cap.
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, counted on
+    /// every row the model is stepped with, rows of weight zero included;
+    /// `0` or `1` is every row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_every: Option<usize>,
+    pub max_rows_between_snapshots: Option<usize>,
 }
 
 /// No row cap on the components' refreshes (`max_rows_between_pca`).
@@ -1311,9 +1324,6 @@ impl EwCovCfg {
                      history to keep, and `None` is the ordinary accumulator that keeps all of it"
                 ));
             }
-            if self.window_every.is_some_and(|e| e == 0) {
-                return Err("ew_cov: window_every must be >= 1".into());
-            }
             if !self.lags.is_empty() {
                 return Err(
                     "ew_cov: window_size and lags do not combine yet; the lagged co-moments are a \
@@ -1331,9 +1341,13 @@ impl EwCovCfg {
                         .into(),
                 );
             }
-        } else if self.window_every.is_some() {
-            return Err("ew_cov: window_every needs `window_size`".into());
         }
+        crate::window::check_cadence(
+            "ew_cov",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        )?;
         if self.stats.contains(&EwCovStat::LagCorr) && self.lags.is_empty() {
             return Err(
                 "ew_cov: lagcorr needs `lags` (which lags to accumulate, e.g. lags = [1, 2, 5])"
@@ -1553,7 +1567,7 @@ impl EwCovModel {
     pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
         cfg.validate()?;
         let cfg_window = cfg.window;
-        let every = cfg.window_every.unwrap_or(1);
+        let cadence = crate::Cadence::of(cfg.window_every, cfg.max_rows_between_snapshots);
         let cov = match cfg.precision_prior {
             Some(p) => EwCov::with_precision_prior(cfg.n_features, p)?,
             None => EwCov::new(cfg.n_features),
@@ -1585,7 +1599,7 @@ impl EwCovModel {
             win: match cfg_window {
                 Some(w) => Some(Windowed {
                     clock: 0.0,
-                    snaps: crate::Snapshots::new(w, every)?,
+                    snaps: crate::Snapshots::with_cadence(w, cadence)?,
                 }),
                 None => None,
             },
@@ -1950,7 +1964,7 @@ impl crate::OnlineModel for EwCovModel {
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
 
@@ -2019,7 +2033,7 @@ impl crate::OnlineModel for EwCovModel {
             // A checkpoint after the update, on the clock or the rows,
             // whichever comes first, as the regressions' solves (task 161).
             // Both count every row the model is stepped with, rows of weight
-            // zero included -- the cadence rule `window_every` keeps (review
+            // zero included -- the rule the window's snapshots keep (review
             // 2026-09-26, C7; review 2026-10-05, CB3) -- so the components a
             // row is scored on never depend on the chunking and `predict`
             // sees the same frozen ones `step` does.
@@ -2236,6 +2250,7 @@ mod tests {
             lags: Vec::new(),
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         }
     }
 
@@ -2543,9 +2558,10 @@ mod tests {
 
     /// `window_every` trades memory for a boundary that can only move
     /// *inward*: a coarser cadence never keeps a row the window excludes.
+    /// Ten clock units here, a row each.
     #[test]
     fn a_coarse_cadence_discards_more_and_never_less() {
-        let mk = |every: usize| {
+        let mk = |every: f64| {
             let mut cfg = model_cfg(1, vec![EwCovStat::Mean]);
             cfg.decay = crate::Decay::Halflife(30.0);
             cfg.min_weight = 0.0;
@@ -2553,7 +2569,7 @@ mod tests {
             cfg.window_every = Some(every);
             EwCovModel::new(cfg).unwrap()
         };
-        let (mut fine, mut coarse) = (mk(1), mk(10));
+        let (mut fine, mut coarse) = (mk(0.0), mk(10.0));
         for i in 0..300 {
             // A step function: old rows are 0, recent rows are 1. A window
             // that reaches further back reports a *smaller* mean.
@@ -2630,27 +2646,32 @@ mod tests {
         assert!(matches!(restore(v), Err(crate::StateError::Invalid(_))));
     }
 
-    /// `window_every` counts every row the model is stepped with, rows of
+    /// The cadence counts every row the model is stepped with, rows of
     /// weight zero included: a stream alternating weight 1 and 0 under
-    /// `window_every = 2` snapshots once a row pair, not once a learned row
-    /// (review 2026-09-26, C7; the docs said learned rows).
+    /// `max_rows_between_snapshots = 2` snapshots once a row pair, not once
+    /// a learned row (review 2026-09-26, C7; the docs said learned rows),
+    /// and a row of weight zero advances the clock `window_every` is
+    /// measured on, two units here, a unit a row (docs/PLAN.md task 162).
     #[test]
     fn a_zero_weight_row_counts_toward_the_snapshot_cadence() {
-        let mut cfg = model_cfg(1, vec![EwCovStat::Mean]);
-        cfg.decay = crate::Decay::Halflife(30.0);
-        cfg.window = Some(1e9);
-        cfg.window_every = Some(2);
-        let mut m = EwCovModel::new(cfg).unwrap();
-        for i in 0..40 {
-            let w = if i % 2 == 0 { 1.0 } else { 0.0 };
-            let d = if i == 0 { 0.0 } else { 1.0 };
-            crate::OnlineModel::step(&mut m, &[i as f64], &[], d, w);
+        for (every, rows) in [(None, Some(2)), (Some(2.0), None)] {
+            let mut cfg = model_cfg(1, vec![EwCovStat::Mean]);
+            cfg.decay = crate::Decay::Halflife(30.0);
+            cfg.window = Some(1e9);
+            cfg.window_every = every;
+            cfg.max_rows_between_snapshots = rows;
+            let mut m = EwCovModel::new(cfg).unwrap();
+            for i in 0..40 {
+                let w = if i % 2 == 0 { 1.0 } else { 0.0 };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                crate::OnlineModel::step(&mut m, &[i as f64], &[], d, w);
+            }
+            assert_eq!(
+                m.win.as_ref().unwrap().snaps.len(),
+                20,
+                "{every:?}, {rows:?}: one snapshot per two rows"
+            );
         }
-        assert_eq!(
-            m.win.as_ref().unwrap().snaps.len(),
-            20,
-            "one snapshot per two rows"
-        );
     }
 
     #[test]
@@ -3155,8 +3176,9 @@ mod tests {
     }
 
     /// `pca_every` counts every row the model is stepped with, rows of
-    /// weight zero included, as `window_every` does (review 2026-09-26, C7):
-    /// the library has one cadence rule. A stream alternating weight 1 and 0
+    /// weight zero included, as the window's snapshots do (review
+    /// 2026-09-26, C7): the library has one cadence rule. A stream
+    /// alternating weight 1 and 0
     /// under `pca_every = 4` refreshes the components every fourth row, two
     /// learned rows apart. The docs said learned rows (review 2026-10-05,
     /// CB3; C7 settled `window_every`'s same mismatch by keeping the code
@@ -3280,6 +3302,66 @@ mod tests {
                 assert!(same_bits(&out, &want[i]), "cut {cut}, row {i}");
             }
             assert_eq!(a, b, "cut {cut}");
+        }
+    }
+
+    /// A windowed model saved part of a clock spacing after its newest
+    /// snapshot, through either msgpack encoding, resumes where the
+    /// unbroken one does, every statistic and `n_eff` to the bit: the
+    /// spacing, the clock it is measured from and the model's own clock are
+    /// all in the state (docs/PLAN.md task 162).
+    #[test]
+    fn a_window_saved_mid_spacing_resumes_to_the_bit() {
+        let mut c = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr]);
+        c.decay = crate::Decay::Halflife(4.0);
+        c.min_weight = 0.0;
+        c.window = Some(6.0);
+        c.window_every = Some(2.5);
+        c.max_rows_between_snapshots = Some(7);
+        let mut s = 21u64;
+        let rows: Vec<([f64; 2], f64)> = (0..90)
+            .map(|i| {
+                let d = match i {
+                    0 => 0.0,
+                    _ if i % 23 == 4 => 0.0,
+                    _ if i % 31 == 9 => 0.02,
+                    _ => 0.1 + f64::from(i % 7) * 0.45,
+                };
+                ([lcg(&mut s), lcg(&mut s)], d)
+            })
+            .collect();
+        let mut a = EwCovModel::new(c.clone()).unwrap();
+        let (mut want, mut mid) = (Vec::new(), Vec::new());
+        for (x, d) in &rows {
+            let out = crate::OnlineModel::step(&mut a, x, &[], *d, 1.0);
+            want.push((out.pred, out.n_eff));
+            let win = a.win.as_ref().unwrap();
+            let since = win.clock - win.snaps.newest().unwrap();
+            mid.push(since > 0.0 && since < 2.5);
+        }
+        let cuts: Vec<usize> = [5, 17, 40, 66]
+            .iter()
+            .map(|&from| (from..rows.len()).find(|&i| mid[i - 1]).unwrap())
+            .collect();
+        type Codec = fn(&EwCovModel) -> Vec<u8>;
+        let codecs: [(Codec, &str); 2] = [
+            (|m| rmp_serde::to_vec(m).unwrap(), "compact"),
+            (|m| rmp_serde::to_vec_named(m).unwrap(), "named"),
+        ];
+        for cut in cuts {
+            for (encode, how) in codecs {
+                let mut b = EwCovModel::new(c.clone()).unwrap();
+                for (i, (x, d)) in rows.iter().enumerate() {
+                    if i == cut {
+                        b = rmp_serde::from_slice(&encode(&b)).unwrap();
+                    }
+                    let out = crate::OnlineModel::step(&mut b, x, &[], *d, 1.0);
+                    let case = format!("cut {cut}, {how}, row {i}");
+                    assert!(same_bits(&out.pred, &want[i].0), "{case}");
+                    assert_eq!(out.n_eff.to_bits(), want[i].1.to_bits(), "{case}");
+                }
+                assert_eq!(a, b, "cut {cut}, {how}");
+            }
         }
     }
 
@@ -4271,6 +4353,7 @@ mod tests {
             lags: Vec::new(),
             window: Some(30.0),
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let mut s = 9u64;
@@ -4319,6 +4402,7 @@ mod tests {
             lags: Vec::new(),
             window: Some(7.0),
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         // `(x, clock step, weight)`; the step of 12.9 puts every row at
@@ -4819,7 +4903,7 @@ mod tests {
         let mut c = model_cfg(2, vec![EwCovStat::Mean]);
         c.decay = crate::Decay::Halflife(30.0);
         c.window = Some(40.0);
-        c.window_every = Some(2);
+        c.max_rows_between_snapshots = Some(2);
         let mut m = EwCovModel::new(c).unwrap();
         let mut s = 127u64;
         for i in 0..10 {
@@ -4835,7 +4919,7 @@ mod tests {
         match m.window_over_budget() {
             Some((bytes, every)) => {
                 assert!(bytes > 1, "{bytes}");
-                assert_eq!(every, 2);
+                assert_eq!(every, crate::Cadence::of(None, Some(2)));
             }
             None => panic!("a ring of snapshots is past a budget of one byte"),
         }

@@ -186,6 +186,7 @@ fn the_lasso_keeps_the_slope_it_learned() {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     };
     holds(
         "lasso",
@@ -216,6 +217,7 @@ fn ridge(standardize: bool) -> EwRidgeCfg {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -481,6 +483,7 @@ fn ew_cov_reports_a_stopped_feature_as_it_is() {
             lags: vec![],
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let mut at_stop = 0.0;
@@ -522,6 +525,7 @@ fn marginal_reports_a_stopped_feature_as_it_is() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let mut at_stop = 0.0;
@@ -634,6 +638,7 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         target_gaps: TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     };
     slopes_decay(
         "lasso",
@@ -684,6 +689,7 @@ fn a_held_target_is_reported_as_it_is() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let (mut ridge_at_stop, mut pair_at_stop) = (0.0, 0.0);
@@ -844,6 +850,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             target_gaps: TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     });
@@ -911,6 +918,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     });
@@ -946,6 +954,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap();
         let (mut gain_at_stop, mut var_at_stop) = (0.0, 0.0);
@@ -1046,6 +1055,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             target_gaps: TargetGaps::OwnRows,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     });
@@ -1113,6 +1123,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     });
@@ -1130,6 +1141,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             lags: vec![],
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     });
@@ -1159,6 +1171,7 @@ fn ew_class_classifies_the_same_at_every_level() {
             precision_prior: 1e-3,
             window: None,
             window_every: None,
+            max_rows_between_snapshots: None,
         })
         .unwrap()
     };

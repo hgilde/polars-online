@@ -115,6 +115,7 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 
@@ -156,7 +157,7 @@ fn ew_ridge_windowed_golden() {
     // 2026-09-18, P1).
     let mut c = ewridge_cfg(false, 1e-4);
     c.window = Some(30.0);
-    c.window_every = Some(3);
+    c.max_rows_between_snapshots = Some(3);
     let mut m = EwRidge::new(c).unwrap();
     check(
         "ew_ridge_windowed",
@@ -288,6 +289,7 @@ fn lasso_golden() {
         solve_share: None,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
         max_iter: 200,
         tol: 1e-12,
         target_gaps: online_core::TargetGaps::OwnRows,
@@ -676,6 +678,7 @@ fn ew_cov_golden() {
         lags: Vec::new(),
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);
@@ -712,6 +715,7 @@ fn marginal_golden() {
         feature_moments: online_core::FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     })
     .unwrap();
     check("marginal", &marginal_signature(&mut m), GOLDEN_MARGINAL);
@@ -803,6 +807,7 @@ fn ew_class_cfg(covariance: Covariance) -> EwClassCfg {
         precision_prior: 0.1,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     }
 }
 

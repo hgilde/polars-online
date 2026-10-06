@@ -116,6 +116,7 @@ fn main() {
         feature_moments: online_core::FeatureMomentLayout::PerTarget,
         window: None,
         window_every: None,
+        max_rows_between_snapshots: None,
     };
     let mut base = None;
     for &count in &counts {
