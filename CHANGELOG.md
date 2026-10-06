@@ -511,6 +511,17 @@ The output names task 144 renamed:
   row it is 8% slower. A way back that keeps the results to the bit, by
   skipping the leverage where the bound provably cannot bind, is a
   follow-up.
+- **`quantile` takes back about a sixth of that, every output bit
+  unchanged** (task 170). A nudge reads its leverage from a kept column
+  without allocating, the band system reads the Gram in place, and each
+  Cholesky factorization allocates one matrix where it allocated two.
+  Through the bank at ten features: 2.83M rows a second against 2.44M on
+  the default schedule, and 1.17M against 1.01M solving every row, measured
+  side by side. The core's `SpdFactor` can now be moved in place to the
+  factor of `c·A + v vᵀ` or of `E·A·E` in O(k²), held to faer's fresh
+  factorization. No model uses it yet: under forgetting a ridge shifts the
+  matrix off a rank-one step, and at ridge 0 a moved factor, which a saved
+  state does not carry, would break a resume's last bit.
 
 ### Fixed
 

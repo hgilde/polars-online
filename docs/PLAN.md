@@ -7791,16 +7791,6 @@ tick, and that the series holding it up has a count near 1.
       difference with its window through `seconds_of_ns`, exact for windows
       under 2^23 s or of whole seconds; a longer one with a sub-second part
       can tie a nanosecond late until the cfgs carry the window's ns.
-- [ ] 176. **`embargo` counts down in doubles, so an embargo of exactly k
-      steps can release a row a row late -- found 2026-10-06 by task 175.**
-      `apply_label_delay` (`stream.rs`) subtracts each row's `elapsed` from
-      the remaining embargo in doubles: on 1 ms Datetime rows under
-      `embargo="2s"`, all 999 rows were released at 2.001 s; `"5ms"`,
-      `"300ms"` and `"1s"` happened to land exactly. CB1's class of bug, on
-      the elapsed (uncapped) clock: the fix holds the elapsed time exactly
-      in `ClockState` and `PendingRow`, as task 175 holds the decayed one.
-      Reproduction: the session scratchpad's `review3/fixwork/cb1/embargo_probe.py`.
-      Awaits the user's word.
 - [x] 172. **`kalman`'s warm-up is unit-free: the noise from the first
       innovation, the prior `p0` times it -- requested 2026-10-06.** Size
       M. Review CC4 (§16). The worker's first commit took the noise from the
@@ -7822,6 +7812,43 @@ tick, and that the series holding it up has a count near 1.
       kalman rows were regenerated. Found, not changed: `huber`'s cut takes
       `s = 1` in the target's units before a residual, the same kind of
       literal.
+- [x] 170. **Cholesky factors move in place, in `solve.rs`; `quantile`
+      takes back a sixth of TC1b's cost, bit for bit -- requested
+      2026-10-06.** Size M. The user: "implement the cholesky performance
+      enhancement for tc1b", in one place ("should we not do this in one
+      place?"). `SpdFactor` keeps its own lower factor, factorized exactly
+      as faer's `llt` does, and moves in place: `updated(c, v)` to the
+      factor of `c·A + v vᵀ` and `congruent(e)` to that of `E·A·E`, by plane
+      rotations (LINPACK's `dchud` form) -- faer's `rank_r_update_clobber`
+      lost three digits where a step dominated a pivot (1,415 units of
+      rounding on a 2x2 at condition 1e6, against 2.6 for the rotations). A
+      factor that needed jitter never moves; a move leaving a zero pivot or
+      an overflow spends it; after 64 moves it refactors, since drift grows
+      about as the square root of the moves and a count does not depend on
+      the chunking. Held to faer's fresh factorization of the moved matrix
+      over condition numbers to 1e12. Bit-identical savings ride with it: a
+      nudge's quadratic form in a kept faer column, the band system read
+      from the Gram in place; 38 of 38 output frames match the old wheel to
+      the bit, and the bank runs `quantile` 16% faster at ten features.
+      **Parked, for the user's word:** `robust` moving its band factor at
+      ridge 0 (branch `task170-cholesky-robust`, `8c03592`). The algebra
+      allows it only at ridge 0 (a ridge under forgetting leaves
+      `(1 − a)·r·I`; standardized, `r(I − aE²)`), it adds about 4% there,
+      and it breaks the README's resume guarantee: the band factor is not
+      state, so a resumed model refactors where the unbroken one holds a
+      moved factor, and 1,357 predictions part by up to 3.4e-13 relative.
+      Options: accept rounding-level resume for `quantile(ridge=0)`, make
+      the band factor state (a schema bump), or leave it parked.
+- [ ] 176. **`embargo` counts down in doubles, so an embargo of exactly k
+      steps can release a row a row late -- found 2026-10-06 by task 175.**
+      `apply_label_delay` (`stream.rs`) subtracts each row's `elapsed` from
+      the remaining embargo in doubles: on 1 ms Datetime rows under
+      `embargo="2s"`, all 999 rows were released at 2.001 s; `"5ms"`,
+      `"300ms"` and `"1s"` happened to land exactly. CB1's class of bug, on
+      the elapsed (uncapped) clock: the fix holds the elapsed time exactly
+      in `ClockState` and `PendingRow`, as task 175 holds the decayed one.
+      Reproduction: the session scratchpad's `review3/fixwork/cb1/embargo_probe.py`.
+      Awaits the user's word.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -11736,7 +11763,10 @@ scratchpad and is unchanged in the code:
   the default solve schedule (2.6M against 5.0M rows a second, 10
   features; 8% solving every row). Accept it, or skip the leverage where
   the bound provably cannot bind (bit-identical and resume-safe, but it
-  needs a floating-point margin argument and a review)?
+  needs a floating-point margin argument and a review)? *2026-10-06: the
+  user asked instead for the Cholesky update, in one place; built as task
+  170 (`solve.rs`), with bit-identical savings that take back about a
+  sixth; its use in `robust` is parked, below.*
 
 **Left as they are, with the reason.** CI9: CLAUDE.md says the Polars pins
 in `pyproject.toml` and `Cargo.toml` "must match", where they are two
