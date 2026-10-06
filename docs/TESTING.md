@@ -22,8 +22,8 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-09-25 | 976 | 3,265 cases |
 | 2026-10-03 | 1,215 | 3,840 cases |
 
-The 2 opt-in soak tests are outside every count, and run with
-`pytest -m soak`. The earlier counts used `cargo test --workspace -- --list`,
+The 2 opt-in soak tests are outside every count. They run with
+`pytest -m soak`, and the weekly leak-check workflow runs them. The earlier counts used `cargo test --workspace -- --list`,
 which also lists `online-py`, a crate with no tests.
 
 Each improvement is an entry with an ID, such as T-E9, and the code and the
@@ -1157,11 +1157,14 @@ wants the exact recursion; where a cap or a threshold is finer than the
 column's step, a refusal by name. Numeric clocks (int and float) are
 unchanged, and are asserted to agree with each other.
 
-**T-E11.** 10M rows go through one state in ~6.5s. `weight_sum` stays
-bounded and does not drift between the start and end of the stream, the
-coefficients are still accurate, and resume is still exact. A 2M-row state
-serializes to under 4KB: memory is O(state) rather than O(data). It is
-opt-in, via `pytest -m soak`.
+**T-E11.** 10M rows go through one state in ~6.5s (2.4s for both soak tests
+at task 160). `weight_sum` stays bounded and does not drift between the start
+and end of the stream, the coefficients are still accurate, and resume is
+still exact. A 2M-row state serializes to under 4KB: memory is O(state)
+rather than O(data). It is opt-in, via `pytest -m soak`, and the weekly
+leak-check workflow runs it. Until task 160 (TC11) no workflow did, and the
+resume test had failed unseen since task 120 refused a step back: its tail
+restarted the clock at 0.
 
 **T-E12.** Splitting a stream exactly after a skipped row and resuming from
 state reproduces the unbroken run, so the pending delta survives the state

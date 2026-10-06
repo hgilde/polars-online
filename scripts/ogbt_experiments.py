@@ -7,7 +7,7 @@ out-of-sample use of a batch learner), and XGBoost's structure with the leaf
 values refreshed online (what its ``refresh`` updater would give with decay).
 
     uv run python scripts/ogbt_experiments.py all           # without xgboost
-    uv run --with xgboost --with scikit-learn python scripts/ogbt_experiments.py all
+    uv run --with xgboost python scripts/ogbt_experiments.py all
 
 Experiments: ``baselines``, ``knobs``, ``pool``, ``negatives``,
 ``invariance``; ``all`` runs them in that order. Each prints a table whose
@@ -15,9 +15,9 @@ rows are quoted in the document. XGBoost is optional -- its rows are skipped
 with a note when it cannot be imported. On macOS the xgboost wheel needs
 libomp, which scikit-learn's wheel bundles:
 
-    DYLD_LIBRARY_PATH=$(uv run --with scikit-learn python -c \\
+    DYLD_LIBRARY_PATH=$(uv run python -c \\
         "import os,sklearn;print(os.path.join(os.path.dirname(sklearn.__file__),'.dylibs'))") \\
-        uv run --with xgboost --with scikit-learn python scripts/ogbt_experiments.py all
+        uv run --with xgboost python scripts/ogbt_experiments.py all
 """
 
 from __future__ import annotations

@@ -326,3 +326,22 @@ def test_the_licence_rule_itself(licence: str, open_: bool) -> None:
     """The rule's own cases, so a check that passed everything would fail
     here: the forms the installed libraries use, and the parked ones."""
     assert is_open(licence) is open_
+
+
+def test_no_script_tells_the_reader_to_install_a_dev_library() -> None:
+    """`scripts/sklearn_comparison.py` said scikit-learn "is not a
+    dependency" and to `uv pip install` it; it is in the dev group, and
+    `uv run` already has it (task 160, SC6). A script's usage line may add a
+    library with `--with` only when the dev group lacks it."""
+    dev = {_name(r) for r in META["dependency-groups"]["dev"]}
+    wrong = []
+    for path in sorted((REPO / "scripts").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for name in re.findall(r"uv pip install ([\w.-]+)", text):
+            wrong.append(f"{path.name}: uv pip install {name}")
+        for name in re.findall(r"--with ([\w.-]+)", text):
+            if _name(name) in dev:
+                wrong.append(f"{path.name}: --with {name}, a dev-group library")
+        if "is not a dependency of this project" in text:
+            wrong.append(f"{path.name}: says a library is not a dependency of this project")
+    assert not wrong, wrong

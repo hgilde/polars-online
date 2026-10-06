@@ -13,7 +13,10 @@ cd "$(dirname "$0")/.."
 source scripts/env.sh
 
 echo "=== Rust (cargo test only; see the note above) ==="
-cargo llvm-cov --workspace --summary-only
+# online-py has no Rust tests, and with it in the build every test binary
+# links libpython, which a uv-managed Python keeps off Linux's loader path
+# (tests/test_ci_cost_policy.py, TestTheRustTestsLinkNoPython).
+cargo llvm-cov --workspace --exclude online-py --summary-only
 
 echo
 echo "=== Python (drives the extension end to end) ==="

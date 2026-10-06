@@ -55,6 +55,10 @@ def row(name: str, lf: pl.LazyFrame) -> str:
 
 
 def main() -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
     warnings.filterwarnings("ignore")
     d = Path(tempfile.mkdtemp())
     pl.DataFrame({"k": [1, 2], "x": [0.5, 1.5], "y": [1.0, 2.0]}).write_parquet(d / "a.parquet")

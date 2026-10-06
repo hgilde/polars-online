@@ -32,6 +32,7 @@ from __future__ import annotations
 import sys
 import time
 import zlib
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -970,6 +971,10 @@ EXPERIMENTS = {
 
 
 def main(argv: list[str]) -> int:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
     which = argv[1:] or ["all"]
     if which == ["all"]:
         which = list(EXPERIMENTS)

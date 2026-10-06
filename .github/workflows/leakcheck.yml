@@ -5,6 +5,8 @@
 # on push -- so a red run *is* the report: GitHub mails the owner when a
 # scheduled workflow fails. Deferred while minutes were metered (valgrind is
 # ~50x slower than native, macOS billed at 10x); the repo is public now.
+# It also runs the soak (tests/test_soak.py), which pyproject's addopts leaves
+# out of every other run (task 160, TC11).
 name: Leak check
 
 on:
@@ -45,7 +47,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
 
       # Same treatment as ci.yml's test job, for the same reasons: the restored
       # target/ does not fit the image's free disk, and the rustflags must be
@@ -93,3 +95,11 @@ jobs:
             echo "::error::the control leak was not detected (exit $status): the leak check is blind"
             exit 1
           fi
+
+      # Ten million rows through one state, then a 2M-row state saved and
+      # resumed. Deselected everywhere else, it ran nowhere until task 160,
+      # and its resume test had failed unseen since task 120. Seconds on the
+      # release build above.
+      - name: soak
+        if: always()
+        run: uv run pytest -q -m soak

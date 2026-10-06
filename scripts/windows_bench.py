@@ -26,8 +26,6 @@ in and `sink_parquet` out, and prints its wall time and peak RSS:
 
 from __future__ import annotations
 
-import os
-import resource
 import subprocess
 import sys
 import time
@@ -130,8 +128,14 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         target = out / "copy.parquet"
     plan.sink_parquet(target)
     secs = time.perf_counter() - start
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    gb = peak / 1e9 if sys.platform == "darwin" else peak * 1024 / 1e9
+    # `resource` is POSIX-only; Windows reports no peak here (task 160, SC4).
+    try:
+        import resource
+    except ImportError:
+        gb = float("nan")
+    else:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        gb = peak / 1e9 if sys.platform == "darwin" else peak * 1024 / 1e9
     print(f"{case:14} rows {n:>11,}  H {h:>3}  {secs:7.2f} s  peak RSS {gb:5.2f} GB", flush=True)
 
 
@@ -141,7 +145,10 @@ def main() -> None:
         return
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".cache/windows_bench")
     out.mkdir(parents=True, exist_ok=True)
-    print(f"load: {os.getloadavg()[0]:.1f}", flush=True)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
     for n in sorted({n for n, _ in RUNS}):
         path = out / f"ticks_{n}.parquet"
         if not path.exists():
@@ -157,7 +164,9 @@ def main() -> None:
         subprocess.run(
             [sys.executable, __file__, "--one", str(out), case, str(16_000_000), "1m"], check=True
         )
-    print(f"load: {os.getloadavg()[0]:.1f}", flush=True)
+    from bench_header import load
+
+    print(f"load at the end: {load()}", flush=True)
 
 
 if __name__ == "__main__":

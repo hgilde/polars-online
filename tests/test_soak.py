@@ -4,7 +4,10 @@ docs/PLAN.md section 7 claims the EW accumulators are stable under arbitrarily
 long runs because they hold weighted *means*, not sums. That is an argument;
 this is a measurement.
 
-Opt-in (it takes tens of seconds): `uv run pytest -m soak`.
+Deselected from the default run by pyproject's addopts, and run by the
+weekly leak-check workflow: `uv run pytest -m soak`. Until task 160 (TC11) no
+workflow ran it, and the resume test below had failed unseen since task 120
+made a step back a refusal: its tail restarted the clock at 0.
 """
 
 import numpy as np
@@ -87,15 +90,18 @@ def test_state_stays_small_and_resumable_after_a_long_run():
         min_weight=20.0,
     )
     bank = po.ModelBank([spec])
+    last_t = 0.0
     for chunk in _chunks(2_000_000, CHUNK, seed=1):
         bank.fit_predict(chunk)
+        last_t = chunk["t"][-1]
 
     blob = bank.save_bytes()
     # Memory is O(state), not O(data): a 2M-row stream still serializes tiny.
     assert len(blob) < 4096, f"state grew to {len(blob)} bytes"
 
     resumed = po.ModelBank.load_bytes(blob, specs=[spec])
-    tail = next(_chunks(1000, 1000, seed=2))
+    # The tail continues the stream's clock, as a resumed feed does.
+    tail = next(_chunks(1000, 1000, seed=2)).with_columns(pl.col("t") + last_t)
     a = bank.fit_predict(tail).select("m").unnest("m")
     b = resumed.fit_predict(tail).select("m").unnest("m")
     assert a.equals(b, null_equal=True)

@@ -171,7 +171,7 @@ jobs:
             bin: online
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # A timed-out or failed job still leaves a valid compile behind;
@@ -277,6 +277,35 @@ jobs:
           name: cli-${{ matrix.target }}
           path: ${{ runner.os == 'Linux' && 'target-cli' || 'target' }}/release/${{ matrix.bin }}
 
+      # The wheel this job built, installed into a fresh environment with its
+      # dependencies from PyPI, as `pip install` gives them to a user, and
+      # run: the version, the native module, a state round trip and the
+      # streaming plan (scripts/wheel_smoke.py). Three of the six wheels were
+      # built and uploaded without ever being imported, and none was run as
+      # the file that ships (task 160, CI3). Each runner runs its own wheel.
+      # The musl wheel runs in Alpine, the platform it is for, where polars'
+      # own `musllinux_1_2_x86_64` runtime wheel installs without a build.
+      # Last, so a failed run leaves the artifacts to look at; `publish`
+      # needs this job either way.
+      - name: install the wheel and run it
+        if: matrix.manylinux != 'musllinux_1_2'
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          uv venv --python 3.12 smoke
+          uv pip install --python smoke dist/*.whl
+          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION"
+      - name: install the wheel and run it (musl, in Alpine)
+        if: matrix.manylinux == 'musllinux_1_2'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          docker run --rm -e VERSION -v "$PWD":/io -w /io python:3.12-alpine sh -euxc '
+            pip install --no-cache-dir --root-user-action=ignore dist/*.whl
+            python scripts/wheel_smoke.py --version "$VERSION"
+          '
+
   # docs/PLAN.md §9 class 7: a state written on macOS must load on Windows.
   write-state:
     name: write state (macOS)
@@ -286,7 +315,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # No Python here either: `online-polars` has no pyo3 in its tree and
       # the test is pure Rust. The `uv sync` this used to run built the
@@ -315,7 +344,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -382,7 +411,7 @@ jobs:
     # every release on a major nobody had adopted yet.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
 
       # Same treatment as ci.yml's test job and the canary's: linking this
@@ -453,7 +482,7 @@ jobs:
     # its locked version, so a red leg means NumPy broke this library.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: free disk and use a leaner linker
         uses: ./.github/actions/linux-build-prep

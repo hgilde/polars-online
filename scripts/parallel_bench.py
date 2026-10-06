@@ -99,20 +99,37 @@ def make_ticks(path: Path, rows: int, k: int, groups: int) -> None:
 
 
 def timed(code: str, env: dict[str, str]) -> tuple[str, float]:
-    """Run `code` in a fresh interpreter under `/usr/bin/time -l`: its
-    stdout, and the peak memory footprint in GB (NaN where not reported)."""
+    """Run `code` in a fresh interpreter: its stdout, and its peak memory in
+    GB, NaN where the platform does not report it. macOS's BSD `time -l`
+    gives the peak memory footprint; GNU `time -v` on Linux gives the peak
+    resident set, a close but not identical measure; Windows has neither
+    (task 160, SC4: `-l` alone failed on Linux)."""
+    if sys.platform == "darwin":
+        prefix, pattern, unit = ["/usr/bin/time", "-l"], r"(\d+)\s+peak memory footprint", 1.0
+    elif sys.platform.startswith("linux") and Path("/usr/bin/time").exists():
+        prefix, pattern, unit = (
+            ["/usr/bin/time", "-v"],
+            r"Maximum resident set size \(kbytes\):\s*(\d+)",
+            1024.0,
+        )
+    else:
+        prefix, pattern, unit = [], "", 0.0
     r = subprocess.run(
-        ["/usr/bin/time", "-l", sys.executable, "-c", code],
+        [*prefix, sys.executable, "-c", code],
         env={**os.environ, **env},
         capture_output=True,
         text=True,
         check=True,
     )
-    m = re.search(r"(\d+)\s+peak memory footprint", r.stderr)
-    return r.stdout.strip(), (int(m.group(1)) / 1e9 if m else float("nan"))
+    m = re.search(pattern, r.stderr) if pattern else None
+    return r.stdout.strip(), (int(m.group(1)) * unit / 1e9 if m else float("nan"))
 
 
 def main() -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".cache/parallel_bench")
     out.mkdir(parents=True, exist_ok=True)
     ticks, wide = out / "ticks.parquet", out / "wide.parquet"

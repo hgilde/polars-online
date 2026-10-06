@@ -2,9 +2,9 @@
 
 Usage: uv run python scripts/sklearn_comparison.py [accuracy|short|wide|grid|all]
 
-scikit-learn is **not** a dependency of this project; install it into the
-environment first (`uv pip install scikit-learn`). Everything here is
-generated, so the script needs no data.
+scikit-learn is in the project's dev group, not among the package's
+dependencies, so `uv run` has it. Everything here is generated, so the
+script needs no data.
 
 Every contender is held to the protocol this library guarantees: a row is
 scored from the state as it stands, and only then learned from. sklearn is
@@ -51,8 +51,8 @@ def _sklearn():
         from sklearn.preprocessing import StandardScaler
     except ImportError:  # pragma: no cover - the message is the point
         sys.exit(
-            "scikit-learn is not installed, and is not a dependency of this "
-            "project. `uv pip install scikit-learn` and run this again."
+            "scikit-learn is not installed. It is in the project's dev group: "
+            "`uv sync` and run this again with `uv run`."
         )
     return SGDRegressor, StandardScaler
 
@@ -338,6 +338,12 @@ def grid():
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     if which in ("accuracy", "all"):
         accuracy()

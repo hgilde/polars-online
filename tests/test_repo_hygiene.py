@@ -38,6 +38,12 @@ DATA_SUFFIXES = {
     ".parq",
     ".orc",
     ".avro",
+    # The suite's own state files, which tests write by the dozen: a frozen
+    # one checked in as a fixture would pass every check above (task 160, TC7).
+    ".state",
+    ".msgpack",
+    ".mpk",
+    ".bin",
 }
 
 #: Generated tool output that belongs in .gitignore, matched on any path part.
@@ -85,6 +91,33 @@ def test_no_data_files_are_tracked(tracked):
         f"hard rule 1: data files are tracked: {offenders}. "
         "Generate or download them in the test instead, cached under .cache/."
     )
+
+
+def _binary(path: Path) -> bool:
+    """Git's own test: a NUL byte in the first 8,000 bytes."""
+    with path.open("rb") as fh:
+        return b"\0" in fh.read(8000)
+
+
+def test_no_binary_file_is_tracked(tracked):
+    """A data file by any other name: an image, a state blob, a model dump.
+    None is tracked today, and the source tree has no need of one."""
+    offenders = [str(p) for p in tracked if (REPO / p).is_file() and _binary(REPO / p)]
+    assert not offenders, f"binary files are tracked: {offenders}"
+
+
+def test_the_checks_know_the_suites_own_formats(tmp_path):
+    """The state formats the suite writes itself are data, and a binary file
+    is caught whatever its name (task 160, TC7: a 240 KB `bank.state`,
+    `.msgpack`, `.bin` or `.png` passed every check)."""
+    for name in ("bank.state", "frame.msgpack", "blob.bin"):
+        assert Path(name).suffix in DATA_SUFFIXES, name
+    blob = tmp_path / "picture.png"
+    blob.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+    assert _binary(blob)
+    text = tmp_path / "notes.txt"
+    text.write_text("plain text\n", encoding="utf-8")
+    assert not _binary(text)
 
 
 def test_no_tool_output_is_tracked(tracked):

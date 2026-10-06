@@ -64,6 +64,10 @@ def main() -> None:
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args()
     rows = args.rows
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
 
     results: list[tuple[str, str, float]] = []
 

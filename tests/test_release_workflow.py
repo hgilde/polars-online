@@ -87,16 +87,22 @@ def test_ci_groups_per_caller_so_a_release_and_a_push_do_not_cancel():
     assert "github.workflow" in CI["concurrency"]["group"]
 
 
+def _transitive_needs(job: str) -> set[str]:
+    seen: set[str] = set()
+    todo = [job]
+    while todo:
+        for need in _needs(todo.pop()):
+            if need not in seen:
+                seen.add(need)
+                todo.append(need)
+    return seen
+
+
 def test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing():
-    assert _needs("publish") == {
-        "version",
-        "ci",
-        "sdist",
-        "build",
-        "read-state",
-        "next-polars",
-        "next-numpy",
-    }
+    """Every job but the three that follow the upload is upstream of it,
+    directly or through another job. A literal list of ``publish``'s needs
+    passed with a new job left out of it (task 160, TC8)."""
+    assert set(JOBS) - {"publish", "tag", "release"} <= _transitive_needs("publish")
     assert JOBS["publish"]["environment"] == "pypi"
     assert _needs("tag") == {"version", "publish"}
     assert _needs("release") == {"version", "tag"}
@@ -126,6 +132,64 @@ def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
     canary_runs = [str(s.get("run", "")) for s in canary["steps"]]
     assert "uv sync --prerelease=allow --upgrade-package numpy" in canary_runs
     assert any("pytest" in r for r in canary_runs)
+
+
+def test_every_wheel_is_installed_and_run_where_it_belongs():
+    """Three of the six wheels were built and uploaded without ever being
+    imported, and none was run as the file that ships (task 160, CI3). Each
+    leg installs its own wheel into a fresh environment and runs
+    ``scripts/wheel_smoke.py`` on it with the version being released: on
+    the runner, or in Alpine for the musl wheel, which the runner's glibc
+    cannot load."""
+    steps = JOBS["build"]["steps"]
+    smoke = [s for s in steps if "scripts/wheel_smoke.py" in str(s.get("run", ""))]
+    assert [s["if"] for s in smoke] == [
+        "matrix.manylinux != 'musllinux_1_2'",
+        "matrix.manylinux == 'musllinux_1_2'",
+    ]
+    for leg in JOBS["build"]["strategy"]["matrix"]["include"]:
+        assert leg["target"].endswith("-musl") == (leg.get("manylinux") == "musllinux_1_2"), leg
+    native, alpine = smoke
+    assert "uv venv" in native["run"]
+    assert "uv pip install --python smoke dist/*.whl" in native["run"]
+    assert "python:3.12-alpine" in alpine["run"] and "pip install" in alpine["run"]
+    for step in smoke:
+        assert step["env"]["VERSION"] == "${{ needs.version.outputs.version }}"
+        assert '--version "$VERSION"' in step["run"]
+    # Last, after both uploads: a failed run leaves the artifacts to look at.
+    assert steps.index(native) > max(
+        i for i, s in enumerate(steps) if "upload-artifact" in str(s.get("uses", ""))
+    )
+
+
+def _wheel_smoke():
+    spec = importlib.util.spec_from_file_location(
+        "wheel_smoke", REPO / "scripts" / "wheel_smoke.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_wheel_smoke_passes_on_this_build_and_refuses_the_wrong_version():
+    import polars_online as po
+
+    smoke = _wheel_smoke()
+    assert smoke.check(po.__version__, installed=False).endswith(": ok")
+    with pytest.raises(SystemExit, match="not 9.9.9"):
+        smoke.check("9.9.9", installed=False)
+
+
+def test_the_wheel_smoke_refuses_a_package_imported_from_the_checkout():
+    import polars_online as po
+
+    smoke = _wheel_smoke()
+    if Path(po.__file__).resolve().is_relative_to(REPO / "python"):
+        with pytest.raises(SystemExit, match="came from the checkout"):
+            smoke.check(po.__version__)
+    else:
+        assert smoke.check(po.__version__).endswith(": ok")
 
 
 def test_the_tag_is_on_the_tested_sha():

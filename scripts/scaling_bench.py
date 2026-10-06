@@ -12,6 +12,7 @@ import argparse
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 WORKLOAD = """
 import os, time, numpy as np, polars as pl, polars_online as po
@@ -51,6 +52,10 @@ def main() -> None:
     ap.add_argument("--rows", type=int, default=200_000)
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args()
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from bench_header import header
+
+    print(header(), flush=True)
 
     # Up to every core the machine has: the last row is the one that shows
     # whether the fan-out still scales where it matters, and stopping at 8 on

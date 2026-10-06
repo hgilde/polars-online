@@ -47,3 +47,26 @@ def test_this_build_runs_the_whole_workload(tmp_path):
     assert meta["ran"] == [name for name, *_ in probe.WORKLOAD]
     frame = pl.read_parquet(out)
     assert frame.height == probe.stream().height and frame.width > 250
+
+
+def test_a_spec_this_build_refuses_is_a_difference_not_a_silence():
+    """`compare` took only the specs both builds ran and never read this
+    build's refusals, so a spec the release ran and this build refuses
+    dropped out, and the verdict said "identical", exit 0 (task 160, SC1).
+    The gate's workload test above catches the probe refusing at HEAD; the
+    script's own verdict must not depend on it."""
+    meta = {"file": "a", "version": "0.0.1", "ran": ["ridge", "rls"], "refused": {}}
+    new_meta = {
+        "file": "b",
+        "version": "0.0.2",
+        "ran": ["ridge"],
+        "refused": {"rls": "RuntimeError: boom"},
+    }
+    frame = pl.DataFrame({"ridge.pred": [1.0, 2.0]})
+    old = frame.with_columns(pl.lit(3.0).alias("rls.pred"))
+    out: list[str] = []
+    code = compare.compare("0.0.1", old, meta, frame, new_meta, out)
+    text = "\n".join(out)
+    assert code == 1, text
+    assert "rls" in text and "RuntimeError: boom" in text, text
+    assert "identical" not in text, text

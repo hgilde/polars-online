@@ -54,9 +54,11 @@ permissions: {}
 
 # Per calling workflow as well as per ref: called from release.yml,
 # `github.workflow` is "Release", so a release on main and a push's CI on
-# main are two groups, and neither cancels the other.
+# main are two groups, and neither cancels the other. Per event too, as in
+# mutants.yml: the Monday run and a push to main must not cancel each other,
+# since only a push run publishes the reference (task 160, CI8).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -83,7 +85,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -169,7 +171,7 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       # MUST precede the cache restore. The Ubuntu image starts with 9.3 GB
       # free, and the restored `target/` does not fit: the job died with
       # "No space left on device" *inside* rust-cache, so hard that the runner

@@ -126,6 +126,12 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   and every other run used the locked version. The newest NumPy now blocks
   a publish, as the newest Polars in range does, and NumPy's next release
   candidate is an early warning, at the release and in the weekly canary.
+- **Every wheel is installed and run before a release publishes** (task
+  160). Three of the six wheels (Intel macOS, aarch64 Linux and musl) were
+  built and uploaded without ever being imported. Each build now installs
+  its wheel into a fresh environment, with its dependencies from PyPI, and
+  runs a fit, a saved and resumed state, and the streaming plan on it; the
+  musl wheel runs in Alpine.
 
 ### Changed
 

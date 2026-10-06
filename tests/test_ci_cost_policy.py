@@ -82,6 +82,15 @@ class TestEveryJobIsBounded:
     def test_superseded_runs_are_cancelled(self, name):
         assert ALL[name]["concurrency"].get("cancel-in-progress") is True
 
+    def test_a_scheduled_run_cannot_cancel_a_push(self):
+        """ci.yml runs on a schedule as well as on push; with the event out of
+        its group, the Monday run and a push to main shared one group under
+        `cancel-in-progress`, so one cancelled the other, and a cancelled push
+        run publishes no reference (task 160, CI8). mutants.yml carries the
+        event for the same reason."""
+        group = ALL["ci.yml"]["concurrency"]["group"]
+        assert "github.event_name" in group, group
+
     def test_releases_queue_rather_than_cancel(self):
         """The one place where cancelling costs more than it saves: a
         superseded release run may be midway through publishing to PyPI."""
@@ -368,6 +377,18 @@ class TestTheRustTestsLinkNoPython:
         ]
         assert runs and all(self.EXCLUDE in line for line in runs), runs
 
+    def test_the_coverage_script_leaves_it_out_too(self):
+        """`scripts/coverage.sh` runs the Rust tests under llvm-cov; without
+        the exclusion every test binary links libpython, as above, and on
+        Linux with a uv-managed Python the step cannot start (task 160, SC5)."""
+        script = (self.ROOT / "scripts/coverage.sh").read_text(encoding="utf-8")
+        runs = [
+            line
+            for line in script.splitlines()
+            if "cargo llvm-cov" in line and not line.lstrip().startswith("#")
+        ]
+        assert runs and all(self.EXCLUDE in line for line in runs), runs
+
     def _packages(self, *selection: str) -> set[str]:
         """Every package cargo would build for `selection`, dev and build
         dependencies included, from this checkout's lock. `--locked`, not
@@ -462,3 +483,52 @@ class TestTheLinuxPrepIsOneAction:
         # Inputs reach the script through its environment, never pasted in.
         assert "${{" not in run
         assert set(action["inputs"]) == {"packages", "update-lists"}
+
+
+class TestActionsArePinnedToCommits:
+    """`.github/dependabot.yml` says actions are pinned to commit SHAs, since a
+    tag or a branch can be repointed by whoever owns the action; Dependabot
+    then proposes the bumps. `dtolnay/rust-toolchain@stable` was a branch, at
+    13 sites, release.yml's wheel build among them (task 160, CI1). Read from
+    the text, since YAML drops the comment that names the version."""
+
+    FILES = [*WORKFLOWS, PREP_ACTION]
+    USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+?)@(\S+)(.*)$")
+
+    def _external(self):
+        for path in self.FILES:
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                m = self.USES.match(line)
+                if m and not m.group(1).startswith("./"):
+                    yield f"{path.name}:{n}", m.group(1), m.group(2), m.group(3)
+
+    def test_every_external_action_is_a_commit_with_its_version_named(self):
+        found = list(self._external())
+        assert len(found) > 40, len(found)
+        for where, action, ref, rest in found:
+            assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{where}: {action}@{ref} is not a commit"
+            assert re.match(r"\s+#\s+\S", rest), f"{where}: {action} names no version"
+
+
+class TestEveryDeselectedMarkerRunsSomewhere:
+    """pyproject's addopts leaves the soak out of every run that does not ask
+    for it, and no workflow asked: its resume test failed unseen from task 120
+    to task 160 (TC11). Each marker the default run deselects must be the
+    `-m` of some workflow's pytest step."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def test_each_marker_the_default_run_leaves_out_runs_in_a_workflow(self):
+        pyproject = tomllib.loads((self.ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        addopts = pyproject["tool"]["pytest"]["ini_options"]["addopts"]
+        deselected = re.findall(r"\bnot (\w+)", addopts)
+        assert deselected, addopts
+        runs = [
+            str(step.get("run", ""))
+            for wf in ALL.values()
+            for job in wf["jobs"].values()
+            for step in job.get("steps", [])
+        ]
+        for marker in deselected:
+            asks = re.compile(rf"pytest\b.*\s-m\s+(['\"]?){marker}\1(\s|$)")
+            assert any(asks.search(run) for run in runs), f"no workflow runs `-m {marker}`"

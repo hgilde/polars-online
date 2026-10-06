@@ -142,6 +142,12 @@ def compare(
     specs = [s for s in new_meta["ran"] if s in old_meta["ran"]]
     not_comparable = sorted(set(new_meta["ran"]) - set(old_meta["ran"]))
     differs: dict[str, list[str]] = {}
+    # A spec the release ran and this build does not is a difference, not a
+    # silence: refused here, it would drop out of `specs` above and the
+    # verdict would say "identical" (task 160, SC1).
+    for spec in [s for s in old_meta["ran"] if s not in new_meta["ran"]]:
+        why = new_meta.get("refused", {}).get(spec, "not run by this build")
+        differs.setdefault(spec, []).append(f"refused by this build: {why}")
     compared = 0
     for col in new.columns:
         spec = col.split(".", 1)[0]

@@ -35,7 +35,9 @@ sequential detector on 2026-09-28 (task 114).
 
 Every number comes from `scripts/regime_experiments.py`, run on 2026-09-27;
 sections 2 to 4 and 9 on 2026-09-28, after task 114 put the monitor's
-kernel on its paper's. Sections 1 to 4 end with a dated note that keeps
+kernel on its paper's; section 8 on 2026-10-05, after task 158 read the
+pre-averaging bias's θ from the window run and task 159 formed CKP's first
+pre-averaged term, which moved two of its cells at the third decimal. Sections 1 to 4 end with a dated note that keeps
 the figures they first reported, on 2026-09-06, and 2 to 4 one with the
 figures before task 114.
 
@@ -557,7 +559,7 @@ observed returns zero, and `plain` loses 0.420. The kernel, which sums its
 lags, keeps most of it, at a bias of −0.094. Pre-averaging is the least
 biased, at −0.017 and −0.021; its window, tens of rows long, spans the
 rows a series missed. Refresh time takes the kernel's bias to −0.017, on
-602 rows a block, and pre-averaging's error rises there, to 0.151 and
+602 rows a block, and pre-averaging's error rises there, to 0.150 and
 0.106, with fewer rows to average over.
 
 **`psd=False` is the better pre-averaging form here.** It has the lower

@@ -16,8 +16,7 @@ the rest. Each command is one of WRITING's steps:
   words, the *X, not Y* aphorisms, and the tables and code blocks. Headings,
   tables, code and HTML are dropped first, and each paragraph is split on its
   own, with a bold lead ending in a full stop split from the sentence after
-  it. ``--long N`` lists every sentence of N words or more, to read: the
-  splitter still merges a sentence across a bold lead that holds a ``*``.
+  it. ``--long N`` lists every sentence of N words or more, to read.
 - ``counts``, §6's table of counts: ten counts, each hit listed with its
   line. The tenth lists the paragraphs that name the library's own names
   (a parameter, a call, an output field or a quoted value) that no python
@@ -63,7 +62,9 @@ SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*(\[])")
 
 # --- measure ------------------------------------------------------------------
 
-BOLD_LEAD = re.compile(r"^(\*\*[^*]+?[.!?]\*\*)\s+(.*)$", re.S)
+# A code span inside the lead may hold a `*` (`rolling_*_by`): the lead runs
+# over code spans whole, and stops only at the bold's own `**` (task 160, SC7).
+BOLD_LEAD = re.compile(r"^(\*\*(?:`[^`]*`|[^*`])+?[.!?]\*\*)\s+(.*)$", re.S)
 COST = re.compile(r"\b(costs?|pays?|buys?|for free|the price|the point)\b", re.I)
 APHORISM = re.compile(r"\w[\w`*)]*, not (?:a |an |the )?\w", re.I)
 

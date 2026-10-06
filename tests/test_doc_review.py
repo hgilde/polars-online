@@ -35,6 +35,15 @@ def test_measure_splits_a_bold_lead_from_the_sentence_after_it():
     assert numbers["## sections"] == 1
 
 
+def test_a_bold_lead_holding_a_code_span_with_a_star_is_split_too():
+    """The README's "**A window holds the rows Polars' `rolling_*_by` would
+    give it.**" was counted as one 36-word sentence with the one after it:
+    the lead's pattern stopped at the `*` inside the code span (task 160,
+    SC7)."""
+    _, sentences = review.measure("## Rows\n\n**Use `a_*_b` first.** Then feed the bank.\n")
+    assert [words for _, words, _ in sentences] == [3, 4]
+
+
 def test_the_counts_find_the_faults_they_were_written_for():
     """Each phrase is one the user reported in a README pass
     (docs/README-ITERATIONS.md: W1, W11, W12, W13)."""

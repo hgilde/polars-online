@@ -6,10 +6,10 @@ row (predict-then-learn) and scored per segment against the generating
 labels: ARI, purity, the tracking error of the true centres, and the outlier
 flags. Batch references: Lloyd's k-means on the full history (in-sample) and
 refit on a rolling window (the honest out-of-sample use of a batch learner);
-scikit-learn's MiniBatchKMeans / GaussianMixture when importable.
+scikit-learn's MiniBatchKMeans / GaussianMixture, which the dev group
+installs.
 
     uv run python scripts/clustering_experiments.py all
-    uv run --with scikit-learn python scripts/clustering_experiments.py all
 
 Experiments: ``guarantees`` (chunk invariance, determinism, zero-weight and
 null rows, NaN-free state), ``baselines``, ``seeding``, ``decay``,
