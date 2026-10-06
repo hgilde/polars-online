@@ -53,7 +53,7 @@ jobs:
       readme_ref: ${{ inputs.publish && steps.v.outputs.tag || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: publishing is from main only
         if: inputs.publish && github.ref != 'refs/heads/main'
         run: |
@@ -92,7 +92,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # PyPI shows README.md as the project page, where a relative link to
       # another file resolves against pypi.org and is a 404. Rewritten to the
       # repository at the tag this run will create (the sha, rehearsing)
@@ -183,7 +183,7 @@ jobs:
       # tree (`cargo tree -p online-cli` finds none). That was 26 minutes of
       # the Intel macOS job in the first rehearsal.
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # PyPI shows README.md as the project page, where a relative link to
       # another file resolves against pypi.org and is a 404. Rewritten to the
       # repository at the tag this run will create (the sha, rehearsing)
@@ -412,7 +412,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       # Same treatment as ci.yml's test job and the canary's: linking this
       # workspace's polars-laden test binaries exhausts the runner without it.
@@ -483,7 +483,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: free disk and use a leaner linker
         uses: ./.github/actions/linux-build-prep
       - run: uv sync ${{ matrix.prerelease }} --upgrade-package numpy
