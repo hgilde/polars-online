@@ -4470,7 +4470,9 @@ decision it needs, with a recommendation where there is one.
       hurt one — re-measure, then decide. **Decided 2026-09-28 (the user:
       "Keep share p off"):** `False` stays; the re-measurement (VALIDATION
       §4, 1.215e-6 against 1.279e-6 and 4.963e-6 against 4.987e-6) is on
-      data with no predictive signal. (b) The solve cadence by
+      data with no predictive signal. (Task 172's relative prior moved them
+      to 1.214e-6 against 1.277e-6 and 4.941e-6 against 4.984e-6, sharing
+      still better on both.) (b) The solve cadence by
       accumulated weight: `halflife=1e12` solves once (a state field; the
       next schema bump). **Decided 2026-09-28 (the user: "Do 115b") and
       built:** with no `solve_every` under a finite halflife, `ewridge`,
@@ -7693,6 +7695,133 @@ tick, and that the series holding it up has a count near 1.
       `scripts/release_probe.py` that turned drift on over a numeric clock
       now give 20.0, the old default, so their numbers do not move (the
       probe runs under the released wheels too, which take a number).
+- [x] 171. **`rcov`'s pre-averaged estimate carries CKP's finite-sample
+      rescaling -- requested 2026-10-06.** Size S. Review CE1 (§16); the
+      user: "follow your recommendations for all remaining review
+      decisions". Under `psd=False` the estimate is divided by
+      `1 − ψ₁/(2ψ₂kₙ²)` (CKP footnote 1, read from the PDF's page 9: the
+      error of `Σxxᵀ = 2nΨ + ∫Σ` has expectation zero). A test from the
+      footnote holds every entry of the estimate to the integrated
+      covariance within 4 standard errors over 300 blocks at `kₙ` = 3, 6
+      and 10 (the old code sat on the footnote's factor, 4.9 to 121
+      standard errors off); the oracles written from Eq. 9 take the
+      footnote; `GOLDEN_RCOV_PREAVG` moved by 19/16 exactly. Through the
+      bank, the reviewer's script reads 1.00083 ± 0.00098 at the default
+      window over 59,980 blocks. The divisor is 0 only at `kₙ = 2`, which
+      `validate` refuses without `psd` (CE5). A worker built it on
+      `task171-ce1`.
+- [x] 169. **The Rust test oracles in one place, independent of `solve.rs`
+      -- requested 2026-10-06.** Size S. The user, on seeing `deco`'s
+      dense-density test take its expected value from `SpdFactor`, the
+      Cholesky it checks: "If we are changing Cholesky factor calculation
+      should we not do this in one place?", then "Do this", then "Point
+      Claude.md to the new oracle". `crates/online-core/src/oracle.rs`
+      (`#[cfg(test)]`) holds faer's partial-pivot LU (solve, inverse,
+      quadratic form) and self-adjoint eigensolver (log-determinant,
+      Gaussian log-density, eigendecomposition), none of which `solve.rs`
+      runs; every ad hoc faer oracle in online-core's tests moved onto it
+      (bocpd, deco, ew_cov, hmm, lasso, rcov, ewridge), and the two
+      hand-written Gauss-Jordan oracles (`EwCov::inverse_from_scratch`,
+      ewclass's `inverse_det`) went with them. Two tests stopped checking
+      the solver with itself: `deco`'s dense density, now from the
+      eigendecomposition, and `ew_cov`'s Mahalanobis test, whose d² came
+      from `precision()`, the same Cholesky. Measured by corrupting
+      `solve.rs` in the worker's tree: a constant added to `log_det` or to
+      `quad_forms` passed the old `deco` test and fails the new one (halving
+      `log_det`, the brief's example, failed both). Expected values moved by
+      at most 6.3e-15 absolute; every tolerance is 1e-9 or wider. CLAUDE.md's
+      Style rule now points at the module.
+- [x] 173. **Forward windows: a silent group needs a clock (PC1), and a
+      reset keeps a complete window whole (PC2) -- requested 2026-10-06.**
+      Size M. Review PC1 and PC2 (§16). The rule lives in `clock_cfg_of`
+      (`ClockPolicy` gains `group` and `looks_ahead`): `with_windows`
+      refuses a window looking ahead under `group` with no clock column, as
+      a spec refuses such a window target, with one message. A reset keeps a
+      forward `right`/`both` window whose far edge is the last row before it
+      whole, as a cut does; the brute force treats a stretch a reset ends as
+      it treats one a cut ends. Tests: the mirror identity across resets,
+      the brute force over step-back and session-reset grids, the resolver
+      path, each refusal (Rust and Python, each failing on the old code).
+      The bank's predictions, `learned_clock` and `weight_sum` match the old
+      build bit for bit on 48 comparisons: a reset clears the rows awaiting
+      their labels (`apply_label_delay`) before any resolution applies, so
+      only `with_windows` values move (one per reset, null to a value). In
+      the bank, PC1 is consistency rather than memory: its per-group cores
+      hold only the silent group's own window.
+- [x] 174. **`lasso` counts each target's selection errors from its own
+      `min_weight` -- requested 2026-10-06.** Size S. Review CA3 (§16).
+      `LassoCfg.target_min_weight` (one threshold per target, empty for the
+      model's own) is filled from the spec's list; `step` folds a target's
+      error only where the target's own weight before the row reaches its
+      threshold, hard rule 8's gate. `[0, 60]` and `[60, 60]` now agree for
+      the second target on every row (141 differed); a target present on
+      every row under a scalar or an equal list is bit-identical to before;
+      a target with gaps moves under any spelling (11 to 26 rows of 240),
+      since its own weight lags the shared one -- the decision's rule, which
+      the brief's "a scalar is unchanged" missed. The cfg is in the state,
+      so `SCHEMA_VERSION` is 31 and the bank refuses 30 and older.
+- [x] 175. **A model window's edge on the decayed clock, held exactly --
+      requested 2026-10-06.** Size L. Review CB1 (§16); the user chose
+      option 1 of two ("Go with option 1"): stamps, against a compensated
+      summed clock, which exact summation of rounded 1 ms steps would have
+      left at 1.0000000000000000208 s, consistently past 1 s. A model
+      window's clock is the decayed one (README, *A hard window*), so the
+      stamp is: integer nanoseconds summed from capped integer steps on a
+      temporal clock (`gap_cap` and `session_gap` as their durations' ns,
+      `ExactCaps`), the raw value beside the removed time on a number clock,
+      the row count without one. `ClockState::advance_stamped` makes it,
+      opt-in, so the window operators' clock writes the bytes it did
+      (`WINDOWS_VERSION` stays 7); a default no-op
+      `OnlineModel::stamp_next` hands it to the five windowed models, so no
+      `step` signature changed; the ring keys `(summed clock, stamp,
+      snapshot)`, decay reads the summed clock bit for bit, and the edge,
+      the stale rule, `window_every`'s spacing and thinning read
+      `Stamp::cmp_span`. Wired through the residual ring, the pre-pass, the
+      embargo's replay, resets and save/resume. The window operators'
+      `Gap` now compares through `Stamp::cmp_span_ns`, its behaviour
+      unchanged (their 47 tests). Tests (`crates/online-polars/tests/window_edge.rs`
+      and `tests/test_window.py`), each oracle from the raw integer ns or
+      raw numbers: every model and unit exact at 1 ms under `"1s"` (7 rows
+      wrong before); a clock of tenths under 0.3 (186 rows); every clock
+      event, a capped hour, `session_gap`, skipped rows and a restart (528
+      rows); chunking at 1, 7 and 37; `window_every` spacing and a save
+      between snapshots; the residual window's boundary; an embargoed row
+      learned at its own stamp; the pre-pass. `SCHEMA_VERSION` is 32 (task
+      174 took 31 the same day). Limit: a model compares a temporal
+      difference with its window through `seconds_of_ns`, exact for windows
+      under 2^23 s or of whole seconds; a longer one with a sub-second part
+      can tie a nanosecond late until the cfgs carry the window's ns.
+- [ ] 176. **`embargo` counts down in doubles, so an embargo of exactly k
+      steps can release a row a row late -- found 2026-10-06 by task 175.**
+      `apply_label_delay` (`stream.rs`) subtracts each row's `elapsed` from
+      the remaining embargo in doubles: on 1 ms Datetime rows under
+      `embargo="2s"`, all 999 rows were released at 2.001 s; `"5ms"`,
+      `"300ms"` and `"1s"` happened to land exactly. CB1's class of bug, on
+      the elapsed (uncapped) clock: the fix holds the elapsed time exactly
+      in `ClockState` and `PendingRow`, as task 175 holds the decayed one.
+      Reproduction: the session scratchpad's `review3/fixwork/cb1/embargo_probe.py`.
+      Awaits the user's word.
+- [x] 172. **`kalman`'s warm-up is unit-free: the noise from the first
+      innovation, the prior `p0` times it -- requested 2026-10-06.** Size
+      M. Review CC4 (§16). The worker's first commit took the noise from the
+      row's innovation, where it was the literal 1.0, and found that at the
+      default `p0 = 1` the warm-up became *more* unit-dependent (1.8 to 2.8
+      target standard deviations between targets at 1e-6 and 1e6, against
+      0.8 to 1.2): the old `R = 1` and `P0 = 1` were both unit-free
+      literals, and only one of them moved. The user chose to make `p0`
+      relative ("p0 relative"): the prior is `p0` times the first noise
+      estimate, set at the target's first row with one (an all-zero `P` is
+      the unsized state, so no layout change), and `p0·obs_var` with
+      `obs_var` given. The gap is now at most 1.4e-15; the equivariance test
+      (every target scaled by `2^±20`, at the default `p0` and at 1/4, eight
+      configurations) holds bit for bit, and failed on both earlier rules.
+      `kalman_ref`, both filterpy second opinions and river's mapping
+      (`p0 = beta/alpha`) state the new prior: filterpy meets the bank to
+      1.0e-15, and misses it by 0.28 and 52 under `P0 = I`. Golden values
+      moved, each matched to `kalman_ref` before re-pinning; VALIDATION's
+      kalman rows were regenerated. Found, not changed: `huber`'s cut takes
+      `s = 1` in the target's units before a residual, the same kind of
+      literal.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -11573,29 +11702,36 @@ scratchpad and is unchanged in the code:
 - **CE1**: `rcov`'s pre-averaged estimate under `psd=False` omits CKP's
   footnote rescaling `1/(1 − ψ₁/(θ²ψ₂)/(2n))`: 0.842 of the integrated
   variance at `k_n = 6`, 0.941 at 10, 0.985 at the default. Applying it
-  moves the golden.
+  moves the golden. *Decided 2026-10-06, the user's word ("follow your
+  recommendations for all remaining review decisions"): applied, task 171.*
 - **CC4**: `kalman`'s observation and process noise are the literal 1.0 in
   target units until the first residual, so the warm-up's gains depend on
   the target's units (a 100% difference between scales of 1e-6 and 1e6).
+  *Decided 2026-10-06, the user's word ("follow your recommendations for
+  all remaining review decisions", then "p0 relative"): the noise from the
+  first innovation and the prior as `p0` times it, task 172.*
 - **CB1**: a model's window edge is decided on its own summed `d_clock`, so a
   row exactly `window_size` old is dropped on some rows and kept on others;
   the window operators were fixed in task 159 (W3), the models' windows
-  were not. Exact edges need the raw clocks in the models.
+  were not. Exact edges need the raw clocks in the models. *Decided
+  2026-10-06, the user's word ("Go with option 1"): stamps on the decayed
+  clock held exactly, task 175.*
 - **PC1**: a silent group on a row-count clock with a forward window holds
   every later row of every group until the end (500,001 rows held, 117 MiB
   over 2M rows), where the docs promise memory of one window. Refuse it, or
-  bound it?
+  bound it? *Decided 2026-10-06, the user's word ("follow your recommendations for all remaining review decisions"): refused, task 173.*
 - **CA3**: `lasso`'s selection starts counting errors at the model's own
   first prediction, gated by the list's smallest `min_weight`, so
   `penalty_selected` differs on 84 of 240 rows between `[0, 60]` and
-  `[60, 60]`. When should the selection start counting?
+  `[60, 60]`. When should the selection start counting? *Decided 2026-10-06, the user's word ("follow your recommendations for all remaining review decisions"): from each
+  target's own `min_weight`, task 174.*
 - **CI2**: run 35508619563 (v0.8.1, 2026-09-20) still waits at "publish to
   PyPI", approvable with one click. Cancelling it is a write. *Cancelled
   2026-10-06 on the user's word ("Yes to the three items"), with the push
   of task 167 and the merges of Dependabot's #3, #4 and #5.*
 - **PC2, a reset**: a cut now keeps a forward window whose far edge is the
   last row before it whole; a reset still discards it, as its docs say ("a
-  reset discards them").
+  reset discards them"). *Decided 2026-10-06, the user's word ("follow your recommendations for all remaining review decisions"): kept whole on a reset too, task 173.*
 - **TC1b's cost**: the full-leverage bound halves `quantile`'s throughput on
   the default solve schedule (2.6M against 5.0M rows a second, 10
   features; 8% solving every row). Accept it, or skip the leverage where

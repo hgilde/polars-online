@@ -144,14 +144,16 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 30,
+- **Every saved bank must be refit.** A bank file now carries schema 32,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
-  its version, naming the way out: refit from the input. Four changes
+  its version, naming the way out: refit from the input. Six changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
-  keeps (task 104, then review rounds R4 and R6), and the PCA, pruning and
+  keeps (task 104, then review rounds R4 and R6), the PCA, pruning and
   window cadences of `ew_cov`, `micro` and the windowed models (tasks 161,
-  163 and 162). An `ew_cov` state with `mahal_quantiles` is refused too.
+  163 and 162), `lasso`'s threshold per target (task 174), and the stamps
+  a model window keys its snapshots by (task 175). An `ew_cov` state with
+  `mahal_quantiles` is refused too.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -203,6 +205,85 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   `sigma`-seconds there. At a row a minute it flagged 244 of 3,000 rows of
   noise, where `"20m"` flags none. To keep a spec's old numbers, give
   `drift_threshold=20.0` on a numeric clock and `"20s"` on a temporal one.
+- **`rcov`'s pre-averaged estimate is rescaled as its paper does** (task
+  171; review 2026-10-05, CE1). Under `kind="preavg"` and `psd=False` the
+  bias-corrected estimate is now divided by `1 − ψ₁/(2ψ₂kₙ²)`, from
+  footnote 1 of Christensen, Kinnebrock and Podolskij (2010): `Σxxᵀ` holds
+  the integrated covariance beside the noise, so subtracting the bias term
+  took a share of the covariance with it. The estimate averaged 0.50 of
+  the block's integrated covariance at a window `kₙ` of 3, 0.84 at 6, 0.94
+  at 10 and 0.985 at 20; it now averages the covariance itself. Every such
+  `rcov` entry moves up by `(kₙ² + 2)/(kₙ² − 4)` at an even window: 19/16
+  at 6, 17/16 at 10, 67/66 at 20. `rcorr`, `rcov_n`, `omega2`, `iv_sparse`,
+  `iq` and `psd_repaired` do not move, and `psd=True`, `"kernel"` and
+  `"plain"` are bit-identical. The paper's authors apply the rescaling in
+  their own simulations and data work and leave it out of the text "to
+  simplify notation".
+- **A window looking ahead under `group` needs a clock column** (task 173;
+  review 2026-10-05, PC1). `with_windows` refuses `po.rewm_mean`,
+  `po.rewm_sum` or `po.rewm_rate` under `group` with no clock column,
+  through `po.stream.with_windows`, `lf.online`, `df.online` and `like=`,
+  and a spec refuses a window target under `group` with no `clock`, both
+  with one message naming the fix. On a row count, a group that fell
+  silent never closed its windows, and `with_windows` held every later row
+  of every group to the end of the input: 500,001 rows and 117 MiB more
+  over 2M rows, where about one window was promised. Without a clock there
+  is no `gap_cap`, which bounds a silent group on a clock.
+- **A reset keeps a window looking ahead whole when its far edge is the
+  last row before the reset** (task 173; review 2026-10-05, PC2), as a gap
+  or a session change has since task 160. A reset is a step back past
+  `restart_after_step_back`, or a session change under
+  `session_gap="reset"`. `with_windows` now gives that row its value where
+  it gave null, under every `partial`; every other window a reset meets is
+  still discarded, null and never dropped. A bank's predictions do not
+  move: a reset clears the rows waiting for their labels before any window
+  resolves, so the row is not learned, as before.
+- **`lasso` counts each target's selection errors from its own `min_weight`**
+  (task 174; review 2026-10-05, CA3). `penalty_selected_<t>` adds a row's
+  error once the target's own weight has reached its own `min_weight`, so
+  one target's choice no longer depends on another target's threshold:
+  `min_weight=[0, 60]` and `[60, 60]` chose differently for the second
+  target on 84 of the 240 rows from row 60, and now agree. A target that is
+  null on some rows counts from where its own weight, not the shared one,
+  reaches the threshold, under a scalar `min_weight` too (11 to 26 rows of
+  240 moved in the measured cases). Only `penalty_selected` moves; a
+  target present on every row under a scalar or an equal list is unchanged.
+- **A model window's edge is exact** (task 175; review 2026-10-05, CB1), in
+  `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`. The edge and the
+  `window_every` spacing are decided on each row's decayed clock held
+  exactly -- integer nanoseconds on a temporal clock, the raw value beside
+  the time the caps removed on a number clock, the row count without a
+  clock column -- where they were decided on a clock the model summed from
+  rounded steps. A thousand steps of 1 ms summed to 1.0000000000000004 s,
+  so a row exactly `window_size` old was dropped on some rows and kept on
+  others: rows 1001 to 1007 of a 1 ms stream under `window_size="1s"` now
+  hold 1001 rows where they held 1000. On a number clock the edge is one
+  subtraction of the raw values, as the window operators and Polars'
+  `rolling_*_by` decide it: on a clock of tenths under `window_size=0.3`, a
+  row 0.30000000000000004 back is outside, and 186 of 400 rows hold 3 rows
+  where they held 4. `window_every`'s snapshots fall on the exact spacing,
+  and `sigma` and `zscore` under a window move with the model's window.
+  Decay is unchanged bit for bit; only rows at an edge or a spacing move.
+  The window operators decide their edges with the same comparison.
+- **`kalman`'s warm-up no longer depends on the target's units** (task
+  172; review 2026-10-05, CC4). Before a target has a residual variance,
+  its observation noise, and the `σ²` its process noise is derived from,
+  are the row's own innovation squared, computed before the update, where
+  they were the literal 1.0 in the target's units. `p0` is now a ratio: the
+  prior variance is `p0` times that first noise estimate, set on the
+  target's first row with a noise, so `p0 = 1` is a prior as uncertain as
+  one observation. Before that row a target's `P` is unsized and takes no
+  process noise; a row whose innovation is exactly 0, a null target or a
+  row of weight 0 sizes nothing and corrects nothing. Scaling every target
+  by `c` now scales every prediction by `c`, bit for bit at powers of two,
+  at any `p0`: targets at 1e-6 and at 1e6 differed by 0.8 to 1.2 target
+  standard deviations in the warm-up and now agree to 1.4e-15. With
+  `obs_var` given the prior is `p0·obs_var·I`, so with no process noise the
+  filter is the ridge regression with penalty `1/p0`; to keep an absolute
+  prior `v`, give `p0 = v/obs_var`. Under `share_p`, before any target has
+  a residual variance, the shared noise is the mean of the squared
+  innovations of the targets the row observes. Warm-up predictions move,
+  and so do the comparisons that read them, such as `seqtest`.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec
