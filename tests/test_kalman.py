@@ -38,12 +38,25 @@ def test_tracks_time_varying_beta_better_than_a_pinned_filter():
     assert e_fast < e_pin, f"fast {e_fast} vs pinned {e_pin}"
 
 
+def _differ(a, b) -> float:
+    pa, pb = _pred(a), _pred(b)
+    m = np.isfinite(pa) & np.isfinite(pb)
+    assert m.sum() > 100, "too few rows scored to compare"
+    return float(np.abs(pa[m] - pb[m]).max())
+
+
 def test_per_factor_halflife_and_pinning():
+    """Each slot takes its own half-life: the per-factor filter is neither
+    the scalar one nor the same one with x1's half-life changed. It once
+    checked only that a prediction came out (review 2026-10-05, TB6)."""
     df, _ = synthetic(seed=42, n_groups=1, n_rows=400, k=3, null_frac=0.0)
     # intercept pinned, x0 slow, x1 fast, x2 pinned
     spec = _spec(coef_half_life=[float("inf"), 500.0, 30.0, float("inf")])
     out = po.ModelBank([spec]).fit_predict(df)
-    assert np.isfinite(_pred(out)).any()
+    scalar = po.ModelBank([_spec(coef_half_life=100.0)]).fit_predict(df)
+    x1_slow = _spec(coef_half_life=[float("inf"), 500.0, 300.0, float("inf")])
+    assert _differ(out, scalar) > 1e-6
+    assert _differ(out, po.ModelBank([x1_slow]).fit_predict(df)) > 1e-6
 
 
 def test_explicit_q_overrides_halflife():
@@ -61,7 +74,11 @@ def test_share_p_runs_and_differs_from_per_target():
     kw = dict(targets=["y0", "y1"])
     a = po.ModelBank([_spec(share_p=False, **kw)]).fit_predict(df)
     b = po.ModelBank([_spec(share_p=True, **kw)]).fit_predict(df)
-    assert np.isfinite(_pred(a)).any() and np.isfinite(_pred(b)).any()
+    # One P driven by the mean sigma^2 is not two driven by their own.
+    for col in ("pred_y0", "pred_y1"):
+        pa, pb = _pred(a, col), _pred(b, col)
+        m = np.isfinite(pa) & np.isfinite(pb)
+        assert m.sum() > 100 and np.abs(pa[m] - pb[m]).max() > 1e-6, col
 
 
 def test_out_of_sample_on_noise():

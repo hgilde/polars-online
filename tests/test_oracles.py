@@ -495,10 +495,6 @@ class TestLassoPredPath:
         )
 
 
-def test_pl_is_importable():
-    assert pl.__version__
-
-
 class TestRobustOracles:
     """T-A3: Huber and quantile vs `tests/reference.py::robust_ref`."""
 

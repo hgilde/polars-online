@@ -281,10 +281,22 @@ def test_a_row_exactly_one_window_later_waits_for_the_window_to_close() -> None:
     # (2, 12] at t = 14, row 2's (4, 14] at t = 20, and so on.
     assert field(got, "learned_clock")[5:] == [2.0, 4.0, 10.0, 12.0, 14.0, 20.0]
     # No embargo at all, under `fit`: the same rows learned at the same
-    # time, since the window closing is what releases them.
-    bank = po.ModelBank([spec(fwd(), embargo=None, min_weight=0.0)])
-    bank.fit(df)
-    assert bank.rows_seen() == df.height
+    # time, since the window closing is what releases them. Held to the
+    # `embargo = W` run's count of rows learned and to its Gram, bit for bit;
+    # `rows_seen() == height` alone was true of any fit (review 2026-10-05,
+    # TA8). A longer embargo, W + 2.5, learns six rows here, not seven.
+    fitted = {}
+    for embargo in (None, W):
+        bank = po.ModelBank([spec(fwd(), embargo=embargo, min_weight=0.0)])
+        bank.fit(df)
+        fitted[embargo] = bank
+    plain, embargoed = fitted[None], fitted[W]
+    assert plain.summary()["rows_learned"].to_list() == [7]
+    assert embargoed.summary()["rows_learned"].to_list() == [7]
+    [a], [b] = plain.gram("m"), embargoed.gram("m")
+    assert a["weight_sum"] == b["weight_sum"] > 0.0
+    for key in ("means", "comoments", "cross_centred", "target_weights", "target_means"):
+        np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 
 # --------------------------------------------------------------------------

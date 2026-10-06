@@ -219,6 +219,8 @@ class TestUniversalProperties:
     @SETTINGS
     @given(df=streams())
     def test_feature_or_weight_null_means_all_outputs_null(self, model, extra, df):
+        """A row with a null feature or weight is skipped, and every field of
+        its record is null, not `weight_sum` alone (review 2026-10-05, TA10)."""
         df = binarize(df, model)
         spec = build(model, extra)
         out = po.ModelBank([spec]).fit_predict(df)
@@ -228,10 +230,11 @@ class TestUniversalProperties:
         for f in spec["features"]:
             cond = cond | pl.col(f).is_null()
         skipped = df.select(cond).to_series().to_list()
-        neff = out["m"].struct.field("weight_sum").to_list()
+        fields = out.select("m").unnest("m")
         for i, skip in enumerate(skipped):
             if skip:
-                assert neff[i] is None, f"row {i} was skipped but reported weight_sum"
+                present = [c for c in fields.columns if fields[c][i] is not None]
+                assert not present, f"row {i} was skipped but reported {present}"
 
     @SETTINGS
     @given(df=streams(max_groups=3))
@@ -247,24 +250,47 @@ class TestUniversalProperties:
             b = unnested(solo)
             assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
 
-    @SETTINGS
-    @given(df=streams())
-    def test_prediction_never_depends_on_the_current_target(self, model, extra, df):
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    def test_prediction_never_depends_on_the_current_target(self, model, extra):
         """Out-of-sample by construction (docs/PLAN.md hard rule 2): changing a
-        row's target must not change that row's own prediction."""
-        df = binarize(df, model)
-        assume(df["y0"].is_not_null().any())
-        spec = build(model, extra)
-        base = po.ModelBank([spec]).fit_predict(df)
-        idx = next(i for i, v in enumerate(df["y0"].to_list()) if v is not None)
-        y = df["y0"].to_list()
-        y[idx] = (0.0 if y[idx] else 1.0) if model == "ftrl" else y[idx] + 12345.0
-        perturbed = po.ModelBank([spec]).fit_predict(
-            df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
-        )
-        field = next(f.name for f in base.schema["m"].fields if f.name.startswith("pred_"))
-        a = base["m"].struct.field(field).to_list()[idx]
-        b = perturbed["m"].struct.field(field).to_list()[idx]
-        assert a == b or (a is None and b is None), (
-            f"row {idx}: changing its own target changed its prediction ({a} -> {b})"
+        row's target must not change that row's own prediction.
+
+        The row is drawn from those the model scored and whose target is
+        there. The first such target is no use: every model withholds its
+        first row, so a test that perturbed it compared two nulls in every
+        stream (review 2026-10-05, TA1). The count at the end says how many
+        streams compared a prediction that was there.
+
+        `ewridge`'s error-inflation gate is switched off. On these short,
+        mostly-null streams it withholds all but 13 in 100 of them, so
+        Hypothesis would discard most streams. The gate only withholds, and
+        the comparison still fails if the perturbed run withholds a row the
+        base run scored."""
+        compared = []
+        kw = {"max_error_inflation": float("inf")} if model == "ewridge" else {}
+
+        @SETTINGS
+        @given(df=streams(), data=st.data())
+        def check(df, data):
+            df = binarize(df, model)
+            spec = build(model, extra, **kw)
+            base = po.ModelBank([spec]).fit_predict(df)
+            field = next(f.name for f in base.schema["m"].fields if f.name.startswith("pred_"))
+            preds = base["m"].struct.field(field).to_list()
+            y = df["y0"].to_list()
+            scored = [i for i in range(df.height) if preds[i] is not None and y[i] is not None]
+            assume(scored)
+            idx = data.draw(st.sampled_from(scored), label="scored row")
+            y[idx] = (0.0 if y[idx] else 1.0) if model == "ftrl" else y[idx] + 12345.0
+            perturbed = po.ModelBank([spec]).fit_predict(
+                df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
+            )
+            a = preds[idx]
+            b = perturbed["m"].struct.field(field).to_list()[idx]
+            assert a == b, f"row {idx}: changing its own target changed its prediction ({a} -> {b})"
+            compared.append(idx)
+
+        check()
+        assert len(compared) >= 10, (
+            f"only {len(compared)} streams compared a prediction that was there"
         )

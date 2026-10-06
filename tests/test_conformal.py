@@ -5,10 +5,12 @@ The interval is `pred ± q` with `q` a tracked quantile of the conformity
 score `|resid|`:
 
     err = 1{|resid| > q}
-    q  <- max(0, q + rate·sigma·w·(err − α)),      α = 1 − coverage
+    q  <- max(0, q + rate·sigma·(w/w̄)·(err − α)),      α = 1 − coverage
 
 read before the row, so the interval a row gets never saw that row (its
-own score moves `q` afterwards). `sigma` is the slot's EW residual standard
+own score moves `q` afterwards). `w̄` is the EW mean weight of the scored
+rows, this one included (docs/PLAN.md task 147), so a constant multiple of
+every weight moves nothing. `sigma` is the slot's EW residual standard
 deviation before the row, which makes `conformal_rate` unit-free; the
 radius starts at the Gaussian one, `sigma · Φ⁻¹(1 − α/2)`, on the first row
 that has both, and tracks from there. `coverage` is the EW fraction of
@@ -21,7 +23,8 @@ Three things are established here:
    for bit, for every regression model, with a grid, nulls in features and
    targets, zero and varying weights, an irregular clock and groups.
 2. **The guarantee, at scale.** Telescoping the recursion gives, for scores
-   in `[0, B]` and steps `η_t`,
+   in `[0, B]`, steps `η_t` and unit weights (with weights, the sum is
+   `(w/w̄)`-weighted),
 
        Σ η_t (err_t − α) ≤ B + max η        (and ≥ −(B + max η) unless
                                              the clamp at zero ever bit)

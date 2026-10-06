@@ -172,6 +172,49 @@ def test_every_float_parameter_survives_a_state_file():
         assert not missing, (name, sorted(missing))
 
 
+#: ``marginal`` specs that give every key its builder writes only when it is
+#: given, the ones the Rust spec skips when absent; three, as ``bin_edges``
+#: is refused beside the learned bins, ``window_lags`` without a window, and
+#: bins beside a window.
+MARGINAL_GIVEN = [
+    dict(
+        lags=[1, 2],
+        cross_lags=[2],
+        serial_rule="bartlett",
+        bins=4,
+        bin_rule="fixed",
+        bin_warm_rows=50,
+        bin_budget=float("inf"),
+        shards="auto",
+        feature_moments="shared",
+    ),
+    dict(lags=[1], window_size=100.0, window_lags=True, shards=2),
+    dict(bin_edges=[[-0.5, 0.5]], bin_budget=64.0),
+]
+
+
+def test_every_kind_reports_back_the_dict_its_builder_made():
+    """A bank's ``specs`` are the dicts that built it, for every kind. The
+    ``marginal`` builder wrote eleven optional keys as ``None``, which the
+    Rust spec skips when absent, on purpose: a key written as null moves
+    every spec's bytes (``crates/online-polars/src/spec.rs``, above
+    ``lags``). So ``ModelBank([s]).specs[0] != s``, and a state saved and
+    loaded compared unequal to its own spec (review 2026-10-05, the TB5
+    leg in ``tests/test_properties_temporal.py``)."""
+    specs = {name: _build(name) for name in MINIMAL}
+    for i, given in enumerate(MARGINAL_GIVEN):
+        specs[f"marginal, given {i}"] = po.spec.marginal(
+            "m", targets=["y"], features=["x0"], half_life=50.0, **given
+        )
+    differ = {name: s for name, s in specs.items() if po.ModelBank([s]).specs[0] != s}
+    assert not differ, sorted(differ)
+    for given in MARGINAL_GIVEN:
+        model = po.spec.marginal("m", targets=["y"], features=["x0"], half_life=50.0, **given)[
+            "model"
+        ]
+        assert set(given) <= set(model), "each key given is written"
+
+
 def test_every_rust_kind_has_exactly_one_builder():
     """A `ModelKind` variant nobody can construct from Python is dead code;
     two builders for one kind would be a `huber`/`quantile` style split that

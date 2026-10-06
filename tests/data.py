@@ -114,22 +114,42 @@ def synthetic(
     return df, betas
 
 
+class Offline(RuntimeError):
+    """Every attempt at a download failed for a reason a retry could fix.
+    The one failure a test turns into a skip."""
+
+
 #: Errors a retry can fix: no route, a timeout, a reset, and a response cut
 #: short (``http.client.IncompleteRead``, which is not an ``OSError`` -- one
-#: took a CI run down as a crash rather than a skip).
+#: took a CI run down as a crash rather than a skip). An HTTP error is an
+#: ``OSError`` too, and is sorted by its status first (:func:`is_transient`).
 _TRANSIENT = (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException)
 
 
+def is_transient(e: BaseException) -> bool:
+    """Whether a retry can fix ``e``. A 5xx is the server failing and a 429
+    is it asking to be called later; any other HTTP status is its answer,
+    such as a file that moved (404) or is refused (403), which no retry and
+    no skip should hide (review 2026-10-05, TA3)."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500 or e.code == 429
+    return isinstance(e, _TRANSIENT)
+
+
 def _download(url: str, attempts: int = 3) -> bytes:
-    """One public file, retried with a short pause; ``RuntimeError("offline")``
-    once every attempt has failed."""
+    """One public file, retried with a short pause; :class:`Offline` once
+    every attempt has failed. An HTTP status a retry cannot fix is raised at
+    once, as itself."""
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(url, timeout=30) as resp:
                 return resp.read()
         except _TRANSIENT as e:
+            if not is_transient(e):
+                e.add_note(f"{url}: the server's answer, not the network's, so not offline")
+                raise
             if attempt + 1 == attempts:
-                raise RuntimeError("offline") from e
+                raise Offline("offline") from e
             time.sleep(2.0 * (attempt + 1))
     raise AssertionError("unreachable")
 
@@ -167,8 +187,8 @@ def public_intraday(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataFrame:
     """BTCUSDT 1-minute rows from Binance's public dump, cached per day.
 
     ``dates`` are ``YYYY-MM-DD`` strings; days are concatenated in order, so the
-    clock stays monotone. Raises ``RuntimeError("offline")`` when a download
-    fails; test callers turn that into a skip via :func:`public_intraday_or_skip`.
+    clock stays monotone. Raises :class:`Offline` when the network fails;
+    test callers turn that into a skip via :func:`public_intraday_or_skip`.
     """
     frames = [_one_day(d) for d in dates]
     return pl.concat(frames).sort("t")
@@ -179,7 +199,7 @@ def public_intraday_or_skip(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataF
 
     try:
         return public_intraday(dates)
-    except RuntimeError:
+    except Offline:
         pytest.skip("offline: could not download public intraday data")
 
 
@@ -201,7 +221,9 @@ def public_quotes_and_trades(symbol: str = "ETCUSDT", date: str = "2024-01-02") 
     equal stamp a quote precedes a trade, as a trade is reported against the
     book it hit; the order of a trade and a quote in one millisecond is not
     in the data (about half the trades share a millisecond with a quote).
-    Downloads once (two zips, about 33 MB); raises when offline.
+    Downloads once (two zips, about 33 MB); raises :class:`Offline` when the
+    network fails, which :func:`public_quotes_and_trades_or_skip` turns into
+    a skip.
     """
     import io
     import zipfile
@@ -266,3 +288,17 @@ def public_quotes_and_trades(symbol: str = "ETCUSDT", date: str = "2024-01-02") 
     )
     both.write_parquet(cached)
     return both
+
+
+def public_quotes_and_trades_or_skip(
+    symbol: str = "ETCUSDT", date: str = "2024-01-02"
+) -> pl.DataFrame:
+    """:func:`public_quotes_and_trades`, skipping the test when offline.
+    Its caller caught ``OSError``, which this module never raised offline, so
+    offline it errored instead of skipping (review 2026-10-05, TB2)."""
+    import pytest
+
+    try:
+        return public_quotes_and_trades(symbol, date)
+    except Offline as e:
+        pytest.skip(f"offline: could not download {symbol} quotes and trades ({e.__cause__})")

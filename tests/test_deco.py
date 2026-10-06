@@ -468,11 +468,27 @@ def test_label_delay_is_accepted_as_ew_cov_accepts_it():
     `embargo`, "nothing to hold back". `ew_cov` -- whose shape `deco`
     copies -- accepts it today, and it does hold something back: the
     accumulator update. Refusing it here and not there would be a surprise,
-    so it is accepted, and §11a records the departure."""
-    spec = po.spec.deco("d", features=cols(4), half_life=HALFLIFE, embargo=5.0)
+    so it is accepted, and §11a records the departure.
+
+    What it holds back is checked, not only accepted (review 2026-10-05,
+    TB12): the embargoed run differs from the plain one, and row ``i`` of it
+    is what a plain bank that learned only the rows five clock units behind
+    ``i`` predicts for row ``i`` -- the delay applied by hand."""
+    df = frame(n=100).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
+    kw = dict(features=cols(4), half_life=HALFLIFE, clock="t", gap_cap=1e9)
+    spec = po.spec.deco("d", embargo=5.0, **kw)
     assert spec["embargo"] == 5.0
-    out = run(spec, frame(n=100))
-    assert out["weight_sum"].drop_nulls().max() > 0
+    held = run(spec, df)
+    plain = po.spec.deco("d", **kw)
+    fields = ("u", "rho", "loglik", "weight_sum")
+    assert not held.select(fields).equals(run(plain, df).select(fields), null_equal=True)
+    assert held["weight_sum"][:5].to_list() == [0.0] * 5
+    for i in range(5, df.height):
+        bank = po.ModelBank([plain])
+        bank.fit_predict(df.slice(0, i - 4))
+        want = bank.predict(df.slice(i, 1))["d"].struct.unnest()
+        assert held.select(fields)[i].equals(want.select(fields), null_equal=True), i
+    assert held["rho"].drop_nulls().len() > 50
 
 
 def test_a_decay_is_required():

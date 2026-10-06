@@ -143,12 +143,14 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 4.9e-15 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | `kalman` | filterpy's `KalmanFilter`, across a zero-weight row (`TestKalmanZeroWeightRow`) and with a mean-reverting transition (`TestAMeanRevertingKalmanIsFilterpy`) | 1e-9 | T-S5 |
+| `kalman` standardized, the default | filterpy's `KalmanFilter` fed the rows standardized in numpy from the documented pre-row moments (`TestAStandardizedKalmanIsFilterpy`), and `coef[t]·x[t+1] = pred[t+1]` asserted directly (review 2026-10-05, TC1) | 1e-9; 1e-12 | |
 | Kalman(q=0, fixed `obs_var`, `standardize=False`) | `river.linear_model.BayesianLinearRegression` | 3.6e-15 | T-R2 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
 | the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref` (`tests/test_oracles_lasso_paths.py`): every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
 | `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor` with one row in fifty a gross error | 1e-9; 0.1 (0.045 measured), where least squares is 0.38 to 0.47 off | T-S4 |
 | `quantile` | statsmodels' `QuantReg` after 20,000 rows (`TestQuantileIsQuantReg`) | 0.05 at the median and 0.08 at τ = 0.9 (0.005 and 0.006 measured) | T-S4 |
+| `quantile`'s every fit | the stationarity condition of the smoothed check loss it solves, rebuilt from the rows by the module doc's rules, band and nudge rows alike (`TestTheQuantileFitsDefinition`; TC1) | 1e-10 of the gradient's scale (1e-15 measured) | |
 | Huber | `river.linear_model.LinearRegression(loss=optim.losses.Huber)` | statistical | T-R6 |
 | quantile | `river.stats.Quantile` | statistical | T-R5 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
@@ -157,15 +159,19 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | FTRL end to end: both losses, the intercept, row weights with zeros, null targets, two targets, `l1` with `l2` | Vowpal Wabbit's `--ftrl`, `pred` and `coef` on every row | 1e-5, its single precision (measured 2.6e-6) | |
 | `pa` | river's `PARegressor`, without an intercept and at unit weight (`TestPassiveAggressiveIsRivers`) | 1e-12 | T-S18 |
 | `sgd` | scikit-learn's `SGDRegressor`, one per group (`tests/test_sgd.py`) | R² within 0.03 | |
+| `sgd`'s `l2` and `clip_gradient` | `sgd_ref` with the ridge on the slopes and the per-coordinate clip, on a case where the clip binds on more than 1,000 coordinates under every schedule (`test_the_clip_and_the_ridge_bind`; TC6) | 1e-12, relative | |
 | `holt` | statsmodels' `Holt` once the weight saturates, and its state-space `ExponentialSmoothing` across a missing observation (`TestHoltAcrossAMissingObservation`); without a trend, statsmodels' `DescrStatsW` and pandas' `ewm(times=)` (`TestALevelOnlyHoltIsAnEwMean`) | 1e-12 and 1e-9; 1e-12 and 1e-8 | T-S14, T-S17 |
 | the plain `sigma` and `zscore` | the weighted EW root mean square of the residuals before the row (`tests/test_oracles_sigma.py`) | 8.1e-16 | |
 | `EwCov` | `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr` | 1e-9 | T-R3 |
 | `ew_cov`'s `mean`, `var`, `cov` and `corr` | pandas' `ewm` on a row-count clock, at offsets up to 1e8 (`TestTheEwMomentsArePandas`) | 1e-12 | T-S9 |
 | EW mean/var | `river.stats.EWMean` / `EWVar` | in the limit | T-R4 |
+| `ew_cov`'s lagged co-moments | the unrolled sum over the raw rows at the last row, AR(1) data with zero weights (`test_the_last_row_is_the_unrolled_sum_over_the_raw_rows`; TB7) | 1e-9 | |
 | `ew_class`; `ew_cov`'s `mahal` and components, under a window | scipy's `multivariate_normal` and `mahalanobis`, and numpy's `eigh`, on the rows the window keeps (`TestWindowedGaussian`) | 1e-9 | T-S6, T-S8 |
 | `marginal`'s bins and best split | scipy's `binned_statistic`; a scikit-learn `DecisionTreeRegressor` stump, whose gain bounds the split's from above (`TestTheBinsAgainstScipyAndAStump`) | 1e-9 | T-S12 |
 | `marginal`'s serial count | statsmodels' `acf` and `weights_bartlett` (`TestTheBartlettSerialFactor`) | 0.02 | T-S11 |
 | `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly | T-S15 |
+| `kmeans`, `micro` | `tests/reference_cluster.py`, a transcription of the Rust held bit for bit: a regression check, which can share a mistake with the code | bit for bit | |
+| `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centres, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay (review 2026-10-05, TB1) | 1e-9; the partition at ARI 0.99995 and the centres to 5.4e-4 | |
 | `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | | |
 | a target with gaps | numpy's `lstsq` on the target's own rows, pandas' pairwise `cov`, and statsmodels' `WLS`, ridge and elastic net (`TestATargetWithGaps`) | 1e-10 to 1e-8; the elastic net 1e-7 | |
 | the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([below](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly | |

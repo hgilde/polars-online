@@ -787,18 +787,21 @@ def sgd_ref(
     fit_intercept: bool = True,
     min_weight: float = 0.0,
     gap_cap: float = np.inf,
+    l2: float = 0.0,
+    clip_gradient: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
-    it, with ``l2 = 0`` and a gradient clip that never binds (both are
-    worded too loosely there to be written from)::
+    it::
 
         eta = z . b    p = link(eta)    d = dL / d eta
         squared: p - y                huber: clamp(p - y, +/- delta)
         quantile: 1{y < p} - tau      epsilon_insensitive: 0 inside the tube, else sign(p - y)
         poisson: exp(eta) - y         logistic: sigmoid(eta) - y
-        g_i = d * z_i * w    b_i -= lr_i * g_i
+        g_i = clamp(d * z_i * w + l2 * b_i, +/- clip_gradient)    b_i -= lr_i * g_i
 
-    ``lr`` is ``learning_rate`` for ``"constant"``, ``learning_rate / (1 +
+    the ridge on the slopes only (the intercept's ``g_0 = clamp(d * w)``),
+    and the clip a cap on each coordinate of the gradient, not on its norm
+    (review 2026-10-05, TC6). ``lr`` is ``learning_rate`` for ``"constant"``, ``learning_rate / (1 +
     weight_sum) ** power`` for ``"inv_scaling"`` with ``weight_sum`` the weight before
     the row, and ``learning_rate / (sqrt(G_i) + 1e-8)`` for ``"adagrad"``,
     ``G_i`` the sum of squared gradients with this row's in it. ``weight_sum``
@@ -807,7 +810,7 @@ def sgd_ref(
     null while the target's own weight, the rows that carried it, decayed,
     is below ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d));
     ``weight_sum`` is every row's. Returns ``pred``, ``weight_sum`` and ``coef``
-    (after the row)."""
+    (after the row), and ``clipped``, how many coordinates the clip bound."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if fit_intercept else k
@@ -816,6 +819,10 @@ def sgd_ref(
     coef = np.full((n, m, kt), np.nan)
     b = np.zeros((m, kt))
     G = np.zeros((m, kt))
+    penalised = np.ones(kt)
+    if fit_intercept:
+        penalised[0] = 0.0
+    clipped = 0
     w_sum = 0.0
     w_target = np.zeros(m)
     links = {
@@ -841,7 +848,9 @@ def sgd_ref(
                 "quantile": float(Y[i, j] < p[j]) - quantile,
                 "epsilon_insensitive": 0.0 if abs(e) <= eps else float(np.sign(e)),
             }[loss]
-            g = dl * z * w[i]
+            g = dl * z * w[i] + l2 * penalised * b[j]
+            clipped += int((np.abs(g) > clip_gradient).sum())
+            g = np.clip(g, -clip_gradient, clip_gradient)
             if schedule == "constant":
                 lr = learning_rate
             elif schedule == "inv_scaling":
@@ -853,7 +862,7 @@ def sgd_ref(
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
-    return {"pred": pred, "weight_sum": weight_sum, "coef": coef}
+    return {"pred": pred, "weight_sum": weight_sum, "coef": coef, "clipped": clipped}
 
 
 def holt_ref(

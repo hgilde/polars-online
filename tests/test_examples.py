@@ -159,6 +159,23 @@ def data(tmp_path_factory):
     return d
 
 
+@pytest.fixture(scope="module")
+def first_run(online_cli, data):
+    """`examples/bank.toml` run once over the input, saving its state: what
+    the output test checks and the resume test continues from. A fixture, so
+    each of them runs alone; the resume test used to read the files the
+    test before it wrote (review 2026-10-05, TA6)."""
+    res = _run([
+        str(online_cli),
+        "--config", str(EXAMPLES / "bank.toml"),
+        "--input", str(data / "in.parquet"),
+        "--output", str(data / "out.parquet"),
+        "--save-state", str(data / "bank.state"),
+    ])  # fmt: skip
+    assert res.returncode == 0, res.stderr
+    return data / "out.parquet", data / "bank.state"
+
+
 class TestBankToml:
     """`examples/bank.toml` is quoted in the README and in the CLI's own module
     docs; nothing until now ran it."""
@@ -180,16 +197,8 @@ class TestBankToml:
         assert res.returncode == 0, res.stderr
         assert "ridge" in res.stdout and "kalman" in res.stdout
 
-    def test_it_produces_both_banks_output(self, data):
-        out = data / "out.parquet"
-        state = data / "bank.state"
-        res = self._cli(
-            "--config", str(EXAMPLES / "bank.toml"),
-            "--input", str(data / "in.parquet"),
-            "--output", str(out),
-            "--save-state", str(state),
-        )  # fmt: skip
-        assert res.returncode == 0, res.stderr
+    def test_it_produces_both_banks_output(self, data, first_run):
+        out, state = first_run
         df = pl.read_parquet(out)
         # --rows is per group, and the example generator makes three.
         assert df.height == pl.read_parquet(data / "in.parquet").height == 6000
@@ -199,11 +208,12 @@ class TestBankToml:
             assert any(f.startswith("pred_y") for f in fields), fields
         assert state.exists(), "save_state produced no file"
 
-    def test_resuming_from_that_state_continues_the_stream(self, data):
-        """The README advertises `--resume`; this proves the state the previous
-        test wrote is loadable by the same config. It resumes on the rows after
+    def test_resuming_from_that_state_continues_the_stream(self, data, first_run):
+        """The README advertises `--resume`; this proves the state the first
+        run saved is loadable by the same config. It resumes on the rows after
         the state's: the same input again would step every group's clock back,
         which the default refuses (task 120)."""
+        out, state = first_run
         rows = pl.read_parquet(data / "in.parquet")
         later = rows.with_columns(pl.col("t") - rows["t"].min() + rows["t"].max() + 1.0)
         later.write_parquet(data / "later.parquet")
@@ -211,13 +221,13 @@ class TestBankToml:
             "--config", str(EXAMPLES / "bank.toml"),
             "--input", str(data / "later.parquet"),
             "--output", str(data / "out2.parquet"),
-            "--resume", str(data / "bank.state"),
+            "--resume", str(state),
             # The config's own `save_state` is relative, so without this the
             # run would drop a `bank.state` in the repo root.
             "--save-state", str(data / "bank2.state"),
         )  # fmt: skip
         assert res.returncode == 0, res.stderr
-        first = pl.read_parquet(data / "out.parquet")
+        first = pl.read_parquet(out)
         second = pl.read_parquet(data / "out2.parquet")
         field = next(f.name for f in first.schema["ridge"].fields if f.name.startswith("pred_y"))
         p1 = first["ridge"].struct.field(field).to_list()

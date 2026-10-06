@@ -409,6 +409,52 @@ class TestLaggedComoments:
         for i, ell in enumerate(lags):
             assert np.allclose(g["lag_comoments"][i], lag[ell], rtol=1e-12, atol=1e-14)
 
+    def test_the_last_row_is_the_unrolled_sum_over_the_raw_rows(self):
+        """The oracle above is the recursion; this one shares no recursion
+        with it (review 2026-10-05, TB7). Unrolled, ``C_l(T) = a C_l(T-1) +
+        a b d e'`` with ``a W_T = lam W_{T-1}`` is a sum over the raw rows:
+
+            W_T C_l(T) = sum_t lam^(T-t) (lam W_{t-1} w_t / W_t)
+                         (x_t - m_{t-1}) (x_{t-l} - m_{t-1})'
+
+        ``W_t`` and the means before each row ``m_{t-1}`` are summed directly
+        from the rows at their decayed weights, ``x_{t-l}`` is the ``l``-th
+        learned row before ``t``, and a row of weight 0 learns nothing and
+        is no one's lagged row."""
+        rng = np.random.default_rng(11)
+        n, lags, half_life = 700, [1, 3], 150.0
+        e = rng.standard_normal((n, 3))
+        x = np.empty((n, 3))
+        x[0] = e[0]
+        for i in range(1, n):  # AR(1), so the lagged matrices are not noise
+            x[i] = 0.7 * x[i - 1] + e[i]
+        x += np.array([5.0, -2.0, 0.5])
+        w = rng.uniform(0.5, 2.0, n)
+        w[5::13] = 0.0
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "w": w})
+        spec = _spec(("x0", "x1", "x2"), lags=lags, half_life=half_life, weight="w")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("c")[0]
+        lam = 2.0 ** (-1.0 / half_life)
+        t = np.arange(n)
+        decay = np.where(t[:, None] >= t[None, :], lam ** (t[:, None] - t[None, :]), 0.0)
+        W = decay @ w  # W[t]: the weight after row t
+        m = (decay @ (w[:, None] * x)) / W[:, None]  # m[t]: the mean after row t
+        learned = np.flatnonzero(w > 0.0)
+        T = n - 1
+        for i, ell in enumerate(lags):
+            total = np.zeros((3, 3))
+            for row in learned[1:]:
+                before = learned[learned < row]
+                if len(before) < ell:
+                    continue
+                d = x[row] - m[row - 1]
+                e = x[before[-ell]] - m[row - 1]
+                total += lam ** (T - row) * lam * W[row - 1] * w[row] / W[row] * np.outer(d, e)
+            np.testing.assert_allclose(g["lag_comoments"][i], total / W[T], rtol=1e-9, atol=1e-12)
+            assert np.diag(total / W[T]).min() > 0.1, "nothing to compare"
+
     def test_a_lagged_matrix_is_not_symmetric(self):
         """`b` is `a` one row back, so `C_1[b, a]` is the variance and
         `C_1[a, b]` is not. A symmetric implementation would pass every

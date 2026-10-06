@@ -370,7 +370,10 @@ def test_the_inf_table_matches_the_rust_side(builder):
     for key, inf in _float_parameters(builder).items():
         spec = builder("m", **kwargs)
         where = spec if key in spec else spec["model"]
-        assert key in where, f"{builder.__name__}.{key} is not a key of the spec dict"
+        # A key the Rust spec skips when absent is written only when given.
+        assert key in where or key in _spec._SKIPPED_WHEN_ABSENT.get(builder.__name__, ()), (
+            f"{builder.__name__}.{key} is not a key of the spec dict"
+        )
         where[key] = inf
         try:
             po.ModelBank([spec])
@@ -407,7 +410,10 @@ def test_nan_is_no_setting_for_any_float_parameter(builder):
             continue  # a list of names or lags: no float to make a NaN of
         spec = builder("m", **kwargs)
         where = spec if key in spec else spec["model"]
-        assert key in where, f"{builder.__name__}.{key} is not a key of the spec dict"
+        # A key the Rust spec skips when absent is written only when given.
+        assert key in where or key in _spec._SKIPPED_WHEN_ABSENT.get(builder.__name__, ()), (
+            f"{builder.__name__}.{key} is not a key of the spec dict"
+        )
         where[key] = _nan_shaped_like(inf)
         with pytest.raises(ValueError) as caught:
             po.ModelBank([spec])
@@ -733,11 +739,8 @@ def test_concurrent_fit_predict_says_so(method):
     )
     bank = po.ModelBank([_spec_dict(half_life=[10.0, 100.0, 1000.0], coef_every=1)])
     call = getattr(bank, method)
-    start = threading.Barrier(4)
-    errors: list[BaseException] = []
-    done: list[int] = []
 
-    def go():
+    def go(start: threading.Barrier, errors: list, done: list) -> None:
         start.wait()
         try:
             call(df)
@@ -745,13 +748,23 @@ def test_concurrent_fit_predict_says_so(method):
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
-    threads = [threading.Thread(target=go) for _ in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert done, errors
-    assert errors, "four threads never overlapped; make the chunk bigger"
+    # The overlap is made certain rather than hoped for: four threads leave a
+    # barrier together on 200,000 rows each, and if one still finishes before
+    # the others reach the bank, the round is run again; five rounds without
+    # an overlap fail the test, which then tested nothing (review 2026-10-05,
+    # TC10). A fast machine once turned it red.
+    for _ in range(5):
+        start, errors, done = threading.Barrier(4), [], []
+        threads = [threading.Thread(target=go, args=(start, errors, done)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert done, errors
+        if errors:
+            break
+    else:
+        pytest.fail("four threads never overlapped in five rounds")
     for e in errors:
         assert isinstance(e, RuntimeError), e
         assert f"ModelBank.{method}:" in str(e), str(e)

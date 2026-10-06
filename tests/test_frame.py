@@ -9,6 +9,7 @@ streaming sink, and the eager and typed forms.
 
 from __future__ import annotations
 
+import gc
 import math
 import time
 
@@ -52,6 +53,47 @@ def _bank_loop(df: pl.DataFrame, chunk_rows: int, **kw) -> pl.DataFrame:
     bank = po.ModelBank([_spec(**kw)])
     parts = [bank.fit_predict(df.slice(i, chunk_rows)) for i in range(0, df.height, chunk_rows)]
     return pl.concat(parts)
+
+
+#: How many input batches an engine reads past the ones a plan needs: six on
+#: polars 1.44.2 with the streaming engine, at 1, 4 and 14 threads and at
+#: batches of 100 or 500 rows, and four to seven with the in-memory engine
+#: (review 2026-10-05, TA11). A plan that did not stop would read them all.
+READ_AHEAD = 8
+
+
+def _counted_source(df: pl.DataFrame, rows: int):
+    """``df`` as a Python source of ``rows``-row batches, with the batches it
+    has yielded and, once it is closed, how many that was."""
+    calls: list[int] = []
+    closed: list[int] = []
+
+    def source(with_columns, predicate, n_rows, batch_size):
+        try:
+            for i in range(0, df.height, rows):
+                calls.append(i)
+                yield df.slice(i, rows)
+        finally:
+            closed.append(len(calls))
+
+    return register_io_source(source, schema=df.schema), calls, closed
+
+
+def _until_closed(closed: list[int], deadline: float = 10.0) -> int:
+    """Wait for a :func:`_counted_source` to be closed, and return the
+    batches it yielded; fail after ``deadline`` seconds. Polars can drop the
+    source on a thread that does not hold the GIL, and pyo3 then releases it
+    at polars' next call from Python, so the wait makes one, besides
+    collecting cycles. Without the call, a source dropped that way stayed
+    open for as long as the wait lasted."""
+    end = time.monotonic() + deadline
+    while not closed:
+        if time.monotonic() > end:
+            pytest.fail(f"the input was still open {deadline:g} s after the plan was done")
+        gc.collect()
+        pl.thread_pool_size()
+        time.sleep(0.001)
+    return closed[0]
 
 
 def _no_coef(df: pl.DataFrame) -> pl.DataFrame:
@@ -136,27 +178,22 @@ def test_pushdowns_are_honoured_after_the_model():
 @pytest.mark.parametrize("engine", ["streaming", "in-memory"])
 def test_the_input_is_read_in_chunks_and_only_as_far_as_needed(engine):
     """The input is pulled a chunk at a time, and a plan that stops early
-    stops reading: `head(10)` over 100 input batches requests a handful (the
-    engine reads a few morsels ahead; 7 measured) and none after the plan is
-    done, so the input query is torn down with the plan."""
+    stops reading: `head(n)` over 100 input batches reads the batches its
+    rows need and at most `READ_AHEAD` more, and the input query is torn
+    down with the plan. The test waits for the input to be closed, after
+    which it can read nothing; it used to sleep and hope (review 2026-10-05,
+    TA11)."""
     df = _frame(n=50000)
-    calls: list[int] = []
-
-    def source(with_columns, predicate, n_rows, batch_size):
-        for i in range(0, df.height, 500):
-            calls.append(i)
-            yield df.slice(i, 500)
-
-    plan = register_io_source(source, schema=df.schema).online.fit_predict(
-        [_spec()], chunk_rows=500
-    )
+    lf, calls, closed = _counted_source(df, 500)
+    plan = lf.online.fit_predict([_spec()], chunk_rows=500)
     assert plan.collect(engine=engine).equals(_bank_loop(df, 500))
-    assert len(calls) == 100
-    calls.clear()
-    assert plan.head(10).collect(engine=engine).height == 10
-    assert 0 < len(calls) < 20
-    time.sleep(0.2)
-    assert len(calls) < 20
+    assert len(calls) == 100 and closed == [100]
+    for n in (10, 2500):
+        calls.clear()
+        closed.clear()
+        assert plan.head(n).collect(engine=engine).height == n
+        need = math.ceil(n / 500)
+        assert need <= _until_closed(closed) <= need + READ_AHEAD, (n, closed)
 
 
 @pytest.mark.filterwarnings("ignore::polars.exceptions.PolarsInefficientMapWarning")
@@ -401,11 +438,15 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     source when it drops the plan), not by one the bank ended with an error."""
     df = _frame(n=40000)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    lf, _, closed = _counted_source(df, 500)
+    plan = lf.online.fit_predict([_spec()], save_state=state, chunk_rows=500)
     batches = plan.collect_batches(chunk_size=500)
     assert next(batches).height == 500
-    del batches, plan  # the engine read a few chunks ahead, out of 80
-    time.sleep(0.2)
+    del batches, plan
+    # Once the input is closed, the run has ended. It read the one chunk
+    # asked for and what two engines in series read ahead (10 measured), out
+    # of 80: so it was abandoned, not run to the end.
+    assert _until_closed(closed) <= 1 + 2 * READ_AHEAD
     assert not state.exists()
     plan = df.reverse().lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
     with pytest.raises(_REFUSAL, match="clock"):

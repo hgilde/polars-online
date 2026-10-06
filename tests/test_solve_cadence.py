@@ -11,6 +11,7 @@ same `half-life / 50` of clock at any row spacing. An explicit `solve_every`
 keeps its clock, and `half_life=inf` or `lam` still solve every row.
 """
 
+import json
 import math
 
 import numpy as np
@@ -88,4 +89,20 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
     a = by_weight["m"].struct.field("pred_y").to_numpy()[3000:]
     b = by_clock["m"].struct.field("pred_y").to_numpy()[3000:]
     assert np.max(np.abs(a - b)) < 1e-2
-    assert math.isclose(math.log(2) / 50 / (1 - 2 ** (-1 / 500)), 10.007, rel_tol=1e-3)
+    # The cadence itself, read from the model, where this line was the
+    # docstring's arithmetic (review 2026-10-05, TC9): the model's share is
+    # `ln 2 / 50`, and in steady state its solves fall the clock's ten rows
+    # apart, one more at most (ten, measured).
+    bank = po.ModelBank(
+        [po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=500.0, min_weight=20.0)]
+    )
+    bank.fit_predict(df.slice(0, 3000))
+    solved = []
+    for i in range(3000, 3200):
+        bank.fit_predict(df.slice(i, 1))
+        model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]["EwRidge"]
+        if model["rows_since_solve"] == 0:
+            solved.append(i)
+    assert model["cfg"]["solve_share"] == pytest.approx(math.log(2) / 50, rel=1e-12)
+    gaps = set(np.diff(solved).tolist())
+    assert len(solved) >= 18 and gaps <= {10, 11}, gaps

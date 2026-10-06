@@ -7,6 +7,8 @@ second moment **to the bit**, so it is the reference the noise-robust two are
 measured against, and the gap between them is the thing they remove.
 """
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
@@ -184,11 +186,30 @@ def test_the_preaveraged_estimate_is_its_definition():
 
 
 def test_the_psd_form_is_a_longer_window_without_the_bias_term():
+    """``psd = True``: CKP's estimator over the longer window ``k_n =
+    ceil(theta * block_rows^0.6)``, with no bias term, written out as the
+    test above writes Eq. 9. It is a sum of outer products, so nothing is
+    clipped. The test once checked only that ``rcov_n`` was smaller
+    (review 2026-10-05, TA9)."""
     df = ticks(n=400)
     strict, _ = block(df, kind="preavg", psd=False, block_rows=400)
     repaired, _ = block(df, kind="preavg", psd=True, block_rows=400)
+    ret = df.filter(pl.col("b") == 0).select(COLS).to_numpy()
+    n = len(ret)  # 200: the block's own rows, half the block_rows hint
+    theta = 1.0  # the default
+    kn = math.ceil(theta * 400**0.6)
+    assert kn == 37
+    g = np.array([min(j / kn, 1 - j / kn) for j in range(kn)])
+    psi2 = sum(min(i / kn, 1 - i / kn) ** 2 for i in range(1, kn)) / kn
+    ybar = np.array(
+        [sum(g[j] * ret[start + j - 1] for j in range(1, kn)) for start in range(n - kn + 2)]
+    )
+    want = n / (n - kn + 2) / (psi2 * kn) * sum(np.outer(y, y) for y in ybar)
+    got = unvech(repaired["rcov"][0].to_list(), 2)
+    assert np.allclose(got, want, rtol=1e-9, atol=1e-15)
     # A longer window means fewer pre-averaged blocks.
-    assert repaired["rcov_n"][0] < strict["rcov_n"][0]
+    assert repaired["rcov_n"][0] == len(ybar) < strict["rcov_n"][0]
+    assert repaired["psd_repaired"][0] is False
 
 
 # --- the shared contract -----------------------------------------------------

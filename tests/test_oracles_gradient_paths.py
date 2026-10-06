@@ -16,10 +16,9 @@ written from each builder's docstring:
   weights, zero steps, null targets and the per-target gate; statsmodels
   holds it on settled rows at unit weight on a row count.
 
-``sgd``'s ``l2`` and ``clip_gradient`` are left at values that do nothing:
-the docstring's ``g_i = d * z_i * w + l2 * b_i`` puts the ridge on the
-intercept, which the replay in ``tests/test_constraints.py`` says the core
-exempts, and "a cap on the gradient's magnitude" does not say which norm.
+``sgd``'s ``l2`` and ``clip_gradient`` are held where both bind: the
+docstring puts the ridge on the slopes and not the intercept, and the clip
+on each coordinate of the gradient (review 2026-10-05, TC6).
 """
 
 import numpy as np
@@ -286,6 +285,34 @@ class TestSgd:
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=False, **kw), y)
+
+    @pytest.mark.parametrize(("schedule", "rate"), SCHEDULES, ids=[s for s, _ in SCHEDULES])
+    @pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+    def test_the_clip_and_the_ridge_bind(self, schedule, rate, fit_intercept):
+        """In the cases above ``clip_gradient`` never binds -- its default
+        1e3 against gradients of 6 at most -- and ``l2`` is 0 (review
+        2026-10-05, TC6). At 0.05 the clip binds on most coordinates, each
+        on its own, and ``l2 = 0.2`` penalises the slopes but not the
+        intercept: held to the rule ``sgd_ref`` writes out."""
+        df = _stream(3)
+        x, y, dc, w = _inputs(df)
+        kw = {"schedule": schedule, "half_life": 50.0, "min_weight": 5.0} | rate
+        kw |= {"l2": 0.2, "clip_gradient": 0.05}
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=1,
+            fit_intercept=fit_intercept,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, fit_intercept=fit_intercept, **kw)
+        _held(out, ref, y)
+        assert ref["clipped"] > 1000, f"the clip bound {ref['clipped']} times"
 
 
 class TestHolt:

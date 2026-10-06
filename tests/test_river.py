@@ -258,14 +258,25 @@ class TestEwStatistics:
         assert ours[2] == pytest.approx(3.014, abs=0.01)
 
     def test_ew_variance_tracks_river(self):
+        """``ew_cov``'s ``var`` against river's ``EWVar`` at the same fading
+        factor, both read before the row: apart while river's seed weighs,
+        and the same number once it is forgotten (1.5e-14 measured). The
+        test never called this library, and held river alone to the truth
+        (review 2026-10-05, TC2)."""
         rng = np.random.default_rng(8)
         y = rng.standard_normal(5000) * 2.0
+        spec = po.spec.ew_cov("c", features=["x0"], stats=["var"], half_life=self.HALFLIFE)
+        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": y}))
+        ours = out["c"].struct.field("var_x0").to_numpy().astype(float)
         v = stats.EWVar(fading_factor=self.fading)
         theirs = []
         for val in y:
-            v.update(float(val))
             theirs.append(v.get())
-        # Both should recover the true variance (4.0) on average once warm.
+            v.update(float(val))
+        theirs = np.array(theirs)
+        np.testing.assert_allclose(ours[-1000:], theirs[-1000:], rtol=1e-9)
+        assert np.nanmean(np.abs(ours[2:20] - theirs[2:20])) > 0.5, "the warmups should differ"
+        # And both recover the true variance (4.0) on average once warm.
         assert abs(np.mean(theirs[-2000:]) - 4.0) < 1.0
 
 
@@ -304,6 +315,10 @@ class TestQuantile:
         # Both estimators should land near the empirical quantile.
         assert abs(theirs - truth) < 0.2, f"river {theirs} vs empirical {truth}"
         assert abs(ours - truth) < 0.5, f"ours {ours} vs empirical {truth}"
+        # And near each other: about one sampling standard error apart at
+        # most (0.019 at tau = 0.75, the se 0.019). The test once compared
+        # neither side to river (review 2026-10-05, TC9).
+        assert abs(ours - theirs) < 0.05, f"ours {ours} vs river {theirs}"
 
 
 class TestHuber:

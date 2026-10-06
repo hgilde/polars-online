@@ -354,6 +354,11 @@ def refresh_time(
 
     .. code-block:: python
 
+        ticks = pl.DataFrame({              # one row per tick, each series at its own times
+            "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],
+            "t": [0.4, 0.9, 1.3, 1.6, 2.2, 2.5, 2.8, 3.1],
+            "px": [100.0, 20.0, 100.2, 50.0, 20.1, 100.1, 100.4, 49.9],
+        })
         grid = po.stream.refresh_time(      # a DataFrame in, a DataFrame out
             ticks, series="symbol", names=["AAA", "BBB", "CCC"], clock="t", value="px"
         )

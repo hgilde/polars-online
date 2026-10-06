@@ -287,3 +287,122 @@ def test_a_level_costs_the_quantile_fit_nothing():
     assert coef8[1] == pytest.approx(coef0[1], abs=1e-6), (coef8, coef0)
     m = np.isfinite(pred0) & np.isfinite(pred8)
     assert np.max(np.abs((pred8[m] - 1e8) - pred0[m])) < 1e-5
+
+
+class TestTheQuantileFitsDefinition:
+    """The quantile fit held to the problem it solves, not to a replay of its
+    arithmetic (`tests/reference.py`'s `robust_ref` restates the core; review
+    2026-10-05, TC1). `robust.rs`'s module doc defines each row's part in
+    the Newton system: under three rows per coefficient, or a band holding
+    under one row per coefficient, a least-squares row; inside the band of
+    half-width ``h = s max(quantile_eps, (k/n)^(2/5))`` a least-squares row
+    with target ``y + 2h(tau - 1/2)``; outside it a nudge ``2h psi(r) z``
+    into the cross-moment only, with ``psi = tau - 1{r < 0}``, its step
+    bounded by ``|r| / (1 + leverage)``. ``s`` is the RMS of the scored
+    residuals before the row and ``n`` the target's rows, both decayed, and
+    ``r`` the residual the row was scored with."""
+
+    EPS, RIDGE = 0.2, 1e-6
+
+    @staticmethod
+    def stream(n=3000, rho=0.0, seed=5):
+        rng = np.random.default_rng(seed)
+        a = rng.standard_normal(n)
+        b = rho * a + np.sqrt(1.0 - rho**2) * rng.standard_normal(n)
+        x = np.column_stack([a, b])
+        y = 1.0 + x @ np.array([0.8, -0.4]) + rng.standard_exponential(n) - 1.0
+        return x, y
+
+    def fit(self, x, y, tau, half_life):
+        spec = po.spec.quantile(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            quantile=tau,
+            half_life=half_life,
+            max_rows_between_solves=1,
+            min_weight=0.0,
+            quantile_eps=self.EPS,
+            ridge=self.RIDGE,
+            coef_every=1,
+        )
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y})
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        pred = out["pred_y0"].fill_null(float("nan")).to_numpy()
+        coef = np.array([c if c is not None else [np.nan] * 3 for c in out["coef"].to_list()])
+        return pred, coef
+
+    def rows(self, x, y, pred, tau, half_life):
+        """Each row's part by the module doc's rules, from the rows and the
+        bank's own predictions: ``"ols"``, ``"band"`` (with ``h``) or
+        ``"nudge"`` (with its step, as the sum form takes it)."""
+        n = len(y)
+        Z = np.column_stack([np.ones(n), x])
+        k = Z.shape[1]
+        lam = 1.0 if np.isinf(half_life) else 2.0 ** (-1.0 / half_life)
+        kinds, h_at, nudge = [], np.full(n, np.nan), np.zeros((n, k))
+        fit_rows: list[int] = []
+        scored: list[int] = []
+        for t in range(n):
+            rows = float((lam ** (t - np.arange(t))).sum())
+            sig2 = 0.0
+            if scored:
+                s = np.array(scored)
+                d = lam ** (t - s)
+                sig2 = float((d * (y[s] - pred[s]) ** 2).sum() / d.sum())
+            scale = np.sqrt(sig2) if sig2 > 0.0 else 1.0
+            f = np.array(fit_rows, dtype=int)
+            fw = lam ** (t - f)
+            band_w = float(fw.sum())
+            if not np.isfinite(pred[t]) or rows < 3 * k or band_w < k:
+                kinds.append("ols")
+                fit_rows.append(t)
+            else:
+                h = scale * max(self.EPS, (k / rows) ** 0.4)
+                r = y[t] - pred[t]
+                h_at[t] = h
+                if abs(r) < h:
+                    kinds.append("band")
+                    fit_rows.append(t)
+                else:
+                    kinds.append("nudge")
+                    raw = 2.0 * h * (tau if r > 0.0 else tau - 1.0) / band_w
+                    m = (fw[:, None] * Z[f]).sum(axis=0) / band_w
+                    v = (fw[:, None] * (Z[f] - m) ** 2).sum(axis=0) / band_w
+                    leverage = float(((Z[t, 1:] - m[1:]) ** 2 / v[1:]).sum())
+                    most = abs(r) / (1.0 + leverage)
+                    step = np.copysign(most, raw) if abs(raw) > most else raw
+                    nudge[t] = band_w * step * Z[t]
+            if np.isfinite(pred[t]):
+                scored.append(t)
+        return Z, lam, kinds, h_at, nudge
+
+    @pytest.mark.parametrize(("half_life", "tau"), [(float("inf"), 0.5), (300.0, 0.9)])
+    def test_the_fit_is_stationary_for_the_loss_it_smooths(self, half_life, tau):
+        """The solved fit makes the score of the smoothed check loss zero,
+        ridge included: ``sum_t lam^(T-t) [w z (target - z'b)]`` over the
+        Gram's rows plus every nudge equals ``ridge W (0, b_slopes)``. Inside
+        the band ``target - z'b`` is ``2h psi_h(y - z'b)``, the smoothed
+        score at the fit; outside, the nudge is the score at the residual
+        the row was scored with. Checked in the lasso-KKT pattern, on the
+        last solve."""
+        x, y = self.stream()
+        pred, coef = self.fit(x, y, tau, half_life)
+        Z, lam, kinds, h_at, nudge = self.rows(x, y, pred, tau, half_life)
+        beta = coef[-1]
+        T = len(y) - 1
+        g, size = np.zeros(3), np.zeros(3)
+        for t, kind in enumerate(kinds):
+            d = lam ** (T - t)
+            if kind == "ols":
+                term = d * Z[t] * (y[t] - Z[t] @ beta)
+            elif kind == "band":
+                term = d * Z[t] * (y[t] + 2.0 * h_at[t] * (tau - 0.5) - Z[t] @ beta)
+            else:
+                term = d * nudge[t]
+            g += term
+            size += np.abs(term)
+        W = sum(lam ** (T - t) for t, kind in enumerate(kinds) if kind != "nudge")
+        g[1:] -= self.RIDGE * W * beta[1:]
+        assert np.abs(g).max() <= 1e-10 * size.max(), (g, size)
+        assert kinds.count("band") > 100 and kinds.count("nudge") > 100, kinds.count("band")

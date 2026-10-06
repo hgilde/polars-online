@@ -66,14 +66,18 @@ def test_a_seed_reproduces_every_frame_byte_for_byte():
 
 def test_the_per_state_correlations_are_recovered():
     """Pooled over the blocks in each state, the sample correlation of the
-    returns is the state's matrix, within the Fisher-z sampling floor."""
-    out = two_state()
+    returns is the state's matrix, within the Fisher-z sampling floor.
+
+    Four blocks of each state, by ``durations``: with the sticky chain alone,
+    seed 0 stayed in state 0 for all eight blocks, and the check of state 1
+    was skipped without a word (review 2026-10-05, TA4)."""
+    out = two_state(durations=[4, 4])
+    assert out["truth_blocks"]["state"].to_list() == [0, 0, 0, 0, 1, 1, 1, 1]
     ret = returns(out["rows"])
     state = out["truth_rows"]["state"].to_numpy()[1:]
     for s, rho in ((0, 0.2), (1, 0.7)):
         rows = ret[state == s]
-        if len(rows) < 100:
-            continue
+        assert len(rows) >= 100, f"state {s} has {len(rows)} rows: nothing to recover"
         r = np.corrcoef(rows.T)
         off = r[~np.eye(4, dtype=bool)]
         se = po.corr.fisher_se(len(rows), rho=rho)

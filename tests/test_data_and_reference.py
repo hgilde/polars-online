@@ -150,3 +150,64 @@ def test_a_truncated_download_is_retried_and_a_dead_one_is_offline(monkeypatch):
     monkeypatch.setattr(data.urllib.request, "urlopen", dead)
     with pytest.raises(RuntimeError, match="offline"):
         data._download("http://example.invalid/x")
+
+
+def _outcome(fetch):
+    """What a fetch does: ``("skipped", reason)``, ``(exception name,
+    exception)``, or ``("returned", None)``."""
+    try:
+        fetch()
+    except pytest.skip.Exception as e:
+        return "skipped", str(e)
+    except Exception as e:
+        return type(e).__name__, e
+    return "returned", None
+
+
+@pytest.mark.parametrize(
+    "fetch",
+    [
+        lambda data: data.public_intraday_or_skip(("1999-01-01",)),
+        lambda data: data.public_quotes_and_trades_or_skip("ZZZUSDT", "1999-01-01"),
+    ],
+    ids=["intraday", "quotes"],
+)
+def test_only_the_network_is_offline(monkeypatch, tmp_path, fetch):
+    """Review 2026-10-05, TA3 and TB2. An HTTP error is an ``OSError``, so a
+    404 or a 403 was retried and then called offline, and the test skipped
+    instead of failing: a moved file would have hidden its tests for good.
+    A 4xx is the server's answer, not the network's: it is raised at once.
+    A 5xx or a 429 is retried as a dropped connection is, and offline after
+    the last attempt; only offline skips."""
+    import io
+    import urllib.error
+
+    import data
+
+    monkeypatch.setattr(data, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    calls: list[str] = []
+
+    def status(code: int):
+        def urlopen(url, timeout):
+            calls.append(url)
+            raise urllib.error.HTTPError(url, code, "status", {}, io.BytesIO(b""))
+
+        return urlopen
+
+    def unreachable(url, timeout):
+        calls.append(url)
+        raise urllib.error.URLError("network unreachable")
+
+    for code in (403, 404, 410):
+        calls.clear()
+        monkeypatch.setattr(data.urllib.request, "urlopen", status(code))
+        kind, err = _outcome(lambda: fetch(data))
+        assert kind == "HTTPError" and err.code == code, (code, kind, err)
+        assert len(calls) == 1, f"a {code} was retried"
+    for answer in (status(500), status(503), status(429), unreachable):
+        calls.clear()
+        monkeypatch.setattr(data.urllib.request, "urlopen", answer)
+        kind, reason = _outcome(lambda: fetch(data))
+        assert kind == "skipped" and "offline" in reason, (kind, reason)
+        assert len(calls) == 3, "a transient failure was not retried"

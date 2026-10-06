@@ -302,6 +302,12 @@ The output names task 144 renamed:
   are undefined, as `from_sums` does, not as an infinity or a NaN.
   `rolling_metrics` refuses a window that is not finite.
 
+- **`po.spec.marginal` writes its optional keys only when they are given**
+  (task 160): `lags`, `cross_lags`, `serial_rule`, `bins`, `bin_rule`,
+  `bin_warm_rows`, `bin_edges`, `bin_budget`, `shards`, `window_lags` and
+  `feature_moments`, as the saved spec does, so `ModelBank([s]).specs[0] ==
+  s`. Code that indexed one of them in a marginal spec reads it with `.get`.
+
 ### Performance
 
 - The nanosecond clock's conversion to seconds takes a 64-bit road when the
@@ -394,6 +400,9 @@ The output names task 144 renamed:
   on an empty input no longer warn `ConsumedSourceWarning`, and
   `po.gram.merge([g])` returns `g` with its group, instance and lags, which
   it dropped (task 160).
+- Every example in the API reference builds the spec, bank and output it
+  reads, or reads only the README's example data (task 160).
+  `ModelBank.skip_learned`'s read a bank it never built.
 
 ## [0.13.0] — 2026-09-30
 

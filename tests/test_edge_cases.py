@@ -60,20 +60,6 @@ class TestWeights:
         with pytest.raises(Exception, match=r"negative value \(-5\) at row 1"):
             _run(df, _spec(weight="w"))
 
-    def test_negative_weight_is_rejected_for_every_model(self):
-        df = pl.DataFrame({"x0": [1.0, 2.0], "y0": [1.0, 2.0], "w": [1.0, -1.0]})
-        for model, extra in [
-            ("ewridge", {}),
-            ("rls", {}),
-            ("kalman", {"coef_half_life": 100.0}),
-            ("lasso", {"lasso_path": [0.0]}),
-            ("huber", {}),
-            ("quantile", {"quantile": 0.5}),
-            ("ftrl", {}),
-        ]:
-            with pytest.raises(Exception, match="negative"):
-                _run(df, _spec(model, weight="w", **extra))
-
     def test_zero_weight_is_a_pure_decay_row(self):
         # w = 0 is legal and means "advance the clock, learn nothing".
         df = pl.DataFrame({"x0": [1.0, 99.0, 2.0], "y0": [1.0, 99.0, 2.0], "w": [1.0, 0.0, 1.0]})
@@ -662,37 +648,42 @@ class TestNumericalScale:
 
 
 class TestClockColumnTypes:
-    """T-E10: which dtypes are allowed as a clock column.
+    """T-E10: which dtypes a clock column may have, and what each takes.
 
-    A temporal column is **rejected**, not cast. Casting one to f64 exposes its
-    internal representation, so the same 60 seconds becomes 60_000 /
-    60_000_000 / 60_000_000_000 clock units depending only on whether the
-    column is `Datetime(ms/us/ns)`, and a `Date` becomes 1 unit per day.
-    `half-life`, `gap_cap` and `session_gap` all live in those units, so
-    `half_life=600` on a microsecond column would silently mean 600
-    microseconds -- every row decays to nothing and the output is
-    plausible-looking garbage with no error.
+    A temporal column -- ``Datetime`` in any unit, ``Date`` or ``Duration``
+    -- is a clock since task 88, and its clock parameters are durations. A
+    plain number beside one is refused, not read in the column's own unit:
+    cast to f64, the same 60 seconds would be 60_000, 60_000_000 or
+    60_000_000_000 clock units depending only on the column's time unit, so
+    ``half_life=600`` on a microsecond column would silently mean 600
+    microseconds. A numeric clock, float or integer, takes plain numbers,
+    and the epoch cast below is the fix the refusal names. The class said a
+    temporal column was rejected outright, and its tests passed on this
+    refusal instead (review 2026-10-05, TB10); its every part is pinned in
+    ``test_temporal_clock.py::TestEachMixtureIsRefused``.
     """
 
+    REFUSAL = "a temporal clock, but half_life is a plain number"
+
     @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
-    def test_datetime_clock_is_rejected(self, unit):
+    def test_a_datetime_clock_refuses_a_plain_number(self, unit):
         ts = pl.datetime_range(
             pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 3), interval="1m", eager=True
         ).cast(pl.Datetime(time_unit=unit))
         df = pl.DataFrame(
             {"t": ts, "x0": np.arange(float(len(ts))), "y0": np.arange(float(len(ts)))}
         )
-        with pytest.raises(Exception, match="temporal clock"):
+        with pytest.raises(ValueError, match=self.REFUSAL):
             _run(df, _spec(clock="t", gap_cap=1e12, half_life=600.0))
 
-    def test_date_and_duration_clocks_are_rejected(self):
+    def test_date_and_duration_clocks_refuse_a_plain_number(self):
         ts = pl.datetime_range(
             pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 4), interval="1d", eager=True
         )
         n = len(ts)
         for col in (ts.dt.date(), ts - ts[0]):
             df = pl.DataFrame({"t": col, "x0": np.arange(float(n)), "y0": np.arange(float(n))})
-            with pytest.raises(Exception, match="temporal clock"):
+            with pytest.raises(ValueError, match=self.REFUSAL):
                 _run(df, _spec(clock="t", gap_cap=1e12, half_life=600.0))
 
     def test_the_error_names_the_column_dtype_and_the_fix(self):

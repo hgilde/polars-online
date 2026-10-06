@@ -102,10 +102,10 @@ def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks
     )
 
 
-rng = np.random.default_rng(0)
-
-
-def frame(n=1500):
+def frame(n=1500, seed=0):
+    """Seeded per call: a module-level generator made each test's rows
+    depend on which tests ran before it (review 2026-10-05, TC3)."""
+    rng = np.random.default_rng(seed)
     d = pl.DataFrame({"x0": rng.standard_normal(n), "x1": rng.standard_normal(n)})
     return d.with_columns(y=pl.col("x0") * 2)
 
@@ -152,7 +152,7 @@ class TestNothingLeaksAcrossTheBoundary:
     def test_multi_chunk_input(self):
         """`SeriesExport` carries `arrays: **ArrowArray` plus a length, so a
         chunked Series exports one ArrowArray per chunk. Each needs releasing."""
-        df = pl.concat([frame(300) for _ in range(5)], rechunk=False)
+        df = pl.concat([frame(300, seed=i) for i in range(5)], rechunk=False)
         assert df.n_chunks() > 1
         assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
 
@@ -160,9 +160,13 @@ class TestNothingLeaksAcrossTheBoundary:
         """A slice shares its parent's buffers; releasing the export must not
         free memory the parent still owns."""
         parent = frame(4000)
+        before = parent.clone()
         sl = parent.slice(100, 1200)
         assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(sl))
-        assert parent["x0"].sum() == pytest.approx(parent["x0"].sum())
+        # Read after, against a copy taken before: the parent's buffers hold
+        # what they held. Compared with itself, the sum held on any data.
+        assert parent.equals(before)
+        assert np.array_equal(parent["x0"].to_numpy(), frame(4000)["x0"].to_numpy())
 
     def test_the_bank_error_path_still_releases(self):
         """The likeliest leak site in any FFI: a call that fails *after* the
@@ -323,12 +327,16 @@ class TestNothingCrashes:
             rng = np.random.default_rng(4)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
-            bank = po.ModelBank([spec])
+            bank, never = po.ModelBank([spec]), po.ModelBank([spec])
             df = pl.DataFrame({"x0": rng.standard_normal(400)})
             df = df.with_columns(y=pl.col("x0"))
             bank.fit_predict(df)
+            never.fit_predict(df)
             for _ in range(40):
                 bank = pickle.loads(pickle.dumps(bank))
                 bank.fit_predict(df)
-            assert bank is not None
+                never.fit_predict(df)
+            # Forty round trips changed nothing: the state is the one a bank
+            # fed the same rows and never pickled holds.
+            assert bank.save_bytes() == never.save_bytes()
         """)

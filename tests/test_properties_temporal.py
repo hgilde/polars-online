@@ -45,7 +45,8 @@ from hypothesis import strategies as st
 
 import polars_online as po
 from polars_online._polars_online import format_duration, parse_duration
-from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column
+from test_model_registry import MINIMAL, _build
+from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
 
 #: The longest duration, and the latest instant, an i64 of nanoseconds holds.
 MAX_NS = 2**63 - 1
@@ -396,18 +397,13 @@ def _instants(step: int):
     return st.builds(lambda a, k: a + k * step, anchor, st.integers(-1_000, 1_000))
 
 
-#: The models with clock parameters of their own besides the shared ones.
-CLOCK_MODELS = [
-    "ewridge",
-    "lasso",
-    "kalman",
-    "holt",
-    "ew_cov",
-    "ew_class",
-    "rls",
-    "huber",
-    "quantile",
-]
+#: The models with clock parameters of their own besides the shared ones:
+#: every kind the Rust side's table lists (``spec_clock_fields``, which
+#: `test_temporal_clock.py` holds to the builders), so a kind that gains one
+#: is drawn here the day it does -- `marginal`'s ``window_size`` was missed
+#: from a list written by hand (review 2026-10-05, TB5). And `rls`, which has
+#: none of its own, for the shared ``embargo`` the strategy draws for it.
+CLOCK_MODELS = sorted({b for b in MINIMAL if _kind(b) in _tables()[0]} | {"rls"})
 
 
 @st.composite
@@ -452,6 +448,8 @@ def clock_specs(draw, model: str, step: int, cap: int):
         kw |= dict(half_life=steps(1, 30)) | maybe("window_size", 1, 60)
     elif model in ("huber", "quantile"):
         kw |= xy | maybe("solve_every", 1, 5) | ({"quantile": 0.5} if model == "quantile" else {})
+    elif model == "marginal":
+        kw |= xy | maybe("window_size", 1, 60)
     else:
         assert model == "rls", model
         kw |= xy | maybe("embargo", 1, 5)
@@ -552,7 +550,8 @@ class TestTemporalClockStreams:
         kept = po.ModelBank([spec])
         head = kept.fit_predict(df.slice(0, split))["m"]
         loaded = po.ModelBank.load_bytes(kept.save_bytes())
-        assert loaded.specs == [spec]  # the durations survive as their text
+        assert loaded.specs == kept.specs  # the durations survive as their text
+        assert kept.specs == [spec]  # the dicts the builders made (`ModelBank.specs`)
         rest = df.slice(split)
         tail = loaded.fit_predict(rest)["m"]
         assert tail.equals(kept.fit_predict(rest)["m"], null_equal=True)
@@ -626,22 +625,50 @@ class TestADelayedLabel:
         _assert_same_numbers(one, many)
 
 
-#: Every model that emits ``weight_sum``, with what each needs besides a half-life.
-N_EFF_MODELS = {
-    "ewridge": {},
-    "rls": {},
-    "lasso": {"lasso_path": [0.1, 0.0]},
-    "kalman": {"coef_half_life": float("inf")},
-    "huber": {},
-    "quantile": {"quantile": 0.5},
-    "ftrl": {},
-    "sgd": {"learning_rate": 0.01},
-    "pa": {},
-    "holt": {"features": None},
-    "ew_cov": {"targets": None},
-    "ew_class": {"targets": None, "label": "lab", "classes": ["a", "b"], "precision_prior": 1.0},
-    "marginal": {},
+#: The kinds whose ``weight_sum`` cannot decay, each refusing a half-life:
+#: with nothing to decay there is no gap to round, and the recursion below
+#: would be a count. `test_the_exempt_kinds_refuse_a_half_life` holds each
+#: reason to the builder's refusal.
+N_EFF_EXEMPT = {
+    "seqtest": "an e-process does not forget",
+    "bocpd": "the run-length posterior is what forgets",
+    "rcov": "a realised covariance is a sum over a block",
 }
+
+#: What a kind needs on this file's frame besides `MINIMAL`'s arguments:
+#: `ew_class`'s labels are in ``lab``; `corrchange` takes a half-life only
+#: in its scalar form, where it parametrises the standardiser; and beside a
+#: duration a plain-number ``coef_half_life`` is refused, which ``inf``,
+#: saying nothing about a unit, is not.
+N_EFF_ARGS: dict[str, dict] = {
+    "ew_class": {"label": "lab"},
+    "corrchange": {"scalar": True},
+    "kalman": {"coef_half_life": float("inf")},
+}
+
+#: Every kind -- each emits ``weight_sum`` -- with what it needs besides a
+#: half-life, but the exempt. Built from `test_model_registry.MINIMAL`: a
+#: list written by hand had missed eight kinds (review 2026-10-05, TB5).
+N_EFF_MODELS = {
+    name: {k: v for k, v in MINIMAL[name].items() if k != "half_life"} | N_EFF_ARGS.get(name, {})
+    for name in sorted(MINIMAL)
+    if name not in N_EFF_EXEMPT
+}
+
+
+@pytest.mark.parametrize("name", sorted(N_EFF_EXEMPT))
+def test_the_exempt_kinds_refuse_a_half_life(name):
+    kw = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 5.0}
+    kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life"}
+    with pytest.raises(
+        ValueError, match=f"half_life/lam do not apply to {name}.*{N_EFF_EXEMPT[name]}"
+    ):
+        getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+
+
+def test_every_kind_emits_weight_sum():
+    for name in MINIMAL:
+        assert "weight_sum" in po.spec.output_fields(_build(name)), name
 
 
 @st.composite

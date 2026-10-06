@@ -245,6 +245,33 @@ _INF_OK: dict[str, frozenset[str]] = {
 }
 
 
+#: The model keys the Rust spec skips when they are absent
+#: (``skip_serializing_if`` in ``crates/online-polars/src/spec.rs``): a key
+#: written as null there would move every spec's bytes and cost a schema
+#: bump. A builder writes each of these only when it is given, so the bank
+#: reports back the dict it made: a ``None`` the bank never writes made
+#: ``ModelBank([s]).specs[0] != s`` for every ``marginal`` (review
+#: 2026-10-05, the TB5 leg). ``holt``'s ``trend`` is written only when off.
+_SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
+    "holt": frozenset({"trend"}),
+    "marginal": frozenset(
+        {
+            "lags",
+            "serial_rule",
+            "cross_lags",
+            "bins",
+            "bin_rule",
+            "bin_warm_rows",
+            "bin_edges",
+            "bin_budget",
+            "shards",
+            "window_lags",
+            "feature_moments",
+        }
+    ),
+}
+
+
 def _takes_duration(hint: Any) -> bool:
     """Whether a parameter's annotation admits a duration: the clock
     parameters, and nothing else."""
@@ -1052,7 +1079,12 @@ def output_fields(spec: dict[str, Any]) -> list[str]:
 
     .. code-block:: python
 
-        fields = po.spec.output_fields(spec)   # ['pred_y__r0.000001', ..., 'weight_sum', 'coef']
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
+        )
+        fields = po.spec.output_fields(spec)
+        # ['pred_y__r0.000001', 'resid_y__r0.000001', 'pred_y__r0.1', 'resid_y__r0.1',
+        #  'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
 
     """
     return spec_output_fields(_json(spec))
@@ -1092,6 +1124,10 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
+        grid = po.spec.ewridge(
+            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
+        )
+        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
         idx = po.spec.output_index(grid)
         name = idx.filter(
             (pl.col("kind") == "pred")
@@ -1153,6 +1189,10 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
+        grid = po.spec.ewridge(
+            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
+        )
+        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
         cf = po.spec.coef_fields(grid)
         row = cf.filter(
             (pl.col("target") == "y") & (pl.col("term") == "x1") & (pl.col("half_life") == 500.0)
@@ -1197,6 +1237,10 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     .. code-block:: python
 
+        grid = po.spec.ewridge(
+            "m", targets=["y"], features=["x0", "x1"], half_life=[100.0, 500.0], ridge=[1e-6, 0.5]
+        )
+        out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
         ci = po.spec.coef_index(grid)
         pos = ci.filter(
             (pl.col("target") == "y") & (pl.col("ridge") == 0.5) & (pl.col("term") == "x1")
@@ -3743,6 +3787,10 @@ def marginal(
         "window_lags": window_lags or None,
         "feature_moments": None if feature_moments == "per_target" else feature_moments,
     }
+    # The keys the Rust spec skips when absent are written only when given,
+    # as `holt`'s `trend` is, so `ModelBank.specs` is the dict made here.
+    skipped = _SKIPPED_WHEN_ABSENT["marginal"]
+    model = {k: v for k, v in model.items() if v is not None or k not in skipped}
     return _common(name, model, targets=targets, features=features, **common)
 
 
@@ -4772,6 +4820,7 @@ def rcov(
 
     .. code-block:: python
 
+        by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # four blocks
         r = po.spec.rcov(
             "rk", features=["x0", "x1"],           # rows are returns
             group="block", group_close="monotone",

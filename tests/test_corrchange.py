@@ -146,19 +146,21 @@ def test_the_scalar_form_tests_the_equicorrelations_level():
 
 
 def test_since_flag_counts_the_rows():
-    n = 400
-    a = pair(n // 2, 0.1, seed=4)
-    b = pair(n // 2, 0.95, seed=5)
+    """The break sits mid-span, at row 150, so the second span straddles it
+    and its flag is the break's. On a span boundary, at row 200, no span
+    held both regimes: the one flag fell on the last span, not the break's,
+    and the restart check sat behind a condition that was false (review
+    2026-10-05, TB4)."""
+    a = pair(150, 0.1, seed=4)
+    b = pair(250, 0.95, seed=5)
     out = run(pl.concat([a, b]), span_rows=100, alpha_adjust="none")
     rows = out.select("stat", "flag", "since_flag").drop_nulls()
     assert rows.height == 4
     # Before any flag, the count runs from the first row.
     assert rows["since_flag"][0] == 100
-    flagged = [i for i, f in enumerate(rows["flag"].to_list()) if f]
-    assert flagged, rows
-    # And it restarts after one.
-    if flagged[0] + 1 < rows.height:
-        assert rows["since_flag"][flagged[0] + 1] == 100
+    # The span holding the break flags, and the count restarts after it.
+    assert rows["flag"].to_list()[:2] == [False, True], rows
+    assert rows["since_flag"].to_list()[1:3] == [200, 100], rows
 
 
 # --- the window --------------------------------------------------------------

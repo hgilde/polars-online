@@ -22,6 +22,7 @@ import ast
 import builtins
 import contextlib
 import copy
+import itertools
 import os
 import pickle
 import re
@@ -587,6 +588,66 @@ def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
 # task 68): the fixture below already writes the files those examples read.
 README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
 
+
+def _names(code: str) -> tuple[set[str], list[str]]:
+    """The names a block builds -- assigns, imports, defines or takes as an
+    argument -- and the names it reads, in order."""
+    stored: set[str] = set()
+    loaded: list[str] = []
+    for node in ast.walk(ast.parse(code)):
+        if isinstance(node, ast.Name):
+            (loaded.append if isinstance(node.ctx, ast.Load) else stored.add)(node.id)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            stored.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.FunctionDef | ast.ClassDef):
+            stored.add(node.name)
+        elif isinstance(node, ast.arg):
+            stored.add(node.arg)
+    return stored, loaded
+
+
+#: The README's own python blocks, in order: the README's definitions.
+README_ONLY = [b for b in README_BLOCKS if b[0] == "README.md"]
+
+
+def _built_by_the_readme(code: str, line: int, ns: dict, memo: dict) -> dict:
+    """``ns``, with each name ``code`` reads and does not build itself
+    replaced by the README's own: the value the README's latest block before
+    ``line`` that assigns it builds, that block run the same way, in a copy
+    of ``ns``. So a block runs on what the README built, not on the
+    fixture's copy, which can differ: the fixture's ``grid`` had a
+    ``min_weight`` the README's has not, and the README defines ``spec``
+    twice (review 2026-10-05, TC5). ``memo`` keeps each (name, block) built
+    once per test."""
+    stored, loaded = _names(code)
+    out = dict(ns)
+    for name in dict.fromkeys(loaded):
+        if name in stored:
+            continue
+        defining = [(ln, c) for _, ln, c in README_ONLY if ln < line and name in _names(c)[0]]
+        if not defining:
+            continue
+        ln, c = defining[-1]
+        if (name, ln) not in memo:
+            local = _built_by_the_readme(c, ln, ns, memo)
+            exec(compile(c, f"README.md:{ln}", "exec"), local)
+            # A comprehension's or a lambda's variable is not the block's.
+            memo[name, ln] = local.get(name, ns.get(name))
+        if memo[name, ln] is not None:
+            out[name] = memo[name, ln]
+    return out
+
+
+def _example_data_block() -> str:
+    """The README's *Example data* block: the frames every example may read."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    start = text.index("\n### Example data\n")
+    section = text[start : text.index("\n## ", start)]
+    blocks = [code for _, _, code in README_BLOCKS if code in section]
+    assert len(blocks) == 1, f"Example data should hold one python block, not {len(blocks)}"
+    return blocks[0]
+
+
 #: The runner guide's shell blocks, run against the built `online` binary.
 #: Only this document's: the README's ```sh blocks are `pip install`, `uv sync`
 #: and the development commands, which must never run from a test.
@@ -745,9 +806,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         ridge=[1e-6, 0.1],
         standardize=True,
     )
-    grid = po.spec.ewridge(
-        "m", half_life=[100.0, 500.0], ridge=[1e-6, 0.5], min_weight=5.0, **common
-    )
+    grid = po.spec.ewridge("m", half_life=[100.0, 500.0], ridge=[1e-6, 0.5], **common)
     scored = po.ModelBank(
         [
             po.spec.ewridge("ridge", half_life=500.0, group="stock_id", **common),
@@ -840,14 +899,12 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "today": today,
         # The query form of `today`: the rows after the stream's.
         "later": today.lazy(),
-        # `ModelBank.skip_learned`'s docstring: input that overlaps the state.
-        "rerun": df,
         "lf": df.lazy(),
         "spec": spec,
         "grid": grid,
         "bank": po.ModelBank([spec]),
         "out": out,
-        "now": float(n),
+        "now": df["t"].max(),
     }
 
 
@@ -877,6 +934,8 @@ class TestReadmeExamples:
         env = dict(os.environ)
         ns = _readme_namespace(tmp_path)
         try:
+            if path == "README.md":
+                ns = _built_by_the_readme(code, line, ns, {})
             exec(compile(code, f"{path}:{line}", "exec"), ns)
         finally:
             os.environ.clear()
@@ -889,18 +948,62 @@ class TestReadmeExamples:
         gives every block, or the README would show one stream and test its
         examples on another."""
         monkeypatch.chdir(tmp_path)  # the block writes ticks.parquet and ticks/
-        text = (REPO / "README.md").read_text(encoding="utf-8")
-        start = text.index("\n### Example data\n")
-        section = text[start : text.index("\n## ", start)]
-        blocks = [code for _, _, code in README_BLOCKS if code in section]
-        assert len(blocks) == 1, f"Example data should hold one python block, not {len(blocks)}"
         ns = _readme_namespace(tmp_path)
         shown: dict[str, object] = {}
-        exec(compile(blocks[0], "README.md: Example data", "exec"), shown)
+        exec(compile(_example_data_block(), "README.md: Example data", "exec"), shown)
         for name in ("df", "trades", "today"):
             assert shown[name].equals(ns[name]), name
         assert shown["lf"].collect().equals(ns["df"])
         assert shown["later"].collect().equals(ns["today"])
+
+    #: The names the namespace hands out that the README also builds, and
+    #: which of the README blocks that assign one it copies.
+    COPIES = {
+        "spec": "first",
+        "grid": "last",
+        "now": "first",
+        "ticks": "first",
+        "flows": "first",
+        "blocks": "first",
+        "by_block": "first",
+        "closed": "first",
+    }
+
+    def test_the_namespace_copies_what_the_readme_builds(self, tmp_path, monkeypatch):
+        """A README block runs on the names the README itself built
+        (`_built_by_the_readme`), but the API reference's examples still
+        read the namespace's copies (TC4), so each copy is what the README
+        block it copies builds. `out` copies two at once: the evaluation
+        section's ``ridge`` and ``kalman`` columns and the field-names
+        section's ``m``; `bank` is `po.ModelBank([spec])` before any row,
+        as the README's blocks start it. The fixture's `grid` had a
+        `min_weight` and its `now` was 400.0, where the README's have none
+        and 399.0; and `spec` was checked against nothing (review
+        2026-10-05, TC5)."""
+        monkeypatch.chdir(tmp_path)
+        ns = _readme_namespace(tmp_path)
+
+        def built(name: str, which: str, text: str = "") -> dict:
+            blocks = [(ln, c) for _, ln, c in README_ONLY if name in _names(c)[0] and text in c]
+            ln, c = blocks[0] if which == "first" else blocks[-1]
+            local = _built_by_the_readme(c, ln, ns, {})
+            exec(compile(c, f"README.md:{ln}", "exec"), local)
+            return local
+
+        def same(a: object, b: object) -> bool:
+            if isinstance(a, pl.LazyFrame):
+                a, b = a.collect(), b.collect()  # type: ignore[union-attr]
+            if isinstance(a, pl.DataFrame):
+                return a.equals(b)  # type: ignore[arg-type]
+            return a == b
+
+        for name, which in self.COPIES.items():
+            assert same(built(name, which)[name], ns[name]), name
+        evaluated = built("out", "first", "fit_predict([ridge, kalman])")["out"]
+        assert ns["out"].select("ridge", "kalman").equals(evaluated.select("ridge", "kalman"))
+        fields = built("grid", "last")["out"]
+        assert ns["out"].select("m").equals(fields.select("m"))
+        assert ns["bank"].save_bytes() == po.ModelBank([ns["spec"]]).save_bytes()
 
     def test_every_name_a_readme_example_reads_was_built_by_an_earlier_one(self):
         """A reader starts with nothing and runs the examples in order. The
@@ -914,17 +1017,7 @@ class TestReadmeExamples:
         known = set(dir(builtins))
         unbuilt: dict[str, int] = {}
         for _, line, code in (b for b in README_BLOCKS if b[0] == "README.md"):
-            stored: set[str] = set()
-            loaded: list[str] = []
-            for node in ast.walk(ast.parse(code)):
-                if isinstance(node, ast.Name):
-                    (loaded.append if isinstance(node.ctx, ast.Load) else stored.add)(node.id)
-                elif isinstance(node, ast.Import | ast.ImportFrom):
-                    stored.update((a.asname or a.name).split(".")[0] for a in node.names)
-                elif isinstance(node, ast.FunctionDef | ast.ClassDef):
-                    stored.add(node.name)
-                elif isinstance(node, ast.arg):
-                    stored.add(node.arg)
+            stored, loaded = _names(code)
             for name in loaded:
                 if name not in known and name not in stored:
                     unbuilt.setdefault(name, line)
@@ -1046,9 +1139,34 @@ class TestReadmeExamples:
         ids=[f"{p}:L{ln}" for p, ln, _ in DOCSTRING_BLOCKS],
     )
     def test_a_docstring_block_runs(self, path, line, code, tmp_path, monkeypatch):
-        """The API reference's examples, run in the README's namespace: a
-        block that needs a name the reader was never shown fails with a
-        `NameError`, which is the finding."""
+        """The API reference's examples, run in the README's namespace. That
+        namespace hands every block the names the README builds, so a block
+        that reads a name its own page never shows still runs here: the next
+        test is the one that finds it (review 2026-10-05, TC4)."""
         monkeypatch.chdir(tmp_path)
         ns = _readme_namespace(tmp_path)
         exec(compile(code, f"{path}:{line}", "exec"), ns)
+
+    def test_every_name_a_docstring_example_reads_is_built_on_its_page(self):
+        """The README's rule (the test above it) for the API reference and
+        the runner guide. A reader of one docstring has that docstring and
+        the README's *Example data*, not the README's every name, which the
+        namespace hands each block: `ModelBank.skip_learned`'s example read
+        `rerun`, defined nowhere, and ran green (review 2026-10-05, TC4). So
+        each block is parsed, not run, and every name it reads must be one
+        that *Example data* builds, an earlier block of the same docstring
+        or page builds, or the block itself builds."""
+        known = set(dir(builtins)) | _names(_example_data_block())[0]
+        runner = [b for b in README_BLOCKS if b[0] != "README.md"]
+        unbuilt: dict[str, list[str]] = {}
+        for where, group in itertools.groupby(DOCSTRING_BLOCKS + runner, key=lambda b: b[0]):
+            built: set[str] = set()
+            for _, line, code in group:
+                stored, loaded = _names(code)
+                missing = sorted({n for n in loaded if n not in known | built | stored})
+                if missing:
+                    unbuilt[f"{where}:L{line}"] = missing
+                built |= stored
+        assert not unbuilt, (
+            f"docstring examples that read names their page never builds, by block: {unbuilt}"
+        )

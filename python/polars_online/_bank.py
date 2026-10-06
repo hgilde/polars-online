@@ -44,6 +44,7 @@ class ModelBank:
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         bank = po.ModelBank([spec])
         for chunk in df.iter_slices(100):          # chunks in stream order
             out = bank.fit_predict(chunk)          # the chunk plus a struct column per spec
@@ -120,9 +121,15 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0"], group="stock_id",
+                clock="ts", gap_cap="5m", half_life="1h",
+            )
+            bank = po.ModelBank([spec])
             bank.fit_predict(df)
+            now = df["ts"].dt.epoch("s").max()     # last_clock is seconds since 1970
             stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
-            bank.drop_groups(stale["group"])
+            bank.drop_groups(stale["group"])     # the groups quiet for 30 days
 
         ``spec``, a name or a position, narrows the table to one spec: ``KeyError``
         for a name the bank has not got (the message lists the names), ``IndexError``
@@ -182,8 +189,16 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge(
+                "m", targets=["y"], features=["x0"], clock="t", half_life=50.0, gap_cap=10.0
+            )
+            saved = po.ModelBank([spec])
+            saved.fit_predict(df.head(300))   # the stream as far as the save
+            saved.save("bank.state")
+
             bank = po.ModelBank.load("bank.state")
-            out = bank.fit_predict(bank.skip_learned(rerun))
+            rerun = df                        # the whole day again: its first 300 rows overlap
+            out = bank.fit_predict(bank.skip_learned(rerun))   # rows 300 to 399, once each
 
         A row at a group's last clock counts as learned, so a stream that
         repeats a clock value, saved between two rows with that value, loses
@@ -247,6 +262,10 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, ridge=[1e-6, 0.1]
+            )
+            bank = po.ModelBank([spec])
             out = bank.fit_predict(df)
             preds = out["ridge"].struct.field("pred_y__r0.1")
             flat = out.online.unnest([spec])          # one column per field
@@ -387,6 +406,7 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
             structs = bank.fit_predict_arrow(df)       # one per spec, Arrow not polars
             out = df.with_columns([pl.Series(s) for s in structs])
@@ -409,6 +429,7 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
             structs = bank.predict_arrow(df)           # the bank unmoved
@@ -462,6 +483,8 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
             for out in bank.fit_predict_batches(lf, chunk_rows=100):
                 pass    # each `out` is a chunk plus the struct columns
 
@@ -646,6 +669,7 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
             bank.fit(lf, chunk_rows=100)
             bank.save("bank.state")
@@ -1002,6 +1026,11 @@ class ModelBank:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge(
+                "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
+                ridge=0.1, standardize=True, group="stock_id",
+            )
+            bank = po.ModelBank([spec])
             bank.fit_predict(df)
             g = bank.gram("ridge", group="b0")[0]     # one dict per (group, instance, Gram)
             beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the model's own fit
@@ -1290,6 +1319,10 @@ class ModelBank:
 
         .. code-block:: python
 
+            blocks = po.spec.ew_cov(
+                "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
+            )
+            by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # four blocks
             bank = po.ModelBank([blocks])              # an ew_cov closing on "block"
             bank.fit_predict(by_block)
             closed = bank.closed_groups()              # one row per finished block

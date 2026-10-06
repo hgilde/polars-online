@@ -980,6 +980,7 @@ class LazyFrameOnlineNamespace:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             fitted = lf.online.fit_predict([spec], save_state="fit.state").collect()
             # one column per field, coef as one column per coefficient
             flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
@@ -1092,6 +1093,7 @@ class LazyFrameOnlineNamespace:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             betas = (
                 lf.online.fit_predict([spec])
                 .online.unnest([spec])
@@ -1193,6 +1195,7 @@ class DataFrameOnlineNamespace:
 
         .. code-block:: python
 
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             out = df.online.fit_predict([spec])
 
         Raises what :class:`ModelBank`, :meth:`ModelBank.fit_predict`,

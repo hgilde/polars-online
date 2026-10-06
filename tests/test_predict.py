@@ -459,39 +459,54 @@ def test_predict_from_many_threads_at_once():
         assert r.equals(results[0], null_equal=True)
 
 
-def test_fit_predict_is_refused_while_scoring():
-    """Scoring holds a shared borrow; learning needs the exclusive one, and
-    says so instead of waiting on or corrupting the scorers."""
-    n = 2_000_000
-    rng = np.random.default_rng(0)
-    df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
-    bank = po.ModelBank([spec])
-    bank.fit_predict(df.head(1000))
-    started = threading.Event()
-    errors: list[BaseException] = []
+def _refused_while_scoring(bank, df, attempts: int = 5) -> RuntimeError:
+    """Start two scorers on ``df``, then try a ``fit_predict`` while they
+    hold the bank, and return its refusal. Each scorer holds the bank for
+    as long as scoring ``df`` takes, about 0.4 s for the 2M rows the test
+    uses, and the ``fit_predict`` goes in 20 ms after they start. If they
+    finish first anyway, the attempt is made again; after ``attempts`` the
+    test fails, since the claim was never tested. It never skips."""
 
-    def score():
+    def score(started: threading.Event, errors: list[BaseException]) -> None:
         started.set()
         try:
             bank.predict(df)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
-    threads = [threading.Thread(target=score) for _ in range(2)]
-    for t in threads:
-        t.start()
-    started.wait()
-    time.sleep(0.02)
-    try:
-        bank.fit_predict(df.head(10))
-    except RuntimeError as e:
-        refused = e
-    else:
-        pytest.skip("the scorers finished before fit_predict reached the bank")
-    for t in threads:
-        t.join()
-    assert not errors, errors
+    for _ in range(attempts):
+        started = threading.Event()
+        errors: list[BaseException] = []
+        threads = [threading.Thread(target=score, args=(started, errors)) for _ in range(2)]
+        for t in threads:
+            t.start()
+        started.wait()
+        time.sleep(0.02)
+        refused = None
+        try:
+            bank.fit_predict(df.head(10))
+        except RuntimeError as e:
+            refused = e
+        for t in threads:
+            t.join()
+        assert not errors, errors
+        if refused is not None:
+            return refused
+    pytest.fail(f"the scorers finished before fit_predict reached the bank, {attempts} times")
+
+
+def test_fit_predict_is_refused_while_scoring():
+    """Scoring holds a shared borrow; learning needs the exclusive one, and
+    says so instead of waiting on or corrupting the scorers. The overlap is
+    made certain rather than hoped for (review 2026-10-05, TA7): a lost race
+    used to skip the test."""
+    n = 2_000_000
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame({"x0": rng.standard_normal(n), "y": rng.standard_normal(n)})
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[10.0, 100.0, 1000.0])
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df.head(1000))
+    refused = _refused_while_scoring(bank, df)
     assert "in use on another thread" in str(refused)
     assert "concurrent `predict` calls are fine" in str(refused)
     assert bank.fit_predict(df.head(10)).height == 10

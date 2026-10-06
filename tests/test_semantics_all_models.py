@@ -93,26 +93,62 @@ def test_feature_null_skips_the_row_entirely(model, extra):
     assert slot(out, "weight_sum", model)[11] is not None
 
 
+#: A clock column, so a skipped row's gap folds into the next row's and a
+#: deleted row is the same stream; and a weight column to null or zero.
+CLOCKED = dict(clock="t", gap_cap=100.0, weight="w")
+
+
+def _fields(out):
+    return out.select("m").unnest("m")
+
+
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestNullPolicy:
+    """What a null does to the model, not only to the row: asserted on the
+    row alone, these held whatever the model learned from it, since the
+    stream layer writes the row's fields (review 2026-10-05, TB13)."""
+
     def test_target_null_is_predict_only(self, model, extra):
+        """A null target is scored and not learned. The row has its
+        prediction and no residual. And the model learns nothing from it:
+        every later row is what it is with the row at weight 0, the other
+        way to advance the clock and learn nothing, field for field and
+        ``coef`` included -- but ``weight_sum``, the shared weight, which
+        counts every processed row (hard rule 8) and so is the zero-weight
+        stream's plus the row's weight, decayed. `kalman` runs
+        unstandardized here: its standardizer takes every processed row's
+        features, a null target's included, as `kalman.rs` documents."""
+        if model == "kalman":
+            extra = {**extra, "standardize": False}
         df = frame(binary=model == "ftrl")
         y = df["y0"].to_list()
         y[20] = None
-        df = df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
-        out = run(model, extra, df)
+        out = run(model, extra, df.with_columns(y0=pl.Series(y, dtype=pl.Float64)), **CLOCKED)
         assert slot(out, "resid_", model)[20] is None, "a null target has no residual"
         # Every model still emits a prediction for the row -- it is the update
         # that is skipped, not the prediction.
         assert slot(out, "pred_", model)[20] is not None
+        w = df["w"].to_list()
+        w[20] = 0.0
+        zero = run(model, extra, df.with_columns(w=pl.Series(w, dtype=pl.Float64)), **CLOCKED)
+        a, b = _fields(out).slice(21), _fields(zero).slice(21)
+        assert a.drop("weight_sum").equals(b.drop("weight_sum"), null_equal=True)
+        lam = 0.5 ** (1.0 / 200.0)  # the rows are one clock unit apart
+        more = a["weight_sum"].to_numpy() - b["weight_sum"].to_numpy()
+        np.testing.assert_allclose(more, lam ** np.arange(len(more)), rtol=1e-12)
 
     def test_null_weight_skips_the_row(self, model, extra):
+        """A null weight skips the row: every field of it is null, and every
+        other row is what it is with the row deleted, ``coef`` included."""
         df = frame(binary=model == "ftrl")
         w = df["w"].to_list()
         w[15] = None
-        df = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
-        out = run(model, extra, df, weight="w")
-        assert slot(out, "weight_sum", model)[15] is None
+        out = _fields(run(model, extra, df.with_columns(w=pl.Series(w)), **CLOCKED))
+        assert all(out[c][15] is None for c in out.columns), out.row(15, named=True)
+        deleted = run(model, extra, pl.concat([df.slice(0, 15), df.slice(16)]), **CLOCKED)
+        assert pl.concat([out.slice(0, 15), out.slice(16)]).equals(
+            _fields(deleted), null_equal=True
+        )
 
     def test_negative_weight_is_rejected(self, model, extra):
         df = frame(binary=model == "ftrl")

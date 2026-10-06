@@ -478,8 +478,6 @@ def test_a_formula_composes_on_either_side_of_a_polars_operator() -> None:
         d=po.ewm_mean("x", half_life=3.0).fill_null(0.0).cast(pl.Float32) ** 2,
         **CLOCK,
     )
-    m = out.with_columns(m=po.ewm_mean("x", half_life=3.0)) if False else None
-    assert m is None
     base = po.stream.with_windows(
         df, m=po.ewm_mean("x", half_life=3.0), s=po.ewm_sum("x", half_life=3.0), **CLOCK
     )
@@ -668,9 +666,10 @@ def test_a_gap_past_the_cap_and_a_session_change_cut_the_windows() -> None:
     dropped = po.stream.with_windows(
         df, d=po.rewm_mean("x", half_life=1.0, window_size=5.0, partial="drop"), **events()
     )
-    assert (
-        dropped.height == 11 - 4 - 3 and dropped["t"].to_list()[:1] == [33.0] or dropped.height < 11
-    )
+    # The four rows the gap cut and the three the session change cut leave;
+    # the rows whose windows the input's end holds stay. Once `or height <
+    # 11`, true of any drop at all (review 2026-10-05, TB9).
+    assert dropped["t"].to_list() == [33.0, 34.0, 35.0, 36.0]
 
 
 def test_a_reset_discards_and_a_late_row_is_refused() -> None:
@@ -840,12 +839,9 @@ def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
     and cached): the three forward VWAPs and a trailing mid, under a
     Datetime clock, chunked; the VWAP from running sums equals the one from
     prices and quantities where the sums step at trades."""
-    from data import public_quotes_and_trades
+    from data import public_quotes_and_trades_or_skip
 
-    try:
-        day = public_quotes_and_trades()
-    except OSError as e:  # offline: the one skip, explained
-        pytest.skip(f"offline: {e}")
+    day = public_quotes_and_trades_or_skip()  # offline: the one skip, explained
     df = day.head(200_000).with_columns(
         cum_q=pl.col("quantity").fill_null(0.0).cum_sum(),
         cum_pq=(pl.col("price") * pl.col("quantity")).fill_null(0.0).cum_sum(),

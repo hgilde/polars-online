@@ -106,6 +106,8 @@ def unpack(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
         long = po.eval.unpack(out, "ridge")       # slot, target, pred, y, and the input columns
 
     Raises:
@@ -277,6 +279,8 @@ def metrics(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
         scores = po.eval.metrics(out, "ridge", by=["stock_id"])   # n, r2, ic, hit_rate, mse per key
 
     Raises as :func:`unpack` does; a ``by`` column the frame has not got is
@@ -310,6 +314,8 @@ def rolling_metrics(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
         by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window_size=100.0)
         # on a Datetime clock: window_size=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
@@ -371,6 +377,11 @@ def compare_specs(
 
     .. code-block:: python
 
+        ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        kalman = po.spec.kalman(
+            "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
+        )
+        out = po.ModelBank([ridge, kalman]).fit_predict(df)
         table = po.eval.compare_specs(out, ["ridge", "kalman"])   # which had the lower error
 
     Raises as :func:`metrics` does for each; no specs give an empty frame.
@@ -446,6 +457,11 @@ def seqtest(
 
     .. code-block:: python
 
+        ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        kalman = po.spec.kalman(
+            "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
+        )
+        out = po.ModelBank([ridge, kalman]).fit_predict(df)
         evidence = po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])
 
     Raises:
@@ -602,6 +618,8 @@ def sums(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        out = po.ModelBank([spec]).fit_predict(df)
         part = po.eval.sums(out.head(200), "ridge", by=["stock_id"])   # ten numbers per key
         rest = po.eval.sums(out.tail(200), "ridge", by=["stock_id"])
         running = po.eval.merge_sums(part, rest)                       # exact, whatever the split

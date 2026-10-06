@@ -3,18 +3,22 @@
 
 Not a regression: no targets, and the six outputs (``cluster``, ``dist``,
 ``micro``, ``outlier``, ``n_clusters``, ``n_micro``) describe the row
-against the summaries *as they stood before the row*. Three kinds of check:
+against the summaries *as they stood before the row*. Four kinds of check:
 
-- **The oracle.** ``tests/reference_cluster.py`` mirrors the Rust operation
-  for operation -- the admission test, the radius cap, promotion, the
-  checkpoint (pruning by the ``xi`` rule, then linkage with the derived
-  threshold), eviction at the cap -- so the bank is held to it **bit for
-  bit** over every knob, nulls, weights, an irregular clock and ``predict``.
+- **The transcription.** ``tests/reference_cluster.py`` mirrors the Rust
+  operation for operation -- the admission test, the radius cap,
+  promotion, the checkpoint (pruning by the ``xi`` rule, then linkage with
+  the derived threshold), eviction at the cap -- so the bank is held to it
+  **bit for bit** over every knob, nulls, weights, an irregular clock and
+  ``predict``. A regression check, which can share a mistake with the code.
+- **The definitions.** ``TestDefinitions`` holds each row's admission to
+  the module doc's rule, and each live summary's weight, centre and radius
+  to the rows sent to it, at their decayed weights; to 1e-9.
 - **Large data.** Tens of thousands of rows of the geometries that defeat
   k-means (moons, rings, unequal densities, twenty dimensions), held to the
   truth and to a numpy DBSCAN ceiling computed here; two hundred thousand
   rows of blobs; a stream whose clusters are born and die; five per cent
-  noise. No scikit-learn.
+  noise.
 - **Edge cases and plumbing.** Everything docs/PLAN.md section 3 promises
   and every place the model touches the bank: warmup, nulls, zero weights,
   heavy weights and the radius cap, ids, the cap, pruning, promotion, the
@@ -25,6 +29,7 @@ against the summaries *as they stood before the row*. Three kinds of check:
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -257,6 +262,109 @@ class TestOracle:
 
 
 # ------------------------------------------------------------- large data
+
+
+class TestDefinitions:
+    """Independent of `reference_cluster.py`, which transcribes the Rust
+    (review 2026-10-05, TB1): written from the module docs of
+    `crates/online-core/src/cluster/micro.rs` and `summary.rs`, read
+    against the bank's exported state, to 1e-9. Without standardization a
+    distance is the Euclidean one, and at unit weights the mean weight
+    ``w̄`` is 1, so a row is admitted at the weight it is absorbed with and
+    the cap on the radius never binds."""
+
+    @staticmethod
+    def state(bank: po.ModelBank) -> dict:
+        model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]
+        return model["Micro"]
+
+    @staticmethod
+    def after(m: dict, z: np.ndarray, lam: float) -> float:
+        """``r2_after``: the summary's radius² once it took ``z`` at weight
+        1, its weight decayed by the row's step first."""
+        n = float(m["s"]["n"]) * lam
+        c = np.array(m["s"]["c"])
+        a, b = n / (n + 1.0), 1.0 / (n + 1.0)
+        return a * float(m["s"]["r2"]) + a * b * float((z - c) @ (z - c))
+
+    @staticmethod
+    def nearest(z: np.ndarray, group: list[dict]) -> tuple[dict, float] | None:
+        """The summary nearest ``z`` (the first of a tie) and the distance."""
+        if not group:
+            return None
+        d2 = [float((z - np.array(m["s"]["c"])) @ (z - np.array(m["s"]["c"]))) for m in group]
+        j = int(np.argmin(d2))
+        return group[j], math.sqrt(d2[j])
+
+    def test_each_summary_is_its_rows_and_each_row_goes_where_the_rule_says(self):
+        """A row goes to the nearest potential summary if its radius² after
+        taking the row, ``a r2 + a b |z - c|²``, stays within ``E = eps² p``;
+        else to the nearest outlier summary on the same test; else to a new
+        summary with the next id. ``micro_id`` names it, ``outlier`` says
+        whether a potential summary took it, and ``dist`` is the distance to
+        the nearest potential one. Then every live summary is its rows: the
+        weight, mean and mean squared deviation about that mean of the rows
+        ``micro_id`` sent it, at the weights they have decayed to -- whatever
+        pruning and eviction removed in between."""
+        X, _ = shapes("varied", seed=3, n=2000)
+        rng = np.random.default_rng(3)
+        steps = rng.exponential(1.0, len(X))
+        steps[::150] = 20.0
+        t = np.cumsum(steps)
+        half_life = 300.0
+        s = spec(
+            eps=0.3,
+            half_life=half_life,
+            min_weight=0.0,
+            beta_mu=5.0,
+            standardize=False,
+            prune_every=100,
+            clock="t",
+            gap_cap=1e9,
+        )
+        df = frame(X, t=t)
+        bank = po.ModelBank([s])
+        prev = None
+        took: dict[int, list[int]] = {}
+        seen = dict.fromkeys(("potential", "outlier", "new", "pruned or evicted"), 0)
+        for i in range(df.height):
+            out = unnested(bank.fit_predict(df.slice(i, 1)))
+            now = self.state(bank)
+            micro_id, outlier, dist = out["micro_id"][0], out["outlier"][0], out["dist"][0]
+            took.setdefault(micro_id, []).append(i)
+            if prev is not None:
+                lam = 0.5 ** ((t[i] - t[i - 1]) / half_life)
+                E = float(prev["eps2"])
+                assert pytest.approx(0.3**2 * 2) == E
+                z = X[i]
+                pot = self.nearest(z, [m for m in prev["mc"] if m["potential"]])
+                out_ = self.nearest(z, [m for m in prev["mc"] if not m["potential"]])
+                if pot is not None and self.after(pot[0], z, lam) <= E:
+                    want, kind = pot[0]["id"], "potential"
+                elif out_ is not None and self.after(out_[0], z, lam) <= E:
+                    want, kind = out_[0]["id"], "outlier"
+                else:
+                    want, kind = prev["next_id"], "new"
+                seen[kind] += 1
+                assert micro_id == want, (i, kind)
+                assert outlier == (kind != "potential"), i
+                if pot is None:
+                    assert dist is None, i
+                else:
+                    assert dist == pytest.approx(pot[1], rel=1e-9), i
+                live = {m["id"] for m in now["mc"]}
+                seen["pruned or evicted"] += len({m["id"] for m in prev["mc"]} - live)
+            for m in now["mc"]:
+                idx = np.array(took[m["id"]])
+                wt = 0.5 ** ((t[i] - t[idx]) / half_life)
+                n = wt.sum()
+                c = (wt[:, None] * X[idx]).sum(axis=0) / n
+                r2 = (wt * ((X[idx] - c) ** 2).sum(axis=1)).sum() / n
+                assert float(m["s"]["n"]) == pytest.approx(n, rel=1e-9), (i, m["id"])
+                np.testing.assert_allclose(m["s"]["c"], c, rtol=1e-9, atol=1e-12)
+                assert float(m["s"]["r2"]) == pytest.approx(r2, rel=1e-9, abs=1e-12), (i, m["id"])
+            prev = now
+        assert all(v > 20 for v in seen.values()), seen
 
 
 class TestLargeData:

@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import polars_online as po
+from data import is_transient
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -57,9 +58,14 @@ probe = _load("release_probe")
 
 
 def _online() -> bool:
+    """Whether PyPI answers. An HTTP error is an ``OSError``, and a 404 here
+    is PyPI saying the package is gone, so only what a retry could fix reads
+    as offline (`data.is_transient`, review 2026-10-05, TA3)."""
     try:
         urllib.request.urlopen("https://pypi.org/simple/polars-online/", timeout=15).close()
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        if not is_transient(e):
+            raise
         return False
     return True
 

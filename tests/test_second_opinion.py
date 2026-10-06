@@ -758,15 +758,25 @@ class TestAZeroWeightRowIsNotSeen:
     jumps a hundredfold must equal a run where it does not, field by field,
     from the next row on. The library check is the detector itself: river's
     ``PageHinkley`` with ``alpha = 1`` and ``mode = "up"`` is ours flag for
-    flag (verified on its own before this test was written), so fed the
-    bank's own ``|resid| / sigma`` series with the zero-weight row left out,
-    it must reproduce the bank's ``drift`` column."""
+    flag when nothing decays, so fed the bank's own ``|resid| / sigma``
+    series with the zero-weight row left out, it must reproduce the bank's
+    ``drift`` column. Under a half-life it is not: ours keeps the error's
+    mean at the model's half-life and river keeps a plain mean, and with a
+    level shift of 3 the two fire a row apart.
 
-    def _run(self, jump: float, drift_action: str = "flag"):
+    The target's level shifts by ten noise standard deviations at row 900,
+    after the zero-weight row, so the detector fires in every leg. Without
+    it no leg ever fired, and the reset leg and river's comparison checked
+    nothing (review 2026-10-05, TA2)."""
+
+    SHIFT_AT = 900
+
+    def _run(self, jump: float, drift_action: str = "flag", half_life: float = 200.0):
         rng = np.random.default_rng(51)
         n, k0 = 1200, 700
         x = rng.normal(0.0, 1.0, n)
         y = 1.0 + 2.0 * x + rng.normal(0.0, 0.5, n)
+        y[self.SHIFT_AT :] += 5.0
         w = np.ones(n)
         w[k0] = 0.0
         y[k0] += jump
@@ -774,7 +784,7 @@ class TestAZeroWeightRowIsNotSeen:
             "m",
             targets=["y"],
             features=["x"],
-            half_life=200.0,
+            half_life=half_life,
             weight="w",
             emit_sigma=True,
             resid_quantiles=[0.5, 0.9],
@@ -796,27 +806,41 @@ class TestAZeroWeightRowIsNotSeen:
         for col in clean.columns:
             a, b = clean[col][after], jumped[col][after]
             assert a.equals(b, null_equal=True), col
+        fired = np.flatnonzero(jumped["drift_y"].fill_null(False).to_numpy())
+        assert len(fired) >= 1, "the detector never fired, so the legs compared nothing"
+        assert (fired > k0).all() and (fired >= self.SHIFT_AT).any(), fired
+        if drift_action == "reset":
+            # The model starts over after the row that fired: the next row
+            # sees no accumulated weight.
+            ws = jumped["weight_sum"].to_numpy()
+            for t in fired:
+                assert ws[t] > 100.0 and ws[t + 1] == 0.0, (t, ws[t], ws[t + 1])
 
     def test_the_drift_column_is_rivers_page_hinkley_without_it(self):
         import river.drift as river_drift
 
-        out, _, w = self._run(100.0)
+        out, _, w = self._run(100.0, half_life=float("inf"))
         resid = out["resid_y"].to_numpy()
         sigma = out["sigma_y"].to_numpy()
         flags = out["drift_y"].to_numpy()
         ph = river_drift.PageHinkley(
             min_instances=0, delta=0.05, threshold=20.0, alpha=1.0, mode="up"
         )
-        fed = 0
+        fed, rivers = 0, []
         for t in range(len(resid)):
             e = abs(resid[t]) / sigma[t] if sigma[t] > 0 else float("nan")
             if w[t] > 0 and np.isfinite(e):
                 ph.update(float(e))
                 fed += 1
                 assert bool(flags[t]) == bool(ph.drift_detected), t
+                if ph.drift_detected:
+                    rivers.append(t)
             else:
                 assert not flags[t], t
         assert fed > 1000
+        # River fired, on the bank's rows, and again after re-arming.
+        assert rivers == np.flatnonzero(flags).tolist()
+        assert any(t >= self.SHIFT_AT for t in rivers), rivers
 
 
 class TestLabelDelayFoldsWhatWasScored:
@@ -1521,7 +1545,8 @@ class TestKalmanZeroWeightRow:
     """S9. ``kalman``'s per-target weights -- ``wj``, which gates the
     prediction, and ``wsig``, the memory of the residual variance ``σ²`` that
     sets both the observation noise ``σ²/w`` and the process noise ``σ²·(ln 2
-    / coef_half_life)²`` -- decayed on a row whose target was null and not on
+    · d / coef_half_life)²`` of a step ``d`` clock units long -- decayed on a
+    row whose target was null and not on
     one whose target was present at weight zero. The filter treats the two
     alike, a prediction step and no update, so ``σ²`` remembered more across
     one than the other.
@@ -1537,21 +1562,32 @@ class TestKalmanZeroWeightRow:
 
     @staticmethod
     def filterpy_pred(
-        kalman: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray, half_life: float, coef_hl: float
+        kalman: Any,
+        t: np.ndarray,
+        Z: np.ndarray,
+        y: np.ndarray,
+        w: np.ndarray,
+        half_life: float,
+        coef_hl: float,
     ) -> np.ndarray:
-        n, k = x.shape
-        kf = kalman.KalmanFilter(dim_x=k + 1, dim_z=1)
-        kf.x = np.zeros((k + 1, 1))
-        kf.P = np.eye(k + 1)
-        kf.F = np.eye(k + 1)
+        """filterpy's predictions over the regressor rows ``Z``, the
+        intercept's column first: ``[1, x]`` unstandardized, the rows
+        standardized otherwise."""
+        n, k1 = Z.shape
+        kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
+        kf.x = np.zeros((k1, 1))
+        kf.P = np.eye(k1)
+        kf.F = np.eye(k1)
         sig2 = wsig = wj = 0.0
         pred = np.full(n, np.nan)
         for i in range(n):
-            d = 0.0 if i == 0 else 1.0
+            d = 0.0 if i == 0 else t[i] - t[i - 1]
             lam = 0.5 ** (d / half_life)
             s2 = sig2 if sig2 > 0.0 else 1.0
-            kf.predict(Q=np.eye(k + 1) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
-            z = np.concatenate(([1.0], x[i]))
+            # The process noise of a step d clock units long, as the
+            # docstring states it: sigma^2 * (ln 2 * d / coef_half_life)^2.
+            kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
+            z = Z[i]
             if wj > 0.0:
                 pred[i] = z @ kf.x[:, 0]
             if np.isnan(y[i]) or w[i] <= 0.0:
@@ -1582,19 +1618,34 @@ class TestKalmanZeroWeightRow:
         skip = (np.arange(n) % 9 == 4) & (np.arange(n) > 20)
         w = np.where(skip & (how == "zero weight"), 0.0, 1.0)
         y_seen = np.where(skip & (how == "null"), np.nan, y)
+        # Steps of 1, one gap of 4 and then half steps, so the process noise's
+        # d**2 is not d (review 2026-10-05, TA5).
+        steps = np.ones(n)
+        steps[150] = 4.0
+        steps[230:] = 0.5
+        t = np.cumsum(steps) - steps[0]
         frame = pl.DataFrame(
             {
+                "t": t,
                 "x0": x[:, 0],
                 "x1": x[:, 1],
                 "y": [None if np.isnan(v) else float(v) for v in y_seen],
                 "w": w,
             },
-            schema={"x0": pl.Float64, "x1": pl.Float64, "y": pl.Float64, "w": pl.Float64},
+            schema={
+                "t": pl.Float64,
+                "x0": pl.Float64,
+                "x1": pl.Float64,
+                "y": pl.Float64,
+                "w": pl.Float64,
+            },
         )
         spec = po.spec.kalman(
             "k",
             targets=["y"],
             features=["x0", "x1"],
+            clock="t",
+            gap_cap=1e9,
             coef_half_life=coef_hl,
             standardize=False,
             p0=1.0,
@@ -1603,8 +1654,95 @@ class TestKalmanZeroWeightRow:
             min_weight=0.0,
         )
         got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
-        want = self.filterpy_pred(kalman, x, y_seen, w, half_life, coef_hl)
+        Z = np.column_stack([np.ones(n), x])
+        want = self.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+
+
+class TestAStandardizedKalmanIsFilterpy:
+    """The review's TC1 (2026-10-05): the library second opinions held
+    `kalman` only at ``standardize = False``, and the default is ``True``,
+    which `kalman_ref` held by restating the core. Standardized, the filter
+    runs on ``z = [1, (x - m) / s]``, with ``m`` and ``s`` the EW means and
+    standard deviations of the features over the rows *before* this one:
+    at the spec's half-life on the clock, every processed row at its weight
+    (a row whose target is null included), and a scale of 1 where the
+    variance is 0 (`kalman.rs`'s module doc; `EwDiag`). Standardized here in
+    numpy, by sums over the raw rows, and fed to filterpy as
+    `TestKalmanZeroWeightRow` feeds it the raw ones.
+
+    The coefficients are read out in the original units with the moments
+    *after* the row, so ``coef`` after one row applied to the next row's
+    features is the next row's prediction (docs/PLAN.md task 97): asserted
+    here directly, where `tests/test_oracles_rls_kalman_paths.py` stated
+    it."""
+
+    @staticmethod
+    def standardized(t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float) -> np.ndarray:
+        n, k = x.shape
+        Z = np.ones((n, k + 1))
+        for i in range(n):
+            u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / half_life) if i else np.zeros(0)
+            if u.sum() > 0.0:
+                m = (u[:, None] * x[:i]).sum(axis=0) / u.sum()
+                v = (u[:, None] * (x[:i] - m) ** 2).sum(axis=0) / u.sum()
+            else:
+                m, v = np.zeros(k), np.zeros(k)
+            Z[i, 1:] = (x[i] - m) / np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
+        return Z
+
+    @pytest.mark.parametrize("how", ["null", "zero weight"])
+    def test_the_filter_is_filterpy_on_the_standardized_rows(self, how):
+        import filterpy.kalman as kalman
+
+        rng = np.random.default_rng(43)
+        n, half_life, coef_hl = 300, 30.0, 50.0
+        raw = rng.normal(0.0, 1.0, (n, 2))
+        drift = np.arange(n) / n
+        y = 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
+        y = y + rng.normal(0.0, 0.3, n)
+        # Features at levels and scales of their own, so standardizing matters.
+        x = raw * np.array([5.0, 0.2]) + np.array([3.0, -40.0])
+        skip = (np.arange(n) % 9 == 4) & (np.arange(n) > 20)
+        w = np.where(skip & (how == "zero weight"), 0.0, rng.uniform(0.5, 1.5, n))
+        y_seen = np.where(skip & (how == "null"), np.nan, y)
+        steps = np.ones(n)
+        steps[150] = 4.0
+        steps[230:] = 0.5
+        t = np.cumsum(steps) - steps[0]
+        frame = pl.DataFrame(
+            {
+                "t": t,
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": [None if np.isnan(v) else float(v) for v in y_seen],
+                "w": w,
+            },
+            schema={c: pl.Float64 for c in ("t", "x0", "x1", "y", "w")},
+        )
+        spec = po.spec.kalman(
+            "k",
+            targets=["y"],
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=1e9,
+            coef_half_life=coef_hl,
+            p0=1.0,
+            weight="w",
+            half_life=half_life,
+            min_weight=0.0,
+            coef_every=1,
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        got = out["pred_y"].to_numpy()
+        Z = self.standardized(t, x, w, half_life)
+        want = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+        assert np.isfinite(got[1:]).all()
+        # Task 97: coef after row i, applied to row i + 1, is row i + 1's pred.
+        coef = out["coef"].to_list()
+        via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(1, n - 1)])
+        np.testing.assert_allclose(via, got[2:], rtol=1e-12, atol=1e-12)
 
 
 class TestAHopelessSerialFactorSaysSo:

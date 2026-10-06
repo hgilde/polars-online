@@ -229,6 +229,10 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     .. code-block:: python
 
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0, group="stock_id"
+        )
+        bank = po.ModelBank([spec])
         bank.fit_predict(df)
         parts = bank.gram("ridge")                      # one Gram per group
         pooled = po.gram.merge(parts)                   # the Gram of every group's rows together
@@ -402,6 +406,12 @@ def from_row(row: Any) -> dict[str, Any]:
 
     .. code-block:: python
 
+        blocks = po.spec.ew_cov(
+            "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
+        )
+        bank = po.ModelBank([blocks])
+        bank.fit_predict(df.with_columns(block=pl.int_range(pl.len()) // 100))
+        closed = bank.closed_groups()                 # one row per finished block
         for row in closed.iter_rows(named=True):
             g = po.gram.from_row(row)
             r = po.gram.correlation(g)
@@ -599,6 +609,11 @@ def solve(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
+            ridge=0.1, standardize=True,
+        )
+        bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
         beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)   # the spec's own fit
@@ -699,6 +714,8 @@ def lasso_path(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
         path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per lambda
@@ -808,6 +825,11 @@ def coef_stats(
 
     .. code-block:: python
 
+        spec = po.spec.ewridge(
+            "ridge", targets=["y"], features=["x0", "x1"], half_life=100.0,
+            ridge=0.1, standardize=True,
+        )
+        bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
         beta = po.gram.solve(g, target="y", ridge=0.1, standardize=True)

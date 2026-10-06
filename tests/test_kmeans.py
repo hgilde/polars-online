@@ -3,17 +3,22 @@ docs/PLAN.md 11a, task 23).
 
 Not a regression: no targets, and the outputs (``cluster``, ``dist``,
 ``dist2``) are the assignment of each row to the centres *as they stood
-before the row*. Three kinds of check:
+before the row*. Four kinds of check:
 
-- **The oracle.** ``tests/reference_cluster.py`` mirrors the Rust operation
-  for operation, so the bank is held to it **bit for bit** -- across every
-  seeding rule, both metrics, mini-batches, split-merge, nulls, weights and
-  an irregular clock -- not to a tolerance. A hard assignment that flips on
-  a rounding difference would move whole rows between centres, and a
-  tolerance would hide exactly that.
+- **The transcription.** ``tests/reference_cluster.py`` mirrors the Rust
+  operation for operation, so the bank is held to it **bit for bit** --
+  across every seeding rule, both metrics, mini-batches, split-merge, nulls,
+  weights and an irregular clock -- not to a tolerance. A hard assignment
+  that flips on a rounding difference would move whole rows between
+  centres, and a tolerance would hide exactly that. Being a transcription,
+  it is a regression check, and can share a mistake with the code.
+- **The definitions.** ``TestDefinitions`` recomputes each checkpoint's
+  centres, weights and radii from the raw rows assigned to them, at their
+  decayed weights, and holds the far, merge and dead decisions to the
+  module doc's formulas, row by row, against the exported state; to 1e-9.
 - **Large data.** Hundreds of thousands of rows, held to the truth (ARI
-  against the generating labels) and to batch Lloyd's answer on the same
-  rows, computed here in numpy. No scikit-learn.
+  against the generating labels), to batch Lloyd's answer on the same rows
+  computed here in numpy, and to scikit-learn's ``KMeans``.
 - **Edge cases and plumbing.** Everything docs/PLAN.md section 3 promises,
   and every place the model touches the bank: warmup, nulls, zero weights,
   ``k = 1``, duplicate rows under the ``first`` rule, constant features,
@@ -24,6 +29,7 @@ before the row*. Three kinds of check:
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -398,6 +404,373 @@ class TestScaleFloor:
         # long-run one some 3.3 half-lives into the spell, not before.
         assert np.array_equal(dist[0.0][:2200], dist[0.1][:2200])
         assert not np.array_equal(dist[0.0][2500:5000], dist[0.1][2500:5000])
+
+
+# ---------------------------------------------------------- the definitions
+#
+# Independent of `reference_cluster.py`, which transcribes the Rust and is
+# held bit for bit above: each check here is written from the definitions in
+# docs/CLUSTERING.md §6.1-6.3 and in the module docs of
+# `crates/online-core/src/cluster/kmeans.rs` and `summary.rs`, recomputes
+# what it needs from the raw rows, and agrees to 1e-9 (review 2026-10-05,
+# TB1). They run without standardization, so a distance is the Euclidean one
+# in the features' own units, and read the weights, radii and far summaries
+# the bank does not emit from its exported state.
+
+
+def _state(bank: po.ModelBank) -> dict:
+    """The model's exported state: one group, one instance."""
+    model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]
+    return model["KMeans"]
+
+
+def _decay(dt, half_life):
+    return 0.5 ** (np.asarray(dt, dtype=float) / half_life)
+
+
+class TestDefinitions:
+    """Assignment, centres, weights and radii from the rows; the far, merge
+    and dead criteria from the formulas; scikit-learn's ``KMeans`` on a large
+    case without decay."""
+
+    @staticmethod
+    def stream(n=900, seed=21):
+        X, _ = blobs(n=n, k=3, seed=seed, scale=0.8)
+        rng = np.random.default_rng(seed)
+        steps = rng.exponential(1.0, n)
+        steps[::97] = 15.0  # gaps
+        t = np.cumsum(steps)
+        w = rng.uniform(0.5, 1.5, n)
+        w[28::29] = 0.0  # scored, not learned
+        w[:3] = 1.0  # the three rows the `first` rule seeds from
+        return X, t, w
+
+    @staticmethod
+    def by_definition(X, t, w, k, half_life, update_every):
+        """Sequential k-means as docs/CLUSTERING.md §6.2-6.3 define it, with
+        the `first` rule and no split-merge. The first `k` learned rows are
+        the seeds, and replaying the buffer assigns each to itself. Every
+        later row is assigned to the nearest centre as it stood (the first
+        minimum wins), and at every `update_every`-th learned row each centre
+        is recomputed as the weighted mean of every row assigned to it, at
+        the weight it has decayed to. Its radius² is the same weighted mean
+        of each row's squared distance to the centre it was assigned to
+        (`summary.rs`, `absorb_plain`)."""
+        learned = [i for i in range(len(w)) if w[i] > 0.0]
+        seeds = learned[:k]
+        rows: list[list[int]] = [[i] for i in seeds]
+        d2_at: dict[int, float] = dict.fromkeys(seeds, 0.0)
+
+        def summarise(at, upto):
+            out = []
+            for js in rows:
+                idx = np.array([i for i in js if i <= upto])
+                wt = w[idx] * _decay(t[at] - t[idx], half_life)
+                n = wt.sum()
+                c = (wt[:, None] * X[idx]).sum(axis=0) / n
+                r2 = (wt * np.array([d2_at[i] for i in idx])).sum() / n
+                out.append((n, c, r2))
+            return out
+
+        checkpoints = [seeds[-1]]
+        centres = np.array([c for _, c, _ in summarise(seeds[-1], seeds[-1])])
+        scored: dict[int, tuple[int, float, float]] = {}
+        since = 0
+        for i in range(seeds[-1] + 1, len(w)):
+            d2 = ((X[i] - centres) ** 2).sum(axis=1)
+            j = int(np.argmin(d2))
+            scored[i] = (j, math.sqrt(d2[j]), math.sqrt(np.sort(d2)[1]))
+            if w[i] <= 0.0:
+                continue
+            rows[j].append(i)
+            d2_at[i] = float(d2[j])
+            since += 1
+            if since == update_every:
+                since = 0
+                checkpoints.append(i)
+                centres = np.array([c for _, c, _ in summarise(i, i)])
+        return scored, checkpoints, summarise
+
+    @pytest.mark.parametrize("update_every", [1, 7])
+    def test_each_checkpoint_is_the_decayed_mean_of_its_rows(self, update_every):
+        X, t, w = self.stream()
+        k, half_life = 3, 60.0
+        s = spec(
+            k=k,
+            half_life=half_life,
+            min_weight=0.0,
+            warm_rows=k,
+            seed_rule="first",
+            split_merge=0.0,
+            standardize=False,
+            update_every=update_every,
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            coef_every=1,
+        )
+        df = frame(X, t=t, w=w)
+        scored, checkpoints, summarise = self.by_definition(X, t, w, k, half_life, update_every)
+        out = unnested(po.ModelBank([s]).fit_predict(df))
+        # The assignment, and the distances to the nearest and the runner-up.
+        assert out["cluster"][: checkpoints[0] + 1].null_count() == checkpoints[0] + 1
+        for i, (j, d1, d2) in scored.items():
+            assert out["cluster"][i] == j, i
+            assert math.isclose(out["dist"][i], d1, rel_tol=1e-9), i
+            assert math.isclose(out["dist2"][i], d2, rel_tol=1e-9), i
+        # The centres after every checkpoint, as `coef` reports them.
+        for i in checkpoints:
+            want = np.concatenate([c for _, c, _ in summarise(i, i)])
+            np.testing.assert_allclose(out["coef"][i].to_numpy(), want, rtol=1e-9, atol=1e-12)
+        # The weights and radii, from the exported state between checkpoints:
+        # the last checkpoint's centres and radii, its rows' weights decayed
+        # to the row the state was read after.
+        bank = po.ModelBank([s])
+        compared = 0
+        for a in range(0, df.height, 23):
+            bank.fit_predict(df.slice(a, 23))
+            last = min(a + 23, df.height) - 1
+            done = [c for c in checkpoints if c <= last]
+            if not done:
+                continue
+            got = _state(bank)["clusters"]
+            for g, (n, c, r2) in zip(got, summarise(last, done[-1]), strict=True):
+                assert math.isclose(g["n"], n, rel_tol=1e-9), (last, g["n"], n)
+                np.testing.assert_allclose(g["c"], c, rtol=1e-9, atol=1e-12)
+                assert math.isclose(g["r2"], r2, rel_tol=1e-9, abs_tol=1e-12), (last, g, r2)
+            compared += 1
+        assert compared > 30
+        assert len(checkpoints) > (df.height - 100) // (update_every * 2)
+
+    # The constants `kmeans.rs` names in its module doc.
+    FAR_SIGMAS, FAR_SHARE, FAR_ROWS, RADIUS_ROWS = 4.0, 0.05, 3, 10
+
+    @classmethod
+    def typical(cls, clusters, rows):
+        """``R̃``: the mean of the positive radii² from at least
+        ``RADIUS_ROWS`` rows, leaving out the largest; ``None`` when there
+        is none, and nothing is far."""
+        r2 = [c["r2"] for c, n in zip(clusters, rows, strict=True) if n >= cls.RADIUS_ROWS]
+        r2 = [v for v in r2 if v > 0.0]
+        if not r2:
+            return None
+        return r2[0] if len(r2) == 1 else (sum(r2) - max(r2)) / (len(r2) - 1)
+
+    @staticmethod
+    def absorb_plain(c, z, w, d2):
+        """`summary.rs`: ``n' = n + w``, ``c' = c + b (z - c)``, ``r2' = r2 +
+        b (d2 - r2)``, ``b = w / n'``."""
+        c["n"] += w
+        b = w / c["n"]
+        c["c"] = c["c"] + b * (z - c["c"])
+        c["r2"] += b * (d2 - c["r2"])
+
+    @staticmethod
+    def welford(c, z, w, r2_o=0.0):
+        """`summary.rs`: ``a = n / n'``, ``b = w / n'``, ``c' = c + b δ``,
+        ``r2' = a r2 + b r2_o + a b |δ|²``; a row is a summary of radius 0."""
+        n = c["n"] + w
+        if n <= 0.0:
+            return
+        a, b = c["n"] / n, w / n
+        delta = z - c["c"]
+        c["c"] = c["c"] + b * delta
+        c["r2"] = a * c["r2"] + b * r2_o + a * b * float(delta @ delta)
+        c["n"] = n
+
+    @classmethod
+    def split(cls, C, F, rows, typ, target, source):
+        """The freed centre ``target`` goes to far summary ``source``'s
+        mean with the typical radius² and half its cluster's weight."""
+        C[source]["n"] *= 0.5
+        C[target] = dict(n=C[source]["n"], c=F[source]["c"].copy(), r2=typ or 0.0)
+        rows[target] = cls.RADIUS_ROWS
+
+    def replay_criteria(self, X, **params):
+        """Step the bank a row at a time and hold each row to the module
+        doc's rules applied to the state before it: the row is far when its
+        squared distance to the nearest centre is above the cut, and then
+        goes to that centre's far summary and not into the centre; the cut
+        is ``f R̃``, ``f = 1 + FAR_SIGMAS sqrt(2/p)``; and at every
+        ``split_merge_every``-th learned row, the radii take the far rows in
+        as if at the cut, the closest pair by ``d_ij / (r_i + r_j)`` below
+        ``split_merge`` is merged when the heaviest far summary (counting
+        ``F_j`` as ``F_i``'s) holds ``FAR_ROWS`` rows and ``FAR_SHARE`` of
+        the weight learned since the last check, and with no such pair the
+        lightest centre, under ``dead_frac n_eff / k``, is dead. Either
+        freed centre goes to the heaviest far summary's mean, with ``R̃``
+        and half that cluster's weight, and every far summary starts
+        again."""
+        k, p = params["k"], X.shape[1]
+        lam = 0.5 ** (1.0 / params["half_life"])
+        f = 1.0 + self.FAR_SIGMAS * math.sqrt(2.0 / p)
+        sm, every, dead_frac = (
+            params["split_merge"],
+            params["split_merge_every"],
+            params["dead_frac"],
+        )
+        bank = po.ModelBank([spec(min_weight=1.0, standardize=False, **params)])
+        df = frame(X)
+        seen = dict.fromkeys(("far", "checks", "merges", "dead"), 0)
+
+        def summaries(state, key):
+            return [
+                dict(n=float(c["n"]), c=np.array(c["c"], dtype=float), r2=float(c["r2"]))
+                for c in state[key]
+            ]
+
+        prev = None
+        for i in range(df.height):
+            bank.fit_predict(df.slice(i, 1))
+            now = _state(bank)
+            if prev is None or not prev["clusters"]:
+                prev = now
+                continue
+            assert float(prev["far_factor"]) == f
+            x = X[i]
+            C, F = summaries(prev, "clusters"), summaries(prev, "far")
+            rows, far_rows = list(prev["rows"]), list(prev["far_rows"])
+            W = lam * float(prev["moments"]["w"]) + 1.0
+            V = lam * float(prev["window_w"]) + 1.0
+            for s in C + F:
+                s["n"] *= lam
+            d2 = np.array([float((x - c["c"]) @ (x - c["c"])) for c in C])
+            j = int(np.argmin(d2))
+            if d2[j] > float(prev["far_cut"]):
+                self.welford(F[j], x, 1.0)
+                far_rows[j] += 1
+                seen["far"] += 1
+            else:
+                self.absorb_plain(C[j], x, 1.0, d2[j])
+                rows[j] += 1
+            typ = self.typical(C, rows)
+            cut = math.inf if typ is None else f * typ
+            merged = dead = False
+            if prev["since_sm"] + 1 >= every:
+                seen["checks"] += 1
+                if math.isfinite(cut):
+                    for c, fs in zip(C, F, strict=True):
+                        if fs["n"] > 0.0:
+                            c["r2"] = (c["n"] * c["r2"] + fs["n"] * cut) / (c["n"] + fs["n"])
+                typ = self.typical(C, rows)
+                cut = math.inf if typ is None else f * typ
+                close = False
+                if k >= 3:
+                    best, pair = math.inf, (0, 0)
+                    for a in range(k):
+                        for b in range(a + 1, k):
+                            den = math.sqrt(max(C[a]["r2"], 0.0)) + math.sqrt(max(C[b]["r2"], 0.0))
+                            d = math.sqrt(float((C[a]["c"] - C[b]["c"]) @ (C[a]["c"] - C[b]["c"])))
+                            ratio = 0.0 if d == 0.0 else (d / den if den > 0.0 else math.inf)
+                            if ratio < best:
+                                best, pair = ratio, (a, b)
+                    if best < sm:
+                        close = True
+                        a, b = pair
+                        src, n_src, rows_src = a, F[a]["n"] + F[b]["n"], far_rows[a] + far_rows[b]
+                        for m in range(k):
+                            if m not in pair and F[m]["n"] > n_src:
+                                src, n_src, rows_src = m, F[m]["n"], far_rows[m]
+                        if (
+                            n_src > 0.0
+                            and rows_src >= self.FAR_ROWS
+                            and n_src >= self.FAR_SHARE * V
+                        ):
+                            self.welford(C[a], C[b]["c"], C[b]["n"], C[b]["r2"])
+                            rows[a] += rows[b]
+                            self.welford(F[a], F[b]["c"], F[b]["n"], F[b]["r2"])
+                            self.split(C, F, rows, typ, b, src)
+                            merged = True
+                if not close and k >= 2 and dead_frac > 0.0:
+                    jd = int(np.argmin([c["n"] for c in C]))
+                    pools = [m for m in range(k) if F[m]["n"] > 0.0]
+                    if C[jd]["n"] < dead_frac * W / k and pools:
+                        heaviest = max(pools, key=lambda m: (F[m]["n"], -m))
+                        self.split(C, F, rows, typ, jd, heaviest)
+                        dead = True
+                F = [dict(n=0.0, c=np.zeros(p), r2=0.0) for _ in range(k)]
+                far_rows = [0] * k
+                V = 0.0
+            seen["merges"] += merged
+            seen["dead"] += dead
+            what = f"row {i}"
+            assert now["n_merges"] == prev["n_merges"] + merged, what
+            assert now["n_dead"] == prev["n_dead"] + dead, what
+            assert now["rows"] == rows, what
+            assert now["far_rows"] == far_rows, what
+            assert float(now["far_cut"]) == pytest.approx(cut, rel=1e-9), what
+            assert float(now["window_w"]) == pytest.approx(V, rel=1e-9), what
+            pairs = zip(summaries(now, "clusters") + summaries(now, "far"), C + F, strict=True)
+            for got, want in pairs:
+                assert got["n"] == pytest.approx(want["n"], rel=1e-9), what
+                np.testing.assert_allclose(got["c"], want["c"], rtol=1e-9, atol=1e-12)
+                assert got["r2"] == pytest.approx(want["r2"], rel=1e-9, abs=1e-12), what
+            prev = now
+        return seen
+
+    def test_the_far_and_merge_criteria_are_the_formulas(self):
+        # Two blobs born after seeding, so a centre seeded on one blob is
+        # freed for them by a merge.
+        X, _ = blobs(n=2500, k=4, seed=2)
+        X[:600] = np.array([[3.0, 3.0]]) + 0.5 * np.random.default_rng(5).standard_normal((600, 2))
+        for split_merge in (0.5, 2.5):
+            seen = self.replay_criteria(
+                X,
+                k=4,
+                half_life=300.0,
+                warm_rows=100,
+                split_merge=split_merge,
+                split_merge_every=50,
+                dead_frac=0.1,
+                seed=3,
+            )
+            assert seen["far"] > 100 and seen["checks"] > 40 and seen["merges"] >= 3, seen
+
+    def test_the_dead_criterion_is_the_formula(self):
+        # A blob dies and one is born far away: its centre is re-placed on
+        # the new blob's far rows once it falls under dead_frac * n_eff / k.
+        X, _ = stranded(seed=1, n=4000)
+        seen = self.replay_criteria(
+            X,
+            k=4,
+            half_life=200.0,
+            warm_rows=200,
+            split_merge=0.5,
+            split_merge_every=100,
+            dead_frac=0.25,
+        )
+        assert seen["dead"] >= 1 and seen["far"] > 100, seen
+
+    def test_a_large_case_without_decay_is_scikit_learns_kmeans(self):
+        """With no decay and no split-merge each centre is the mean of the
+        rows assigned to it, the fixed point batch Lloyd's algorithm reaches.
+        scikit-learn's ``KMeans``, ten k-means++ starts over the same rows,
+        is the second opinion: the same partition (ARI 0.99995 measured)
+        and the same centres (5.4e-4 apart at most, the noise sd 0.9)."""
+        from sklearn.cluster import KMeans
+        from sklearn.metrics import adjusted_rand_score
+
+        n, k = 100_000, 6
+        X, _ = blobs(n=n, k=k, seed=12, scale=0.9, spread=6.0)
+        s = spec(
+            k=k,
+            half_life=float("inf"),
+            min_weight=50.0,
+            warm_rows=3000,
+            standardize=False,
+            split_merge=0.0,
+        )
+        out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
+        got = out["cluster"].to_numpy()
+        scored = out["cluster"].is_not_null().to_numpy()
+        km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(X)
+        score = ari(got[scored], km.labels_[scored])
+        assert score == pytest.approx(adjusted_rand_score(got[scored], km.labels_[scored]))
+        assert score > 0.999
+        coef = np.array(out["coef"][-1]).reshape(k, 2)
+        dist = np.linalg.norm(coef[:, None, :] - km.cluster_centers_[None, :, :], axis=2)
+        assert sorted(dist.argmin(axis=1)) == list(range(k)), "not one centre each"
+        assert dist.min(axis=1).max() < 0.01, dist.min(axis=1)
 
 
 def stranded(seed, n=20_000, sd=0.6, radius=6.0, born=(9.0, 9.0)):
