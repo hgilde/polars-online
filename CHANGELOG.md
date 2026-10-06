@@ -502,6 +502,10 @@ The output names task 144 renamed:
   the documented `ComputeError`, where it panicked. A `quantile` row of
   weight 0 outside the band no longer moves `sigma`'s last bit. `bocpd`
   names `prune_below` in its refusal, where it said `truncate` (task 160).
+- **A source build names the Rust it needs: 1.95** (task 160). The
+  declared `rust-version` said 1.85 while the locked dependencies needed
+  1.95, so installing the sdist with Rust 1.85 to 1.94 failed inside a
+  dependency's build. Cargo now refuses an older Rust up front, by name.
 
 ## [0.13.0] — 2026-09-30
 

@@ -1068,21 +1068,21 @@ impl Marginal {
                 bin_mean_y.push(b.mean_y);
                 bin_var_y.push(b.var_y);
             }
-            if n_eff >= self.cfg.min_weight[t] {
-                if let Some(split) = hist.best_split(t, j) {
-                    split_gain = split.gain;
-                    split_at = split.at;
-                    // Serial dependence, when it was measured, deflates this
-                    // count for the same reason it deflates `t`.
-                    let n = if n_serial.is_finite() {
-                        n_serial
-                    } else {
-                        n_kish
-                    };
-                    // `+inf` at a gain of one, as `t` is at `corr = ±1`.
-                    if n > 2.0 {
-                        split_gain_t = ((n - 2.0) * split.gain / (1.0 - split.gain)).sqrt();
-                    }
+            if n_eff >= self.cfg.min_weight[t]
+                && let Some(split) = hist.best_split(t, j)
+            {
+                split_gain = split.gain;
+                split_at = split.at;
+                // Serial dependence, when it was measured, deflates this
+                // count for the same reason it deflates `t`.
+                let n = if n_serial.is_finite() {
+                    n_serial
+                } else {
+                    n_kish
+                };
+                // `+inf` at a gain of one, as `t` is at `corr = ±1`.
+                if n > 2.0 {
+                    split_gain_t = ((n - 2.0) * split.gain / (1.0 - split.gain)).sqrt();
                 }
             }
         }
@@ -1248,10 +1248,10 @@ impl Marginal {
                 continue;
             };
             let r = t * p..(t + 1) * p;
-            if let Some(row) = mix.runs_row {
-                if let Some((values, start)) = self.x_runs.slots_mut(n_targets * p) {
-                    crate::runs::track_slots(&mut values[r.clone()], &mut start[r.clone()], x, row);
-                }
+            if let Some(row) = mix.runs_row
+                && let Some((values, start)) = self.x_runs.slots_mut(n_targets * p)
+            {
+                crate::runs::track_slots(&mut values[r.clone()], &mut start[r.clone()], x, row);
             }
             pair_kernel(
                 mix,
@@ -1418,12 +1418,14 @@ impl Marginal {
         self.defer.u.push(u);
         self.defer.n += 1;
         // The ring holds rows that taught something, as `step` pushes them.
-        if let Some(lag) = self.lag.as_ref() {
-            if w > 0.0 && w.is_finite() && x.iter().all(|v| v.is_finite()) {
-                self.defer.ring.push_back(Src::Row(r));
-                if self.defer.ring.len() > lag.max_lag() {
-                    self.defer.ring.pop_front();
-                }
+        if let Some(lag) = self.lag.as_ref()
+            && w > 0.0
+            && w.is_finite()
+            && x.iter().all(|v| v.is_finite())
+        {
+            self.defer.ring.push_back(Src::Row(r));
+            if self.defer.ring.len() > lag.max_lag() {
+                self.defer.ring.pop_front();
             }
         }
         if self.defer.n >= batch_rows(p) {
@@ -1538,11 +1540,9 @@ impl Marginal {
             deal(mx_lo, p, &cuts, |k, v| parts[k].mx_lo.push(v));
             deal(sxx, p, &cuts, |k, v| parts[k].sxx.push(v));
             deal(sxy, p, &cuts, |k, v| parts[k].sxy.push(v));
-            if tracks_runs {
-                if let Some((values, start)) = x_runs.slots_mut(n_targets * p) {
-                    deal(values, p, &cuts, |k, v| parts[k].runs.push(v));
-                    deal(start, p, &cuts, |k, v| parts[k].runs_start.push(v));
-                }
+            if tracks_runs && let Some((values, start)) = x_runs.slots_mut(n_targets * p) {
+                deal(values, p, &cuts, |k, v| parts[k].runs.push(v));
+                deal(start, p, &cuts, |k, v| parts[k].runs_start.push(v));
             }
             if let Some([cxx, cxy, cyx]) = moments {
                 for v in cxx.iter_mut() {
@@ -2237,10 +2237,12 @@ impl OnlineModel for Marginal {
         // The cheap test is on the outside: `x.iter().all(...)` walks every
         // feature, and a stream with no lags must not pay for a ring it does
         // not have.
-        if let Some(lag) = self.lag.as_mut() {
-            if weight > 0.0 && weight.is_finite() && x.iter().all(|v| v.is_finite()) {
-                lag.push(x, y);
-            }
+        if let Some(lag) = self.lag.as_mut()
+            && weight > 0.0
+            && weight.is_finite()
+            && x.iter().all(|v| v.is_finite())
+        {
+            lag.push(x, y);
         }
         out
     }

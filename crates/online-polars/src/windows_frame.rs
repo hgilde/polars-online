@@ -568,13 +568,13 @@ impl WindowsRun {
             ("session", &config.session),
             ("group", &config.group),
         ] {
-            if let Some(c) = c {
-                if !input.contains(c) {
-                    return Err(format!(
-                        "{WHO}: no {role} column {c:?} in the frame; it has {:?}",
-                        input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
-                    ));
-                }
+            if let Some(c) = c
+                && !input.contains(c)
+            {
+                return Err(format!(
+                    "{WHO}: no {role} column {c:?} in the frame; it has {:?}",
+                    input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
+                ));
             }
         }
         let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
@@ -993,11 +993,11 @@ impl WindowsRun {
             at.resize(self.core.ready(), rows.first().copied().unwrap_or(0));
         }
         for i in 0..n {
-            if let Some(l) = limit {
-                if self.core.ready_kept() >= l {
-                    consumed = i;
-                    break;
-                }
+            if let Some(l) = limit
+                && self.core.ready_kept() >= l
+            {
+                consumed = i;
+                break;
             }
             for (k, col) in values.iter().enumerate() {
                 row_values[k] = col[i];
@@ -1388,15 +1388,15 @@ impl WindowsRun {
                 })
                 .collect::<PolarsResult<_>>()?
         };
-        if let (Some(first), Some(last)) = (values.first(), self.core.shared_clock().last_clock()) {
-            if kind_of(*first) != kind_of(last) {
-                polars_bail!(ComputeError:
-                    "{WHO}: clock column {c:?} is {}, and the state it resumes was fed a {} one; \
-                     resume a state on the kind of clock that wrote it",
-                    col.dtype(),
-                    match kind_of(last) { ClockKind::Numeric => "numeric", ClockKind::Temporal => "temporal" }
-                );
-            }
+        if let (Some(first), Some(last)) = (values.first(), self.core.shared_clock().last_clock())
+            && kind_of(*first) != kind_of(last)
+        {
+            polars_bail!(ComputeError:
+                "{WHO}: clock column {c:?} is {}, and the state it resumes was fed a {} one; \
+                 resume a state on the kind of clock that wrote it",
+                col.dtype(),
+                match kind_of(last) { ClockKind::Numeric => "numeric", ClockKind::Temporal => "temporal" }
+            );
         }
         Ok(Some(values))
     }
@@ -1554,10 +1554,8 @@ impl WindowsRun {
         // Only the caller knows whether the input ended or a slice was
         // satisfied first; a skip still pending is another input only in
         // the first case (review R5, C3).
-        if input_ended {
-            if let Some(msg) = self.resumed_input_ended_early() {
-                return Err(msg);
-            }
+        if input_ended && let Some(msg) = self.resumed_input_ended_early() {
+            return Err(msg);
         }
         let held_schema = {
             let mut s = self.input.clone();
@@ -1791,10 +1789,10 @@ impl WindowsRun {
             if extra > 0 {
                 want = want.slice(extra as i64, want.height() - extra);
             }
-            if want.height() == 0 {
-                if let Some(last) = &run.last_row {
-                    want = last.clone();
-                }
+            if want.height() == 0
+                && let Some(last) = &run.last_row
+            {
+                want = last.clone();
             }
             if want.height() == 0 {
                 // This build writes the last row read under every skip, so a

@@ -665,7 +665,7 @@ why = "`Option::default()` is `None`, which is what the visitor returns"
 file = "crates/online-core/src/window.rs"
 function = "Snapshots<S>::enforce"
 mutation = "replace - with +"
-line_has = ".filter(|(i, _)| (n - 1 - i) % 2 == 0)"
+line_has = ".filter(|(i, _)| (n - 1 - i).is_multiple_of(2))"
 why = """either `-` made `+` (`n + 1 - i`, or `n - 1 + i`) moves the number by \
 2 or by `2i`, so its parity, and the snapshots the filter keeps, stay the \
 same; with `i < n` neither overflows"""
@@ -1319,7 +1319,7 @@ the constant 1, so its variance is 0"""
 file = "crates/online-core/src/ewridge.rs"
 function = "EwRidge::inflation_into"
 mutation = "replace > with >="
-line_has = "if n > 0.0 {"
+line_has = "let slot = j * nc + c;\n                if n > 0.0"
 why = """at `n = 0` the bound's ratio `sqrt(1 + bound/0)` is infinite (or NaN at \
 a bound of 0), never below `limit`, so the arm it lets in falls through to \
 the exact ratio, as the original does"""

@@ -172,12 +172,12 @@ impl EwQuantile {
                     self.at[l] = n;
                     continue;
                 }
-            } else if self.below[l] >= target {
-                if let Some(p) = self.prev(at) {
-                    self.at[l] = p;
-                    self.below[l] -= self.weight(p);
-                    continue;
-                }
+            } else if self.below[l] >= target
+                && let Some(p) = self.prev(at)
+            {
+                self.at[l] = p;
+                self.below[l] -= self.weight(p);
+                continue;
             }
             break;
         }

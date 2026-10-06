@@ -2649,14 +2649,14 @@ impl Spec {
                 }
             }
         }
-        if let Some(d) = self.embargo.as_ref().map(Span::value) {
-            if d.is_nan() || !d.is_finite() || d <= 0.0 {
-                return Err(format!(
-                    "spec {:?}: embargo must be finite and > 0 (got {d}); leave it out for no \
+        if let Some(d) = self.embargo.as_ref().map(Span::value)
+            && (d.is_nan() || !d.is_finite() || d <= 0.0)
+        {
+            return Err(format!(
+                "spec {:?}: embargo must be finite and > 0 (got {d}); leave it out for no \
                      delay",
-                    self.name
-                ));
-            }
+                self.name
+            ));
         }
         // Holt has no features by construction, and neither has seqtest;
         // every other model needs at least one to regress on. Both
@@ -2942,13 +2942,13 @@ impl Spec {
                 self.model.kind_name()
             ));
         }
-        if let Some(a) = &self.drift_action {
-            if !["flag", "reset"].contains(&a.as_str()) {
-                return Err(format!(
-                    "spec {:?}: drift_action must be \"flag\" or \"reset\"",
-                    self.name
-                ));
-            }
+        if let Some(a) = &self.drift_action
+            && !["flag", "reset"].contains(&a.as_str())
+        {
+            return Err(format!(
+                "spec {:?}: drift_action must be \"flag\" or \"reset\"",
+                self.name
+            ));
         }
         // A tolerance or a threshold of `inf` is a detector that never
         // fires: no setting (review 2026-09-12, S27).
@@ -3161,13 +3161,13 @@ impl Spec {
                 }
             }
             ModelKind::Pa { mode, c, eps, .. } => {
-                if let Some(md) = mode {
-                    if !["pa", "pa1", "pa2"].contains(&md.as_str()) {
-                        return Err(format!(
-                            "spec {:?}: unknown pa mode {md:?}; expected pa, pa1 or pa2",
-                            self.name
-                        ));
-                    }
+                if let Some(md) = mode
+                    && !["pa", "pa1", "pa2"].contains(&md.as_str())
+                {
+                    return Err(format!(
+                        "spec {:?}: unknown pa mode {md:?}; expected pa, pa1 or pa2",
+                        self.name
+                    ));
                 }
                 if c.is_some_and(|v| v.0 <= 0.0 || v.0.is_nan()) {
                     return Err(format!(
@@ -3217,14 +3217,14 @@ impl Spec {
                         ));
                     }
                 }
-                if let Some(sc) = schedule {
-                    if !["constant", "inv_scaling", "adagrad"].contains(&sc.as_str()) {
-                        return Err(format!(
-                            "spec {:?}: unknown sgd schedule {sc:?}; expected constant, \
+                if let Some(sc) = schedule
+                    && !["constant", "inv_scaling", "adagrad"].contains(&sc.as_str())
+                {
+                    return Err(format!(
+                        "spec {:?}: unknown sgd schedule {sc:?}; expected constant, \
                              inv_scaling or adagrad",
-                            self.name
-                        ));
-                    }
+                        self.name
+                    ));
                 }
                 if learning_rate.is_some_and(|v| v <= 0.0 || !v.is_finite()) {
                     return Err(format!(
@@ -3378,14 +3378,14 @@ impl Spec {
                         }
                     }
                 }
-                if let Some(r) = pca {
-                    if *r > self.k() {
-                        return Err(format!(
-                            "spec {:?}: ew_cov pca asks for {r} components of {} features",
-                            self.name,
-                            self.k()
-                        ));
-                    }
+                if let Some(r) = pca
+                    && *r > self.k()
+                {
+                    return Err(format!(
+                        "spec {:?}: ew_cov pca asks for {r} components of {} features",
+                        self.name,
+                        self.k()
+                    ));
                 }
                 if pca_every.is_some_and(|e| e == 0) {
                     return Err(format!(
@@ -3656,15 +3656,15 @@ impl Spec {
                 // means nothing here, and its column is what the model would
                 // read (review 2026-09-26, D4: the names were compared, so a
                 // table named like the hazard put another column in the slot).
-                if let Some(h) = hazard_col {
-                    if self.targets.defs() != [crate::targets::TargetDef::plain(h.clone())] {
-                        return Err(format!(
-                            "spec {:?}: bocpd reads hazard_col {h:?} from the targets slot, so \
+                if let Some(h) = hazard_col
+                    && self.targets.defs() != [crate::targets::TargetDef::plain(h.clone())]
+                {
+                    return Err(format!(
+                        "spec {:?}: bocpd reads hazard_col {h:?} from the targets slot, so \
                              targets must be [{h:?}], the column itself (got {:?})",
-                            self.name,
-                            self.targets.as_slice()
-                        ));
-                    }
+                        self.name,
+                        self.targets.as_slice()
+                    ));
                 }
                 if self.half_life.is_some() || self.lam.is_some() {
                     return Err(format!(
@@ -3688,15 +3688,15 @@ impl Spec {
             }
             ModelKind::Hmm { exog_tvtp, .. } => {
                 // As `bocpd`'s `hazard_col` (review 2026-09-12, C20).
-                if let Some(z) = exog_tvtp {
-                    if self.targets.defs() != [crate::targets::TargetDef::plain(z.clone())] {
-                        return Err(format!(
-                            "spec {:?}: hmm reads exog_tvtp {z:?} from the targets slot, so \
+                if let Some(z) = exog_tvtp
+                    && self.targets.defs() != [crate::targets::TargetDef::plain(z.clone())]
+                {
+                    return Err(format!(
+                        "spec {:?}: hmm reads exog_tvtp {z:?} from the targets slot, so \
                              targets must be [{z:?}], the column itself (got {:?})",
-                            self.name,
-                            self.targets.as_slice()
-                        ));
-                    }
+                        self.name,
+                        self.targets.as_slice()
+                    ));
                 }
                 crate::stream::hmm_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
             }
@@ -3913,13 +3913,13 @@ impl Spec {
                     ));
                 }
                 let k_total = self.k() + usize::from(self.fit_intercept);
-                if let Some(c) = coef_prior {
-                    if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
-                        return Err(format!(
-                            "spec {:?}: coef_prior must be n_targets x (n_features + intercept)",
-                            self.name
-                        ));
-                    }
+                if let Some(c) = coef_prior
+                    && (c.len() != self.m() || c.iter().any(|v| v.len() != k_total))
+                {
+                    return Err(format!(
+                        "spec {:?}: coef_prior must be n_targets x (n_features + intercept)",
+                        self.name
+                    ));
                 }
             }
             ModelKind::EwRidge {

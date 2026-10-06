@@ -578,11 +578,11 @@ impl KMeans {
                 }
             }
             let floor = self.cfg.dead_frac * self.moments.w / k as f64;
-            if self.clusters[jd].n < floor {
-                if let Some(source) = self.far_source() {
-                    self.split(jd, source);
-                    self.n_dead += 1;
-                }
+            if self.clusters[jd].n < floor
+                && let Some(source) = self.far_source()
+            {
+                self.split(jd, source);
+                self.n_dead += 1;
             }
         }
     }
@@ -1164,23 +1164,23 @@ mod tests {
             }
             // Read before learning.
             let mut out = [f64::NAN; 3];
-            if let Some(cl) = &seeds {
-                if n_before >= c.min_weight {
-                    let dd: Vec<f64> = cl.iter().map(|s| d2(&s.1, row, &mw)).collect();
-                    let mut j = 0;
-                    for i in 1..dd.len() {
-                        if dd[i] < dd[j] {
-                            j = i;
-                        }
+            if let Some(cl) = &seeds
+                && n_before >= c.min_weight
+            {
+                let dd: Vec<f64> = cl.iter().map(|s| d2(&s.1, row, &mw)).collect();
+                let mut j = 0;
+                for i in 1..dd.len() {
+                    if dd[i] < dd[j] {
+                        j = i;
                     }
-                    let mut second = f64::INFINITY;
-                    for (i, &v) in dd.iter().enumerate() {
-                        if i != j && v < second {
-                            second = v;
-                        }
-                    }
-                    out = [j as f64, dd[j].sqrt(), second.sqrt()];
                 }
+                let mut second = f64::INFINITY;
+                for (i, &v) in dd.iter().enumerate() {
+                    if i != j && v < second {
+                        second = v;
+                    }
+                }
+                out = [j as f64, dd[j].sqrt(), second.sqrt()];
             }
             preds.push(out);
             if w > 0.0 {

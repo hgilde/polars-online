@@ -2286,7 +2286,7 @@ impl ChunkOut {
         const LINE: usize = 16;
         let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1);
         let lines = BUDGET / (8 * width * LINE);
-        let lines = if lines % 2 == 0 {
+        let lines = if lines.is_multiple_of(2) {
             lines.saturating_sub(1)
         } else {
             lines
@@ -2884,7 +2884,8 @@ impl Stream {
             // whether this run ends the chunk (`ChunkOut::run_rows`).
             let want_coef = accept
                 && ((last && ri + 1 == n_rows)
-                    || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
+                    || (spec.coef_every > 0
+                        && rows_seen.is_multiple_of(u64::from(spec.coef_every))));
             plans.push(RowPlan {
                 ri,
                 i,
@@ -3337,20 +3338,20 @@ impl Stream {
             // first unresolved row still waiting ends the pass. A resolution
             // is made by a row of this group in this chunk, so it is never
             // left for a later one.
-            if !plan.reset {
-                if let Some(res) = formulas.and_then(|f| f.resolved) {
-                    let f = formulas.expect("checked");
-                    let now = f.seqs[plan.i];
-                    for row in pending.iter_mut().skip_while(|r| r.resolved) {
-                        match res.find(row.seq) {
-                            Some((at, ys)) if at <= now => {
-                                for (&slot, &y) in f.slots.iter().zip(ys) {
-                                    row.ys[slot] = Some(y).filter(|v| usable(*v));
-                                }
-                                row.resolved = true;
+            if !plan.reset
+                && let Some(res) = formulas.and_then(|f| f.resolved)
+            {
+                let f = formulas.expect("checked");
+                let now = f.seqs[plan.i];
+                for row in pending.iter_mut().skip_while(|r| r.resolved) {
+                    match res.find(row.seq) {
+                        Some((at, ys)) if at <= now => {
+                            for (&slot, &y) in f.slots.iter().zip(ys) {
+                                row.ys[slot] = Some(y).filter(|v| usable(*v));
                             }
-                            _ => break,
+                            row.resolved = true;
                         }
+                        _ => break,
                     }
                 }
             }
@@ -4509,24 +4510,24 @@ fn run_instance(
                     .flat_map(|slot| slot.iter().enumerate())
                     .filter(|(_, v)| v.is_finite())
                     .min_by(|a, b| a.1.total_cmp(b.1));
-                if let Some((i, &share)) = worst {
-                    if share < 0.5 {
-                        let feature = inst
-                            .spec
-                            .features
-                            .get(i % k_total - usize::from(inst.spec.fit_intercept))
-                            .map_or("?", String::as_str);
-                        inst.notified.support = true;
-                        inst.notified.pending.push(format!(
-                            "the coefficient of {feature:?} is {share:.2} data and {:.2} \
+                if let Some((i, &share)) = worst
+                    && share < 0.5
+                {
+                    let feature = inst
+                        .spec
+                        .features
+                        .get(i % k_total - usize::from(inst.spec.fit_intercept))
+                        .map_or("?", String::as_str);
+                    inst.notified.support = true;
+                    inst.notified.pending.push(format!(
+                        "the coefficient of {feature:?} is {share:.2} data and {:.2} \
                              ridge (support_coef < 0.5): the design does not determine it \
                              -- a duplicated or constant column, or a ridge as large as the \
                              feature's variance. Predictions are unaffected in sample; the \
                              split among such columns is arbitrary and moves the moment the \
                              collinearity breaks (docs/WARMUP-AND-CONVERGENCE.md §2.2).",
-                            1.0 - share
-                        ));
-                    }
+                        1.0 - share
+                    ));
                 }
             }
             inst.o_support_coef[ri] = support.map(|s| s.into_iter().flatten().collect());

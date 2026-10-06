@@ -87,7 +87,7 @@ fn main() {
     let widths: Vec<(usize, usize)> = if args.is_empty() {
         vec![(256, 32_768), (1000, 4096), (2000, 2048)]
     } else {
-        assert!(args.len() % 2 == 0, "pairs of width and row count");
+        assert!(args.len().is_multiple_of(2), "pairs of width and row count");
         args.chunks(2).map(|p| (p[0], p[1])).collect()
     };
     println!(

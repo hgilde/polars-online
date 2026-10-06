@@ -486,7 +486,7 @@ impl<S: Footprint> Snapshots<S> {
                     self.ring = std::mem::take(&mut self.ring)
                         .into_iter()
                         .enumerate()
-                        .filter(|(i, _)| (n - 1 - i) % 2 == 0)
+                        .filter(|(i, _)| (n - 1 - i).is_multiple_of(2))
                         .map(|(_, e)| e)
                         .collect();
                     self.every = self.every.saturating_mul(2);

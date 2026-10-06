@@ -1321,14 +1321,14 @@ mod tests {
                         );
                         held[j] += 1;
                     }
-                    if let (Some(yv), true) = (y[j], out.pred[j * np].is_finite()) {
-                        if w > 0.0 {
-                            let e2 = out.pred[j * np..(j + 1) * np]
-                                .iter()
-                                .map(|p| (yv - p).powi(2))
-                                .collect();
-                            scored[j].push((t, w, e2));
-                        }
+                    if let (Some(yv), true) = (y[j], out.pred[j * np].is_finite())
+                        && w > 0.0
+                    {
+                        let e2 = out.pred[j * np..(j + 1) * np]
+                            .iter()
+                            .map(|p| (yv - p).powi(2))
+                            .collect();
+                        scored[j].push((t, w, e2));
                     }
                 }
                 t_prev = t;

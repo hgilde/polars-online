@@ -190,10 +190,10 @@ impl HmmCfg {
             }
             _ => return Err("hmm: means and covs go together".into()),
         }
-        if let Some((a, b)) = &self.tvtp {
-            if a.len() != k * k || b.len() != k * k {
-                return Err(format!("hmm: tvtp_coef A and B must each be {k}x{k}"));
-            }
+        if let Some((a, b)) = &self.tvtp
+            && (a.len() != k * k || b.len() != k * k)
+        {
+            return Err(format!("hmm: tvtp_coef A and B must each be {k}x{k}"));
         }
         Ok(())
     }

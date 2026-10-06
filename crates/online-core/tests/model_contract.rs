@@ -1977,7 +1977,7 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
             .collect();
         let d = match i {
             0 => 0.0,
-            _ if i % 5 == 0 => 3.0,
+            _ if i.is_multiple_of(5) => 3.0,
             _ => 1.0,
         };
         (x, y, d)

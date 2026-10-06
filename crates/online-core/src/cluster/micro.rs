@@ -148,10 +148,10 @@ impl MicroCfg {
         if self.prune_every == 0 {
             return Err("micro: prune_every must be >= 1".into());
         }
-        if let Some(l) = self.macro_link {
-            if !l.is_finite() || l < 0.0 {
-                return Err("micro: macro_link must be finite and >= 0".into());
-            }
+        if let Some(l) = self.macro_link
+            && (!l.is_finite() || l < 0.0)
+        {
+            return Err("micro: macro_link must be finite and >= 0".into());
         }
         if !self.scale_floor.is_finite() || self.scale_floor < 0.0 {
             return Err("micro: scale_floor must be finite and >= 0".into());
@@ -375,23 +375,23 @@ impl Micro {
     fn decide(&self, z: &[f64], lam: f64) -> Decision {
         let potential = self.nearest(z, true);
         let nearest_potential = potential.map(|(jp, _, d)| (jp, d));
-        if let Some((jp, d2, _)) = potential {
-            if self.admits(jp, d2, lam) {
-                return Decision {
-                    target: Some(jp),
-                    nearest_potential,
-                    outlier: false,
-                };
-            }
+        if let Some((jp, d2, _)) = potential
+            && self.admits(jp, d2, lam)
+        {
+            return Decision {
+                target: Some(jp),
+                nearest_potential,
+                outlier: false,
+            };
         }
-        if let Some((jo, d2, _)) = self.nearest(z, false) {
-            if self.admits(jo, d2, lam) {
-                return Decision {
-                    target: Some(jo),
-                    nearest_potential,
-                    outlier: true,
-                };
-            }
+        if let Some((jo, d2, _)) = self.nearest(z, false)
+            && self.admits(jo, d2, lam)
+        {
+            return Decision {
+                target: Some(jo),
+                nearest_potential,
+                outlier: true,
+            };
         }
         Decision {
             target: None,

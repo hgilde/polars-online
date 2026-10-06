@@ -231,7 +231,7 @@ impl StridedRv {
             for (i, xi) in x.iter().enumerate().take(k) {
                 self.partial[o * k + i] += xi;
             }
-            if (self.t - o as u64 + 1) % s as u64 == 0 {
+            if (self.t - o as u64 + 1).is_multiple_of(s as u64) {
                 for i in 0..k {
                     let v = self.partial[o * k + i];
                     self.rv[o * k + i] += v * v;
@@ -364,13 +364,13 @@ const MAX_RING: usize = 1 << 20;
 /// `value`, a size in returns that `Rcov::new` allocates from, at most
 /// `block_rows` where that is given and at most [`MAX_RING`] in any case.
 fn within_block(name: &str, value: usize, block_rows: Option<usize>) -> Result<(), String> {
-    if let Some(b) = block_rows {
-        if value > b {
-            return Err(format!(
-                "rcov: {name} = {value} is more than block_rows = {b}, the returns a block \
+    if let Some(b) = block_rows
+        && value > b
+    {
+        return Err(format!(
+            "rcov: {name} = {value} is more than block_rows = {b}, the returns a block \
                  holds: it is sized before the first row and a block never fills it"
-            ));
-        }
+        ));
     }
     if value > MAX_RING {
         return Err(format!(
@@ -512,14 +512,14 @@ impl RcovCfg {
                     .into(),
             );
         }
-        if let (Some(h), Some(b)) = (self.max_bandwidth, self.bandwidth) {
-            if h < b {
-                return Err(format!(
-                    "rcov: max_bandwidth = {h} caps the ring below bandwidth = {b}, so the lags the \
+        if let (Some(h), Some(b)) = (self.max_bandwidth, self.bandwidth)
+            && h < b
+        {
+            return Err(format!(
+                "rcov: max_bandwidth = {h} caps the ring below bandwidth = {b}, so the lags the \
                      bandwidth asks for are not there and it is silently reduced to {h}; raise \
                      max_bandwidth or lower the bandwidth"
-                ));
-            }
+            ));
         }
         // Every size `Rcov::new` allocates from, before the first row: what
         // a caller sets, at most `block_rows` where it is given, and every
@@ -537,14 +537,15 @@ impl RcovCfg {
         within_block("noise_stride", self.noise_stride, None)?;
         within_block("iv_stride", self.iv_stride, None)?;
         let automatic = self.bandwidth.is_none() && self.max_bandwidth.is_none();
-        if let (Some(h), Some(b), true) = (self.ring_rows(), self.block_rows, automatic) {
-            if self.kind == RcovKind::Kernel && h > MAX_RING as f64 {
-                return Err(format!(
-                    "rcov: block_rows = {b} gives an automatic bandwidth's ring of {h:e} lags, above \
+        if let (Some(h), Some(b), true) = (self.ring_rows(), self.block_rows, automatic)
+            && self.kind == RcovKind::Kernel
+            && h > MAX_RING as f64
+        {
+            return Err(format!(
+                "rcov: block_rows = {b} gives an automatic bandwidth's ring of {h:e} lags, above \
                      {MAX_RING}, the most this model sizes a ring for before the first row; give a \
                      bandwidth, or a max_bandwidth"
-                ));
-            }
+            ));
         }
         if let (RcovKind::Preavg, None, Some(b)) = (self.kind, self.preavg_rows, self.block_rows) {
             let w = self.window_rows().expect("block_rows sizes the window");
@@ -923,11 +924,11 @@ impl Rcov {
             }
         }
         let mut psd_repaired = false;
-        if self.cfg.psd {
-            if let Some(fixed) = clip_psd(&cov, k) {
-                psd_repaired = fixed.1;
-                cov = fixed.0;
-            }
+        if self.cfg.psd
+            && let Some(fixed) = clip_psd(&cov, k)
+        {
+            psd_repaired = fixed.1;
+            cov = fixed.0;
         }
         let rcorr = correlation(&cov, k);
         RcovEstimate {

@@ -7513,6 +7513,33 @@ tick, and that the series holding it up has a count near 1.
       Fixed in three gated batches: A, the regression (B1, F1); B, the
       numbers (D1, R1, R2, W2, W3, W5, D2); C, the rest.
 
+- [x] 160. **The whole-project review, every finding with a clear fix
+      fixed -- requested 2026-10-05.** Size L. The user's words: "Do a
+      complete code review of every detail of this project except md
+      files", then "Do everything that has a clear solution". Sixteen
+      read-only reviewers over 183k lines at `e6b70a2`; 139 finding IDs, each
+      re-verified against its reproduction (PB6 rejected; PB7 = CA2 = YA3,
+      PC4 = PB2 and TB3 = TA3 folded); §16 has the table. Four workers
+      fixed them in worktrees, one area each (the core models, the polars
+      layer and the CLI, the Python surface, the test suite), each test
+      shown failing on the old code, and the coordinator took the CI,
+      scripts and repository policy, then reviewed and merged each branch
+      under its own gate. The new tests found seven defects of their own,
+      fixed with them: the quantile nudge thrown past its target on
+      correlated features (TC1b), `ModelBank.specs` dropping marginal's
+      optional keys, 29 docstring examples reading names their page never
+      builds, a soak test failing unseen since task 120, Rust `validate`
+      taking what the sgd builder refuses (YA8b), a zoned `Datetime` group
+      column refused (PA4b), and CE6's cancellation in three more places
+      (CE6b). Left for the user, as decisions: the seven raised before the
+      fixes (CC1, CE1, CC4, CB1, PC1, CA3, CI2), a reset discarding a
+      forward window whose far edge is the last row before it (PC2), and
+      TC1b's cost, half of `quantile`'s default-schedule throughput.
+      Committed in five gated batches: `1120f9c` (CI and scripts),
+      `f8b3aa3` (the Python surface), `ca1e6d0` (the tests), `a37ebf9` (the
+      core and polars layer), and the last, CI4's Rust 1.95 with the clippy
+      lints it turns on.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -10548,7 +10575,11 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   pyo3-polars **0.28** ↔ pyo3 **0.29**. py-polars 1.44.1 is built from rust polars 0.55.1;
   0.55.2 is the same minor and is what pyo3-polars 0.28 resolves its sub-crates to, so the
   facade is pinned there to keep one polars version in the graph.
-- Rust edition 2024, `rust-version = 1.85`, `rust-toolchain.toml` pins the stable channel.
+- Rust edition 2024, `rust-version = 1.95`, `rust-toolchain.toml` pins the stable channel.
+  It said 1.85 until task 160 (CI4), while the locked tree needed 1.95 (`sysinfo` 0.39.6);
+  `tests/test_ci_cost_policy.py` now holds the declaration to the lock. Declaring 1.95
+  raised clippy's MSRV, which turned on `manual_is_multiple_of`, `collapsible_if` over
+  let-chains and `as_chunks`; the code takes them.
 - Two non-obvious feature flags on the polars/pyo3-polars side, both needed to compile at all
   (upstream feature-unification gaps in 0.55.2), both commented at the call site:
   - `polars` needs `object`: `pyo3-polars/derive` turns on `polars-plan/python`, which turns on
@@ -11239,3 +11270,181 @@ every renamed name refused by name in builders, dicts and TOML; save/load
 at 159 cuts equal to one run; `bocpd`, the sequential `corrchange`,
 `kalman`, `holt` and `hmm` against oracles from their papers; the `.pyi`,
 `po.eval` and 99 docstring defaults.
+
+## 16. Whole-project review at `e6b70a2` (2026-10-05): every file but Markdown
+
+Sixteen read-only reviewers, one slice each (six over `online-core`, three
+over the polars layer, two over the Python package, three over the tests,
+one over the scripts, one over CI), every finding re-derived from its
+reproduction (`review2/<slice>/` in the session's scratchpad) and recorded
+in one list before any fix. The fixes: four workers in worktrees and the
+coordinator, each test shown failing on the old code, each branch reviewed
+and merged under its own gate (task 160). Severity as in §15: high = wrong
+numbers silently, or a check that could not fail where it was the only one;
+medium = wrong numbers in a narrow case, a crash, or a wrong refusal;
+low = a doc, a message or an edge.
+
+| ID | Sev | Finding | Fix | Test |
+|---|---|---|---|---|
+| SC1 | high | `compare_release.py`'s verdict ignored the specs the new build refuses, so a refused spec dropped out and "identical" exited 0 | a spec the old build ran and the new one did not is a difference, naming the refusal | `test_release_compare.py::test_a_spec_this_build_refuses_is_a_difference_not_a_silence` |
+| TA1 | high | the one universal rule-2 test perturbed the first non-null target, a row every model withholds: 0 of 1,200 comparisons saw a prediction | the row is drawn from those the model scored; at least 10 streams must compare a prediction that was there (ewridge's inflation gate off in this test, since it withheld 87% of the streams) | `test_properties.py::…::test_prediction_never_depends_on_the_current_target` (no rule-2 failure found) |
+| TB1 | high | the kmeans/micro oracle is the Rust transcribed bit for bit; the independent checks were coarse | kept as a regression check, beside checks from the definitions: centres, weights and radii from the raw assigned rows; far, merge and dead decisions row by row; micro's admissions and summaries; scikit-learn `KMeans` (ARI 0.99995) | `test_kmeans.py`, `test_micro.py` `TestDefinitions`; TESTING.md's table |
+| TC1 | high | `kalman_ref` and `robust_ref` restate the implementation; the library second opinions covered kalman only unstandardized and huber only at delta 1e9 | the standardized kalman held to filterpy on rows standardized in numpy (1e-9) and `coef·x[t+1] = pred[t+1]` (1e-12); the quantile fit to its smoothed check loss's stationarity (1e-15); the nudge to its purpose, which found TC1b | `test_second_opinion.py`, `test_robust.py::TestTheQuantileFitsDefinition` |
+| TC1b | high | found by TC1 (iii): `quantile`'s nudge was bounded by the band Gram's diagonal leverage; on correlated features the next solve moved the row by 6 to 127 times its residual, past its target | the full leverage `1 + u'A⁻¹u` against the band's own system, from a kept `SpdFactor` that is `solve_spd`'s to the bit; `GOLDEN_QUANTILE` and four golden-pipeline values moved; the reference oracle and the stationarity test's reference take the full leverage too. Costs half the default schedule's throughput (2.6M against 5.0M rows/s, 10 features; 8% solving every row): a decision | `robust.rs::a_nudge_never_moves_its_row_past_its_residual`, `::the_full_leverage_is_the_diagonal_one_on_uncorrelated_features`, `test_robust.py::…::test_a_nudge_never_moves_its_row_past_its_residual` |
+| PB1 | high | under an embargo the drift detector ran on the learn pass, so `drift_<t>` was never true and `drift_action="reset"` restarted silently | the flag goes on the row that released the label that tripped it (`RowPlan::drift_ri`), the restart before that row is scored | `test_label_delay.py::TestDriftUnderAnEmbargo` (8) |
+| PB2 | high | `gap_cap` without a clock passed and capped the row-count step: `gap_cap=0.5` halved every decay, marked every row capped, cleared lags every row | refused, in specs and `with_windows` | `spec.rs::gap_cap_needs_a_clock`, `test_gap_cap_without_a_clock_is_refused_by_name` |
+| PC2 | high | a forward `right`/`both` window whose far edge is exactly the stretch's last row before a break was cut as partial: null, or dropped under `partial="drop"` (2,309 of ~22k fuzz rows) | whole, as its mirror is. A reset still discards it, as documented: a decision | `test_windows.py::test_a_forward_window_whose_far_edge_is_the_last_row_before_a_break_is_whole`, the Rust mirror test across breaks |
+| PA1 | high | `load_bytes` indexed specs by the states' count: a file with an extra states entry panicked, one with fewer lost a spec's groups | refused as damaged | `bank/damaged_file_tests.rs::a_file_whose_states_do_not_match_its_specs_is_refused` |
+| PA2 | high | closed rows restored unchecked (`closed_groups()` panicked, `save_bytes` re-saved the poison); counts at `u64::MAX` wrapped | every queued row checked against its spec at load; counts saturate, and a summary whose counts wrap is refused | `::a_closed_row_that_does_not_fit_its_spec_is_refused`, `::a_row_count_at_the_top_of_its_range_saturates`, `::a_summary_count_that_wraps_is_refused` |
+| PA3 | high | an `Int128` key past `i64` was cast non-strict to a null group, merged with real nulls | read as its text, marked an integer so `"monotone"` orders it as a number | `integer_group_keys_match_the_string_cast` (Int128), `a_monotone_int128_key_is_ordered_as_a_number` |
+| PA4 | high | `refresh_time`'s group keys round-tripped through String: `Datetime`/`Time`/`Struct` came back null, `Boolean` and zoned failed | the input's own values at the completing ticks; a zoned key by its instant | `test_refresh_time.py::test_the_group_column_is_the_inputs_at_the_completing_ticks` (8 dtypes), `a_zoned_datetime_group_comes_back_as_it_went_in` |
+| CI1 | med | `dtolnay/rust-toolchain@stable` is a branch, at 13 sites, the release's wheel build among them, against `.github/dependabot.yml`'s rule that actions are pinned to commits | pinned to the `stable` branch's head commit, the version in a comment | `test_ci_cost_policy.py::TestActionsArePinnedToCommits` |
+| CI3 | med | three of the six wheels (Intel macOS, aarch64 Linux, musl) were built and uploaded without ever being imported, and none was run as the file that ships | each build installs its wheel into a fresh environment, dependencies from PyPI, and runs `scripts/wheel_smoke.py` (the version, a fit, a state round trip, the streaming plan); the musl wheel in `python:3.12-alpine` | `test_release_workflow.py::test_every_wheel_is_installed_and_run_where_it_belongs` and the two smoke tests; run here on a built arm64 wheel in a clean venv |
+| SC2 | med | REGIMES.md §8's prose kept 0.151 where its table read 0.150 after task 159 | 0.150, and the section dated | `test_regimes_doc.py`: sections 1, 5, 7 and 8 against the experiments that print them (macOS) |
+| SC3 | med | no benchmark printed its commit, versions, platform or load: a 576 ms reading at load 524 stood against the README's 155 | `scripts/bench_header.py`, printed first by the seven benchmarks | `test_bench_scripts.py` |
+| SC4 | med | `parallel_bench.py` ran BSD `time -l`, and `windows_bench.py` imported `resource` at the top: neither ran on Linux or Windows | memory by platform: `time -l` on macOS, GNU `time -v` on Linux, NaN elsewhere | `test_bench_scripts.py::test_the_platform_specific_benchmarks_import_everywhere`, `::test_the_memory_measure_runs_on_this_platform` |
+| YB3, YB10 | med | `po.stream.embargo` with a float delay on an integer clock, the docstring's own `delay=5.0`, died in the merge of the two copies (`SchemaError`) | a whole delay is added in the clock's dtype; a fractional one, and a frame already holding `role + "_weight"`, are refused by name (YB10) | `test_label_delay.py::TestRefusals::test_a_whole_delay_keeps_an_integer_clocks_dtype`, `::…_cannot_hold_is_refused_by_name`, `::test_embargo_names_the_weight_column_it_would_add` |
+| YB4 | med | `po.eval` dropped null targets but not the NaN ones the bank predicts: `r2`, `ic`, `mse` NaN, `hit_rate` quietly lowered (0.889 against 0.914) | rows whose target or prediction the bank reads as missing (null, NaN, infinite, beyond 1e100) are dropped, as `eval.seqtest` already did | `test_eval.py::test_what_the_bank_reads_as_missing_is_missing_here_too` |
+| YA2 | med | a broken bank's `save` raised a bare `OSError` where `save_bytes` and pickle raise `ValueError`, and `to_json` exported the state `save` refuses | `save` maps the refusal (`io::Error::other`, a kind std never produces, by its docs) to `ValueError` and leaves the file alone; `to_json`/`save_json` refuse it | `test_window_budget.py::test_a_broken_bank_names_itself_before_a_bad_column` |
+| PB7 | med | `lasso(max_iter=0)` passed the builder and `validate`: no descent, every solve a failure, output that reads like a fit | the builder refuses `max_iter < 1` (the Rust side is worker 2's) | `test_error_messages.py::test_a_bad_value_names_the_parameter[max_iter0/1]` |
+| YB1 | med | a `Date`/`Time` literal was read as its bare integer: a cast to String compared false silently, and a date less it was refused | the literal is carried as a cast to its dtype, read on both sides | `test_windows.py::test_a_date_literal_keeps_its_dtype`, `formula.rs::a_date_or_time_literal_is_its_own_dtype` |
+| YB2 | med | a cast to a parametrized dtype crashed with `TypeError: unhashable type: 'dict'` before the refusal | refused by name (`a cast to Datetime is not read`) | `test_windows.py::test_a_cast_to_a_parametrized_dtype_is_refused_by_name` |
+| YB5 | med | `partial` was accepted without a `window_size`, and did nothing | refused, saying a window must exist to be cut short | `test_windows.py::test_partial_needs_a_window_size` |
+| YA1 | med | `features=[]` raised `IndexError` in the eight builders of models with no target | `features must be non-empty`, by name | `test_error_messages.py::test_an_empty_features_list_is_named_by_a_model_with_no_target` (8) |
+| TA2 | med | drift fired in none of the four legs, so the reset leg and the river comparison tested nothing | a level shift makes it fire; the reset leg's `weight_sum` drops to 0 after each flag; river's PageHinkley agrees flag for flag at `half_life=inf`, where its plain mean is ours | `test_second_opinion.py::TestAZeroWeightRowIsNotSeen` |
+| TA3, TB2 | med | an HTTP 404/403/500 was an `OSError`, so "offline" and a skip; `test_windows` caught `OSError` where offline raised `RuntimeError` (TB2) | a 4xx raises at once; 5xx, 429 and the network retry, then raise `data.Offline`, the one thing a test skips on (also `test_released_state`) | `test_data_and_reference.py::test_only_the_network_is_offline` |
+| TB5 | med | `N_EFF_MODELS` ("every model that emits weight_sum") missed eight kinds; `CLOCK_MODELS` missed marginal | both built from `MINIMAL` and the Rust clock-field table, exemptions checked against the builders' refusals; corrchange, deco, hmm, kmeans and micro hold the exact recursion; the marginal leg found defect 2 (`specs` round trip) | `test_properties_temporal.py` |
+| TB7 | med | the ew_cov lag oracle was the recursion written out | the lagged co-moment equals the unrolled sum over the raw rows (AR(1), zero weights) to 1e-9 | `test_ew_cov.py` |
+| TC4 | med | the docstring-block test claimed a NameError on an unshown name while handing every block 16 names; `skip_learned`'s example read `rerun`, built nowhere | the example builds what it reads; a rule test: a docstring block reads only names its docstring builds and the Example-data frames (29 docstrings fixed, defect 3) | `test_production_hardening.py` |
+| TC5 | med | README blocks ran on fixture objects that differ from the README's own (`grid`'s `min_weight`, `now`) | blocks run on names the README's own latest defining block builds (83 substitutions); the fixture's copies pinned | `test_production_hardening.py` |
+| TA4 | med | every simulator block was state 0, and `continue` skipped ρ = 0.7 silently | `durations=[4, 4]`; each state must occur | `test_sim.py` |
+| TB4 | med | corrchange's break sat on a span boundary, its one flag a false positive, and the restart check behind a false condition | the break mid-span at row 150; `since_flag` 200 then 100 | `test_corrchange.py` |
+| TB6 | med | two kalman tests asserted only a finite prediction | the outputs differ | `test_kalman.py` |
+| TC2 | med | `test_ew_variance_tracks_river` never called the library | `ew_cov(stats=["var"])` against river's EWVar, 1.5e-14 in the limit | `test_river.py` |
+| TC3 | med | a value compared with itself; a module-level rng made data depend on order | captured before, compared after; a seed per test | `test_ffi_memory.py` |
+| CC2 | med | ftrl without a rate guard in the non-forgetting arm: one subnormal gradient at `beta = l2 = 0` made a coefficient infinite and every later row null | no evidence and no prior is no fit (0), as under a half-life | `ftrl.rs::a_rate_of_zero_is_no_fit` (both decays), `::a_row_too_light_to_square_leaves_the_rows_after_it_learning` |
+| CC3 | med | an overflow-skipped ftrl row still aged its target's sums and moved the scale: the next prediction moved 2.2% | `Ftrl::teach` returns before the owed decay, `W*`, the scale and the target's weight move | `ftrl.rs::a_row_that_teaches_nothing_leaves_the_fit` (its overflow twin) |
+| CB2 | med | the window's target moments lacked the feature side's floor: a target held at 1e8 exported `target_vars = 2.5e-9` | the 64ε floor, the means' low parts kept in snapshots; the held-run rule is not built (the targets keep no runs: new state and a schema bump) | `gaps.rs::a_target_held_over_the_window_has_no_spread_there` |
+| CE2 | med | `marginal`'s bin `m2` overflowed for a target spread above ~1e79 once the scale neared its fold | the scale folds at 1e-50; ordinary scales unchanged (2.7e-13 against 2.8e-13) | `margbins.rs::a_target_spread_at_the_bound_survives_the_folds` |
+| CE3 | med | a window of rows each ≤ 1e-12 of the decayed weight but together above it reported the last heavy row's value held (var = cov = 0) | every row with a weight counts for the runs, in `marginal` and `EwCov`; the window alone says what is nothing | `marginal::a_window_of_light_rows_reads_their_moments`, `ewcov::…` |
+| CE4 | med | no ceiling on rcov's `bandwidth`, `max_bandwidth`, `preavg_rows`, `theta`, `jitter` or strides: "capacity overflow", or an abort at `theta = 1e15` | at most `block_rows` where given and 2^20 in any case; `theta`'s window read as a double | `rcov.rs::a_bad_configuration_is_refused_by_name` |
+| CA1 | med | `ewridge`'s restore checked neither `beta`, `ready` nor the twin: `beta = []` loaded and predict panicked | refused at load | `ewridge::a_state_whose_fit_or_readiness_is_the_wrong_shape_is_refused` |
+| PB3 | med | `half_life=[]` passed the builder and validate: zero instances, an empty struct | refused | `test_an_empty_grid_is_refused_by_name`, `an_empty_half_life_grid_is_refused` |
+| CD1 | med | `boundary_gamma` up to 0.5 admitted; the solve's work ∝ 1/(½ − γ): 32 s at 0.499, an hour at 0.49999 | at most 0.49, refused with the reason | `corrchange.rs::a_bad_sequential_configuration_is_refused_by_name`, `test_corrchange.py::test_the_boundary_exponent_is_at_most_0_49` |
+| PA5 | med | `RefreshTime::load_bytes` checked nothing: a narrow grid panicked | refused; grid ticks saturate | `a_state_whose_grids_do_not_fit_its_series_is_refused` |
+| PA6 | med | `time_refresh` was the ns integer as Float64 (…2001 → …2048) | the completing tick's clock in the clock's dtype, exact | `test_time_refresh_is_the_completing_ticks_clock_in_its_own_dtype` |
+| PA7 | med | `pca_prev` grew per key forever under `group_close="session"`; `drop_groups` left it | dropped with the group | `drop_groups_drops_the_groups_pca_continuity` |
+| PA8 | med | `POLARS_ONLINE_MAX_THREADS=100000` panicked where `ComputeError` is promised | the documented error | `a_pool_the_system_will_not_start_names_the_variable` |
+| PC3 | med | `Duration`'s equality included its text: a state saved with `"5s"` refused `"5000ms"` | equal by length; a bank loaded under another spelling restores every stream under the caller's spec and renames its PCA continuity (PC3b) | `a_state_resumes_another_spelling_of_one_length`, `bank.rs::a_bank_loaded_under_another_spelling_keeps_its_pca_continuity` |
+| PA4b | med | found by worker 2: a zoned `Datetime` group or session column was refused by the bank with polars' inner message (no `timezones` feature) | keyed by its instant as UTC wall time (`arrow::key_text`) in the bank, `with_windows`, `refresh_time` and `skip_learned` | `bank.rs::a_zoned_datetime_group_is_keyed_by_its_instant`, `test_error_messages.py::…`, `test_windows.py::…` |
+| CF1 | med | the ew_cov contract probe asserted rows 0-1 only | the decayed row and the gap asserted | `model_contract.rs` |
+| MUT | med | `target_n_eff_into` in ftrl, pa and sgd had no Rust test (6 survivors); `clock.rs`'s `<`→`<=` survived | tests kill them; the clock mutant is not an equivalent (zero recursed until the stack overflowed) | `::the_trait_reports_each_targets_own_weight` (3), `clock.rs::no_time_is_positive_zero` |
+| TC11 | low | `test_soak.py` ran in no workflow, and its resume test had failed since task 120: its tail restarted the clock at 0 | the weekly leak-check job runs `-m soak`; the tail continues the clock | `test_ci_cost_policy.py::TestEveryDeselectedMarkerRunsSomewhere`; the soak itself |
+| CI4 | low | `rust-version = "1.85"` while the lock needs 1.95 (`sysinfo` 0.39.6), so an sdist build on 1.85-1.94 failed inside a dependency | 1.95 | `test_ci_cost_policy.py::TestTheDeclaredRustVersionBuildsTheLock`, from `cargo metadata --locked` |
+| CI8 | low | ci.yml's concurrency group lacked the event, so the Monday run and a push to main could cancel each other, and only a push publishes the reference | the group carries `github.event_name`. The red docs job on `a7a8f3c`'s run was GitHub failing to acquire a runner (zero steps), not a superseded deploy | `test_ci_cost_policy.py::test_a_scheduled_run_cannot_cancel_a_push` |
+| SC5 | low | `coverage.sh` built `online-py`, so every test binary linked libpython | `--exclude online-py` | `test_ci_cost_policy.py::test_the_coverage_script_leaves_it_out_too` |
+| SC6 | low | three scripts said scikit-learn was not installed, or to add it with `--with`, where the dev group has it | they say `uv sync` | `test_dependency_policy.py::test_no_script_tells_the_reader_to_install_a_dev_library` |
+| SC7 | low | `doc_review.py`'s bold-lead split missed a lead holding a code span with a star | a code span is one token of the lead | `test_doc_review.py::test_a_bold_lead_holding_a_code_span_with_a_star_is_split_too` |
+| TC7 | low | the hygiene test missed the suite's own state formats and any binary file | `.state`, `.msgpack`, `.mpk` and `.bin` are data, and no tracked file may be binary (a NUL in its first 8,000 bytes, git's test) | `test_repo_hygiene.py::test_no_binary_file_is_tracked`, `::test_the_checks_know_the_suites_own_formats` |
+| TC8 | low | the release test pinned `publish`'s literal `needs`, which passed with a new job left out | every job but the three after the upload is upstream of `publish`, transitively | `test_release_workflow.py::test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing` |
+| YA4 | low | `targets` was an invariant `list`: mypy rejected six documented forms | a covariant `Sequence`; a bare `str` now type-checks and is refused at run time by name (a trade-off: no annotation excludes `str` from `Sequence[str]`) | `test_kwargs_typing.py::test_every_documented_target_form_type_checks` (mypy over the forms) |
+| YA5 | low | `targets=` on `deco`, `bocpd`, `corrchange`, `hmm`, `rcov` raised `_common() got multiple values` | refused as `ew_cov` refuses it | `test_error_messages.py::test_a_model_with_no_target_refuses_targets_by_name` (5) |
+| YA6 | low | a word such as `"inf"` given to `rolling_metrics`/`embargo` on a temporal clock lost the `who: key` prefix | the parse error carries the helper's and the parameter's name | `test_temporal_clock.py::…::test_what_is_not_a_duration_is_refused_by_name_by_a_helper` |
+| YA7 | low | `half_life="inf"` did not round-trip: `ModelBank([s]).specs[0] != s` | an infinity word is kept as `float("inf")` | `test_temporal_clock.py::TestADurationSurvives::test_save_load_and_the_specs_it_was_built_from` |
+| YA8 | low | `sgd` accepted `huber_delta`, `quantile`, `eps` and `power` beside a loss or schedule that does not read them | the builder refuses each by name; Rust `validate` too, for a raw dict or TOML (YA8b, worker 2) | `test_sgd.py::TestPlumbing::test_a_parameter_of_another_loss_or_schedule_is_refused_by_name` (8) |
+| YA9 | low | `format_of_path`'s doc comment sat on `RefreshTime` | moved | `test_kwargs_typing.py::test_each_native_item_carries_its_own_docstring` |
+| YA10 | low | spec.py said every field is computed before the row (`coef` and `support_coef` are after it); a stale error example; 19 builders' Output rubrics omitted `settled_frac`/`withheld_reason`; "largest first" in duration text, which Polars does not require | the docs say each; `coef` on row t is the fit row t+1 is predicted with (measured: exact for ewridge and rls under the default cadence, 8.9e-16 for sgd's lane order) | `test_model_registry.py::test_every_builders_output_rubric_names_the_fields_its_plainest_spec_writes`, `::test_the_field_grammar_names_every_field_a_grid_writes` |
+| YA11 | low | an expression under any key of a raw dict was read as a formula | a duration expression or `timedelta` under a clock parameter is converted as the builders convert it; an expression is a formula under `targets` alone, refused by name elsewhere | `test_formula_targets.py::test_a_raw_dict_takes_a_duration_under_a_clock_parameter` |
+| YB6 | low | `fit`/`fit_predict_batches` over this package's own plan form on an empty input warned `ConsumedSourceWarning` | the source-run counter is read before the plan is collected | `test_consumed_source.py` (the chain test) |
+| YB7 | low | a `save_state` that is a directory failed after the whole stream | refused when the plan is built, `IsADirectoryError` on every OS | `test_frame.py::test_a_save_state_that_is_a_directory_is_refused_before_the_stream` |
+| YB8 | low | `po.gram.merge([g])` dropped `group`, the instance and the lags | one part is returned as it is | `test_gram_module.py::TestMerge::test_merging_one_gram_returns_it_unchanged` |
+| YB9 | low | `metrics` gave `r2 = -inf` and `ic = NaN` at zero variance where `from_sums` gives null | null where undefined, as `from_sums` | `test_eval_sums.py::…::test_metrics_is_null_where_from_sums_is` (4) |
+| YB11 | low | `rolling_metrics(window_size=inf)` gave one bucket with `window_start = NaN` | refused, pointing at `po.eval.metrics` | `test_eval.py::test_rolling_metrics_refuses_a_window_that_is_not_finite` |
+| YB14 | low | `_frame.py` said a join above a bank is never reported; on 1.44.2 it is | the doc says what is measured | `test_order_hazards.py::test_a_join_above_a_bank_is_reported_where_polars_serializes_the_plan` |
+| CI5 | low | `po.ReadinessWarning` and `po.FormulaTarget` were exported and on no reference page | added | `test_api_links.py::test_every_name_the_package_exports_is_in_the_reference` |
+| CI6 | low | llms.txt, the bug template, the Pathway example and two README sentences said `coef` is the one field that follows the chunking (`support_coef` too) | each names both | `test_llms_txt.py::test_it_names_every_field_whose_schedule_follows_the_chunking` (the README sentences included) |
+| CI7 | low | llms.txt showed a clocked spec without `gap_cap`, which the bank refuses | the rule is stated | `test_llms_txt.py::test_it_says_a_clock_needs_a_gap_cap` |
+| TC6 | low | sgd's `clip_gradient` bound in none of 18 replay cases; a test restated `sgd.rs` | a case where the clip binds on more than 1,000 coordinates under every schedule, held to a reference from the per-coordinate rule | `test_oracles_gradient_paths.py` |
+| TA5 | low | the filterpy oracle's process noise was linear in d, passing at d ∈ {0, 1} | d², on a clock with steps 1, 4 and 0.5 (149 of 300 rows differed before) | `test_second_opinion.py` |
+| TA6 | low | the CLI resume test read files the previous test wrote | one module fixture runs the CLI for both | `test_examples.py` |
+| TA7 | low | a refusal test skipped when the scorers finished first: a race, not a platform guard | five rounds, then `pytest.fail` | `test_predict.py` |
+| TA8 | low | "no embargo, the same rows learned" asserted `rows_seen == height`, true of any fit | `rows_learned` (7) and the whole Gram, bit for bit, against `embargo=W`; `W + 2.5` gives 6, so it can fail | `test_formula_targets.py` |
+| TA9 | low | the psd form's test asserted only a smaller `rcov_n` | held to its definition (k_n = 37) to 1e-9 | `test_rcov.py` |
+| TA10 | low | a skipped row's test checked `weight_sum` alone | every field null | `test_properties.py` |
+| TA11 | low | two tests slept 0.2 s before asserting a source closed | wait for it (gc plus a polars call, since pyo3 releases the source at polars' next call), bounded by the engine's measured read-ahead (6 streaming, 4-7 in memory; bound 8) | `test_frame.py` |
+| TB8 | low | the conformal module docstring left out `w/w̄` | fixed | -- |
+| TB9 | low | `… or dropped.height < 11` passed for any drop; two lines asserted a constant | the precise claim (height 4, first t 33.0); the constant gone | `test_windows.py` |
+| TB10 | low | `TestClockColumnTypes` said a temporal clock is refused | re-documented to what it tests | `test_edge_cases.py` |
+| TB11 | low | a negative-weight test duplicated another for 7 of 10 models | deleted | -- |
+| TB12 | low | deco's embargo test asserted only that it was accepted | the embargoed run differs from the plain one and equals the delay applied by hand | `test_deco.py` |
+| TB13 | low | the null-target and null-weight tests were met by the stream layer whatever the model learned | per model (11): after a null target every later row equals the weight-0 stream, `weight_sum` up by the row's decayed weight; a null weight equals the row deleted | `test_semantics_all_models.py` |
+| TC9 | low | four assertions that could not fail | one deleted, three compare with something real | -- |
+| TC10 | low | "four threads never overlapped" could fail on a fast machine | retry rounds ending in `pytest.fail` | `test_error_messages.py` |
+| CE6, CE6b | low | windowed Kish sizes cancel: 2% off at 1e-8, `inf` at 1e-11 in `marginal`; 10.75 against 11 at 1e-6 in `ew_cov`, the regressions and the target moments (CE6b, found by worker 1) | null where the window's Kish sum is within 64ε of the history's | `kish_size_inside_a_window_is_the_rows_inside_or_nothing` (marginal, ewcov), `gaps.rs::kish_sizes_inside_a_window_are_the_rows_inside_or_nothing` |
+| CC5 | low | a zero-weight quantile row outside the band moved σ² by 1 ulp | it leaves before the σ² update | `robust.rs::a_zero_weight_row_keeps_the_residual_variance_to_the_bit` |
+| CB3 | low | `pca_every`'s docs said learned rows; the code counts every stepped row | the docs say every row, weight-zero rows included: C7's cadence rule (the code is the released behaviour) | `ewcov.rs::a_zero_weight_row_counts_toward_the_pca_cadence` |
+| CE5 | low | `preavg_rows=2` without `psd` gave the zero matrix | refused; `theta`'s window at least 3 without `psd` | `each_stride_is_refused_at_zero_and_a_window_of_two_is_allowed` |
+| CA5, CA6 | low | a failed first solve left zeros and a share of 1.0; a combo skipped for no weight kept stale shares | NaN `coef` and a null prediction; no shares | `ewridge::a_first_solve_that_fails_leaves_no_fit`, `::a_combo_skipped_for_no_weight_reports_no_shares` |
+| CB6 | low | ew_lagcov's only definitional test was the recursion | an oracle from the unrolled definition | `ewlagcov.rs::the_recursion_is_its_unrolled_definition` |
+| CF5 | low | no `Decay::check` in the Rust API | every decay-carrying `validate` checks first | `model_contract.rs::every_model_refuses_a_decay_it_cannot_run_on` (17), `clock.rs::a_decay_is_checked_at_its_edges` |
+| CF6 | low | `holds()` could pass vacuously | the slope is an `Option`; the windowed ridge test tightened | the held-value tests (`0 of 3000` rows predicted fails) |
+| CF7 | low | EXTENDING's hook table missed `set_solve_share` and the readiness hooks | rows added | `exactly_the_scheduled_solvers_report_a_solve_share` |
+| PB4, PB5 | low | wrong-length `coef_min`/`coef_max` dropped when trivial; the formula-target name check was the builder's alone | refused; `validate_spec`, `ModelBank` and the CLI dry run refuse it | `test_the_rust_side_names_the_offence`, the builder test extended |
+| YA8b | low | found by worker 3: Rust `validate` accepted the sgd parameters the builder refuses (YA8), from a dict or TOML | refused in the builder's words | `sgd_tests::…`, `test_a_raw_spec_with_a_parameter_nothing_reads_is_refused` |
+| PC5 | low | the brute force shared the forward closing rule with the core | it decides completeness from the stretch, on half-unit grids reaching the edge exactly | the brute force (`seed 5: drop flags differ` on the old core) |
+| CD2, CD3, CD4, CD5, CE7, CE8, CA4, CB4, CB5, CC6, CC7, CF2, CF3, CF4, PA9, PB8, PB9, PB10 | low | a message naming no parameter (`truncate`); a vacuous hmm test; bocpd's row-one sentence (`min_weight` gates it); `alpha_adjust` doing nothing under the window kind (now refused); doc drift in kmeans, rcov, lasso, ewcov, window, sgd, conformal, clock, model, bank, spec | each fixed, each message or claim pinned where a test can read it | `bocpd::a_bad_configuration_is_refused_by_name`, `hmm::a_uniform_chain_is_the_classifier`, `test_a_parameter_of_another_kind_is_refused`, `test_a_deco_block_refusal_reads_as_one_sentence`, `test_a_zero_delay_is_told_to_leave_it_out` |
+| YB12 | low | `online --dry-run` said "config OK" for an input that is not there | the dry run opens the input and names a missing one | `a_dry_run_names_an_input_that_is_not_there` |
+| YB13 | low | `--no-output --predict` was refused with a message pointing at fixes that cannot apply | refused, naming `--predict` | `no_output_with_predict_is_refused_naming_predict` |
+
+**Decisions left for the user.** Each has its evidence in the review's
+scratchpad and is unchanged in the code:
+
+- **CC1**: `drift_threshold` is in σ times clock units; on a temporal clock
+  `d_clock` is seconds, so the default 20 fires on noise at a row a minute
+  (237 of 3,000 rows) and a row a day (435), and under
+  `drift_action="reset"` the model restarts on noise. Which unit?
+- **CE1**: `rcov`'s pre-averaged estimate under `psd=False` omits CKP's
+  footnote rescaling `1/(1 − ψ₁/(θ²ψ₂)/(2n))`: 0.842 of the integrated
+  variance at `k_n = 6`, 0.941 at 10, 0.985 at the default. Applying it
+  moves the golden.
+- **CC4**: `kalman`'s observation and process noise are the literal 1.0 in
+  target units until the first residual, so the warm-up's gains depend on
+  the target's units (a 100% difference between scales of 1e-6 and 1e6).
+- **CB1**: a model's window edge is decided on its own summed `d_clock`, so a
+  row exactly `window_size` old is dropped on some rows and kept on others;
+  the window operators were fixed in task 159 (W3), the models' windows
+  were not. Exact edges need the raw clocks in the models.
+- **PC1**: a silent group on a row-count clock with a forward window holds
+  every later row of every group until the end (500,001 rows held, 117 MiB
+  over 2M rows), where the docs promise memory of one window. Refuse it, or
+  bound it?
+- **CA3**: `lasso`'s selection starts counting errors at the model's own
+  first prediction, gated by the list's smallest `min_weight`, so
+  `penalty_selected` differs on 84 of 240 rows between `[0, 60]` and
+  `[60, 60]`. When should the selection start counting?
+- **CI2**: run 35508619563 (v0.8.1, 2026-09-20) still waits at "publish to
+  PyPI", approvable with one click. Cancelling it is a write.
+- **PC2, a reset**: a cut now keeps a forward window whose far edge is the
+  last row before it whole; a reset still discards it, as its docs say ("a
+  reset discards them").
+- **TC1b's cost**: the full-leverage bound halves `quantile`'s throughput on
+  the default solve schedule (2.6M against 5.0M rows a second, 10
+  features; 8% solving every row). Accept it, or skip the leverage where
+  the bound provably cannot bind (bit-identical and resume-safe, but it
+  needs a floating-point margin argument and a review)?
+
+**Left as they are, with the reason.** CI9: CLAUDE.md says the Polars pins
+in `pyproject.toml` and `Cargo.toml` "must match", where they are two
+numbering schemes kept in step; CLAUDE.md is the user's to edit. YA4's
+`Sequence` typing takes a bare `str` as a `Sequence[str]`; no annotation
+excludes it, and the builders refuse it by name at run time. CB2's held-run
+rule for targets needs per-target runs in the state, a schema bump; the
+64ε floor covers the case found. `bank.rs` stands at 249,165 bytes against
+the 250 KB cap: the next addition moves tests out first.
+
+**What held, measured.** No rule-2 failure under the corrected property
+(TA1); every other kind round-trips its spec dict (only marginal did not);
+corrchange, deco, hmm, kmeans and micro hold the exact `weight_sum`
+recursion (TB5); kmeans and micro against their definitions and
+scikit-learn (ARI 0.99995); the standardized kalman against filterpy
+(1e-9); the quantile fit stationary for the loss it smooths (1e-15).

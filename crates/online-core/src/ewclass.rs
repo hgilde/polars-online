@@ -909,13 +909,13 @@ mod tests {
                 }
                 n_run[c] = w_new;
             }
-            if let Some(c) = r.label {
-                if r.w > 0.0 {
-                    let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
-                    n[c] += wt;
-                    for (m, xj) in mu[c].iter_mut().zip(&r.x) {
-                        *m += wt * xj;
-                    }
+            if let Some(c) = r.label
+                && r.w > 0.0
+            {
+                let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
+                n[c] += wt;
+                for (m, xj) in mu[c].iter_mut().zip(&r.x) {
+                    *m += wt * xj;
                 }
             }
         }
@@ -927,13 +927,13 @@ mod tests {
             }
         }
         for (i, r) in rows[..upto].iter().enumerate() {
-            if let Some(c) = r.label {
-                if r.w > 0.0 {
-                    let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
-                    for a in 0..k {
-                        for b in 0..k {
-                            cov[c][a * k + b] += wt * (r.x[a] - mu[c][a]) * (r.x[b] - mu[c][b]);
-                        }
+            if let Some(c) = r.label
+                && r.w > 0.0
+            {
+                let wt: f64 = r.w * lams[i + 1..].iter().product::<f64>();
+                for a in 0..k {
+                    for b in 0..k {
+                        cov[c][a * k + b] += wt * (r.x[a] - mu[c][a]) * (r.x[b] - mu[c][b]);
                     }
                 }
             }

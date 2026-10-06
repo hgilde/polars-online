@@ -262,12 +262,12 @@ impl KernelDef {
         }
         // The two forms of one window agree (review R4, A4): membership is
         // decided on the integer, the far edge and `complete` on the number.
-        if let (Some(w), Some(ns)) = (self.window_size, self.window_ns) {
-            if seconds_of_ns(i128::from(ns)) != w {
-                return Err(format!(
-                    "window_ns {ns} is not window_size {w} in nanoseconds"
-                ));
-            }
+        if let (Some(w), Some(ns)) = (self.window_size, self.window_ns)
+            && seconds_of_ns(i128::from(ns)) != w
+        {
+            return Err(format!(
+                "window_ns {ns} is not window_size {w} in nanoseconds"
+            ));
         }
         Ok(())
     }
@@ -2447,10 +2447,10 @@ mod tests {
             }
             if let (Some(now), true) = (r.clock, cfg.gap_cap.is_finite()) {
                 for g in groups.values_mut() {
-                    if let Some(last) = g.last_raw {
-                        if elapsed_bf(now, last) > cfg.gap_cap {
-                            end(g, End::Cut, &mut stretches, &mut live);
-                        }
+                    if let Some(last) = g.last_raw
+                        && elapsed_bf(now, last) > cfg.gap_cap
+                    {
+                        end(g, End::Cut, &mut stretches, &mut live);
                     }
                 }
             }

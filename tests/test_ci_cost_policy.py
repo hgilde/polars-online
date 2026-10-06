@@ -510,6 +510,46 @@ class TestActionsArePinnedToCommits:
             assert re.match(r"\s+#\s+\S", rest), f"{where}: {action} names no version"
 
 
+class TestTheDeclaredRustVersionBuildsTheLock:
+    """`rust-version` in the workspace's Cargo.toml is the oldest Rust a
+    source build supports. It said 1.85 while the locked tree held `sysinfo`
+    0.39.6 (1.95) and `simd-json` 0.17.3 (1.88), so an sdist install on Rust
+    1.85-1.94 failed in cargo (task 160, CI4). The declaration must cover
+    every resolved package's own."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    @staticmethod
+    def _version(text: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in text.split("."))
+
+    def test_the_workspace_declares_at_least_what_its_dependencies_need(self):
+        cmd = ["cargo", "metadata", "--locked", "--format-version", "1"]
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", cwd=self.ROOT, check=False
+            )
+        except FileNotFoundError:
+            pytest.fail("cargo is not on PATH; `source scripts/env.sh` first")
+        assert res.returncode == 0, res.stderr
+        import json
+
+        meta = json.loads(res.stdout)
+        members = set(meta["workspace_members"])
+        declared = {p["name"]: p["rust_version"] for p in meta["packages"] if p["id"] in members}
+        needed = max(
+            (
+                (p["rust_version"], p["name"])
+                for p in meta["packages"]
+                if p.get("rust_version") and p["id"] not in members
+            ),
+            key=lambda t: self._version(t[0]),
+        )
+        assert len(set(declared.values())) == 1, declared
+        floor = next(iter(declared.values()))
+        assert self._version(floor) >= self._version(needed[0]), (floor, needed)
+
+
 class TestEveryDeselectedMarkerRunsSomewhere:
     """pyproject's addopts leaves the soak out of every run that does not ask
     for it, and no workflow asked: its resume test failed unseen from task 120

@@ -189,10 +189,10 @@ impl SgdCfg {
             }
             _ => {}
         }
-        if let LearningRate::InvScaling { power } = self.schedule {
-            if power.is_nan() || power < 0.0 {
-                return Err("sgd: inv_scaling power must be >= 0".into());
-            }
+        if let LearningRate::InvScaling { power } = self.schedule
+            && (power.is_nan() || power < 0.0)
+        {
+            return Err("sgd: inv_scaling power must be >= 0".into());
         }
         if let Some(c) = &self.constraint {
             c.validate(self.n_features, "sgd")?;
@@ -510,14 +510,14 @@ fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
     let b = &beta[off..];
     debug_assert_eq!(b.len(), z.len());
     let mut acc = [0.0f64; DOT_LANES];
-    let mut zc = z.chunks_exact(DOT_LANES);
-    let mut bc = b.chunks_exact(DOT_LANES);
-    for (zs, bs) in (&mut zc).zip(&mut bc) {
+    let (zc, zr) = z.as_chunks::<DOT_LANES>();
+    let (bc, br) = b.as_chunks::<DOT_LANES>();
+    for (zs, bs) in zc.iter().zip(bc) {
         for l in 0..DOT_LANES {
             acc[l] += zs[l] * bs[l];
         }
     }
-    for (l, (zi, bi)) in zc.remainder().iter().zip(bc.remainder()).enumerate() {
+    for (l, (zi, bi)) in zr.iter().zip(br).enumerate() {
         acc[l] += zi * bi;
     }
     let s = ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
@@ -1089,7 +1089,7 @@ mod tests {
         let mut row = 0u64;
         move |x: &[f64], s: &mut u64| {
             row += 1;
-            if row % 20 == 0 {
+            if row.is_multiple_of(20) {
                 500.0 * lcg(s)
             } else {
                 2.0 * x[0]

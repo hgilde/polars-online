@@ -571,7 +571,7 @@ mod tests {
         let mut row = 0u64;
         let contaminated = move |x: &[f64], s: &mut u64| {
             row += 1;
-            if row % 25 == 0 {
+            if row.is_multiple_of(25) {
                 500.0 * lcg(s)
             } else {
                 2.0 * x[0]
@@ -587,7 +587,7 @@ mod tests {
             3,
             move |x: &[f64], s: &mut u64| {
                 row2 += 1;
-                if row2 % 25 == 0 {
+                if row2.is_multiple_of(25) {
                     500.0 * lcg(s)
                 } else {
                     2.0 * x[0]

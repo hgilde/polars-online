@@ -421,18 +421,16 @@ fn extract(
                         strict_binary: true,
                         ..
                     }
-                ) {
-                    if let Some(j) = v
-                        .iter()
-                        .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
-                    {
-                        polars_bail!(ComputeError:
-                            "spec {:?}: strict_binary target column {:?} has the value {} at \
-                             row {}, which is neither 0 nor 1; null the rows that should only \
-                             be scored, or drop strict_binary to clamp them into [0, 1]",
-                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
-                        );
-                    }
+                ) && let Some(j) = v
+                    .iter()
+                    .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: strict_binary target column {:?} has the value {} at \
+                         row {}, which is neither 0 nor 1; null the rows that should only \
+                         be scored, or drop strict_binary to clamp them into [0, 1]",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
                 }
                 // `bocpd`'s hazard column rides in the targets slot and is
                 // not a target: it is a parameter, and a value the model
@@ -447,15 +445,14 @@ fn extract(
                         hazard_col: Some(_),
                         ..
                     }
-                ) {
-                    if let Some(j) = v.iter().position(|f| f.is_finite() && *f <= 1.0) {
-                        polars_bail!(ComputeError:
-                            "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
-                             expected rows between changepoints and must be > 1 (use null to \
-                             fall back to the spec's own hazard)",
-                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
-                        );
-                    }
+                ) && let Some(j) = v.iter().position(|f| f.is_finite() && *f <= 1.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
+                         expected rows between changepoints and must be > 1 (use null to \
+                         fall back to the spec's own hazard)",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
                 }
                 Ok(v)
             }
@@ -537,17 +534,16 @@ fn extract(
                 // `rcov` sums returns over a block; a fractional weight has
                 // no meaning there, so it takes a weight only as "this row
                 // is a return" or "this row is not" (E57).
-                if matches!(spec.model, ModelKind::Rcov { .. }) {
-                    if let Some(j) = v
+                if matches!(spec.model, ModelKind::Rcov { .. })
+                    && let Some(j) = v
                         .iter()
                         .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
-                    {
-                        polars_bail!(ComputeError:
-                            "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \
-                             (a realised covariance is a sum over returns, not a weighted mean)",
-                            spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
-                        );
-                    }
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \
+                         (a realised covariance is a sum over returns, not a weighted mean)",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
                 }
                 Ok(Some(v))
             }
@@ -2540,10 +2536,10 @@ impl Bank {
     /// with it, whether or not its stream was still held. `spec` is an index
     /// into [`Self::specs`]; the caller keeps it in range.
     pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
-        if let Some(si) = spec {
-            if si >= self.states.len() {
-                return Err(format!("spec index {si} out of range"));
-            }
+        if let Some(si) = spec
+            && si >= self.states.len()
+        {
+            return Err(format!("spec index {si} out of range"));
         }
         let mut dropped = 0;
         for (si, hm) in self.states.iter_mut().enumerate() {
@@ -3099,10 +3095,8 @@ impl Bank {
         chunk: &ArrowChunk,
         learn_only: bool,
     ) -> PolarsResult<Vec<StructArray>> {
-        if !learn_only {
-            if let Some(why) = self.fit_predict_refusal() {
-                polars_bail!(ComputeError: "{}", why);
-            }
+        if !learn_only && let Some(why) = self.fit_predict_refusal() {
+            polars_bail!(ComputeError: "{}", why);
         }
         // The clock column's type, as first seen: what the clock fields
         // come out as, kept in the state for `last_row` (task 152).
@@ -3167,20 +3161,20 @@ impl Bank {
                 // mark was written under an integer column and the column
                 // is text now, so `"9" > "10"` would let a closed group
                 // reopen (docs/REVIEW-E54-E64.md G1).
-                if let (Some(hw), Some(prev)) = (&self.high_water[si], self.key_integer[si]) {
-                    if prev != integer_keys[si] {
-                        let (was, now) = if prev {
-                            ("integer", "text")
-                        } else {
-                            ("text", "integer")
-                        };
-                        polars_bail!(ComputeError:
-                            "spec {:?}: the high-water key {} was saved under a {} group column \
-                             {:?} and this chunk's is {}; the two order keys differently, so the \
-                             mark cannot be honoured",
-                            spec.name, hw, was, spec.group.as_deref().unwrap_or(""), now
-                        );
-                    }
+                if let (Some(hw), Some(prev)) = (&self.high_water[si], self.key_integer[si])
+                    && prev != integer_keys[si]
+                {
+                    let (was, now) = if prev {
+                        ("integer", "text")
+                    } else {
+                        ("text", "integer")
+                    };
+                    polars_bail!(ComputeError:
+                        "spec {:?}: the high-water key {} was saved under a {} group column \
+                         {:?} and this chunk's is {}; the two order keys differently, so the \
+                         mark cannot be honoured",
+                        spec.name, hw, was, spec.group.as_deref().unwrap_or(""), now
+                    );
                 }
                 // Kept in `self.key_integer` with the mark, once the chunk is
                 // taken: written here, a chunk `check_monotone` refused left
@@ -3734,10 +3728,10 @@ impl Bank {
     ///
     /// `spec` out of range, or a frame the columns cannot make.
     pub fn closed_groups(&mut self, spec: Option<usize>, drop: bool) -> Result<DataFrame, String> {
-        if let Some(si) = spec {
-            if si >= self.specs.len() {
-                return Err(format!("spec index {si} out of range"));
-            }
+        if let Some(si) = spec
+            && si >= self.specs.len()
+        {
+            return Err(format!("spec index {si} out of range"));
         }
         let taken: Vec<ClosedRow> = if drop {
             let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.closed)
@@ -5497,10 +5491,10 @@ fn assemble(
                     let mut support: Vec<Option<&Vec<f64>>> = vec![None; n];
                     for ch in chunks {
                         for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri] {
-                                if let Some(c) = &ch.support_coef[mi][ri] {
-                                    support[row] = Some(c);
-                                }
+                            if ch.processed[ri]
+                                && let Some(c) = &ch.support_coef[mi][ri]
+                            {
+                                support[row] = Some(c);
                             }
                         }
                     }
@@ -5529,10 +5523,10 @@ fn assemble(
                     let mut coef: Vec<Option<&Vec<f64>>> = vec![None; n];
                     for ch in chunks {
                         for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri] {
-                                if let Some(c) = &ch.coef[mi][ri] {
-                                    coef[row] = Some(c);
-                                }
+                            if ch.processed[ri]
+                                && let Some(c) = &ch.coef[mi][ri]
+                            {
+                                coef[row] = Some(c);
                             }
                         }
                     }

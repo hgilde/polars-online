@@ -2604,12 +2604,12 @@ fn the_sharded_stream_reaches_every_case() {
     let (mut folds, mut empties, mut folds_while_held) = (0, 0, 0);
     for r in &rows {
         let lam = m.cfg.decay.factor(r.d);
-        if let Some(h) = m.bins.as_ref().and_then(|b| b.hist.as_ref()) {
-            if h.folds_at(lam) {
-                folds += 1;
-                empties += usize::from(lam == 0.0);
-                folds_while_held += usize::from(m.held_rows() > 0);
-            }
+        if let Some(h) = m.bins.as_ref().and_then(|b| b.hist.as_ref())
+            && h.folds_at(lam)
+        {
+            folds += 1;
+            empties += usize::from(lam == 0.0);
+            folds_while_held += usize::from(m.held_rows() > 0);
         }
         m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
     }
@@ -3141,7 +3141,7 @@ fn shared_row(s: &mut u64, i: usize, p: usize, t: usize) -> (Vec<f64>, Vec<f64>,
     let y: Vec<f64> = (0..t).map(|k| 0.5 * x[k % p] + lcg(s)).collect();
     let d = if i == 0 {
         0.0
-    } else if i % 13 == 0 {
+    } else if i.is_multiple_of(13) {
         7.0
     } else {
         1.0

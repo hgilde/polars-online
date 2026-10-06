@@ -99,8 +99,10 @@ impl F64Column {
             }
         }
         let bytes = &mut self.bits[(base + head) / 8..];
-        for (f, byte) in self.flags[head..body].chunks_exact(8).zip(bytes) {
-            let x = u64::from_le_bytes(f.try_into().expect("eight flags"));
+        // `body - head` is a whole number of eights, so nothing remains.
+        let (eights, _) = self.flags[head..body].as_chunks::<8>();
+        for (f, byte) in eights.iter().zip(bytes) {
+            let x = u64::from_le_bytes(*f);
             *byte = (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) as u8;
         }
     }

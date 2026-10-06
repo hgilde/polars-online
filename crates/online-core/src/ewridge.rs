@@ -1286,13 +1286,13 @@ impl EwRidge {
             };
             for c in 0..nc {
                 let slot = j * nc + c;
-                if n > 0.0 {
-                    if let Some(bound) = self.ready.edf_bound_at(slot) {
-                        let ratio = (1.0 + bound / n).sqrt();
-                        if ratio < limit {
-                            out[slot] = ratio;
-                            continue;
-                        }
+                if n > 0.0
+                    && let Some(bound) = self.ready.edf_bound_at(slot)
+                {
+                    let ratio = (1.0 + bound / n).sqrt();
+                    if ratio < limit {
+                        out[slot] = ratio;
+                        continue;
                     }
                 }
                 let edf = self.ready.edf_at(slot);

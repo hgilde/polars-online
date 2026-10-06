@@ -1728,7 +1728,7 @@ mod tests {
     /// x·Γ(x)` from `Γ(1/2) = √π` and `Γ(1) = 1`: a sum of logs, sharing
     /// nothing with the Lanczos series the model uses.
     fn ln_gamma_half(k: u64) -> f64 {
-        let (mut x, mut acc) = if k % 2 == 0 {
+        let (mut x, mut acc) = if k.is_multiple_of(2) {
             (1.0, 0.0)
         } else {
             (0.5, 0.5 * std::f64::consts::PI.ln())
