@@ -129,8 +129,13 @@ every window open across it, and ``partial`` says what such a window gives:
 
 A reset discards it: null, never dropped. Under ``session_gap="reset"`` a
 session change is a reset, so it discards rather than cuts. A forward window
-still open when the input ends is null. ``partial`` needs a ``window_size``:
-without one no window is cut short, so ``partial`` alone is refused.
+under ``closed="right"`` or ``"both"`` whose far edge is the last row before
+a cut or a reset is whole: every row it covers has arrived, so it gives its
+value. A forward window still open when the input ends is null.
+Under ``group`` a forward window needs a clock column, since only a clock
+ends the windows of a group that falls silent. ``partial`` needs a
+``window_size``: without one no window is cut short, so ``partial`` alone is
+refused.
 
 An operator's input is a column name or an element-wise expression of the
 row, :func:`increment` included -- not another window operator: a formula

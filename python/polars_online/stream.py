@@ -645,12 +645,16 @@ def with_windows(
        * - ``session``, ``session_gap``
          - a number, a duration or ``"reset"``
        * - ``group``
-         - groups that each have their own clock, sessions and windows
+         - groups that each have their own clock, sessions and windows; a
+           window looking ahead under ``group`` needs ``clock``
 
     A window is measured on that policy clock, after the cap and the session
     gap. A gap longer than ``gap_cap`` or a session change ends every window
     open across it, under each operator's ``partial``; a reset discards
-    them: null, never dropped. The rows must be in clock order across
+    them: null, never dropped. A window looking ahead under
+    ``closed="right"`` or ``"both"`` whose far edge is the last row before
+    either holds every row it covers, so it is whole, and gives its value
+    under any ``partial``. The rows must be in clock order across
     groups, as one stream. The clock is also read in input order, under the
     same policy, so a step back there is refused or, past
     ``restart_after_step_back``, resets every group, and a gap there ends
@@ -683,7 +687,10 @@ def with_windows(
     the output trails the input by the longest window. A group that falls
     silent holds every later row for at most ``gap_cap`` of the stream's
     time: past that its next row is certain to open with a gap past the cap,
-    so its windows end then. The rows a look-ahead holds are kept as the
+    so its windows end then. Only a clock column has a cap, so a look-ahead
+    under ``group`` needs one, and is refused without it: each group's clock
+    would count only its own rows, and a silent group would hold every later
+    row to the end of the input. The rows a look-ahead holds are kept as the
     input's own chunks, not copied, so the memory is one window of input
     whatever its width. The kernels' own sums are one window of the rows
     that count in them.
@@ -733,8 +740,9 @@ def with_windows(
     A state resumes only the call that saved it, on the same kind of clock.
 
     ``ValueError`` for a formula, a clock policy or a column that cannot
-    run, an output name that collides, and a ``load_state`` another call
-    saved. What the run refuses once the plan is running -- a step back,
+    run (a look-ahead under ``group`` with no ``clock`` among them), an
+    output name that collides, and a ``load_state`` another call saved.
+    What the run refuses once the plan is running -- a step back,
     naming the row, or a state resumed on another input -- surfaces as
     ``polars.exceptions.ComputeError`` with the message inside under
     py-polars 1.x, since the rows come from a Python source, and as the

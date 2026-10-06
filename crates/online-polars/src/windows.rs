@@ -43,9 +43,13 @@
 //! `partial`); a reset discards them (null, never dropped); a group that
 //! falls silent is cut once the stream's clock is `gap_cap` past its last
 //! row. A forward `"right"` or `"both"` window whose far edge is the last
-//! row before such a cut holds every timestamp it can, and is whole, as its
-//! backward mirror is (task 160). Rows leave in input order, each once every
-//! window over it has resolved.
+//! row before such a cut or reset holds every timestamp it can, and is
+//! whole, as its backward mirror is (tasks 160 and 173). Only a clock column
+//! cuts a silent group, so the frame runner and the specs refuse a forward
+//! window under groups without one (`spec.rs`, `clock_cfg_of`; task 173):
+//! on a row-count clock a silent group's clock never moves, and its open
+//! windows would hold every later row. Rows leave in input order, each once
+//! every window over it has resolved.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -1682,7 +1686,9 @@ impl Windows {
 
     /// Cut the open windows of every group whose last row is more than
     /// `gap_cap` behind `now`: the stream's clock has shown that its next
-    /// row opens with a longer gap.
+    /// row opens with a longer gap. Only a clock column has a cap; on a
+    /// row-count clock nothing cuts a silent group, which is why a forward
+    /// window under groups needs a clock column (task 173, PC1).
     fn end_silent(&mut self, now: ClockValue) {
         let cap = self.clock_cfg.gap_cap;
         if !cap.is_finite() {
@@ -1720,11 +1726,12 @@ impl Windows {
                 g.closed[ki] += 1;
                 // Under "right" and "both" a window whose far edge is the
                 // stretch's last row holds every timestamp it can, and a cut
-                // leaves none of them to come: it is whole, as its backward
-                // mirror is, where it was cut short -- null, or dropped
-                // (task 160, PC2). Under "left" and "none" a row on the edge
-                // closed it already. A reset still discards it.
-                let whole = how == End::Cut
+                // or a reset leaves none of them to come: it is whole, as its
+                // backward mirror is, where a cut cut it short -- null, or
+                // dropped (task 160, PC2) -- and a reset discarded it (task
+                // 173, PC2). Under "left" and "none" a row on the edge closed
+                // it already. A reset discards every other window.
+                let whole = matches!(how, End::Cut | End::Discard)
                     && k.closed.far(Direction::Forward)
                     && gap(g.exact, t.off, g.off).cmp_window(k) == Ordering::Equal;
                 let (how, far) = if whole {
@@ -2572,18 +2579,19 @@ mod tests {
                             // Whole once every timestamp of the stretch the
                             // window can hold is in, read from the stretch
                             // itself rather than from a closing rule (task
-                            // 160, PC5). A stretch a break ended has every
-                            // row it will have: the window is whole when the
-                            // stretch reaches its far edge, so that its span
-                            // lies inside the stretch, and cut short when it
-                            // does not. A stretch still open at the end of
-                            // the input, or one a reset ended, has shown its
-                            // window whole only by a row stamped past every
-                            // timestamp the window holds: past the far edge
-                            // where the window holds it ("right", "both"),
-                            // at it or past where it does not; a window it
-                            // has not shown whole is unresolved, or
-                            // discarded, and null either way.
+                            // 160, PC5). A stretch a break or a reset ended
+                            // has every row it will have: the window is
+                            // whole when the stretch reaches its far edge, so
+                            // that its span lies inside the stretch (task
+                            // 173, PC2, for a reset), and otherwise cut short
+                            // by a break, or discarded by a reset. A stretch
+                            // still open at the end of the input has shown
+                            // its window whole only by a row stamped past
+                            // every timestamp the window holds: past the far
+                            // edge where the window holds it ("right",
+                            // "both"), at it or past where it does not; a
+                            // window it has not shown whole is unresolved,
+                            // and null.
                             let reaches_edge =
                                 gap_bf(rows, s, a, n - 1).cmp_window(k) != Ordering::Less;
                             let shown_whole = (a + 1..n).any(|b| {
@@ -2595,7 +2603,9 @@ mod tests {
                                 }
                             });
                             match s.end {
-                                Some((End::Cut, _)) if reaches_edge => (later, true, w),
+                                Some((End::Cut | End::Discard, _)) if reaches_edge => {
+                                    (later, true, w)
+                                }
                                 Some((End::Cut, end_tau)) => {
                                     if op.partial == Partial::Drop {
                                         t.drop[r] = true;
@@ -2880,27 +2890,65 @@ mod tests {
                 stream(seed, 400, groups, temporal, sessions)
             };
             let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
-            let want = brute(&kernels, &ops, c, &rows).unwrap();
-            let got = run(&kernels, &ops, c, &rows, 1).unwrap();
-            if let Err((o, i, e)) = got.close_to(&want, 1e-9) {
-                for (r, row) in rows
-                    .iter()
-                    .enumerate()
-                    .take(i + 5)
-                    .skip(i.saturating_sub(10))
-                {
-                    let (g, w) = if o < got.values.len() {
-                        (got.values[o][r], want.values[o][r])
-                    } else {
-                        (f64::NAN, f64::NAN)
-                    };
-                    eprintln!(
-                        "row {r}: clock {:?} x {:?} accept {} got {g} want {w}",
-                        row.clock, row.values, row.accept
-                    );
-                }
-                panic!("seed {seed}: {e}");
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
+    }
+
+    /// The core against the brute force on `rows`, to 1e-9, the rows around
+    /// the first difference printed.
+    fn assert_matches_brute(
+        kernels: &[KernelDef],
+        ops: &[OpDef],
+        c: ClockCfg,
+        rows: &[Row],
+        seed: u64,
+    ) {
+        let want = brute(kernels, ops, c, rows).unwrap();
+        let got = run(kernels, ops, c, rows, 1).unwrap();
+        if let Err((o, i, e)) = got.close_to(&want, 1e-9) {
+            for (r, row) in rows
+                .iter()
+                .enumerate()
+                .take(i + 5)
+                .skip(i.saturating_sub(10))
+            {
+                let (g, w) = if o < got.values.len() {
+                    (got.values[o][r], want.values[o][r])
+                } else {
+                    (f64::NAN, f64::NAN)
+                };
+                eprintln!(
+                    "row {r}: clock {:?} x {:?} accept {} got {g} want {w}",
+                    row.clock, row.values, row.accept
+                );
             }
+            panic!("seed {seed}: {e}");
+        }
+    }
+
+    /// Every operator on every kernel against the definition across resets
+    /// (task 173, PC2): the half-unit grid's breaks made steps back past
+    /// `restart_after_step_back` or new sessions under `session_gap =
+    /// "reset"`, alone and with groups, so windows end exactly on the last
+    /// row before a reset. Whole there, as before a cut; the rest of the
+    /// windows a reset meets discarded, null under every `partial` and
+    /// never dropped.
+    #[test]
+    fn every_operator_matches_its_definition_across_resets() {
+        let (kernels, ops) = all_kernels();
+        for (seed, groups) in [(21, 1), (22, 3), (23, 1), (24, 2)] {
+            let (rows, c) = if seed < 23 {
+                (
+                    step_back_stream(seed, 400, groups, true),
+                    cfg(8.0, None, Some(0.0)),
+                )
+            } else {
+                (
+                    session_reset_stream(seed, 400, groups, true),
+                    cfg(8.0, Some(SessionGap::Reset), None),
+                )
+            };
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
         }
     }
 
@@ -2942,42 +2990,77 @@ mod tests {
         }
     }
 
-    /// A forward window is a backward one over the reversed stream, less the
-    /// row itself: the mirror of each kernel on the mirror of the stream.
-    #[test]
-    fn a_forward_window_is_a_backward_one_over_the_reversed_stream() {
-        // Distinct stamps on a half-unit grid, so the row itself is the only
-        // exclusion and a row lands exactly on a window's far edge, broken
-        // by gaps past the cap; the last row after one, so the input ends
-        // on a stretch of one row and no forward window is left open by
-        // the end of the input where its mirror is whole (task 160, PC2).
-        let mut rows = grid_stream(11, 300, 1, false, false);
-        rows.iter_mut().for_each(|r| r.accept = true);
-        let clock = |r: &Row| match r.clock {
+    /// A test row's number clock.
+    fn clock_of(r: &Row) -> f64 {
+        match r.clock {
             Some(ClockValue::F64(x)) => x,
             _ => unreachable!("a number clock"),
-        };
-        let mut last_row = rows.last().unwrap().clone();
-        last_row.clock = Some(ClockValue::F64(clock(&last_row) + 12.0));
-        rows.push(last_row);
-        let c = cfg(8.0, None, None);
+        }
+    }
+
+    /// [`grid_stream`]'s clock with each of its steps past the cap turned
+    /// into a step back of the same size, which `restart_after_step_back`
+    /// restarts on: the same stretches, each ended by a reset rather than a
+    /// cut (task 173, PC2).
+    fn step_back_stream(seed: u64, n: usize, groups: usize, repeats: bool) -> Vec<Row> {
+        let mut rows = grid_stream(seed, n, groups, false, repeats);
+        let (mut prev, mut t) = (0.0, 0.0);
+        for r in &mut rows {
+            let step = clock_of(r) - prev;
+            prev = clock_of(r);
+            t += if step == 12.0 { -12.0 } else { step };
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
+    /// [`grid_stream`]'s clock with each of its steps past the cap turned
+    /// into a step of 1 and a new session, which `session_gap = "reset"`
+    /// restarts on: the same stretches again, each ended by the other kind
+    /// of reset (task 173, PC2).
+    fn session_reset_stream(seed: u64, n: usize, groups: usize, repeats: bool) -> Vec<Row> {
+        let mut rows = grid_stream(seed, n, groups, false, repeats);
+        let (mut prev, mut t, mut session) = (0.0, 0.0, 0u64);
+        for r in &mut rows {
+            let step = clock_of(r) - prev;
+            prev = clock_of(r);
+            if step == 12.0 {
+                session += 1;
+                t += 1.0;
+            } else {
+                t += step;
+            }
+            r.clock = Some(ClockValue::F64(t));
+            r.session = Some(session);
+        }
+        rows
+    }
+
+    /// The time-reversal identity on `rows`, under `c`: row `i`'s forward
+    /// window is the mirror's backward window at the mirrored row, where
+    /// the mirror is the stream with its times negated and its rows
+    /// reversed. `ends(j)` says a break follows row `j`, which ends its
+    /// stretch: the mirror has the same break between the same two rows (a
+    /// gap, a step back of the same size, the same new session). The last
+    /// row is put after one, so the input ends on a stretch of one row and
+    /// no forward window is left open by the end of the input where its
+    /// mirror is whole (task 160, PC2).
+    fn assert_mirror(rows: &[Row], c: ClockCfg, ends: impl Fn(&[Row], usize) -> bool) {
         let n = rows.len();
-        let t: Vec<f64> = rows.iter().map(clock).collect();
+        let t: Vec<f64> = rows.iter().map(clock_of).collect();
         // The rows whose window of 5 ends exactly on the last row before a
         // break: the case the mirror catches.
         let on_edge = (0..n)
             .filter(|&i| {
-                let end = (i..n)
-                    .find(|&j| j + 1 == n || t[j + 1] - t[j] > 8.0)
-                    .unwrap();
-                t[end] - t[i] == 5.0
+                let end = (i..n).find(|&j| j + 1 == n || ends(rows, j)).unwrap();
+                end + 1 < n && t[end] - t[i] == 5.0
             })
             .count();
         assert!(on_edge > 5, "{on_edge} rows end on the edge");
         let last = t[n - 1];
         let mut mirror: Vec<Row> = rows.iter().rev().cloned().collect();
         for r in &mut mirror {
-            r.clock = Some(ClockValue::F64(last - clock(r)));
+            r.clock = Some(ClockValue::F64(last - clock_of(r)));
         }
         // The mirror: times negated and reversed, a backward kernel closed
         // on the far side -- "left" mirrors "right", "both" mirrors itself.
@@ -2999,7 +3082,7 @@ mod tests {
                     partial: Partial::Null,
                 })
                 .collect();
-            let fwd = run(std::slice::from_ref(&k), &ops, c, &rows, 1).unwrap();
+            let fwd = run(std::slice::from_ref(&k), &ops, c, rows, 1).unwrap();
             let kb = KernelDef {
                 direction: Direction::Backward,
                 closed: mirrored,
@@ -3007,8 +3090,9 @@ mod tests {
             };
             let back = run(&[kb], &ops, c, &mirror, 1).unwrap();
             // Row i's forward window is the mirror's backward window at the
-            // mirrored row i: whole where it is whole, cut short where it is
-            // cut short (null both), and the same number where it is whole.
+            // mirrored row i: whole where it is whole, cut short or discarded
+            // where it does not reach its far edge (null both), and the same
+            // number where it is whole.
             for o in 0..ops.len() {
                 for (i, ti) in t.iter().enumerate() {
                     let (a, b) = (fwd.values[o][i], back.values[o][n - 1 - i]);
@@ -3027,6 +3111,52 @@ mod tests {
                 assert!(fwd.values[o].iter().filter(|v| !v.is_nan()).count() > n / 3);
             }
         }
+    }
+
+    /// A forward window is a backward one over the reversed stream, less the
+    /// row itself: the mirror of each kernel on the mirror of the stream.
+    #[test]
+    fn a_forward_window_is_a_backward_one_over_the_reversed_stream() {
+        // Distinct stamps on a half-unit grid, so the row itself is the only
+        // exclusion and a row lands exactly on a window's far edge, broken
+        // by gaps past the cap.
+        let mut rows = grid_stream(11, 300, 1, false, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) + 12.0));
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, None, None), |rows, j| {
+            clock_of(&rows[j + 1]) - clock_of(&rows[j]) > 8.0
+        });
+    }
+
+    /// The identity across resets (task 173, PC2): a reset discards every
+    /// window still open across it, but one whose far edge is the last row
+    /// before it is whole, as at a cut -- every row it covers has arrived,
+    /// and its mirror, a backward window reaching exactly back to its
+    /// stretch's first row, is complete. Before, a reset discarded it, and
+    /// the forward side was null where the mirror had its number.
+    #[test]
+    fn a_forward_window_is_a_backward_one_over_the_reversed_stream_across_resets() {
+        // A step back past `restart_after_step_back` (0: every step back).
+        let mut rows = step_back_stream(11, 300, 1, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) - 12.0));
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, None, Some(0.0)), |rows, j| {
+            clock_of(&rows[j + 1]) < clock_of(&rows[j])
+        });
+        // A new session under `session_gap = "reset"`.
+        let mut rows = session_reset_stream(11, 300, 1, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) + 1.0));
+        last_row.session = last_row.session.map(|s| s + 1);
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, Some(SessionGap::Reset), None), |rows, j| {
+            rows[j + 1].session != rows[j].session
+        });
     }
 
     /// Every row at a repeated stamp gets the same backward window under
@@ -3146,7 +3276,8 @@ mod tests {
     }
 
     /// A reset discards the windows open across it, whatever `partial`
-    /// says; a cut keeps, nulls or drops them as it says.
+    /// says; a cut keeps, nulls or drops them as it says. A window whose far
+    /// edge is the last row before either is whole.
     #[test]
     fn a_reset_discards_and_a_cut_follows_partial() {
         let k = KernelDef {
@@ -3203,7 +3334,7 @@ mod tests {
         assert!(!cut.drop[3]);
         // A step back restarts: discarded, null, never dropped.
         let reset = run(
-            &[k],
+            std::slice::from_ref(&k),
             &ops,
             cfg(4.0, None, Some(0.0)),
             &mk(&[0.0, 1.0, 2.0, 1.5, 2.5]),
@@ -3211,6 +3342,29 @@ mod tests {
         )
         .unwrap();
         assert!(reset.values[0][0].is_nan() && reset.values[1][0].is_nan() && !reset.drop[0]);
+        // Task 173, PC2: row 0's window (0, 5] ends exactly on the last row
+        // before the step back, so every row it covers has arrived: whole,
+        // under every `partial`, as before a cut. Its sum from the
+        // definition, `Σ 2^(−d/2)` over the rows 1, 2 and 5 later. The
+        // windows that reach past that row are discarded, never dropped.
+        let reset = run(
+            &[k],
+            &ops,
+            cfg(100.0, None, Some(0.0)),
+            &mk(&[0.0, 1.0, 2.0, 5.0, 3.0]),
+            1,
+        )
+        .unwrap();
+        let whole = 2f64.powf(-0.5) + 2f64.powf(-1.0) + 2f64.powf(-2.5);
+        for o in 0..3 {
+            assert!(
+                (reset.values[o][0] - whole).abs() < 1e-15,
+                "op {o}: {} vs {whole}",
+                reset.values[o][0]
+            );
+            assert!(reset.values[o][1..].iter().all(|v| v.is_nan()), "op {o}");
+        }
+        assert!(reset.drop.iter().all(|d| !d), "{:?}", reset.drop);
     }
 
     /// `min_samples` nulls a window with fewer rows carrying a value.

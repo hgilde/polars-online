@@ -585,6 +585,14 @@ impl WindowsRun {
             session: config.session.as_deref(),
             session_gap: config.session_gap.as_ref(),
             spec_closes_on_session: None,
+            // A bank's window targets run one core per group, each built
+            // with no group column (`resolvers.rs`): the spec refuses its
+            // own groups without a clock, with this same rule (task 173).
+            group: config.group.as_deref(),
+            looks_ahead: config
+                .formulas
+                .iter()
+                .any(|f| f.tree.has_forward_operator()),
         })?;
         let p = plan(&config, input)?;
         check_scale(&config, &p.spans, input)?;
@@ -1854,6 +1862,87 @@ mod tests {
         .err()
         .expect("refused");
         assert!(err.contains("with_windows: gap_cap needs clock"), "{err}");
+    }
+
+    /// Task 173, PC1: without a clock column each group's clock counts its
+    /// own rows, so a group that falls silent never closed its windows, and
+    /// every later row of every group waited for them to the end of the
+    /// input (500,001 rows held, 117 MiB more over 2M rows). Refused, naming
+    /// a clock column or no group; the same call with a clock runs, and so
+    /// do a window looking back under groups and one looking ahead without.
+    #[test]
+    fn a_window_looking_ahead_with_group_needs_a_clock() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "g" => ["a", "b", "b", "b"],
+            "x" => [1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap();
+        let ahead = r#"[{"name": "f", "tree": ["-", ["rewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 2}], ["col", "x"]]}]"#;
+        let back = r#"[{"name": "f", "tree": ["ewm_sum", ["col", "x"], {"half_life": 10}]}]"#;
+        let run = |formulas: &str, policy: &str| {
+            WindowsRun::new(
+                config(&format!(r#"{{"formulas": {formulas}{policy}}}"#)),
+                df.schema(),
+            )
+        };
+        let err = run(ahead, r#", "group": "g""#).err().expect("refused");
+        assert!(
+            err.starts_with("with_windows: a window looking ahead with group needs a clock column")
+                && err.ends_with("Name a clock column, with gap_cap, or leave out group"),
+            "{err}"
+        );
+        // `like=` takes a spec's policy, and is held to the same rule.
+        let like = r#", "group": "g", "like": {"spec": "m", "accept": ["x"]}"#;
+        let err = run(ahead, like).err().expect("refused");
+        assert!(err.contains("needs a clock column"), "{err}");
+        let mut clocked = run(ahead, r#", "group": "g", "clock": "t", "gap_cap": 1.5"#).unwrap();
+        let mut out = clocked.feed(&df, None).unwrap();
+        out.vstack_mut(&clocked.finish().unwrap()).unwrap();
+        assert_eq!(out.height(), 4);
+        run(back, r#", "group": "g""#).unwrap();
+        run(ahead, "").unwrap();
+    }
+
+    /// Task 173, PC2: a spec's window target runs the same core, through
+    /// `feed_resolving`, and a reset keeps the window whose far edge is the
+    /// last row before it whole there too: row 1's window `(1, 3]` resolves
+    /// at the step back with `4 + 8`, where it resolved discarded, null.
+    /// The windows reaching past that row resolve discarded, null.
+    #[test]
+    fn a_target_window_whose_far_edge_is_the_last_row_before_a_reset_resolves_whole() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, -7.0, -6.0],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+            "@po:row" => [100u64, 101, 102, 103, 104, 105],
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {"half_life": "inf", "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+                "restart_after_step_back": 1}"#,
+            ),
+            df.schema(),
+        )
+        .unwrap();
+        let out = run
+            .feed_resolving(&df, &[100, 101, 102, 103, 104, 105])
+            .unwrap();
+        let rows = |name: &str| -> Vec<u64> {
+            out.column(name)
+                .unwrap()
+                .u64()
+                .unwrap()
+                .iter()
+                .flatten()
+                .collect()
+        };
+        let f: Vec<Option<f64>> = out.column("f").unwrap().f64().unwrap().iter().collect();
+        assert_eq!(rows("@po:seq"), [100, 101, 102, 103]);
+        assert_eq!(rows("@po:at"), [103, 104, 104, 104]);
+        assert_eq!(f, [Some(6.0), Some(12.0), None, None]);
     }
 
     /// Task 160, PC3: a state compares its call by length, not by how a

@@ -1838,6 +1838,102 @@ def test_a_forward_window_whose_far_edge_is_the_last_row_before_a_break_is_whole
     assert out["f"].to_list()[:2] == [6.0, 12.0]
 
 
+def test_a_reset_keeps_a_forward_window_whose_far_edge_is_the_last_row_before_it_whole() -> None:
+    """Task 173, PC2: a reset -- a step back past ``restart_after_step_back``,
+    or a new session under ``session_gap="reset"`` -- discards the windows
+    open across it. One whose far edge is the stretch's last row has every
+    row it covers, as before a cut (the test above), and is whole under
+    every ``partial``; the reset discarded it, null. The windows reaching
+    past that row are still discarded: null, and the row never dropped."""
+    back = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, -7.0, -6.0, -5.0],
+            "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0],
+        }
+    )
+    sessions = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "s": ["a", "a", "a", "a", "b", "b"],
+            "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+        }
+    )
+
+    def run(
+        frame: pl.DataFrame, closed: str = "right", partial: str = "null", **kw: Any
+    ) -> pl.DataFrame:
+        f = po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial)
+        return po.stream.with_windows(frame, f=f, clock="t", gap_cap=100.0, **kw)
+
+    step_back: dict[str, Any] = {"restart_after_step_back": 1.0}
+    reset: dict[str, Any] = {"session": "s", "session_gap": "reset"}
+    # t = 1: (1, 3] holds 4 + 8, and [1, 3] under "both" 2 + 4 + 8; t = 2 and
+    # t = 3 reach past the stretch; the last stretch is open at the end.
+    assert run(back, **step_back)["f"].to_list() == [6.0, 12.0, None, None, None, None, None]
+    assert run(back, "both", **step_back)["f"].to_list() == [7.0, 14.0, *[None] * 5]
+    assert run(sessions, **reset)["f"].to_list() == [6.0, 12.0, None, None, None, None]
+    assert run(sessions, "both", **reset)["f"].to_list() == [7.0, 14.0, *[None] * 4]
+    for partial in ("keep", "drop"):
+        out = run(back, partial=partial, **step_back)
+        assert out["t"].to_list() == back["t"].to_list(), partial
+        assert out["f"].to_list() == [6.0, 12.0, None, None, None, None, None], partial
+    # The rule that stands: the far edge outside the window, where the row on
+    # it closed the window already.
+    assert run(back, "left", **step_back)["f"].to_list() == [3.0, 6.0, None, None, 48.0, None, None]
+    assert run(back, "none", **step_back)["f"].to_list() == [2.0, 4.0, None, None, 32.0, None, None]
+
+
+def test_a_window_looking_ahead_with_group_needs_a_clock_column() -> None:
+    """Task 173, PC1: without a clock column each group's clock counts its
+    own rows, so a group that fell silent never closed its windows, and
+    every later row of every group waited behind them to the end of the
+    input -- 500,001 rows held, 117 MiB more over 2M rows -- where the
+    call holds about one window. ``gap_cap``, which cuts a silent group on
+    a clock, needs a clock. Refused at every door, naming the fix; the
+    same calls with a clock column run, and so do a window looking back
+    under ``group`` and one looking ahead without it."""
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, 4.0],
+            "g": ["a", "b", "b", "b", "b"],
+            "x": [1.0, 2.0, 4.0, 8.0, 16.0],
+        }
+    )
+    fwd = po.rewm_sum("x", half_life=math.inf, window_size=2.0)
+    msg = (
+        "with_windows: a window looking ahead with group needs a clock column.*"
+        "Name a clock column, with gap_cap, or leave out group"
+    )
+    with pytest.raises(ValueError, match=msg):
+        po.stream.with_windows(df, f=fwd, group="g")
+    with pytest.raises(ValueError, match=msg):
+        po.stream.with_windows(df.lazy(), (fwd - pl.col("x")).alias("f"), group="g")
+    with pytest.raises(ValueError, match=msg):
+        df.lazy().online.with_windows(f=fwd, group="g")
+    with pytest.raises(ValueError, match=msg):
+        df.online.with_windows(f=fwd, group="g")
+    # like= takes its policy from a spec, groups and no clock here.
+    like = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0, group="g")
+    with pytest.raises(ValueError, match=msg):
+        po.stream.with_windows(df, f=fwd, like=like)
+    # With a clock column: group a's window is cut once the stream's clock is
+    # past the cap; b's row at t = 1 holds 4 + 8; the rest are open at the end.
+    clocked = po.stream.with_windows(df, f=fwd, group="g", clock="t", gap_cap=1.5)
+    assert clocked["f"].to_list() == [None, 12.0, None, None, None]
+    lazy = df.lazy().online.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).collect()
+    assert lazy.equals(clocked)
+    assert df.online.with_windows(f=fwd, group="g", clock="t", gap_cap=1.5).equals(clocked)
+    like = po.spec.ewridge(
+        "m", targets=["y"], features=["x"], half_life=10.0, group="g", clock="t", gap_cap=1.5
+    )
+    assert po.stream.with_windows(df, f=fwd, like=like).equals(clocked)
+    # Looking back under groups, each group's running sum; looking ahead with
+    # no group, the one stream's rows.
+    back = po.stream.with_windows(df, b=po.ewm_sum("x", half_life=math.inf), group="g")
+    assert back["b"].to_list() == [1.0, 2.0, 6.0, 14.0, 30.0]
+    assert po.stream.with_windows(df, f=fwd)["f"].to_list() == [6.0, 12.0, None, None, None]
+
+
 def test_a_state_resumes_under_another_spelling_of_the_same_length(tmp_path: Any) -> None:
     """PC3: a duration was compared as written, so a state saved with
     ``gap_cap="5s"`` refused ``"5000ms"`` as another clock policy, and one

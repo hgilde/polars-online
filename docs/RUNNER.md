@@ -210,7 +210,8 @@ type = "ew_ridge"
 
 The formula is Polars' expression written as a tree: an operator, its
 input and its keywords. TOML has no null, so a null literal is written
-`["lit"]`. `group_close` is refused beside a window target.
+`["lit"]`. `group_close` is refused beside a window target, and so is
+`group` without `clock`.
 
 ### Clocks that are times
 

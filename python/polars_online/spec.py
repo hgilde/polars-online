@@ -29,7 +29,8 @@ sees a stream* is the guide to them. This is the reference.
     ``(po.rewm_mean("mid", half_life="10s", window_size="1m") -
     pl.col("mid")).alias("fwd")``. The bank resolves it when the row's window
     closes, and learns the row then, under the ``embargo``. ``fit_predict``
-    asks the embargo to cover the longest forward ``window_size``.
+    asks the embargo to cover the longest forward ``window_size``. Under
+    ``group`` it needs a ``clock``.
     :func:`polars_online.stream.with_windows` with ``like=`` the spec writes
     the same target as a column (docs/PLAN.md task 104).
 ``fit_intercept``
@@ -414,6 +415,7 @@ model refuses:
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
 - ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
+- a window target beside ``group`` without ``clock``;
 - a column listed twice, or as both target and feature;
 - a level outside ``(0, 1)``, or an option not in the list the message
   gives;

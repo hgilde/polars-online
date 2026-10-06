@@ -372,6 +372,79 @@ def test_what_is_refused() -> None:
         spec((po.ewm_mean("mid", half_life=H) - pl.col("mid")).alias("back"))
 
 
+def test_a_window_target_with_group_needs_a_clock_column() -> None:
+    """Task 173, PC1: a window target under ``group`` is resolved by its
+    group's own window core, on its group's clock. Without a clock column
+    that clock counts the group's own rows, so a group that falls silent
+    leaves its windows open with nothing to cut them, and the column form,
+    ``with_windows(like=spec)``, would hold every later row behind them. So
+    the spec is refused at every door it comes in by, with ``with_windows``'
+    message: the rule is stated once. With a clock column it runs."""
+    msg = (
+        'spec "m": a window looking ahead with group needs a clock column.*'
+        "Name a clock column, with gap_cap, or leave out group"
+    )
+    with pytest.raises(ValueError, match=msg):
+        po.spec.ewridge(
+            "m", targets=[fwd()], features=["x"], half_life=50.0, embargo=W + 2.5, group="g"
+        )
+    clocked = spec(fwd(), group="g")
+    unclocked = {**clocked, "clock": None, "gap_cap": None}
+    with pytest.raises(ValueError, match=msg):
+        po.ModelBank([unclocked])
+    with pytest.raises(ValueError, match=msg):
+        validate_spec(json.dumps(unclocked))
+    df = stream(300, 41, groups=2)
+    out = native(df, clocked)
+    assert out.height == df.height
+    assert sum(p is not None for p in field(out, "pred_fwd")) > 100
+    # Without groups the same unclocked spec counts rows, as before.
+    ungrouped = {**unclocked, "group": None}
+    assert native(df.drop("g"), ungrouped).height == df.height
+
+
+def test_a_reset_keeps_a_target_window_whose_far_edge_is_the_last_row_before_it_whole() -> None:
+    """Task 173, PC2, through a spec: a spec's window target runs the same
+    window core as ``with_windows``, so a step back past
+    ``restart_after_step_back`` right after a row exactly one window after
+    row 20 leaves row 20's window whole, where it was discarded: the
+    column form shows its target, the value the same window has when a
+    later row closes it. The reset starts the model over and drops every
+    row still waiting to be learned, row 20 with them, so neither path
+    learns it, and the native path's predictions stay the column form's,
+    row for row, chunked anyhow."""
+    rng = np.random.default_rng(42)
+    first = np.arange(31, dtype=float)  # 0, 1, ..., 30
+    t = np.concatenate([first, np.arange(61) + 0.5])  # then a step back to 0.5
+    n = len(t)
+    df = pl.DataFrame(
+        {
+            "t": t,
+            "x": rng.standard_normal(n),
+            "mid": 100 + np.cumsum(rng.standard_normal(n) * 0.1),
+        }
+    )
+    s = spec(fwd(), restart_after_step_back=1.0)
+    col = po.stream.with_windows(df, fwd(), like=s)["fwd"]
+    # The oracle: the same stretch, then a row one step past the far edge
+    # and no reset, which closes row 20's window (20, 30].
+    past = df.head(31).vstack(df.slice(31, 1).with_columns(t=pl.lit(31.0)))
+    whole = po.stream.with_windows(past, fwd(), like=s)["fwd"][20]
+    assert whole is not None
+    assert col[20] is not None, "discarded by the reset"
+    assert abs(col[20] - whole) <= 1e-12 * (1.0 + abs(whole)), (col[20], whole)
+    # The rows whose windows reach past t = 30 are discarded.
+    assert col[21:31].is_null().all()
+    want = column_form(df, s, fwd())
+    for chunk_rows in [None, 7, 1]:
+        got = native(df, s, chunk_rows)
+        assert field(got, "pred_fwd") == field(want, "pred_fwd"), chunk_rows
+        assert field(got, "learned_clock") == field(want, "learned_clock"), chunk_rows
+    learned = [c for c in field(want, "learned_clock") if c is not None]
+    assert 20.0 not in learned, "dropped at the reset with every row still waiting"
+    assert max(c for c in learned if c == int(c)) < 18.0
+
+
 def test_a_target_known_at_its_own_row_is_pointed_to_the_call_that_makes_its_column() -> None:
     """A formula that only looks back is a column `with_windows` makes; one of
     the row alone is Polars' own `with_columns`, which `with_windows` refuses.

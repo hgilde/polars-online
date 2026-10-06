@@ -1794,6 +1794,11 @@ pub(crate) struct ClockPolicy<'a> {
     /// stands in for `session_gap`; `None` for a caller with no model, whose
     /// messages speak of its windows.
     pub spec_closes_on_session: Option<bool>,
+    /// The group column: each group's windows close on its own clock.
+    pub group: Option<&'a str>,
+    /// Whether a window looks ahead: a `with_windows` formula's forward
+    /// operator, or a spec's formula target, which always holds one.
+    pub looks_ahead: bool,
 }
 
 /// The [`ClockCfg`] a clock policy asks for, or why it cannot run.
@@ -1811,6 +1816,24 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
         return Err(format!(
             "{who}: gap_cap needs clock; it caps the step from one clock value to the \
              next, and without a clock every row is one step"
+        ));
+    }
+    // A window looking ahead closes when a row past its far edge arrives on
+    // its group's clock, and on a clock a group silent past `gap_cap` is cut.
+    // Without a clock column a group's clock counts only its own rows and
+    // there is no cap, so a silent group left its windows open, and
+    // `with_windows`, which returns rows in input order, held every later
+    // row of every group behind them to the end of the input: 500,001 rows
+    // and 117 MiB more over 2M rows, where the docs promise about one
+    // window (task 173, PC1). Refused, by `with_windows` and by a spec with
+    // a window target alike, the user's call: one rule, one message.
+    if p.looks_ahead && p.group.is_some() && p.clock.is_none() {
+        return Err(format!(
+            "{who}: a window looking ahead with group needs a clock column. Without one a \
+             group's clock counts only its own rows, so a group that falls silent leaves its \
+             windows open, and every row waiting on them waits for as long as it is silent, \
+             with nothing to cut them: gap_cap, which cuts a silent group, needs a clock. \
+             Name a clock column, with gap_cap, or leave out group"
         ));
     }
     // The cap is a cap on a step and nothing else (task 120, decided
@@ -2570,6 +2593,12 @@ impl Spec {
             session: self.session.as_deref(),
             session_gap: self.session_gap.as_ref(),
             spec_closes_on_session: Some(self.closes_on_session()),
+            group: self.group.as_deref(),
+            looks_ahead: self.targets.defs().iter().any(|t| {
+                t.formula
+                    .as_ref()
+                    .is_some_and(crate::formula::Node::has_forward_operator)
+            }),
         })
     }
 
@@ -4424,6 +4453,38 @@ mod clock_tests {
                 .check()
                 .is_ok()
         );
+    }
+
+    /// Task 173, PC1: a window target under `group` is one window core per
+    /// group on that group's clock, which without a clock column counts
+    /// its own rows, so a group that falls silent leaves its windows open
+    /// with nothing to cut them. Refused with `with_windows`' message, the
+    /// rule stated once (`clock_cfg_of`); with a clock, or without groups,
+    /// the same spec is a spec.
+    #[test]
+    fn a_formula_target_with_group_needs_a_clock() {
+        let formula = |extra: &str| {
+            serde_json::from_str::<Spec>(&format!(
+                r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "features": ["x"],
+                    "targets": [{{"name": "fwd", "formula": ["-", ["rewm_mean", ["col", "mid"],
+                        {{"half_life": 5, "window_size": 10}}], ["col", "mid"]]}}],
+                    "half_life": 50, "embargo": 10{extra}}}"#
+            ))
+            .unwrap()
+        };
+        let err = formula(r#", "group": "g""#).check().unwrap_err();
+        assert!(
+            err.starts_with("spec \"m\": a window looking ahead with group needs a clock column")
+                && err.ends_with("Name a clock column, with gap_cap, or leave out group"),
+            "{err}"
+        );
+        assert_eq!(
+            formula(r#", "group": "g", "clock": "t", "gap_cap": 100"#).check(),
+            Ok(())
+        );
+        assert_eq!(formula("").check(), Ok(()));
+        // A plain target under groups and no clock is a spec as before.
+        assert_eq!(spec(r#", "half_life": 10, "group": "g""#).check(), Ok(()));
     }
 
     /// Task 160, PB3: an empty half-life grid built no model instance.

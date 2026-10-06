@@ -1154,6 +1154,13 @@ their rows come out null, never dropped:
 | `"null"` | null | not learned | looking ahead |
 | `"drop"` | nothing: the row leaves the output | not learned, as under `"null"`, while its other targets still are | |
 
+**A window that looks ahead under `closed="right"` or `"both"` is whole
+when its far edge is the last row before a break or a restart.** That row
+is in the window and no later row can join it, so the window gives its
+value under any `partial`. For a window target, a restart still starts the
+model over and drops every row waiting to be learned, a whole one with the
+rest.
+
 #### Windows as columns
 
 Call `po.stream.with_windows(frame, name=formula, ...)` before the bank. It
@@ -1197,7 +1204,11 @@ row order Polars does not guarantee draws an `OrderNotGuaranteedWarning`.
 **`with_windows` returns the rows in input order, each once every window
 over it has its value,** so the output trails the input by the longest
 window. A group that falls silent holds back the rows after it for at most
-`gap_cap` of the stream's time.
+`gap_cap` of the stream's time. Only a clock column has a `gap_cap`, so a
+window that looks ahead under `group` needs `clock`, and `with_windows`
+raises `ValueError` without it. Each group's clock would count only its own
+rows, and a silent group's windows would hold back every later row until
+the input ended.
 
 **Two things keep a row out of the output: `partial="drop"`, and
 `save_state=`, which saves for the next run the rows still waiting for a
@@ -1222,7 +1233,8 @@ target a column in the query before the bank instead, and name the column
 in `targets`.
 Make it with `with_windows` if it reads a window that looks back, or with
 Polars' `with_columns` if it reads only its own row. The builder refuses
-`group_close` beside a window target.
+`group_close` beside a window target, and `group` without `clock`, as
+`with_windows` does.
 This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
