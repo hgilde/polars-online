@@ -100,7 +100,9 @@ sees a stream* is the guide to them. This is the reference.
     is gated on its own rows, and its first prediction comes later than the
     others'. Units: ``weight_sum`` units, not rows.
 ``coef_every``
-    How often the ``coef`` field is filled, in learned rows. ``0``, the
+    How often the ``coef`` field is filled: on every ``coef_every``-th row the
+    group's stream accepts, a row whose features and weight are usable, rows
+    of weight zero and rows with a null target included. ``0``, the
     default, fills it on **each group's** last row within every chunk only:
     one row per group per chunk, not one per chunk. Any value fills it there
     too. So ``coef``'s emission schedule follows the chunking, while every

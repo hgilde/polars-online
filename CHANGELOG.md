@@ -530,6 +530,9 @@ The output names task 144 renamed:
   declared `rust-version` said 1.85 while the locked dependencies needed
   1.95, so installing the sdist with Rust 1.85 to 1.94 failed inside a
   dependency's build. Cargo now refuses an older Rust up front, by name.
+- `coef_every`'s doc says what it counts: each group's accepted rows, rows
+  of weight zero and rows with a null target included, where it said
+  learned rows (task 164).
 
 ## [0.13.0] — 2026-09-30
 

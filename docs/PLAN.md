@@ -7580,6 +7580,22 @@ tick, and that the series holding it up has a count near 1.
       JSON tag its infinite value needs (task 161's miss: `to_json()`
       refused a spec with `max_rows_between_pca` alone).
 
+- [x] 164. **The parameters that count rows where a clock would fit,
+      reviewed -- requested 2026-10-06.** Size S. The user's words: "Find
+      more example where a parameter references only rows when it should
+      also be a clock", then "Do both these and document the rest for
+      review". Task 163 built `micro`'s pruning and task 162 builds the
+      window snapshots; §17 lists the rest with a
+      recommendation each, and the decisions they need (task 165). Found on
+      the way and fixed here: `coef_every`'s doc said learned rows, where it
+      counts each group's accepted rows (measured: `coef_every = 3` filled
+      rows 2, 5, 8, ... of a stream whose every third learned row was 8 and
+      16).
+- [ ] 165. **The user's decisions on §17.** Size S each, once decided: the
+      two rules for counting a cadence's rows, `micro`'s default cadence
+      (100 learned rows, or DenStream's `Tp`), `coef_every` on the clock and
+      the spelling of its default, and `bocpd`'s hazard in clock units.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -11490,3 +11506,73 @@ corrchange, deco, hmm, kmeans and micro hold the exact `weight_sum`
 recursion (TB5); kmeans and micro against their definitions and
 scikit-learn (ARI 0.99995); the standardized kalman against filterpy
 (1e-9); the quantile fit stationary for the loss it smooths (1e-15).
+
+## 17. Parameters counted in rows, where a clock would fit (2026-10-06)
+
+The user, after task 161: "Find more example where a parameter references
+only rows when it should also be a clock", then "Do both these and document
+the rest for review". Every integer parameter of every builder was read
+against what it counts (`_spec.py`, `spec.rs`, the models). Two are built on
+the regressions' pattern -- clock units in the parameter, a row cap beside
+it, whichever comes first, the old default kept: `micro`'s pruning (task 163)
+and the window snapshots (task 162, in progress as this is written). The rest are listed here for the
+user's review, each with what it counts, what a clock form would mean, and a
+recommendation. Nothing below is built.
+
+**Cadences that could take the clock, as `solve_every` does.**
+
+| Parameter | Counts | A clock form | Recommendation |
+|---|---|---|---|
+| `coef_every` (every model with coefficients) | each group's accepted rows, rows of weight zero and rows with a null target included (its doc said learned rows until task 164) | "write `coef` every five minutes": an output cadence, so no number moves | build it, on the pattern; one decision first: `coef_every = 0` means "only each group's last row in a chunk", where `0` in the clock parameters means "every row", so the clock form needs its own spelling of that default |
+| `kmeans`' `update_every`, `split_merge_every` | learned rows | batch the centres' updates, and look for splits and merges, every so long | leave as rows unless a stream needs it: both are closer to batching knobs than to a span of time |
+
+**Dynamics stated per row, a model change rather than a cadence.**
+
+| Parameter | Today | Clock-aware | Recommendation |
+|---|---|---|---|
+| `bocpd`'s `hazard` | "the per-row chance of a break", `1/hazard` | the chance grows with the time since the last row: `H(d) = 1 - exp(-d / tau)`, `tau` the expected time between breaks, in clock units | worth building as an option (a duration `hazard` on a temporal clock): on irregular rows the per-row hazard says breaks follow the row rate. `hazard_col` can carry such a per-row value today, computed from the clock |
+| `hmm`'s transition matrix | a per-row Markov chain | a continuous-time chain, `P(d) = exp(Q d)` | record only: estimating `Q` from soft counts over irregular gaps is a larger change, needed only for irregular data whose regimes switch on the clock |
+| `deco`'s `alpha`, `beta` | per-row dynamics | dynamics per unit of time | record only, as for `hmm` |
+| `sgd`, `pa`, `ftrl` coefficients | learn per row; `n_eff` decays on the clock (hard rule 8) | -- | by design, documented |
+
+**Rows by definition, to keep.**
+
+- `lags`, `cross_lags` (`ew_cov`, `marginal`) and `resid_autocorr_lag`: a lag
+  of `l` rows is the estimator. A lag in time on irregular data is another
+  estimator. The standard route is to put the series on a common clock first
+  -- a fixed grid with the last value, or refresh times
+  (`po.stream.refresh_time`) -- after which a lag in rows is a lag in time.
+  For asynchronous ticks the established estimators are Hayashi and Yoshida's
+  (2005) for the covariance and its time-shifted form for the lead-lag
+  (Hoffmann, Rosenbaum and Yoshida 2013), which avoid the bias previous-tick
+  sampling adds (the Epps effect). Recommendation: document the grid route
+  beside `lags`; an HRY lead-lag model would be a new model, as `rcov` is, if
+  lead-lag on ticks becomes a use.
+- `corrchange`'s `span_rows`, `monitor_rows`, `permute_every`, `perm_block`:
+  the tests' statistics are defined over row counts (Wied and Galeano; a
+  permutation in blocks of rows).
+- `rcov`'s `block_rows`, `preavg_rows`, `bandwidth`, `max_bandwidth`,
+  `jitter`, `noise_stride`, `iv_stride`: tick-count estimators (BNHLS, CKP);
+  the block's edges already come from `group_close`.
+- `bocpd`'s `max_run`: a run length is a count of observations.
+- `kmeans`' and `hmm`'s `warm_rows`, `marginal`'s `bin_warm_rows`: sample
+  sizes for seeding and for quantile edges.
+- Mechanical: `gram_block_rows`, `shards`, `bins`, `max_clusters`,
+  `max_iter`, `n_perm`, `k`, `pca`, the seeds.
+
+**Decisions for the user.**
+
+1. **Two rules for counting a cadence's rows.** `window_every`'s row cap,
+   `max_rows_between_pca` and `coef_every` count every row, rows of weight
+   zero included (review C7); `kmeans`' `update_every` and
+   `split_merge_every` and `micro`'s `max_rows_between_prunes` count learned
+   rows only. A test docstring of task 160 (CB3) says "the library has one
+   cadence rule". Narrow that sentence, or move `kmeans` and `micro` to the
+   shared rule, which moves their numbers on a stream with rows of weight
+   zero.
+2. **`micro`'s default cadence.** Every 100 learned rows, kept by task 163;
+   DenStream's is `Tp = ceil(h log2(beta_mu / (beta_mu - 1)))` clock units.
+   Keep it, or default to `Tp`, which moves every default `micro`'s numbers.
+3. **`coef_every` on the clock**, and the spelling of its "last row of a
+   chunk" default (above).
+4. **`bocpd`'s hazard in clock units** (above).
