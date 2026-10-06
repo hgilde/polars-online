@@ -182,7 +182,7 @@ class TestFtrl:
             weight="w",
             half_life=float("inf"),
             l1=1.0,
-            coef_every=1,
+            coef_every=0,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         ref = ftrl_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, l1=1.0)
@@ -206,7 +206,7 @@ class TestPassiveAggressive:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -224,7 +224,7 @@ class TestPassiveAggressive:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             fit_intercept=False,
             **kw,
         )
@@ -262,7 +262,7 @@ class TestSgd:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -279,7 +279,7 @@ class TestSgd:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             fit_intercept=False,
             **kw,
         )
@@ -305,7 +305,7 @@ class TestSgd:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             fit_intercept=fit_intercept,
             **kw,
         )
@@ -336,7 +336,7 @@ class TestHolt:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]

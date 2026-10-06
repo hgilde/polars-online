@@ -81,7 +81,7 @@ def kitchen_sink_spec(**overrides):
         group="g",
         min_weight=[10.0, 20.0],
         max_rows_between_solves=16,
-        coef_every=997,
+        max_rows_between_coefs=997,
         emit_sigma=True,
         emit_zscore=True,
         emit_drift=True,
@@ -106,8 +106,10 @@ def run_chunked(df, spec, chunk):
 
 
 def drop_coef(out):
-    # coef is a reporting cadence (emitted on every chunk's LAST row as well as
-    # every coef_every rows), so it legitimately differs across chunkings.
+    # coef is a reporting cadence: by default emitted on every chunk's LAST
+    # row, so it legitimately differs across chunkings. Under a cadence, as
+    # the kitchen sink's, it does not (docs/PLAN.md task 178), which
+    # `test_chunk_invariance_with_everything_on` checks apart.
     return out.drop([c for c in out.columns if c.startswith(("coef", "support_coef"))])
 
 
@@ -128,9 +130,15 @@ class TestKitchenSinkAtScale:
         assert out.columns == fields
 
     def test_chunk_invariance_with_everything_on(self, frame):
-        one = drop_coef(run_chunked(frame, kitchen_sink_spec(), None))
-        odd = drop_coef(run_chunked(frame, kitchen_sink_spec(), 1013))
+        whole = run_chunked(frame, kitchen_sink_spec(), None)
+        chunked = run_chunked(frame, kitchen_sink_spec(), 1013)
+        one, odd = drop_coef(whole), drop_coef(chunked)
         assert one.equals(odd, null_equal=True), "1 chunk vs 1013-row chunks"
+        # Under a cadence the rows carrying `coef` do not move either (task
+        # 178): every 997th row of each group, whatever the chunks.
+        coef = [c for c in whole.columns if c.startswith(("coef", "support_coef"))]
+        assert coef and whole.select(coef).equals(chunked.select(coef), null_equal=True)
+        assert 0 < whole[coef[0]].drop_nulls().len() < whole.height // 900
         tiny = drop_coef(run_chunked(frame.head(2000), kitchen_sink_spec(), 1))
         ref = drop_coef(run_chunked(frame.head(2000), kitchen_sink_spec(), None))
         assert ref.equals(tiny, null_equal=True), "row-at-a-time must match too"
@@ -368,11 +376,24 @@ class TestParameterRanges:
         assert 0.0 <= lo <= hi, f"{lo} vs {hi}"
         assert hi < 2.0, "q0.999 of |resid| should be near the noise scale"
 
-    @pytest.mark.parametrize("coef_every", [0, 1, 997])
-    def test_coef_cadence_counts_accepted_rows_across_chunks(self, coef_every):
+    @pytest.mark.parametrize(
+        ("kw", "want"),
+        [
+            ({}, None),
+            ({"coef_every": 0}, 3000),
+            # The 997th, 1,994th and 2,991st accepted rows.
+            ({"max_rows_between_coefs": 997}, 3),
+            # The clock steps by 1 from 0: t = 997, 1,994 and 2,991.
+            ({"coef_every": 997.0}, 3),
+        ],
+        ids=["unset", "every-row", "rows", "clock"],
+    )
+    def test_coef_cadence_across_chunks(self, kw, want):
+        """Unset, ``coef`` is on each chunk's last row; under a cadence the
+        same rows whatever the chunking (docs/PLAN.md task 178)."""
         n = 3000
         df = self._df(n)
-        spec = self._spec(coef_every=coef_every)
+        spec = self._spec(**kw)
         for chunk in (None, 700):
             bank = po.ModelBank([spec])
             if chunk is None:
@@ -382,15 +403,7 @@ class TestParameterRanges:
                 out = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, n, chunk)])
                 boundaries = -(-n // chunk)
             got = sum(v is not None for v in out["m"].struct.field("coef").to_list())
-            cadence = 0 if coef_every == 0 else n // coef_every
-            # Cadence rows plus each chunk's last row, minus overlaps; allow
-            # the off-by-few from coincidence, but pin the two exact cases.
-            if coef_every == 1:
-                assert got == n
-            elif coef_every == 0:
-                assert got == boundaries
-            else:
-                assert cadence <= got <= cadence + boundaries
+            assert got == (boundaries if want is None else want), (kw, chunk, got)
 
 
 class TestRunnerErrorPaths:

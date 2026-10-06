@@ -154,7 +154,7 @@ def test_the_first_fits_prose_holds(ran):
             group="stock_id",
             clock="ts",
             half_life="10m",
-            coef_every=1,
+            coef_every=0,
         )
 
     # "Each hour from 10:30, stock A's beta on signal_a climbs with the true one."

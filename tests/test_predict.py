@@ -98,7 +98,7 @@ def _spec(model, extra, **kw):
         resid_quantiles=[0.5],
         emit_autocorr=True,
         conformal=0.9,
-        coef_every=7,
+        max_rows_between_coefs=7,
     )
     opts.update(extra)
     opts.update(kw)
@@ -149,7 +149,7 @@ def test_all_the_shared_options_at_once():
             conformal=0.95,
             emit_selected=True,
             emit_averaged=True,
-            coef_every=10,
+            max_rows_between_coefs=10,
         ),
         po.spec.holt(
             "h",
@@ -359,12 +359,14 @@ class TestInputs:
         out = self.bank.predict(later)
         coef = out["m"].struct.field("coef").to_list()
         assert [c is None for c in coef] == [i not in (17, 18) for i in range(20)]
-        # They are the coefficients the bank holds: the ones `fit_predict`
-        # reported on each group's last training row, which is the state
-        # *after* that row (coef is a snapshot of the state, not a prediction).
-        trained = self.trained["m"].struct.field("coef").to_list()
-        assert coef[18] == trained[38]  # group a
-        assert coef[17] == trained[39]  # group b
+        # They are the coefficients the bank holds, the state *after* each
+        # group's last training row (coef is a snapshot of the state, not a
+        # prediction): `bank.coef()`, since under the spec's cadence those
+        # rows of `fit_predict` carry none.
+        held = self.bank.coef("m")
+        assert coef[18] == held.filter(pl.col("group") == "a")["coef"].to_list()
+        assert coef[17] == held.filter(pl.col("group") == "b")["coef"].to_list()
+        assert self.trained["m"].struct.field("coef")[38:].is_null().all()
 
     def test_type_and_name_errors_match_fit_predict(self):
         with pytest.raises(TypeError, match=r"predict takes a DataFrame, not a LazyFrame"):

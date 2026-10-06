@@ -822,13 +822,14 @@ fn ew_cov_spec(k: usize) -> Spec {
     .unwrap()
 }
 
-/// An ungrouped, unclocked `ew_ridge` on `x0`, `x1` that solves every row and
-/// reports its coefficients every `coef_every` learned rows (0: chunk ends only).
-fn ridge_spec(coef_every: u32) -> Spec {
+/// An ungrouped, unclocked `ew_ridge` on `x0`, `x1` that solves every row,
+/// with `cadence` the `coef` schedule's `, "key": value` pairs: none
+/// reports the coefficients on the chunk's last row only.
+fn ridge_spec(cadence: &str) -> Spec {
     serde_json::from_str(&format!(
         r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
-            "min_weight": 5.0, "coef_every": {coef_every}}}"#
+            "min_weight": 5.0{cadence}}}"#
     ))
     .unwrap()
 }
@@ -890,7 +891,7 @@ fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // a row -- pred, resid, n_eff, settled_frac -- against a 2 MiB budget),
     // so a chunk of twice that plus a hundred is three runs with two
     // boundaries inside it, and exactly one `coef`.
-    let spec = ridge_spec(0);
+    let spec = ridge_spec("");
     let stream = Stream::new(&spec).unwrap();
     let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
     assert_eq!(run_rows, 65_520);
@@ -910,13 +911,26 @@ fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     let strip = |d: &DataFrame| drop_coef(&d.clone().unnest(["m"], None).unwrap());
     assert!(strip(&one).equals_missing(&strip(&two)));
 
-    // `coef_every` counts learned rows across runs, since it is stream
-    // state: every thousandth row, and the chunk's last, whatever run they
-    // fall in. Every row here is accepted, so learned rows are rows.
-    let every = run_spec_chunked(&ridge_spec(1000), &df, 1);
-    let mut want: Vec<usize> = (0..n).filter(|i| (i + 1) % 1000 == 0).collect();
-    want.push(n - 1);
-    assert_eq!(coef_rows(&every, "m"), want, "coef_every across runs");
+    // `coef_every` counts the clock across runs, since it is stream state
+    // -- without a clock column the row's number, the first row being 1 --
+    // and under a cadence the chunk's last row is not a `coef` row (task
+    // 178): every thousandth row, whatever run it falls in, and no other.
+    // Every row here is accepted, so the row cap counts the same rows.
+    let want: Vec<usize> = (0..n).filter(|i| (i + 1) % 1000 == 0).collect();
+    assert_ne!(
+        want.last(),
+        Some(&(n - 1)),
+        "the chunk's last row is not on the cadence"
+    );
+    for cadence in [
+        r#", "coef_every": 1000"#,
+        r#", "max_rows_between_coefs": 1000"#,
+    ] {
+        let every = run_spec_chunked(&ridge_spec(cadence), &df, 1);
+        assert_eq!(coef_rows(&every, "m"), want, "{cadence} across runs");
+        let two = run_spec_chunked(&ridge_spec(cadence), &df, 2);
+        assert_eq!(coef_rows(&two, "m"), want, "{cadence} in two chunks");
+    }
 }
 
 #[test]
@@ -932,7 +946,7 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     let cases: Vec<(Spec, usize)> = vec![
         (ew_cov_spec(20), 232),     // 230 statistics + n_eff + settled_frac
         (ew_cov_spec(2), 7),        // 5 statistics + n_eff + settled_frac
-        (ridge_spec(0), 4),         // pred + resid + n_eff + settled_frac
+        (ridge_spec(""), 4),        // pred + resid + n_eff + settled_frac
         (ew_cov_spec(200), 20_302), // wider than the budget's floor allows
     ];
     for (spec, width) in cases {
@@ -955,7 +969,7 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
         }
     }
     assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1104);
-    assert_eq!(ChunkOut::run_rows(&ridge_spec(0), 1, 1), 65_520);
+    assert_eq!(ChunkOut::run_rows(&ridge_spec(""), 1, 1), 65_520);
     // A no-target model with one statistic and one instance writes three
     // values a row -- the statistic, `n_eff`, `settled_frac` -- and gets
     // the widest run there is.
@@ -980,7 +994,7 @@ fn blocked_ridge_spec(block: usize) -> Spec {
             "group": "g",
             "group_close": "monotone",
             "min_weight": 5.0,
-            "coef_every": 1
+            "coef_every": 0
         }}"#
     ))
     .unwrap()

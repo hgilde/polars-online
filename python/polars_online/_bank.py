@@ -259,7 +259,8 @@ class ModelBank:
         <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_
         has every model's). ``pred`` is out-of-sample: computed from the
         state before the row updates it. Chunk boundaries never change the
-        numbers, only the cadence at which ``coef`` is reported.
+        numbers. By default they move the rows ``coef`` is reported on;
+        under ``coef_every`` or ``max_rows_between_coefs`` not even those.
 
         .. code-block:: python
 
@@ -704,9 +705,9 @@ class ModelBank:
         then the question was about that spec. A bank with no coefficients at all
         gives an empty frame.
 
-        The values are what the output's ``coef`` field reported on the last row each
-        stream learned from: the fit after that row, which the next row's ``pred`` is
-        computed from. The columns:
+        The values are the fit after the last row each stream learned from, which the
+        next row's ``pred`` is computed from: what the output's ``coef`` field shows on
+        that row where it is written there. The columns:
 
         ``spec``, ``group``, ``instance``
             The spec's name; the group key as :meth:`groups` reports it; the decay
@@ -809,8 +810,9 @@ class ModelBank:
         It is the row :meth:`fit_predict` reported for that row, field for
         field, unnested after ``spec`` and ``group``: ``pred``, ``resid``,
         ``sigma``, the metrics, the residual quantiles, ``weight_sum``, and
-        ``coef`` when the row carried it. A chunk's last row does;
-        :meth:`coef` has the coefficients whichever row was last. It travels
+        ``coef`` when the row carried it. A chunk's last row does by default;
+        under ``coef_every`` or ``max_rows_between_coefs`` only a row on the
+        cadence does. :meth:`coef` has the coefficients whichever row was last. It travels
         with the state, so a bank loaded from a file says how each model was
         doing without its output frame, and a directory of fits compares
         without keeping the last row of every output:

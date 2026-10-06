@@ -80,11 +80,14 @@ fn ext(format: Format) -> &'static str {
     }
 }
 
+/// `coef` on every row: `coef_every = 0`.
 fn spec() -> online_polars::Spec {
-    spec_with_coef_every(1)
+    spec_with_cadence(r#""coef_every": 0"#)
 }
 
-fn spec_with_coef_every(coef_every: usize) -> online_polars::Spec {
+/// The spec with `cadence`, the `coef` schedule's `"key": value` pair: the
+/// clock is in seconds, so a cadence in rows is `max_rows_between_coefs`.
+fn spec_with_cadence(cadence: &str) -> online_polars::Spec {
     serde_json::from_str(&format!(
         r#"{{
             "name": "ridge",
@@ -96,7 +99,7 @@ fn spec_with_coef_every(coef_every: usize) -> online_polars::Spec {
             "gap_cap": 10.0,
             "group": "group",
             "min_weight": 5.0,
-            "coef_every": {coef_every}
+            {cadence}
         }}"#
     ))
     .unwrap()
@@ -249,7 +252,7 @@ fn csv_lists_read_back_as_lists() {
     // A snapshot every 7 rows, so the rows between are null and must come
     // back null (an empty CSV field) rather than as an empty list.
     let mut cfg = config(&input, &output);
-    cfg.specs = vec![spec_with_coef_every(7)];
+    cfg.specs = vec![spec_with_cadence(r#""max_rows_between_coefs": 7"#)];
     run_config(&cfg, no_progress).unwrap();
     let got = read(&output, Format::Csv);
     let nulls = got.column("ridge.coef").unwrap().null_count();
@@ -274,9 +277,9 @@ fn csv_lists_read_back_as_lists() {
             })
         })
         .collect();
-    // The oracle sees the runner's chunks: `coef` is also snapshotted on
-    // each chunk's last row (the documented exception to chunk invariance).
-    let mut bank = Bank::new(vec![spec_with_coef_every(7)]).unwrap();
+    // The oracle sees the runner's chunks, though under a cadence no row
+    // of `coef` moves with them (docs/PLAN.md task 178).
+    let mut bank = Bank::new(vec![spec_with_cadence(r#""max_rows_between_coefs": 7"#)]).unwrap();
     let mut want: Vec<Option<Vec<f64>>> = vec![];
     for start in (0..df.height()).step_by(64) {
         let cols = bank.fit_predict(&df.slice(start as i64, 64)).unwrap();

@@ -65,7 +65,7 @@ impl std::fmt::Display for GroupKey {
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable; a
 /// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
-/// as every file written before schema 31 is. Version 3 lets a spec
+/// as every file written before schema 34 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -115,7 +115,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// clock held exactly, which each stream's clock keeps and each held row
 /// keeps its place on, where a 33 file's held rows keep the time still to
 /// wait as a double; it is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 34;
+/// **35 since task 178** (the same day): `coef_every` reads the clock, where a
+/// 34 file's spec counted rows with it and wrote `0` for its default, which
+/// now means every row; and a stream keeps where its `coef` cadence stands.
+/// A 34 file is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 35;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -2556,8 +2560,8 @@ impl Bank {
 
     /// The groups each spec holds state for, sorted by key: `(key, rows
     /// processed, last clock value)`. Rows processed are the group's rows the
-    /// null policy did not skip -- the count the stream's own `coef_every`
-    /// cadence runs on. A group's state lives until [`Self::drop_groups`]
+    /// null policy did not skip -- the rows the stream's own
+    /// `max_rows_between_coefs` cadence counts. A group's state lives until [`Self::drop_groups`]
     /// removes it, so this is how a long-running bank finds the ones that have
     /// gone quiet (docs/IMPROVEMENTS.md U3). A temporal clock's value is
     /// seconds since the Unix epoch ([`online_core::ClockValue::seconds`]).

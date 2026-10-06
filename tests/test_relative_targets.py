@@ -134,7 +134,7 @@ def test_a_saved_bank_resumes_with_its_relative_target(tmp_path):
     row and a chunk boundary would add one."""
     df = frame()
     target = po.target("p", relative_to="mid", relative="ratio")
-    spec = po.spec.ewridge("m", targets=[target, "x1"], **common(features=["x0"], coef_every=1))
+    spec = po.spec.ewridge("m", targets=[target, "x1"], **common(features=["x0"], coef_every=0))
     whole = po.ModelBank([spec]).fit_predict(df)
     bank = po.ModelBank([spec])
     first = bank.fit_predict(df[:250])

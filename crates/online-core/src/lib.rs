@@ -437,7 +437,15 @@ pub use window::{
 ///   keeps its place on it where it kept the time still to wait, so a 33
 ///   file's streams are another shape. The bank refuses a file older than
 ///   34 by number; pre-1.0 no loader is written. No model's state moved.
-pub const SCHEMA_VERSION: u32 = 34;
+/// - 35 (2026-10-06, task 178): no model state changes; a bank file does.
+///   `coef_every` reads the clock, as `solve_every` does, where it counted
+///   rows, and `0`, its old default, now writes `coef` on every row;
+///   `max_rows_between_coefs` caps the rows. A stream keeps where its `coef`
+///   cadence stands, the stamp of its last `coef` row and the rows since. A
+///   34 file's specs would read differently, so the bank refuses a file
+///   older than 35 by number; pre-1.0 no loader is written. A model's own
+///   state loads as it did at 34.
+pub const SCHEMA_VERSION: u32 = 35;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

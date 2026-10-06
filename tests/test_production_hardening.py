@@ -335,7 +335,7 @@ class TestScoringWithoutLearning:
             min_weight=3.0,
             weight="w",
             max_rows_between_solves=1,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         bank = po.ModelBank([spec])

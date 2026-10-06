@@ -503,6 +503,7 @@ class TestEveryClockParameterTakesADuration:
         "prune_every": ("10m", {}),
         "window_every": ("1m", {"window_size": "30m"}),
         "drift_threshold": ("20m", {"emit_drift": True}),
+        "coef_every": ("10m", {}),
     }
 
     def _cases(self):
@@ -535,6 +536,7 @@ class TestEveryClockParameterTakesADuration:
         "pca_every": None,
         "prune_every": None,
         "window_every": None,
+        "coef_every": None,
     }
 
     # The noise gate's notice is about the tiny frame, not about durations.

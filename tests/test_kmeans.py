@@ -507,7 +507,7 @@ class TestDefinitions:
             clock="t",
             gap_cap=1e9,
             weight="w",
-            coef_every=1,
+            coef_every=0,
         )
         df = frame(X, t=t, w=w)
         scored, checkpoints, summarise = self.by_definition(X, t, w, k, half_life, update_every)

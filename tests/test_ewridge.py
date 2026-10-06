@@ -153,7 +153,7 @@ class TestWarmPriors:
             half_life=1e9,
             min_weight=0.0,
             max_rows_between_solves=1,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         coefs = np.array(
@@ -191,7 +191,7 @@ class TestWarmPriors:
             half_life=1e9,
             min_weight=0.0,
             max_rows_between_solves=1,
-            coef_every=1,
+            coef_every=0,
         )
         c = np.array(
             po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").to_list()[-1],
@@ -247,7 +247,7 @@ class TestSessionShrink:
             session_gap=0.0,
             min_weight=0.0,
             max_rows_between_solves=1,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(self._df())
@@ -311,7 +311,7 @@ class TestSessionShrink:
                 session="s",
                 session_gap=0.0,
                 min_weight=0.0,
-                coef_every=1,
+                coef_every=0,
                 session_shrink=f,
                 long_half_life=1e5,
             )
@@ -505,7 +505,7 @@ class TestWarmPriorsThroughTheOrigin:
             half_life=float("inf"),
             min_weight=5.0,
             max_rows_between_solves=1,
-            coef_every=1,
+            coef_every=0,
             fit_intercept=False,
             standardize=True,
             **kw,
@@ -547,7 +547,7 @@ class TestRidgeDecayPenalisesTheIntercept:
             half_life=50.0,
             ridge=10.0,
             min_weight=0.0,
-            coef_every=1,
+            coef_every=0,
             max_rows_between_solves=1,
             **kw,
         )

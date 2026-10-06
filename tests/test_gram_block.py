@@ -60,7 +60,7 @@ def spec(block: int | None, **kw):
         min_weight=8.0,
         solve_every=7.0,
         max_rows_between_solves=30,
-        coef_every=1,
+        coef_every=0,
         gram_block_rows=block,
     )
     opts.update(kw)

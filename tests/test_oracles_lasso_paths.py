@@ -113,7 +113,7 @@ def _fit(df: pl.DataFrame, **kw):
         clock="t",
         gap_cap=MAX_DCLOCK,
         weight="w",
-        coef_every=1,
+        coef_every=0,
         tol=1e-14,
         max_iter=100_000,
         **kw,

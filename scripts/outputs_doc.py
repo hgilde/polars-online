@@ -183,8 +183,9 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "regression's coefficients, or what a model that is not a regression keeps in their "
         "place, such as its centres or state means. Its builder's docstring lays the list "
         "out. A model that solves on a schedule (`solve_every`) shows its latest solve",
-        "on every row but those `coef_every` fills, which by default are each group's last "
-        "row in each chunk; and before the model has anything to report, such as a first solve",
+        "on every row but those `coef_every` or `max_rows_between_coefs` fills, which with "
+        "neither are each group's last row in each chunk; and before the model has anything "
+        "to report, such as a first solve",
     ),
 ]
 

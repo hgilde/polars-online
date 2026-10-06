@@ -291,7 +291,8 @@ class TestSupportCoef:
         assert support.to_list() == pytest.approx([None, 0.5, 1.0, 0.5], abs=1e-3)
 
     def test_rides_on_the_coef_schedule(self):
-        out = po.ModelBank([spec(coef_every=0)]).fit_predict(frame(50))
+        # Unset, `coef` is on the chunk's last row alone.
+        out = po.ModelBank([spec()]).fit_predict(frame(50))
         assert field(out, "support_coef").null_count() == 49
         assert field(out, "coef")[-1] is not None
         assert field(out, "support_coef")[-1] is not None
@@ -417,11 +418,12 @@ class TestInvariants:
             emit_error_inflation=True,
         )
 
-        def run(every: int) -> pl.DataFrame:
-            bank = po.ModelBank([spec(coef_every=every, **kw)])
+        def run(**cadence: int) -> pl.DataFrame:
+            bank = po.ModelBank([spec(**cadence, **kw)])
             return pl.concat([bank.fit_predict(df[i : i + 100]) for i in range(0, 400, 100)])
 
-        read, unread = run(1), run(10_000)
+        # Every row (`coef_every = 0`), and unset: each chunk's last row.
+        read, unread = run(coef_every=0), run()
         for name in ("pred_y", "resid_y", "error_inflation_y", "weight_sum", "settled_frac"):
             assert field(read, name).equals(field(unread, name)), name
         assert reasons(read) == reasons(unread)

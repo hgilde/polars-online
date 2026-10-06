@@ -27,7 +27,7 @@ session_gap = 1800.0
 weight = "w"
 group = "group"
 min_weight = 20.0
-coef_every = 1000
+max_rows_between_coefs = 1000   # coef on each group's every 1000th row; coef_every = 600.0 is every ten minutes of t
 
 [specs.model]
 type = "ew_ridge"

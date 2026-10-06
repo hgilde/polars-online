@@ -14,7 +14,7 @@ def _spec(**kw):
 
 
 def _run(df, **kw):
-    return po.ModelBank([_spec(coef_every=1, **kw)]).fit_predict(df)
+    return po.ModelBank([_spec(coef_every=0, **kw)]).fit_predict(df)
 
 
 def _trending(n=500, slope=2.0, noise=0.5, step=1.0, seed=0):

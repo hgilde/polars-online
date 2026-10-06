@@ -48,8 +48,8 @@ fn spec_on(clock: &str, name: &str, group: Option<&str>, half_life: &str, extra:
 /// The grouped specs every test runs, keyed on `group`: a plain one, whose
 /// `coef` lands on each chunk's last row per group and so depends on the
 /// chunking; one with every optional output on, two half-lives (instances run
-/// in parallel) and `coef_every = 1`, so that every one of its fields is
-/// chunk-invariant; and the coupled drift path, where a break in either
+/// in parallel) and `coef_every = 0`, every row, so that every one of its
+/// fields is chunk-invariant; and the coupled drift path, where a break in either
 /// instance resets both and the rows go one at a time, with a session
 /// change resetting the stream as well.
 fn grouped_specs(group: &str) -> Vec<Spec> {
@@ -59,7 +59,7 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
             "full",
             Some(group),
             "[30.0, 120.0]",
-            r#""session_gap": 10.0, "coef_every": 1, "emit_sigma": true,
+            r#""session_gap": 10.0, "coef_every": 0, "emit_sigma": true,
                "emit_zscore": true, "emit_metrics": true,
                "resid_quantiles": [0.5, 0.9], "emit_autocorr": true, "conformal": 0.9,
                "emit_drift": true, "drift_threshold": 20.0, "emit_selected": true,
@@ -69,7 +69,7 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
             "coupled",
             Some(group),
             "[30.0, 120.0]",
-            r#""session_gap": "reset", "coef_every": 1, "emit_drift": true,
+            r#""session_gap": "reset", "coef_every": 0, "emit_drift": true,
                "drift_action": "reset", "drift_threshold": 2.0,"#,
         ),
     ]
@@ -89,7 +89,7 @@ fn all_specs(group: &str) -> Vec<Spec> {
         "solo",
         None,
         "60.0",
-        r#""session_gap": 10.0, "coef_every": 1,
+        r#""session_gap": 10.0, "coef_every": 0,
            "restart_after_step_back": 0,"#,
     ));
     specs

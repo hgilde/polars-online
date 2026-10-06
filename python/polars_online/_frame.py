@@ -559,7 +559,8 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     # starts over, which is order itself.
     "restart_after_step_back": (None,),
     "target_gaps": ("own_rows",),
-    "coef_every": (0,),
+    "coef_every": (None,),
+    "max_rows_between_coefs": (None,),
     "emit_autocorr": (False,),
     "emit_metrics": (False,),
     "emit_zscore": (False,),

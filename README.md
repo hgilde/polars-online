@@ -84,7 +84,7 @@ local = po.spec.ewridge(
     "local", targets=["ret"], features=["signal_a", "signal_b"], group="stock_id",
     clock="ts", half_life="10m",                # a row's weight halves every ten minutes of ts
     gap_cap="5m",                               # and a gap longer than five minutes decays as five
-    coef_every=1,                               # the coefficients on every row
+    coef_every=0,                               # the coefficients on every row
 )
 betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
 
@@ -152,8 +152,8 @@ requires.** Give the same spec a clock (timestamp column `ts`) and
 fit is now local: it describes the recent past, and it moves from row to row,
 weighted toward the last few tens of minutes. Because this is a local
 regression, remember that saving the final state may be of limited value.
-But using `coef_every=1` produces a time series of the betas at every row, as
-they stood after learning that row. This can be used to track the betas over
+But `coef_every=0` produces a time series of the betas at every row, as they
+stood after learning that row. This can be used to track the betas over
 time.
 
 Each hour from 10:30, stock A's beta on `signal_a` climbs with the true one:
@@ -500,8 +500,8 @@ A duration is written three ways: `pl.duration(minutes=10)`,
 
 **Every clock parameter acts on the clock, so a model's numbers do not
 change with how densely the rows arrive.** The clock parameters are
-`half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`
-and `drift_threshold`, and a model's `window_size`, its cadences
+`half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`,
+`drift_threshold` and `coef_every`, and a model's `window_size`, its cadences
 (`window_every`, `solve_every`, `pca_every`, `prune_every`) and its own
 half-lives. A few things still count rows, and each model's page names
 them.
@@ -687,7 +687,7 @@ kernel = po.spec.ewridge(
     half_life=0.5,              # the bandwidth, in x0's own units
     gap_cap=1.0,                # a wider gap decays as if it were this wide
     max_rows_between_solves=1,  # refit at every row
-    coef_every=1,               # write the coefficients on every row
+    coef_every=0,               # write the coefficients on every row
     min_weight=10.0,
 )
 fitted = po.ModelBank([kernel]).fit_predict(curve).unnest("kernel")
@@ -720,10 +720,10 @@ which the caller supplies.
   on it.
 - **Chunk invariance.** One chunk or a thousand, with or without a save and
   resume in the middle, gives bit-identical numbers. Only which rows carry
-  `coef`, and `support_coef` beside it, can differ. The bank writes them
-  every `coef_every` rows ([Coefficients](#coefficients)) and on each
-  group's last row in every chunk, so smaller chunks report them more
-  often.
+  `coef`, and `support_coef` beside it, can differ, and only by default:
+  the bank then writes them on each group's last row in every chunk, so
+  smaller chunks report them more often. Under `coef_every` or
+  `max_rows_between_coefs` they do not move ([Coefficients](#coefficients)).
 
 **A model learns in row order, so a query whose row order Polars does not
 guarantee can give a different model each time it runs.** Run a chunk at a
@@ -763,7 +763,7 @@ you know, silence the warning with
 **`ModelBank.fit` does not warn when its state cannot depend on the row
 order.** That is when every spec is an `ewridge` or `rls` with decay off
 and none of the settings that read the order. Those include a window, a
-session, a weight, an embargo, a drift reset, `coef_every`, a window
+session, a weight, an embargo, a drift reset, a `coef` cadence, a window
 expression as a target, and any diagnostic but `emit_drift`, `emit_clocks`
 and `emit_error_inflation`. Such sums reach the same state in any order, to
 rounding, and `fit` keeps only the state.
@@ -1789,7 +1789,7 @@ stood after the last row it learned from.
 |---|---|---|
 | what a bank holds, and what it was fed | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()` | [What a bank holds](#what-a-bank-holds) |
 | any field of the output, by name | `po.spec.output_index`, `po.spec.coef_fields` | [Output field names](#output-field-names) |
-| the coefficients, at the end or row by row | `bank.coef()`, or `coef_every=1` and `.online.unnest` | [Coefficients](#coefficients) |
+| the coefficients, at the end or row by row | `bank.coef()`, or `coef_every=0` and `.online.unnest` | [Coefficients](#coefficients) |
 | the running sums a fit is solved from, and the algebra on them | `bank.gram(spec)`, `po.gram` | [The running sums behind a fit](#the-running-sums-behind-a-fit) |
 | a finished group's running sums | `bank.closed_groups()` | [One row per finished group](#one-row-per-finished-group) |
 | what a correlation matrix says, from an array, a `gram()` dict or a closed row | `po.corr` | [Reading a correlation matrix](#reading-a-correlation-matrix) |
@@ -1952,7 +1952,7 @@ This code uses `df` and `lf` from [Example data](#example-data):
 ```python
 ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
                       half_life=600.0, gap_cap=300.0, group="stock_id",
-                      coef_every=1)         # write coef on every row but a skipped one
+                      coef_every=0)         # write coef on every row but a skipped one
 
 # 1. From a bank -- live, or loaded from a state file with no data at hand.
 bank = po.ModelBank([ols])
@@ -1973,9 +1973,14 @@ lf.online.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parque
 saved = pl.scan_parquet("fitted.parquet").online.unnest("ols.state").collect()
 ```
 
-**`coef_every=1` writes `coef` on every row but a skipped one**, as a list
-of one float per term. The default, `0`, writes it on each group's
-last row in a chunk.
+**`coef_every=0` writes `coef` on every row but a skipped one**, as a list
+of one float per term. Without a cadence the bank writes it on each
+group's last row in a chunk. A number of clock units, or a duration such as
+`"5m"` on a temporal clock, writes it once the clock has moved that far
+since the group's last `coef` row, as `solve_every` schedules a solve.
+`max_rows_between_coefs` writes it after that many rows, and with both,
+whichever comes first. A cadence reads only the clock and the rows, so the
+rows that carry `coef` do not depend on the chunking.
 
 **To spread that list into columns, chain `.online.unnest(specs)` after
 `fit_predict`.** It takes the specs, a bank, or the path of a saved state,

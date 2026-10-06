@@ -45,10 +45,12 @@ bank.save("bank.state")
   state as it stands *before* the update that uses that row's target. Never fit a row
   and then score it: the `pred` the library returns is already out-of-sample.
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
-  gives identical output, bit for bit, and a test enforces it. The exceptions are the
-  `coef` field and `support_coef`, which sits on `coef`'s rows: they are filled on each
-  group's last row in every chunk, and every `coef_every` learned rows, so their
-  schedule follows the chunking.
+  gives identical output, bit for bit, and a test enforces it. The one exception is
+  which rows carry `coef`, and `support_coef` on the same rows, by default: they are
+  filled on each group's last row in every chunk, so that schedule follows the
+  chunking. Under a cadence those rows do not move either: `coef_every` is a clock
+  parameter, as `solve_every` is (`0` every row, `"5m"` a row once five minutes of the
+  clock have passed), and `max_rows_between_coefs` writes one after that many rows.
 - **Decay runs on the clock, not on row count.** A `Datetime`, `Date` or `Duration`
   clock takes its clock parameters (`half_life`, `gap_cap`, `window_size`, ...) as
   durations: `pl.duration(minutes=10)`, a `timedelta` or `"10m"`. A numeric clock takes

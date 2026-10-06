@@ -232,7 +232,7 @@ class TestLargeData:
             half_life=2000.0,
             min_weight=50.0,
             standardize=False,
-            coef_every=1,
+            coef_every=0,
         )
         walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
         rev = po.ModelBank([po.spec.kalman("m", revert_half_life=revert, **common)]).fit_predict(df)
@@ -287,7 +287,7 @@ class TestLargeData:
             half_life=2000.0,
             min_weight=50.0,
             standardize=False,
-            coef_every=1,
+            coef_every=0,
         )
         walk = po.ModelBank([po.spec.kalman("m", **common)]).fit_predict(df)
         rev = po.ModelBank(
@@ -324,7 +324,7 @@ class TestLargeData:
             half_life=INF,
             min_weight=10.0,
             standardize=False,
-            coef_every=1,
+            coef_every=0,
         )
         got = {}
         for rh in (INF, 100.0):
@@ -352,7 +352,7 @@ class TestLargeData:
 class TestExactness:
     def test_inf_is_bit_identical_to_the_default(self):
         df, _ = synthetic(seed=102, n_groups=2, n_rows=600, k=3, null_frac=0.03)
-        base = _spec(group="group", clock="t", gap_cap=MAXD, weight="w", coef_every=1)
+        base = _spec(group="group", clock="t", gap_cap=MAXD, weight="w", coef_every=0)
         want = po.ModelBank([base]).fit_predict(df)
         for r in (INF, [INF], [INF, INF, INF, INF]):
             spec = _spec(
@@ -360,7 +360,7 @@ class TestExactness:
                 clock="t",
                 gap_cap=MAXD,
                 weight="w",
-                coef_every=1,
+                coef_every=0,
                 revert_half_life=r,
             )
             got = po.ModelBank([spec]).fit_predict(df)
@@ -368,8 +368,8 @@ class TestExactness:
 
     def test_scalar_equals_the_list_that_spells_it(self):
         df, _ = synthetic(seed=103, n_groups=1, n_rows=400, k=3, null_frac=0.0)
-        a = po.ModelBank([_spec(revert_half_life=33.0, coef_every=1)]).fit_predict(df)
-        b = po.ModelBank([_spec(revert_half_life=[33.0] * 4, coef_every=1)]).fit_predict(df)
+        a = po.ModelBank([_spec(revert_half_life=33.0, coef_every=0)]).fit_predict(df)
+        b = po.ModelBank([_spec(revert_half_life=[33.0] * 4, coef_every=0)]).fit_predict(df)
         assert a.equals(b, null_equal=True)
 
     def test_shrinks_exactly_over_a_run_of_null_targets_on_an_irregular_clock(self):
@@ -397,7 +397,7 @@ class TestExactness:
             revert_half_life=r,
             standardize=False,
             q=[0.0] * 4,
-            coef_every=1,
+            coef_every=0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
         c = _coef(out)
@@ -432,7 +432,7 @@ class TestExactness:
             revert_half_life=[INF, 4.0, 4.0],
             standardize=False,
             q=[0.0] * 3,
-            coef_every=1,
+            coef_every=0,
         )
         c = _coef(po.ModelBank([spec]).fit_predict(df))
         assert c[-1, 1:] == pytest.approx(c[-2, 1:] * 0.5 ** (1.0 / 4.0), rel=1e-12)

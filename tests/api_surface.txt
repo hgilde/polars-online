@@ -30,7 +30,7 @@
   target
   thread_pool_size
   unnest
-  schema_version = 34
+  schema_version = 35
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -49,7 +49,8 @@
   max_error_inflation = None
   emit_error_inflation = False
   emit_clocks = False
-  coef_every = 0
+  coef_every = None
+  max_rows_between_coefs = None
   emit_sigma = False
   emit_zscore = False
   emit_selected = False

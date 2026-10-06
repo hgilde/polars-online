@@ -305,6 +305,9 @@ _AT_LEAST_ONE = frozenset(
         # A lasso of no sweeps never descends: every solve is a failure, and
         # the coefficients read like a fit (review 2026-10-05, PB7).
         "max_iter",
+        # A cap of no rows is no schedule: every row is `coef_every = 0`
+        # (docs/PLAN.md task 178).
+        "max_rows_between_coefs",
     }
 )
 
@@ -625,7 +628,8 @@ def _common(
     max_error_inflation: float | None = None,
     emit_error_inflation: bool = False,
     emit_clocks: bool = False,
-    coef_every: int = 0,
+    coef_every: float | Duration | None = None,
+    max_rows_between_coefs: int | None = None,
     emit_sigma: bool = False,
     emit_zscore: bool = False,
     emit_selected: bool = False,
@@ -669,6 +673,7 @@ def _common(
         "emit_error_inflation": emit_error_inflation,
         "emit_clocks": emit_clocks,
         "coef_every": coef_every,
+        "max_rows_between_coefs": max_rows_between_coefs,
         "emit_sigma": emit_sigma,
         "emit_zscore": emit_zscore,
         "emit_selected": emit_selected,

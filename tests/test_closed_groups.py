@@ -789,12 +789,14 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 34 since
-    2026-10-06 (task 176: an ``embargo`` is decided on the elapsed clock held
-    exactly, which a stream's clock keeps and each held row keeps its place
-    on), after 33 the same day (task 170: a quantile fit's state keeps its
-    band systems, the
-    factors its nudges read, which a band row at ``ridge = 0`` moves in
+    """The version a bank file names, held to the library's: 35 since
+    2026-10-06 (task 178: ``coef_every`` reads the clock, its old default
+    ``0`` is every row, and a stream keeps where its cadence stands), after
+    34 the same day (task 176: an ``embargo`` is decided on the elapsed
+    clock held exactly, which a stream's clock keeps and each held row
+    keeps its place on), after 33 the same day (task 170: a quantile fit's
+    state keeps its band systems, the factors its nudges read, which a band
+    row at ``ridge = 0`` moves in
     place), after 32 the same day (task 175: a model window's snapshots are
     keyed by each row's stamp, its decayed clock held exactly), after 31 the
     same day (task 174:
@@ -824,7 +826,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 34
+    assert po.schema_version() == 35
     assert sys.version_info >= (3, 12)
 
 

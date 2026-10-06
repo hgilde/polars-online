@@ -66,7 +66,7 @@ class TestRls:
             clock="t",
             gap_cap=MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -160,7 +160,7 @@ class TestKalmanSeveralTargetsWithNulls:
             half_life=500.0,
             coef_half_life=100.0,
             min_weight=10.0,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]

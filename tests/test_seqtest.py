@@ -422,10 +422,10 @@ def regression(n, seed, groups=None, null_every=0):
 
 
 def two_sides(halflife_a=20.0, halflife_b=400.0, **kw):
-    # `coef_every=1`: by default `coef` is reported on each chunk's last row
+    # `coef_every=0`, every row: by default `coef` is reported on each chunk's last row
     # (README, "Row order and the two guarantees"), so whole frames compare across chunkings
-    # only when it is reported on every row.
-    common = dict(targets=["y"], features=["x0", "x1"], min_weight=5.0, coef_every=1, **kw)
+    # only under a cadence, and every row is one with or without a clock.
+    common = dict(targets=["y"], features=["x0", "x1"], min_weight=5.0, coef_every=0, **kw)
     return [
         po.spec.ewridge("fast", half_life=halflife_a, **common),
         po.spec.ewridge("slow", half_life=halflife_b, **common),

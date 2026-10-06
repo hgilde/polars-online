@@ -100,15 +100,26 @@ sees a stream* is the guide to them. This is the reference.
     field is the shared weight in every model. So a target that is often null
     is gated on its own rows, and its first prediction comes later than the
     others'. Units: ``weight_sum`` units, not rows.
-``coef_every``
-    How often the ``coef`` field is filled: on every ``coef_every``-th row the
-    group's stream accepts, a row whose features and weight are usable, rows
-    of weight zero and rows with a null target included. ``0``, the
-    default, fills it on **each group's** last row within every chunk only:
-    one row per group per chunk, not one per chunk. Any value fills it there
-    too. So ``coef``'s emission schedule follows the chunking, while every
-    other field is chunk-invariant: one chunk or a thousand gives the same
-    numbers. Refused on a model that reports no coefficients.
+``coef_every``, ``max_rows_between_coefs``
+    How often the ``coef`` field is filled, as ``solve_every`` and
+    ``max_rows_between_solves`` schedule a solve. ``coef_every`` writes a
+    ``coef`` row once the clock has moved that far since the group's last
+    one, or since the group's first row before the first. It is a number of
+    the clock's units, a duration on a temporal clock (``"5m"``), or ``0``
+    for every row. ``max_rows_between_coefs`` writes one after that many
+    rows the group's stream accepts: a row whose features and weight are
+    usable, rows of weight zero and rows with a null target included. With
+    both, whichever comes first. The clock is the one the models are stepped
+    on, so a gap capped at ``gap_cap`` counts as the cap. Without a clock
+    column it is the row's number, the first row being 1: ``coef_every=10``
+    writes the tenth row, the twentieth and so on. A reset of the clock
+    starts the count over. Under either, the ``coef`` rows are the same
+    however the stream is chunked. With neither, the default, ``coef`` is
+    filled on **each group's** last row within every chunk: one row per
+    group per chunk, not one per chunk. Only that schedule follows the
+    chunking; every other field is chunk-invariant, so one chunk or a
+    thousand gives the same numbers. Refused on a model that reports no
+    coefficients. Units: clock units, and accepted rows.
 ``embargo``
     Why: a target that is a forward quantity over ``h`` clock units is not
     known at the row it sits on. Learning it there hands the model ``h`` of
@@ -178,8 +189,8 @@ durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
 number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
-``session_gap`` and ``embargo`` above, ``drift_threshold`` below, and in the
-models ``window_size``,
+``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
+below, and in the models ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
@@ -406,7 +417,7 @@ A builder raises ``TypeError`` for a name that is not a str, a keyword it has
 not got, or a value of the wrong shape, naming the parameter and what it
 takes::
 
-    spec "m": coef_every must be an int, got float 1.5
+    spec "m": max_rows_between_coefs must be an int, got float 1.5
 
 It raises ``ValueError``, naming the spec and the parameter, for a value the
 model refuses:
@@ -436,7 +447,8 @@ A parameter whose switch is off is refused rather than ignored:
 - ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
   not use it, and its ``power`` beside a schedule other than
   ``"inv_scaling"``;
-- and ``coef_every`` on a model that reports no coefficients.
+- and ``coef_every`` or ``max_rows_between_coefs`` on a model that reports
+  no coefficients.
 
 Names are checked too: a feature set named twice, a column twice in one set,
 an empty set, and a spec named ``""``, ``"spec"`` or ``"group"``, which the

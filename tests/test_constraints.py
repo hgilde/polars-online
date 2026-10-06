@@ -431,7 +431,7 @@ class TestOracle:
             clock="t",
             weight="w",
             gap_cap=3.0,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
@@ -472,7 +472,7 @@ class TestOracle:
             clock="t",
             weight="w",
             gap_cap=3.0,
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(_frame(X, y, t, w))
@@ -708,8 +708,9 @@ class TestLargeData:
 
 
 def _base(**kw):
+    # `coef` on every row, with a clock (`_clocked`) or without one.
     d = dict(
-        targets=["y"], features=["x0", "x1", "x2"], half_life=INF, min_weight=5.0, coef_every=1
+        targets=["y"], features=["x0", "x1", "x2"], half_life=INF, min_weight=5.0, coef_every=0
     )
     d.update(kw)
     return d
@@ -895,7 +896,7 @@ class TestEdgeCases:
                     'weight = "w"',
                     "half_life = 40.0",
                     "min_weight = 5.0",
-                    "coef_every = 1",
+                    "coef_every = 0",
                     "[specs.model]",
                     'type = "sgd"',
                     "coef_min = [0.0, 0.0, -0.1]",

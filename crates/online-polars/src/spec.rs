@@ -1730,6 +1730,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "session_gap",
             "embargo",
             "drift_threshold",
+            "coef_every",
         ],
     ),
     (
@@ -1958,6 +1959,7 @@ impl Spec {
         }
         put(&mut out, "embargo", self.embargo.as_ref());
         put(&mut out, "drift_threshold", self.drift_threshold.as_ref());
+        put(&mut out, "coef_every", self.coef_every.as_ref());
         // A formula target's operators measure in the same clock (review
         // R1, D7): with them here a number beside durations is refused at
         // the spec, and the embargo check compares like units.
@@ -2247,12 +2249,24 @@ pub struct Spec {
     /// same rows at the same time. Default false.
     #[serde(default)]
     pub emit_clocks: bool,
-    /// 0 = never; coefficients are also emitted on **each group's** last row
-    /// within every chunk -- one row per group per chunk, not one per chunk,
-    /// so `coef`'s emission schedule follows the chunking while every other
-    /// field is chunk-invariant.
+    /// When the `coef` field is filled, as `solve_every` schedules a solve
+    /// (docs/PLAN.md task 178): a `coef` row once the clock has moved this
+    /// far since the group's last one -- a number of the clock column's
+    /// units, or a duration on a temporal clock, the clock measured as the
+    /// models are stepped on it, a gap capped at `gap_cap` counting as the
+    /// cap -- and `0` every row. With `max_rows_between_coefs` too,
+    /// whichever comes first. Without a clock column the clock is the row's
+    /// number, the first row being 1, so `N` is every `N` rows. With neither
+    /// given, **each group's** last row within every chunk: one row per
+    /// group per chunk, the one schedule that follows the chunking, while
+    /// every other field, and `coef` under a cadence, is chunk-invariant.
     #[serde(default)]
-    pub coef_every: u32,
+    pub coef_every: Option<Span>,
+    /// At most this many accepted rows between `coef` rows, rows of weight
+    /// zero and rows with a null target included, as `coef_every` counted
+    /// them before it read the clock; at least 1 (task 178).
+    #[serde(default)]
+    pub max_rows_between_coefs: Option<u32>,
     /// Emit `sigma_<slot>`: the EW standard deviation of this slot's
     /// out-of-sample residuals, read from the state *before* each row. Off by
     /// default because it widens the output struct. Its weight ages on every
@@ -3287,13 +3301,42 @@ impl Spec {
                 ));
             }
         }
-        // `coef_every` schedules the `coef` field, which a model with no
-        // coefficients does not have (review 2026-09-12, S22).
-        if self.coef_every > 0 && !self.model.has_coef() {
+        // `coef_every` and `max_rows_between_coefs` schedule the `coef`
+        // field, which a model with no coefficients does not have (review
+        // 2026-09-12, S22). `0` was the default and passed there; since task
+        // 178 it is every row, and refused there as any other value is.
+        for (key, given) in [
+            ("coef_every", self.coef_every.is_some()),
+            (
+                "max_rows_between_coefs",
+                self.max_rows_between_coefs.is_some(),
+            ),
+        ] {
+            if given && !self.model.has_coef() {
+                return Err(format!(
+                    "spec {:?}: {key} does not apply to {} (it reports no coefficients)",
+                    self.name,
+                    self.model.kind_name()
+                ));
+            }
+        }
+        if self
+            .coef_every
+            .as_ref()
+            .is_some_and(|e| !(e.value().is_finite() && non_negative(e.value())))
+        {
             return Err(format!(
-                "spec {:?}: coef_every does not apply to {} (it reports no coefficients)",
-                self.name,
-                self.model.kind_name()
+                "spec {:?}: coef_every must be finite and >= 0 clock units (0 writes `coef` on \
+                 every row)",
+                self.name
+            ));
+        }
+        // A cap of no rows is no schedule: every row is `coef_every = 0`.
+        if self.max_rows_between_coefs == Some(0) {
+            return Err(format!(
+                "spec {:?}: max_rows_between_coefs must be >= 1 (coef_every = 0 writes `coef` \
+                 on every row)",
+                self.name
             ));
         }
         // Nothing residual-based applies to a model that predicts no target.
@@ -4568,6 +4611,70 @@ mod clock_tests {
             spec(r#", "half_life": 600, "emit_drift": true"#).validate(),
             Ok(())
         );
+    }
+
+    /// `coef_every` reads the clock, as `solve_every` does (task 178): a
+    /// number of the clock column's units or a duration on a temporal clock,
+    /// the mixtures refused as for every clock parameter; `0` every row and
+    /// free of a unit; finite and `>= 0`. `max_rows_between_coefs` is at
+    /// least 1, and both need a model with coefficients, `0` included, which
+    /// was the default and passed there.
+    #[test]
+    fn coef_every_is_a_clock_parameter_and_its_row_cap_a_count() {
+        let durations = r#", "clock": "t", "half_life": "10m", "gap_cap": "5m""#;
+        let given = spec(&format!(r#"{durations}, "coef_every": "15m""#));
+        assert_eq!(given.validate(), Ok(()));
+        assert_eq!(given.coef_every.as_ref().map(Span::value), Some(900.0));
+        let err = spec(&format!(r#"{durations}, "coef_every": 900"#))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("coef_every is a plain number"), "{err}");
+        // `0` means the same in every unit, so a temporal spec takes it.
+        assert_eq!(
+            spec(&format!(r#"{durations}, "coef_every": 0"#)).validate(),
+            Ok(())
+        );
+        let numbers = r#", "clock": "t", "half_life": 600, "gap_cap": 300"#;
+        assert_eq!(
+            spec(&format!(r#"{numbers}, "coef_every": 900"#)).validate(),
+            Ok(())
+        );
+        let err = spec(&format!(r#"{numbers}, "coef_every": "15m""#))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("coef_every is a duration"), "{err}");
+        for bad in ["-1", "-0.5", "\"inf\""] {
+            let err = spec(&format!(r#"{numbers}, "coef_every": {bad}"#))
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.contains("coef_every must be finite and >= 0 clock units"),
+                "{bad}: {err}"
+            );
+        }
+        let err = spec(r#", "half_life": 60, "max_rows_between_coefs": 0"#)
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("max_rows_between_coefs must be >= 1"), "{err}");
+        assert_eq!(
+            spec(r#", "half_life": 60, "coef_every": 7, "max_rows_between_coefs": 1"#).validate(),
+            Ok(())
+        );
+        for cadence in [r#""coef_every": 0"#, r#""max_rows_between_coefs": 5"#] {
+            let cov: Spec = serde_json::from_str(&format!(
+                r#"{{"name": "c", "model": {{"type": "ew_cov"}}, "targets": ["x"],
+                    "features": ["x", "z"], "half_life": 60, {cadence}}}"#
+            ))
+            .unwrap();
+            let err = cov.validate().unwrap_err();
+            let key = cadence.split('"').nth(1).unwrap();
+            assert!(
+                err.contains(&format!(
+                    "{key} does not apply to ew_cov (it reports no coefficients)"
+                )),
+                "{err}"
+            );
+        }
     }
 
     /// Task 160, PB9: no delay is no embargo, not an embargo of 0.

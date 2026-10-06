@@ -66,7 +66,11 @@ SHAPES = [
         dict(session_gap=[1]),
         "session_gap must be a number or a duration, got list",
     ),
-    (po.spec.ewridge, dict(coef_every=1.5), "coef_every must be an int, got float 1.5"),
+    (
+        po.spec.ewridge,
+        dict(max_rows_between_coefs=1.5),
+        "max_rows_between_coefs must be an int, got float 1.5",
+    ),
     (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, got int 1"),
     (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
     (
@@ -151,7 +155,14 @@ VALUES = [
         dict(lags=[1], cross_lags=[-1]),
         "cross_lags must be >= 1, got list [-1]",
     ),
-    (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
+    # A clock parameter since task 178: the Rust side's message, in clock
+    # units; its row cap is a count of at least one.
+    (po.spec.ewridge, dict(coef_every=-1), "coef_every must be finite and >= 0 clock units"),
+    (
+        po.spec.ewridge,
+        dict(max_rows_between_coefs=0),
+        "max_rows_between_coefs must be >= 1, got 0",
+    ),
     # No sweep is no descent: every solve a failure, and coefficients that
     # read like a fit (review 2026-10-05, PB7).
     (po.spec.lasso, dict(lasso_path=[0.1], max_iter=-1), "max_iter must be >= 1, got -1"),

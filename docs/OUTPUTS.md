@@ -51,7 +51,7 @@ Four fields appear in nearly every table below, and are defined here once:
 | `weight_sum` | the accumulated weight before this row's update and before its own decay | |
 | `settled_frac` | how far the decay window had filled toward steady state before this row: `1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half-life and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
 | `withheld_reason` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight` or `above_max_error_inflation`. That order is their precedence, so the first that applies is the one named | where nothing was withheld |
-| `coef` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve | on every row but those `coef_every` fills, which by default are each group's last row in each chunk; and before the model has anything to report, such as a first solve |
+| `coef` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last row in each chunk; and before the model has anything to report, such as a first solve |
 
 ### What is not listed
 

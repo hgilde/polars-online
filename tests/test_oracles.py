@@ -375,7 +375,7 @@ class TestLassoPredPath:
             clock="t",
             gap_cap=self.MAX_DCLOCK,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **descent,
             **kw,
         )

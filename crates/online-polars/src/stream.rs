@@ -1788,6 +1788,112 @@ impl Embargo {
     }
 }
 
+/// What `coef_every` and `max_rows_between_coefs` ask of the `coef` field
+/// (docs/PLAN.md task 178).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CoefPlan {
+    /// Neither given: each group's last row in each chunk.
+    ChunkEnds,
+    /// A cadence, as `solve_every` and `max_rows_between_solves` schedule a
+    /// solve: a `coef` row once the clock has moved `clock` units since the
+    /// last, `0` every row, or at the `rows`-th accepted row since,
+    /// whichever comes first; `INFINITY` and `u64::MAX` for the one not
+    /// given.
+    Cadence { clock: f64, rows: u64 },
+}
+
+impl CoefPlan {
+    fn of(spec: &Spec) -> Self {
+        match (&spec.coef_every, spec.max_rows_between_coefs) {
+            (None, None) => CoefPlan::ChunkEnds,
+            (every, rows) => CoefPlan::Cadence {
+                clock: every.as_ref().map_or(f64::INFINITY, Span::value),
+                rows: rows.map_or(u64::MAX, u64::from),
+            },
+        }
+    }
+}
+
+/// Where a stream's `coef` cadence stands (docs/PLAN.md task 178): the
+/// stamp its clock is measured from -- the last `coef` row's, or before the
+/// first the group's start or the clock's last reset ([`coef_origin`]) --
+/// and the accepted rows since. The clock is a [`Stamp`], the decayed
+/// clock held exactly, as a window spaces its snapshots by it (task 175):
+/// summed in doubles, two thousand steps of a millisecond come to less than
+/// two seconds, and `coef_every = "2s"` would write a row late.
+///
+/// Moved only under a cadence, so a spec without one writes the state it
+/// did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CoefCadence {
+    /// `None` before the group's first row.
+    pub from: Option<Stamp>,
+    /// Accepted rows since `from`, rows of weight zero and rows with a null
+    /// target included.
+    pub rows: u64,
+}
+
+impl CoefCadence {
+    fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// One row under a cadence of `clock` units or `rows` accepted rows
+    /// ([`CoefPlan::Cadence`]), whether the stream accepts the row or not,
+    /// `now` its clock value and `adv` what the clock made of it: whether it
+    /// is a `coef` row. The group's first row, and a row the clock resets
+    /// at, start the cadence over, as they start the models over; a skipped
+    /// row is never one, and moves the clock only as the next accepted
+    /// row's stamp shows.
+    fn step(
+        &mut self,
+        clock: f64,
+        rows: u64,
+        now: Option<ClockValue>,
+        adv: &online_core::ClockAdvance,
+        accept: bool,
+    ) -> bool {
+        if adv.reset || self.from.is_none() {
+            *self = CoefCadence {
+                from: Some(coef_origin(now)),
+                rows: 0,
+            };
+        }
+        // `advance_stamped` stamps every accepted row.
+        debug_assert!(!accept || adv.stamp.is_some(), "an accepted row unstamped");
+        let (true, Some(stamp), Some(from)) = (accept, adv.stamp, self.from) else {
+            return false;
+        };
+        self.rows = self.rows.saturating_add(1);
+        let due = self.rows >= rows
+            || clock == 0.0
+            || (clock.is_finite() && stamp.cmp_span(from, clock) != std::cmp::Ordering::Less);
+        if due {
+            *self = CoefCadence {
+                from: Some(stamp),
+                rows: 0,
+            };
+        }
+        due
+    }
+}
+
+/// The stamp a stream's `coef` clock is measured from at the group's first
+/// row, or at a row the clock resets at (task 178). On a clock column, the
+/// stamp that row takes ([`ClockState::advance_stamped`]): 0 on a temporal
+/// clock, and the row's own value with nothing removed on a number clock,
+/// whether the row is accepted or skipped. Without one, the place before
+/// the row's: the clock is then the row's number, the first row being 1,
+/// so `coef_every = N` writes the `N`-th, `2N`-th, ... row, as the count of
+/// rows it read before task 178 did.
+fn coef_origin(now: Option<ClockValue>) -> Stamp {
+    match now {
+        Some(ClockValue::Ns(_)) => Stamp::Ns(0),
+        Some(v) => Stamp::Raw(v.seconds(), 0.0),
+        None => Stamp::Raw(-1.0, 0.0),
+    }
+}
+
 /// What a spec's window core resolved in one chunk for one group
 /// (docs/PLAN.md task 104): per resolved row, in row order, its number,
 /// the number of the row that resolved it -- the row that closed, cut or
@@ -1916,6 +2022,12 @@ pub struct StreamState {
     /// session, so no other spec's bytes move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_session: Option<String>,
+    /// Where the `coef` cadence stands (docs/PLAN.md task 178): the clock
+    /// since the last `coef` row and the rows since, which a resumed stream
+    /// goes on counting. Written only once a cadence has moved it, so a
+    /// spec without one writes the bytes it did.
+    #[serde(default, skip_serializing_if = "CoefCadence::is_unset")]
+    pub coef_cadence: CoefCadence,
 }
 
 /// `StreamState::score_pred` holds nothing worth writing.
@@ -2056,6 +2168,8 @@ pub struct Stream {
     /// The session value of the span this stream is in (E54); see
     /// [`StreamState::last_session`].
     pub last_session: Option<String>,
+    /// Where the `coef` cadence stands; see [`StreamState::coef_cadence`].
+    coef_cadence: CoefCadence,
 }
 
 impl Stream {
@@ -2636,6 +2750,7 @@ impl Stream {
                 .map(|_| std::collections::VecDeque::new())
                 .collect(),
             last_session: None,
+            coef_cadence: CoefCadence::default(),
         })
     }
 
@@ -2673,6 +2788,7 @@ impl Stream {
                 .map(|q| q.iter().cloned().collect())
                 .collect(),
             last_session: self.last_session.clone(),
+            coef_cadence: self.coef_cadence,
         }
     }
 
@@ -2714,6 +2830,7 @@ impl Stream {
         }
         stream.clock = saved.clock.clone();
         stream.rows_seen = saved.rows_seen;
+        stream.coef_cadence = saved.coef_cadence;
         // The decay time and the notices, per instance; a file written
         // before either existed leaves the fresh zeros, so for such a file
         // `settled_frac` counts from the load.
@@ -2924,9 +3041,10 @@ impl Stream {
     }
 
     /// Pass 1 of [`Self::process_chunk`]: the clock schedule of `rows`, on
-    /// a copy of the clock, with the clock and the count of accepted rows it
-    /// leaves. What it decides depends on the clock and the input columns
-    /// alone, never on the models, so the window budget's pre-pass
+    /// a copy of the clock, with what it leaves: the clock, the count of
+    /// accepted rows and of rows fed, and where the `coef` cadence stands.
+    /// What it decides depends on the clock and the input columns alone,
+    /// never on the models, so the window budget's pre-pass
     /// ([`Self::window_prepass`]) replays the schedule the run will follow. A
     /// step back the policy refuses is handed back for the caller to name.
     #[allow(clippy::too_many_arguments)]
@@ -2941,11 +3059,13 @@ impl Stream {
         rows: &[usize],
         base: usize,
         last: bool,
-    ) -> Result<(ClockState, u64, u64, Vec<RowPlan>), ClockRefusal> {
+    ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.clock.clone();
         let mut rows_seen = self.rows_seen;
         let mut fed = self.fed;
+        let coef_plan = CoefPlan::of(spec);
+        let mut coef_cadence = self.coef_cadence;
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
@@ -2981,12 +3101,16 @@ impl Stream {
             // the row's index in the group, every row counted.
             let shown = c.or(Some(ClockValue::F64(fed as f64)));
             fed = fed.saturating_add(1);
-            // The chunk's last row reports the coefficients; `last` says
-            // whether this run ends the chunk (`ChunkOut::run_rows`).
-            let want_coef = accept
-                && ((last && ri + 1 == n_rows)
-                    || (spec.coef_every > 0
-                        && rows_seen.is_multiple_of(u64::from(spec.coef_every))));
+            // With no cadence the chunk's last row reports the coefficients;
+            // `last` says whether this run ends the chunk
+            // (`ChunkOut::run_rows`). A cadence reads the clock and the rows
+            // alone, so its rows do not move with the chunking (task 178).
+            let want_coef = match coef_plan {
+                CoefPlan::ChunkEnds => accept && last && ri + 1 == n_rows,
+                CoefPlan::Cadence { clock: every, rows } => {
+                    coef_cadence.step(every, rows, c, &adv, accept)
+                }
+            };
             plans.push(RowPlan {
                 ri,
                 i,
@@ -3009,7 +3133,13 @@ impl Stream {
                 w: w.unwrap_or(1.0),
             });
         }
-        Ok((clock_state, rows_seen, fed, plans))
+        Ok(Scheduled {
+            clock: clock_state,
+            rows_seen,
+            fed,
+            coef_cadence,
+            plans,
+        })
     }
 
     /// The first overrun a chunk's rows would give a window's ring past a
@@ -3047,11 +3177,12 @@ impl Stream {
         if !self.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
-        let (_, _, _, mut plans) = self
+        let mut plans = self
             .schedule(
                 spec, cfg, features, clock, session, weight, rows, base, false,
             )
-            .ok()?;
+            .ok()?
+            .plans;
         let mut pending = self.pending.clone();
         let mut held_break = self.held_break;
         Self::apply_label_delay(
@@ -3163,7 +3294,13 @@ impl Stream {
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
         // the stream exactly as it was.
-        let (clock_state, rows_seen, fed, mut plans) = self.schedule(
+        let Scheduled {
+            clock: clock_state,
+            rows_seen,
+            fed,
+            coef_cadence,
+            mut plans,
+        } = self.schedule(
             spec, cfg, features, clock, session, weight, rows, base, last,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
@@ -3173,6 +3310,7 @@ impl Stream {
         self.clock = clock_state;
         self.rows_seen = rows_seen;
         self.fed = fed;
+        self.coef_cadence = coef_cadence;
 
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
@@ -3946,6 +4084,16 @@ pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
         ) => m.cfg().auto_shards(rayon::current_num_threads()),
         _ => 1,
     }
+}
+
+/// What pass 1 ([`Stream::schedule`]) leaves: the stream's clock and counts
+/// after the rows, for the caller to commit, and the plan of each row.
+struct Scheduled {
+    clock: ClockState,
+    rows_seen: u64,
+    fed: u64,
+    coef_cadence: CoefCadence,
+    plans: Vec<RowPlan>,
 }
 
 /// What pass 1 decided about one row, so pass 2 can replay it per instance

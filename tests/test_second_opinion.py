@@ -703,7 +703,7 @@ class TestNoInterceptIsNotCentred:
             p0=1e6,
             obs_var=0.01,
             half_life=float("inf"),
-            coef_every=1,
+            coef_every=0,
             fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
@@ -731,7 +731,7 @@ class TestNoInterceptIsNotCentred:
             standardize=True,
             learning_rate=0.01,
             half_life=1e6,
-            coef_every=1,
+            coef_every=0,
             fit_intercept=False,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
@@ -1442,7 +1442,7 @@ class TestALevelOnlyHoltIsAnEwMean:
             level_half_life=self.HALFLIFE,
             min_weight=0.0,
             weight="w",
-            coef_every=1,
+            coef_every=0,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
@@ -1745,7 +1745,7 @@ class TestAStandardizedKalmanIsFilterpy:
             weight="w",
             half_life=half_life,
             min_weight=0.0,
-            coef_every=1,
+            coef_every=0,
         )
         out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         got = out["pred_y"].to_numpy()
@@ -2313,7 +2313,7 @@ class TestPassiveAggressiveIsRivers:
             fit_intercept=False,
             half_life=float("inf"),
             min_weight=0.0,
-            coef_every=1,
+            coef_every=0,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
@@ -2920,7 +2920,7 @@ class TestFtrlIsVowpalWabbits:
             l2=l2,
             half_life=float("inf"),
             min_weight=0.0,
-            coef_every=1,
+            coef_every=0,
             **({"weight": "w"} if weighted else {}),
         )
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct

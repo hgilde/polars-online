@@ -73,7 +73,7 @@ def _check(df, half_life, *, sets=None, fit_intercept=True, **kw):
         half_life=half_life,
         feature_sets=sets,
         fit_intercept=fit_intercept,
-        coef_every=1,
+        coef_every=0,
         max_error_inflation=float("inf"),
         **spec_only,
         **kw,
