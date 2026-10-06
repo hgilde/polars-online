@@ -11439,8 +11439,10 @@ numbering schemes kept in step; CLAUDE.md is the user's to edit. YA4's
 `Sequence` typing takes a bare `str` as a `Sequence[str]`; no annotation
 excludes it, and the builders refuse it by name at run time. CB2's held-run
 rule for targets needs per-target runs in the state, a schema bump; the
-64ε floor covers the case found. `bank.rs` stands at 249,165 bytes against
-the 250 KB cap: the next addition moves tests out first.
+64ε floor covers the case found. `bank.rs` stood at 249,165 bytes against
+the 250 KB cap; its four inline test modules moved to files of their own
+under `src/bank/`, as `damaged_file_tests` had (2026-10-06, on the user's
+word), leaving 242,524 bytes of production code.
 
 **What held, measured.** No rule-2 failure under the corrected property
 (TA1); every other kind round-trips its spec dict (only marginal did not);
