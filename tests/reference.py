@@ -808,12 +808,20 @@ def robust_ref(
 
     Both losses read each row's *prior* residual, so both stay out-of-sample;
     what they do with it is :func:`_row_update`'s. Because the weights are per
-    target, ``S`` is per target here (unlike ew_ridge, which shares one). Three
+    target, ``S`` is per target here (unlike ew_ridge, which shares one). Four
     details that matter for agreement:
 
     - the robust weight scales the accumulator update, but ``sigma2_j`` is
       updated with the *raw* row weight, so the scale estimate is not itself
       shrunk by the reweighting;
+    - ``sigma2_j``'s weight ages on every row the model sees, a null target, a
+      row of weight 0 and a row with no prediction included (review
+      2026-09-12, S13 and N6); ``sigma2_j`` itself moves only on a row with a
+      prediction and a weight above 0, so a row of weight 0, a quantile nudge
+      among them, moves it by nothing, not by a rounding (review 2026-10-05,
+      CC5). The weight aged only on the rows that moved ``sigma2_j`` here
+      until task 177, up to 4.6e-2 from the bank on streams with rows of
+      weight 0;
     - a row whose robust weight is zero still decays the accumulator;
     - a quantile row outside the band decays the accumulators and adds its
       nudge to the cross-moment, which is a mean, so the nudge enters divided
@@ -891,12 +899,13 @@ def robust_ref(
         for j in range(m):
             present = lam * st["wobs"][j]
             rows = lam * st["nobs"][j]
+            # sigma2's weight ages on every row the model sees (S13, N6).
+            st["wsig"][j] *= lam
             if np.isnan(Y[i, j]):
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
                 st["wobs"][j] = present
                 st["nobs"][j] = rows
-                st["wsig"][j] *= lam
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
@@ -958,10 +967,12 @@ def robust_ref(
                 st["W"][j] = W_new
                 st["wj"][j] = aged_wj + ww
 
-            if not np.isnan(p_own[j]):
+            # sigma2 moves on a row with a prediction and a weight, and a row
+            # of weight 0 moves it by nothing (CC5); its weight is aged above.
+            if not np.isnan(p_own[j]) and w[i] > 0.0:
                 rr = Y[i, j] - p_own[j]
-                ws_new = lam * st["wsig"][j] + w[i]
-                st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * rr * rr) / ws_new
+                ws_new = st["wsig"][j] + w[i]
+                st["sig2"][j] = (st["wsig"][j] * st["sig2"][j] + w[i] * rr * rr) / ws_new
                 st["wsig"][j] = ws_new
 
         st["w_raw"] = lam * st["w_raw"] + w[i]

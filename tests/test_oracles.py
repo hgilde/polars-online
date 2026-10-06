@@ -541,10 +541,41 @@ class TestRobustOracles:
             ref["weight_sum"],
             what="weight_sum",
         )
+        return out
 
     def test_huber(self):
         df, _ = synthetic(seed=91, n_groups=1, n_rows=250, k=2, null_frac=0.0)
         self._compare(df)
+
+    @pytest.mark.parametrize("model", ["huber", "quantile"])
+    @pytest.mark.parametrize(
+        ("n_rows", "zeros"),
+        [(250, slice(60, None, 7)), (300, slice(100, 200))],
+        ids=["every seventh row", "a hundred rows in a row"],
+    )
+    def test_rows_of_weight_zero(self, model, n_rows, zeros):
+        """A row of weight 0 advances the clock and teaches nothing (hard rule
+        9). The core's residual scale keeps three rules for it: sigma2's
+        weight ages on every row the model sees, a row of weight 0 or with no
+        prediction included (review 2026-09-12, S13 and N6), and a row of
+        weight 0 moves no sigma2, a quantile nudge included (review
+        2026-10-05, CC5). No other case holds such a row, and robust_ref aged
+        the weight only on the rows it moved sigma2 on, which put it 5.1e-4 to
+        4.6e-2 from the bank on these four cases (task 177). A hundred rows of
+        weight 0 in a row take the weight under ``min_weight``, so the rows at
+        the end of them and just after have a target and no prediction."""
+        df, _ = synthetic(seed=91, n_groups=1, n_rows=n_rows, k=2, null_frac=0.0)
+        w = df["w"].to_numpy().copy()
+        w[zeros] = 0.0
+        df = df.with_columns(pl.Series("w", w))
+        if model == "huber":
+            out = self._compare(df)
+        else:
+            out = self._compare(df, model="quantile", ref_kw={"quantile": 0.9}, quantile=0.9)
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        if zeros.step is None:
+            withheld = np.isnan(pred[zeros.start :])
+            assert withheld.any() and not withheld.all(), "the weight must fall under min_weight"
 
     @pytest.mark.parametrize("delta", [0.5, 1.5, 10.0])
     def test_huber_delta_values(self, delta):
