@@ -10,11 +10,13 @@
 //! q_{t+1} = max(0, q_t + η_t · (w_t / w̄_t) · (err_t − α))
 //! ```
 //!
-//! with `w̄_t` the EW mean weight of the scored rows, this one included, so
-//! a step reads a row's weight against the stream's, and multiplying every
-//! weight by one constant moves nothing (docs/PLAN.md task 147: the step
-//! was `η·w`, and the same rows at weight 100 swung the band, width sd 3.10
-//! against 0.21).
+//! with `w̄_t` the stream's EW mean weight, this row's included: the mean
+//! over every row the layer is given with a residual and a weight, which
+//! takes in the row that warm-starts the radius and a delayed row shown no
+//! interval, though neither is scored. So a step reads a row's weight
+//! against the stream's, and multiplying every weight by one constant moves
+//! nothing (docs/PLAN.md task 147: the step was `η·w`, and the same rows at
+//! weight 100 swung the band, width sd 3.10 against 0.21).
 //!
 //! which is online gradient descent on the pinball loss at level `1 − α` —
 //! the "P" term of Angelopoulos, Candès & Tibshirani (2023), *Conformal PID
@@ -58,7 +60,9 @@ pub struct Conformal {
     /// EW mean of `1{|resid| ≤ q}` and its weight.
     cov: f64,
     cov_w: f64,
-    /// EW mean weight of the scored rows, and their EW count: what a row's
+    /// The stream's EW mean weight, and the EW count behind it: every row
+    /// with a residual and a weight, the warm-start row and a delayed row
+    /// shown no interval included, though neither is scored. What a row's
     /// step reads its weight against (docs/PLAN.md task 147).
     #[serde(default)]
     w_mean: f64,
@@ -480,8 +484,11 @@ mod tests {
     /// coverage is the weighted EW mean of `1{s ≤ q}` over the scored rows,
     /// every row ageing it; the step reads the row's weight against `w̄`, the
     /// EW mean weight of the rows with a residual and a weight, every row
-    /// ageing their count. Both are written out as sums over the rows they
-    /// hold, each row's age the product of the factors after it.
+    /// ageing their count. That is not the scored rows' mean: the row that
+    /// warm-starts the radius and a delayed row shown no interval are pushed
+    /// into `w̄` though neither is scored. Both are written out as sums over
+    /// the rows they hold, each row's age the product of the factors after
+    /// it.
     #[test]
     fn the_recursion_is_its_definitions_among_rows_that_are_no_evidence() {
         let (alpha, rate) = (0.2, 0.3);

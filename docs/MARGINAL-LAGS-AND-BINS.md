@@ -374,9 +374,11 @@ factor so far, `λ^(t − t_i) = s_t/s_{t_i}`, so the weights are kept
 *undecayed* against one scale per group: a row adds `w/s`, and a read
 multiplies by `s`. Every ratio a caller wants — a bin mean, a variance, a
 gain — is scale-free and does not even need that. When `s` would fall below
-`1e-150` the weights and `M2` are multiplied through and `s` reset to 1, at a
+`1e-50` the weights and `M2` are multiplied through and `s` reset to 1, at a
 row that is a function of the clock alone, so chunk invariance holds across
-it. The trick would serve any per-row-decayed histogram; it is not specific
+it. (It was `1e-150` until task 160, CE2: a cell's `M2` adds `u·δ²` at up to
+`1/s` times the real weight, which overflowed for a target spread above about
+`1e79`.) The trick would serve any per-row-decayed histogram; it is not specific
 to this model. Three details the review added, each with a test that fails
 without it:
 

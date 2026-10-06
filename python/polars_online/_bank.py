@@ -110,7 +110,8 @@ class ModelBank:
 
         ``spec``, ``group``
             The spec's name, and the group key as a string: ``""`` for a spec without
-            a ``group`` column, null for rows whose key was null.
+            a ``group`` column, null for rows whose key was null. A zoned ``Datetime``
+            key is its instant, written as the UTC wall time.
         ``rows_processed``
             The group's rows that the null policy did not skip.
         ``last_clock``
@@ -975,7 +976,10 @@ class ModelBank:
             scale-free: decay divides ``weight_sum`` and ``sum(w**2)`` by the same factor,
             so it does not shrink when a stream goes quiet. It says how many rows
             these moments average, not how old they are; ``weight_sum`` and
-            ``target_weights`` say that. ``None`` before the first row.
+            ``target_weights`` say that. ``None`` before the first row, and
+            under a window whose sum of squared weights the subtraction keeps
+            no digit of (within ``64 eps`` of the history's): a window of rows
+            far lighter than the history, where the ratio would be rounding.
         ``means``
             EW column means, shape ``(k,)``.
         ``comoments``
@@ -1010,7 +1014,8 @@ class ModelBank:
         ``target_n_kish``
             Per-target Kish effective sample size, ``target_weights**2 / sum(w**2)``
             over that target's rows; ``nan`` for a target that has not seen a weighted
-            row. Empty for ``ew_cov``.
+            row, and under a window, as ``n_kish``, where the window's squared weights
+            keep no digit. Empty for ``ew_cov``.
         ``lags``, ``lag_comoments``
             The lags an ``ew_cov(lags=[...])`` accumulates at, in the order given, and
             their cross-moments as an ``(L, k, k)`` array: ``lag_comoments[l][a][b]``
@@ -1165,7 +1170,9 @@ class ModelBank:
         ``n_kish``
             ``W_t^2 / Q_t`` with ``Q_t`` the accumulated squared weight: the Kish
             effective sample size, the number of equally weighted rows that carry the
-            same information. Null before the target's first row.
+            same information. Null before the target's first row, and under a
+            window whose ``Q_t`` the subtraction keeps no digit of (within
+            ``64 eps`` of the history's).
         ``mean_x``, ``var_x``, ``mean_y``, ``var_y``, ``cov``
             The pair's EW moments, population form, over the decayed weights, so
             ``var`` is never negative.
@@ -1550,10 +1557,17 @@ def _unlearned(
         last = pl.lit(lasts.get(""), dtype=kind)
     else:
         named = {k: v for k, v in lasts.items() if k is not None}
+        keys = pl.col(group)
+        keyed = schema[group]
+        if isinstance(keyed, pl.Datetime) and keyed.time_zone is not None:
+            # The bank keys a zoned Datetime by its instant, the UTC wall
+            # time without the zone; cast to text, the zone's own wall time
+            # and offset matched no key (review 2026-10-05, PA4b).
+            keys = keys.cast(pl.Datetime(keyed.time_unit))
         last = (
-            pl.col(group)
-            .cast(pl.String)
-            .replace_strict(list(named), list(named.values()), default=None, return_dtype=kind)
+            keys.cast(pl.String).replace_strict(
+                list(named), list(named.values()), default=None, return_dtype=kind
+            )
             if named
             else pl.lit(None, dtype=kind)
         )

@@ -34,7 +34,7 @@
 //! before it already inside the run.
 //!
 //! The run vector would grow by one every row, so runs whose normalised
-//! mass falls below `truncate` are dropped and the rest renormalised, and
+//! mass falls below `prune_below` are dropped and the rest renormalised, and
 //! `max_run` folds the tail into the last kept run. Both are approximations
 //! with a knob, and a test measures what the knob costs. In a stationary
 //! stream the pruning bounds little: one regime makes every "it began `j`
@@ -311,7 +311,11 @@ impl BocpdCfg {
             );
         }
         if !(0.0..1.0).contains(&self.prune_below) || self.prune_below.is_nan() {
-            return Err("bocpd: truncate must be in [0, 1)".into());
+            return Err(
+                "bocpd: prune_below must be in [0, 1): the share of the mass below which a run \
+                 is dropped"
+                    .into(),
+            );
         }
         if self.max_run < 2 {
             return Err("bocpd: max_run must be >= 2".into());
@@ -662,7 +666,7 @@ impl Bocpd {
             }
         }
         // Every run carries its own length, because the slot index stops
-        // being it as soon as `truncate` drops a run from the middle or
+        // being it as soon as `prune_below` drops a run from the middle or
         // `max_run` folds the tail.
         let run_mean: f64 = pre.iter().zip(&self.runs).map(|(p, run)| p * run.len).sum();
         let mut pred = vec![0.0; d];
@@ -738,7 +742,7 @@ impl Bocpd {
         (out, Some(update))
     }
 
-    /// Drop the runs below `truncate` and fold the tail at `max_run`.
+    /// Drop the runs below `prune_below` and fold the tail at `max_run`.
     ///
     /// The joint is **not** renormalised, deliberately. Subtracting `z` here
     /// would keep it near zero, and every output is a difference against `z`
@@ -1216,7 +1220,7 @@ mod tests {
             let b = cut.step(&[x], &[], 1.0, 1.0);
             worst = worst.max((a.pred[0] - b.pred[0]).abs());
         }
-        // `truncate = 1e-4` drops runs holding up to that much mass each, so
+        // `prune_below = 1e-4` drops runs holding up to that much mass each, so
         // `P(r ≤ 1)` can move by a small multiple of it; measured at 3e-4.
         assert!(worst < 1e-3, "p_change moved by {worst}");
         assert!(
@@ -1654,13 +1658,17 @@ mod tests {
             },
             "needs robust_beta > 0",
         );
-        bad(
-            BocpdCfg {
-                prune_below: 1.0,
-                ..cfg(1)
-            },
-            "truncate must be in",
-        );
+        // Named by the parameter a caller has: `truncate` named none
+        // (review 2026-10-05, CD2).
+        for prune_below in [1.0, -1e-9, f64::NAN] {
+            bad(
+                BocpdCfg {
+                    prune_below,
+                    ..cfg(1)
+                },
+                "bocpd: prune_below must be in [0, 1)",
+            );
+        }
         bad(
             BocpdCfg {
                 max_run: 1,

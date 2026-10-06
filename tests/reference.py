@@ -888,17 +888,15 @@ def robust_ref(
                     # the raw `r += nudge·z/wj` is `ȳ += nudge/wj` and
                     # `c += nudge·(z − m)/wj`, exactly. Bounded so the fit
                     # at the row moves by at most its residual, the step's
-                    # effect there being `step·(1 + Σ dev²/var)` under the
-                    # Gram's diagonal (review 2026-09-26, G2).
+                    # effect there being `step·(1 + u'A⁻¹u)`, the row's full
+                    # leverage against the solve's own system (review
+                    # 2026-09-26, G2; the diagonal of it until 2026-10-05,
+                    # TC1b).
                     dev = z - st["mean"][j]
-                    var = np.diag(st["C"][j])
-                    lev = 0.0
-                    for dv, vv in zip(dev[off:], var[off:], strict=True):
-                        if vv > 0.0:
-                            lev += dv * dv / vv
-                        elif dv != 0.0:
-                            lev = np.inf
-                    most = abs(Y[i, j] - p_own[j]) / (1.0 + lev)
+                    move = _band_movement(
+                        st["mean"][j], st["C"][j], z, ridge, fit_intercept, standardize
+                    )
+                    most = abs(Y[i, j] - p_own[j]) / move if move > 0.0 else np.inf
                     step = value / aged_wj
                     if abs(step) > most:
                         step = np.copysign(most, step)
@@ -946,6 +944,39 @@ def robust_ref(
         coef[i] = beta
 
     return {"pred": pred, "resid": resid, "weight_sum": weight_sum, "coef": coef}
+
+
+def _band_movement(mean, C, z, ridge, fit_intercept, standardize):
+    """The row's prediction moved per unit nudge step at the next solve:
+    `1 + u'A^-1 u` with an intercept (u the scaled centred deviations over
+    the kept features), `u'A^-1 u` through the origin (u the scaled raw
+    values), A the solve's own system, ridge included. A kept column with no
+    spread on which the row deviates moves it without bound."""
+    kt = len(mean)
+    if fit_intercept:
+        Cf = C[1:, 1:]
+        dev = (z - mean)[1:]
+        var = np.diag(Cf)
+        s = np.sqrt(np.maximum(var, 0.0)) if standardize else np.ones(kt - 1)
+        keep = s > 1e-12
+        if np.any(keep & (var <= 0.0) & (dev != 0.0)):
+            return np.inf
+        if not keep.any():
+            return 1.0
+        A = Cf[np.ix_(keep, keep)] / np.outer(s[keep], s[keep]) + ridge * np.eye(keep.sum())
+        u = dev[keep] / s[keep]
+        return 1.0 + float(u @ np.linalg.solve(A, u))
+    raw = C + np.outer(mean, mean)
+    var = np.diag(raw)
+    s = np.sqrt(np.maximum(var, 0.0)) if standardize else np.ones(kt)
+    keep = s > 0.0
+    if np.any(keep & (var <= 0.0) & (z != 0.0)):
+        return np.inf
+    if not keep.any():
+        return 0.0
+    A = raw[np.ix_(keep, keep)] / np.outer(s[keep], s[keep]) + ridge * np.eye(keep.sum())
+    u = z[keep] / s[keep]
+    return float(u @ np.linalg.solve(A, u))
 
 
 def _solve_centred(

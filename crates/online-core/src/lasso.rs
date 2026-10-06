@@ -62,6 +62,7 @@ pub struct LassoCfg {
     /// never again. `None` keeps the clock.
     #[serde(default)]
     pub solve_share: Option<f64>,
+    /// The coordinate descent's sweeps per solve, at least 1.
     pub max_iter: u32,
     pub tol: f64,
     /// Which rows a target's Gram is taken over where the target is null on
@@ -96,6 +97,9 @@ impl LassoCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("lasso: {e}"))?;
         if self
             .solve_share
             .is_some_and(|f| !(f.is_finite() && f > 0.0))
@@ -117,6 +121,16 @@ impl LassoCfg {
         if !(0.0..=1.0).contains(&self.l1_ratio) {
             return Err("l1_ratio must be in [0, 1]".into());
         }
+        // No sweep is no descent: every solve a failure, and the output the
+        // start of one -- the intercept at the mean, every slope 0 -- that
+        // looked like a fit (review 2026-10-05, PB7).
+        if self.max_iter < 1 {
+            return Err(
+                "lasso: max_iter must be >= 1: it is the coordinate descent's sweeps, and with \
+                 none every solve fails and leaves the slopes at 0"
+                    .into(),
+            );
+        }
         if self.window.is_none() && self.window_every.is_some() {
             return Err("lasso: window_every needs `window_size`".into());
         }
@@ -135,7 +149,11 @@ pub struct Lasso {
     /// Per target, per path point: EW mean squared out-of-sample error.
     sel_err: Vec<Vec<f64>>,
     sel_w: Vec<f64>,
-    /// Per target: index into the path chosen by `sel_err`.
+    /// Per target: index into the path chosen by `sel_err`. It starts at
+    /// `np − 1`, the path's last point (its lightest penalty), and stays
+    /// there until the target's first scored row; from then it is the
+    /// argmin of `sel_err`, the first point on a tie, so the heavier
+    /// penalty of two that predict alike (review 2026-10-05, CA4).
     sel_idx: Vec<usize>,
     clock_since_solve: f64,
     rows_since_solve: u32,
@@ -2099,6 +2117,23 @@ mod tests {
             assert!(err.contains("solve_share"), "{bad}: {err}");
         }
         with(0.25).unwrap();
+    }
+
+    /// `max_iter = 0` is refused: the descent never ran, every solve was a
+    /// failure, and the output looked like a fit -- the intercept at the
+    /// mean and every slope 0 (review 2026-10-05, PB7). One sweep is
+    /// accepted.
+    #[test]
+    fn cfg_validation_refuses_a_descent_of_no_sweeps() {
+        let with = |max_iter: u32| {
+            let mut c = cfg(2, 1, vec![0.1]);
+            c.max_iter = max_iter;
+            c.validate()
+        };
+        let err = with(0).unwrap_err();
+        assert!(err.contains("max_iter must be >= 1"), "{err}");
+        assert!(Lasso::new(cfg(2, 1, vec![0.1])).is_ok());
+        with(1).unwrap();
     }
 
     /// The share the model runs at is the one it is given, by its cfg or

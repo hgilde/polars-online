@@ -47,9 +47,11 @@
 //!                     W* = the same on a clock that runs only on the rows that teach it
 //! ```
 //!
-//! A row that teaches the target nothing -- absent, at weight 0, or a label
-//! `strict_binary` refuses -- ages `zz`, `d` and `m` by the same factor, so
-//! the fit does not move; the rows that teach it bring `m` back toward 1.
+//! A row that teaches the target nothing -- absent, at weight 0, a label
+//! `strict_binary` refuses, or a gradient whose square would overflow --
+//! ages `zz`, `d` and `m` by the same factor, so the fit does not move, and
+//! adds nothing to the target's weight; the rows that teach it bring `m`
+//! back toward 1.
 //! Without a half-life `W = W*`, `m = 1`, and the model is river's to the
 //! bit, and Vowpal Wabbit's to its single precision. The steady state is as
 //! before: the penalties act as a mean-scale ridge of
@@ -121,6 +123,9 @@ impl FtrlCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("ftrl: {e}"))?;
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
@@ -169,8 +174,9 @@ pub struct Ftrl {
     /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
     /// `min_weight = 10` with every coefficient at zero and `pred = 0.5`
-    /// (review 2026-09-12, S31). A label `strict_binary` refuses does not
-    /// count.
+    /// (review 2026-09-12, S31). A row that taught it nothing does not
+    /// count: a label `strict_binary` refuses, and a row whose gradient
+    /// would overflow, which is skipped (review 2026-10-05, CC3).
     #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the scale on the penalties `beta/alpha`, `l1` and `l2`
@@ -321,8 +327,17 @@ impl Ftrl {
             // Never zero here: `|zz| > l1 >= 0`, or `zz` is NaN, so `< 0` and
             // `<= 0` agree (scripts/mutants_equivalent.toml).
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            let rate = (pen.base + n.sqrt()) / self.cfg.alpha;
-            -(zz - sgn * pen.l1) / (rate + pen.l2)
+            let rate = (pen.base + n.sqrt()) / self.cfg.alpha + pen.l2;
+            // No evidence and no prior -- `beta = l2 = 0` and a gradient
+            // whose square underflowed, which moves `z` and not `n` -- is
+            // no fit, as under a half-life above: `-z / 0` was an infinite
+            // weight, and every row after it skipped (review 2026-10-05,
+            // CC2).
+            if rate > 0.0 {
+                -(zz - sgn * pen.l1) / rate
+            } else {
+                0.0
+            }
         }
     }
 
@@ -332,6 +347,71 @@ impl Ftrl {
             self.zbuf = vec![0.0; k];
             self.coef = vec![0.0; k];
         }
+    }
+
+    /// Learn target `j` from the row in `zbuf`, its prediction `p` read
+    /// with the weights in `coef`, and say whether the row taught it. A row
+    /// that teaches nothing -- the target absent, a weight of 0, a label
+    /// `strict_binary` refuses, or a gradient whose square would overflow
+    /// -- touches none of the target's state: its sums keep the decay they
+    /// are owed, `W*` and the scale stay as the last row that taught left
+    /// them, so the fit does not move (the module docs). The overflow skip
+    /// came after the owed decay, `W*` and the scale had moved as though
+    /// the row taught, and the next prediction moved 2.2% (review
+    /// 2026-10-05, CC3).
+    fn teach(&mut self, j: usize, p: f64, y: Option<f64>, lam: f64, weight: f64) -> bool {
+        let Some(yj) = y else { return false };
+        if weight <= 0.0 {
+            return false;
+        }
+        let yb = match self.cfg.loss {
+            FtrlLoss::Squared => yj,
+            FtrlLoss::Logistic if self.cfg.strict_binary => {
+                if yj != 0.0 && yj != 1.0 {
+                    return false; // caller asked for strictness: skip, do not learn
+                }
+                yj
+            }
+            FtrlLoss::Logistic => yj.clamp(0.0, 1.0),
+        };
+        let err = p - yb;
+        // `n_i += g^2` never decays an `inf` away, so a row whose squared
+        // gradient would overflow (a feature at the input bound with a
+        // comparable weight or, under the squared loss, a comparable
+        // error) is skipped rather than learned from
+        // (docs/IMPROVEMENTS.md C2).
+        let g_max = err.abs() * weight * self.zbuf.iter().fold(0.0_f64, |m, z| m.max(z.abs()));
+        if !(g_max * g_max).is_finite() {
+            return false;
+        }
+        let k = self.cfg.k_total();
+        // The row teaches the target: its sums take the decay they were
+        // owed, and its weight on the teaching clock this row's.
+        let owed = self.pending[j];
+        if owed != 1.0 {
+            for i in 0..k {
+                self.n[j][i] *= owed;
+                self.zz[j][i] *= owed;
+                self.prox[j][i] *= owed;
+            }
+            self.pending[j] = 1.0;
+        }
+        self.w_taught[j] = lam * self.w_taught[j] + weight;
+        // The penalties' scale `W/W*`, with `W` as the ageing after this
+        // leaves it: rows that teach bring it back toward 1 after a gap took
+        // it down with the sums. Without a half-life it stays 1.
+        if self.forgets() {
+            self.scale[j] = (lam * self.w_target[j] + weight) / self.w_taught[j];
+        }
+        for i in 0..k {
+            let g = err * self.zbuf[i] * weight;
+            let n_new = self.n[j][i] + g * g;
+            let s = (n_new.sqrt() - self.n[j][i].sqrt()) / self.cfg.alpha;
+            self.zz[j][i] += g - s * self.coef[i];
+            self.n[j][i] = n_new;
+            self.prox[j][i] += s;
+        }
+        true
     }
 }
 
@@ -387,65 +467,14 @@ impl OnlineModel for Ftrl {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
-            let Some(yj) = y[j] else { continue };
-            if weight <= 0.0 {
-                continue;
-            }
-            let yb = match self.cfg.loss {
-                FtrlLoss::Squared => yj,
-                FtrlLoss::Logistic if self.cfg.strict_binary => {
-                    if yj != 0.0 && yj != 1.0 {
-                        continue; // caller asked for strictness: skip, do not learn
-                    }
-                    yj
-                }
-                FtrlLoss::Logistic => yj.clamp(0.0, 1.0),
-            };
-            // The row teaches the target: its sums take the decay they were
-            // owed, and its weight on the teaching clock this row's.
-            let owed = self.pending[j];
-            if owed != 1.0 {
-                for i in 0..k {
-                    self.n[j][i] *= owed;
-                    self.zz[j][i] *= owed;
-                    self.prox[j][i] *= owed;
-                }
-                self.pending[j] = 1.0;
-            }
-            self.w_taught[j] = lam * self.w_taught[j] + weight;
-            // The penalties' scale `W/W*`, with `W` as the ageing below
-            // leaves it: rows that teach bring it back toward 1 after a gap
-            // took it down with the sums. Without a half-life it stays 1.
-            if self.forgets() {
-                self.scale[j] = (lam * self.w_target[j] + weight) / self.w_taught[j];
-            }
-            let err = p - yb;
-            // `n_i += g^2` never decays an `inf` away, so a row whose squared
-            // gradient would overflow (a feature at the input bound with a
-            // comparable weight or, under the squared loss, a comparable
-            // error) is skipped rather than learned from
-            // (docs/IMPROVEMENTS.md C2).
-            let g_max = err.abs() * weight * self.zbuf.iter().fold(0.0_f64, |m, z| m.max(z.abs()));
-            if !(g_max * g_max).is_finite() {
-                continue;
-            }
-            for i in 0..k {
-                let g = err * self.zbuf[i] * weight;
-                let n_new = self.n[j][i] + g * g;
-                let s = (n_new.sqrt() - self.n[j][i].sqrt()) / self.cfg.alpha;
-                self.zz[j][i] += g - s * self.coef[i];
-                self.n[j][i] = n_new;
-                self.prox[j][i] += s;
-            }
+            let taught = self.teach(j, p, y[j], lam, weight);
+            // The target's own weight, aged by the row and carrying it only
+            // where it taught (`crate::model::age_target_weights`'
+            // expression): read above, and in `teach`, as it stood before
+            // the row, and by no other target.
+            self.w_target[j] = lam * self.w_target[j] + if taught { weight } else { 0.0 };
         }
         self.w_sum = lam * self.w_sum + weight;
-        let strict = self.cfg.strict_binary && matches!(self.cfg.loss, FtrlLoss::Logistic);
-        crate::model::age_target_weights(
-            &mut self.w_target,
-            |j| y[j].is_some_and(|v| v.is_finite() && (!strict || v == 0.0 || v == 1.0)),
-            lam,
-            weight,
-        );
         Step {
             pred,
             n_eff,
@@ -1117,6 +1146,31 @@ mod tests {
             assert_eq!(after.to_bits(), before, "the first row after a total gap");
             let next = m.coefficients()[0][0];
             assert!(next.is_finite() && (next - 5.0).abs() < 5.0, "{next}");
+            // A row whose squared gradient would overflow -- a feature and a
+            // target at the input bound -- is skipped, and a skipped row
+            // teaches nothing: the fit, the target's weight and its scale
+            // after it are those after the same row with the target absent
+            // (review 2026-10-05, CC3: the skip came after the owed decay,
+            // `W*` and the scale had moved as though it taught).
+            let mut c2 = intercept_only(Decay::Halflife(20.0));
+            c2.l1 = l1;
+            let (_, fitted) = fit_constant(&c2, 5.0, 300);
+            let (mut skipped, mut absent) = (fitted.clone(), fitted);
+            skipped.step(&[1e100], &[Some(1e100)], 1.0, 1.0);
+            absent.step(&[1e100], &[None], 1.0, 1.0);
+            assert_eq!(
+                skipped.coefficients()[0][0].to_bits(),
+                absent.coefficients()[0][0].to_bits(),
+                "the overflow row moved the fit"
+            );
+            assert_eq!(skipped.target_weights(), absent.target_weights());
+            assert_eq!(skipped.scale, absent.scale);
+            assert_eq!(skipped.w_taught, absent.w_taught);
+            let (a, b) = (
+                skipped.step(&[0.5], &[Some(5.0)], 1.0, 1.0).pred[0],
+                absent.step(&[0.5], &[Some(5.0)], 1.0, 1.0).pred[0],
+            );
+            assert_eq!(a.to_bits(), b.to_bits(), "the next prediction");
             let c_short = intercept_only(Decay::Halflife(1.0));
             let (_, mut short) = fit_constant(&c_short, 5.0, 200);
             let frozen = short.coefficients()[0][0].to_bits();
@@ -1243,26 +1297,115 @@ mod tests {
         }
     }
 
-    /// No prior and no curvature yet is no fit. Under a half-life with
-    /// `beta = l2 = 0`, a target so small that its squared gradient
-    /// underflows moves `z` but adds nothing to the proximal sum, so the
-    /// rate is 0: the weight is 0, not `-z / 0 = ±inf`.
+    /// No prior and no curvature yet is no fit. With `beta = l2 = 0`, a
+    /// target so small that its squared gradient underflows moves `z` but
+    /// adds nothing to `n` or to the proximal sum, so the rate is 0: the
+    /// weight is 0, not `-z / 0 = ±inf` -- under a half-life, and without
+    /// one, where the rate is river's `(beta + √n)/alpha` (review
+    /// 2026-10-05, CC2: there an infinite coefficient made every later
+    /// prediction infinite and every later row a skipped one).
     #[test]
     fn a_rate_of_zero_is_no_fit() {
+        for decay in [Decay::Halflife(50.0), Decay::Halflife(f64::INFINITY)] {
+            let mut c = cfg(1, 1);
+            c.decay = decay;
+            c.beta = 0.0;
+            c.l2 = 0.0;
+            c.min_weight = 0.0;
+            c.loss = FtrlLoss::Squared;
+            let mut m = Ftrl::new(c).unwrap();
+            m.step(&[0.0], &[Some(1e-170)], 0.0, 1.0);
+            assert_eq!(m.forgets(), decay.factor(1.0) < 1.0, "{decay:?}");
+            assert_eq!(m.zz[0][0], -1e-170, "{decay:?}: the row moved z");
+            assert_eq!(
+                (m.n[0][0], m.prox[0][0]),
+                (0.0, 0.0),
+                "{decay:?}: and no sum"
+            );
+            assert_eq!(m.coefficients(), vec![vec![0.0, 0.0]], "{decay:?}");
+            let p = m.predict(&[1.0], 1.0).pred[0];
+            assert_eq!(p, 0.0, "{decay:?}");
+        }
+    }
+
+    /// A row of weight `1e-170` teaches a gradient whose square underflows,
+    /// so after it the sums hold a `z` and no rate; the rows after it are
+    /// ordinary and must be learned from. Without decay at `beta = l2 = 0`
+    /// the weight read from such sums was `±inf`: every prediction after it
+    /// infinite, and every row skipped by the overflow guard, for the rest
+    /// of the stream (review 2026-10-05, CC2). The fit is held to the stream
+    /// without the light row, which it can differ from only by what a
+    /// gradient of `2e-170` moved.
+    #[test]
+    fn a_row_too_light_to_square_leaves_the_rows_after_it_learning() {
         let mut c = cfg(1, 1);
-        c.decay = Decay::Halflife(50.0);
+        c.decay = Decay::Halflife(f64::INFINITY);
         c.beta = 0.0;
         c.l2 = 0.0;
         c.min_weight = 0.0;
         c.loss = FtrlLoss::Squared;
+        let (mut light, mut without) = (Ftrl::new(c.clone()).unwrap(), Ftrl::new(c).unwrap());
+        light.step(&[0.5], &[Some(2.0)], 0.0, 1e-170);
+        for i in 1..12 {
+            let y = 2.0 + 0.1 * f64::from(i);
+            let (a, b) = (
+                light.step(&[0.5], &[Some(y)], 1.0, 1.0).pred[0],
+                without
+                    .step(&[0.5], &[Some(y)], if i == 1 { 0.0 } else { 1.0 }, 1.0)
+                    .pred[0],
+            );
+            assert!(a.is_finite(), "row {i}: {a}");
+            assert!(
+                (a - b).abs() <= 1e-12 * (1.0 + b.abs()),
+                "row {i}: {a} against {b}"
+            );
+        }
+        let last = light.predict(&[0.5], 1.0).pred[0];
+        assert!(
+            last > 0.5,
+            "the fit learned the rows after the light one: {last}"
+        );
+    }
+
+    /// The bank's per-target `min_weight` gate reads each target's own
+    /// weight through the trait: `true`, and one entry a target, the decayed
+    /// weight of the rows that carried it -- a sparse second target its own
+    /// rows only (task 158, E14; the mutation run of 2026-10-05 left the
+    /// body replaced by `true` or `false` alive).
+    #[test]
+    fn the_trait_reports_each_targets_own_weight() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(10.0);
+        c.loss = FtrlLoss::Squared;
         let mut m = Ftrl::new(c).unwrap();
-        m.step(&[0.0], &[Some(1e-170)], 0.0, 1.0);
-        assert!(m.forgets());
-        assert_eq!(m.zz[0][0], -1e-170, "the row moved z");
-        assert_eq!((m.n[0][0], m.prox[0][0]), (0.0, 0.0), "and no sum");
-        assert_eq!(m.coefficients(), vec![vec![0.0, 0.0]]);
-        let p = m.predict(&[1.0], 1.0).pred[0];
-        assert_eq!(p, 0.0);
+        let lam = Decay::Halflife(10.0).factor(1.0);
+        let (mut want0, mut want1) = (0.0f64, 0.0f64);
+        let mut s = 3u64;
+        for i in 0..30 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = 0.5 + lcg(&mut s).abs();
+            let y1 = (i % 4 == 1).then_some(x[1]);
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, w);
+            let f = if i == 0 { 1.0 } else { lam };
+            want0 = f * want0 + w;
+            want1 = f * want1 + if y1.is_some() { w } else { 0.0 };
+        }
+        let mut out = vec![7.0; 5];
+        assert!(m.target_n_eff_into(&mut out));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(
+            (out[0] - want0).abs() <= 1e-12 * want0,
+            "{out:?} against {want0}"
+        );
+        assert!(
+            (out[1] - want1).abs() <= 1e-12 * want1,
+            "{out:?} against {want1}"
+        );
+        assert!(
+            out[1] < 0.5 * out[0],
+            "the sparse target's own weight: {out:?}"
+        );
     }
 
     /// One corruption per accumulator and per part of the penalties' scale,

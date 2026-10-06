@@ -929,8 +929,12 @@ const GOLDEN_HUBER: &[f64] = &[
 // Regenerated 2026-09-26 (review, G2): the quantile nudge is bounded by the
 // row's leverage, which binds on this stream's early rows; the three values
 // moved by 1.4e-3, 1.3e-3 and 4e-4 of themselves, and the QuantReg oracles
-// in `robust.rs` hold.
-const GOLDEN_QUANTILE: &[f64] = &[0.2569722435129411, 2.225768960188687, -0.02107823181906003];
+// in `robust.rs` hold. Regenerated again 2026-10-05 (review, TC1b): the
+// leverage is the row's full one against the band system, where it was the
+// Gram's diagonal; the early rows' band Gram is not diagonal, so the bound
+// they bind moved, and the three values by 5.1e-4, 4.6e-4 and 1.5e-3 of
+// themselves. The QuantReg oracles hold.
+const GOLDEN_QUANTILE: &[f64] = &[0.25710455741995175, 2.226788224665792, -0.02104718549249386];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a half-life the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.

@@ -611,6 +611,9 @@ fn integer_group_keys_match_the_string_cast() {
         (DataType::UInt16, 0, u16::MAX as i128),
         (DataType::UInt32, 0, u32::MAX as i128),
         (DataType::UInt64, 0, u64::MAX as i128),
+        // Wider than any 64-bit form: a value past i64 was cast to null and
+        // merged with the real nulls, silently (task 160, PA3).
+        (DataType::Int128, i128::MIN, i128::MAX),
     ];
     for (dtype, lo, hi) in dtypes {
         let vals: Vec<Option<i128>> = (0..n).map(|i| cycle(i, lo, hi)).collect();
@@ -653,6 +656,51 @@ fn integer_group_keys_match_the_string_cast() {
             "{dtype}: same groups, counts and clocks"
         );
     }
+}
+
+/// An `Int128` key is read as its text, which keeps every value (task 160,
+/// PA3), and `group_close = "monotone"` still orders it as a number: 10
+/// after 9, and past i64, `1e20` after `99999999999999999999`, both of
+/// which the bytes order the other way. A value past i64 was a null key,
+/// which `"monotone"` refuses.
+#[test]
+fn a_monotone_int128_key_is_ordered_as_a_number() {
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0,
+            "group_close": "monotone"}"#,
+    )
+    .unwrap();
+    let keys: [i128; 4] = [
+        9,
+        10,
+        99_999_999_999_999_999_999,
+        100_000_000_000_000_000_000,
+    ];
+    let g: Vec<i128> = keys.iter().flat_map(|&k| [k, k]).collect();
+    let n = g.len();
+    let df = df!(
+        "g" => Series::new("g".into(), g).cast(&DataType::Int128).unwrap(),
+        "x" => (0..n).map(|i| i as f64).collect::<Vec<_>>(),
+        "y" => (0..n).map(|i| 2.0 * i as f64).collect::<Vec<_>>()
+    )
+    .unwrap();
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let closed = bank.closed_groups(None, true).unwrap();
+    let got: Vec<Option<&str>> = closed
+        .column("group")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(
+        got,
+        vec![Some("9"), Some("10"), Some("99999999999999999999")]
+    );
+    let open: Vec<GroupKey> = bank.groups()[0].iter().map(|(k, _, _)| k.clone()).collect();
+    assert_eq!(open, vec![GroupKey(Some("100000000000000000000".into()))]);
 }
 
 #[test]
@@ -1229,4 +1277,190 @@ fn the_solve_cadence_is_the_specs_on_restore() {
         resumed.models[0].1.solve_share(),
         Some(online_polars::online_core::DEFAULT_SOLVE_SHARE)
     );
+}
+
+/// Six blocks of 40 rows a minute apart, each a cloud along its own
+/// direction, 50 degrees on from the last, so a loading's largest entry
+/// changes sign along the run while continuity keeps its sign: block `j` is
+/// session `s{j}` of group `x`, and key `j` of the column `k`.
+fn rotating_blocks() -> DataFrame {
+    let (blocks, per) = (6usize, 40usize);
+    let mut seed = 7u64;
+    let mut lcg = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let (mut t, mut g, mut s, mut k, mut a, mut b) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    for j in 0..blocks {
+        let theta = (50.0 * j as f64).to_radians();
+        for i in 0..per {
+            let u = lcg();
+            t.push(((j * per + i) as i64) * 60_000);
+            g.push("x");
+            s.push(format!("s{j}"));
+            k.push(j as i64);
+            a.push(theta.cos() * u + 0.02 * lcg());
+            b.push(theta.sin() * u + 0.02 * lcg());
+        }
+    }
+    let t = Series::new("t".into(), t)
+        .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+        .unwrap();
+    df!("t" => t, "g" => g, "s" => s, "k" => k, "a" => a, "b" => b).unwrap()
+}
+
+/// An `ew_cov(pca = 2)` closing on session, whose sign continuity runs along
+/// one group's closes, and one closing on a monotone key, whose continuity
+/// runs from one group to the next, both over a half-life grid written as
+/// `half_life`.
+fn pca_specs(half_life: &str) -> Vec<Spec> {
+    let spec = |name: &str, close: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "{name}", "model": {{"type": "ew_cov", "pca": 2}},
+                "features": ["a", "b"], "clock": "t", "gap_cap": "1d",
+                "half_life": {half_life}, {close}}}"#
+        ))
+        .unwrap()
+    };
+    vec![
+        spec(
+            "session",
+            r#""group": "g", "session": "s", "group_close": "session""#,
+        ),
+        spec("monotone", r#""group": "k", "group_close": "monotone""#),
+    ]
+}
+
+/// Task 160, PC3b: a duration compares by its length, so a bank saved with
+/// a half-life grid written `["10m", "1h"]` loads under `["600s", "60m"]`
+/// and labels its outputs the caller's way. The PCA sign continuity is kept
+/// per instance label, and the saved labels were never looked up again: the
+/// next close of every instance signed its loadings afresh, the largest
+/// entry positive, where continuity had them negative. Each saved label
+/// now takes the caller's for the same instance of the grid, the closed
+/// rows still queued in the file included.
+#[test]
+fn a_bank_loaded_under_another_spelling_keeps_its_pca_continuity() {
+    let df = rotating_blocks();
+    // Blocks 0 to 2 have closed, their rows still queued, and block 3 is
+    // open when the bank is saved.
+    let split = 3 * 40 + 1;
+    let (first, rest) = (
+        df.slice(0, split),
+        df.slice(split as i64, df.height() - split),
+    );
+    let saved_specs = pca_specs(r#"["10m", "1h"]"#);
+    let mut unbroken = Bank::new(saved_specs.clone()).unwrap();
+    unbroken.fit_predict(&first).unwrap();
+    unbroken.fit_predict(&rest).unwrap();
+    let want = unbroken.closed_groups(None, true).unwrap();
+    let mut saved = Bank::new(saved_specs).unwrap();
+    saved.fit_predict(&first).unwrap();
+    let mut resumed = Bank::load_bytes(
+        &saved.save_bytes().unwrap(),
+        Some(&pca_specs(r#"["600s", "60m"]"#)),
+    )
+    .unwrap();
+    resumed.fit_predict(&rest).unwrap();
+    let got = resumed.closed_groups(None, true).unwrap();
+
+    let strs = |f: &DataFrame, c: &str| -> Vec<String> {
+        f.column(c)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|v| v.unwrap_or("").to_string())
+            .collect()
+    };
+    let loadings = |f: &DataFrame| -> Vec<Vec<f64>> {
+        let lists = f.column("eig_vecs").unwrap().list().unwrap().clone();
+        (0..lists.len())
+            .map(|i| {
+                lists
+                    .get_as_series(i)
+                    .expect("every close carries loadings")
+                    .f64()
+                    .unwrap()
+                    .into_no_null_iter()
+                    .collect()
+            })
+            .collect()
+    };
+    // Blocks 0 to 4 close, for two specs and two instances: the first three
+    // before the save, queued in the file, and blocks 3 and 4 after it.
+    assert_eq!(want.height(), 20, "{want}");
+    assert_eq!(strs(&got, "spec"), strs(&want, "spec"));
+    let relabel = |l: &str| match l {
+        "@h10m" => "@h600s".to_string(),
+        "@h1h" => "@h60m".to_string(),
+        other => panic!("an instance label {other:?}"),
+    };
+    assert_eq!(
+        strs(&got, "instance"),
+        strs(&want, "instance")
+            .iter()
+            .map(|l| relabel(l))
+            .collect::<Vec<_>>(),
+        "the caller's labels"
+    );
+    assert_eq!(loadings(&got), loadings(&want), "the unbroken run's signs");
+    // What continuity decided against the fresh sign: every loading closed
+    // after the load has its largest entry negative, which a close signed
+    // afresh flips.
+    for v in loadings(&want).split_off(12) {
+        for c in v.chunks(2) {
+            let big = if c[0].abs() >= c[1].abs() { c[0] } else { c[1] };
+            assert!(big < 0.0, "{c:?} is signed as a fresh close would sign it");
+        }
+    }
+}
+
+/// Task 160, PA4b: a zoned Datetime group column was refused with polars'
+/// own message, this build formatting no time zone. Its keys are its
+/// instants, as the UTC wall time: the outputs, the groups and their keys of
+/// the same instants as a naive column, whatever zone shows them, and two
+/// instants Amsterdam shows at one wall time -- 02:30, as its clock goes
+/// back -- are two groups.
+#[test]
+fn a_zoned_datetime_group_is_keyed_by_its_instant() {
+    let n = 40;
+    let df = make_df(n);
+    // 2024-10-27 00:30 and 01:30 UTC, alternating, in microseconds.
+    let instants: Vec<i64> = (0..n)
+        .map(|i| 1_729_989_000_000_000 + 3_600_000_000 * (i as i64 % 2))
+        .collect();
+    let keyed = |tz: Option<&str>| {
+        let g = Int64Chunked::new("g".into(), &instants)
+            .into_datetime(
+                TimeUnit::Microseconds,
+                tz.map(|z| TimeZone::opt_try_new(Some(z)).unwrap().unwrap()),
+            )
+            .into_series();
+        let mut d = df.clone();
+        d.with_column(g.into_column()).unwrap();
+        d
+    };
+    let run = |frame: &DataFrame| {
+        let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+        let out = DataFrame::new(n, bank.fit_predict(frame).unwrap()).unwrap();
+        (out, bank.groups())
+    };
+    let (want, want_groups) = run(&keyed(None));
+    let keys: Vec<GroupKey> = want_groups[0].iter().map(|(k, _, _)| k.clone()).collect();
+    assert_eq!(
+        keys,
+        vec![
+            GroupKey(Some("2024-10-27 00:30:00.000000".into())),
+            GroupKey(Some("2024-10-27 01:30:00.000000".into())),
+        ]
+    );
+    for tz in ["Europe/Amsterdam", "America/New_York"] {
+        let (got, groups) = run(&keyed(Some(tz)));
+        assert!(got.equals_missing(&want), "{tz}");
+        assert_eq!(groups, want_groups, "{tz}");
+    }
 }

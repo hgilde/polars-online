@@ -32,13 +32,13 @@ use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_fram
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
-/// which the earlier string sentinel collided with.
+/// which the earlier string sentinel collided with. A zoned Datetime's key
+/// is its instant as the UTC wall time ([`crate::arrow::key_text`]).
 ///
 /// Serialized transparently as its inner `Option<String>` (msgpack `nil` or a
-/// string), so bank state files written before this type existed (plain string
-/// keys) still load, as `Some(..)`. The one thing such a file cannot express is
-/// the difference between a null group and a group literally named `"<null>"`;
-/// it is read as the literal, which is the likelier intent.
+/// string). The files written before this type existed, with plain string
+/// keys, are bank format version 1, and their schema is far below
+/// [`MIN_BANK_SCHEMA_VERSION`]: they are refused by it, not loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GroupKey(pub Option<String>);
 
@@ -63,8 +63,9 @@ impl std::fmt::Display for GroupKey {
 }
 
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
-/// (which versions the *model* state). Version 2 made group keys nullable;
-/// version 1 files still load (see [`GroupKey`]). Version 3 lets a spec
+/// (which versions the *model* state). Version 2 made group keys nullable; a
+/// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
+/// as every file written before schema 27 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -106,6 +107,10 @@ fn format_version_for(specs: &[Spec]) -> u32 {
     }
 }
 
+/// The version of a file with none: version 1, written before the envelope
+/// carried one. Not dead: it reads such a file's header, so the file is
+/// refused by its schema version, with the way out, rather than by a
+/// missing field (task 160, PA9).
 fn default_format_version() -> u32 {
     1
 }
@@ -1193,12 +1198,13 @@ pub(crate) fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> std::cmp::Or
 /// Is this spec's group column an integer one, so that [`key_cmp`] compares
 /// its keys as numbers? `Err` names a dtype `"monotone"` cannot order.
 /// A dtype `"monotone"` cannot order is refused where the chunk is built, so
-/// by here the column is an integer or it is text.
+/// by here the column is an integer or it is text -- an integer too wide
+/// for 64 bits being text the chunk marks as integers (task 160, PA3).
 fn group_key_is_integer(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<bool> {
     let Some(g) = &spec.group else {
         return Ok(false);
     };
-    Ok(chunk.key(spec, "group", g)?.is_integer())
+    Ok(chunk.key(spec, "group", g)?.is_integer() || chunk.is_integer_text(g))
 }
 
 /// [`group_indices`] over an integer column: `bucket` maps a value to its
@@ -1656,6 +1662,85 @@ fn spec_bins(s: &Spec) -> bool {
                 ..
             }
     )
+}
+
+/// Whether a closed row read from a state file fits the bank's specs:
+/// everything [`closed_frame`] reads it by -- its spec, which must close
+/// groups, the targets its Gram names, and the Gram's shape, `k` columns of
+/// the spec's and one entry per named target in every per-target list.
+/// Checked at load, so a damaged file is refused there rather than loaded,
+/// saved again and found by a panic at the first drain (task 160, PA2).
+fn check_closed_row(specs: &[Spec], r: &ClosedRow) -> Result<(), String> {
+    let damaged = |what: String| {
+        Err(format!(
+            "bank state file is damaged: a closed row of group {} {what}",
+            r.group
+        ))
+    };
+    let Some(spec) = specs.get(r.spec) else {
+        return damaged(format!(
+            "belongs to spec {} of a bank of {}",
+            r.spec,
+            specs.len()
+        ));
+    };
+    if spec.group_close.is_none() {
+        return damaged(format!(
+            "belongs to spec {:?}, which closes no group",
+            spec.name
+        ));
+    }
+    let Some(g) = &r.gram else {
+        return Ok(());
+    };
+    if !matches!(
+        spec.model,
+        ModelKind::EwRidge { .. } | ModelKind::Lasso { .. } | ModelKind::EwCov { .. }
+    ) {
+        return damaged(format!(
+            "carries a Gram, and spec {:?} keeps none",
+            spec.name
+        ));
+    }
+    let (columns, targets) = gram_axes(spec);
+    let k = columns.len();
+    if g.k != k || g.means.len() != k || g.comoments.len() != k * k {
+        return damaged(format!(
+            "has a Gram of {} columns with {} means and {} co-moments, where spec {:?} has \
+             {k} columns",
+            g.k,
+            g.means.len(),
+            g.comoments.len(),
+            spec.name
+        ));
+    }
+    if let Some(j) = g.targets.iter().find(|&&j| j >= targets.len()) {
+        return damaged(format!(
+            "names target {j} of spec {:?}, which has {}",
+            spec.name,
+            targets.len()
+        ));
+    }
+    let m = g.targets.len();
+    let lists_fit = [&g.cross_moments, &g.means_by_target, &g.cross_centred]
+        .iter()
+        .all(|l| l.len() == m && l.iter().all(|v| v.len() == k))
+        && g.target_weights.len() == m
+        && g.target_means.as_ref().is_none_or(|v| v.len() == m)
+        && g.target_vars.as_ref().is_none_or(|v| v.len() == m)
+        && g.target_n_kish.as_ref().is_none_or(|v| v.len() == m);
+    if !lists_fit {
+        return damaged(format!(
+            "names {m} targets and carries per-target lists of another length"
+        ));
+    }
+    match (&g.lags, &g.lag_comoments) {
+        (None, None) => Ok(()),
+        (Some(l), Some(c)) if c.len() == l.len() * k * k => Ok(()),
+        _ => damaged(format!(
+            "carries lag co-moments that are not one {k} x {k} block per lag"
+        )),
+    }
 }
 
 /// The frame [`Bank::closed_groups`] returns: the common columns always,
@@ -2450,7 +2535,9 @@ impl Bank {
 
     /// Forget the state of these groups -- in every spec, or in one -- and
     /// return how many streams were dropped. A dropped group starts cold if it
-    /// appears again, exactly as a never-seen one would. `spec` is an index
+    /// appears again, exactly as a never-seen one would: its window core and
+    /// the PCA sign continuity it keeps under `group_close = "session"` go
+    /// with it, whether or not its stream was still held. `spec` is an index
     /// into [`Self::specs`]; the caller keeps it in range.
     pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
         if let Some(si) = spec {
@@ -2470,6 +2557,16 @@ impl Bank {
                 // a stale core refused the new rows, or held the old ones).
                 self.resolvers[si].runs.remove(key);
                 self.resolvers[si].saved.remove(key);
+            }
+            // So does the PCA sign continuity a group keeps under
+            // `group_close = "session"`, whose stream is gone at every close:
+            // kept, it grew by one entry per key ever seen, in the bank and
+            // in every file it saved (task 160, PA7).
+            if !self.pca_prev.is_empty() {
+                let gone: std::collections::HashSet<&GroupKey> = keys.iter().collect();
+                self.pca_prev.retain(|(s, g, _), _| {
+                    *s != si || g.as_ref().is_none_or(|g| !gone.contains(g))
+                });
             }
         }
         Ok(dropped)
@@ -2539,7 +2636,7 @@ impl Bank {
     /// by group, in spec order within one, with `group`, `instance` (the
     /// half-life-grid suffix, `""` for a single instance), `feature`,
     /// `target` (the target's name, which is its column unless a table
-    /// target gave one), `n_eff` (the weight behind the target's pairs), `n_kish`
+    /// target gave one), `weight_sum` (the weight behind the target's pairs), `n_kish`
     /// (Kish's effective sample size, `(Σw)²/Σw²`), `mean_x`, `var_x`,
     /// `mean_y`, `var_y`, `cov`, `corr`, `beta` (the slope of the target on
     /// the feature) and `t` (the t-statistic of the correlation at Kish's
@@ -2766,7 +2863,10 @@ impl Bank {
     /// row per group sorted by key: `group`, `rows_fed`, `rows_processed`,
     /// `rows_skipped`, `rows_learned`, `rows_zero_weight`, `weight_sum`,
     /// `clock_min`, `clock_max`, `last_clock`, `session_changes`,
-    /// `clock_backwards`, `resets`. The counts are over every row routed to
+    /// `clock_backwards`, `resets`, and where each group stands on the
+    /// readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3):
+    /// `settled_frac`, `error_inflation`, `min_support_coef`,
+    /// `min_support_coef_feature` and `n_coef`. The counts are over every row routed to
     /// the group since its state began, undecayed, and survive
     /// [`Bank::save_bytes`] / [`Bank::load_bytes`]; a group restored from a
     /// file written before the summary existed has `group`, `rows_processed`
@@ -2871,8 +2971,6 @@ impl Bank {
         Ok(())
     }
 
-    /// Refuse to go on from a chunk refused after some of it was learned
-    /// (the `broken` field).
     /// The readiness notices raised since the last call
     /// (docs/WARMUP-AND-CONVERGENCE.md §3), each once per (spec, group,
     /// instance) for the life of the stream: a coefficient more ridge than
@@ -2890,6 +2988,8 @@ impl Bank {
         self.window_prepass = on;
     }
 
+    /// Refuse to go on from a chunk refused after some of it was learned
+    /// (the `broken` field).
     fn refuse_if_broken(&self) -> PolarsResult<()> {
         match &self.broken {
             None => Ok(()),
@@ -2910,8 +3010,9 @@ impl Bank {
     /// Each names the spec and the column: `ColumnNotFound` for a column a
     /// spec reads that the frame has not got (and what it has);
     /// `ComputeError` for a target, feature, clock or weight column that is
-    /// not numeric (a temporal clock is refused rather than read as its
-    /// epoch integer), a clock with a null or non-finite value, a finite
+    /// not numeric (a temporal column is refused in every role but the
+    /// clock, which reads it in integer nanoseconds, docs/PLAN.md task 88;
+    /// a time of day is no clock), a clock with a null or non-finite value, a finite
     /// negative weight, or a group's clock running backwards with
     /// `restart_after_step_back` unset; `Duplicate` for a spec named like an
     /// input column, which its struct would replace; and a window whose
@@ -3081,7 +3182,9 @@ impl Bank {
                         );
                     }
                 }
-                self.key_integer[si] = Some(integer_keys[si]);
+                // Kept in `self.key_integer` with the mark, once the chunk is
+                // taken: written here, a chunk `check_monotone` refused left
+                // it changed (task 160, PA9).
                 check_monotone(
                     spec,
                     &groups[si],
@@ -3377,7 +3480,13 @@ impl Bank {
         // largest key is finished, whatever the chunking, because every row
         // of it precedes the first row of a greater key.
         for si in 0..self.specs.len() {
-            if !self.specs[si].closes_monotone() || groups[si].is_empty() {
+            if !self.specs[si].closes_monotone() {
+                continue;
+            }
+            // The chunk is taken: the order its keys were read in is kept
+            // beside the mark (task 160, PA9).
+            self.key_integer[si] = Some(integer_keys[si]);
+            if groups[si].is_empty() {
                 continue;
             }
             let integer = integer_keys[si];
@@ -3436,7 +3545,9 @@ impl Bank {
                 n as f64 / total.as_secs_f64()
             );
         }
-        self.rows_fed += n as u64;
+        // Saturating: a count a state file carries at the top of its range
+        // wrapped to the chunk's size in a release build (task 160, PA2).
+        self.rows_fed = self.rows_fed.saturating_add(n as u64);
         Ok(out
             .into_iter()
             .map(|c| c.expect("every spec is assembled in one of the two phases"))
@@ -3644,11 +3755,6 @@ impl Bank {
         closed_frame(&self.specs, &taken).map_err(|e| e.to_string())
     }
 
-    /// The bank as versioned msgpack: the specs, every group's state and the
-    /// row count, behind a magic string and two version numbers
-    /// (`BANK_FORMAT_VERSION` for this envelope, `online_core::SCHEMA_VERSION`
-    /// for the states). Fails only if serialization does, which a bank
-    /// built by this crate cannot make happen.
     /// The state as the struct every encoding writes. One builder, so the
     /// msgpack and JSON forms cannot drift apart.
     fn to_file(&self) -> Result<BankFile, String> {
@@ -3721,6 +3827,12 @@ impl Bank {
         })
     }
 
+    /// The bank as versioned msgpack: the specs, every group's state and the
+    /// row count, behind a magic string and two version numbers
+    /// (`BANK_FORMAT_VERSION` for this envelope, `online_core::SCHEMA_VERSION`
+    /// for the states). Refused for a bank a chunk broke (the `broken`
+    /// field); otherwise fails only if serialization does, which a bank
+    /// built by this crate cannot make happen.
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
         self.refuse_if_broken().map_err(|e| e.to_string())?;
         rmp_serde::to_vec_named(&self.to_file()?).map_err(|e| e.to_string())
@@ -3811,17 +3923,68 @@ impl Bank {
         // The caller's specs where given, the file's otherwise: the same
         // specs but for the shard count, which is the caller's to set.
         let specs = expected_specs.map_or_else(|| file.specs.clone(), <[Spec]>::to_vec);
+        // One list of groups per spec. A file with another count was read
+        // by index and panicked, or lost every group of a spec it had no
+        // list for (task 160, PA1).
+        if file.states.len() != file.specs.len() || file.specs.len() != specs.len() {
+            return Err(format!(
+                "bank state file is damaged: it holds group states for {} specs and names {} \
+                 (the bank has {})",
+                file.states.len(),
+                file.specs.len(),
+                specs.len()
+            ));
+        }
+        // What `closed_groups` reads a row by, checked here: a row that does
+        // not fit its spec loaded, was saved again, and panicked at the
+        // first drain (task 160, PA2).
+        for row in &file.closed {
+            check_closed_row(&specs, row)?;
+        }
         let mut bank = Bank::new(specs)?;
+        // The caller's spec may write a half-life grid another way, `"600s"`
+        // for `"10m"`: the same instances, a duration being its length, under
+        // other labels. Each stream is restored under the bank's spec, so its
+        // instances carry the labels a new stream's do, and what the file keys
+        // by label -- the PCA sign continuity, the closed rows queued --
+        // takes the bank's label for the same instance of the grid. Restored
+        // under the file's spec, a stream kept the saved labels, and a stream
+        // begun after the load looked the continuity up under its own, found
+        // nothing and signed its loadings afresh (task 160, PC3b).
+        let relabel: Vec<HashMap<String, String>> = file
+            .specs
+            .iter()
+            .zip(&bank.specs)
+            .map(|(saved, now)| {
+                Ok(saved
+                    .decays()?
+                    .into_iter()
+                    .zip(now.decays()?)
+                    .filter(|((was, _), (is, _))| was != is)
+                    .map(|((was, _), (is, _))| (was, is))
+                    .collect())
+            })
+            .collect::<Result<_, String>>()?;
+        let label = |si: usize, l: &str| -> String {
+            relabel
+                .get(si)
+                .and_then(|m| m.get(l))
+                .map_or_else(|| l.to_string(), Clone::clone)
+        };
         for (si, groups) in file.states.iter().enumerate() {
             for (key, st) in groups {
-                let stream = Stream::restore(&file.specs[si], st)?;
+                let stream = Stream::restore(&bank.specs[si], st)?;
                 bank.states[si].insert(key.clone(), stream);
             }
         }
-        // A file from before the counter existed: every spec sees every row,
-        // so the first spec's streams have the count, less any dropped group
-        // and less the rows the null policy skipped.
-        bank.closed = file.closed.clone();
+        bank.closed = file
+            .closed
+            .iter()
+            .map(|r| ClosedRow {
+                instance: label(r.spec, &r.instance),
+                ..r.clone()
+            })
+            .collect();
         for (si, key) in &file.high_water {
             // A key stored under a column dtype the bank no longer has is a
             // different key: `"10"` orders after `"9"` as an integer and
@@ -3837,11 +4000,12 @@ impl Bank {
             }
         }
         for (si, inst, pca) in &file.pca_prev {
-            bank.pca_prev.insert((*si, None, inst.clone()), pca.clone());
+            bank.pca_prev
+                .insert((*si, None, label(*si, inst)), pca.clone());
         }
         for (si, group, inst, pca) in &file.pca_prev_by_group {
             bank.pca_prev
-                .insert((*si, Some(group.clone()), inst.clone()), pca.clone());
+                .insert((*si, Some(group.clone()), label(*si, inst)), pca.clone());
         }
         for (si, integer) in &file.key_integer {
             if let Some(slot) = bank.key_integer.get_mut(*si) {
@@ -3857,12 +4021,18 @@ impl Bank {
                 }
             }
         }
+        // A file from before the counter existed: every spec sees every row,
+        // so the first spec's streams have the count, less any dropped group
+        // and less the rows the null policy skipped. Saturating, as every
+        // count the bank keeps is (task 160, PA2).
         bank.rows_fed = if file.rows_fed > 0 {
             file.rows_fed
         } else {
-            bank.states
-                .first()
-                .map_or(0, |hm| hm.values().map(|s| s.rows_seen).sum())
+            bank.states.first().map_or(0, |hm| {
+                hm.values()
+                    .map(|s| s.rows_seen)
+                    .fold(0, u64::saturating_add)
+            })
         };
         Ok(bank)
     }
@@ -5578,3 +5748,6 @@ mod schema_14_loader_tests {
         assert_eq!(kept, saved.pending_clock);
     }
 }
+
+#[cfg(test)]
+mod damaged_file_tests;

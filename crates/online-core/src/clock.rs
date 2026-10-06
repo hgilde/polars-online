@@ -22,6 +22,26 @@ pub enum Decay {
 }
 
 impl Decay {
+    /// Whether a model can run on this decay: a half-life above 0 (`inf`
+    /// is no decay), or a factor in `(0, 1]` (1 is no decay). Every model's
+    /// `new` makes this check, where only the bank's spec made it
+    /// (`Spec::decays`), so the Rust API built a model on any decay:
+    /// `Halflife(0)` made the first row's factor NaN (`exp2(-(0/0))`), a
+    /// factor below 0 made NaN, and one above 1 made the weights grow
+    /// (review 2026-10-05, CF5). The message names the parameter; the
+    /// caller adds the model's name.
+    pub fn check(&self) -> Result<(), String> {
+        match *self {
+            Decay::Halflife(h) if h.is_nan() || h <= 0.0 => {
+                Err(format!("half_life must be > 0 (got {h}); inf is no decay"))
+            }
+            Decay::Lam(l) if l.is_nan() || l <= 0.0 || l > 1.0 => {
+                Err(format!("lam must be in (0, 1] (got {l}); 1 is no decay"))
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn factor(&self, d_clock: f64) -> f64 {
         match *self {
             Decay::Halflife(h) => {
@@ -49,17 +69,23 @@ impl Decay {
 /// task 120). Two policies: `"max"`, which took `gap_cap` as the step,
 /// and `"zero"`, which took none, were removed on 2026-09-28 -- a cap is not
 /// a step, and both absorbed a data bug into plausible, wrong output.
+///
+/// A spec does not name this or [`ClockCfg::min_backwards_jump`]: its one
+/// knob, `restart_after_step_back`, builds both (task 144). Unset is
+/// [`OnClockReset::Error`]; given, it is [`OnClockReset::ResetState`] with
+/// `min_backwards_jump` at its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnClockReset {
-    /// Refuse the row (the default). A backwards clock is usually a data
-    /// bug -- a mis-sorted chunk, or rows from two streams interleaved --
-    /// and absorbing it gives plausible but wrong output.
+    /// Refuse the row (the default, and a spec without
+    /// `restart_after_step_back`). A backwards clock is usually a data bug
+    /// -- a mis-sorted chunk, or rows from two streams interleaved -- and
+    /// absorbing it gives plausible but wrong output.
     #[default]
     Error,
-    /// The clock resets on purpose: a step back by more than
-    /// `min_backwards_jump` starts the model over, and one by no more than
-    /// it is a late row, refused as [`Disorder`].
+    /// The clock resets on purpose (a spec with `restart_after_step_back`):
+    /// a step back by more than `min_backwards_jump` starts the model over,
+    /// and one by no more than it is a late row, refused as [`Disorder`].
     ResetState,
 }
 
@@ -87,8 +113,9 @@ pub struct ClockCfg {
     /// Under [`OnClockReset::ResetState`], a step back by no more than this,
     /// in clock units, is a late row and is refused as [`Disorder`]; a
     /// larger one resets the model. `0` resets on every step back. Unread
-    /// under [`OnClockReset::Error`], which refuses every step back; the spec
-    /// requires it with `"reset_state"` and refuses it with `"error"`.
+    /// under [`OnClockReset::Error`], which refuses every step back. A spec
+    /// sets the two together through `restart_after_step_back`, this its
+    /// value (task 144; [`OnClockReset`]).
     pub min_backwards_jump: f64,
 }
 
@@ -139,16 +166,19 @@ pub struct ClockAdvance {
     /// from `reset` so a caller can do something gentler than starting over —
     /// see `session_shrink` (ENHANCEMENTS E6).
     pub session_changed: bool,
-    /// The raw delta asked for more clock than `gap_cap` allows, so the
-    /// delta handed to the models is the ceiling rather than the truth.
+    /// The row asked for more clock than `gap_cap` allows, so the delta
+    /// handed to the models is the ceiling rather than the truth: its own
+    /// raw delta did, or the total that the skipped rows before it fold into
+    /// it did, even where no single step among them passed the cap
+    /// ([`ClockState::advance`]; review 2026-09-12, S3).
     ///
     /// Decay copes with that by construction — it only ever forgets more —
     /// but anything **lagged by rows** does not: the row `ℓ` back is no
     /// longer `ℓ` rows *ago* in any useful sense once a weekend has passed
     /// between them. A caller that keeps such a ring clears it here
-    /// ([`crate::OnlineModel::clear_lags`], docs/PLAN.md task 47). Per row,
-    /// not per accumulated gap: it is the one row's jump that breaks
-    /// adjacency.
+    /// ([`crate::OnlineModel::clear_lags`], docs/PLAN.md task 47). Per
+    /// accepted row: the gap between it and the last accepted row is what
+    /// breaks adjacency, however many skipped rows it spans.
     pub capped: bool,
     /// The time that passed since the previous accepted row, uncapped: the
     /// clock column's forward steps, skipped rows' included, and at a
@@ -617,6 +647,54 @@ mod tests {
         assert_eq!(seconds_of_ns(-1_000_000), -0.001);
         assert_eq!(ClockValue::Ns(0).delta(ClockValue::Ns(1_000_000)), -0.001);
         assert_eq!(seconds_of_ns(i128::MIN), -seconds_of_ns(i128::MAX));
+    }
+
+    /// A decay is checked at its edges: a half-life above 0, the smallest
+    /// positive one included and `inf` too; a factor in `(0, 1]`, the
+    /// smallest positive one and 1 included and the next double above 1
+    /// not (review 2026-10-05, CF5).
+    #[test]
+    fn a_decay_is_checked_at_its_edges() {
+        for ok in [
+            Decay::Halflife(f64::MIN_POSITIVE),
+            Decay::Halflife(f64::INFINITY),
+            Decay::Lam(f64::MIN_POSITIVE),
+            Decay::Lam(1.0),
+        ] {
+            assert_eq!(ok.check(), Ok(()), "{ok:?}");
+        }
+        for bad in [
+            Decay::Halflife(0.0),
+            Decay::Halflife(-0.0),
+            Decay::Halflife(f64::NEG_INFINITY),
+            Decay::Halflife(f64::NAN),
+        ] {
+            let e = bad.check().unwrap_err();
+            assert!(e.starts_with("half_life must be > 0"), "{bad:?}: {e}");
+        }
+        for bad in [
+            Decay::Lam(0.0),
+            Decay::Lam(1.0f64.next_up()),
+            Decay::Lam(f64::INFINITY),
+            Decay::Lam(f64::NAN),
+        ] {
+            let e = bad.check().unwrap_err();
+            assert!(e.starts_with("lam must be in (0, 1]"), "{bad:?}: {e}");
+        }
+    }
+
+    /// No time is `+0.0`: zero is not a step back, so it takes the forward
+    /// road, and two equal stamps are a delta of `+0.0`. The mutation run of
+    /// 2026-10-05 left `ns < 0` as `ns <= 0` alive, since nothing asked for
+    /// zero; under it zero is its own mirror, and recursed until the stack
+    /// overflowed.
+    #[test]
+    fn no_time_is_positive_zero() {
+        let zero = seconds_of_ns(0);
+        assert_eq!(zero, 0.0);
+        assert!(zero.is_sign_positive(), "{zero:?}");
+        let same = ClockValue::Ns(1_700_000_000_000_000_000);
+        assert!(same.delta(same).is_sign_positive());
     }
 
     /// A count of nanoseconds past an `i64` -- a difference of two stamps

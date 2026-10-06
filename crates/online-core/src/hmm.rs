@@ -100,6 +100,9 @@ pub struct HmmCfg {
 
 impl HmmCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("hmm: {e}"))?;
         if self.n_features == 0 {
             return Err("hmm: n_features must be >= 1".into());
         }
@@ -877,7 +880,18 @@ mod tests {
 
     /// With a uniform `Π` and `learn = false`, the filter is the classifier:
     /// `p̃` is flat, so `p ∝ f` -- exactly what `ew_class`'s posterior is
-    /// when its classes carry equal weight.
+    /// when its classes carry equal weight, at the same ridge. The
+    /// classifier's ridge is its `precision_prior` times each class's decayed
+    /// prior scale, 1/100 after 100 rows a class, and `from_moments` starts
+    /// the hmm's scale at 1, so the hmm is built at the classifier's
+    /// `precision_prior` times that scale.
+    ///
+    /// On classes that overlap (blobs at ±0.5 with noise of ±1), whose
+    /// posteriors are numbers between 0 and 1, so the ridge and the prior
+    /// both show in them. Blobs at ±3 decided every posterior to 1e-32, and
+    /// the test passed with the hmm's ridge 100 times the classifier's
+    /// (review 2026-10-05, CD3): that ridge is the control here, and must
+    /// show.
     ///
     /// Not bit-identical: `ew_class` adds `ln π_c` to each log density
     /// before the softmax and this does not, and adding then subtracting a
@@ -885,6 +899,7 @@ mod tests {
     /// the two orders of operations agree to.
     #[test]
     fn a_uniform_chain_is_the_classifier() {
+        use crate::OnlineModel;
         let d = 2;
         let mut cls = EwClass::new(EwClassCfg {
             n_features: d,
@@ -897,47 +912,64 @@ mod tests {
             window_every: None,
         })
         .unwrap();
-        let rows = stream(200, 3, 1);
+        let mut s = 3u64;
+        let rows: Vec<(Vec<f64>, usize)> = (0..200)
+            .map(|i| {
+                let c = if i % 2 == 0 { -0.5 } else { 0.5 };
+                (vec![c + lcg(&mut s), c + lcg(&mut s)], i % 2)
+            })
+            .collect();
         for (x, g) in &rows {
             cls.step(x, &[Some(*g as f64)], 1.0, 1.0);
         }
         // Exactly balanced classes: `ln π_c` is then the same f64 for both,
-        // so the only difference left is the softmax's own arithmetic.
+        // so the only difference left is the softmax's own arithmetic; and
+        // the two classes' prior scales are the same double.
         assert_eq!(cls.class_weights()[0], cls.class_weights()[1]);
+        let scale = cls.class_cov(0).precision_scale();
+        assert_eq!(scale, cls.class_cov(1).precision_scale());
+        assert!((scale - 0.01).abs() < 1e-12, "100 rows a class: {scale}");
         let means: Vec<f64> = (0..2)
             .flat_map(|c| cls.class_cov(c).means().to_vec())
             .collect();
         let covs: Vec<f64> = (0..2)
             .flat_map(|c| cls.class_cov(c).comoments().to_vec())
             .collect();
-        let mut hmm = Hmm::new(HmmCfg {
-            learn: false,
-            means: Some(means),
-            covs: Some(covs),
-            ..cfg(d, 2)
-        })
-        .unwrap();
-        let mut checked = 0;
-        for (x, g) in &rows {
-            let a = cls.step(x, &[Some(*g as f64)], 1.0, 1.0);
-            let b = hmm.step(x, &[], 1.0, 1.0);
-            // `ew_class`: [class, p_0, p_1]. `hmm`: [p_0, p_1, p1_0, p1_1,
-            // state, loglik], and its `p` is the posterior *before* the row,
-            // so compare against the classifier's on the next row -- or,
-            // more directly, against `p̃ f` normalised, which is what `p1`
-            // and the densities give. The filtered posterior after the row
-            // is what the next row reports.
-            let _ = b;
+        let build = |precision_prior: f64| {
+            Hmm::new(HmmCfg {
+                learn: false,
+                means: Some(means.clone()),
+                covs: Some(covs.clone()),
+                precision_prior,
+                ..cfg(d, 2)
+            })
+            .unwrap()
+        };
+        let mut hmm = build(1e-3 * scale);
+        let mut control = build(1e-3);
+        let (mut open, mut off) = (0, 0.0f64);
+        // The classifier frozen: each row scored by both from fixed moments.
+        for (x, _) in &rows {
+            let a = cls.predict(x, 1.0);
+            hmm.step(x, &[], 1.0, 1.0);
+            control.step(x, &[], 1.0, 1.0);
+            // `ew_class`: [class, p_0, p_1]. The hmm's filtered posterior
+            // after the row is `p̃ f` normalised, which with a flat `p̃` is
+            // the classifier's posterior for the row.
             for (c, &got) in hmm.filtered().iter().enumerate() {
-                assert!(
-                    (got - a.pred[1 + c]).abs() < 1e-12,
-                    "state {c}: {got} vs {}",
-                    a.pred[1 + c]
-                );
+                let want = a.pred[1 + c];
+                assert!((got - want).abs() < 1e-12, "state {c}: {got} vs {want}");
+                if (0.05..0.95).contains(&want) {
+                    open += 1;
+                }
+                off = off.max((control.filtered()[c] - want).abs());
             }
-            checked += 1;
         }
-        assert!(checked > 190);
+        assert!(open > 100, "the posteriors are not decided: {open}");
+        assert!(
+            off > 1e-6,
+            "a ridge 100 times the classifier's shows: {off:e}"
+        );
     }
 
     /// A longhand Hamilton filter at fixed parameters.

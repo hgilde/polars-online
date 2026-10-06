@@ -715,9 +715,12 @@ class TestConfigParsing:
 
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_config_parses_with_either_line_ending(self, tmp_path, newline):
+        # The dry run opens the input as the run would (task 160, YB12).
+        src = tmp_path / "in.parquet"
+        pl.DataFrame({"x0": [1.0, 2.0], "y": [1.0, 2.0]}).write_parquet(src)
         toml = newline.join(
             [
-                'input = "in.parquet"',
+                f'input = "{src.as_posix()}"',
                 'output = "out.parquet"',
                 "",
                 "[[specs]]",
@@ -743,7 +746,9 @@ class TestConfigParsing:
     def test_windows_style_path_round_trips_through_toml(self, tmp_path):
         # A backslash path must be written with escaped separators (or a TOML
         # literal string); this pins that the parser keeps it intact, which is
-        # what T-W3 will exercise for real on Windows.
+        # what T-W3 will exercise for real on Windows. The dry run opens the
+        # input as the run would (task 160, YB12), and no host has this one,
+        # so it names the path in its refusal, as it read it.
         cfg = tmp_path / "win.toml"
         cfg.write_text(
             'input = "C:\\\\data\\\\in.parquet"\n'
@@ -757,12 +762,13 @@ class TestConfigParsing:
             'type = "ew_ridge"\n'
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
-        assert res.returncode == 0, res.stderr[-1500:]
-        assert "C:\\data\\in.parquet" in res.stdout
+        assert res.returncode != 0, res.stdout
+        assert "input C:\\data\\in.parquet:" in res.stderr, res.stderr[-1500:]
 
     def test_paths_with_spaces(self, tmp_path):
         d = tmp_path / "a directory with spaces"
         d.mkdir()
+        pl.DataFrame({"x0": [1.0, 2.0], "y": [1.0, 2.0]}).write_parquet(d / "in.parquet")
         cfg = d / "bank.toml"
         cfg.write_text(
             f'input = "{(d / "in.parquet").as_posix()}"\n'

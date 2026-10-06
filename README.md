@@ -3912,7 +3912,7 @@ it reads each pair's correlation `ρ̂_h` and its long-run standard deviation
 ```
 V_k  = (k/√m)·(ρ̂_k − ρ̂_h) / D̂           m = span_rows, ρ̂_k over the k monitored rows
 stat = max over pairs of |V_k| / w(k/m)
-w(b) = (1 + b)·(b/(1 + b))^γ               γ = boundary_gamma, 0 ≤ γ < 1/2
+w(b) = (1 + b)·(b/(1 + b))^γ               γ = boundary_gamma, 0 ≤ γ ≤ 0.49
 ```
 
 and flags where `stat` passes `crit`.
@@ -3923,7 +3923,9 @@ for a Brownian motion `W`. At `γ = 0` and `T = 1`, `crit` is 1.5849 at 5%.
 Where the paper simulates `q`, above `γ = 0`, this library solves it as a
 diffusion with an absorbing boundary
 ([`boundary.rs`](crates/online-core/src/boundary.rs)), within 0.03 of the
-paper's Table 1.
+paper's Table 1. The paper allows `γ` up to 1/2, but the solve's work grows
+as `1/(1/2 − γ)`: seconds at 0.49 and hours just under 1/2. So
+`boundary_gamma` above 0.49 is refused.
 
 **Increase `boundary_gamma`, the `γ` of `w(b)`, to catch an early change
 sooner.** Above 0 the boundary starts lower, and so it flags more stable

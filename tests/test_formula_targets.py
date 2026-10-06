@@ -25,6 +25,7 @@ import pytest
 
 import polars_online as po
 from conftest import run_online
+from polars_online._polars_online import validate_spec
 from test_windows import trades_and_quotes
 
 W = 10.0
@@ -866,7 +867,9 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
             po.ModelBank.load_bytes(old)
 
 
-def test_a_target_named_after_its_own_column_is_refused_at_the_builder() -> None:
+def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
+    online_cli: Any, tmp_path: Any
+) -> None:
     """Task 159 (P1): a window target without ``.alias()`` is named after its
     leftmost column; where that is a column the formula reads, the bank could
     never add the target beside it, yet the builder accepted it and the bank
@@ -875,6 +878,28 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder() -> None
     names the spec, never ``with_windows``."""
     with pytest.raises(ValueError, match=r"named after a column its formula reads.*\.alias"):
         spec(pl.col("mid") - po.rewm_mean("mid", half_life=H, window_size=W))
+    # Task 160 (PB5): the same spec as a table, the form a dict or a TOML
+    # file writes, passed the Rust validation and was refused only at the
+    # first chunk. It is refused where every spec is checked: by
+    # `validate_spec`, by the bank as it is built, and by the CLI's dry run.
+    table = spec(fwd())
+    table["targets"][0]["name"] = "mid"
+    with pytest.raises(ValueError, match='spec "m": target "mid" is named after a column its'):
+        validate_spec(json.dumps(table))
+    with pytest.raises(ValueError, match="named after a column its formula reads"):
+        po.ModelBank([table])
+    stream(50, 17).write_parquet(tmp_path / "in.parquet")
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [table],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        args=["--dry-run"],
+        check=False,
+    )
+    assert res.returncode != 0, res.stdout
+    assert "named after a column its formula reads" in res.stderr, res.stderr
     # A refusal the core raises while the bank runs: a strict cast that
     # overflows. The bank's words, not the operator layer's.
     df = stream(60, 3).with_columns(mid=pl.col("mid") * 1e6)

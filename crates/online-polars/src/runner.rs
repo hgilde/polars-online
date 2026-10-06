@@ -47,10 +47,20 @@ fn io_err(what: &str, path: &Path, e: std::io::Error) -> PolarsError {
     }
 }
 
-/// The directory `path` would be written into, or the error naming it: a
-/// missing directory is reported before a run, not after the stream it would
-/// have cost. `what` is as for [`io_err`].
+/// Whether `path` can be written once the run is done, or the error naming
+/// it: a directory that is not there is reported before a run, not after the
+/// stream it would have cost, and so is a path that is a directory itself,
+/// which the write at the end cannot replace -- a `--save-state` naming a
+/// directory was found after the output had been published (task 160,
+/// YB7). `what` is as for [`io_err`].
 fn check_parent(what: &str, path: &Path) -> PolarsResult<()> {
+    if path.is_dir() {
+        let e = std::io::Error::new(
+            std::io::ErrorKind::IsADirectory,
+            format!("{} is a directory", path.display()),
+        );
+        return Err(io_err(what, path, e));
+    }
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -222,6 +232,17 @@ impl RunConfig {
         }
         if self.chunk_rows == 0 {
             return Err("chunk_rows must be > 0".into());
+        }
+        // Named first: a scoring run learns nothing, so it can save no state
+        // and close no group, and the refusal below asked for one of the two
+        // (task 160, YB13).
+        if self.no_output() && self.predict {
+            return Err(
+                "predict = true (--predict) scores the rows and learns nothing, so its output is \
+                 its only product: it needs an `output` path, and has none (--no-output, or no \
+                 `output` in the config)"
+                    .into(),
+            );
         }
         if self.no_output() && self.save_state.is_none() && self.closed_groups.is_none() {
             return Err(
@@ -417,9 +438,10 @@ impl Default for RunOptions {
 /// Before a row is read: `ComputeError` for a config [`RunConfig::validate`]
 /// refuses or a bank [`Bank::new`] does; `PolarsError::IO` -- carrying the
 /// `io::Error` under a message naming the path -- for a `load_state` that
-/// cannot be read, and for a `save_state` whose directory is not there,
-/// checked before the run because finding out after it would leave the
-/// output written and the state lost; `ComputeError` as `loading state
+/// cannot be read, and for a `save_state` whose directory is not there or
+/// that is a directory itself, checked before the run because finding out
+/// after it would leave the output written and the state lost (the output
+/// and `closed_groups` paths are held to the same); `ComputeError` as `loading state
 /// <path>: ...` for a `load_state` that is not a bank this build loads or
 /// whose specs are not the config's. During the run (the scan is lazy):
 /// polars' own error for `input` (a missing file is its `IO`, naming the

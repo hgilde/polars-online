@@ -348,13 +348,13 @@ impl<S> Snapshots<S> {
         self.window
     }
 
-    /// Every snapshot held, oldest first, for a caller that must rewrite them
-    /// in place: a state converted as it is read.
     /// The snapshots, oldest first.
     pub fn iter(&self) -> impl Iterator<Item = &S> {
         self.ring.iter().map(|(_, s)| s)
     }
 
+    /// Every snapshot held, oldest first, for a caller that must rewrite them
+    /// in place: a state converted as it is read.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
         self.ring.iter_mut().map(|(_, s)| s)
     }
@@ -562,9 +562,12 @@ impl Footprint for Moments {
 /// the snapshot's clock `u`, and every row after it are kept (the module
 /// docs say why the boundary is drawn there).
 ///
-/// `None` when the window holds no weight -- a clock gap longer than it, or a
-/// boundary that is the whole accumulator. The caller reports nothing rather
-/// than dividing by zero (hard rule 9).
+/// `None` when the window holds no weight: a boundary that is the whole
+/// accumulator, every row since it of weight 0, as rows of weight 0 after a
+/// clock gap longer than the window are. A gap alone does not empty it: the
+/// row after a gap reads the window before its own decay (hard rule 8), as
+/// the previous row left it, and is inside the window from then on. The
+/// caller reports nothing rather than dividing by zero (hard rule 9).
 ///
 /// **Centred, never through raw moments.** With `W` the live weight, `W_u` the
 /// snapshot's weight decayed forward and `W_R = W - W_u` what the window
@@ -653,8 +656,21 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
             }
         }
     }
+    // Kish's sum inside the window, `Q − f²·Q_u`, a remainder that keeps no
+    // digit once the window's squared weights are within a rounding of the
+    // history's -- a window of light rows. There it is 0, so `EwCov::n_kish`
+    // reports no size rather than one made of rounding: 10.75 against 11
+    // with the window's rows at 1e-6 (review 2026-10-05, CE6b; CE6's rule
+    // in `marginal`).
     let q = match (cov.q_sum(), old.q) {
-        (Some(q_now), Some(q_then)) => Some((q_now - f * f * q_then).max(0.0)),
+        (Some(q_now), Some(q_then)) => {
+            let q = q_now - f * f * q_then;
+            Some(if q > 64.0 * f64::EPSILON * q_now {
+                q
+            } else {
+                0.0
+            })
+        }
         _ => None,
     };
     let mut out = cov.clone();
@@ -1181,11 +1197,12 @@ mod tests {
         let (w, c, _) = windowed(n, window, 10.0, 1e3, 1.0, n - 20, &rows, &[(odd, -5.0)], 2);
         assert_eq!(w.var(1), 0.0);
         assert_eq!(w.mean(1), c);
-        // Nor does a row whose weight is nothing next to the window's: the
-        // boundary row, at a weight far below `EMPTY_FRACTION` of the live
-        // weight, carrying another value before the run begins. What the run
-        // misses of the window's weight is within what the window's own
-        // weight counts as nothing, so the feature has no spread there.
+        // A row of any other weight is a learned row, however light: the
+        // window alone says what is nothing, by its own weight (review
+        // 2026-10-05, CE3). The boundary row, at a weight far below
+        // `EMPTY_FRACTION` of the live weight, carrying another value before
+        // the run begins, ends the run, and the window reads the spread it
+        // brings: the variance of the rows inside, at their decayed weights.
         let boundary = n - 1 - window as usize;
         let rows = |i: usize| {
             if i == boundary {
@@ -1194,7 +1211,7 @@ mod tests {
                 weights(i)
             }
         };
-        let (w, c, _) = windowed(
+        let (w, _, inside) = windowed(
             n,
             window,
             10.0,
@@ -1205,8 +1222,19 @@ mod tests {
             &[(boundary, -5.0)],
             3,
         );
-        assert_eq!(w.var(1), 0.0, "a boundary row of no account");
-        assert_eq!(w.mean(1), c);
+        let total: f64 = inside.iter().map(|&(_, w)| w).sum();
+        let mean = inside.iter().map(|&(x, w)| w * x).sum::<f64>() / total;
+        let exact = inside
+            .iter()
+            .map(|&(x, w)| w * (x - mean).powi(2))
+            .sum::<f64>()
+            / total;
+        assert!(exact > 1e-9, "the case needs a spread: {exact:e}");
+        let got = w.var(1);
+        assert!(
+            (got - exact).abs() <= 1e-4 * exact,
+            "a boundary row of little weight: {got:e} against {exact:e}"
+        );
     }
 
     /// The module doc's promise -- a coarse `every` discards more than

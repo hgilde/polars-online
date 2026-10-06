@@ -308,6 +308,63 @@ The output names task 144 renamed:
   `feature_moments`, as the saved spec does, so `ModelBank([s]).specs[0] ==
   s`. Code that indexed one of them in a marginal spec reads it with `.get`.
 
+- **More of what crashed, hung or did nothing is refused by name** (task
+  160). `corrchange` refuses a `boundary_gamma` above 0.49, whose critical
+  value took minutes to hours to solve, and a non-default `alpha_adjust`
+  under `kind="window"`, where it did nothing. `rcov` refuses a
+  `bandwidth`, `max_bandwidth` or `preavg_rows` above `block_rows`, a
+  `theta` whose window is longer than `block_rows`, and a ring, window,
+  jitter or stride above 2^20, which panicked or aborted the process; and
+  `preavg_rows=2` without `psd`, where the estimate is the zero matrix. A
+  spec refuses `gap_cap` without a clock (so does `with_windows`),
+  `half_life=[]`, and a `coef_min`/`coef_max` list of the wrong length even
+  when every bound is infinite. A dict or TOML spec now meets the builders'
+  refusals of a formula target named after its own column and of an `sgd`
+  parameter its loss or schedule does not read. In Rust, every model's
+  `new` refuses a half-life of 0 or below, or NaN, and a `lam` outside
+  (0, 1].
+- **Durations compare by their length** (task 160). `"5s"` is `"5000ms"`:
+  a `with_windows` state resumes under another spelling of the same
+  length, and a bank loads under a half-life grid spelled another way,
+  labelling its outputs the caller's way and keeping `ew_cov`'s PCA sign
+  continuity.
+- **Under an embargo, drift is flagged on the row that released the label
+  that tripped it** (task 160). The flag was never written under an
+  embargo, and `drift_action="reset"` restarted the model without one. The
+  restart now takes effect before the releasing row is scored.
+- **`refresh_time` returns its columns in their own dtypes** (task 160).
+  `time_refresh` is the completing tick's clock in the clock column's own
+  dtype, exactly, where it was a `Float64` of the clock's physical integer.
+  The group column is the input's own value at each completing tick, so
+  `Datetime`, `Time`, `Struct`, `Boolean` and zoned keys round-trip.
+- **A window counts every row with a weight for its held-value rule**
+  (task 160). In `marginal`, `ew_cov`, `ewridge`, `lasso` and `ew_class`, a
+  row lighter than `1e-12` of the history did not count, so a window made
+  of such rows read each value as held at the last heavy row's. It now
+  reads their moments, and a light row with another value ends a held run.
+- **`ewridge` reports no fit where its first solve fails** (task 160): a
+  NaN `coef` and a null prediction, where it reported zeros. A combination
+  skipped for having no weight at `ridge=0` reports no readiness shares,
+  where it reported the previous solve's.
+- **The command line checks its paths before it reads any input** (task
+  160). A `save_state`, output or `closed_groups` path that is a directory
+  is refused before the run. `--dry-run` opens the input, and names one
+  that is not there, where it said "config OK". `--no-output --predict` is
+  refused, naming `--predict`.
+
+- **A `quantile` row outside the band moves the fit at most to its own
+  target** (task 160). Its nudge was bounded by the row's leverage under the
+  band Gram's diagonal alone, and on correlated features the next solve
+  moved the fit at that row by 6 to 127 times its residual. The bound is
+  now the full leverage against the band's own system. Predictions move
+  where the bound binds, and the speed it costs is under *Performance*.
+- **A zoned `Datetime` group or session column works** (task 160), in the
+  bank, `with_windows`, `refresh_time` and `skip_learned`, where it was
+  refused with polars' inner message. Its key is its instant, written as
+  the UTC wall time, so the same instants shown in two zones are one group,
+  and two instants a zone shows at one wall time are two. `with_windows`
+  and `refresh_time` return the column's own values.
+
 ### Performance
 
 - The nanosecond clock's conversion to seconds takes a 64-bit road when the
@@ -315,6 +372,12 @@ The output names task 144 renamed:
   apart (task 143). It runs the same two Euclidean operations, so every
   clock in the library gets the same bits. The 128-bit division it skips
   took a tenth of each row of the window core.
+- **`quantile` on its default solve schedule runs at about half its former
+  speed** (task 160): 2.6M rows a second against 5.0M at 10 features, the
+  cost of bounding each nudge by the full leverage (above). Solving every
+  row it is 8% slower. A way back that keeps the results to the bit, by
+  skipping the leverage where the bound provably cannot bind, is a
+  follow-up.
 
 ### Fixed
 
@@ -403,6 +466,42 @@ The output names task 144 renamed:
 - Every example in the API reference builds the spec, bank and output it
   reads, or reads only the README's example data (task 160).
   `ModelBank.skip_learned`'s read a bank it never built.
+- **A damaged state file is refused, not a panic** (task 160). A bank file
+  whose group states do not match its specs, or whose queued closed rows
+  do not fit their spec, is refused at load, where it panicked at load or
+  at the first drain; so is an `ewridge` state whose coefficients,
+  readiness statistics or session twin do not match its configuration, and
+  a `refresh_time` state whose grids do not fit its series. Row counts in
+  the bank, its streams and its summaries saturate rather than wrap, and a
+  summary whose counts wrap is refused.
+- **`ftrl` keeps learning after a row too light or too heavy to square**
+  (task 160). With `beta = l2 = 0` and no decay, a row whose squared
+  gradient underflows made a coefficient infinite and every later row
+  null. A row skipped because its squared gradient would overflow moved the
+  next prediction 2.2% before; it now teaches nothing, as a null target.
+- **Windowed Kish sizes are null where the window keeps no digit of them**
+  (task 160). `marginal`'s and `ew_cov`'s windowed `n_kish`, the
+  regressions' readiness Kish size and the Gram's `target_n_kish` were
+  rounding, or `inf`, for a window of rows far lighter than the history:
+  10.75 against 11 at `1e-6`.
+- **A target held at one value over a window has no spread there** (task
+  160): `ewridge`'s and `lasso`'s exported `target_vars` read `2.5e-9` at a
+  level of `1e8`.
+- **`marginal`'s bins hold a target spread up to the input bound** (task
+  160): the scale folds at `1e-50`, where the bin variances overflowed above
+  a spread of about `1e79` and the split gain read 0.
+- **A forward window whose far edge is the last row before a break is
+  whole** (task 160). Under `closed="right"` or `"both"`, a window ending
+  exactly at the last row before a capped gap, a session change or a
+  silent-group cut was null, or dropped under `partial="drop"`.
+- An `Int128` group key past the `Int64` range is its own group, where it
+  was a null key, and `group_close="monotone"` orders such keys as numbers.
+  `drop_groups` drops a group's PCA sign continuity with it, so a state no
+  longer grows by an entry for every key ever seen. A
+  `POLARS_ONLINE_MAX_THREADS` the system cannot start threads for raises
+  the documented `ComputeError`, where it panicked. A `quantile` row of
+  weight 0 outside the band no longer moves `sigma`'s last bit. `bocpd`
+  names `prune_below` in its refusal, where it said `truncate` (task 160).
 
 ## [0.13.0] — 2026-09-30
 

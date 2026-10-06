@@ -33,6 +33,24 @@
 //! `statsmodels`' `QuantReg` at the median of a skewed noise after 20 000 rows,
 //! and 0.477 at the 0.9 quantile (review 2026-09-12, N9).
 //!
+//! A nudge enters the cross-moment, a mean, as a step over the band's
+//! weight, and the step is bounded so that the next solve moves the row's
+//! prediction by at most its residual: the linearisation holds inside the
+//! band, and a step past the row's own target is more than one term of the
+//! score can justify.
+//!
+//! ```text
+//! |step| <= |r| / (1 + u' A^-1 u)    (u' A^-1 u through the origin)
+//! ```
+//!
+//! `A` is the band system the solve factorizes: the centred Gram over the
+//! kept features, scaled under `standardize`, plus the ridge, or the raw
+//! Gram through the origin. `u` is the row's deviation from the band's
+//! means over the same columns, scaled alike, or its raw values through the
+//! origin. The bound dates from review 2026-09-26 (G2), which read the
+//! row's leverage off the Gram's diagonal; the full leverage `u' A^-1 u`
+//! is review 2026-10-05's (TC1b).
+//!
 //! Under three rows per coefficient of the rows the target was present on,
 //! the quantile fit warms up as ordinary least squares: a Newton step needs a
 //! Hessian, and a band around a fit built from a handful of rows is not one.
@@ -76,8 +94,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{dot_aug, solve_spd};
-use crate::{Decay, EwCov};
+use crate::solve::dot_aug;
+use crate::{Decay, EwCov, SpdFactor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +135,43 @@ pub struct RobustCfg {
     pub quantile_eps: f64,
 }
 
+/// A target's band system as a solve factorizes it -- `A`, the band Gram
+/// over the kept columns, scaled, with the ridge on its diagonal -- the
+/// columns kept and their scales: what a nudge reads its row's full leverage
+/// from (review 2026-10-05, TC1b). `factor` is `None` where no column was
+/// kept: a step then moves the intercept alone, and through the origin
+/// nothing.
+#[derive(Debug, Clone)]
+struct BandSystem {
+    factor: Option<SpdFactor>,
+    keep: Vec<usize>,
+    s: Vec<f64>,
+}
+
+/// Each target's [`BandSystem`] while its Gram is the one the system was
+/// built from: a row inside the band moves the Gram and drops it, decay
+/// moves neither its moments nor `A`, and the next nudge after a drop builds
+/// it again. Not state: rebuilt from the Gram, and equal whatever it holds.
+#[derive(Debug, Clone, Default)]
+struct BandSystems(Vec<Option<BandSystem>>);
+
+impl PartialEq for BandSystems {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl BandSystems {
+    /// Target `j`'s slot among `n`, the slots made on first use (a state
+    /// loaded from a file carries none).
+    fn slot(&mut self, n: usize, j: usize) -> &mut Option<BandSystem> {
+        if self.0.len() != n {
+            self.0 = vec![None; n];
+        }
+        &mut self.0[j]
+    }
+}
+
 /// What one row does to a target's accumulators ([`Robust::row_update`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum RowUpdate {
@@ -142,6 +197,9 @@ impl RobustCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("robust: {e}"))?;
         if self
             .solve_share
             .is_some_and(|f| !(f.is_finite() && f > 0.0))
@@ -232,6 +290,10 @@ pub struct Robust {
     ybar_lo: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// Each target's band system, kept from its last solve for the nudges
+    /// that follow ([`BandSystems`]). Not state.
+    #[serde(skip)]
+    systems: BandSystems,
 }
 
 impl Robust {
@@ -257,6 +319,7 @@ impl Robust {
             solve_failures: 0,
             ybar_lo: vec![0.0; m],
             zbuf: vec![0.0; k],
+            systems: BandSystems(vec![None; m]),
             cfg,
         })
     }
@@ -389,26 +452,66 @@ impl Robust {
     /// anything on the way (S2). `None` when every jitter failed.
     fn solve_centred(&mut self, k: usize, j: usize) -> Option<Vec<f64>> {
         let kf = k - 1;
-        let cov = &self.cov[j];
-        let mut c = vec![0.0; kf * kf];
-        for i in 0..kf {
-            for jj in 0..kf {
-                c[i * kf + jj] = cov.cov(i + 1, jj + 1);
-            }
-        }
-        let (s, keep): (Vec<f64>, Vec<usize>) = if self.cfg.standardize {
-            let s = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
-            let keep = (0..kf)
-                .filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))
-                .collect();
-            (s, keep)
-        } else {
-            (vec![1.0; kf], (0..kf).collect())
-        };
+        let (asub, keep, s) = self.band_system(j);
         let kk = keep.len();
         let mut out = vec![0.0; k];
         let mut jitter = 0u32;
+        let mut factor = None;
         if kk > 0 {
+            let bsub: Vec<f64> = keep.iter().map(|&i| self.cross[j][i + 1] / s[i]).collect();
+            // The factor's own solve is `solve_spd`'s, to the bit; it is kept
+            // for the nudges that follow (`Self::nudge_movement`).
+            let Some(f) = SpdFactor::of(&asub, kk) else {
+                *self.systems.slot(self.cfg.n_targets, j) = None;
+                return None;
+            };
+            let sol = f.solve(&bsub, kk, 1);
+            jitter = f.attempts();
+            for (i2, &i) in keep.iter().enumerate() {
+                out[i + 1] = sol[i2] / s[i];
+            }
+            factor = Some(f);
+        }
+        let cov = &self.cov[j];
+        let mut b0 = self.ybar[j];
+        for i in 0..kf {
+            b0 -= cov.mean(i + 1) * out[i + 1];
+        }
+        out[0] = b0;
+        self.solve_failures += u64::from(jitter);
+        *self.systems.slot(self.cfg.n_targets, j) = Some(BandSystem { factor, keep, s });
+        Some(out)
+    }
+
+    /// Target `j`'s band system as its solve factorizes it, from the band
+    /// Gram as it stands: `A` row-major over the kept columns, the columns
+    /// kept and their scales. With an intercept, the centred Gram over the
+    /// features (column `i` is slot `i + 1`), scaled by the centred
+    /// deviations under `standardize` and keeping the columns whose variance
+    /// is usable; through the origin, the raw Gram over every slot, scaled
+    /// by the raw second moments under `standardize` and keeping the columns
+    /// with one. The ridge is on `A`'s diagonal either way.
+    fn band_system(&self, j: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
+        let k = self.cfg.k_total();
+        let cov = &self.cov[j];
+        if self.cfg.fit_intercept {
+            let kf = k - 1;
+            let mut c = vec![0.0; kf * kf];
+            for i in 0..kf {
+                for jj in 0..kf {
+                    c[i * kf + jj] = cov.cov(i + 1, jj + 1);
+                }
+            }
+            let (s, keep): (Vec<f64>, Vec<usize>) = if self.cfg.standardize {
+                let s = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
+                let keep = (0..kf)
+                    .filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))
+                    .collect();
+                (s, keep)
+            } else {
+                (vec![1.0; kf], (0..kf).collect())
+            };
+            let kk = keep.len();
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
                 for (j2, &jj) in keep.iter().enumerate() {
@@ -416,20 +519,85 @@ impl Robust {
                 }
                 asub[i2 * kk + i2] += self.cfg.ridge;
             }
-            let bsub: Vec<f64> = keep.iter().map(|&i| self.cross[j][i + 1] / s[i]).collect();
-            let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
-            jitter = jit;
+            (asub, keep, s)
+        } else {
+            let s: Vec<f64> = if self.cfg.standardize {
+                (0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()).collect()
+            } else {
+                vec![1.0; k]
+            };
+            // No centering here, so no cancellation: any strictly positive raw
+            // moment is usable.
+            let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
+            let kk = keep.len();
+            let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
-                out[i + 1] = sol[i2] / s[i];
+                for (j2, &jj) in keep.iter().enumerate() {
+                    asub[i2 * kk + j2] = cov.raw(i, jj) / (s[i] * s[jj]);
+                }
+                asub[i2 * kk + i2] += self.cfg.ridge;
             }
+            (asub, keep, s)
         }
-        let mut b0 = self.ybar[j];
-        for i in 0..kf {
-            b0 -= cov.mean(i + 1) * out[i + 1];
+    }
+
+    /// How far a unit step moves the nudged row's prediction at the next
+    /// solve, the row in `zbuf`: `1 + uᵀA⁻¹u` with an intercept, `u` the
+    /// row's centred deviations over the kept columns, scaled, and `uᵀA⁻¹u`
+    /// through the origin, `u` its scaled values -- the row's full leverage
+    /// against the solve's own system (`Self::band_system`), ridge included,
+    /// so a step bounded by it moves the row by no more than the bound. The
+    /// diagonal's `Σ dᵢ²/vᵢ` read a row at (+1, −1) against features
+    /// correlated at 0.999 at about 2, where its full leverage is about
+    /// 2,000, and the solve threw such a row 6 to 13 times its residual
+    /// past its target, 30 to 127 times at 0.9999 (review 2026-10-05,
+    /// TC1b). The factor is kept, from the last solve or the last nudge
+    /// that made one, until a row inside the band moves the Gram: a nudge
+    /// costs `O(k²)`, and the first nudge after such a row makes the
+    /// `O(k³)` factorization again. A kept feature with no spread in the
+    /// band, on which the row deviates, has no curvature to lean on: the
+    /// movement is unbounded and the step 0 (G2), as for a system no jitter
+    /// factorizes.
+    fn nudge_movement(&mut self, j: usize) -> f64 {
+        let n = self.cfg.n_targets;
+        if self.systems.slot(n, j).is_none() {
+            let (a, keep, s) = self.band_system(j);
+            let kk = keep.len();
+            let factor = if kk > 0 {
+                let Some(f) = SpdFactor::of(&a, kk) else {
+                    return f64::INFINITY;
+                };
+                Some(f)
+            } else {
+                None
+            };
+            *self.systems.slot(n, j) = Some(BandSystem { factor, keep, s });
         }
-        out[0] = b0;
-        self.solve_failures += u64::from(jitter);
-        Some(out)
+        let sys = self.systems.0[j]
+            .as_ref()
+            .expect("the system is built above");
+        let cov = &self.cov[j];
+        let intercept = self.cfg.fit_intercept;
+        let mut u = Vec::with_capacity(sys.keep.len());
+        for &i in &sys.keep {
+            let (d, spread) = if intercept {
+                (
+                    cov.deviation(i + 1, self.zbuf[i + 1]),
+                    cov.cov(i + 1, i + 1),
+                )
+            } else {
+                (self.zbuf[i], cov.raw(i, i))
+            };
+            if (spread.is_nan() || spread <= 0.0) && d != 0.0 {
+                return f64::INFINITY;
+            }
+            u.push(d / sys.s[i]);
+        }
+        let q = match &sys.factor {
+            Some(f) => f.quad_forms(&u, u.len(), 1)[0],
+            None => 0.0,
+        };
+        if intercept { 1.0 + q } else { q }
     }
 
     /// The solve through the origin, on the raw system: every slot is a
@@ -448,33 +616,27 @@ impl Robust {
         let b: Vec<f64> = (0..k)
             .map(|i| self.cross[j][i] + cov.mean(i) * ybar)
             .collect();
-        let s: Vec<f64> = if self.cfg.standardize {
-            (0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()).collect()
-        } else {
-            vec![1.0; k]
-        };
-        // No centering here, so no cancellation: any strictly positive raw
-        // moment is usable.
-        let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
+        let (asub, keep, s) = self.band_system(j);
         let kk = keep.len();
         let mut out = vec![0.0; k];
         let mut jitter = 0u32;
+        let mut factor = None;
         if kk > 0 {
-            let mut asub = vec![0.0; kk * kk];
-            for (i2, &i) in keep.iter().enumerate() {
-                for (j2, &jj) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = cov.raw(i, jj) / (s[i] * s[jj]);
-                }
-                asub[i2 * kk + i2] += self.cfg.ridge;
-            }
             let bsub: Vec<f64> = keep.iter().map(|&i| b[i] / s[i]).collect();
-            let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
-            jitter = jit;
+            // Kept for the nudges that follow, as in `Self::solve_centred`.
+            let Some(f) = SpdFactor::of(&asub, kk) else {
+                *self.systems.slot(self.cfg.n_targets, j) = None;
+                return None;
+            };
+            let sol = f.solve(&bsub, kk, 1);
+            jitter = f.attempts();
             for (i2, &i) in keep.iter().enumerate() {
                 out[i] = sol[i2] / s[i];
             }
+            factor = Some(f);
         }
         self.solve_failures += u64::from(jitter);
+        *self.systems.slot(self.cfg.n_targets, j) = Some(BandSystem { factor, keep, s });
         Some(out)
     }
 }
@@ -577,6 +739,9 @@ impl OnlineModel for Robust {
                     );
                     self.cov[j].update(&self.zbuf, lam, w);
                     self.wj[j] = wj_new;
+                    // The Gram moved: the band system kept from the last
+                    // solve is not this one's.
+                    *self.systems.slot(m, j) = None;
                 }
                 RowUpdate::Nudge { nudge } => {
                     // Outside the band a row is one term of the score and none
@@ -586,38 +751,32 @@ impl OnlineModel for Robust {
                     // that is `ȳ += nudge/wj` and `c += nudge·(z − m)/wj`.
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
+                    // A row of weight 0 learns nothing, the residual variance
+                    // included, as the fit arm leaves it above: its nudge is
+                    // 0, and `(wsig·σ² + 0)/(wsig + 0)` is not `σ²` to the bit
+                    // (hard rule 9; review 2026-10-05, CC5).
+                    if weight.is_nan() || weight <= 0.0 {
+                        continue;
+                    }
                     if nudge.is_finite() && aged > 0.0 {
+                        // The step moves the fit at this row by the step
+                        // times the row's full leverage against the band
+                        // system (`Self::nudge_movement`), unbounded for a
+                        // row far outside the data's spread, where the Gram
+                        // holds no curvature for it. The linearisation holds
+                        // inside the band, so a step past the row's own
+                        // residual overshoots what one term of the score can
+                        // justify: bounded to it, the row is brought at most
+                        // to its target, not thrown past it. A target of
+                        // `1e100` and features of `1e100` at weights from
+                        // `1e-100` moved a slope to `1e248` this way, and the
+                        // prediction at `1e100` read `-inf` (review
+                        // 2026-09-26, G2). The leverage was the Gram's
+                        // diagonal reading, which correlated features take
+                        // far below the solve's (review 2026-10-05, TC1b).
+                        let movement = self.nudge_movement(j);
                         let cov = &self.cov[j];
-                        // The step moves the fit at this row by
-                        // `step·(1 + Σ dev_i²/var_i)` (the row's leverage,
-                        // under the Gram's diagonal), unbounded for a row far
-                        // outside the data's spread, where the Gram holds no
-                        // curvature for it. The linearisation holds inside
-                        // the band, so a step past the row's own residual
-                        // overshoots what one term of the score can justify:
-                        // bounded to it, the row is brought to its band's
-                        // edge, not thrown past it. A target of `1e100` and
-                        // features of `1e100` at weights from `1e-100` moved
-                        // a slope to `1e248` this way, and the prediction at
-                        // `1e100` read `-inf` (review 2026-09-26, G2).
-                        let leverage: f64 = self
-                            .zbuf
-                            .iter()
-                            .enumerate()
-                            .skip(usize::from(self.cfg.fit_intercept))
-                            .map(|(i, &zi)| {
-                                let d = cov.deviation(i, zi);
-                                let v = cov.cov(i, i);
-                                if v > 0.0 {
-                                    d * d / v
-                                } else if d != 0.0 {
-                                    f64::INFINITY
-                                } else {
-                                    0.0
-                                }
-                            })
-                            .sum();
-                        let most = (yj - pred[j]).abs() / (1.0 + leverage);
+                        let most = (yj - pred[j]).abs() / movement;
                         let raw = nudge / aged;
                         let step = if raw.abs() > most {
                             most.copysign(raw)
@@ -1061,6 +1220,47 @@ mod tests {
             m.wsig[0],
             w * lam
         );
+    }
+
+    /// A row of weight 0 learns nothing, the residual variance included:
+    /// across every such row `σ²` keeps its bits, not `(a σ²) / a` --
+    /// `kalman`'s twin (task 158) for both losses. A quantile row outside
+    /// the band is a nudge, which skipped no zero weight before the `σ²`
+    /// update, and moved it by an ulp on some rows (review 2026-10-05,
+    /// CC5); the Huber row of weight 0 is a fit of weight 0, which did.
+    #[test]
+    fn a_zero_weight_row_keeps_the_residual_variance_to_the_bit() {
+        for loss in [
+            RobustLoss::Quantile { tau: 0.5 },
+            RobustLoss::Quantile { tau: 0.9 },
+            RobustLoss::Huber { delta: 1.345 },
+        ] {
+            let mut c = cfg(1, 1, loss);
+            c.decay = Decay::Halflife(9.0);
+            c.min_weight = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 107u64;
+            let mut checked = 0;
+            for i in 0..3000 {
+                let x = [lcg(&mut s)];
+                let y = 1.0 + x[0] + 0.3 * lcg(&mut s);
+                // Far outside the band, where a quantile row is a nudge.
+                let zero = i % 3 == 2;
+                let (y, w) = if zero { (y + 50.0, 0.0) } else { (y, 1.0) };
+                let before = m.sigma2()[0];
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 0.7 }, w);
+                if zero && i > 60 {
+                    assert!(before > 0.0, "{loss:?}, row {i}");
+                    assert_eq!(
+                        m.sigma2()[0].to_bits(),
+                        before.to_bits(),
+                        "{loss:?}, row {i}"
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked > 900, "{loss:?}: {checked}");
+        }
     }
 
     /// `σ²` is the EW mean of the squared out-of-sample errors: every row
@@ -1941,6 +2141,146 @@ mod tests {
             assert!(
                 (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-12 * (1.0 + b.abs()),
                 "row {i}: {a} against {b}"
+            );
+        }
+    }
+
+    /// Whether target 0's next row, `y` scored at `pred` at weight `w` after
+    /// a clock step of `d`, is a nudge: `row_update`'s own reading of the
+    /// model's state before the row, as `step` forms its inputs.
+    fn is_nudge(m: &Robust, pred: f64, y: f64, d: f64, w: f64) -> bool {
+        let lam = m.cfg.decay.factor(d);
+        let sigma = m.sig2[0].max(0.0).sqrt();
+        let scale = if sigma > 0.0 { sigma } else { 1.0 };
+        let (present, rows, aged) = (lam * m.wobs[0], lam * m.nobs[0], lam * m.wj[0]);
+        let aged_rows = if present > 0.0 {
+            aged * (rows / present)
+        } else {
+            0.0
+        };
+        matches!(
+            m.row_update(y, pred, scale, w, rows, aged_rows),
+            RowUpdate::Nudge { .. }
+        )
+    }
+
+    /// A nudge brings its row at most to its target, never past it (the
+    /// module docs): the solve after a nudged row moves that row's
+    /// prediction by no more than its residual. The step was bounded by the
+    /// band Gram's diagonal leverage, `Σ d²/v`, where the solve moves the
+    /// row by its full leverage, `1 + uᵀA⁻¹u` over the solve's own system:
+    /// against features correlated at 0.999 a row at (+1, −1) reads about 2
+    /// on the diagonal and about 2,000 in full, and was thrown 6 to 13 times
+    /// its residual, 30 to 127 times at 0.9999 (review 2026-10-05, TC1b;
+    /// this test on the old code: 5.9 to 7.5, and 30 to 36). Every
+    /// nudged row is held to it -- with an intercept, standardized or not,
+    /// and through the origin -- and on uncorrelated features, where the
+    /// two leverages agree. Every hundredth row past the warm-up runs
+    /// against the correlation, at (+1, −1), 0.4 above the true line.
+    #[test]
+    fn a_nudge_never_moves_its_row_past_its_residual() {
+        for rho in [0.0, 0.999, 0.9999] {
+            for (fit_intercept, standardize) in [(true, false), (true, true), (false, false)] {
+                let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.5 });
+                c.decay = Decay::Halflife(500.0);
+                c.min_weight = 0.0;
+                c.ridge = 1e-6;
+                c.quantile_eps = 0.2;
+                c.fit_intercept = fit_intercept;
+                c.standardize = standardize;
+                let mut m = Robust::new(c).unwrap();
+                let mut s = 5u64;
+                let (mut checked, mut glitches, mut worst) = (0, 0, (0.0f64, 0usize));
+                for i in 0..3000usize {
+                    let a = 3f64.sqrt() * lcg(&mut s);
+                    let b = rho * a + (1.0 - rho * rho).sqrt() * 3f64.sqrt() * lcg(&mut s);
+                    let glitch = i >= 1000 && i % 100 == 0;
+                    let x = if glitch { [1.0, -1.0] } else { [a, b] };
+                    let noise = if glitch { 0.4 } else { 0.5 * lcg(&mut s) };
+                    // Through the origin the line through the origin.
+                    let level = if fit_intercept { 1.0 } else { 0.0 };
+                    let y = level + 0.8 * x[0] - 0.4 * x[1] + noise;
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let before = m.predict(&x, d).pred[0];
+                    let nudge = before.is_finite() && is_nudge(&m, before, y, d, 1.0);
+                    m.step(&x, &[Some(y)], d, 1.0);
+                    if nudge {
+                        let after = m.predict(&x, 1.0).pred[0];
+                        let moved = (after - before).abs() / (y - before).abs();
+                        // NaN, a movement not a number, counts as the worst.
+                        if moved.is_nan() || moved > worst.0 {
+                            worst = (moved, i);
+                        }
+                        checked += 1;
+                        glitches += usize::from(glitch);
+                    }
+                }
+                let case =
+                    format!("rho {rho}, intercept {fit_intercept}, standardize {standardize}");
+                assert!(checked > 300, "{case}: {checked} nudges");
+                assert!(glitches > 0, "{case}: no glitch row was nudged");
+                assert!(
+                    worst.0 <= 1.0 + 1e-9,
+                    "{case}: row {} moved {:.3} times its residual",
+                    worst.1,
+                    worst.0
+                );
+            }
+        }
+    }
+
+    /// On uncorrelated features the full leverage is the diagonal one: a
+    /// band Gram set to a diagonal matrix reads a row's leverage as `Σ
+    /// d²/(v + ridge)` unstandardized and `Σ (d²/v)/(1 + ridge)` standardized,
+    /// to rounding, and so as the old reading, `Σ d²/v`, to the ridge's
+    /// share of the smallest variance.
+    #[test]
+    fn the_full_leverage_is_the_diagonal_one_on_uncorrelated_features() {
+        for standardize in [false, true] {
+            let mut c = cfg(3, 1, RobustLoss::Quantile { tau: 0.5 });
+            c.ridge = 1e-6;
+            c.standardize = standardize;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 7u64;
+            for i in 0..50 {
+                let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                m.step(
+                    &x,
+                    &[Some(x[0] - x[2])],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            let (mean, var) = ([1.0, 0.2, -0.3, 0.5], [0.0, 0.7, 1.9, 0.04]);
+            let mut cen = vec![0.0; 16];
+            for i in 0..4 {
+                cen[i * 4 + i] = var[i];
+            }
+            let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
+            m.cov[0].set_moments(&mean, &cen, w, q);
+            m.systems.0[0] = None;
+            m.zbuf = vec![1.0, 1.1, -2.0, 0.9];
+            let ridge = 1e-6;
+            let term = |i: usize| (m.zbuf[i] - mean[i]).powi(2);
+            let with_ridge: f64 = 1.0
+                + (1..4)
+                    .map(|i| {
+                        if standardize {
+                            term(i) / var[i] / (1.0 + ridge)
+                        } else {
+                            term(i) / (var[i] + ridge)
+                        }
+                    })
+                    .sum::<f64>();
+            let old: f64 = 1.0 + (1..4).map(|i| term(i) / var[i]).sum::<f64>();
+            let full = m.nudge_movement(0);
+            assert!(
+                (full - with_ridge).abs() <= 1e-12 * with_ridge,
+                "standardize {standardize}: {full} against {with_ridge}"
+            );
+            assert!(
+                (full - old).abs() <= ridge / 0.04 * old,
+                "standardize {standardize}: {full} against the old {old}"
             );
         }
     }

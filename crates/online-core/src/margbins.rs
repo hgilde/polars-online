@@ -55,7 +55,9 @@
 //! need that.
 //!
 //! `s` shrinks, so the stored weights grow like `1/s`. When `s` would fall
-//! below `1e-150` it is folded into `W` and `M2` and reset to 1:
+//! below `1e-50` it is folded into `W` and `M2` and reset to 1 -- early
+//! enough that `M2`, which grows like the weights times the target's spread
+//! squared, stays finite for a spread at the input bound (`RENORM_AT`):
 //! deterministic in the clock, so it happens at the same row however the
 //! stream is chunked, and chunk invariance holds across it. A factor of
 //! zero -- a clock gap past `gap_cap` under the default `+inf` cap --
@@ -64,10 +66,15 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The renormalization point: below this the stored weights are approaching
-/// the top of `f64`'s range, and a scale that small has already lost
-/// nothing.
-const RENORM_AT: f64 = 1e-150;
+/// The renormalization point: the stored weights run to `1/RENORM_AT` times
+/// the real ones before a fold, and a cell's `m2` adds `u·δ²` at that
+/// weight. At `1e-50` a target spread at the input bound -- deviations of
+/// `2e100`, `4e200` squared -- keeps `m2` finite up to a cell weight of
+/// `4e57`. The fold was at `1e-150`, where `m2` overflowed for a spread
+/// above about `1e79` and the fold kept the `inf` (review 2026-10-05,
+/// CE2). A fold is `O(cells)`, now once every 166 half-lives rather than
+/// 498.
+const RENORM_AT: f64 = 1e-50;
 
 /// A feature whose value falls in no bin on this row (it is not finite).
 pub(crate) const NO_BIN: usize = usize::MAX;
@@ -641,9 +648,9 @@ impl MarginalBins {
         // `d_L = Σ_{b≤c} w_b·(mean_b − mean)` the left side's total
         // deviation -- the right side's is `−d_L`, since the two sum to
         // zero -- and the gain is that over the total, `W·var`. Taken as a
-        // product of ratios: the undecayed weights run to `1e150` times the
-        // real ones just before a fold, and three of them multiplied
-        // together overflow.
+        // product of ratios: the undecayed weights run to `1e50` times the
+        // real ones just before a fold (`RENORM_AT`), and three of them
+        // multiplied together with a spread squared overflow.
         let (mut left_w, mut left_d) = (0.0, 0.0);
         let mut best: Option<Split> = None;
         for c in 0..self.n_bins(j) - 1 {
@@ -941,19 +948,71 @@ mod tests {
     }
 
     /// Renormalization is a no-op on every number a caller can read. Run
-    /// past it -- `lam^rows < 1e-150` needs ~1150 rows at 0.74 -- and compare
-    /// against the brute force, which never scales anything.
+    /// past it -- `lam^rows < 1e-50` needs ~383 rows at 0.74, so 2000 rows
+    /// fold five times -- and compare against the brute force, which never
+    /// scales anything.
     #[test]
     fn renormalization_changes_nothing_readable() {
         let (b, sums) = brute(0.74, 2000, &[-0.5, 0.0, 0.5]);
+        assert!(0.74f64.powi(2000) < RENORM_AT, "the stream passes a fold");
         assert!(
-            b.scale > RENORM_AT && b.scale < 1e-100,
-            "the test never reached a renormalization, or reached it on the last row: {}",
+            b.scale >= RENORM_AT && b.scale < 1e-6,
+            "the last fold was not on the last rows: {}",
             b.scale
         );
         assert_matches(&b, &sums);
         let s = b.best_split(0, 0).unwrap();
         assert!(s.gain.is_finite() && (0.0..=1.0).contains(&s.gain));
+    }
+
+    /// A target spread at `1e90`, inside the input bound, through the folds
+    /// of a half-life of one row: the histogram is the one the same rows
+    /// make at a spread of 1, scaled -- every bin's mean by `1e90` and
+    /// variance by `1e180`, the same weights, and the same split. The stored
+    /// weights ran to `1e150` times the real ones before a fold at `1e-150`,
+    /// and `u·δ²` overflowed `m2` for a spread above about `1e79`, which the
+    /// fold kept: `inf` in a bin's variance and a split gain of 0 for good
+    /// (review 2026-10-05, CE2).
+    #[test]
+    fn a_target_spread_at_the_bound_survives_the_folds() {
+        let run = |level: f64| {
+            let mut b = MarginalBins::new(1, 1, vec![vec![0.0]]).unwrap();
+            let mut seed = 3u64;
+            let (mut seen, mut folds) = (Vec::new(), 0);
+            for i in 0..1600 {
+                let x = lcg(&mut seed);
+                let y = level * (x + 0.3 * lcg(&mut seed));
+                if i > 0 {
+                    b.decay(0.5);
+                    folds += usize::from(b.scale == 1.0);
+                }
+                b.update_row(&[x], &[Some(y)], 1.0);
+                seen.push((b.bins(0, 0), b.best_split(0, 0)));
+            }
+            assert!(folds >= 3, "the case needs folds: {folds}");
+            seen
+        };
+        let (unit, big) = (run(1.0), run(1e90));
+        for (i, ((u_bins, u_split), (b_bins, b_split))) in unit.iter().zip(&big).enumerate() {
+            for (u, b) in u_bins.iter().zip(b_bins) {
+                assert_eq!(u.n.to_bits(), b.n.to_bits(), "row {i}: the weights");
+                if u.n > 0.0 {
+                    assert!(b.var_y.is_finite(), "row {i}: {b:?}");
+                    let (m, v) = (1e90 * u.mean_y, 1e180 * u.var_y);
+                    assert!((b.mean_y - m).abs() <= 1e-12 * 1e90, "row {i}: {b:?} {u:?}");
+                    assert!((b.var_y - v).abs() <= 1e-9 * v, "row {i}: {b:?} {u:?}");
+                }
+            }
+            let (Some(u), Some(b)) = (u_split, b_split) else {
+                assert_eq!(u_split.is_some(), b_split.is_some(), "row {i}");
+                continue;
+            };
+            assert!(
+                b.gain > 0.0 && (b.gain - u.gain).abs() <= 1e-9,
+                "row {i}: {b:?} {u:?}"
+            );
+            assert_eq!(b.at, u.at);
+        }
     }
 
     /// A factor of zero is a row the pair moments forget everything on, and
@@ -1775,7 +1834,11 @@ mod tests {
         };
         for (lam, rows, folded) in [(0.9, 300, false), (0.74, 2000, true)] {
             let (b, sums) = brute(lam, rows, &[-0.5, 0.0, 0.5]);
-            assert_eq!(b.scale < 1e-100, folded, "scale {}", b.scale);
+            // `decay` folds whenever the scale would fall below `RENORM_AT`,
+            // so the stream folded exactly when its decay passes that point.
+            let passes = lam.powi(rows as i32 - 1) < RENORM_AT;
+            assert_eq!(passes, folded, "lam {lam}, scale {}", b.scale);
+            assert!(b.scale >= RENORM_AT, "scale {}", b.scale);
             let got = b.best_split(0, 0).unwrap().gain;
             let want = stump(&sums);
             assert!(want > 0.5, "the cut explains most of a line: {want}");

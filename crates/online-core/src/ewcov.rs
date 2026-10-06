@@ -435,8 +435,6 @@ impl EwCov {
         self.c[i * self.k + j]
     }
 
-    /// Centered variance, floored at zero against rounding.
-    #[inline]
     /// The full centered co-moment matrix, row-major `k*k` — the EW analogue
     /// of the centered `X'X / n`.
     ///
@@ -445,6 +443,7 @@ impl EwCov {
     /// information criterion, `cond(G)`, a scree plot, forward stepwise or
     /// orthogonal matching pursuit — none of which needs a second pass over
     /// data that was never materialized (docs/ENHANCEMENTS.md E30).
+    #[inline]
     pub fn comoments(&self) -> &[f64] {
         debug_assert!(
             !self.has_pending(),
@@ -465,6 +464,8 @@ impl EwCov {
         &self.m
     }
 
+    /// Centered variance, floored at zero against rounding.
+    #[inline]
     pub fn var(&self, i: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
@@ -787,11 +788,13 @@ impl EwCov {
             w >= 0.0,
             "EwCov::update requires a non-negative weight, got {w}"
         );
-        // A row counts for the runs when its weight is something next to the
-        // accumulator's: `EMPTY_FRACTION` of the live weight is the window's
-        // own notion of nothing, and a row below it neither starts nor ends
-        // a run (`crate::Runs`).
-        if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.w_sum) {
+        // Every row with a weight counts for the runs, however light next to
+        // the live weight: the window alone says what is nothing, by its own
+        // weight (`crate::Runs`). A row below `EMPTY_FRACTION` of the live
+        // weight counted for none, so a window of such rows, together above
+        // the fraction, read each feature as held at the last heavy row's
+        // value (review 2026-10-05, CE3).
+        if w > 0.0 {
             self.rows_learned += 1;
             self.runs.track(x, self.rows_learned);
         }
@@ -1043,15 +1046,24 @@ impl TargetMoments {
 
     /// The moments as a window's snapshot holds them (docs/PLAN.md task 136):
     /// decayed by `lam` to the row the snapshot precedes, so `Q_t` by `lam²`
-    /// while a mean and a variance do not decay, and without the means' low
-    /// parts, which the truncation does not read.
+    /// while a mean and a variance do not decay. The means' low parts come
+    /// too, since the truncation reads the two means' difference as the
+    /// pairs': from the doubles alone it was off by a rounding step of the
+    /// level, which at 1e8 left a held target a variance of 2.5e-9 (review
+    /// 2026-10-05, CB2).
     pub(crate) fn decayed(&self, lam: f64) -> Self {
         Self {
             mean: self.mean.clone(),
             var: self.var.clone(),
             q: self.q.iter().map(|q| q * lam * lam).collect(),
-            mean_lo: Vec::new(),
+            mean_lo: self.mean_lo.clone(),
         }
+    }
+
+    /// What each mean leaves out ([`crate::comp`]): empty in a state, or a
+    /// snapshot, written before it. For a snapshot's footprint.
+    pub(crate) fn means_lo(&self) -> &[f64] {
+        &self.mean_lo
     }
 
     /// The moments over the rows inside a window: these, less the snapshot
@@ -1063,8 +1075,17 @@ impl TargetMoments {
     ///
     /// ```text
     /// m_R = m − ratio·d,   v_R = g·v − ratio·v_u − ratio·g·d²,   Q_R = Q − f²·Q_u,
-    /// d = m_u − m
+    /// d = m_u − m          (the two means as pairs, `hi + lo`)
     /// ```
+    ///
+    /// With `crate::truncated`'s floor: a variance no larger than the
+    /// rounding of the terms it is formed from, `64 ε (g·v + ratio·v_u)`,
+    /// carries no digit of the window's spread and is 0, so a target held at
+    /// one value over the window reads none (review 2026-10-05, CB2). The
+    /// Grams' other guard, a run that says a slot held one value since a
+    /// row inside the window, has no target-side twin: the targets keep no
+    /// runs. A `Q_R` within `64 ε` of `Q` keeps no digit and is 0, so no
+    /// Kish size is read from it (review 2026-10-05, CE6b).
     pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Self {
         let n = self.mean.len();
         let mut out = Self {
@@ -1075,10 +1096,28 @@ impl TargetMoments {
         };
         for (t, p) in per.iter().enumerate() {
             let Some((ratio, g)) = *p else { continue };
-            let d = old.mean[t] - self.mean[t];
-            out.mean[t] = self.mean[t] - ratio * d;
-            out.var[t] = (g * self.var[t] - ratio * old.var[t] - ratio * g * d * d).max(0.0);
-            out.q[t] = (self.q[t] - f * f * old.q[t]).max(0.0);
+            let (lo, lo_old) = (
+                crate::comp::lo_of(&self.mean_lo, t),
+                crate::comp::lo_of(&old.mean_lo, t),
+            );
+            let d = (old.mean[t] - self.mean[t]) + (lo_old - lo);
+            out.mean[t] = self.mean[t] + (lo - ratio * d);
+            let var = (g * self.var[t] - ratio * old.var[t] - ratio * g * d * d).max(0.0);
+            let terms = g * self.var[t] + ratio * old.var[t];
+            out.var[t] = if var <= 64.0 * f64::EPSILON * terms {
+                0.0
+            } else {
+                var
+            };
+            // And a Kish sum the subtraction leaves no digit of is 0, so
+            // `Self::n_kish` reports no size (`crate::truncated`; review
+            // 2026-10-05, CE6b).
+            let q = self.q[t] - f * f * old.q[t];
+            out.q[t] = if q > 64.0 * f64::EPSILON * self.q[t] {
+                q
+            } else {
+                0.0
+            };
         }
         out
     }
@@ -1186,9 +1225,12 @@ pub struct EwCovCfg {
     /// variance, its share of the total, its `k` loadings and the row's score.
     #[serde(default)]
     pub pca: usize,
-    /// Learned rows between refreshes of the components; between refreshes
-    /// the loadings are frozen, so a row's scores do not depend on how the
-    /// stream was chunked. `1` refreshes on every row.
+    /// Rows between refreshes of the components, counted on every row the
+    /// model is stepped with, rows of weight zero included -- the cadence
+    /// rule `window_every` keeps (review 2026-09-26, C7; review 2026-10-05,
+    /// CB3). Between refreshes the loadings are frozen, so a row's scores
+    /// do not depend on how the stream was chunked. `1` refreshes on every
+    /// row.
     #[serde(default)]
     pub pca_every: usize,
     /// Lags to accumulate cross-moments at, in output order
@@ -1217,6 +1259,9 @@ pub struct EwCovCfg {
 
 impl EwCovCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("ew_cov: {e}"))?;
         if self.n_features == 0 {
             return Err("ew_cov: at least one column is required".into());
         }
@@ -1449,10 +1494,11 @@ pub struct EwCovModel {
     /// which kept P² markers here and is refused where it has levels.
     #[serde(default, deserialize_with = "sketch_or_p2_markers")]
     mahal_q: Option<crate::EwQuantile>,
-    /// The components in force, refreshed every `pca_every` learned rows.
+    /// The components in force, refreshed every `pca_every` rows, rows of
+    /// weight zero included.
     #[serde(default)]
     pca: Option<Pca>,
-    /// Learned rows since the last refresh.
+    /// Rows stepped since the last refresh, rows of weight zero included.
     #[serde(default)]
     since_pca: usize,
     /// Lagged cross-moments, when the spec asks for lags (E56). Written as
@@ -1558,8 +1604,13 @@ impl EwCovModel {
         match crate::truncated(&self.cov, old, f) {
             Some(cov) => Cow::Owned(cov),
             None => {
-                // Nothing inside the window: a clock gap longer than it.
-                // Report an empty state rather than dividing by it.
+                // Nothing inside the window: every row since the boundary
+                // carried no weight, as rows of weight 0 after a gap longer
+                // than the window do. A gap alone does not empty it: the row
+                // after a gap reads the window before its own decay (hard
+                // rule 8), as the previous row left it, and is inside it
+                // from then on. Report an empty state rather than dividing
+                // by it.
                 let k = self.cfg.n_features;
                 let mut out = self.cov.clone();
                 out.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, old.q.map(|_| 0.0));
@@ -1693,8 +1744,8 @@ impl EwCovModel {
 
     /// Output slot labels, in emission order (used for field names): the
     /// statistics, then `mahal_q<p>` per quantile level, then per component
-    /// `j`: `pc<j>_var`, `pc<j>_share`, `pc<j>_<column>` for each column and
-    /// `pc<j>_score`.
+    /// `j`: `pc<j>_var`, `pc<j>_share`, `pc<j>_loading_<column>` for each
+    /// column and `pc<j>_score`.
     pub fn labels(
         names: &[String],
         stats: &[EwCovStat],
@@ -1940,9 +1991,12 @@ impl crate::OnlineModel for EwCovModel {
         }
         self.cov.update(x, lam, weight);
         if self.cfg.pca > 0 {
-            // A checkpoint after the update, counted in learned rows, so the
-            // components a row is scored on never depend on the chunking and
-            // `predict` sees the same frozen ones `step` does.
+            // A checkpoint after the update, counted on every row the model
+            // is stepped with, rows of weight zero included -- the cadence
+            // rule `window_every` keeps (review 2026-09-26, C7; review
+            // 2026-10-05, CB3) -- so the components a row is scored on never
+            // depend on the chunking and `predict` sees the same frozen ones
+            // `step` does.
             self.since_pca += 1;
             if self.n_eff() >= self.cfg.min_weight
                 && (self.pca.is_none() || self.since_pca >= self.cfg.pca_every)
@@ -3068,11 +3122,42 @@ mod tests {
         );
     }
 
+    /// `pca_every` counts every row the model is stepped with, rows of
+    /// weight zero included, as `window_every` does (review 2026-09-26, C7):
+    /// the library has one cadence rule. A stream alternating weight 1 and 0
+    /// under `pca_every = 4` refreshes the components every fourth row, two
+    /// learned rows apart. The docs said learned rows (review 2026-10-05,
+    /// CB3; C7 settled `window_every`'s same mismatch by keeping the code
+    /// and fixing the docs). A refresh is a row after which the counter
+    /// stands at 0 and did not before.
+    #[test]
+    fn a_zero_weight_row_counts_toward_the_pca_cadence() {
+        let mut m = EwCovModel::new(pca_cfg(2, 1, 4)).unwrap();
+        let mut s = 3u64;
+        let mut refreshed = Vec::new();
+        for i in 0..80usize {
+            let a = lcg(&mut s);
+            let x = [a, 2.0 * a + 0.3 * lcg(&mut s)];
+            let w = if i % 2 == 0 { 1.0 } else { 0.0 };
+            let before = (m.pca.is_some(), m.since_pca);
+            crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, w);
+            if m.pca.is_some() && m.since_pca == 0 && before != (true, 0) {
+                refreshed.push(i);
+            }
+        }
+        let gaps: Vec<usize> = refreshed.windows(2).map(|p| p[1] - p[0]).collect();
+        assert!(gaps.len() >= 10, "refreshed at rows {refreshed:?}");
+        assert!(
+            gaps.iter().all(|&g| g == 4),
+            "refreshed at rows {refreshed:?}"
+        );
+    }
+
     #[test]
     fn pca_fields_follow_the_stats_and_are_frozen_between_refreshes() {
         // Outputs: mean_a, mean_b, then pc0_var, pc0_share, pc0_a, pc0_b,
         // pc0_score. With `pca_every = 3` the loadings change only every
-        // third learned row, and a row's score uses the frozen loadings
+        // third row, and a row's score uses the frozen loadings
         // about the live mean.
         let k = 2;
         let mut m = EwCovModel::new(pca_cfg(k, 1, 3)).unwrap();
@@ -3111,7 +3196,7 @@ mod tests {
     }
 
     #[test]
-    fn pca_refresh_counts_learned_rows_so_chunking_cannot_matter() {
+    fn pca_refresh_counts_rows_so_chunking_cannot_matter() {
         // The same rows through one model and through a clone that was
         // serialized and restored midway give identical outputs, including
         // the refresh cadence and the frozen loadings.
@@ -4132,12 +4217,15 @@ mod tests {
         assert!(w.cov(0, 1).abs() < 1e-50, "{:e}", w.cov(0, 1));
     }
 
-    /// Every learned row counts for the runs, a row of weight 0 does not,
-    /// and nor does a row whose weight is `EMPTY_FRACTION` of the live
-    /// weight or less, the window's own notion of nothing: it neither
-    /// counts nor ends a run, so a held feature stays held across it.
+    /// Every learned row counts for the runs, and a row of weight 0 does
+    /// not. A row of any other weight is a learned row, however light next
+    /// to the live weight: the window alone says what is nothing, by its
+    /// own weight (review 2026-10-05, CE3). A row at `EMPTY_FRACTION` of the
+    /// live weight or less counted for no run, so a window of such rows,
+    /// together above the fraction, read every feature as held at the last
+    /// heavy row's value.
     #[test]
-    fn learned_rows_count_for_the_runs_and_rows_of_no_account_do_not() {
+    fn learned_rows_count_for_the_runs_and_rows_of_no_weight_do_not() {
         let mut ew = EwCov::new(1);
         for i in 0..20 {
             ew.update(&[5.0], 0.9, if i % 5 == 4 { 0.0 } else { 1.0 });
@@ -4146,21 +4234,112 @@ mod tests {
         let mut ew = EwCov::new(1);
         ew.update(&[5.0], 1.0, 1.0);
         ew.update(&[7.0], 1.0, crate::window::EMPTY_FRACTION);
+        assert_eq!(ew.rows_learned(), 2, "the row at the fraction counts");
+        assert_eq!(ew.held_from(0, 2), Some(7.0), "and started a run");
         ew.update(&[5.0], 1.0, 1.0);
-        assert_eq!(
-            ew.rows_learned(),
-            2,
-            "the row at the fraction exactly is nothing"
+        assert_eq!(ew.held_from(0, 2), None, "which the next row ended");
+        ew.update(&[5.0], 1.0, 1e-300);
+        assert_eq!(ew.rows_learned(), 4, "a row far below the fraction");
+        assert_eq!(ew.held_from(0, 3), Some(5.0), "extends the run it carries");
+        ew.update(&[9.0], 1.0, 0.0);
+        assert_eq!(ew.rows_learned(), 4, "a row of weight 0 does not count");
+        assert_eq!(ew.held_from(0, 3), Some(5.0), "nor end a run");
+    }
+
+    /// A window whose rows are each lighter than `EMPTY_FRACTION` of the
+    /// live weight, and together heavier, reads their moments (review
+    /// 2026-10-05, CE3, as `marginal` does). A thousand unit rows, then
+    /// twelve at `1e-9`, a window of 10 clock units and no decay: the runs
+    /// counted none of the light rows, so the window read each feature as
+    /// held at the last heavy row's value, with no spread. Against the
+    /// eleven rows inside, to the digits a window of `1.1e-11` of the weight
+    /// leaves the subtraction, about five.
+    /// Kish's size inside `ew_cov`'s window, `W_R² / Q_R` from
+    /// `crate::truncated`'s remainders: where `Q_R` keeps digits, the rows
+    /// inside the window's, to the digits kept; where the subtraction of the
+    /// Kish sums leaves none -- `Q_R` within `64 ε` of the sum it came from
+    /// -- no size, as `marginal`'s and the regressions' Grams read it. It
+    /// read 10.75 against 11 with the window's rows at 1e-6 (review
+    /// 2026-10-05, CE6b). A thousand unit rows, then twelve light ones, a
+    /// window of 10 clock units and no decay.
+    #[test]
+    fn kish_size_inside_a_window_is_the_rows_inside_or_nothing() {
+        for (light, digits) in [
+            (1e-3, true),
+            (1e-5, true),
+            (1e-6, false),
+            (1e-7, false),
+            (1e-9, false),
+        ] {
+            let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+            c.decay = crate::Decay::Halflife(f64::INFINITY);
+            c.window = Some(10.0);
+            let mut m = EwCovModel::new(c).unwrap();
+            let mut s = 5u64;
+            for i in 0..1012 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let w = if i < 1000 { 1.0 } else { light };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                crate::OnlineModel::step(&mut m, &x, &[], d, w);
+            }
+            let got = m.windowed_cov().n_kish();
+            if digits {
+                // Eleven rows of one weight: `(11 w)² / (11 w²) = 11`.
+                let got = got.unwrap_or_else(|| panic!("{light}: no size"));
+                assert!((got - 11.0).abs() <= 1e-3 * 11.0, "{light}: {got}");
+            } else {
+                assert_eq!(got, None, "{light}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_of_light_rows_reads_their_moments() {
+        let mut c = model_cfg(2, vec![EwCovStat::Mean]);
+        c.decay = crate::Decay::Halflife(f64::INFINITY);
+        c.window = Some(10.0);
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 5u64;
+        let mut rows = Vec::new();
+        for i in 0..1012 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if i < 1000 { 1.0 } else { 1e-9 };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut m, &x, &[], d, w);
+            rows.push(x);
+        }
+        let inside = &rows[rows.len() - 11..];
+        let n = inside.len() as f64;
+        let mean = |i: usize| inside.iter().map(|r| r[i]).sum::<f64>() / n;
+        let cov = |i: usize, j: usize| {
+            let (mi, mj) = (mean(i), mean(j));
+            inside
+                .iter()
+                .map(|r| (r[i] - mi) * (r[j] - mj))
+                .sum::<f64>()
+                / n
+        };
+        let w = m.windowed_cov();
+        assert!((w.n_eff() - 11e-9).abs() <= 1e-3 * 11e-9, "{:e}", w.n_eff());
+        for i in 0..2 {
+            assert!(
+                (w.mean(i) - mean(i)).abs() <= 1e-3,
+                "mean {i}: {}",
+                w.mean(i)
+            );
+            let v = cov(i, i);
+            assert!(
+                (w.var(i) - v).abs() <= 1e-3 * v,
+                "var {i}: {} against {v}",
+                w.var(i)
+            );
+        }
+        let (c01, scale) = (cov(0, 1), (cov(0, 0) * cov(1, 1)).sqrt());
+        assert!(
+            (w.cov(0, 1) - c01).abs() <= 1e-3 * scale,
+            "{} against {c01}",
+            w.cov(0, 1)
         );
-        assert_eq!(
-            ew.held_from(0, 2),
-            Some(5.0),
-            "the run was not broken by it"
-        );
-        // The live weight is 2 now, so twice the fraction is nothing still.
-        ew.update(&[7.0], 1.0, 3.0 * crate::window::EMPTY_FRACTION);
-        assert_eq!(ew.rows_learned(), 3, "a row above the fraction counts");
-        assert_eq!(ew.held_from(0, 2), None, "and it broke the run");
     }
 
     #[test]

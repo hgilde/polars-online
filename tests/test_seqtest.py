@@ -877,11 +877,14 @@ class TestEdgeCases:
         assert got.schema["c"].fields[2].dtype == pl.Int64
 
     def test_the_cli_dry_run_lists_the_residual_fields_a_mismatch_needs(self, tmp_path, online_cli):
+        # The dry run opens the input as the run would (task 160, YB12).
+        src = tmp_path / "in.parquet"
+        pl.DataFrame({"x0": [1.0, 2.0], "y": [1.0, 2.0]}).write_parquet(src)
         cfg = tmp_path / "bank.toml"
         cfg.write_text(
             "\n".join(
                 [
-                    'input = "in.parquet"',
+                    f'input = "{src.as_posix()}"',
                     'output = "out.parquet"',
                     "[[specs]]",
                     'name = "ridge"',

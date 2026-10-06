@@ -15,9 +15,12 @@
 //! half-life (fifty thousand rows of each at a half-life of a million), where
 //! the held feature then read as moving. Row indices do not drift. A row of
 //! weight 0 learns nothing, so it neither starts nor ends a run, and the
-//! caller does not offer it; nor does the caller offer a row whose weight is
-//! nothing next to the accumulator's (`crate::window::EMPTY_FRACTION` of
-//! it), the window's own notion of nothing.
+//! caller does not offer it. Every other row is offered, however light next
+//! to the accumulator's weight: the window alone says what is nothing, by
+//! its own weight (`crate::window::EMPTY_FRACTION`). A row below that
+//! fraction of the accumulator's was not offered, and a window of such rows,
+//! together above it, read each slot as held at the last heavy row's value
+//! (review 2026-10-05, CE3).
 
 use serde::{Deserialize, Serialize};
 

@@ -133,29 +133,140 @@ fn a_slot_held_over_the_window_has_no_spread_there() {
     }
 }
 
-/// The window's own weight counts `EMPTY_FRACTION` of the live weight as
-/// nothing, and so may a run: a boundary row at a weight of 1e-12,
-/// carrying another value before the run begins, leaves the held
-/// feature with no spread inside the window.
+/// One rule says what is nothing, the window's: a window weighing no more
+/// than `EMPTY_FRACTION` of the live weight is empty. A run has no rule of
+/// its own, so every row with a weight is a learned row for it (review
+/// 2026-10-05, CE3): a boundary row at a weight of 1e-12, carrying another
+/// value before the run begins, ends the run, and the window reads the
+/// spread that row brings from the subtraction, against the definition.
+/// It read as held, the spread dropped, where the window's weight already
+/// counted the row.
 #[test]
-fn a_boundary_row_of_no_account_does_not_end_a_run() {
+fn a_boundary_row_of_little_weight_ends_a_run() {
     let (window, n) = (9.0, 300);
     let boundary = n - 1 - window as usize;
+    let value = |i: usize, a: f64| match i {
+        _ if i == boundary => -5.0,
+        _ if i > boundary => 0.37,
+        _ => 1e-3 * a,
+    };
+    let weight = |i: usize| if i == boundary { 1e-12 } else { 1.0 };
     let m = windowed_pairs(
         window,
         10.0,
         n,
-        |i, a| match i {
-            _ if i == boundary => 1e3 - 5.0,
-            _ if i > boundary => 1e3 + 0.37,
-            _ => 1e3 + 1e-3 * a,
-        },
+        value,
         |_, a, b| Some(1.0 + 0.5 * a + b),
-        |i| if i == boundary { 1e-12 } else { 1.0 },
+        weight,
     );
     let pair = m.pair(0, 1);
-    assert_eq!(pair.var_x, 0.0, "a boundary row of no account");
-    assert_eq!(pair.mean_x, 1e3 + 0.37);
+    // The definition: the rows inside the window, at their decayed weights.
+    let lam = Decay::Halflife(10.0).factor(1.0);
+    let inside: Vec<(f64, f64)> = (boundary..n)
+        .map(|i| (value(i, 0.0), weight(i) * lam.powi((n - 1 - i) as i32)))
+        .collect();
+    let w: f64 = inside.iter().map(|r| r.1).sum();
+    let mean = inside.iter().map(|r| r.0 * r.1).sum::<f64>() / w;
+    let var = inside
+        .iter()
+        .map(|r| r.1 * (r.0 - mean).powi(2))
+        .sum::<f64>()
+        / w;
+    assert!(var > 1e-12, "the case needs a spread: {var:e}");
+    assert!(pair.var_x > 0.0, "the row ended the run: {:e}", pair.var_x);
+    assert!(
+        (pair.var_x - var).abs() <= 1e-3 * var,
+        "{:e} against {var:e}",
+        pair.var_x
+    );
+    assert!(
+        (pair.mean_x - mean).abs() <= 1e-12,
+        "{} against {mean}",
+        pair.mean_x
+    );
+}
+
+/// A window whose rows are each lighter than `EMPTY_FRACTION` of the
+/// history, and together heavier, is a window with rows in it, and the
+/// pair reads their moments (review 2026-10-05, CE3). The runs counted a
+/// row only above that fraction of the target's weight, so they saw none
+/// of these, and the pair took the last heavy row's value as held over the
+/// window: its `x` as the mean, no variance and no covariance. A thousand
+/// unit rows, then twelve at `1e-9`, a window of 10 clock units and no
+/// decay: the eleven rows inside, against the definition, to the digits a
+/// window of `1.1e-11` of the weight leaves the subtraction, about five.
+#[test]
+fn a_window_of_light_rows_reads_their_moments() {
+    let mut c = cfg(1, 1);
+    c.decay = Decay::Halflife(f64::INFINITY);
+    c.window = Some(10.0);
+    let mut m = Marginal::new(c).unwrap();
+    let mut s = 5u64;
+    let mut rows = Vec::new();
+    for i in 0..1012 {
+        let x = lcg(&mut s);
+        let y = 0.7 * x + lcg(&mut s);
+        let w = if i < 1000 { 1.0 } else { 1e-9 };
+        m.step(&[x], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
+        rows.push((x, y));
+    }
+    let inside = &rows[rows.len() - 11..];
+    let n = inside.len() as f64;
+    let mx = inside.iter().map(|r| r.0).sum::<f64>() / n;
+    let my = inside.iter().map(|r| r.1).sum::<f64>() / n;
+    let vx = inside.iter().map(|r| (r.0 - mx).powi(2)).sum::<f64>() / n;
+    let vy = inside.iter().map(|r| (r.1 - my).powi(2)).sum::<f64>() / n;
+    let cov = inside.iter().map(|r| (r.0 - mx) * (r.1 - my)).sum::<f64>() / n;
+    let p = m.pair(0, 0);
+    let near = |got: f64, want: f64, scale: f64| (got - want).abs() <= 1e-3 * scale;
+    assert!(near(p.n_eff, 11e-9, 11e-9), "weight {:e}", p.n_eff);
+    assert!(near(p.mean_x, mx, 1.0), "mean_x {} against {mx}", p.mean_x);
+    assert!(near(p.mean_y, my, 1.0), "mean_y {} against {my}", p.mean_y);
+    assert!(near(p.var_x, vx, vx), "var_x {} against {vx}", p.var_x);
+    assert!(near(p.var_y, vy, vy), "var_y {} against {vy}", p.var_y);
+    assert!(
+        near(p.cov, cov, (vx * vy).sqrt()),
+        "cov {} against {cov}",
+        p.cov
+    );
+}
+
+/// Kish's size inside a window is `W_R² / Q_R`, both remainders of a
+/// subtraction, and `Q_R` loses its digits first: a window of light rows
+/// holds the squares of their weights. Where it keeps some, the size is the
+/// definition's, the rows inside the window, to the digits kept -- three at
+/// rows of `1e-5`, whose squares are `1e-10` against a sum of 1000; where
+/// the subtraction has none left -- `Q_R` within `64 ε` of the sum it came
+/// from -- it is NaN, not the `inf` of a remainder of 0 or a number made of
+/// rounding (review 2026-10-05, CE6: 2% off with the window at 1e-8 of the
+/// history, `inf` at 1e-11). A thousand unit rows, then twelve light ones,
+/// a window of 10 clock units and no decay.
+#[test]
+fn kish_size_inside_a_window_is_the_rows_inside_or_nothing() {
+    for (light, digits) in [(1e-3, true), (1e-5, true), (1e-9, false), (1e-12, false)] {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.window = Some(10.0);
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 5u64;
+        for i in 0..1012 {
+            let x = lcg(&mut s);
+            let w = if i < 1000 { 1.0 } else { light };
+            m.step(
+                &[x],
+                &[Some(0.7 * x + lcg(&mut s))],
+                if i == 0 { 0.0 } else { 1.0 },
+                w,
+            );
+        }
+        let got = m.pair(0, 0).n_kish;
+        if digits {
+            // Eleven rows of one weight: `(11 w)² / (11 w²) = 11`.
+            assert!((got - 11.0).abs() <= 1e-3 * 11.0, "{light}: {got}");
+        } else {
+            assert!(got.is_nan(), "{light}: {got}");
+        }
+    }
 }
 
 /// A row without the target ages its runs as it ages its weight, so a run
@@ -771,8 +882,11 @@ fn only_a_window_keeps_the_runs() {
     }
 }
 
-/// Each target counts its own learned rows, and a row of weight 0 or of
-/// no account counts for none (`EwCov::update`).
+/// Each target counts its own learned rows: a row of weight 0 counts for
+/// none, and any other row for every target it carries, however light
+/// next to the target's weight -- the window alone says what is nothing
+/// (`EwCov::update`; review 2026-10-05, CE3, where a row at
+/// `EMPTY_FRACTION` of the target's weight counted for none).
 #[test]
 fn each_target_counts_its_learned_rows() {
     let mut m = Marginal::new(cfg(1, 2)).unwrap();
@@ -782,21 +896,14 @@ fn each_target_counts_its_learned_rows() {
         m.step(&[0.5], &[y0, Some(2.0)], if i == 0 { 0.0 } else { 1.0 }, w);
     }
     assert_eq!(m.rows_t, vec![8, 16]);
-    // A row at exactly the fraction of target 0's decayed weight is
-    // nothing to it, and below the fraction of target 1's, heavier.
     let lam = m.cfg.decay.factor(1.0);
-    let nothing = crate::window::EMPTY_FRACTION * (lam * m.wt[0]);
-    m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, nothing);
-    assert_eq!(m.rows_t, vec![8, 16], "a row at the fraction is nothing");
-    // Just above it, the row counts for target 0 alone.
-    m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, nothing * (1.0 + 1e-6));
-    assert_eq!(
-        m.rows_t,
-        vec![9, 16],
-        "a row just above the fraction counts"
-    );
-    m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, 1.0);
-    assert_eq!(m.rows_t, vec![10, 17]);
+    let crumb = crate::window::EMPTY_FRACTION * (lam * m.wt[0]);
+    m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, crumb);
+    assert_eq!(m.rows_t, vec![9, 17], "a row at the fraction counts");
+    m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, 1e-300);
+    assert_eq!(m.rows_t, vec![10, 18], "and one far below it");
+    m.step(&[0.5], &[None, Some(2.0)], 1.0, 0.0);
+    assert_eq!(m.rows_t, vec![10, 18], "a row of weight 0 does not");
 }
 
 /// A standard normal from the module's LCG, by Box-Muller.

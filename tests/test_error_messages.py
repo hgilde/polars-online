@@ -587,6 +587,69 @@ def test_boolean_features_and_integer_keys_are_fine():
     assert out["m"].struct.field("pred_y").drop_nulls().len() > 0
 
 
+#: Two instants an hour apart that Amsterdam shows at one wall time,
+#: 02:30, once in summer time and once in winter time.
+_FALL_BACK = [datetime.datetime(2024, 10, 27, 0, 30), datetime.datetime(2024, 10, 27, 1, 30)]
+
+
+def zoned_keys(tz: str | None, n: int = 60) -> pl.DataFrame:
+    """Two groups and two sessions keyed by instants: as naive UTC
+    Datetimes with ``tz`` None, else the same instants shown in ``tz``."""
+    utc = pl.Series([_FALL_BACK[i % 2] for i in range(n)], dtype=pl.Datetime("us"))
+    day = pl.Series([_FALL_BACK[i * 2 // n] for i in range(n)], dtype=pl.Datetime("us"))
+    if tz is not None:
+        utc = utc.dt.replace_time_zone("UTC").dt.convert_time_zone(tz)
+        day = day.dt.replace_time_zone("UTC").dt.convert_time_zone(tz)
+    rng = np.random.default_rng(160)
+    x = rng.standard_normal(n)
+    return pl.DataFrame(
+        {
+            "g": utc,
+            "s": day,
+            "t": np.arange(n, dtype=float),
+            "x0": x,
+            "y": 2.0 * x + 0.1 * rng.standard_normal(n),
+        }
+    )
+
+
+def test_a_zoned_datetime_group_is_keyed_by_its_instant():
+    """Task 160, PA4b: a zoned Datetime group or session column was refused
+    with polars' own message, this build formatting no time zone. A zoned
+    key is its instant: the same numbers and keys as the UTC instants as a
+    naive Datetime column, whatever zone shows it, two instants Amsterdam
+    shows at one wall time are two groups, and every way a key goes back
+    in -- ``drop_groups``, ``skip_learned`` -- takes it."""
+    specs = [
+        _spec_dict(group="g", clock="t", gap_cap=10.0),
+        po.spec.ew_cov(
+            "c", features=["x0", "y"], group="g", session="s", group_close="session", half_life=5.0
+        ),
+    ]
+    naive = zoned_keys(None)
+    want_bank = po.ModelBank(specs)
+    want = want_bank.fit_predict(naive)
+    want_closed = want_bank.closed_groups()
+    assert want_bank.groups().filter(spec="m")["group"].to_list() == [
+        "2024-10-27 00:30:00.000000",
+        "2024-10-27 01:30:00.000000",
+    ]
+    for tz in ("Europe/Amsterdam", "America/New_York"):
+        df = zoned_keys(tz)
+        bank = po.ModelBank(specs)
+        got = bank.fit_predict(df)
+        assert got.select("m", "c").equals(want.select("m", "c")), tz
+        assert bank.groups().equals(want_bank.groups()), tz
+        assert bank.closed_groups().equals(want_closed), tz
+        # A key as `groups` gives it goes back in.
+        key = bank.groups()["group"][0]
+        assert bank.drop_groups([key], spec="m") == 1, tz
+        # So does the column itself, matched to the keys by `skip_learned`.
+        half = po.ModelBank(specs)
+        half.fit_predict(df.head(30))
+        assert half.skip_learned(df).equals(df.slice(30)), tz
+
+
 #: One column of every dtype polars can hand us, by name. Built lazily,
 #: because a few need a cast to exist at all.
 DTYPES: dict[str, typing.Callable[[], pl.Series]] = {
@@ -779,3 +842,76 @@ def test_ridge_scale_is_checked_by_name():
     variant with no parameter name."""
     with pytest.raises(ValueError, match="ridge_scale must be"):
         po.spec.ewridge("m", targets=["y"], features=["x"], ridge_scale="foo")
+
+
+def test_gap_cap_without_a_clock_is_refused_by_name():
+    """Task 160, PB2: ``gap_cap`` caps the clock's step, and without a clock
+    each row is one step. It was taken and capped the row count: 0.5 halved
+    every decay step, marked every row capped and cleared every lag, so an
+    AR(0.9) input read ``lagcorr`` 0.0. Refused as ``restart_after_step_back``
+    is, in a spec and in ``with_windows``."""
+    with pytest.raises(ValueError, match='spec "m": gap_cap needs clock'):
+        po.spec.ewridge("m", **BASE, gap_cap=0.5)
+    with pytest.raises(ValueError, match='spec "c": gap_cap needs clock'):
+        po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, lags=[1], gap_cap=0.5)
+    with pytest.raises(ValueError, match="with_windows: gap_cap needs clock"):
+        po.stream.with_windows(
+            _df(), f=po.rewm_sum("x0", half_life=10.0, window_size=3.0), gap_cap=0.5
+        )
+    # With the clock, the same cap is a cap.
+    po.spec.ewridge("m", **BASE, clock="t", gap_cap=0.5)
+
+
+EMPTY_HALF_LIFE = 'spec "m": half_life names no half-life; give one or a grid'
+
+
+@pytest.mark.parametrize(
+    ("builder", "kw", "msg"),
+    [
+        (po.spec.ewridge, dict(half_life=[]), EMPTY_HALF_LIFE),
+        (po.spec.rls, dict(half_life=[]), EMPTY_HALF_LIFE),
+        (po.spec.sgd, dict(half_life=[]), EMPTY_HALF_LIFE),
+        # The other lists that make a grid were refused already, each by name.
+        (po.spec.ewridge, dict(ridge=[]), "ridge grid must have at least one value"),
+        (po.spec.lasso, dict(lasso_path=[]), 'spec "m": lasso_path must be non-empty'),
+    ],
+)
+def test_an_empty_grid_is_refused_by_name(builder, kw, msg):
+    """Task 160, PB3: ``half_life = []`` passed the builder and the Rust
+    validation and built no model instance at all, an output struct with no
+    field. A grid of no values names no model."""
+    with pytest.raises(ValueError, match=msg):
+        builder("m", **{**BASE, **kw})
+
+
+def test_an_empty_half_life_in_a_dict_spec_is_refused():
+    """The same through the door JSON and TOML come in by. ``lam`` is one
+    number, never a grid, so an empty list is no ``lam`` at either door."""
+    spec = po.spec.ewridge("m", **BASE)
+    spec["half_life"] = []
+    with pytest.raises(ValueError, match=EMPTY_HALF_LIFE):
+        po.ModelBank([spec])
+    with pytest.raises(TypeError, match='spec "m": lam must be a number, got list'):
+        po.spec.ewridge("m", targets=["y"], features=["x0"], lam=[])
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=0.99)
+    spec["lam"] = []
+    with pytest.raises(ValueError, match="lam: invalid type: sequence, expected f64"):
+        po.ModelBank([spec])
+
+
+def test_a_deco_block_refusal_reads_as_one_sentence():
+    """Task 160, PB8: two refusals were string literals continued across a
+    line without a ``\\``, so each carried a run of 18 spaces."""
+    spec = po.spec.deco("d", features=["x0", "y"], half_life=10.0)
+    for blocks, want in [
+        ([], "deco blocks is empty; leave it out for the unblocked equicorrelation, or name at"),
+        (
+            [["u", ["x0"]], ["u", ["y"]]],
+            'deco block "u" is named twice; block names are the output labels, so they have',
+        ),
+    ]:
+        spec["model"]["blocks"] = blocks
+        with pytest.raises(ValueError) as exc:
+            po.ModelBank([spec])
+        assert want in str(exc.value), str(exc.value)
+        assert "  " not in str(exc.value), str(exc.value)

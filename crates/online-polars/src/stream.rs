@@ -439,6 +439,12 @@ fn constraint(
         hi: bounds(coef_max, f64::INFINITY),
         sum: coef_sum,
     };
+    // A list of the wrong length goes to the model's check, which names
+    // it, whatever its bounds: dropped as trivial first, `coef_min =
+    // ["-inf"]` with two features, or `[]`, passed (task 160, PB4).
+    if c.lo.len() != k || c.hi.len() != k {
+        return Some(c);
+    }
     (!c.is_trivial()).then_some(c)
 }
 
@@ -1184,6 +1190,14 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         "bandwidth",
         "\"monitor\" or \"sequential\"",
     )?;
+    // `"window"` takes its permutation quantile at `alpha` itself, so a
+    // spread over the pairs changed nothing there (task 160, CD4). The
+    // builders' default, "bonferroni", is taken as unset.
+    refuse(
+        window && alpha_adjust.as_deref().is_some_and(|a| a != "bonferroni"),
+        "alpha_adjust",
+        "\"monitor\" or \"sequential\" (\"window\" takes its permutation quantile at alpha)",
+    )?;
     if !sequential {
         refuse(monitor_rows.is_some(), "monitor_rows", "\"sequential\"")?;
         refuse(boundary_gamma.is_some(), "boundary_gamma", "\"sequential\"")?;
@@ -1370,10 +1384,11 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
             // An empty list is not "one block of everything" and not the
             // unblocked form either; whichever was meant, say which
             // (docs/REVIEW-E54-E64.md D1).
-            return Err(
-                "deco blocks is empty; leave it out for the unblocked equicorrelation, or name                  at least one block"
-                    .into(),
-            );
+            // One sentence: continued across the line without a `\`, the
+            // literal carried a run of 18 spaces (task 160, PB8).
+            return Err("deco blocks is empty; leave it out for the unblocked \
+                        equicorrelation, or name at least one block"
+                .into());
         }
         Some(named) => named
             .iter()
@@ -1395,7 +1410,8 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         let mut seen = std::collections::HashSet::new();
         if let Some((dup, _)) = named.iter().find(|(n, _)| !seen.insert(n.as_str())) {
             return Err(format!(
-                "deco block {dup:?} is named twice; block names are the output labels, so they                  have to be distinct"
+                "deco block {dup:?} is named twice; block names are the output labels, so \
+                 they have to be distinct"
             ));
         }
     }
@@ -2856,13 +2872,14 @@ impl Stream {
             if let Some(raw) = adv.backwards {
                 return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
             }
+            // Saturating, as every count the bank keeps (task 160, PA2).
             if accept {
-                rows_seen += 1;
+                rows_seen = rows_seen.saturating_add(1);
             }
             // The clock the fields show (task 152): the column's value, or
             // the row's index in the group, every row counted.
             let shown = c.or(Some(ClockValue::F64(fed as f64)));
-            fed += 1;
+            fed = fed.saturating_add(1);
             // The chunk's last row reports the coefficients; `last` says
             // whether this run ends the chunk (`ChunkOut::run_rows`).
             let want_coef = accept
@@ -2883,6 +2900,7 @@ impl Stream {
                 accept,
                 want_coef,
                 emit: true,
+                drift_ri: ri,
                 learn: true,
                 buffered: false,
                 w: w.unwrap_or(1.0),
@@ -3234,8 +3252,12 @@ impl Stream {
     /// (docs/REVIEW-E54-E64.md L2). Applied when the row arrived, they had
     /// forced every held row out first, and a label shorter-lived than the
     /// delay was learned before it was known. The models run one delay
-    /// behind, events included. Only a **reset** acts on arrival: it drops
-    /// the buffer, since the state those rows would teach is gone.
+    /// behind, events included. Only a clock **reset** acts on arrival: it
+    /// drops the buffer, since the state those rows would teach is gone. A
+    /// drift a released row trips is flagged on the row releasing it
+    /// ([`RowPlan::drift_ri`]), and a drift reset restarts the models there,
+    /// keeping the buffer: the rows it holds arrived after the one that
+    /// tripped it.
     ///
     /// A formula target (docs/PLAN.md task 104) is not known at its row:
     /// the row waits, with no embargo as well, until the spec's window core
@@ -3266,8 +3288,9 @@ impl Stream {
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
         // One template for every replayed row: only `pending` and the
         // break's events differ, and a replay never emits, never wants
-        // coefficients and never counts as a row of the frame.
-        let replay = |slot: usize, row: &PendingRow| RowPlan {
+        // coefficients and never counts as a row of the frame. A drift it
+        // detects is flagged on `at`, the row releasing it (task 160, PB1).
+        let replay = |slot: usize, row: &PendingRow, at: usize| RowPlan {
             ri: usize::MAX,
             i: usize::MAX,
             pending: slot,
@@ -3282,6 +3305,7 @@ impl Stream {
             accept: true,
             want_coef: false,
             emit: false,
+            drift_ri: at,
             learn: true,
             buffered: false,
             w: row.w,
@@ -3350,7 +3374,11 @@ impl Stream {
                     .count();
                 for row in pending.drain(..ready) {
                     released.push(row);
-                    out.push(replay(released.len() - 1, released.last().unwrap()));
+                    out.push(replay(
+                        released.len() - 1,
+                        released.last().unwrap(),
+                        plan.ri,
+                    ));
                 }
             }
             // The row itself: scored from the state as it now stands, and
@@ -3478,6 +3506,7 @@ impl Stream {
                 accept,
                 want_coef: false,
                 emit: true,
+                drift_ri: ri,
                 learn: false,
                 buffered: false,
                 w: 1.0,
@@ -3840,6 +3869,14 @@ struct RowPlan {
     /// Write this row's outputs at `ri`. False for a replayed row: it is a
     /// lesson, not a row of the frame.
     emit: bool,
+    /// The output row a drift detection at this row is flagged on: `ri`
+    /// for a row learned where it sits; for a row replayed out of the
+    /// `embargo` buffer, the row whose clock released it, the one being
+    /// output as the release happens -- the replayed row's own is out
+    /// already. A detection on a replay set no flag, so under an embargo
+    /// `drift_<t>` was never true, and `drift_action = "reset"` restarted
+    /// the model unannounced (task 160, PB1).
+    drift_ri: usize,
     /// Step the models and fold the diagnostics. False for a row whose label
     /// has not matured: it is scored here and learned from later.
     learn: bool,
@@ -3945,8 +3982,13 @@ impl Instance<'_> {
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
-        // A rebuilt model has seen no decay: it settles from here. A reset
-        // drops the held rows too (E47).
+        // A rebuilt model has seen no decay: it settles from here. A clock
+        // reset drops the rows held under `embargo` with it (E47); a drift
+        // reset keeps them, and each teaches the rebuilt model as it is
+        // released, its delta moving from the held clock to the decay time
+        // as any held row's does. The clock they covered before the restart
+        // is not the rebuilt model's, so both start at 0 either way (task
+        // 160, PB1).
         *self.decay_time = 0.0;
         *self.pending_clock = 0.0;
         if let Some(ring) = self.resid_win.as_mut() {
@@ -4318,8 +4360,11 @@ fn run_instance(
                 let scale = sc.sig[slot];
                 if w > 0.0 && rv.is_finite() && scale.is_finite() && scale > 0.0 {
                     let flag = dets[slot].update(rv.abs() / scale, plan.d_clock, lam);
-                    if emit {
-                        inst.o_drift[slot * n_rows + ri] = flag;
+                    // On the row being output: this one, or under an
+                    // embargo the row releasing this one (task 160, PB1).
+                    // Set, never cleared: one row may release several.
+                    if flag && plan.drift_ri != usize::MAX {
+                        inst.o_drift[slot * n_rows + plan.drift_ri] = true;
                     }
                     row_drift |= flag;
                 } else {

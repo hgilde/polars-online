@@ -72,9 +72,12 @@
 //! Every output is read *before* the row is learned, so `cluster` is an
 //! out-of-sample assignment (CLAUDE.md rule 2), and `n_eff` is the EW weight
 //! before the row and before its own decay (rule 8). Seeding waits for
-//! `warm_rows` learned rows, held in a buffer capped at
-//! [`BUF_CAP`](KMeans::BUF_CAP) so memory stays O(k·p) in the stream; until
-//! then every output is null. Standardization scales the metric, never the
+//! `max(warm_rows, k)` learned rows, held whole in a buffer of that many
+//! rows, so the warm-up holds `O(warm_rows·p)` and the stream after it
+//! `O(k·p)`; until then every output is null. Under `first`, which waits
+//! for `k` distinct rows, the buffer goes on growing until it has them or
+//! holds `max(warm_rows, k, BUF_CAP)` rows ([`KMeans::BUF_CAP`]), where
+//! duplicates are taken. Standardization scales the metric, never the
 //! coordinates (docs/CLUSTERING.md §10), so the centres stay in the features'
 //! own units and `coef` reads as `k` rows of `p` feature values.
 
@@ -146,6 +149,9 @@ pub struct KMeansCfg {
 
 impl KMeansCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("kmeans: {e}"))?;
         if self.n_features == 0 {
             return Err("kmeans: n_features must be >= 1".into());
         }
@@ -233,9 +239,10 @@ pub struct KMeans {
 }
 
 impl KMeans {
-    /// The warm-up buffer never holds more rows than this: the `first`
-    /// seeding rule, which waits for `k` distinct rows, gives up on
-    /// distinctness at the cap and seeds with what it has.
+    /// Where the `first` seeding rule, which waits for `k` distinct rows,
+    /// gives up on distinctness and seeds with what it has: once the buffer
+    /// holds `max(warm_rows, k, BUF_CAP)` rows. Not a cap on the buffer,
+    /// which holds `max(warm_rows, k)` rows whatever this is.
     pub const BUF_CAP: usize = 1000;
 
     pub fn new(cfg: KMeansCfg) -> Result<Self, String> {

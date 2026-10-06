@@ -1959,7 +1959,8 @@ def ftrl(
     a per-target scale ``m = W / W*``. ``W`` is the target's weight, decayed
     on every row, and ``W*`` the same on a clock that runs only on the rows
     that teach it. A row that teaches the target nothing -- absent, at
-    weight 0, or a label ``strict_binary`` refuses -- ages the sums and the
+    weight 0, a label ``strict_binary`` refuses, or a row whose squared
+    gradient would overflow, which is skipped -- ages the sums and the
     penalties alike, so the fit does not move, as :func:`ewridge`'s does not.
     The rows that teach it bring ``m`` back toward 1. Held constant, the
     penalties shrank the fit to 0.75 of itself over one half-life of such
@@ -2003,7 +2004,8 @@ def ftrl(
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed, where ``weight_sum`` counts every row. So rows with a
     null target do not warm up coefficients they never moved (docs/PLAN.md
-    task 115 (d)). A label ``strict_binary`` refuses is not one of them.
+    task 115 (d)). A label ``strict_binary`` refuses is not one of them, nor
+    a row skipped because its squared gradient would overflow.
 
     .. rubric:: Output
 
@@ -2143,8 +2145,9 @@ def ew_cov(
            * - ``pc<j>_score``
              - the row's coordinate ``v_j . (x - m)``
 
-        The eigendecomposition is refreshed every ``pca_every`` learned rows
-        (default 1, O(k³) each) after the row is folded in. Between refreshes
+        The eigendecomposition is refreshed every ``pca_every`` rows,
+        weight-zero rows included, as ``window_every`` counts them (default 1,
+        O(k³) each), after the row is folded in. Between refreshes
         the loadings are frozen, so a row's scores never depend on chunking.
         Each refresh keeps the previous sign, so a loading never flips.
     ``lags``
@@ -4765,7 +4768,9 @@ def rcov(
         the bias is subtracted.
         ``theta`` sets the window and nothing else: the bias term reads theta
         from the window actually run, ``k_n / sqrt(n)`` over the block's own
-        ``n`` rows (the paper's Eq. 7).
+        ``n`` rows (the paper's Eq. 7). A window ``theta`` derives is at least
+        2, at least 3 under ``psd = False``, and no longer than
+        ``block_rows``.
     ``noise_stride``, ``iv_stride``
         The two subsampled grids behind an automatic bandwidth (defaults 1 and
         20): the noise variance ``omega2`` from the dense one, deliberately biased
@@ -4837,8 +4842,12 @@ def rcov(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``, ``ValueError`` for ``half_life``/``lam``, for a missing ``group``
     or ``group_close``, for an automatic bandwidth without ``block_rows``, for
-    a ``max_bandwidth`` below a fixed ``bandwidth``, and for a ``preavg_rows``
-    below 2, or below 3 under ``psd = False``.
+    a ``max_bandwidth`` below a fixed ``bandwidth``, for a ``preavg_rows``
+    below 2, or below 3 under ``psd = False``, for a ``bandwidth``,
+    ``max_bandwidth`` or ``preavg_rows`` above ``block_rows``, for a ``theta``
+    whose window is longer than ``block_rows``, and for a ring, window,
+    ``jitter`` or stride above 2^20 (1,048,576), the most this model sizes a
+    ring.
     """
     model: dict[str, Any] = {
         "type": "rcov",

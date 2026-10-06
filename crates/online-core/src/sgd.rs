@@ -13,11 +13,15 @@
 //! | `Huber` | identity | `eta` | `clamp(p − y, ±delta)` |
 //! | `Quantile` | identity | `eta` | `1{y < p} − tau` |
 //! | `EpsilonInsensitive` | identity | `eta` | `0` if `|p − y| ≤ eps`, else `sign(p − y)` |
-//! | `Poisson` | log | `exp(eta)` | `p − y` |
+//! | `Poisson` | log | `exp(clamp(eta, −30, 30))` | `p − y` |
 //! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − y` |
 //!
 //! then `g_i = d · z_i · w + l2 · b_i` for a slope and `g_0 = d · w` for the
-//! intercept, which is not penalised; then `b_i -= lr_i · g_i`.
+//! intercept, which is not penalised; then `b_i -= lr_i · g_i`. The Poisson
+//! link clamps its exponent at `±30`, so a rate is between `e^−30 ≈ 9.4e-14`
+//! and `e^30 ≈ 1.1e13`, and a linear predictor past either end predicts as
+//! that end does: the prediction and its gradient stay finite, where `exp`
+//! alone overflows past 709.
 //!
 //! Learning rates ([`LearningRate`]): a constant, an inverse-scaling schedule
 //! that anneals with `n_eff`, or AdaGrad's per-coordinate `lr / (sqrt(G_i) + eps)`.
@@ -150,6 +154,9 @@ impl SgdCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("sgd: {e}"))?;
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("sgd: n_features and n_targets must be >= 1".into());
         }
@@ -401,7 +408,8 @@ impl Sgd {
         &self.w_target
     }
 
-    /// `p = link(eta)`.
+    /// `p = link(eta)`; the Poisson link is `exp(clamp(eta, −30, 30))` (the
+    /// module docs).
     fn link(&self, eta: f64) -> f64 {
         match self.cfg.loss {
             SgdLoss::Poisson => eta.clamp(-30.0, 30.0).exp(),
@@ -882,6 +890,13 @@ mod tests {
         assert_eq!(po.link(0.0), 1.0);
         assert!(po.link(1e9).is_finite(), "the exponent is clamped");
         assert!(po.link(-1e9) > 0.0, "a rate is positive");
+        // Where the module docs put the clamp: `exp(clamp(eta, ±30))`, so a
+        // linear predictor past 30 either way predicts as 30 does (review
+        // 2026-10-05, CC6: the table said `exp(eta)`).
+        assert_eq!(po.link(31.0), po.link(30.0));
+        assert_eq!(po.link(-31.0), po.link(-30.0));
+        assert_eq!(po.link(30.0), 30.0f64.exp());
+        assert!(po.link(29.0) < po.link(30.0), "inside the clamp it is exp");
     }
 
     /// The case scaling exists for: one feature in thousands, one in
@@ -1779,5 +1794,45 @@ mod tests {
         let before = m.beta.clone();
         m.step(&[3.0, -0.05], &[Some(1.0), Some(1.0)], 1.0, 0.0);
         assert_eq!(m.beta, before);
+    }
+
+    /// The bank's per-target `min_weight` gate reads each target's own
+    /// weight through the trait: `true`, and one entry a target, the decayed
+    /// weight of the rows that carried it -- a sparse second target its own
+    /// rows only (task 158, E14; the mutation run of 2026-10-05 left the
+    /// body replaced by `true` or `false` alive).
+    #[test]
+    fn the_trait_reports_each_targets_own_weight() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.n_targets = 2;
+        c.decay = Decay::Halflife(10.0);
+        let mut m = Sgd::new(c).unwrap();
+        let lam = Decay::Halflife(10.0).factor(1.0);
+        let (mut want0, mut want1) = (0.0f64, 0.0f64);
+        let mut s = 3u64;
+        for i in 0..30 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = 0.5 + lcg(&mut s).abs();
+            let y1 = (i % 4 == 1).then_some(x[1]);
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, w);
+            let f = if i == 0 { 1.0 } else { lam };
+            want0 = f * want0 + w;
+            want1 = f * want1 + if y1.is_some() { w } else { 0.0 };
+        }
+        let mut out = vec![7.0; 5];
+        assert!(m.target_n_eff_into(&mut out));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(
+            (out[0] - want0).abs() <= 1e-12 * want0,
+            "{out:?} against {want0}"
+        );
+        assert!(
+            (out[1] - want1).abs() <= 1e-12 * want1,
+            "{out:?} against {want1}"
+        );
+        assert!(
+            out[1] < 0.5 * out[0],
+            "the sparse target's own weight: {out:?}"
+        );
     }
 }

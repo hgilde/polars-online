@@ -298,7 +298,9 @@ class TestTheQuantileFitsDefinition:
     half-width ``h = s max(quantile_eps, (k/n)^(2/5))`` a least-squares row
     with target ``y + 2h(tau - 1/2)``; outside it a nudge ``2h psi(r) z``
     into the cross-moment only, with ``psi = tau - 1{r < 0}``, its step
-    bounded by ``|r| / (1 + leverage)``. ``s`` is the RMS of the scored
+    bounded by ``|r| / (1 + u'A^-1 u)``, the row's full leverage against the
+    band's system: ``A`` the band rows' centred covariance plus the ridge,
+    ``u`` the row's centred features (TC1b). ``s`` is the RMS of the scored
     residuals before the row and ``n`` the target's rows, both decayed, and
     ``r`` the residual the row was scored with."""
 
@@ -368,8 +370,10 @@ class TestTheQuantileFitsDefinition:
                     kinds.append("nudge")
                     raw = 2.0 * h * (tau if r > 0.0 else tau - 1.0) / band_w
                     m = (fw[:, None] * Z[f]).sum(axis=0) / band_w
-                    v = (fw[:, None] * (Z[f] - m) ** 2).sum(axis=0) / band_w
-                    leverage = float(((Z[t, 1:] - m[1:]) ** 2 / v[1:]).sum())
+                    dev = Z[f][:, 1:] - m[1:]
+                    A = (fw[:, None] * dev).T @ dev / band_w + self.RIDGE * np.eye(k - 1)
+                    u = Z[t, 1:] - m[1:]
+                    leverage = float(u @ np.linalg.solve(A, u))
                     most = abs(r) / (1.0 + leverage)
                     step = np.copysign(most, raw) if abs(raw) > most else raw
                     nudge[t] = band_w * step * Z[t]
@@ -406,3 +410,24 @@ class TestTheQuantileFitsDefinition:
         g[1:] -= self.RIDGE * W * beta[1:]
         assert np.abs(g).max() <= 1e-10 * size.max(), (g, size)
         assert kinds.count("band") > 100 and kinds.count("nudge") > 100, kinds.count("band")
+
+    @pytest.mark.parametrize("rho", [0.0, 0.999])
+    def test_a_nudge_never_moves_its_row_past_its_residual(self, rho):
+        """The step's bound has one purpose, which `robust.rs` states: the
+        row is brought at most to its target, not thrown past it. So the
+        solve after a nudged row moves that row's prediction by no more than
+        its residual. Every hundredth row past the warm-up runs against the
+        features' correlation, at ``(+1, -1)``, on the true line: under
+        ``rho = 0.999`` its leverage is near 2,000, where the diagonal
+        reading the bound used until review 2026-10-05 (TC1b) said 2, and
+        the row moved 9.2 times its residual."""
+        x, y = self.stream(rho=rho)
+        glitch = np.arange(1000, len(y), 100)
+        x[glitch] = [1.0, -1.0]
+        y[glitch] = 1.0 + 0.8 + 0.4
+        pred, coef = self.fit(x, y, 0.5, 500.0)
+        Z, _, kinds, _, _ = self.rows(x, y, pred, 0.5, 500.0)
+        nudged = [t for t in range(len(y)) if kinds[t] == "nudge"]
+        worst = max((abs(coef[t] @ Z[t] - pred[t]) / abs(y[t] - pred[t]), t) for t in nudged)
+        assert worst[0] <= 1.0, f"row {worst[1]} moved {worst[0]:.2f} times its residual"
+        assert set(glitch) & set(nudged), "no glitch row was nudged"

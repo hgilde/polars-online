@@ -483,3 +483,80 @@ def test_a_state_of_the_other_kind_of_clock_is_refused_on_any_row(tmp_path):
     )
     with pytest.raises(Exception, match="temporal.*numeric|numeric.*temporal"):
         stream.refresh_time(temporal, load_state=state, **kw)
+
+
+def _two_groups(n: int = 60) -> pl.DataFrame:
+    """Blocks of a, b, c ticks, alternating between two groups, so each
+    block completes a point of its group; ``i`` is the row."""
+    rng = np.random.default_rng(31)
+    return pl.DataFrame(
+        {
+            "series": [NAMES[i % 3] for i in range(n)],
+            "t": [float(i) for i in range(n)],
+            "v": rng.standard_normal(n),
+            "k": [(i // 3) % 2 for i in range(n)],
+            "i": list(range(n)),
+        }
+    )
+
+
+_GROUP_DTYPES = {
+    "Int64": lambda k: k.cast(pl.Int64),
+    "String": lambda k: k.cast(pl.String).replace_strict({"0": "x", "1": "y"}),
+    "Date": lambda k: pl.date(2024, 1, 1) + pl.duration(days=k),
+    "Datetime(us)": lambda k: pl.datetime(2024, 1, 1, time_unit="us") + pl.duration(seconds=k),
+    "Datetime(ms, tz)": lambda k: (
+        pl.datetime(2024, 1, 1, time_unit="ms", time_zone="Europe/Amsterdam")
+        + pl.duration(milliseconds=k)
+    ),
+    "Time": lambda k: pl.when(k == 0).then(pl.time(9)).otherwise(pl.time(10, 30)),
+    "Boolean": lambda k: k == 1,
+    "Struct": lambda k: pl.struct(a=k, b=pl.lit("q")),
+}
+
+
+@pytest.mark.parametrize("dtype", list(_GROUP_DTYPES), ids=list(_GROUP_DTYPES))
+def test_the_group_column_is_the_inputs_at_the_completing_ticks(dtype: str) -> None:
+    """Task 160, PA4: the keys were held as text and cast back, so a
+    Datetime(us), Time or Struct group came back null on every row, and a
+    Boolean or tz-aware Datetime group failed the cast. The column is the
+    input's own, taken at each point's completing tick, as ``keep`` is."""
+    df = _two_groups().with_columns(g=_GROUP_DTYPES[dtype](pl.col("k")))
+    lazy = stream.refresh_time(
+        df.lazy(), series="series", names=NAMES, clock="t", value="v", group="g", keep=["i"]
+    )
+    out = lazy.collect()
+    assert out.height == 20, "each block of three completes one point"
+    assert out.schema["g"] == df.schema["g"] == lazy.collect_schema()["g"]
+    want = df["g"].gather(out["i"])
+    assert out["g"].null_count() == 0
+    assert out["g"].equals(want), (out["g"], want)
+
+
+_CLOCK_DTYPES = {
+    "Float64": lambda t: t.cast(pl.Float64),
+    "Int64": lambda t: t.cast(pl.Int64) * 7 + 3,
+    "Datetime(ns)": lambda t: (pl.lit(1_700_000_000_000_000_001) + t.cast(pl.Int64) * 1_000).cast(
+        pl.Datetime("ns")
+    ),
+    "Datetime(us, tz)": lambda t: (pl.lit(1_700_000_000_000_001) + t.cast(pl.Int64) * 1_000).cast(
+        pl.Datetime("us", "UTC")
+    ),
+    "Date": lambda t: pl.date(2024, 1, 1) + pl.duration(days=t.cast(pl.Int64)),
+}
+
+
+@pytest.mark.parametrize("dtype", list(_CLOCK_DTYPES), ids=list(_CLOCK_DTYPES))
+def test_time_refresh_is_the_completing_ticks_clock_in_its_own_dtype(dtype: str) -> None:
+    """Task 160, PA6: ``time_refresh`` was the clock's physical integer as a
+    Float64, so a nanosecond clock's 1700000000000002001 came out as
+    ...2048, and a Datetime as a bare number. It is the completing tick's
+    clock, exactly, in the clock column's dtype."""
+    df = _two_groups().with_columns(t=_CLOCK_DTYPES[dtype](pl.col("t")))
+    lazy = stream.refresh_time(
+        df.lazy(), series="series", names=NAMES, clock="t", value="v", keep=["i"]
+    )
+    out = lazy.collect()
+    assert out.height > 10
+    assert out.schema["time_refresh"] == df.schema["t"] == lazy.collect_schema()["time_refresh"]
+    assert out["time_refresh"].equals(df["t"].gather(out["i"]).alias("time_refresh"))

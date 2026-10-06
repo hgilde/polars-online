@@ -88,12 +88,26 @@ impl GridState {
     fn tick(&mut self, si: usize, value: f64) -> bool {
         let s = &mut self.series[si];
         s.last = value;
-        s.ticks += 1;
+        // Saturating: a state file can carry a count at the top of its
+        // range (task 160, PA5).
+        s.ticks = s.ticks.saturating_add(1);
         if !s.seen {
             s.seen = true;
             self.pending -= 1;
         }
         self.pending == 0
+    }
+
+    /// Whether a grid read from a file is one this sampler could have left:
+    /// `width` series, and `pending` the count of those still unseen, at
+    /// least one -- a point closes the moment the last of them ticks. A
+    /// narrower grid panicked at the next tick of a series past its width;
+    /// a `pending` below the unseen count wrapped below zero, and one above
+    /// it never reached zero, so the grid never completed again (task 160,
+    /// PA5).
+    fn fits(&self, width: usize) -> bool {
+        let unseen = self.series.iter().filter(|s| !s.seen).count();
+        self.series.len() == width && self.pending >= 1 && self.pending == unseen
     }
 
     /// Start the next interval: every series unseen, every count back to
@@ -224,6 +238,14 @@ const REFRESH_VERSION: u32 = 1;
 /// series' last value.
 type Point = (GroupKey, usize, usize, Vec<u64>, Vec<f64>);
 
+/// A group column as the text its keys are, as the bank keys a group
+/// ([`crate::arrow::key_text`]: a zoned Datetime by its instant, task 160,
+/// PA4). The text is the group's identity alone: the output carries the
+/// input's own values.
+fn key_text(col: &Column) -> PolarsResult<Column> {
+    crate::arrow::key_text(col.as_materialized_series()).map(Series::into_column)
+}
+
 /// The columns [`RefreshTime::feed`] reads.
 pub struct RefreshCols<'a> {
     pub series: &'a str,
@@ -315,7 +337,8 @@ impl RefreshTime {
     /// # Errors
     ///
     /// Bytes that are not a refresh_time state, a version this build does
-    /// not read, or other `names` or `pairs`.
+    /// not read, other `names` or `pairs`, or a grid that does not fit them
+    /// (a damaged state).
     pub fn load_bytes(
         bytes: &[u8],
         names: Vec<String>,
@@ -349,6 +372,23 @@ impl RefreshTime {
             ));
         }
         let mut rt = Self::new(names, pairs)?;
+        // One joint grid of every series per group, or one two-series grid
+        // per pair, each in a state the scan could have left it in.
+        let (n_grids, width) = if rt.pairs.is_empty() {
+            (1, rt.names.len())
+        } else {
+            (rt.pairs.len(), 2)
+        };
+        if let Some((key, _)) = file
+            .states
+            .iter()
+            .find(|(_, grids)| grids.len() != n_grids || !grids.iter().all(|g| g.fits(width)))
+        {
+            return Err(format!(
+                "refresh_time: the state is damaged: group {key}'s grids are not {n_grids} of \
+                 {width} series, each waiting on the series it has not seen"
+            ));
+        }
         rt.states = file.states.into_iter().collect();
         rt.last_time = file.last_time.into_iter().collect();
         rt.grouped = Some(grouped);
@@ -366,8 +406,11 @@ impl RefreshTime {
                 input.get(by).cloned().unwrap_or(DataType::String),
             );
         }
+        // The completing tick's clock, in the clock column's own dtype
+        // (task 160, PA6).
+        let time = input.get(cols.clock).cloned().unwrap_or(DataType::Float64);
         if self.pairs.is_empty() {
-            out.insert("time_refresh".into(), DataType::Float64);
+            out.insert("time_refresh".into(), time);
             for n in &self.names {
                 out.insert(format!("{n}_value").into(), DataType::Float64);
             }
@@ -377,7 +420,7 @@ impl RefreshTime {
             out.insert("retained_fraction".into(), DataType::Float64);
         } else {
             out.insert("pair".into(), DataType::String);
-            out.insert("time_refresh".into(), DataType::Float64);
+            out.insert("time_refresh".into(), time);
             out.insert("a_value".into(), DataType::Float64);
             out.insert("b_value".into(), DataType::Float64);
             out.insert("n_obs_a".into(), DataType::Int64);
@@ -450,7 +493,7 @@ impl RefreshTime {
         let value = df.column(cols.value)?.cast(&DataType::Float64)?;
         let value = value.f64()?;
         let by = match cols.group {
-            Some(b) => Some(df.column(b)?.cast(&DataType::String)?),
+            Some(b) => Some(key_text(df.column(b)?)?),
             None => None,
         };
         let by = by.as_ref().map(|s| s.str()).transpose()?;
@@ -573,28 +616,22 @@ impl RefreshTime {
         points: Vec<Point>,
     ) -> PolarsResult<DataFrame> {
         let h = points.len();
-        let time = df.column(cols.clock)?.cast(&DataType::Float64)?;
-        let time = time.f64()?;
+        // The row of each point's completing tick, which every column taken
+        // from the input is read at.
+        let idx: Vec<IdxSize> = points
+            .iter()
+            .map(|(_, _, row, ..)| *row as IdxSize)
+            .collect();
         let mut out: Vec<Column> = Vec::new();
         if let Some(b) = cols.group {
             // The keys are held as text, because that is what a group key
-            // is here -- but the column goes back out in the dtype it came
-            // in as, so the result joins to the input it came from
-            // (docs/REVIEW-E54-E64.md RT1). The cast cannot fail: every
-            // string here was produced by casting a value of that dtype.
-            let dtype = df.column(b)?.dtype().clone();
-            let col = Column::new(
-                b.into(),
-                points
-                    .iter()
-                    .map(|(k, ..)| k.as_str().map(str::to_string))
-                    .collect::<Vec<_>>(),
-            );
-            out.push(if dtype == DataType::String {
-                col
-            } else {
-                col.cast(&dtype)?
-            });
+            // is here, but the column goes out as the input's own values at
+            // the completing ticks, in the dtype they came in as, so the
+            // result joins to the input it came from (docs/REVIEW-E54-E64.md
+            // RT1). The text cast back made a Datetime(us), a Time or a
+            // Struct key null, and failed for a Boolean or a zoned Datetime
+            // (task 160, PA4).
+            out.push(df.column(b)?.take_slice(&idx)?.with_name(b.into()));
         }
         let pair_of = |pi: usize| {
             let (a, b) = self.pairs[pi];
@@ -609,13 +646,14 @@ impl RefreshTime {
                     .collect::<Vec<_>>(),
             ));
         }
-        out.push(Column::new(
-            "time_refresh".into(),
-            points
-                .iter()
-                .map(|(_, _, row, ..)| time.get(*row))
-                .collect::<Vec<_>>(),
-        ));
+        // The completing tick's clock as the input has it: a nanosecond clock
+        // read as a Float64 lost its last digits, and a Datetime came out as
+        // a bare number (task 160, PA6).
+        out.push(
+            df.column(cols.clock)?
+                .take_slice(&idx)?
+                .with_name("time_refresh".into()),
+        );
         let value_names: Vec<String> = if self.pairs.is_empty() {
             self.names.iter().map(|n| format!("{n}_value")).collect()
         } else {
@@ -651,7 +689,7 @@ impl RefreshTime {
             points
                 .iter()
                 .map(|(_, _, _, ticks, _)| {
-                    let total: u64 = ticks.iter().sum();
+                    let total: u64 = ticks.iter().fold(0, |a, &t| a.saturating_add(t));
                     if total == 0 {
                         f64::NAN
                     } else {
@@ -661,12 +699,7 @@ impl RefreshTime {
                 .collect::<Vec<_>>(),
         ));
         for k in cols.keep {
-            let col = df.column(k.as_str())?;
-            let idx: Vec<IdxSize> = points
-                .iter()
-                .map(|(_, _, row, ..)| *row as IdxSize)
-                .collect();
-            let taken = col.take_slice(&idx)?;
+            let taken = df.column(k.as_str())?.take_slice(&idx)?;
             out.push(taken.with_name(k.as_str().into()));
         }
         DataFrame::new(h, out)
@@ -1145,5 +1178,108 @@ mod tests {
         }
         let mut unlimited = RefreshTime::new(names, false).unwrap();
         assert!(unlimited.feed(&long(&rows), &cols(&[])).is_err());
+    }
+
+    /// Task 160, PA4: a zoned Datetime group was refused, its cast to text
+    /// failing -- this build formats no zone. It is keyed by its instant and
+    /// comes back as the input had it, zone and all.
+    #[test]
+    fn a_zoned_datetime_group_comes_back_as_it_went_in() {
+        let tz = TimeZone::opt_try_new(Some("Europe/Amsterdam")).unwrap();
+        let g = Int64Chunked::new("g".into(), [0i64, 0, 0, 3_600_000, 3_600_000, 3_600_000])
+            .into_datetime(TimeUnit::Milliseconds, tz)
+            .into_series();
+        let dtype = g.dtype().clone();
+        assert!(
+            matches!(dtype, DataType::Datetime(_, Some(_))),
+            "a zoned column: {dtype}"
+        );
+        let df = df!(
+            "series" => ["a", "b", "c", "a", "b", "c"],
+            "t" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "v" => [1.0; 6],
+            "g" => g.clone(),
+        )
+        .unwrap();
+        let names: Vec<String> = ["a", "b", "c"].map(str::to_string).to_vec();
+        let mut rt = RefreshTime::new(names, false).unwrap();
+        let cols = RefreshCols {
+            series: "series",
+            clock: "t",
+            value: "v",
+            group: Some("g"),
+            keep: &[],
+        };
+        let out = rt.feed(&df, &cols).unwrap();
+        let got = out.column("g").unwrap();
+        assert_eq!(got.dtype(), &dtype);
+        let want = g.take_slice(&[2, 5]).unwrap();
+        assert!(got.as_materialized_series().equals(&want), "{got:?}");
+    }
+
+    /// Task 160, PA5: a state whose grids do not fit its series is refused at
+    /// load. A grid narrower than the series panicked at the next tick of a
+    /// series past its width; a `pending` count other than the series still
+    /// unseen wrapped below zero, or never reached it, so the grid never
+    /// completed a point again.
+    #[test]
+    fn a_state_whose_grids_do_not_fit_its_series_is_refused() {
+        type Case<'a> = (&'a str, &'a dyn Fn(&mut RefreshFile));
+        let names: Vec<String> = ["a", "b", "c"].map(str::to_string).to_vec();
+        let reencoded = |pairs: bool, edit: &dyn Fn(&mut RefreshFile)| {
+            let mut rt = RefreshTime::new(names.clone(), pairs).unwrap();
+            rt.feed(&long(&[("a", 1.0, 1.0), ("b", 2.0, 2.0)]), &cols(&[]))
+                .unwrap();
+            let mut file: RefreshFile = rmp_serde::from_slice(&rt.save_bytes().unwrap()).unwrap();
+            edit(&mut file);
+            rmp_serde::to_vec_named(&file).unwrap()
+        };
+        let joint: Vec<Case> = vec![
+            ("a grid one series wide", &|f| {
+                f.states[0].1[0].series.truncate(1)
+            }),
+            ("a grid four series wide", &|f| {
+                f.states[0].1[0].series.push(SeriesState::default());
+            }),
+            ("pending 0, a series unseen", &|f| {
+                f.states[0].1[0].pending = 0
+            }),
+            ("pending 7 of three series", &|f| {
+                f.states[0].1[0].pending = 7
+            }),
+            ("a second joint grid", &|f| {
+                let g = f.states[0].1[0].clone();
+                f.states[0].1.push(g);
+            }),
+            ("no grid at all", &|f| f.states[0].1.clear()),
+        ];
+        for (what, edit) in joint {
+            let bytes = reencoded(false, edit);
+            match RefreshTime::load_bytes(&bytes, names.clone(), false, false) {
+                Err(e) => assert!(e.contains("damaged"), "{what}: {e}"),
+                Ok(_) => panic!("{what}: loaded"),
+            }
+        }
+        // Under pairs, one two-series grid per pair.
+        let paired: Vec<Case> = vec![
+            ("a pair's grid three wide", &|f| {
+                f.states[0].1[1].series.push(SeriesState::default());
+            }),
+            ("a pair short", &|f| {
+                f.states[0].1.pop();
+            }),
+        ];
+        for (what, edit) in paired {
+            let bytes = reencoded(true, edit);
+            match RefreshTime::load_bytes(&bytes, names.clone(), true, false) {
+                Err(e) => assert!(e.contains("damaged"), "{what}: {e}"),
+                Ok(_) => panic!("{what}: loaded"),
+            }
+        }
+        // And the untouched states load.
+        for pairs in [false, true] {
+            let bytes = reencoded(pairs, &|_| {});
+            assert!(RefreshTime::load_bytes(&bytes, names.clone(), pairs, false).is_ok());
+        }
     }
 }

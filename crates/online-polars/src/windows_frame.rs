@@ -20,7 +20,7 @@ use online_core::{ClockCfg, ClockValue};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::nanos_array;
+use crate::arrow::{key_text, nanos_array};
 use crate::formula::{Formula, Node, OpNode};
 use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
@@ -909,16 +909,18 @@ impl WindowsRun {
             }
         }
         let n = df.height();
+        // Keys are text, a zoned Datetime's its instant, as the bank keys
+        // them: the cast to text failed on one (task 160, PA4b).
         let session: Option<Vec<u64>> = match &self.config.session {
             None => None,
             Some(c) => {
-                let s = df.column(c.as_str())?.cast(&DataType::String)?;
+                let s = key_text(df.column(c.as_str())?.as_materialized_series())?;
                 Some(s.str()?.iter().map(session_hash).collect())
             }
         };
         let group_col = match &self.config.group {
             None => None,
-            Some(c) => Some(df.column(c.as_str())?.cast(&DataType::String)?),
+            Some(c) => Some(key_text(df.column(c.as_str())?.as_materialized_series())?),
         };
         let groups = group_col.as_ref().map(|c| c.str()).transpose()?;
         let keys: Vec<Option<&str>> = (0..n)
@@ -1089,9 +1091,7 @@ impl WindowsRun {
         let head = df.slice(0, 1);
         let key = match &self.config.group {
             None => Some(String::new()),
-            Some(c) => head
-                .column(c.as_str())?
-                .cast(&DataType::String)?
+            Some(c) => key_text(head.column(c.as_str())?.as_materialized_series())?
                 .str()?
                 .get(0)
                 .map(str::to_string),
@@ -1099,7 +1099,7 @@ impl WindowsRun {
         let session = match &self.config.session {
             None => None,
             Some(c) => {
-                let s = head.column(c.as_str())?.cast(&DataType::String)?;
+                let s = key_text(head.column(c.as_str())?.as_materialized_series())?;
                 Some(session_hash(s.str()?.get(0)))
             }
         };
@@ -1657,6 +1657,8 @@ impl WindowsRun {
                  without bumping the version ({e})"
             )
         })?;
+        // A duration compares by its length, so "5000ms" is the call that
+        // saved "5s" (task 160, PC3).
         if file.config != config {
             return Err(format!(
                 "{WHO}: the state was saved by another call -- other formulas or another clock \
@@ -1837,6 +1839,65 @@ mod tests {
             "wide" => t.iter().map(|v| format!("row {v} {}", "pad".repeat(20))).collect::<Vec<_>>(),
         )
         .unwrap()
+    }
+
+    /// Task 160, PB2: without a clock a row is one step, and a cap on it cut
+    /// every window at every row (a gap of 1 past a cap of 0.5).
+    #[test]
+    fn gap_cap_needs_a_clock() {
+        let input = frame(&[0.0, 1.0]).schema().clone();
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {"half_life": 10, "window_size": 3}]}], "gap_cap": 0.5}"#,
+            ),
+            &input,
+        )
+        .err()
+        .expect("refused");
+        assert!(err.contains("with_windows: gap_cap needs clock"), "{err}");
+    }
+
+    /// Task 160, PC3: a state compares its call by length, not by how a
+    /// length was written: "5000ms" resumes the call that saved "5s", and
+    /// the rows it holds go on to the same values.
+    #[test]
+    fn a_state_resumes_another_spelling_of_one_length() {
+        let df = df!(
+            "t" => Series::new("t".into(), [0i64, 1_000, 2_000, 3_000, 4_000, 5_000])
+                .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+                .unwrap(),
+            "x" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        )
+        .unwrap();
+        let call = |cap: &str, window: &str| {
+            config(&format!(
+                r#"{{"formulas": [{{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {{"half_life": "1h", "window_size": "{window}"}}]}}], "clock": "t",
+                "gap_cap": "{cap}"}}"#
+            ))
+        };
+        let mut whole = WindowsRun::new(call("5s", "2s"), df.schema()).unwrap();
+        let mut want = whole.feed(&df, None).unwrap();
+        want.vstack_mut(&whole.finish().unwrap()).unwrap();
+        let mut first = WindowsRun::new(call("5s", "2s"), df.schema()).unwrap();
+        let got = first.feed(&df.slice(0, 3), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        for (cap, window) in [("5000ms", "2s"), ("5s", "2000ms")] {
+            let mut second = WindowsRun::load_bytes(&bytes, call(cap, window), df.schema())
+                .unwrap_or_else(|e| panic!("{cap}, {window}: {e}"));
+            let mut out = got.clone();
+            out.vstack_mut(&second.feed(&df.slice(3, 3), None).unwrap())
+                .unwrap();
+            out.vstack_mut(&second.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cap}, {window}");
+        }
+        assert!(
+            WindowsRun::load_bytes(&bytes, call("6s", "2s"), df.schema())
+                .err()
+                .expect("another length is another call")
+                .contains("another call")
+        );
     }
 
     fn values_ptr(df: &DataFrame, c: &str) -> *const f64 {

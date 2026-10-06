@@ -1700,6 +1700,16 @@ pub(crate) fn clock_cfg_of(p: &ClockPolicy<'_>) -> Result<ClockCfg, String> {
     if p.clock.is_some() && p.gap_cap.is_none() {
         return Err(format!("{who}: gap_cap is required when clock is given"));
     }
+    // The cap is on the clock's step. Without a clock every row is one step,
+    // and a cap was taken and applied to it: `gap_cap = 0.5` halved every
+    // decay step, marked every row capped and cleared every lag at every row
+    // (task 160, PB2). Refused, as `restart_after_step_back` is.
+    if p.clock.is_none() && p.gap_cap.is_some() {
+        return Err(format!(
+            "{who}: gap_cap needs clock; it caps the step from one clock value to the \
+             next, and without a clock every row is one step"
+        ));
+    }
     // The cap is a cap on a step and nothing else (task 120, decided
     // 2026-09-28). A negative one clipped every delta to it, so the decay
     // *grew* (`n_eff` ran to 6e7 on 50 rows with `gap_cap = -5`); NaN
@@ -2017,8 +2027,9 @@ pub struct Spec {
     pub half_life: Option<SpanList>,
     #[serde(default)]
     pub lam: Option<f64>,
-    /// Ceiling on the clock delta, in clock units: finite and positive, and
-    /// required with a clock. It caps the step between two rows a model
+    /// Ceiling on the clock delta, in clock units: finite and positive,
+    /// required with a clock and refused without one (task 160, PB2), where
+    /// every row is one step. It caps the step between two rows a model
     /// learns from, so a run of skipped rows hands the row after it at most
     /// this much clock (review 2026-09-12, S3); a step the ceiling cut is a
     /// break, which clears `ew_cov`'s and `marginal`'s lagged co-moments,
@@ -2048,9 +2059,10 @@ pub struct Spec {
     /// from rows whose predictions are withheld. Each target's threshold is
     /// checked against that target's own weight -- the rows it was present
     /// on, inside the window under one -- where the model keeps one
-    /// (`ewridge`, `lasso`, `kalman`, `huber`, `quantile`, `holt`), and
-    /// against the shared `n_eff` otherwise; the emitted `n_eff` is the
-    /// shared weight either way (review 2026-09-12, S2).
+    /// (`ewridge`, `lasso`, `kalman`, `huber`, `quantile`, `holt`, and since
+    /// task 158 `sgd`, `pa`, `ftrl` and `rls`), and against the shared
+    /// `n_eff` otherwise; the emitted `n_eff` is the shared weight either way
+    /// (review 2026-09-12, S2).
     pub min_weight: Option<FloatOrList>,
     /// Withhold predictions until the decay window has filled this far
     /// toward steady state: `settled_frac = 1 − 2^(−T/h)`, `T` the decay
@@ -2170,8 +2182,11 @@ pub struct Spec {
     pub resid_autocorr_lag: Option<usize>,
     /// Emit `drift_<slot>`: a Page-Hinkley detector on each slot's absolute
     /// out-of-sample residual, true on the row where a break is detected.
-    /// Complements the half-life: decay forgets smoothly and always, drift
-    /// detection notices a break and says so.
+    /// Under `embargo` a residual reaches the detector when its label is
+    /// released, so the flag is on the row whose clock released the label
+    /// that tripped it; that label's own row is out already (task 160,
+    /// PB1). Complements the half-life: decay forgets smoothly and always,
+    /// drift detection notices a break and says so.
     #[serde(default)]
     pub emit_drift: bool,
     /// Change magnitude the drift detector tolerates before accumulating,
@@ -2182,8 +2197,11 @@ pub struct Spec {
     #[serde(default)]
     pub drift_threshold: Option<f64>,
     /// What a detection does besides setting the flag: `"flag"` (default) or
-    /// `"reset"`, which restarts this stream's models the way a clock reset
-    /// does.
+    /// `"reset"`, which restarts this stream's models and their residual
+    /// diagnostics on the flagged row, before it is scored under `embargo`
+    /// and after it is learned from otherwise. Unlike a clock reset it
+    /// keeps the rows `embargo` holds: they teach the restarted models as
+    /// they are released.
     #[serde(default)]
     pub drift_action: Option<String>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
@@ -2373,6 +2391,14 @@ impl Spec {
             }
             (Some(h), None) => {
                 let hs = h.to_vec();
+                // An empty grid built no model instance at all, and the
+                // output struct had no field (task 160, PB3).
+                if hs.is_empty() {
+                    return Err(format!(
+                        "spec {:?}: half_life names no half-life; give one or a grid",
+                        self.name
+                    ));
+                }
                 // `!(h > 0)` rather than `h <= 0` so NaN is refused too: it
                 // decays every accumulator to NaN and nothing washes it out.
                 if hs.iter().any(|&h| !positive(h)) {
@@ -2626,8 +2652,8 @@ impl Spec {
         if let Some(d) = self.embargo.as_ref().map(Span::value) {
             if d.is_nan() || !d.is_finite() || d <= 0.0 {
                 return Err(format!(
-                    "spec {:?}: embargo must be finite and > 0 (got {d}); 0 is no delay, \
-                     which is the default",
+                    "spec {:?}: embargo must be finite and > 0 (got {d}); leave it out for no \
+                     delay",
                     self.name
                 ));
             }
@@ -2821,6 +2847,21 @@ impl Spec {
                     "spec {:?}: a comparison reads two other specs' residuals, not a formula \
                      target",
                     self.name
+                ));
+            }
+            // The bank adds the target beside the columns its formula reads,
+            // so it cannot be one of them. The builder has said so since task
+            // 159 (P1); a spec written as a dict or in TOML was refused only
+            // at its first chunk (task 160, PB5).
+            if let Some(t) = self.targets.defs().iter().find(|t| {
+                t.formula
+                    .as_ref()
+                    .is_some_and(|tree| tree.columns().contains(&t.name))
+            }) {
+                return Err(format!(
+                    "spec {:?}: target {:?} is named after a column its formula reads, so it \
+                     could never be added beside that column: give it a name of its own",
+                    self.name, t.name
                 ));
             }
         }
@@ -3147,8 +3188,10 @@ impl Spec {
                 loss,
                 huber_delta,
                 quantile,
+                eps,
                 learning_rate,
                 schedule,
+                power,
                 ..
             } => {
                 if let Some(l) = loss {
@@ -3196,6 +3239,33 @@ impl Spec {
                         "spec {:?}: huber_delta must be > 0 (\"inf\" is the squared loss)",
                         self.name
                     ));
+                }
+                // A parameter of a loss or a schedule the spec does not use
+                // is refused, as a switch that is off is: each was taken and
+                // ignored. The builder has refused them since task 160 (YA8);
+                // a dict or a TOML file is refused here, in its words (YA8b).
+                // A null is the default, not a value given.
+                let loss = loss.as_deref().unwrap_or("squared");
+                let schedule = schedule.as_deref().unwrap_or("constant");
+                for (key, given, what, owner, chosen) in [
+                    ("huber_delta", huber_delta.is_some(), "loss", "huber", loss),
+                    ("quantile", quantile.is_some(), "loss", "quantile", loss),
+                    ("eps", eps.is_some(), "loss", "epsilon_insensitive", loss),
+                    (
+                        "power",
+                        power.is_some(),
+                        "schedule",
+                        "inv_scaling",
+                        schedule,
+                    ),
+                ] {
+                    if given && chosen != owner {
+                        return Err(format!(
+                            "spec {:?}: sgd {key} is for {what} {owner:?}; {what} {chosen:?} \
+                             does not use it",
+                            self.name
+                        ));
+                    }
                 }
             }
             ModelKind::EwCov {
@@ -4170,5 +4240,106 @@ mod clock_tests {
             s.half_life.as_ref().unwrap().spans()[0],
             Span::Duration(_)
         ));
+    }
+
+    /// Task 160, PB2: the cap is on the clock's step, and without a clock a
+    /// row is one step. A cap of 0.5 was taken and halved every decay step,
+    /// marked every row capped and cleared every lag at every row.
+    #[test]
+    fn gap_cap_needs_a_clock() {
+        let err = spec(r#", "half_life": 10, "gap_cap": 0.5"#)
+            .check()
+            .unwrap_err();
+        assert!(err.contains("spec \"m\": gap_cap needs clock"), "{err}");
+        assert!(
+            spec(r#", "clock": "t", "half_life": 10, "gap_cap": 0.5"#)
+                .check()
+                .is_ok()
+        );
+    }
+
+    /// Task 160, PB3: an empty half-life grid built no model instance.
+    #[test]
+    fn an_empty_half_life_grid_is_refused() {
+        let err = spec(r#", "half_life": []"#).check().unwrap_err();
+        assert!(
+            err.contains("spec \"m\": half_life names no half-life; give one or a grid"),
+            "{err}"
+        );
+    }
+
+    /// Task 160, PB9: no delay is no embargo, not an embargo of 0.
+    #[test]
+    fn a_zero_embargo_is_told_to_leave_it_out() {
+        let err = spec(r#", "half_life": 10, "embargo": 0"#)
+            .check()
+            .unwrap_err();
+        assert!(
+            err.contains("embargo must be finite and > 0 (got 0); leave it out for no delay"),
+            "{err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sgd_tests {
+    use super::Spec;
+
+    fn sgd(model: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "sgd"{model}}}, "targets": ["y"],
+                "features": ["x"], "half_life": 10}}"#
+        ))
+        .unwrap()
+    }
+
+    /// Task 160, YA8b: a parameter of a loss or a schedule the spec does not
+    /// use was taken and ignored by every door; the builder refuses it now,
+    /// and so does the validation every spec meets, a dict's or a TOML
+    /// file's, naming the parameter and what reads it. A null is the
+    /// default, not a value given.
+    #[test]
+    fn a_parameter_its_loss_or_schedule_does_not_read_is_refused() {
+        for (model, want) in [
+            (
+                r#", "huber_delta": 0.5"#,
+                r#"sgd huber_delta is for loss "huber"; loss "squared" does not use it"#,
+            ),
+            (
+                r#", "quantile": 0.3"#,
+                r#"sgd quantile is for loss "quantile"; loss "squared" does not use it"#,
+            ),
+            (
+                r#", "loss": "huber", "eps": 0.2"#,
+                r#"sgd eps is for loss "epsilon_insensitive"; loss "huber" does not use it"#,
+            ),
+            (
+                r#", "power": 0.9"#,
+                r#"sgd power is for schedule "inv_scaling"; schedule "constant" does not use it"#,
+            ),
+            (
+                r#", "schedule": "adagrad", "power": 0.9"#,
+                r#"sgd power is for schedule "inv_scaling"; schedule "adagrad" does not use it"#,
+            ),
+        ] {
+            let err = sgd(model).check().unwrap_err();
+            assert!(
+                err.contains(&format!("spec \"m\": {want}")),
+                "{model}: {err}"
+            );
+        }
+        // Each beside what reads it, and every one null, is a spec.
+        for model in [
+            r#", "loss": "huber", "huber_delta": 0.5"#,
+            r#", "loss": "quantile", "quantile": 0.3"#,
+            r#", "loss": "epsilon_insensitive", "eps": 0.2"#,
+            r#", "schedule": "inv_scaling", "power": 0.9"#,
+            r#", "huber_delta": null, "quantile": null, "eps": null, "power": null"#,
+        ] {
+            assert!(sgd(model).check().is_ok(), "{model}");
+        }
+        // An unknown loss is named as unknown, not as the wrong owner.
+        let err = sgd(r#", "loss": "nope", "eps": 0.2"#).check().unwrap_err();
+        assert!(err.contains("unknown sgd loss \"nope\""), "{err}");
     }
 }

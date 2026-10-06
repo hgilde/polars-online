@@ -119,6 +119,9 @@ pub struct EwClassCfg {
 
 impl EwClassCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("ew_class: {e}"))?;
         if self.n_features == 0 {
             return Err("ew_class: n_features must be >= 1".into());
         }

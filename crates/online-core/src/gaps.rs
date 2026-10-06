@@ -577,6 +577,7 @@ impl crate::Footprint for AccSnap {
                 crate::window::floats(t.means())
                     + crate::window::floats(t.vars())
                     + crate::window::floats(t.q())
+                    + crate::window::floats(t.means_lo())
             })
     }
 }
@@ -656,10 +657,12 @@ impl Acc {
     pub(crate) fn snapshot(&self, lam: f64) -> AccSnap {
         let mut cross = self.cross.clone();
         cross.w *= lam;
-        // The window's subtraction reads the means' doubles alone
-        // (`Cross::truncated`), so a snapshot carries no low parts: `k + T`
-        // doubles a snapshot the ring would otherwise hold for nothing
-        // (review 2026-09-26, C9).
+        // The window's subtraction reads the cross accumulator's means as
+        // doubles alone (`Cross::truncated`), so its snapshot carries no low
+        // parts: `k + T` doubles a snapshot the ring would otherwise hold for
+        // nothing (review 2026-09-26, C9). The target moments' do come, `T`
+        // doubles, since their truncation reads the pairs (`TargetMoments::
+        // decayed`; review 2026-10-05, CB2).
         cross.m_lo = Vec::new();
         cross.my_lo = Vec::new();
         cross.mj_lo = Vec::new();
@@ -761,7 +764,8 @@ impl Acc {
     /// truncating the moments themselves, for the readiness statistics a
     /// row reads (docs/WARMUP-AND-CONVERGENCE.md §2.1). `None` where
     /// [`Self::window`] is; an entry is `None` for a Gram with nothing left
-    /// in the window, or no Kish sum.
+    /// in the window, no Kish sum, or a Kish sum the subtraction leaves no
+    /// digit of (`Q_R` within `64 ε` of `Q`; review 2026-10-05, CE6b).
     pub(crate) fn window_kish(&self, old: &AccSnap, f: f64) -> Option<Vec<Option<f64>>> {
         if old.cross.w == 0.0 {
             return None;
@@ -772,8 +776,12 @@ impl Acc {
                     let live = &self.grams.grams[g];
                     let then = self.grams.ancestor(g, &old.grams.of, &old.grams.grams)?;
                     let w = live.n_eff() - f * then.w;
-                    let q = live.q_sum()? - f * f * then.q?;
-                    (w > EMPTY_FRACTION * live.n_eff() && w.is_finite() && q > 0.0)
+                    let q_now = live.q_sum()?;
+                    let q = q_now - f * f * then.q?;
+                    // A Kish sum the subtraction leaves no digit of is no
+                    // size (`crate::truncated`; review 2026-10-05, CE6b).
+                    let digits = q > 64.0 * f64::EPSILON * q_now;
+                    (w > EMPTY_FRACTION * live.n_eff() && w.is_finite() && digits)
                         .then(|| w * w / q)
                 })
                 .collect(),
@@ -1425,5 +1433,140 @@ mod tests {
         let (acc, snap) = windowed(1.0, Some(3.0));
         let got = acc.window_kish(&snap, 1.0).unwrap()[0].unwrap();
         assert!(close(got, 1.0, 1e-12), "{got}");
+    }
+
+    /// Kish's sizes inside a window, `W_R² / Q_R` for a Gram and for each
+    /// target, are read from remainders of subtractions, and `Q_R` loses its
+    /// digits first: a window of light rows holds the squares of their
+    /// weights. Where it keeps some, each size is the rows inside the
+    /// window's, to the digits kept; where the subtraction leaves none --
+    /// `Q_R` within `64 ε` of the sum it came from -- there is no size, not
+    /// one made of rounding: the Gram's read 10.75 against 11 with the
+    /// window's rows at 1e-6 (review 2026-10-05, CE6b; CE6's rule in
+    /// `marginal`). A thousand unit rows, then eleven light ones after the
+    /// snapshot, no decay.
+    #[test]
+    fn kish_sizes_inside_a_window_are_the_rows_inside_or_nothing() {
+        let gaps = TargetGaps::Pairwise;
+        let row = |i: usize, w: f64| -> Row {
+            let z = vec![1.0, 0.5 + 0.01 * (i % 7) as f64];
+            (z, vec![Some(1.0 + 0.1 * (i % 5) as f64)], w)
+        };
+        for (light, digits) in [
+            (1e-3, true),
+            (1e-5, true),
+            (1e-6, false),
+            (1e-7, false),
+            (1e-9, false),
+        ] {
+            let heavy: Vec<Row> = (0..1000).map(|i| row(i, 1.0)).collect();
+            let mut acc = learned(&heavy, 1.0, gaps);
+            let snap = acc.snapshot(1.0);
+            for i in 0..11 {
+                let (z, y, w) = row(i, light);
+                acc.learn(&z, &y, 1.0, w, gaps);
+            }
+            let gram = acc.window_kish(&snap, 1.0).unwrap()[0];
+            let view = acc.window(&snap, 1.0).unwrap();
+            let target = view.tm.as_ref().unwrap().n_kish(&view.wj)[0];
+            for (what, got) in [("the Gram's", gram), ("the target's", target)] {
+                if digits {
+                    // Eleven rows of one weight: `(11 w)² / (11 w²) = 11`.
+                    let got = got.unwrap_or_else(|| panic!("{light}: {what}: no size"));
+                    assert!(close(got, 11.0, 1e-3), "{light}: {what}: {got}");
+                } else {
+                    assert_eq!(got, None, "{light}: {what}");
+                }
+            }
+        }
+    }
+
+    /// A target held at one value over every row inside a window has no
+    /// spread there, as a feature held there has none
+    /// (`crate::window`'s `a_feature_constant_inside_the_window_has_no_spread_there`):
+    /// the window's target moments, which the Gram export reports, read a
+    /// variance of exactly 0 and the value held as the mean. The target
+    /// side's subtraction had neither of `crate::truncated`'s guards and
+    /// read the snapshot's means without their low parts, so a target held
+    /// at 1e8 over a window of 30 exported a variance of 2.5e-9 (review
+    /// 2026-10-05, CB2). A target that moves inside the window keeps its
+    /// spread, against the definition.
+    #[test]
+    fn a_target_held_over_the_window_has_no_spread_there() {
+        use crate::{EwRidge, EwRidgeCfg, OnlineModel};
+        for level in [0.5, 1e3, 1e8, -1e8] {
+            for (window, h, held) in [
+                (30.0, 50.0, 100usize),
+                (9.0, 10.0, 12),
+                (0.5, 40.0, 3),
+                (199.0, 70.0, 230),
+                (1999.0, 2.0, 2100),
+            ] {
+                let mut m = EwRidge::new(EwRidgeCfg {
+                    n_features: 1,
+                    n_targets: 2,
+                    fit_intercept: true,
+                    decay: crate::Decay::Halflife(h),
+                    ridge: vec![1e-6],
+                    feature_sets: vec![],
+                    standardize: false,
+                    ridge_scale: false,
+                    coef_prior: None,
+                    session_shrink: None,
+                    long_half_life: None,
+                    min_weight: 3.0,
+                    solve_every: 0.0,
+                    max_rows_between_solves: 1,
+                    solve_share: None,
+                    gram_block_rows: 0,
+                    target_gaps: TargetGaps::OwnRows,
+                    window: Some(window),
+                    window_every: None,
+                })
+                .unwrap();
+                let n = 300 + held;
+                let mut s = 2u64;
+                let lam = crate::Decay::Halflife(h).factor(1.0);
+                let mut inside = Vec::new();
+                for i in 0..n {
+                    let x = lcg(&mut s);
+                    let y0 = if i >= n - held {
+                        level + 0.37
+                    } else {
+                        level + lcg(&mut s)
+                    };
+                    let y1 = level + 0.5 * x + lcg(&mut s);
+                    let w = 0.75 + 0.5 * lcg(&mut s).abs();
+                    m.step(
+                        &[x],
+                        &[Some(y0), Some(y1)],
+                        if i == 0 { 0.0 } else { 1.0 },
+                        w,
+                    );
+                    if (i as f64) >= (n - 1) as f64 - window {
+                        inside.push((y1, w * lam.powi((n - 1 - i) as i32)));
+                    }
+                }
+                let case = format!("level {level}, window {window}, h {h}");
+                let tm = m.gram_parts().1.expect("the window's target moments");
+                assert_eq!(tm.vars()[0], 0.0, "{case}: the held target");
+                let mean = tm.means()[0];
+                assert!(
+                    (mean - (level + 0.37)).abs() <= 1e-12 * level.abs().max(1.0),
+                    "{case}: the value held is the mean, {mean}"
+                );
+                let total: f64 = inside.iter().map(|r| r.1).sum();
+                let m1 = inside.iter().map(|r| r.0 * r.1).sum::<f64>() / total;
+                let v1 = inside.iter().map(|r| r.1 * (r.0 - m1).powi(2)).sum::<f64>() / total;
+                if window >= 1.0 {
+                    let got = tm.vars()[1];
+                    assert!(
+                        (got - v1).abs() <= 1e-6 * v1,
+                        "{case}: the moving target {got} against {v1}"
+                    );
+                }
+                let _ = OnlineModel::n_outputs(&m);
+            }
+        }
     }
 }

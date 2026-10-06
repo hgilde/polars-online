@@ -973,6 +973,11 @@ class TestRefusals:
             ),
             (dict(coef_min=INF), r"coef_min\[0\] is inf \(use -inf for no bound\)"),
             (dict(coef_max=-INF), r"coef_max\[0\] is -inf \(use inf for no bound\)"),
+            # A list of the wrong length bounds nothing it could name, and was
+            # dropped unchecked when every entry was infinite (task 160, PB4).
+            (dict(coef_min=[-INF]), "coef_min lists 1 bounds for 3 features"),
+            (dict(coef_min=[]), "coef_min lists 0 bounds for 3 features"),
+            (dict(coef_max=[INF] * 4), "coef_max lists 4 bounds for 3 features"),
         ],
     )
     @pytest.mark.parametrize("builder", [po.spec.sgd, po.spec.pa])

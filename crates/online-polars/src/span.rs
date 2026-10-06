@@ -160,11 +160,25 @@ pub fn format_duration(ns: i64) -> String {
 
 /// A duration as a spec wrote it: the text, kept for display and for the
 /// round trip, and its length.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Two durations are equal when their lengths are: `"5s"` is `"5000ms"`.
+/// Compared as written, a state saved with `gap_cap = "5s"` refused
+/// `"5000ms"` as another clock policy (task 160, PC3). The text still names
+/// a grid's fields (`@h10m`), so a spec that spells a half-life another way
+/// labels its outputs that way.
+#[derive(Debug, Clone)]
 pub struct Duration {
     pub text: String,
     pub nanos: i64,
 }
+
+impl PartialEq for Duration {
+    fn eq(&self, other: &Self) -> bool {
+        self.nanos == other.nanos
+    }
+}
+
+impl Eq for Duration {}
 
 impl Duration {
     /// The text is kept as written, less the whitespace around it, since it

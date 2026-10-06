@@ -85,7 +85,8 @@ struct Cli {
     #[arg(long)]
     predict: bool,
 
-    /// Validate the config and print the output schema without running.
+    /// Validate the config, open the input as the run would, and print the
+    /// output schema without running.
     #[arg(long)]
     dry_run: bool,
 
@@ -178,6 +179,13 @@ fn run() -> Result<(), String> {
     };
 
     if cli.dry_run {
+        // What the run reads first, read now: the dry run said "config OK"
+        // for an input that is not there (task 160, YB12). The schema is
+        // the source's metadata, a parquet footer or a CSV's first rows; a
+        // glob or a directory resolves as the run's scan would.
+        cfg.scan()
+            .and_then(|mut lf| lf.collect_schema().map(|_| ()))
+            .map_err(|e| format!("input {}: {e}", cfg.input.display()))?;
         println!("config OK: {} spec(s)", cfg.specs.len());
         for spec in &cfg.specs {
             println!("  {} ({}):", spec.name, spec.model.kind_name());

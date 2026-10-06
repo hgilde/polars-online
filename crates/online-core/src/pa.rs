@@ -86,6 +86,9 @@ impl PaCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("pa: {e}"))?;
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("pa: n_features and n_targets must be >= 1".into());
         }
@@ -806,5 +809,46 @@ mod tests {
         assert!(p.is_infinite(), "the prediction overflows: {p}");
         m.step(&[1e300], &[Some(0.0)], 1.0, 1.0);
         assert_eq!(m.coefficients()[0][0], big);
+    }
+
+    /// The bank's per-target `min_weight` gate reads each target's own
+    /// weight through the trait: `true`, and one entry a target, the decayed
+    /// weight of the rows that carried it -- a sparse second target its own
+    /// rows only (task 158, E14; the mutation run of 2026-10-05 left the
+    /// body replaced by `true` or `false` alive).
+    #[test]
+    fn the_trait_reports_each_targets_own_weight() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, PaMode::Pa1);
+        c.n_targets = 2;
+        c.decay = Decay::Halflife(10.0);
+        let mut m = Pa::new(c).unwrap();
+        let lam = Decay::Halflife(10.0).factor(1.0);
+        let (mut want0, mut want1) = (0.0f64, 0.0f64);
+        let mut s = 3u64;
+        for i in 0..30 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = 0.5 + lcg(&mut s).abs();
+            let y1 = (i % 4 == 1).then_some(x[1]);
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, w);
+            let f = if i == 0 { 1.0 } else { lam };
+            want0 = f * want0 + w;
+            want1 = f * want1 + if y1.is_some() { w } else { 0.0 };
+        }
+        let mut out = vec![7.0; 5];
+        assert!(m.target_n_eff_into(&mut out));
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(
+            (out[0] - want0).abs() <= 1e-12 * want0,
+            "{out:?} against {want0}"
+        );
+        assert!(
+            (out[1] - want1).abs() <= 1e-12 * want1,
+            "{out:?} against {want1}"
+        );
+        assert!(
+            out[1] < 0.5 * out[0],
+            "the sparse target's own weight: {out:?}"
+        );
     }
 }

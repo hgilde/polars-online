@@ -136,10 +136,13 @@ pub struct CorrChangeCfg {
     /// `"window"` compares. One number, because it is one concept -- the two
     /// kinds only differ in what they do with the block.
     pub span_rows: usize,
-    /// Nominal level; the critical value is `1 − alpha/npairs` under
-    /// Bonferroni.
+    /// Nominal level; under `monitor` and `sequential` the critical value is
+    /// `1 − alpha/npairs` under Bonferroni.
     pub alpha: f64,
-    /// `"bonferroni"` (default) or `"none"`.
+    /// `"bonferroni"` (default) or `"none"`: whether `monitor` and
+    /// `sequential` split `alpha` over the pairs. Under `window` it changes
+    /// nothing, since there is one statistic over all the pairs: the
+    /// permutation critical value is taken at `alpha`.
     pub alpha_adjust: String,
     /// `monitor`: the Bartlett bandwidth, `⌊ln T⌋` when `None`.
     pub bandwidth: Option<usize>,
@@ -162,13 +165,24 @@ pub struct CorrChangeCfg {
     #[serde(default)]
     pub monitor_rows: usize,
     /// `sequential`: the boundary's exponent `γ` in `w(b) = (1 + b)(b/(1 +
-    /// b))^γ`, `0 ≤ γ < 1/2`; 0 is the straight boundary `1 + b`.
+    /// b))^γ`, `0 ≤ γ ≤ 0.49`; 0 is the straight boundary `1 + b`. W&G
+    /// allow up to 1/2, but the critical value is solved for, and the
+    /// solve's work grows as `1/(1/2 − γ)`.
     #[serde(default)]
     pub boundary_gamma: f64,
 }
 
+/// The largest `boundary_gamma` a configuration may give. W&G's boundary
+/// takes `γ < 1/2`, but the critical value is solved for, and the solve's
+/// work grows as `1/(1/2 − γ)`: seconds here, and hours just under 1/2
+/// (review 2026-10-05, CD1).
+const MAX_BOUNDARY_GAMMA: f64 = 0.49;
+
 impl CorrChangeCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("corrchange: {e}"))?;
         if let Some(c) = self.crit {
             // A NaN never flags and a non-positive one flags every row, both
             // in silence (docs/REVIEW-E54-E64.md CC1).
@@ -223,9 +237,17 @@ impl CorrChangeCfg {
                             .into(),
                     );
                 }
-                if !(0.0..0.5).contains(&self.boundary_gamma) {
+                // Not up to 1/2: the critical value is solved for
+                // (`crate::boundary`), and the solve's work grows as 1/(1/2
+                // − γ). Measured under load on a release build, 0.9 s at
+                // 0.45, 2.8 s at 0.49 and 32 s at 0.499, and about an hour
+                // at 0.49999 by its step count, in every process and on
+                // every load (review 2026-10-05, CD1).
+                if !(0.0..=MAX_BOUNDARY_GAMMA).contains(&self.boundary_gamma) {
                     return Err(format!(
-                        "corrchange: boundary_gamma must be in [0, 0.5) (got {}); at 1/2 the \
+                        "corrchange: boundary_gamma must be in [0, {MAX_BOUNDARY_GAMMA}] (got {}); \
+                         the critical value's solve takes work that grows as 1/(1/2 − γ), \
+                         seconds at {MAX_BOUNDARY_GAMMA} and hours just under 1/2; at 1/2 the \
                          boundary is crossed with probability 1 whatever the data",
                         self.boundary_gamma
                     ));
@@ -2495,8 +2517,22 @@ mod tests {
         bad(seq_cfg(2, 7, 10, 0.0), "span_rows of at least 8");
         bad(seq_cfg(2, 20, 1, 0.0), "monitor_rows of at least 2");
         for g in [0.5, -0.1, f64::NAN, f64::INFINITY] {
-            bad(seq_cfg(2, 20, 10, g), "boundary_gamma must be in [0, 0.5)");
+            bad(seq_cfg(2, 20, 10, g), "boundary_gamma must be in [0, 0.49]");
         }
+        // Past 0.49 the critical value's solve, whose work grows as 1/(1/2 −
+        // γ), runs for minutes to hours in every process and on every load
+        // (review 2026-10-05, CD1): refused by `validate`, before it runs,
+        // and 0.49 itself kept. Read through `validate` alone, since the
+        // model a configuration builds solves for its critical value.
+        for g in [0.4999, 0.491, 0.49f64.next_up()] {
+            let e = seq_cfg(2, 20, 10, g).validate().unwrap_err();
+            assert!(
+                e.contains("boundary_gamma must be in [0, 0.49]"),
+                "{g}: {e}"
+            );
+            assert!(e.contains("1/(1/2 − γ)"), "{g}: the message says why: {e}");
+        }
+        seq_cfg(2, 20, 10, 0.49).validate().unwrap();
         bad(
             CorrChangeCfg {
                 bandwidth: Some(0),

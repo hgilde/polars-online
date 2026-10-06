@@ -1788,3 +1788,117 @@ def test_at_a_repeated_stamp_every_row_carries_the_stamps_total() -> None:
             assert got[i] == got[j], (i, j)
             tied += 1
     assert tied > 20
+
+
+# --------------------------------------------------------------------------
+# Task 160: the whole-project review of 2026-10-05
+
+
+def test_a_forward_window_whose_far_edge_is_the_last_row_before_a_break_is_whole() -> None:
+    """PC2: a window is the set of the stretch's timestamps in ``(t, t + w]``.
+    When its far edge is the stretch's last row, a break after that row
+    leaves every one of them arrived -- the backward mirror calls the same
+    window complete -- yet the core closed a forward window only on a row
+    strictly past its edge, and the break cut it: null by default, and the
+    row dropped under ``partial="drop"``. Under ``"left"`` and ``"none"`` the
+    far edge is outside, and a row on it closed the window already."""
+    df = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0],
+            "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0],
+        }
+    )
+
+    def run(frame: pl.DataFrame, **kw: Any) -> pl.DataFrame:
+        call = {"clock": "t", "gap_cap": 1.5} | kw
+        closed = call.pop("closed", "right")
+        partial = call.pop("partial", "null")
+        f = po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial)
+        return po.stream.with_windows(frame, f=f, **call)
+
+    # t = 1: (1, 3] holds 4 + 8; t = 2 and t = 3 reach past the stretch; the
+    # last stretch is still open when the input ends.
+    assert run(df)["f"].to_list() == [6.0, 12.0, None, None, None, None, None]
+    assert run(df, closed="both")["f"].to_list() == [7.0, 14.0, None, None, None, None, None]
+    dropped = run(df, partial="drop")
+    assert dropped["t"].to_list() == [0.0, 1.0, 10.0, 11.0, 12.0]
+    assert dropped["f"].to_list() == [6.0, 12.0, None, None, None]
+    # The rule that stands: the far edge outside the window.
+    assert run(df, closed="left")["f"].to_list() == [3.0, 6.0, None, None, 48.0, None, None]
+    assert run(df, closed="none")["f"].to_list() == [2.0, 4.0, None, None, 32.0, None, None]
+    # A session change in place of the gap is the same break.
+    sessions = pl.DataFrame(
+        {
+            "t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "s": ["a", "a", "a", "a", "b", "b"],
+            "x": [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+        }
+    )
+    out = run(sessions, gap_cap=100.0, session="s", session_gap=1.0)
+    assert out["f"].to_list()[:2] == [6.0, 12.0]
+
+
+def test_a_state_resumes_under_another_spelling_of_the_same_length(tmp_path: Any) -> None:
+    """PC3: a duration was compared as written, so a state saved with
+    ``gap_cap="5s"`` refused ``"5000ms"`` as another clock policy, and one
+    saved with ``window_size="2s"`` refused ``"2000ms"``. A length is its
+    nanoseconds. The forward operator holds rows across the save, so the
+    resumed run reads the rows the state holds as well as its own."""
+    df = pl.DataFrame(
+        {
+            "t": pl.Series([0, 1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000]).cast(
+                pl.Datetime("ms")
+            ),
+            "x": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        }
+    )
+
+    def run(frame: pl.DataFrame, gap_cap: str, window: str, **kw: Any) -> pl.DataFrame:
+        return po.stream.with_windows(
+            frame,
+            b=po.ewm_sum("x", half_life="1h", window_size=window),
+            f=po.rewm_sum("x", half_life="1h", window_size=window),
+            clock="t",
+            gap_cap=gap_cap,
+            **kw,
+        )
+
+    whole = run(df, "5s", "2s")
+    assert whole["f"].drop_nulls().len() > 3
+    state = tmp_path / "w.state"
+    first = run(df.head(4), "5s", "2s", save_state=state)
+    for gap_cap, window in [("5000ms", "2s"), ("5s", "2000ms"), ("5000000us", "2000ms")]:
+        second = run(df.slice(4), gap_cap, window, load_state=state)
+        assert pl.concat([first, second]).equals(whole), (gap_cap, window)
+    # Another length is still another call.
+    with pytest.raises(ValueError, match="another call"):
+        run(df.slice(4), "6s", "2s", load_state=state)
+
+
+def test_a_zoned_datetime_group_is_keyed_by_its_instant() -> None:
+    """PA4b: a zoned Datetime group or session column failed inside the
+    run with polars' own message, this build formatting no time zone. Its
+    keys are its instants: the windows of the UTC instants as a naive
+    column, whatever zone shows them -- Amsterdam shows the two groups at
+    one wall time -- and the rows come back with the input's own values."""
+    from test_error_messages import zoned_keys
+
+    def run(frame: pl.DataFrame) -> pl.DataFrame:
+        return po.stream.with_windows(
+            frame,
+            b=po.ewm_sum("x0", half_life=3.0),
+            f=po.rewm_sum("x0", half_life=3.0, window_size=4.0),
+            clock="t",
+            gap_cap=100.0,
+            group="g",
+            session="s",
+            session_gap=1.0,
+        )
+
+    want = run(zoned_keys(None))
+    assert want["f"].drop_nulls().len() > 20
+    for tz in ("Europe/Amsterdam", "America/New_York"):
+        df = zoned_keys(tz)
+        out = run(df)
+        assert out.select("b", "f").equals(want.select("b", "f")), tz
+        assert out.select(df.columns).equals(df), tz

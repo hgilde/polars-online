@@ -366,3 +366,135 @@ fn resume_rejects_mismatched_specs() {
         let _ = std::fs::remove_file(p);
     }
 }
+
+/// The `online` binary over a config written to `dir`, with `args` after
+/// `--config`: its exit status, stdout and stderr.
+fn online(dir: &Path, input: &Path, output: &Path, args: &[&str]) -> (bool, String, String) {
+    let toml = format!(
+        r#"
+input = "{}"
+output = "{}"
+chunk_rows = 100
+
+[[specs]]
+name = "ridge"
+targets = ["y"]
+features = ["x0", "x1"]
+clock = "t"
+half_life = 50.0
+gap_cap = 10.0
+group = "group"
+
+[specs.model]
+type = "ew_ridge"
+"#,
+        toml_path(input),
+        toml_path(output)
+    );
+    let cfg = dir.join("bank.toml");
+    std::fs::write(&cfg, toml).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_online"))
+        .arg("--config")
+        .arg(&cfg)
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = tmp(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Task 160, YB7: a `--save-state` that is a directory was found when the
+/// state was saved, after the run had read the input and published the
+/// output. It is refused before a row is read, naming the path.
+#[test]
+fn a_save_state_that_is_a_directory_is_refused_before_the_run() {
+    let dir = fresh_dir("yb7");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 300).unwrap();
+    let state = dir.join("a-directory");
+    std::fs::create_dir_all(&state).unwrap();
+    let (ok, _, err) = online(
+        &dir,
+        &input,
+        &output,
+        &["-q", "--save-state", state.to_str().unwrap()],
+    );
+    assert!(!ok, "the run succeeded");
+    assert!(
+        err.contains(&state.display().to_string()) && err.contains("is a directory"),
+        "{err}"
+    );
+    assert!(
+        !output.exists(),
+        "the output was written before the refusal"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Task 160, YB12: the dry run said "config OK" for an input that is not
+/// there. It reads what the run would read first, and fails naming it.
+#[test]
+fn a_dry_run_names_an_input_that_is_not_there() {
+    let dir = fresh_dir("yb12");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 50).unwrap();
+    let (ok, stdout, err) = online(&dir, &input, &output, &["--dry-run"]);
+    assert!(ok, "{err}");
+    assert!(stdout.contains("config OK"), "{stdout}");
+    let missing = dir.join("nope.parquet");
+    let (ok, stdout, err) = online(
+        &dir,
+        &input,
+        &output,
+        &["--dry-run", "--input", missing.to_str().unwrap()],
+    );
+    assert!(!ok, "{stdout}");
+    assert!(!stdout.contains("config OK"), "{stdout}");
+    assert!(err.contains(&missing.display().to_string()), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Task 160, YB13: `--no-output --predict` can never run -- a scoring run's
+/// product is its output -- and the refusal asked for `closed_groups` or
+/// `save_state`, both of which `--predict` refuses. It names `--predict`.
+#[test]
+fn no_output_with_predict_is_refused_naming_predict() {
+    let dir = fresh_dir("yb13");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 300).unwrap();
+    let state = dir.join("bank.state");
+    let (ok, _, err) = online(
+        &dir,
+        &input,
+        &output,
+        &["-q", "--save-state", state.to_str().unwrap()],
+    );
+    assert!(ok, "{err}");
+    for extra in [&[][..], &["--dry-run"][..]] {
+        let mut args = vec![
+            "--no-output",
+            "--predict",
+            "--resume",
+            state.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, _, err) = online(&dir, &input, &output, &args);
+        assert!(!ok, "{extra:?}");
+        assert!(
+            err.contains("predict") && err.contains("its output is its only product"),
+            "{extra:?}: {err}"
+        );
+        assert!(!err.contains("closed_groups"), "{extra:?}: {err}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

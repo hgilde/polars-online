@@ -64,8 +64,11 @@ impl ColumnStats {
     /// which path a column took.
     #[inline]
     fn push(&mut self, x: f64, n_row: u64, inv_row: f64) {
+        // Every count here saturates: a state file can carry one at the top
+        // of its range, and a wrapped count reads as a fresh one (task 160,
+        // PA2).
         if usable(x) {
-            self.count += 1;
+            self.count = self.count.saturating_add(1);
             let inv = if self.count == n_row {
                 inv_row
             } else {
@@ -77,7 +80,7 @@ impl ColumnStats {
             self.min = self.min.min(x);
             self.max = self.max.max(x);
         } else {
-            self.nulls += 1;
+            self.nulls = self.nulls.saturating_add(1);
         }
     }
 
@@ -104,7 +107,12 @@ impl ColumnStats {
     /// rows: the counts add up, the moments are finite, the range is a
     /// range. What [`DataSummary::validate`] asks of a loaded file.
     fn is_consistent(&self, fed: u64) -> bool {
-        if self.count + self.nulls != fed || !self.mean.is_finite() || !self.m2.is_finite() {
+        // Checked: a file's counts can sum past the top of the range, and a
+        // wrapped sum matched a small `fed` (task 160, PA2).
+        if self.count.checked_add(self.nulls) != Some(fed)
+            || !self.mean.is_finite()
+            || !self.m2.is_finite()
+        {
             return false;
         }
         if self.count == 0 {
@@ -219,7 +227,7 @@ impl DataSummary {
         clock: Option<f64>,
         i: usize,
     ) {
-        self.rows_fed += 1;
+        self.rows_fed = self.rows_fed.saturating_add(1);
         let n_row = self.rows_fed;
         let inv_row = 1.0 / n_row as f64;
         let nf = features.len();
@@ -238,7 +246,7 @@ impl DataSummary {
         {
             match targets.get(k) {
                 Some(t) => c.push(t[i], n_row, inv_row),
-                None => c.nulls += 1,
+                None => c.nulls = c.nulls.saturating_add(1),
             }
         }
         if let (Some(w), Some(c)) = (weight, self.columns.get_mut(nf + nt)) {
@@ -253,9 +261,11 @@ impl DataSummary {
     /// What the clock schedule found at the row just fed.
     #[inline]
     pub fn events(&mut self, session_changed: bool, backwards: bool, reset: bool) {
-        self.session_changes += u64::from(session_changed);
-        self.clock_backwards += u64::from(backwards);
-        self.resets += u64::from(reset);
+        self.session_changes = self
+            .session_changes
+            .saturating_add(u64::from(session_changed));
+        self.clock_backwards = self.clock_backwards.saturating_add(u64::from(backwards));
+        self.resets = self.resets.saturating_add(u64::from(reset));
     }
 
     /// A row accepted earlier, counted without a target, is learned from
@@ -263,7 +273,7 @@ impl DataSummary {
     /// review R1 D3).
     #[inline]
     pub fn learned_late(&mut self) {
-        self.rows_learned += 1;
+        self.rows_learned = self.rows_learned.saturating_add(1);
     }
 
     /// The row just fed was accepted: its weight, and whether the models
@@ -273,9 +283,9 @@ impl DataSummary {
     pub fn accepted(&mut self, w: f64, has_target: bool) {
         self.weight_sum += w;
         if w == 0.0 {
-            self.rows_zero_weight += 1;
+            self.rows_zero_weight = self.rows_zero_weight.saturating_add(1);
         } else if has_target {
-            self.rows_learned += 1;
+            self.rows_learned = self.rows_learned.saturating_add(1);
         }
     }
 
@@ -299,7 +309,9 @@ impl DataSummary {
         if self.rows_fed < rows_seen {
             return fail("fewer rows fed than processed");
         }
-        if self.rows_learned + self.rows_zero_weight > rows_seen {
+        // Saturating: `u64::MAX + 1` wrapped to 0 learned rows and loaded
+        // (task 160, PA2).
+        if self.rows_learned.saturating_add(self.rows_zero_weight) > rows_seen {
             return fail("more rows learned than processed");
         }
         if !(self.weight_sum.is_finite() && self.weight_sum >= 0.0) {
@@ -340,10 +352,12 @@ pub struct SummaryRow<'a> {
     pub readiness: Option<crate::stream::Readiness>,
 }
 
-/// The `summary` frame for these rows: `group`, `rows_fed`,
+/// The `summary` frame for these rows, 18 columns: `group`, `rows_fed`,
 /// `rows_processed`, `rows_skipped`, `rows_learned`, `rows_zero_weight`,
 /// `weight_sum`, `clock_min`, `clock_max`, `last_clock`, `session_changes`,
-/// `clock_backwards`, `resets`.
+/// `clock_backwards`, `resets`, and the readiness statistics
+/// (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`, `error_inflation`,
+/// `min_support_coef`, `min_support_coef_feature` and `n_coef`.
 pub fn summary_frame(rows: &[SummaryRow<'_>]) -> PolarsResult<DataFrame> {
     let s = |f: fn(&DataSummary) -> u64| -> Vec<Option<u64>> {
         rows.iter().map(|r| r.summary.map(f)).collect()

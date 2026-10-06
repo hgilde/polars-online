@@ -350,6 +350,9 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
         ("monitor", {"monitor_rows": 50}, '"sequential"'),
         ("monitor", {"boundary_gamma": 0.2}, '"sequential"'),
         ("window", {"bandwidth": 3}, '"monitor" or "sequential"'),
+        # "window"'s permutation quantile is taken at `alpha`, so a spread over
+        # the pairs changed nothing there (task 160, CD4).
+        ("window", {"alpha_adjust": "none"}, '"monitor" or "sequential"'),
         ("window", {"monitor_rows": 50}, '"sequential"'),
         ("window", {"boundary_gamma": 0.2}, '"sequential"'),
         ("sequential", {"n_perm": 50}, '"window"'),
@@ -368,9 +371,14 @@ def test_a_parameter_of_another_kind_is_refused(kind, kw, applies_to):
         spec(kind=kind, span_rows=50, **kw)
 
 
-@pytest.mark.parametrize("kw", [{"boundary_gamma": 0.5}, {"boundary_gamma": -0.1}])
-def test_the_boundary_exponent_is_below_a_half(kw):
-    with pytest.raises(ValueError, match=r"boundary_gamma must be in \[0, 0.5\)"):
+@pytest.mark.parametrize(
+    "kw", [{"boundary_gamma": 0.5}, {"boundary_gamma": 0.495}, {"boundary_gamma": -0.1}]
+)
+def test_the_boundary_exponent_is_at_most_0_49(kw):
+    """W&G allow up to 1/2, but the critical value is solved for, and the
+    solve's work grows as 1/(1/2 - gamma): minutes to hours past 0.49
+    (task 160, CD1)."""
+    with pytest.raises(ValueError, match=r"boundary_gamma must be in \[0, 0.49\]"):
         spec(kind="sequential", span_rows=50, **kw)
 
 

@@ -512,6 +512,10 @@ fn ew_cov_model() {
     assert_eq!(r.pred_len, r.n_outputs);
     assert_eq!(r.n_eff[0], 0.0);
     assert_eq!(r.n_eff[1], 1.0);
+    // The decayed row and the gap, as the sibling probes hold them (review
+    // 2026-10-05, CF1: this probe read rows 0 and 1 alone).
+    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
     assert!(r.roundtrips);
 }
 
@@ -973,6 +977,212 @@ fn bocpd() {
     assert_eq!(r.n_eff, vec![0.0, 1.0, 2.0, 40.0]);
     assert_eq!(r.after_gap, r.before_gap + 1.0, "no decay over a gap");
     assert!(r.roundtrips);
+}
+
+/// Every model with a decay of its own refuses, through its own `new`, a
+/// decay it cannot run on -- a half-life of 0, below 0 or NaN, a factor of
+/// 0, below 0, above 1 or NaN -- naming itself and the parameter, and runs
+/// on no decay (`Halflife(inf)`, `Lam(1)`) and an ordinary one. Only the
+/// bank's spec checked (`Spec::decays`), so the Rust API built each on any
+/// of them, and `Halflife(0)` gave NaN from the first row (review
+/// 2026-10-05, CF5; docs/EXTENDING.md: every parameter check belongs in
+/// `new`). `holt`, `seqtest`, `rcov` and `bocpd` take no `Decay`.
+#[test]
+fn every_model_refuses_a_decay_it_cannot_run_on() {
+    type Build<'a> = (&'a str, &'a dyn Fn(Decay) -> Result<(), String>);
+    let builds: [Build; 17] = [
+        ("ewridge", &|decay| {
+            EwRidge::new(EwRidgeCfg {
+                decay,
+                ..ew_ridge_cfg()
+            })
+            .map(drop)
+        }),
+        ("rls", &|decay| {
+            Rls::new(RlsCfg { decay, ..rls_cfg() }).map(drop)
+        }),
+        ("lasso", &|decay| {
+            Lasso::new(LassoCfg {
+                decay,
+                ..lasso_cfg()
+            })
+            .map(drop)
+        }),
+        ("kalman", &|decay| {
+            Kalman::new(KalmanCfg {
+                decay,
+                ..kalman_cfg()
+            })
+            .map(drop)
+        }),
+        ("robust", &|decay| {
+            Robust::new(RobustCfg {
+                decay,
+                ..robust_cfg(ROBUST_LOSSES[0])
+            })
+            .map(drop)
+        }),
+        ("robust", &|decay| {
+            Robust::new(RobustCfg {
+                decay,
+                ..robust_cfg(ROBUST_LOSSES[1])
+            })
+            .map(drop)
+        }),
+        ("ftrl", &|decay| {
+            Ftrl::new(FtrlCfg {
+                decay,
+                ..ftrl_cfg()
+            })
+            .map(drop)
+        }),
+        ("sgd", &|decay| {
+            Sgd::new(SgdCfg { decay, ..sgd_cfg() }).map(drop)
+        }),
+        ("pa", &|decay| {
+            Pa::new(PaCfg { decay, ..pa_cfg() }).map(drop)
+        }),
+        ("ew_cov", &|decay| {
+            EwCovModel::new(EwCovCfg {
+                decay,
+                ..ew_cov_model_cfg()
+            })
+            .map(drop)
+        }),
+        ("kmeans", &|decay| {
+            KMeans::new(KMeansCfg {
+                decay,
+                ..kmeans_cfg()
+            })
+            .map(drop)
+        }),
+        ("micro", &|decay| {
+            Micro::new(MicroCfg {
+                decay,
+                ..micro_cfg()
+            })
+            .map(drop)
+        }),
+        ("ew_class", &|decay| {
+            EwClass::new(EwClassCfg {
+                decay,
+                ..ew_class_cfg()
+            })
+            .map(drop)
+        }),
+        ("marginal", &|decay| {
+            Marginal::new(MarginalCfg {
+                decay,
+                ..marginal_cfg()
+            })
+            .map(drop)
+        }),
+        ("deco", &|decay| {
+            Deco::new(DecoCfg {
+                decay,
+                ..deco_cfg()
+            })
+            .map(drop)
+        }),
+        ("hmm", &|decay| {
+            Hmm::new(HmmCfg { decay, ..hmm_cfg() }).map(drop)
+        }),
+        ("corrchange", &|decay| {
+            CorrChange::new(CorrChangeCfg {
+                decay,
+                ..corrchange_cfg()
+            })
+            .map(drop)
+        }),
+    ];
+    let bad = [
+        Decay::Halflife(0.0),
+        Decay::Halflife(-1.0),
+        Decay::Halflife(f64::NAN),
+        Decay::Lam(1.5),
+        Decay::Lam(0.0),
+        Decay::Lam(-0.5),
+        Decay::Lam(f64::NAN),
+    ];
+    for (name, build) in builds {
+        for decay in bad {
+            let e = build(decay).expect_err(&format!("{name}: {decay:?} was accepted"));
+            let says = match decay {
+                Decay::Halflife(_) => "half_life must be > 0",
+                Decay::Lam(_) => "lam must be in (0, 1]",
+            };
+            assert!(
+                e.starts_with(&format!("{name}: {says}")),
+                "{name}, {decay:?}: {e}"
+            );
+        }
+        for decay in [
+            Decay::Halflife(f64::INFINITY),
+            Decay::Halflife(HALFLIFE),
+            Decay::Lam(1.0),
+            Decay::Lam(0.97),
+        ] {
+            build(decay).unwrap_or_else(|e| panic!("{name}, {decay:?}: {e}"));
+        }
+    }
+}
+
+/// Exactly the models that solve on a schedule report a solve share --
+/// `ewridge`, `lasso`, and `robust` under both losses -- each the share it
+/// is given; every other model keeps the trait's `None` whatever it is set
+/// to (docs/EXTENDING.md's table of hooks; review 2026-10-05, CF7). The
+/// stream sets the spec's share on every model it builds or restores, so
+/// these are the models whose cadence it reaches.
+#[test]
+fn exactly_the_scheduled_solvers_report_a_solve_share() {
+    fn share<M: OnlineModel>(mut m: M) -> Option<f64> {
+        m.set_solve_share(Some(0.3));
+        m.solve_share()
+    }
+    let shares = [
+        ("ewridge", share(EwRidge::new(ew_ridge_cfg()).unwrap())),
+        ("rls", share(Rls::new(rls_cfg()).unwrap())),
+        ("lasso", share(Lasso::new(lasso_cfg()).unwrap())),
+        ("kalman", share(Kalman::new(kalman_cfg()).unwrap())),
+        (
+            "huber",
+            share(Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap()),
+        ),
+        (
+            "quantile",
+            share(Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap()),
+        ),
+        ("ftrl", share(Ftrl::new(ftrl_cfg()).unwrap())),
+        ("sgd", share(Sgd::new(sgd_cfg()).unwrap())),
+        ("pa", share(Pa::new(pa_cfg()).unwrap())),
+        ("holt", share(Holt::new(holt_cfg()).unwrap())),
+        (
+            "ew_cov",
+            share(EwCovModel::new(ew_cov_model_cfg()).unwrap()),
+        ),
+        ("kmeans", share(KMeans::new(kmeans_cfg()).unwrap())),
+        ("micro", share(Micro::new(micro_cfg()).unwrap())),
+        ("ew_class", share(EwClass::new(ew_class_cfg()).unwrap())),
+        ("seqtest", share(SeqTest::new(seqtest_cfg()).unwrap())),
+        ("marginal", share(Marginal::new(marginal_cfg()).unwrap())),
+        ("deco", share(Deco::new(deco_cfg()).unwrap())),
+        ("rcov", share(Rcov::new(rcov_cfg()).unwrap())),
+        ("hmm", share(Hmm::new(hmm_cfg()).unwrap())),
+        (
+            "corrchange",
+            share(CorrChange::new(corrchange_cfg()).unwrap()),
+        ),
+        ("bocpd", share(Bocpd::new(bocpd_cfg()).unwrap())),
+    ];
+    let reporting: Vec<&str> = shares
+        .iter()
+        .filter(|(_, s)| s.is_some())
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(reporting, ["ewridge", "lasso", "huber", "quantile"]);
+    for (name, s) in shares {
+        assert!(s.is_none() || s == Some(0.3), "{name}: {s:?}");
+    }
 }
 
 /// The variants of `ModelState` this file probes. A model added to the enum

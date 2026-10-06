@@ -136,6 +136,9 @@ impl DecoCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("deco: {e}"))?;
         if self.n_features < 2 {
             return Err(format!(
                 "deco: at least two columns are required (got {}); an equicorrelation is an \

@@ -127,6 +127,9 @@ pub struct MicroCfg {
 
 impl MicroCfg {
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("micro: {e}"))?;
         if self.n_features == 0 {
             return Err("micro: n_features must be >= 1".into());
         }

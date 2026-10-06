@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 
 
 def _spec(**kw):
@@ -479,3 +480,41 @@ class TestFeatureScaling:
         assert scaled > 0.5, f"scaled fit did not learn: R2 {scaled}"
         assert abs(scaled - unscaled) < 0.01, f"scaled {scaled} against unscaled {unscaled}"
         assert np.corrcoef(preds[False][ok], preds[True][ok])[0, 1] > 0.999
+
+
+@pytest.mark.parametrize(
+    ("extra", "msg"),
+    [
+        ({"huber_delta": 0.5}, 'sgd huber_delta is for loss "huber"; loss "squared"'),
+        ({"quantile": 0.3}, 'sgd quantile is for loss "quantile"; loss "squared"'),
+        ({"eps": 0.2}, 'sgd eps is for loss "epsilon_insensitive"; loss "squared"'),
+        ({"power": 0.9}, 'sgd power is for schedule "inv_scaling"; schedule "constant"'),
+    ],
+    ids=["huber_delta", "quantile", "eps", "power"],
+)
+def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_path, online_cli):
+    """Task 160, YA8b: a parameter of a loss or a schedule the spec does not
+    use was taken and ignored. The builder refuses it (YA8); a raw dict, the
+    form a JSON or TOML spec takes, skipped the builder and built, and is
+    refused now by the validation every spec meets, as a TOML file is by the
+    CLI's dry run."""
+    spec = _spec()
+    raw = dict(spec, model={**spec["model"], **extra})
+    with pytest.raises(ValueError, match=f'spec "m": {msg} does not use it'):
+        po.ModelBank([raw])
+    _linear(n=50).write_parquet(tmp_path / "in.parquet")
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [raw],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        args=["--dry-run"],
+        check=False,
+    )
+    assert res.returncode != 0, res.stdout
+    assert f"{msg} does not use it" in res.stderr, res.stderr
+    # The builder's own dict carries each as a null, which is the default,
+    # not a value given.
+    assert all(spec["model"][k] is None for k in extra), spec["model"]
+    po.ModelBank([spec])

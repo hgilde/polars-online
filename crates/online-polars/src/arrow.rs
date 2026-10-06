@@ -163,6 +163,10 @@ pub struct ArrowChunk {
     /// Each temporal clock column's dtype as it arrived, for the clock
     /// fields to echo it (docs/PLAN.md task 152).
     clock_dtypes: Vec<(PlSmallStr, DataType)>,
+    /// The group key columns held as text that are integers, too wide for
+    /// a 64-bit form (task 160, PA3): `group_close = "monotone"` orders
+    /// them as numbers, as it does the integer forms.
+    integer_text: PlHashSet<PlSmallStr>,
 }
 
 impl ArrowChunk {
@@ -225,7 +229,23 @@ impl ArrowChunk {
             name_set,
             row_base: 0,
             clock_dtypes: Vec::new(),
+            integer_text: PlHashSet::default(),
         })
+    }
+
+    /// The chunk, with these text columns marked as integer group keys:
+    /// decimal text of integers too wide for a 64-bit form, which
+    /// `group_close = "monotone"` orders as numbers (task 160, PA3).
+    #[must_use]
+    pub fn with_integer_text_keys(mut self, names: impl IntoIterator<Item = PlSmallStr>) -> Self {
+        self.integer_text.extend(names);
+        self
+    }
+
+    /// Whether `name` is a group key held as the text of integers
+    /// ([`Self::with_integer_text_keys`]).
+    pub fn is_integer_text(&self, name: &str) -> bool {
+        self.integer_text.contains(name)
     }
 
     /// The dtype a temporal clock column arrived with (task 152); `None`
@@ -485,7 +505,7 @@ fn form_of(want: Want, dtype: &DataType) -> &'static str {
     match want {
         Want::Number => "a number",
         Want::Text => "text",
-        Want::Key if dtype.is_integer() => "an integer key",
+        Want::Key if fits_64(dtype) => "an integer key",
         Want::Key => "text",
         Want::Value if value_is_number(dtype) => "a number",
         Want::Value if *dtype == DataType::Boolean => "a boolean",
@@ -553,7 +573,10 @@ fn cast_to(
             Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?))
         }
         Want::Key => {
-            if s.dtype().is_integer() {
+            // An integer wider than 64 bits is its text, as a Decimal is: a
+            // non-strict cast to Int64 made a value past i64 a null key,
+            // merged with the real nulls in silence (task 160, PA3).
+            if fits_64(s.dtype()) {
                 return Ok(if *s.dtype() == DataType::UInt64 {
                     let r = s.rechunk();
                     let ca = r.u64()?;
@@ -579,10 +602,47 @@ fn cast_to(
     }
 }
 
-/// A key or a label as text. Any dtype with a string form is a key (ints,
-/// dates and categoricals included); a nested one is refused by name.
+/// An integer dtype a group key keeps as an integer: one of the 64-bit
+/// forms holds every value of it. A wider one (`Int128`) is read as its
+/// text, which holds every value too, and is still ordered as a number
+/// ([`ArrowChunk::is_integer_text`]).
+fn fits_64(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+    )
+}
+
+/// A key column as the text its keys are: each value's string form, which
+/// is what a group, a session and a label are read as. A zoned Datetime is
+/// its instant, written as the UTC wall time without the zone,
+/// `2024-10-27 00:30:00.000000`: this build formats no time zone, and the
+/// cast to text failed on one with polars' own message. So two zones
+/// showing one instant give one key, and two instants one zone shows at
+/// the same wall time, as a clock goes back an hour, give two (task 160,
+/// PA4 and PA4b). The same text as Polars' `cast(pl.Datetime(unit))` then
+/// `cast(pl.String)`, which keep the instant.
+pub(crate) fn key_text(s: &Series) -> PolarsResult<Series> {
+    match s.dtype() {
+        DataType::Datetime(unit, Some(_)) => s
+            .cast(&DataType::Datetime(*unit, None))?
+            .cast(&DataType::String),
+        _ => s.cast(&DataType::String),
+    }
+}
+
+/// A key or a label as text ([`key_text`]). Any dtype with a string form is
+/// a key (ints, dates, zoned Datetimes and categoricals included); a nested
+/// one is refused by name.
 fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResult<Utf8ViewArray> {
-    let cast = s.cast(&DataType::String).map_err(|e| {
+    let cast = key_text(s).map_err(|e| {
         polars_err!(ComputeError:
             "spec {:?}: {} column {:?} has dtype {}, which cannot be used as a key: {}",
             spec_name, role, name, s.dtype(), e
@@ -639,6 +699,7 @@ pub fn chunk_from_frame_at(
     let readers = first_readers(specs);
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     let mut clock_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
+    let mut integer_text: Vec<PlSmallStr> = Vec::new();
     let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -671,6 +732,11 @@ pub fn chunk_from_frame_at(
             cols.push((name.clone(), col));
             continue;
         }
+        // Marked whether or not the cast below runs: a session read from the
+        // same column may have made the text already.
+        if want == Want::Key && s.dtype().is_integer() && !fits_64(s.dtype()) {
+            integer_text.push(name.clone());
+        }
         // One column read in two roles that cast to the same form -- a
         // column that is a group key for one spec and a session for another,
         // both text -- would cast identically twice. `ArrowChunk::new` refuses
@@ -688,7 +754,8 @@ pub fn chunk_from_frame_at(
     }
     Ok(ArrowChunk::new(df.height(), cols, names)?
         .with_row_base(row_base)
-        .with_clock_dtypes(clock_dtypes))
+        .with_clock_dtypes(clock_dtypes)
+        .with_integer_text_keys(integer_text))
 }
 
 /// Each column's first reader, for the errors a cast can raise: the first
@@ -991,6 +1058,47 @@ mod tests {
 
     fn spec(json: &str) -> Spec {
         serde_json::from_str(json).unwrap()
+    }
+
+    /// Task 160, PA4b: a zoned Datetime is keyed by its instant, as the UTC
+    /// wall time with no zone. Two zones showing one instant give one key,
+    /// and the two instants Amsterdam shows at 02:30 as its clock goes back
+    /// give two. The cast to text failed: this build formats no zone.
+    #[test]
+    fn a_zoned_datetime_key_is_its_instant() {
+        // 2024-10-27 00:30 and 01:30 UTC, in microseconds.
+        let instants = Int64Chunked::new(
+            "g".into(),
+            [1_729_989_000_000_000i64, 1_729_992_600_000_000],
+        );
+        let naive = instants
+            .clone()
+            .into_datetime(TimeUnit::Microseconds, None)
+            .into_series();
+        assert!(naive.cast(&DataType::String).is_ok());
+        let want = key_text(&naive).unwrap();
+        let text: Vec<Option<&str>> = want.str().unwrap().iter().collect();
+        assert_eq!(
+            text,
+            vec![
+                Some("2024-10-27 00:30:00.000000"),
+                Some("2024-10-27 01:30:00.000000")
+            ]
+        );
+        for tz in ["Europe/Amsterdam", "America/New_York", "UTC"] {
+            let zoned = instants
+                .clone()
+                .into_datetime(
+                    TimeUnit::Microseconds,
+                    TimeZone::opt_try_new(Some(tz)).unwrap(),
+                )
+                .into_series();
+            assert!(
+                zoned.cast(&DataType::String).is_err(),
+                "{tz}: still unformattable"
+            );
+            assert!(key_text(&zoned).unwrap().equals(&want), "{tz}");
+        }
     }
 
     /// `first_readers` names, for every column, the spec and the role the

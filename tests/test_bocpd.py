@@ -508,7 +508,7 @@ def test_chunks_and_a_reload_do_not_move_it():
         (dict(prior_mean=[0.0, 0.0]), "prior_mean must be 1 values"),
         (dict(hazard=0.5), "hazard"),
         (dict(prior_kappa=0.0), "prior_kappa"),
-        (dict(prune_below=1.0), "truncate must be in"),
+        (dict(prune_below=1.0), "prune_below must be in"),
         (dict(max_run=0), "max_run"),
         (dict(robust_beta=-1.0), "robust_beta"),
         # docs/REVIEW-E54-E64.md B2: priors that give a predictive with no

@@ -692,6 +692,73 @@ class TestRefusals:
             stream.embargo(df, clock="t", delay=2.5)
         assert "clock column 't' is Int64" in str(e.value), str(e.value)
 
+    def test_a_zero_delay_is_told_to_leave_it_out(self):
+        """Task 160, PB9: the refusal called 0 "the default", where the
+        default is no embargo at all."""
+        with pytest.raises(ValueError) as exc:
+            spec(embargo=0.0)
+        assert "embargo must be finite and > 0 (got 0); leave it out for no delay" in str(
+            exc.value
+        ), str(exc.value)
+        assert "default" not in str(exc.value), str(exc.value)
+
+
+def _break_frame(n=600, at=300):
+    """A regime break at row ``at``: the slope flips and the level jumps, on
+    a clock one unit a row."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(n)
+    y = np.where(np.arange(n) < at, 2.0 * x, -2.0 * x + 8.0) + 0.1 * rng.standard_normal(n)
+    return pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y})
+
+
+class TestDriftUnderAnEmbargo:
+    """Task 160, PB1: under ``embargo`` a row's residual reaches the drift
+    detector when its label is released, on a replay that writes no output.
+    The flag was written only where the row is output, so ``drift_<t>`` was
+    never true, and ``drift_action="reset"`` restarted the model with no flag
+    at all. The flag goes on the row whose clock released the label that
+    tripped the detector; that label's own row is already out."""
+
+    @pytest.mark.parametrize("grid", [False, True], ids=["one instance", "a grid"])
+    @pytest.mark.parametrize("action", ["flag", "reset"])
+    @pytest.mark.parametrize("delay", [1.0, 5.0])
+    def test_a_break_is_flagged_on_the_row_that_released_its_label(self, delay, action, grid):
+        df = _break_frame()
+        kw = dict(
+            emit_drift=True,
+            drift_delta=0.5,
+            drift_threshold=5.0,
+            drift_action=action,
+            half_life=[50.0, 100.0] if grid else 50.0,
+        )
+        fields = po.spec.output_fields(spec(**kw))
+        drift = [f for f in fields if f.startswith("drift_")]
+        weight = [f for f in fields if f.startswith("weight_sum")]
+        assert len(drift) == (2 if grid else 1) and len(weight) == len(drift), fields
+
+        def first_flag(out):
+            flags = out.select(pl.any_horizontal(pl.col(drift).fill_null(False))).to_series()
+            rows = flags.arg_true().to_list()
+            assert rows, "the detector never fired"
+            return rows[0]
+
+        plain = po.ModelBank([spec(**kw)]).fit_predict(df)["m"].struct.unnest()
+        held = po.ModelBank([spec(embargo=delay, **kw)]).fit_predict(df)["m"].struct.unnest()
+        assert first_flag(plain) == 300, "the break is where the data put it"
+        # Row 300's label is released by the row `delay` clock units later.
+        released_at = 300 + int(delay)
+        assert first_flag(held) == released_at
+        # The restart takes effect at the replay, before the releasing row is
+        # scored: that row reads a fresh model, and the row before it the old.
+        for w in weight:
+            before, at = held[w][released_at - 1], held[w][released_at]
+            assert before > 10.0, (w, before)
+            if action == "reset":
+                assert at == 0.0, (w, at)
+            else:
+                assert at > 10.0, (w, at)
+
 
 class TestEmbargoItself:
     def test_the_shape_and_the_order(self):

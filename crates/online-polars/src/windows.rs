@@ -42,8 +42,10 @@
 //! ends every window open across it (partial, under each operator's
 //! `partial`); a reset discards them (null, never dropped); a group that
 //! falls silent is cut once the stream's clock is `gap_cap` past its last
-//! row. Rows leave in input order, each once every window over it has
-//! resolved.
+//! row. A forward `"right"` or `"both"` window whose far edge is the last
+//! row before such a cut holds every timestamp it can, and is whole, as its
+//! backward mirror is (task 160). Rows leave in input order, each once every
+//! window over it has resolved.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -1712,9 +1714,24 @@ impl Windows {
             if k.direction != Direction::Forward {
                 continue;
             }
+            let w = k.window_size.expect("a forward kernel has a window");
             while g.closed[ki] < g.waiting.len() {
                 let t = g.waiting[g.closed[ki]];
                 g.closed[ki] += 1;
+                // Under "right" and "both" a window whose far edge is the
+                // stretch's last row holds every timestamp it can, and a cut
+                // leaves none of them to come: it is whole, as its backward
+                // mirror is, where it was cut short -- null, or dropped
+                // (task 160, PC2). Under "left" and "none" a row on the edge
+                // closed it already. A reset still discards it.
+                let whole = how == End::Cut
+                    && k.closed.far(Direction::Forward)
+                    && gap(g.exact, t.off, g.off).cmp_window(k) == Ordering::Equal;
+                let (how, far) = if whole {
+                    (End::Complete, t.tau + w)
+                } else {
+                    (how, end_tau)
+                };
                 let held = Held {
                     first: self.held_first,
                     n_outputs: self.n_outputs,
@@ -1733,7 +1750,7 @@ impl Windows {
                     end_tau,
                     t,
                     how,
-                    end_tau,
+                    far,
                     g.exact,
                     held,
                 );
@@ -2552,7 +2569,24 @@ mod tests {
                                     near_ok && far_ok
                                 })
                                 .collect();
-                            let closed_by_row = (a + 1..n).any(|b| {
+                            // Whole once every timestamp of the stretch the
+                            // window can hold is in, read from the stretch
+                            // itself rather than from a closing rule (task
+                            // 160, PC5). A stretch a break ended has every
+                            // row it will have: the window is whole when the
+                            // stretch reaches its far edge, so that its span
+                            // lies inside the stretch, and cut short when it
+                            // does not. A stretch still open at the end of
+                            // the input, or one a reset ended, has shown its
+                            // window whole only by a row stamped past every
+                            // timestamp the window holds: past the far edge
+                            // where the window holds it ("right", "both"),
+                            // at it or past where it does not; a window it
+                            // has not shown whole is unresolved, or
+                            // discarded, and null either way.
+                            let reaches_edge =
+                                gap_bf(rows, s, a, n - 1).cmp_window(k) != Ordering::Less;
+                            let shown_whole = (a + 1..n).any(|b| {
                                 let d = gap_bf(rows, s, a, b).cmp_window(k);
                                 if k.closed.far(Direction::Forward) {
                                     d == Ordering::Greater
@@ -2560,9 +2594,9 @@ mod tests {
                                     d != Ordering::Less
                                 }
                             });
-                            match (closed_by_row, s.end) {
-                                (true, _) => (later, true, w),
-                                (false, Some((End::Cut, end_tau))) => {
+                            match s.end {
+                                Some((End::Cut, _)) if reaches_edge => (later, true, w),
+                                Some((End::Cut, end_tau)) => {
                                     if op.partial == Partial::Drop {
                                         t.drop[r] = true;
                                     }
@@ -2571,6 +2605,7 @@ mod tests {
                                     }
                                     (later, false, (ta + w).min(end_tau) - ta)
                                 }
+                                _ if shown_whole => (later, true, w),
                                 _ => continue,
                             }
                         }
@@ -2753,6 +2788,30 @@ mod tests {
         rows
     }
 
+    /// [`stream`] on a half-unit grid: every step a multiple of 0.5, so a
+    /// row lands exactly a window after another, and exactly on a window's
+    /// far edge as the last row before a break, often (task 160, PC2;
+    /// `stream`'s random steps land there only where its exact ones happen
+    /// to add up). `repeats` lets a step of 0 repeat a stamp.
+    fn grid_stream(seed: u64, n: usize, groups: usize, sessions: bool, repeats: bool) -> Vec<Row> {
+        let mut rows = stream(seed, n, groups, false, sessions);
+        let mut rng = Lcg(seed.wrapping_mul(31).wrapping_add(7));
+        let mut t = 0.0f64;
+        for r in &mut rows {
+            t += match rng.below(9) {
+                0 if repeats => 0.0,
+                0 | 1 => 0.5,
+                2 | 3 => 1.0,
+                4 => 1.5,
+                5 | 6 => 2.0,
+                7 => 3.0,
+                _ => 12.0,
+            };
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
     fn all_kernels() -> (Vec<KernelDef>, Vec<OpDef>) {
         let mut kernels = Vec::new();
         let mut ops = Vec::new();
@@ -2802,14 +2861,24 @@ mod tests {
     #[test]
     fn every_operator_matches_its_definition() {
         let (kernels, ops) = all_kernels();
-        for (seed, groups, temporal, sessions) in [
-            (1, 1, false, false),
-            (2, 1, true, false),
-            (3, 3, false, true),
-            (4, 2, true, true),
-            (5, 4, true, false),
+        // The last four on the half-unit grid, where windows end exactly on
+        // the last row before a break (task 160, PC2).
+        for (seed, groups, temporal, sessions, grid) in [
+            (1, 1, false, false, false),
+            (2, 1, true, false, false),
+            (3, 3, false, true, false),
+            (4, 2, true, true, false),
+            (5, 4, true, false, false),
+            (6, 1, false, false, true),
+            (7, 1, false, true, true),
+            (8, 3, false, true, true),
+            (9, 2, false, false, true),
         ] {
-            let rows = stream(seed, 400, groups, temporal, sessions);
+            let rows = if grid {
+                grid_stream(seed, 400, groups, sessions, true)
+            } else {
+                stream(seed, 400, groups, temporal, sessions)
+            };
             let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
             let want = brute(&kernels, &ops, c, &rows).unwrap();
             let got = run(&kernels, &ops, c, &rows, 1).unwrap();
@@ -2877,76 +2946,86 @@ mod tests {
     /// row itself: the mirror of each kernel on the mirror of the stream.
     #[test]
     fn a_forward_window_is_a_backward_one_over_the_reversed_stream() {
-        let k = KernelDef {
-            direction: Direction::Forward,
-            half_life: 3.0,
-            window_size: Some(5.0),
-            window_ns: Some(ns_of(5.0)),
-            closed: Closed::Right,
-        };
-        let ops = vec![
-            OpDef {
-                kernel: 0,
-                stat: Stat::Mean,
-                input: 0,
-                min_samples: 1,
-                partial: Partial::Null,
-            },
-            OpDef {
-                kernel: 0,
-                stat: Stat::Sum,
-                input: 0,
-                min_samples: 1,
-                partial: Partial::Null,
-            },
-        ];
-        let mut rows = stream(11, 300, 1, false, false);
+        // Distinct stamps on a half-unit grid, so the row itself is the only
+        // exclusion and a row lands exactly on a window's far edge, broken
+        // by gaps past the cap; the last row after one, so the input ends
+        // on a stretch of one row and no forward window is left open by
+        // the end of the input where its mirror is whole (task 160, PC2).
+        let mut rows = grid_stream(11, 300, 1, false, false);
         rows.iter_mut().for_each(|r| r.accept = true);
-        // Distinct stamps, so the row itself is the only exclusion.
-        let mut t = 0.0;
-        for r in &mut rows {
-            let v = if r.values[1].is_nan() {
-                0.5
-            } else {
-                r.values[1].abs() % 1.0
-            };
-            t += 0.3 + 1.7 * v;
-            r.clock = Some(ClockValue::F64(t));
-        }
-        let c = cfg(1e9, None, None);
-        let fwd = run(std::slice::from_ref(&k), &ops, c, &rows, 1).unwrap();
-        // The mirror: times negated and reversed, a backward kernel closed
-        // on the far side ("left" mirrors "right").
-        let last = t;
+        let clock = |r: &Row| match r.clock {
+            Some(ClockValue::F64(x)) => x,
+            _ => unreachable!("a number clock"),
+        };
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock(&last_row) + 12.0));
+        rows.push(last_row);
+        let c = cfg(8.0, None, None);
+        let n = rows.len();
+        let t: Vec<f64> = rows.iter().map(clock).collect();
+        // The rows whose window of 5 ends exactly on the last row before a
+        // break: the case the mirror catches.
+        let on_edge = (0..n)
+            .filter(|&i| {
+                let end = (i..n)
+                    .find(|&j| j + 1 == n || t[j + 1] - t[j] > 8.0)
+                    .unwrap();
+                t[end] - t[i] == 5.0
+            })
+            .count();
+        assert!(on_edge > 5, "{on_edge} rows end on the edge");
+        let last = t[n - 1];
         let mut mirror: Vec<Row> = rows.iter().rev().cloned().collect();
         for r in &mut mirror {
-            if let Some(ClockValue::F64(x)) = r.clock {
-                r.clock = Some(ClockValue::F64(last - x));
-            }
+            r.clock = Some(ClockValue::F64(last - clock(r)));
         }
-        let kb = KernelDef {
-            direction: Direction::Backward,
-            closed: Closed::Left,
-            ..k
-        };
-        let back = run(&[kb], &ops, c, &mirror, 1).unwrap();
-        // Row i's forward window is the mirror's backward window at the
-        // mirrored row i, which under "left" excludes the row's own stamp.
-        let n = rows.len();
-        for o in 0..2 {
-            for i in 0..n {
-                let (a, b) = (fwd.values[o][i], back.values[o][n - 1 - i]);
-                if a.is_nan() || b.is_nan() {
-                    // The end of the input: the forward window is
-                    // unresolved; the mirror's backward window is partial.
-                    continue;
+        // The mirror: times negated and reversed, a backward kernel closed
+        // on the far side -- "left" mirrors "right", "both" mirrors itself.
+        for (closed, mirrored) in [(Closed::Right, Closed::Left), (Closed::Both, Closed::Both)] {
+            let k = KernelDef {
+                direction: Direction::Forward,
+                half_life: 3.0,
+                window_size: Some(5.0),
+                window_ns: Some(ns_of(5.0)),
+                closed,
+            };
+            let ops: Vec<OpDef> = [Stat::Mean, Stat::Sum, Stat::Rate]
+                .into_iter()
+                .map(|stat| OpDef {
+                    kernel: 0,
+                    stat,
+                    input: 0,
+                    min_samples: 1,
+                    partial: Partial::Null,
+                })
+                .collect();
+            let fwd = run(std::slice::from_ref(&k), &ops, c, &rows, 1).unwrap();
+            let kb = KernelDef {
+                direction: Direction::Backward,
+                closed: mirrored,
+                ..k
+            };
+            let back = run(&[kb], &ops, c, &mirror, 1).unwrap();
+            // Row i's forward window is the mirror's backward window at the
+            // mirrored row i: whole where it is whole, cut short where it is
+            // cut short (null both), and the same number where it is whole.
+            for o in 0..ops.len() {
+                for (i, ti) in t.iter().enumerate() {
+                    let (a, b) = (fwd.values[o][i], back.values[o][n - 1 - i]);
+                    assert_eq!(
+                        a.is_nan(),
+                        b.is_nan(),
+                        "{closed:?} op {o} row {i} at {ti}: {a} vs {b}"
+                    );
+                    if !a.is_nan() {
+                        assert!(
+                            (a - b).abs() <= 1e-9 * (1.0 + a.abs()),
+                            "{closed:?} op {o} row {i}: {a} vs {b}"
+                        );
+                    }
                 }
-                assert!(
-                    (a - b).abs() <= 1e-9 * (1.0 + a.abs()),
-                    "op {o} row {i}: {a} vs {b}"
-                );
+                assert!(fwd.values[o].iter().filter(|v| !v.is_nan()).count() > n / 3);
             }
-            assert!(fwd.values[o].iter().filter(|v| !v.is_nan()).count() > n / 2);
         }
     }
 

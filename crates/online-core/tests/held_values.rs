@@ -113,25 +113,44 @@ fn steps_of(level: f64) -> f64 {
 /// ranged over 0.41 to 0.61, all of it within 10 half-lives of the stop, and
 /// within the same range in blocks of 4 to 64 rows. With the means plain it
 /// went to -79 at 50 half-lives, -4.7e3 at 40, 1e10.
+///
+/// Every row after the stop is held: the fit at 0.5 predicts on each, the
+/// fit at each level predicts on each of those, and where a model reports a
+/// slope it is a number. A model that never predicted, or never solved,
+/// passed: the slope's test took NaN and the comparison skipped any row the
+/// fit at 0.5 had no prediction for (review 2026-10-05, CF6). `kalman` and
+/// `sgd` report no slope on the stopped feature, and say so with `None`.
 fn holds<M: OnlineModel>(
     name: &str,
     make: impl Fn() -> M,
-    slope: impl Fn(&M) -> f64,
+    slope: Option<fn(&M) -> f64>,
     inv: Invariance,
 ) {
-    let (base, _) = run(make(), 0.5, &slope);
+    let read = |m: &M| slope.map_or(f64::NAN, |f| f(m));
+    let (base, _) = run(make(), 0.5, read);
+    let predicted = (MOVING..base.len())
+        .filter(|&i| base[i].is_finite())
+        .count();
+    assert_eq!(
+        predicted,
+        base.len() - MOVING,
+        "{name}: the fit at 0.5 predicts on every row after the stop"
+    );
     for level in LEVELS {
-        let (pred, coef) = run(make(), level, &slope);
+        let (pred, coef) = run(make(), level, read);
         for (i, &c) in coef.iter().enumerate().skip(MOVING) {
             assert!(
-                c.is_nan() || (0.2..0.8).contains(&c),
+                slope.is_none() || (0.2..0.8).contains(&c),
                 "{name} at level {level}: slope {c} on the stopped feature, {:.1} half_lives after it stopped",
                 (i - MOVING) as f64 / H
             );
         }
         let from = MOVING + inv.from * H as usize;
+        assert!(
+            pred[from..].iter().all(|p| p.is_finite()),
+            "{name} at level {level}: a row with no prediction after the stop"
+        );
         let worst = (from..pred.len())
-            .filter(|&i| base[i].is_finite())
             .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
             .fold(0.0, f64::max);
         let tol = (inv.tol)(level);
@@ -171,7 +190,7 @@ fn the_lasso_keeps_the_slope_it_learned() {
     holds(
         "lasso",
         || Lasso::new(cfg.clone()).unwrap(),
-        |m: &Lasso| m.coefficients().map_or(f64::NAN, |c| c[0][1][3]),
+        Some(|m: &Lasso| m.coefficients().map_or(f64::NAN, |c| c[0][1][3])),
         FROM_THE_STOP,
     );
 }
@@ -205,7 +224,7 @@ fn a_standardized_ridge_keeps_the_slope_it_learned() {
     holds(
         "ewridge",
         || EwRidge::new(ridge(true)).unwrap(),
-        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        Some(|m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3])),
         FROM_THE_STOP,
     );
 }
@@ -223,7 +242,7 @@ fn a_blocked_ridge_keeps_the_slope_it_learned() {
             c.max_rows_between_solves = 16;
             EwRidge::new(c).unwrap()
         },
-        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        Some(|m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3])),
         FROM_THE_STOP,
     );
 }
@@ -232,7 +251,9 @@ fn a_blocked_ridge_keeps_the_slope_it_learned() {
 /// on which the feature moved, the slope is the one learned; once every row
 /// inside it is held, the run reads the feature as having no spread there
 /// and the standardized solve drops it, at every level alike. The
-/// predictions at a level are those at 0.5 throughout.
+/// predictions at a level are those at 0.5 throughout: every row after the
+/// stop has a prediction and a slope, at 0.5 and at each level, where a fit
+/// that never predicted or never solved passed (review 2026-10-05, CF6).
 #[test]
 fn a_windowed_ridge_keeps_the_slope_while_the_window_has_spread() {
     let make = || {
@@ -242,24 +263,31 @@ fn a_windowed_ridge_keeps_the_slope_while_the_window_has_spread() {
     };
     let slope = |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]);
     let (base, _) = run(make(), 0.5, slope);
+    assert!(
+        base[MOVING..].iter().all(|p| p.is_finite()),
+        "the fit at 0.5 predicts on every row after the stop"
+    );
     let covered = MOVING + 4 * H as usize;
     for level in LEVELS {
         let (pred, coef) = run(make(), level, slope);
         for (i, &c) in coef.iter().enumerate().skip(MOVING) {
             if i < MOVING + 2 * H as usize {
                 assert!(
-                    c.is_nan() || (0.2..0.8).contains(&c),
+                    (0.2..0.8).contains(&c),
                     "level {level}, row {i}: slope {c} while the window still has spread"
                 );
             } else if i >= covered {
                 assert!(
-                    c.is_nan() || c == 0.0,
+                    c == 0.0,
                     "level {level}, row {i}: slope {c} on a feature without spread in the window"
                 );
             }
         }
+        assert!(
+            pred[MOVING..].iter().all(|p| p.is_finite()),
+            "level {level}: a row with no prediction after the stop"
+        );
         let worst = (MOVING..pred.len())
-            .filter(|&i| base[i].is_finite())
             .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
             .fold(0.0, f64::max);
         let tol = steps_of(level);
@@ -365,7 +393,7 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
     holds(
         "huber",
         || Robust::new(cfg.clone()).unwrap(),
-        |m: &Robust| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        Some(|m: &Robust| m.coefficients().map_or(f64::NAN, |c| c[0][3])),
         FROM_THE_STOP,
     );
 }
@@ -396,7 +424,7 @@ fn kalman_predicts_the_same_at_every_level() {
     holds(
         "kalman",
         || Kalman::new(cfg.clone()).unwrap(),
-        |_: &Kalman| f64::NAN,
+        None,
         Invariance {
             from: 100,
             tol: |_| 5e-3,
@@ -428,7 +456,7 @@ fn sgd_predicts_the_same_at_every_level() {
     holds(
         "sgd",
         || Sgd::new(cfg.clone()).unwrap(),
-        |_: &Sgd| f64::NAN,
+        None,
         FROM_THE_STOP,
     );
 }

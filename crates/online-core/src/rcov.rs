@@ -39,9 +39,20 @@
 //!
 //! **`preavg`** is the modulated realised covariance of Christensen,
 //! Kinnebrock & Podolskij (2010): the returns are pre-averaged over a window
-//! of `kₙ = ⌊θ√n⌋` with the weight function `g(x) = min(x, 1−x)`, which
-//! averages the noise away, and the residual bias is subtracted, at the θ
-//! the window itself gives, `kₙ/√n` (their Eq. 7).
+//! of `kₙ` with the weight function `g(x) = min(x, 1−x)`, which averages the
+//! noise away. Two of their configurations are offered. The default, `psd =
+//! true`, is their §3.4 one: the longer window `kₙ = ⌈θ·n^0.6⌉` and no bias
+//! term (their Eq. 16 and 17), so the estimate is positive semi-definite by
+//! construction. `psd = false` is the one of their Eq. 7: `kₙ = ⌊θ√n⌋`, with
+//! the residual bias subtracted at the θ the window itself gives, `kₙ/√n`.
+//! `n` is `block_rows`, which fixes the window before the first row.
+//!
+//! What an estimate's `n` counts depends on the kind: the returns accepted
+//! for `plain`; for `kernel` the jittered returns, `n − 2m + 2` in a stretch
+//! of `n` returns (the lead, the `n − 2m` between the jitters, and the
+//! trail); for `preavg` the pre-averaged terms, `n − kₙ + 2` in a stretch of
+//! `n`. Both of the last are summed over the stretches a break splits the
+//! group into (below).
 //!
 //! # Nothing reads a future row
 //!
@@ -309,12 +320,14 @@ pub struct RcovCfg {
     /// Only `"parzen"`; another name is refused.
     pub kernel: String,
     /// A fixed `H`, or `None` for BNHLS's `"auto"` rule (which needs
-    /// `block_rows`).
+    /// `block_rows`). At most `block_rows`, where it is given, and `2^20`.
     pub bandwidth: Option<usize>,
     /// Observations averaged at each end, `m`. Default 2; `1` is no jitter.
+    /// At most `2^20`.
     pub jitter: usize,
     /// Pre-averaging window scale: `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`, the
-    /// default, and `⌊θ√block_rows⌋` without it ([`RcovCfg::window_for`]).
+    /// default, and `⌊θ√block_rows⌋` without it ([`RcovCfg::window_for`]),
+    /// at least 2 and 3 respectively, and no longer than `block_rows`.
     /// It sets the window and nothing else: the bias term reads θ from the
     /// window actually run, `kₙ/√n` over the block's own `n`.
     pub theta: f64,
@@ -323,57 +336,107 @@ pub struct RcovCfg {
     /// The block's expected length, which sizes the ring: `"auto"` and
     /// pre-averaging both need a window fixed before the first row.
     pub block_rows: Option<usize>,
-    /// Ring depth; defaults to `⌈c*·block_rows^{3/5}⌉` under `"auto"`.
+    /// Ring depth; defaults to `⌈c*·block_rows^{3/5}⌉` under `"auto"`. At
+    /// most `block_rows`, where it is given, and `2^20`.
     pub max_bandwidth: Option<usize>,
-    /// A fixed `kₙ`, instead of `⌊θ√block_rows⌋`.
+    /// A fixed `kₙ`, instead of the one `theta` gives: at least 2 under
+    /// `psd` and 3 without it, where a window of 2 is the zero matrix, and
+    /// at most `block_rows`, where it is given, and `2^20`.
     pub preavg_rows: Option<usize>,
     /// Subsampling stride for the noise estimate `ω̂²` (default 1, the dense
-    /// grid).
+    /// grid). At most `2^20`.
     pub noise_stride: usize,
     /// Subsampling stride for the sparse integrated variance `IV̂` and the
-    /// quarticity (default 20).
+    /// quarticity (default 20). At most `2^20`.
     pub iv_stride: usize,
+}
+
+/// The most returns a ring, the pre-averaging window, the jitter or a stride
+/// is sized for, where nothing tighter bounds it: an explicit `bandwidth`,
+/// `max_bandwidth` or `preavg_rows` without `block_rows`, the jitter and the
+/// strides, and the sizes the automatic rules derive from `block_rows`. All
+/// of them are allocated before the first row; `2^64 − 1` panicked
+/// "capacity overflow", and `theta = 1e15` aborted the process asking for
+/// 8.7e17 bytes (review 2026-10-05, CE4). BNHLS's automatic bandwidth
+/// reaches it at a block of over a billion returns.
+const MAX_RING: usize = 1 << 20;
+
+/// `value`, a size in returns that `Rcov::new` allocates from, at most
+/// `block_rows` where that is given and at most [`MAX_RING`] in any case.
+fn within_block(name: &str, value: usize, block_rows: Option<usize>) -> Result<(), String> {
+    if let Some(b) = block_rows {
+        if value > b {
+            return Err(format!(
+                "rcov: {name} = {value} is more than block_rows = {b}, the returns a block \
+                 holds: it is sized before the first row and a block never fills it"
+            ));
+        }
+    }
+    if value > MAX_RING {
+        return Err(format!(
+            "rcov: {name} = {value} is above {MAX_RING}, the most this model sizes a ring, a \
+             window or a stride for before the first row"
+        ));
+    }
+    Ok(())
 }
 
 impl RcovCfg {
     /// The pre-averaging window this configuration fixes before the block
-    /// starts.
+    /// starts: `preavg_rows`, or the one `theta` and `block_rows` give,
+    /// at least 2 under `psd` and 3 without it. `None` without either, and
+    /// for a window above `2^20` returns (`MAX_RING`), which
+    /// [`Self::validate`] refuses: the window is a double until it is known
+    /// to fit, so no `theta` saturates the count.
     pub fn window_for(&self) -> Option<usize> {
+        self.window_rows()
+            .and_then(|w| (w <= MAX_RING as f64).then_some(w as usize))
+    }
+
+    /// [`Self::window_for`] as a double, before it is a count.
+    fn window_rows(&self) -> Option<f64> {
         if let Some(w) = self.preavg_rows {
-            return Some(w);
+            return Some(w as f64);
         }
         let n = self.block_rows? as f64;
-        Some(
-            if self.psd {
-                // CKP §3.4's longer, PSD configuration: `k_n / n^{1/2+δ} = θ +
-                // o(n^{−1/4+δ/2})` (their Eq. 16) at `δ = 0.1`, the choice
-                // they call optimal (Theorem 4 (ii), rate `n^{−1/5}`), and no
-                // bias term (Eq. 17). Read against the paper 2026-09-28
-                // (docs/PLAN.md task 114); the ceiling meets Eq. 16's bound.
-                (self.theta * n.powf(0.6)).ceil() as usize
-            } else {
-                // CKP's own floor.
-                (self.theta * n.sqrt()).floor() as usize
-            }
-            .max(2),
-        )
+        Some(if self.psd {
+            // CKP §3.4's longer, PSD configuration: `k_n / n^{1/2+δ} = θ +
+            // o(n^{−1/4+δ/2})` (their Eq. 16) at `δ = 0.1`, the choice
+            // they call optimal (Theorem 4 (ii), rate `n^{−1/5}`), and no
+            // bias term (Eq. 17). Read against the paper 2026-09-28
+            // (docs/PLAN.md task 114); the ceiling meets Eq. 16's bound.
+            // At 2 it is `plain`'s estimate.
+            (self.theta * n.powf(0.6)).ceil().max(2.0)
+        } else {
+            // CKP's own floor, and 3 at the least: at 2 the scaled sum of
+            // the pre-averaged squares is the bias term, and the estimate
+            // the zero matrix (review 2026-10-05, CE5).
+            (self.theta * n.sqrt()).floor().max(3.0)
+        })
     }
 
     /// The ring depth: `max_bandwidth`, or `⌈c*·block_rows^{3/5}⌉` when the bandwidth is
     /// automatic -- the depth at which `ξ̂ = 1`, a noise variance equal to
     /// the block's integrated variance, beyond which the estimator is not
-    /// worth having.
+    /// worth having. `None` for a ring above `2^20` (`MAX_RING`), which
+    /// [`Self::validate`] refuses, as [`Self::window_for`] does.
     pub fn ring_for(&self) -> Option<usize> {
+        self.ring_rows()
+            .and_then(|h| (h <= MAX_RING as f64).then_some(h as usize))
+    }
+
+    /// [`Self::ring_for`] as a double, before it is a count.
+    fn ring_rows(&self) -> Option<f64> {
         if let Some(h) = self.max_bandwidth {
-            return Some(h);
+            return Some(h as f64);
         }
         match (self.kind, self.bandwidth) {
-            (RcovKind::Kernel, Some(h)) => Some(h),
+            (RcovKind::Kernel, Some(h)) => Some(h as f64),
             (RcovKind::Kernel, None) => {
                 let n = self.block_rows? as f64;
-                Some(((parzen_c_star() * n.powf(0.6)).ceil() as usize).max(1))
+                Some((parzen_c_star() * n.powf(0.6)).ceil().max(1.0))
             }
-            _ => Some(0),
+            _ => Some(0.0),
         }
     }
 
@@ -417,7 +480,7 @@ impl RcovCfg {
                     .into(),
             );
         }
-        if self.kind == RcovKind::Preavg && self.window_for().is_none() {
+        if self.kind == RcovKind::Preavg && self.window_rows().is_none() {
             return Err(
                 "rcov: pre-averaging needs `block_rows` or an explicit `preavg_rows`: the window has to be \
                  fixed before the first row"
@@ -431,6 +494,15 @@ impl RcovCfg {
                      sum over `preavg_rows − 1` returns, so below 2 there is nothing to average and \
                      no block ever accumulates"
                 ));
+            }
+            if w == 2 && !self.psd {
+                return Err(
+                    "rcov: preavg_rows must be >= 3 without psd (got 2): at 2 the scaled sum of the \
+                     pre-averaged squares is exactly the bias term subtracted from it, so the \
+                     estimate is the zero matrix whatever the returns; give 3 or more, or psd = \
+                     true, where a window of 2 is the plain estimate"
+                        .into(),
+                );
             }
         }
         if self.block_rows == Some(0) {
@@ -449,6 +521,44 @@ impl RcovCfg {
                 ));
             }
         }
+        // Every size `Rcov::new` allocates from, before the first row: what
+        // a caller sets, at most `block_rows` where it is given, and every
+        // size at most `MAX_RING` (review 2026-10-05, CE4).
+        if let Some(h) = self.bandwidth {
+            within_block("bandwidth", h, self.block_rows)?;
+        }
+        if let Some(h) = self.max_bandwidth {
+            within_block("max_bandwidth", h, self.block_rows)?;
+        }
+        if let Some(w) = self.preavg_rows {
+            within_block("preavg_rows", w, self.block_rows)?;
+        }
+        within_block("jitter", self.jitter, None)?;
+        within_block("noise_stride", self.noise_stride, None)?;
+        within_block("iv_stride", self.iv_stride, None)?;
+        let automatic = self.bandwidth.is_none() && self.max_bandwidth.is_none();
+        if let (Some(h), Some(b), true) = (self.ring_rows(), self.block_rows, automatic) {
+            if self.kind == RcovKind::Kernel && h > MAX_RING as f64 {
+                return Err(format!(
+                    "rcov: block_rows = {b} gives an automatic bandwidth's ring of {h:e} lags, above \
+                     {MAX_RING}, the most this model sizes a ring for before the first row; give a \
+                     bandwidth, or a max_bandwidth"
+                ));
+            }
+        }
+        if let (RcovKind::Preavg, None, Some(b)) = (self.kind, self.preavg_rows, self.block_rows) {
+            let w = self.window_rows().expect("block_rows sizes the window");
+            // Read as a double, so a `theta` past any count is refused here
+            // rather than saturating the cast.
+            if w > b as f64 || w > MAX_RING as f64 {
+                return Err(format!(
+                    "rcov: the pre-averaging window theta = {} sets is {w:e} returns, which is more \
+                     than block_rows = {b} (or {MAX_RING}, the most this model sizes a window for): \
+                     a window past the block never forms a term; lower theta, or give preavg_rows",
+                    self.theta
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -459,7 +569,11 @@ pub struct RcovEstimate {
     /// `k*k` row-major; `None` when the block was too short.
     pub rcov: Option<Vec<f64>>,
     pub rcorr: Option<Vec<f64>>,
-    /// Effective returns behind it.
+    /// Effective returns behind it, by kind: `plain`, the returns accepted;
+    /// `kernel`, the jittered returns, `n − 2m + 2` in a stretch of `n`
+    /// returns at a jitter of `m` (a stretch cut short before its tail
+    /// fills gives the ones it had emitted); `preavg`, the pre-averaged
+    /// terms, `n − kₙ + 2` in a stretch of `n`. Summed over the stretches.
     pub n: i64,
     pub kind: &'static str,
     /// The bandwidth actually used (`kernel` only).
@@ -1764,10 +1878,148 @@ mod tests {
             },
             "theta must be",
         );
+        // Every ring and window is sized before the first row, so each size
+        // has a ceiling a block can use: `block_rows` where it is given, and
+        // 2^20 otherwise. `2^64 − 1` panicked "capacity overflow" in `new`,
+        // and `theta = 1e15` aborted the process asking for 8.7e17 bytes
+        // (review 2026-10-05, CE4).
+        let huge = usize::MAX;
+        for (c, msg) in [
+            (
+                RcovCfg {
+                    bandwidth: Some(huge),
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "bandwidth = 18446744073709551615 is more than block_rows = 400",
+            ),
+            (
+                RcovCfg {
+                    bandwidth: Some(401),
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "bandwidth = 401 is more than block_rows = 400",
+            ),
+            (
+                RcovCfg {
+                    bandwidth: Some(huge),
+                    block_rows: None,
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "bandwidth = 18446744073709551615 is above 1048576",
+            ),
+            (
+                RcovCfg {
+                    bandwidth: Some(1),
+                    max_bandwidth: Some(huge),
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "max_bandwidth = 18446744073709551615 is more than block_rows = 400",
+            ),
+            (
+                RcovCfg {
+                    bandwidth: Some(1),
+                    max_bandwidth: Some(huge),
+                    block_rows: None,
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "max_bandwidth = 18446744073709551615 is above 1048576",
+            ),
+            (
+                RcovCfg {
+                    bandwidth: None,
+                    block_rows: Some(1 << 62),
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "an automatic bandwidth's ring",
+            ),
+            (
+                RcovCfg {
+                    preavg_rows: Some(1 << 62),
+                    ..cfg(2, RcovKind::Preavg)
+                },
+                "preavg_rows = 4611686018427387904 is more than block_rows = 400",
+            ),
+            (
+                RcovCfg {
+                    preavg_rows: Some(1 << 62),
+                    block_rows: None,
+                    ..cfg(2, RcovKind::Preavg)
+                },
+                "preavg_rows = 4611686018427387904 is above 1048576",
+            ),
+            (
+                RcovCfg {
+                    jitter: huge,
+                    ..cfg(2, RcovKind::Kernel)
+                },
+                "jitter = 18446744073709551615 is above 1048576",
+            ),
+            (
+                RcovCfg {
+                    iv_stride: huge,
+                    ..cfg(2, RcovKind::Plain)
+                },
+                "iv_stride = 18446744073709551615 is above 1048576",
+            ),
+            (
+                RcovCfg {
+                    noise_stride: huge,
+                    ..cfg(2, RcovKind::Plain)
+                },
+                "noise_stride = 18446744073709551615 is above 1048576",
+            ),
+        ] {
+            bad(c, msg);
+        }
+        // `theta` sizes the window from `block_rows`, and the window is read
+        // in a double before it is a count, so no `theta` saturates it.
+        for theta in [1e6, 1e15, 1e300, f64::MAX] {
+            for psd in [true, false] {
+                bad(
+                    RcovCfg {
+                        theta,
+                        psd,
+                        ..cfg(2, RcovKind::Preavg)
+                    },
+                    "is more than block_rows = 400",
+                );
+            }
+        }
+        // At the ceilings, and the default `theta` on a short block.
+        for c in [
+            RcovCfg {
+                bandwidth: Some(400),
+                ..cfg(2, RcovKind::Kernel)
+            },
+            RcovCfg {
+                bandwidth: Some(1 << 20),
+                block_rows: None,
+                ..cfg(2, RcovKind::Kernel)
+            },
+            RcovCfg {
+                preavg_rows: Some(400),
+                ..cfg(2, RcovKind::Preavg)
+            },
+            RcovCfg {
+                block_rows: Some(3),
+                psd: true,
+                ..cfg(2, RcovKind::Preavg)
+            },
+            RcovCfg {
+                bandwidth: None,
+                block_rows: Some(6),
+                ..cfg(2, RcovKind::Kernel)
+            },
+        ] {
+            Rcov::new(c.clone()).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+        }
     }
 
     /// Each stride is checked on its own, and the smallest window allowed is
-    /// allowed.
+    /// allowed: 2 under `psd`, where the estimate is `plain`'s, and 3
+    /// without it, where a window of 2 gave exactly the zero matrix -- the
+    /// scaled sum of the pre-averaged squares is then the bias term itself
+    /// (review 2026-10-05, CE5).
     #[test]
     fn each_stride_is_refused_at_zero_and_a_window_of_two_is_allowed() {
         for (noise_stride, iv_stride) in [(0, 20), (1, 0)] {
@@ -1782,9 +2034,45 @@ mod tests {
                 "{noise_stride}, {iv_stride}: {e}"
             );
         }
+        let e = Rcov::new(RcovCfg {
+            preavg_rows: Some(2),
+            ..cfg(2, RcovKind::Preavg)
+        })
+        .unwrap_err();
+        assert!(e.contains("preavg_rows must be >= 3 without psd"), "{e}");
+        assert!(e.contains("zero matrix"), "the message says why: {e}");
+        assert!(
+            Rcov::new(RcovCfg {
+                preavg_rows: Some(3),
+                ..cfg(2, RcovKind::Preavg)
+            })
+            .is_ok()
+        );
+        // The window `theta` gives without `psd` is 3 at the least.
+        let short = RcovCfg {
+            block_rows: Some(4),
+            ..cfg(2, RcovKind::Preavg)
+        };
+        assert_eq!(short.window_for(), Some(3));
+        let rows = returns(400, 2, 77, 0.1);
+        let mut psd = Rcov::new(RcovCfg {
+            preavg_rows: Some(2),
+            psd: true,
+            ..cfg(2, RcovKind::Preavg)
+        })
+        .unwrap();
+        let mut plain = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        feed(&mut psd, &rows);
+        feed(&mut plain, &rows);
+        assert_eq!(
+            psd.estimate().rcov,
+            plain.estimate().rcov,
+            "a window of 2 under psd"
+        );
         assert!(
             Rcov::new(RcovCfg {
                 preavg_rows: Some(2),
+                psd: true,
                 ..cfg(2, RcovKind::Preavg)
             })
             .is_ok()
@@ -2025,8 +2313,8 @@ mod tests {
     /// return shorter: `plain` from one return, which is its own outer
     /// product; `kernel` from `2m` (one leading and one trailing jittered
     /// return); `preavg` from `kₙ − 1` (one pre-averaged return, CKP's `Ȳ₀`
-    /// over the first `kₙ − 1` returns; task 159, D1), the smallest window,
-    /// 2, included.
+    /// over the first `kₙ − 1` returns; task 159, D1), the smallest windows
+    /// included: 2 under `psd`, 3 without it.
     #[test]
     fn the_shortest_blocks_with_an_estimate() {
         let rows = returns(12, 2, 21, 0.2);
@@ -2060,10 +2348,13 @@ mod tests {
                 "jitter {m_j}, 2m − 1 rows: {e:?}"
             );
         }
-        for kn in [2usize, 5] {
+        // A window of 2 is `psd`'s alone: without it the estimate there is
+        // exactly the zero matrix, and refused (review 2026-10-05, CE5).
+        for (kn, psd) in [(2usize, true), (3, false), (5, false)] {
             let pre = || {
                 Rcov::new(RcovCfg {
                     preavg_rows: Some(kn),
+                    psd,
                     ..cfg(2, RcovKind::Preavg)
                 })
                 .unwrap()

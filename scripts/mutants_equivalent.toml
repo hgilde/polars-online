@@ -45,16 +45,6 @@ second: at `d² = cap` exactly both branches give `±√(d²)`, and `√(fl(d²)
 |d|` for every double that neither overflows nor underflows"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::update"
-mutation = "replace > with >="
-line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.w_sum) {"
-why = """the first `>`: a row of weight 0 passes `w >= 0` and fails the \
-fraction test after it (`0 > EMPTY_FRACTION · lam · w_sum` for any weight), \
-so it is not counted either way; the second `>` is caught (the row at the \
-fraction exactly)"""
-
-[[equivalent]]
 file = "crates/online-core/src/cluster/summary.rs"
 function = "FeatureMoments::metric"
 mutation = "replace > with >="
@@ -380,16 +370,6 @@ mutation = "replace > with >="
 line_has = "if p > 0 {"
 why = """`p` is `n_features`, which `MarginalCfg::validate` holds at one or \
 more, so the branch is taken either way"""
-
-[[equivalent]]
-file = "crates/online-core/src/marginal.rs"
-function = "Marginal::advance_target"
-mutation = "replace > with >="
-line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {"
-why = """as `EwCov::update`'s: a row of weight 0 fails the fraction test after \
-`w >= 0` (`0 > EMPTY_FRACTION · lam · W_t` for no weight), so it is not \
-counted either way; the second `>` is caught. The line moved here from \
-`Marginal::learn`, whose entry no longer matches it"""
 
 [[equivalent]]
 file = "crates/online-core/src/marginal.rs"
@@ -855,12 +835,12 @@ alike"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
-function = "Robust::solve_centred"
+function = "Robust::band_system"
 mutation = "replace + with *"
 line_has = ".filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))"
 why = """as `EwRidge::solve_centred`'s: both mutants are inside the second \
 argument, which `variance_is_usable` ignores; `cov.raw(i * 1, ..)` is still \
-in range"""
+in range. The line moved here from `Robust::solve_centred` (task 160, TC1b)"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
@@ -868,16 +848,28 @@ function = "Robust::solve_centred"
 mutation = "replace > with >="
 line_has = "if kk > 0 {"
 why = """with no usable feature the mutant solves the empty system: \
-`solve_spd` of a 0×0 matrix returns an empty solution and no jitter, so \
-nothing is written and nothing counted"""
+`SpdFactor::of` of a 0×0 matrix factors at the first rung with no jitter and \
+solves to an empty solution, so nothing is written and nothing counted, and \
+the empty factor it keeps reads a nudge's movement as 1, as no factor does"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"
 function = "Robust::solve_through_origin"
 mutation = "replace > with >="
 line_has = "if kk > 0 {"
-why = """as `Robust::solve_centred`'s: `solve_spd` of a 0×0 matrix returns an \
-empty solution and no jitter"""
+why = """as `Robust::solve_centred`'s: `SpdFactor::of` of a 0×0 matrix factors \
+with no jitter and solves to an empty solution, and the empty factor it \
+keeps reads a movement of 0 through the origin, as no factor does"""
+
+[[equivalent]]
+file = "crates/online-core/src/robust.rs"
+function = "Robust::nudge_movement"
+mutation = "replace > with >="
+line_has = "let factor = if kk > 0 {"
+why = """as `Robust::solve_centred`'s: with no column kept the mutant keeps the \
+factor of the 0×0 system, which `SpdFactor::of` makes at the first rung, \
+and its quadratic form over the empty row is 0, as no factor's is (task \
+160, TC1b)"""
 
 [[equivalent]]
 file = "crates/online-core/src/robust.rs"

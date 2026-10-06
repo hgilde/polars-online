@@ -67,6 +67,9 @@ impl RlsCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("rls: {e}"))?;
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }

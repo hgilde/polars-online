@@ -214,6 +214,9 @@ impl MarginalCfg {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        self.decay.check().map_err(|e| format!("marginal: {e}"))?;
         if self.n_features == 0 {
             return Err("marginal: at least one feature is required".into());
         }
@@ -286,7 +289,9 @@ pub struct Pair {
     /// Accumulated weight behind the pair: `W_t`, the rows where the target
     /// was present.
     pub n_eff: f64,
-    /// Kish's effective sample size `W_t² / Q_t`; NaN before the first row.
+    /// Kish's effective sample size `W_t² / Q_t`; NaN before the first row,
+    /// and under a window whose `Q_t` the subtraction leaves no digit of
+    /// (within `64 ε` of the history's).
     pub n_kish: f64,
     pub mean_x: f64,
     /// Centred variance of the feature over the rows the target was present.
@@ -921,7 +926,21 @@ impl Marginal {
                     ),
                 ) {
                     (Some((w, mx, _, sxx)), Some((_, my, _, syy)), Some((_, _, _, sxy))) => {
-                        let q = (self.qt[t] - f * f * old.qt[t]).max(0.0);
+                        // Kish's size from `Q_R = Q − f²·Q_u`, a remainder
+                        // that keeps no digit once the window's squared
+                        // weights are within a rounding of the history's:
+                        // a window of light rows. There it is no size, not
+                        // `W²/0 = inf` or a ratio of rounding (review
+                        // 2026-10-05, CE6: 2% off with the window at 1e-8 of
+                        // the history, `inf` at 1e-11). The compensated sums
+                        // the means keep would hold the digits, at a layout
+                        // change of the state and of every snapshot.
+                        let q = self.qt[t] - f * f * old.qt[t];
+                        let n_kish = if q > 64.0 * f64::EPSILON * self.qt[t] {
+                            w * w / q
+                        } else {
+                            f64::NAN
+                        };
                         let (mut mx, mut my, mut sxx, mut syy, mut sxy) =
                             (mx, my, sxx.max(0.0), syy.max(0.0), sxy);
                         // A slot that held one value over every row inside
@@ -940,7 +959,7 @@ impl Marginal {
                                 (my, syy, sxy) = (value, 0.0, 0.0);
                             }
                         }
-                        (w, w * w / q, mx, my, sxx, syy, sxy)
+                        (w, n_kish, mx, my, sxx, syy, sxy)
                     }
                     // Nothing inside the window: report nothing, not stale
                     // moments (hard rule 9).
@@ -1607,9 +1626,10 @@ impl Marginal {
         let a = lam * self.wt[t] / w_new;
         let b = w / w_new;
         let mut runs_row = None;
-        // A row counts for the runs when its weight is something next to the
-        // target's (`EwCov::update`, `crate::Runs`).
-        if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {
+        // Every row with a weight counts for the runs, however light next to
+        // the target's weight: the window alone says what is nothing
+        // (`EwCov::update`, `crate::Runs`; review 2026-10-05, CE3).
+        if w > 0.0 {
             self.rows_t[t] += 1;
             // The runs are read by a window's truncated pair alone, and a
             // window is fixed when the model is built: without one they were

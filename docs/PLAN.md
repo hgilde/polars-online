@@ -4970,8 +4970,13 @@ is not, since the model alone has `0.0` and `3.5` there.
       against a Gram holding no curvature that far out, to `1e248`; the
       prediction at `1e100` read `-inf`. The nudge is bounded by the row's
       leverage under the Gram's diagonal, so the fit at the row moves by at
-      most its residual (the row reaches its band's edge); the linearisation
-      holds inside the band and nothing past it is justified. The 24 robust
+      most its residual (the row is brought at most to its target); the
+      linearisation holds inside the band and nothing past it is justified.
+      (Task 160, TC1b: the diagonal under-reads the leverage of a row
+      against correlated features, and such a row moved 6 to 127 times its
+      residual; the bound is the full leverage `1 + u'A⁻¹u` against the
+      band's own system since, at about half the default schedule's
+      throughput: 2.6M rows/s against 5.0M, 10 features.) The 24 robust
       tests, the QuantReg oracles among them, hold; the quantile golden's
       three values moved by about 1e-3 of themselves, the bound binding on
       early rows where a row's leverage exceeds its weight share. Measured

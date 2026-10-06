@@ -26,6 +26,14 @@
 //! when that row arrived -- is a different statistic, and one that cannot be
 //! computed from a ring of raw rows.
 //!
+//! **The statistic is defined by this recursion.** Unrolled, row `i`
+//! enters with weight `λ_i·W_{i−1}·w_i/W_i`, decayed by every later row's
+//! factor and divided by the final weight, its product taken about the
+//! mean *before* that row. That is not a batch EW lagged cross-moment taken
+//! about the final mean, `Σ_i ω_i (x_i − m_T)(x_{i−ℓ} − m_T)' / Σ_i ω_i`:
+//! the two differ, by 4.5e-2 in a lag-2 autocorrelation on an AR(1) stream
+//! (`φ = 0.7`), where the recursion read 0.508 and the batch form 0.553.
+//!
 //! # What is in the ring
 //!
 //! The last `max(lags)` rows that **entered the accumulator**: a skipped row
@@ -292,6 +300,79 @@ mod tests {
             cov.update(x, lam, w);
         }
         assert_eq!(lc.comoments(), &direct[..], "at a level of {level}");
+    }
+
+    /// The recursion against the statistic it defines, from its unrolled
+    /// weights rather than stepped (review 2026-10-05, CB6: the only
+    /// definitional test was the recursion written out). Row `i` enters
+    /// with weight `λ_i·W_{i−1}·w_i/W_i`, the sum form of `a·b`, decays by
+    /// every later row's factor, and the sum is over the final weight `W_T`;
+    /// both legs are centred at the mean before row `i`, here the decayed
+    /// weighted mean of the rows before it, from its definition; and the leg
+    /// `ℓ` back is the `ℓ`-th learned row before it, a row of weight 0
+    /// being none. Every weight is a sum written out over the rows, with
+    /// uneven factors and weights.
+    #[test]
+    fn the_recursion_is_its_unrolled_definition() {
+        let (k, lag) = (2usize, 2usize);
+        let mut cov = EwCov::new(k);
+        let mut lc = EwLagCov::new(k, vec![lag]).unwrap();
+        let mut s = 21u64;
+        let mut rows: Vec<(Vec<f64>, f64, f64)> = Vec::new();
+        for i in 0..150 {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+            let lam = if i == 0 {
+                1.0
+            } else {
+                0.9 + 0.09 * lcg(&mut s).abs()
+            };
+            let w = if i % 7 == 3 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            lc.update(&x, (cov.means(), cov.means_lo()), cov.n_eff(), lam, w);
+            cov.update(&x, lam, w);
+            rows.push((x, lam, w));
+        }
+        let n = rows.len();
+        // The factor from row `r` to row `i`: every row's after `r`, to `i`.
+        let decay = |r: usize, i: usize| (r + 1..=i).map(|s| rows[s].1).product::<f64>();
+        // The weight after row `i`, and before row `i` (after `i − 1`).
+        let weight = |i: usize| (0..=i).map(|r| rows[r].2 * decay(r, i)).sum::<f64>();
+        let mut sum = vec![0.0; k * k];
+        for i in 0..n {
+            let (ref x, lam, w) = rows[i];
+            if i == 0 || w == 0.0 {
+                continue;
+            }
+            let before = weight(i - 1);
+            let mean: Vec<f64> = (0..k)
+                .map(|j| {
+                    (0..i)
+                        .map(|r| rows[r].2 * decay(r, i - 1) * rows[r].0[j])
+                        .sum::<f64>()
+                        / before
+                })
+                .collect();
+            let Some(partner) = (0..i).rev().filter(|&r| rows[r].2 > 0.0).nth(lag - 1) else {
+                continue;
+            };
+            let c = lam * before * w / weight(i) * decay(i, n - 1);
+            for a in 0..k {
+                for b in 0..k {
+                    sum[a * k + b] += c * (x[a] - mean[a]) * (rows[partner].0[b] - mean[b]);
+                }
+            }
+        }
+        let total = weight(n - 1);
+        for (j, (got, s)) in lc.comoments().iter().zip(&sum).enumerate() {
+            let want = s / total;
+            assert!(
+                (got - want).abs() <= 1e-12 * want.abs().max(1e-3),
+                "cell {j}: {got} against {want}"
+            );
+        }
     }
 
     #[test]

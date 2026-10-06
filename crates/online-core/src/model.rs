@@ -315,10 +315,11 @@ pub trait OnlineModel: Sized {
     /// the last solve used over Kish's effective sample size behind the
     /// slot's Gram (docs/WARMUP-AND-CONVERGENCE.md §2.1). Infinite before
     /// the first solve, and where the Gram has no weight. Clears and fills
-    /// `out`, an entry a slot, and says whether it did; a model with no
-    /// linear fit to read it from -- `sgd`, `pa`, `ftrl`, and every model
-    /// that is not a regression -- has none, hence the default, and the
-    /// stream's `max_error_inflation` gate leaves such a model alone.
+    /// `out`, an entry a slot, and says whether it did. Only `ewridge`
+    /// reports it. Every other model keeps the default, `false`, the linear
+    /// fits `rls`, `lasso`, `huber`, `quantile` and `kalman` among them, and
+    /// the spec refuses `max_error_inflation` and `emit_error_inflation` for
+    /// every model but `ewridge`.
     fn error_inflation_into(&self, _out: &mut Vec<f64>) -> bool {
         false
     }
