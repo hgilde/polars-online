@@ -7901,12 +7901,27 @@ tick, and that the series holding it up has a count near 1.
       the old build. The README's first fit and every clocked use that
       meant every row now write `coef_every=0`; `examples/bank.toml` uses
       `max_rows_between_coefs`. Schema 35 (task 176 took 34 the same day).
-- [ ] 180. **`solve_every`, `pca_every` and `prune_every` sum their clock in
+- [x] 180. **`solve_every`, `pca_every` and `prune_every` sum their clock in
       doubles -- found 2026-10-06 by task 178.** CB1's class of bug (tasks
       175, 176): two thousand steps of 1 ms sum to 1.9999999999998905 s, so
       a cadence of `"2s"` fires a row late. `window_every` (task 175) and
       `coef_every` (task 178) read exact stamps; these three should too.
-      Awaits the user's word.
+      *Built 2026-10-06 on the user's word ("Do the two code changes and
+      then push").* A new `Since` (`crates/online-core/src/since.rs`) keeps
+      the last event's stamp, the last row's (ewridge's solve after a blend
+      falls between rows) and the clock summed since the event (the path of
+      a row handed no stamp, which keeps a direct core caller unchanged to
+      the bit -- read literally, "the clock summed since construction"
+      would have fired 0.1-steps under 0.3 at rows 3, 7, 11 instead of 3,
+      6, 9). Before the first event the clock starts at the first stamped
+      row's stamp less its own step. All six models (`ewridge`, `lasso`,
+      `huber`, `quantile`, `ew_cov`, `micro`) fire exactly every 2,000 rows
+      of a 1 ms clock under `"2s"` in ms, us and ns (18 cases, each a row
+      late per event on the old code); irregular tenths under 1.3 fire by
+      one subtraction (regular tenths under 0.3 cannot fail: their sums
+      restart exactly at each event); chunking and a save between events
+      (checked by sabotage). Schema 37, the bank refusing 36. No pinned
+      value moved.
 - [x] 177. **`huber` and `quantile` down-weight nothing until a residual
       scale exists -- requested 2026-10-06.** Size S. The user's word
       ("Follow your reco on all"), option (a): a row's Huber weight is 1
@@ -7951,6 +7966,36 @@ tick, and that the series holding it up has a count near 1.
       clamps with `max(0.0)`, which turns NaN into 0; that clamp in
       `solve.rs` can swallow a NaN for other Rust-API callers too, left for
       the user.
+- [x] 181. **A quadratic form of a NaN is NaN, and every caller refuses the
+      row -- requested 2026-10-06.** Size S. The user: "Do the two code
+      changes and then push". `solve.rs`'s `clamp_rounding` is `if acc < 0.0
+      { 0.0 } else { acc }` (bit-identical to `max(0.0)` for every number,
+      since `acc` starts at +0.0), used by `quad_forms`, `quad_form` and so
+      `quad_forms_logdet`. Each caller, read: `hmm` refuses the row, and its
+      refusal path aged the states by a zero-weight update that wrote `0·NaN`
+      into the co-moments, so `age_states` decays them instead on a row that
+      is not finite; `ew_class` never hands the form a NaN feature, but a
+      form overflowing to ±∞ on a finite row is NaN, and its softmax skipped
+      it, so a guard withholds the row; `robust` never nudges without a
+      finite prediction, and a NaN leverage from overflow dropped the step's
+      bound, so it reads as unbounded and the step is 0; `ewridge`'s row
+      inflation and `deco`'s `loglik` are outputs only; `bocpd` keeps task
+      179's guard; `ew_cov`'s `mahal_of` already refused a non-finite d².
+      Tests in `solve.rs`, `hmm`, `ew_class`, `ewridge` and `robust`, each
+      failing on the old code but the rounding guard (a factor built by hand
+      to give a raw form of exactly −0.125). Finite inputs move nothing.
+- [ ] 182. **Four older NaN gaps, outside the core's stated contract (every
+      input finite) -- found 2026-10-06 by task 181.** None goes through a
+      quadratic form, and the bank never passes a NaN feature, so each is
+      reachable only through the Rust API: `hmm`'s warm-up buffer keeps a
+      NaN row and seeding replays it into a state (every later output
+      non-finite); `deco`'s standardiser learns a NaN feature (`loglik` NaN
+      ever after, `u` and `rho` silently reading the other columns);
+      `robust` learns one through its least-squares arm (every later solve
+      fails, the fit frozen while predictions look finite); `EwCov::var` and
+      `EwDiag`'s variance turn a NaN into 0 with `.max(0.0)`. Reproduction:
+      the session scratchpad's `review3/fixwork/nan_clamp/zz_probe_nan_paths.rs`.
+      Awaits the user's word.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

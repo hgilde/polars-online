@@ -156,7 +156,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 36,
+- **Every saved bank must be refit.** A bank file now carries schema 37,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Nine changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -167,8 +167,9 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   model window keys its snapshots by (task 175), `quantile`'s band factor
   (task 170), the elapsed clock an embargo's held rows are measured on
   (task 176), and where each stream's `coef` cadence stands (task 178). An
-  `ew_cov` state with `mahal_quantiles` is refused too. Schema 36 (task
-  179's duration `hazard`) still loads a 35 file.
+  `ew_cov` state with `mahal_quantiles` is refused too. Schema 37 keeps
+  the stamp of the last solve, PCA refresh and checkpoint (task 180), and
+  refuses 36 and older.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -575,6 +576,29 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`solve_every`, `pca_every` and `prune_every` are decided on the exact
+  clock** (task 180), as `window_every` and `coef_every` are. Each summed
+  its clock in doubles, so on a temporal clock `"2s"` on rows 1 ms apart
+  fired each solve, PCA refresh or `micro` checkpoint a row late, and the
+  lateness built up (2,001 rows apart). They are now decided in integer
+  nanoseconds from the last event on a temporal clock, and by one
+  subtraction of the raw values on a number clock. Where an event moves,
+  the fit, the components or the clusters change on another row, with
+  every field read from them between. Default cadences, whole-second and
+  row-count cadences, and a model stepped through the core without stamps
+  do not move.
+- **A quadratic form of a NaN is NaN, not 0** (task 181). The clamp that
+  lifts a rounding below zero to 0 used `max(0.0)`, which also turned a NaN
+  into 0: a vector holding a NaN read as sitting on every mean. It keeps
+  NaN now; every finite form keeps its exact bits. Through the Rust API,
+  where a NaN feature can arrive (the bank passes none): `hmm` refuses such
+  a row in every shape (it reports nulls, counts a failure if it carries
+  weight, ages the clock) where `full` and `shared` learned it and any
+  shape at weight 0 wrote NaN into every co-moment; `ew_class` withholds a
+  row whose class score is NaN instead of classing it; a `quantile` nudge
+  whose leverage is NaN takes no step instead of an unbounded one;
+  `ewridge`'s row error inflation and `deco`'s `loglik` are NaN where they
+  read a NaN form.
 - **`bocpd`'s `gaussian` emission refuses a row whose feature is NaN**
   (task 179), as its other emission does. It learned such a row, read
   through a quadratic form that clamps with `max(0.0)` -- which turns NaN
