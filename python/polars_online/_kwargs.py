@@ -71,7 +71,7 @@ class ExprKwargs(TypedDict, total=False):
     resid_autocorr_lag: int | None
     emit_drift: bool
     drift_delta: float | None
-    drift_threshold: float | None
+    drift_threshold: float | Duration | None
     drift_action: str
     embargo: float | Duration | None
 

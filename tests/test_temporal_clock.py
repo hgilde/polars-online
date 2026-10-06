@@ -502,6 +502,7 @@ class TestEveryClockParameterTakesADuration:
         "pca_every": ("10m", {"pca": 1}),
         "prune_every": ("10m", {}),
         "window_every": ("1m", {"window_size": "30m"}),
+        "drift_threshold": ("20m", {"emit_drift": True}),
     }
 
     def _cases(self):

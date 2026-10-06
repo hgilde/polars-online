@@ -62,7 +62,8 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
             r#""session_gap": 10.0, "coef_every": 1, "emit_sigma": true,
                "emit_zscore": true, "emit_metrics": true,
                "resid_quantiles": [0.5, 0.9], "emit_autocorr": true, "conformal": 0.9,
-               "emit_drift": true, "emit_selected": true, "emit_averaged": true,"#,
+               "emit_drift": true, "drift_threshold": 20.0, "emit_selected": true,
+               "emit_averaged": true,"#,
         ),
         spec(
             "coupled",

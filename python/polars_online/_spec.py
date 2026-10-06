@@ -639,7 +639,7 @@ def _common(
     resid_autocorr_lag: int | None = None,
     emit_drift: bool = False,
     drift_delta: float | None = None,
-    drift_threshold: float | None = None,
+    drift_threshold: float | Duration | None = None,
     drift_action: str = "flag",
     embargo: float | Duration | None = None,
     group: str | None = None,

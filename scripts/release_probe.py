@@ -89,6 +89,9 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
             emit_sigma=True,
             emit_zscore=True,
             emit_drift=True,
+            # The default every release before task 168 gave a numeric
+            # clock, which this build requires be said with a clock.
+            drift_threshold=20.0,
             emit_metrics=True,
             emit_autocorr=True,
             resid_quantiles=[0.1, 0.9],

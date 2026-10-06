@@ -189,6 +189,20 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   past a budget names it. A spec without a clock column is unchanged; a
   clocked spec that gave `window_every=N` now means `N` clock units, and
   `max_rows_between_snapshots=N` is the old cadence exactly.
+- **`drift_threshold` is a clock parameter, required with a clock** (task
+  168; review 2026-10-05, CC1). The drift detector sums each row's excess,
+  in `sigma`, times the row's clock step, so its threshold is `sigma` times
+  clock time: a number of the clock column's units, or a duration on a
+  temporal clock (`"20m"` is one `sigma` of excess held for twenty
+  minutes). The default of 20 stays only without a clock column, where a
+  row is one unit and it is the classic Page-Hinkley test. A spec with a
+  clock and `emit_drift` and no threshold is refused, naming the fix, as one
+  without `gap_cap` is. A temporal clock refuses a plain number, and a
+  numeric clock a duration. Before, every temporal clock was read in
+  seconds whatever the column's own unit, so the default was 20
+  `sigma`-seconds there. At a row a minute it flagged 244 of 3,000 rows of
+  noise, where `"20m"` flags none. To keep a spec's old numbers, give
+  `drift_threshold=20.0` on a numeric clock and `"20s"` on a temporal one.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec

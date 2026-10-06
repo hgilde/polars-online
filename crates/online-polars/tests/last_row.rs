@@ -34,6 +34,7 @@ fn rich_spec() -> Spec {
             "resid_quantiles": [0.5],
             "emit_autocorr": true,
             "emit_drift": true,
+            "drift_threshold": 20.0,
             "emit_error_inflation": true,
             "min_settled_frac": 0.2
         }"#,

@@ -174,7 +174,8 @@ durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
 number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
-``session_gap`` and ``embargo`` above, and in the models ``window_size``,
+``session_gap`` and ``embargo`` above, ``drift_threshold`` below, and in the
+models ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
@@ -383,14 +384,17 @@ The diagnostics add, per slot:
      - True on the row a Page-Hinkley detector on ``|resid|`` finds a
        break. Each residual over ``sigma`` is compared with its EW mean at
        the model's half-life, less ``drift_delta`` (default 0.5, in units
-       of ``sigma``). The excess is integrated over the clock: a break when
-       it climbs ``drift_threshold`` (default 20, in ``sigma`` times clock
-       units) above its lowest point. The detector counts the same burst
-       the same whatever the rows' density. Each residual is scored against
-       the ``sigma`` before its row, which trails a moving scale further
-       where rows are sparser. With rows one unit apart and no decay it is
-       the classic test. ``drift_action = "reset"`` also starts the model
-       over there.
+       of ``sigma``). The excess times each row's clock step is summed: a
+       break when the sum climbs ``drift_threshold`` above its lowest
+       point. So the threshold is in ``sigma`` times clock units, a clock
+       parameter: a number of the clock column's units, or a duration on a
+       temporal clock (``"20m"`` is one ``sigma`` of excess held for twenty
+       minutes). It is required with a clock column, as ``gap_cap`` is;
+       without one a row is one unit, and the default 20 is the classic
+       test. The detector counts the same burst the same whatever the rows'
+       density. Each residual is scored against the ``sigma`` before its
+       row, which trails a moving scale further where rows are sparser.
+       ``drift_action = "reset"`` also starts the model over there.
 
 .. rubric:: Errors
 
@@ -409,6 +413,7 @@ model refuses:
   that say so);
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
+- ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
 - a column listed twice, or as both target and feature;
 - a level outside ``(0, 1)``, or an option not in the list the message
   gives;

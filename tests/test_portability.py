@@ -78,6 +78,7 @@ def _bank_specs():
         resid_quantiles=[0.5, 0.9],
         emit_autocorr=True,
         emit_drift=True,
+        drift_threshold=20.0,
         conformal=0.9,
     )
     return [_spec(), grid]

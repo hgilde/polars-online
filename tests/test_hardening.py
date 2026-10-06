@@ -85,6 +85,7 @@ def kitchen_sink_spec(**overrides):
         emit_sigma=True,
         emit_zscore=True,
         emit_drift=True,
+        drift_threshold=20.0,
         emit_metrics=True,
         emit_autocorr=True,
         resid_quantiles=[0.05, 0.95],

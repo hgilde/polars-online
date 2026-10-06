@@ -142,6 +142,7 @@ def test_all_the_shared_options_at_once():
             emit_sigma=True,
             emit_zscore=True,
             emit_drift=True,
+            drift_threshold=20.0,
             emit_metrics=True,
             resid_quantiles=[0.5, 0.9],
             emit_autocorr=True,

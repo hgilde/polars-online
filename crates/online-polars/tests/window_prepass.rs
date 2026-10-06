@@ -228,7 +228,8 @@ fn under_drift_resets_the_ring_still_stops_the_run() {
     let s = spec(
         r#"{"type": "ew_ridge", "window_size": 200.0, "window_every": 1,
             "window_budget": {"refuse": 0.004}}"#,
-        r#", "targets": ["y"], "emit_drift": true, "drift_action": "reset""#,
+        r#", "targets": ["y"], "emit_drift": true, "drift_threshold": 20.0,
+            "drift_action": "reset""#,
     );
     let mut bank = Bank::new(vec![s]).unwrap();
     let err = bank.fit_predict(&df).unwrap_err().to_string();

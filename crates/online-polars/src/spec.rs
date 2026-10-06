@@ -1729,6 +1729,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "restart_after_step_back",
             "session_gap",
             "embargo",
+            "drift_threshold",
         ],
     ),
     (
@@ -1933,6 +1934,7 @@ impl Spec {
             put(&mut out, "session_gap", Some(g));
         }
         put(&mut out, "embargo", self.embargo.as_ref());
+        put(&mut out, "drift_threshold", self.drift_threshold.as_ref());
         // A formula target's operators measure in the same clock (review
         // R1, D7): with them here a number beside durations is refused at
         // the spec, and the embargo check compares like units.
@@ -2311,9 +2313,15 @@ pub struct Spec {
     /// in units of the slot's own EW residual std. Default 0.5.
     #[serde(default)]
     pub drift_delta: Option<f64>,
-    /// Accumulated excess that counts as drift. Default 20.
+    /// Accumulated excess that counts as drift, in `sigma` times clock units:
+    /// the detector sums each row's excess times its clock step. A number of
+    /// the clock column's units, or a duration on a temporal clock (`"20m"`
+    /// is one `sigma` of excess held for twenty minutes). Default 20 without
+    /// a clock column, where a row is one unit and it is the classic test;
+    /// required with one, as `gap_cap` is, since no number means the same
+    /// evidence on every clock (task 168; review 2026-10-05, CC1).
     #[serde(default)]
-    pub drift_threshold: Option<f64>,
+    pub drift_threshold: Option<Span>,
     /// What a detection does besides setting the flag: `"flag"` (default) or
     /// `"reset"`, which restarts this stream's models and their residual
     /// diagnostics on the flagged row, before it is scored under `embargo`
@@ -3078,7 +3086,8 @@ impl Spec {
         }
         if self
             .drift_threshold
-            .is_some_and(|v| v <= 0.0 || !v.is_finite())
+            .as_ref()
+            .is_some_and(|v| v.value() <= 0.0 || !v.value().is_finite())
         {
             return Err(format!(
                 "spec {:?}: drift_threshold must be finite and > 0",
@@ -3155,6 +3164,15 @@ impl Spec {
                     return Err(format!("spec {:?}: {knob} needs emit_drift", self.name));
                 }
             }
+        } else if self.clock.is_some() && self.drift_threshold.is_none() {
+            return Err(format!(
+                "spec {:?}: drift_threshold is required when clock is given, as gap_cap is: the \
+                 drift detector sums each row's excess times its clock step, so its threshold is \
+                 sigma times clock time, and no default means the same on every clock; give it \
+                 in the clock column's units, or as a duration on a Datetime, Date or Duration \
+                 clock (\"20m\": one sigma of excess held for twenty minutes)",
+                self.name
+            ));
         }
         if self.average_eta.is_some() && !self.emit_averaged {
             return Err(format!(
@@ -4415,6 +4433,58 @@ mod clock_tests {
         assert!(
             err.contains("spec \"m\": half_life names no half-life; give one or a grid"),
             "{err}"
+        );
+    }
+
+    /// The drift detector sums each row's excess times its clock step, so
+    /// its threshold is sigma times clock units: a number of the clock
+    /// column's units, a duration on a temporal clock, and required with a
+    /// clock, as `gap_cap` is; 20 without one, where a row is one unit and
+    /// it is the classic test (task 168). The default 20 on a temporal clock
+    /// was 20 sigma-seconds, a unit no one chose, and fired on noise at a
+    /// row a minute (review 2026-10-05, CC1).
+    #[test]
+    fn drift_threshold_is_a_clock_parameter() {
+        let durations =
+            r#", "clock": "t", "half_life": "10m", "gap_cap": "5m", "emit_drift": true"#;
+        let err = spec(durations).validate().unwrap_err();
+        assert!(
+            err.contains("spec \"m\": drift_threshold is required when clock is given"),
+            "{err}"
+        );
+        let given = spec(&format!(r#"{durations}, "drift_threshold": "20m""#));
+        assert_eq!(given.validate(), Ok(()));
+        assert_eq!(
+            given.drift_threshold.as_ref().map(Span::value),
+            Some(1200.0),
+            "a duration is read on the clock's scale, seconds"
+        );
+        let err = spec(&format!(r#"{durations}, "drift_threshold": 20"#))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("drift_threshold is a plain number"), "{err}");
+        let numbers = r#", "clock": "t", "half_life": 600, "gap_cap": 300, "emit_drift": true"#;
+        assert_eq!(
+            spec(&format!(r#"{numbers}, "drift_threshold": 20"#)).validate(),
+            Ok(())
+        );
+        let err = spec(&format!(r#"{numbers}, "drift_threshold": "20m""#))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("drift_threshold is a duration"), "{err}");
+        for bad in ["0", "-1", "\"inf\""] {
+            let err = spec(&format!(r#"{numbers}, "drift_threshold": {bad}"#))
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.contains("drift_threshold must be finite and > 0"),
+                "{bad}: {err}"
+            );
+        }
+        // Without a clock a row is one unit: 20 is the classic test.
+        assert_eq!(
+            spec(r#", "half_life": 600, "emit_drift": true"#).validate(),
+            Ok(())
         );
     }
 

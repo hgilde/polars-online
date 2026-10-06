@@ -101,7 +101,7 @@ class TestItIsTheDoubledStream:
         "kw",
         [
             dict(emit_sigma=True, emit_zscore=True, emit_metrics=True, conformal=0.9),
-            dict(emit_drift=True, emit_autocorr=True, resid_quantiles=[0.5]),
+            dict(emit_drift=True, drift_threshold=20.0, emit_autocorr=True, resid_quantiles=[0.5]),
         ],
         ids=["weighted", "weight-free"],
     )

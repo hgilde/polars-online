@@ -7670,6 +7670,29 @@ tick, and that the series holding it up has a count near 1.
       what `df.lazy()` does (STATE-WORKFLOW R3, a `_frame.py` comment), a
       quotation in PHRASING's log, the code that accepts a frame and makes
       it lazy, and the tests' own inputs.
+- [x] 168. **`drift_threshold` is a clock parameter, required with a clock
+      -- requested 2026-10-06.** Size S. Review CC1 (§16); the user asked
+      whether the problem was the unit or the default, why seconds ("there
+      are many possible units"), and then: "make drift_threshold a clock
+      parameter as you recommend". The detector sums each row's excess
+      times its clock step (`drift.rs`), so its threshold is `sigma` times
+      clock time. Every temporal clock is read in seconds whatever the
+      column's unit (`span.rs`), and every other clock parameter is a
+      duration there, so the internal scale never shows; `drift_threshold`,
+      a plain number, was the one parameter it leaked into. Now it is a
+      `Span` in `CLOCK_FIELDS`: a number of the clock column's units, a
+      duration on a temporal clock, the mixtures refused as for every clock
+      parameter, and required with a clock as `gap_cap` is. 20 stays the
+      default only without a clock column, where it is the classic test.
+      Measured on 3,000 rows a minute apart: the old default, `"20s"`,
+      flags 244 rows of pure noise and `"20m"` none, and `"20m"` finds a
+      burst 18 rows in; `"20m"` on a temporal clock flags exactly what 1200
+      does on the same clock in seconds, whatever the column's unit.
+      `tests/test_drift_threshold.py` holds each of these, the refusals and
+      a resume; `spec.rs` holds the rules in the core. Specs in tests and
+      `scripts/release_probe.py` that turned drift on over a numeric clock
+      now give 20.0, the old default, so their numbers do not move (the
+      probe runs under the released wheels too, which take a number).
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -11543,6 +11566,10 @@ scratchpad and is unchanged in the code:
   `d_clock` is seconds, so the default 20 fires on noise at a row a minute
   (237 of 3,000 rows) and a row a day (435), and under
   `drift_action="reset"` the model restarts on noise. Which unit?
+  *Decided 2026-10-06, the user's word ("make drift_threshold a clock
+  parameter as you recommend"); built as task 168.* The seconds were the
+  scale every temporal clock is read on, not a unit anyone chose, so the
+  threshold became a clock parameter.
 - **CE1**: `rcov`'s pre-averaged estimate under `psd=False` omits CKP's
   footnote rescaling `1/(1 − ψ₁/(θ²ψ₂)/(2n))`: 0.842 of the integrated
   variance at `k_n = 6`, 0.941 at 10, 0.985 at the default. Applying it
@@ -11563,7 +11590,9 @@ scratchpad and is unchanged in the code:
   `penalty_selected` differs on 84 of 240 rows between `[0, 60]` and
   `[60, 60]`. When should the selection start counting?
 - **CI2**: run 35508619563 (v0.8.1, 2026-09-20) still waits at "publish to
-  PyPI", approvable with one click. Cancelling it is a write.
+  PyPI", approvable with one click. Cancelling it is a write. *Cancelled
+  2026-10-06 on the user's word ("Yes to the three items"), with the push
+  of task 167 and the merges of Dependabot's #3, #4 and #5.*
 - **PC2, a reset**: a cut now keeps a forward window whose far edge is the
   last row before it whole; a reset still discards it, as its docs say ("a
   reset discards them").

@@ -403,7 +403,9 @@ class TestDriftDetection:
             size = np.where((t >= 200.0) & (t < 230.0), 0.8, 0.2)
             noise = size * rng.choice([-1.0, 1.0], t.size)
             df = pl.DataFrame({"t": t, "x0": x, "y0": 2 * x + noise})
-            flags, _ = self._flags(df, clock="t", gap_cap=5.0, half_life=1000.0)
+            flags, _ = self._flags(
+                df, clock="t", gap_cap=5.0, half_life=1000.0, drift_threshold=20.0
+            )
             hits = t[flags]
             first[per_unit] = float(hits[0]) if hits.size else None
         assert first[1] is not None and 205.0 <= first[1] < 230.0, first

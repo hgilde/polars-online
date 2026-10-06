@@ -500,8 +500,9 @@ A duration is written three ways: `pl.duration(minutes=10)`,
 
 **Every clock parameter acts on the clock, so a model's numbers do not
 change with how densely the rows arrive.** The clock parameters are
-`half_life`, `gap_cap`, `restart_after_step_back`, `session_gap` and
-`embargo`, and a model's `window_size`, `solve_every` and its own
+`half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`
+and `drift_threshold`, and a model's `window_size`, its cadences
+(`window_every`, `solve_every`, `pca_every`, `prune_every`) and its own
 half-lives. A few things still count rows, and each model's page names
 them.
 
@@ -2210,12 +2211,12 @@ This code uses `df` from [Example data](#example-data):
 diag = po.spec.ewridge(
     "diag", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
     ridge=[1e-6, 0.1],           # a grid of two ridge values: two slots for the one target
-    # EW: exponentially weighted. A switch's tuning keywords sit under it, at their defaults.
+    # EW: exponentially weighted. A switch's tuning keywords sit under it, each at its default if it has one.
     emit_sigma=True,             # sigma_<slot>:     EW standard deviation of that slot's out-of-sample residuals
     emit_zscore=True,            # zscore_<slot>:    resid / sigma: how surprising the row was, in units of recent error
     emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on |resid| ...
     drift_delta=0.5,             #                   ... with this tolerance, in units of the slot's sigma ...
-    drift_threshold=20.0,        #                   ... and this threshold, in sigma times clock units
+    drift_threshold=20.0,        #                   ... and this threshold, in sigma times clock units: required with a clock
     drift_action="flag",         #                   "reset" also starts the model over at a break
     emit_metrics=True,           # ic_, r2_, hit_rate_<slot>: EW IC (the correlation of prediction with target), R², hit rate
     resid_quantiles=[0.5, 0.9],  # abs_resid_q<p>_<slot>: EW quantiles of |resid|, within 0.78% of the exact ones

@@ -2509,9 +2509,11 @@ impl Stream {
         let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
         let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
         let drift = if spec.emit_drift {
+            // 20 only without a clock, where a row is one unit: the spec
+            // requires a threshold with a clock (task 168).
             let d = PageHinkley::new(
                 spec.drift_delta.unwrap_or(0.5),
-                spec.drift_threshold.unwrap_or(20.0),
+                spec.drift_threshold.as_ref().map_or(20.0, Span::value),
             );
             slots.iter().map(|&n| vec![d.clone(); n]).collect()
         } else {
