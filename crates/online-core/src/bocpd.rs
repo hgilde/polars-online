@@ -729,6 +729,13 @@ impl Bocpd {
             sigma.iter_mut().for_each(|v| *v *= scale);
             let f = SpdFactor::of(&sigma, d)?;
             let delta: Vec<f64> = x.iter().zip(&mun).map(|(a, b)| a - b).collect();
+            // The quadratic form is clamped at 0, and `f64::max` takes a NaN
+            // to that 0: a row that is not a number read as sitting on the
+            // mean, and was learned. Refused here, as the diagonal
+            // emission's NaN density refuses it.
+            if delta.iter().any(|v| v.is_nan()) {
+                return None;
+            }
             let q = f.quad_forms(&delta, d, 1)[0];
             let df = d as f64;
             let base = ln_gamma((dof + df) / 2.0)
@@ -2367,6 +2374,45 @@ mod tests {
         let bytes = rmp_serde::to_vec(&m).unwrap();
         let back: Bocpd = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(back, m);
+    }
+
+    /// A row whose feature is not a number is a row the predictive cannot
+    /// read, under the full emission as under the diagonal one: it reports
+    /// nulls, counts a failure, and moves nothing, and the rows after it
+    /// read as before. The full emission's quadratic form is clamped at 0,
+    /// and `f64::max` takes a NaN to that 0, so the row read as sitting on
+    /// every run's mean and was learned. Every run's statistics then held a
+    /// NaN, and every learned row after it was a failure: 88 of the 99 that
+    /// followed one, in a stream task 179 ran. The bank never hands a NaN
+    /// feature over; the Rust API does.
+    #[test]
+    fn a_row_that_is_not_a_number_moves_nothing_under_either_emission() {
+        for emission in [BocpdEmission::Gaussian, BocpdEmission::Diag] {
+            let mut m = Bocpd::new(BocpdCfg {
+                emission,
+                prior_nu: Some(5.0),
+                ..cfg(3)
+            })
+            .unwrap();
+            let mut n = Normals::new(83);
+            for _ in 0..30 {
+                m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
+            }
+            let before = m.clone();
+            let out = m.step(&[f64::NAN, 0.1, 0.2], &[], 1.0, 1.0);
+            assert!(out.pred.iter().all(|v| v.is_nan()), "{emission:?}: {out:?}");
+            assert_eq!(m.solve_failures, 1, "{emission:?}");
+            assert_eq!(m.runs, before.runs, "{emission:?}");
+            assert_eq!(m.logjoint, before.logjoint, "{emission:?}");
+            for t in 0..20 {
+                let out = m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
+                assert!(
+                    out.pred.iter().all(|v| v.is_finite()),
+                    "{emission:?} row {t} after: {out:?}"
+                );
+            }
+            assert_eq!(m.solve_failures, 1, "{emission:?}");
+        }
     }
 
     /// A row of weight 0 lengthens a run and moves nothing else, to the bit
