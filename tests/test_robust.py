@@ -58,6 +58,45 @@ def test_huge_delta_reduces_to_least_squares():
     assert np.max(np.abs(pa[m] - pb[m])) < 1e-6
 
 
+@pytest.mark.parametrize("standardize", [False, True], ids=["plain", "standardized"])
+@pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "origin"])
+def test_the_targets_units_do_not_matter(fit_intercept, standardize):
+    """Task 177. Scaling every target by ``c`` scales every prediction by
+    ``c``. Powers of two keep each operation exact, so the comparison is to
+    the bit, nulls in the same places. Until a target had a residual scale,
+    its Huber cut was ``huber_delta`` times the literal 1, in the target's
+    units, so a target in millions had its first predicted rows down-weighted
+    as outliers and one in millionths none, and every prediction after them
+    moved with the units. Now no row is down-weighted before the scale
+    exists. The first target opens on twenty rows a group at exactly zero, so
+    its residuals are exactly zero until it moves."""
+    df, _ = synthetic(seed=47, n_groups=2, n_rows=200, k=3, n_targets=2, null_frac=0.05)
+    opening = pl.int_range(pl.len()).over("group") < 20
+    df = df.with_columns(pl.when(opening).then(0.0).otherwise(pl.col("y0")).alias("y0"))
+
+    def preds(c: float) -> dict[str, np.ndarray]:
+        spec = po.spec.huber(
+            "m",
+            targets=["y0", "y1"],
+            features=["x0", "x1", "x2"],
+            group="group",
+            clock="t",
+            gap_cap=50.0,
+            weight="w",
+            half_life=300.0,
+            fit_intercept=fit_intercept,
+            standardize=standardize,
+        )
+        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
+
+    base = preds(1.0)
+    assert all(np.isfinite(p).sum() > 250 for p in base.values())
+    for c in (2.0**20, 2.0**-20):
+        for t, got in preds(c).items():
+            np.testing.assert_array_equal(got, base[t] * c, err_msg=f"c = {c}, {t}")
+
+
 def test_quantile_levels_are_ordered():
     rng = np.random.default_rng(12)
     n = 6000

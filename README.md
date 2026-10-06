@@ -2813,9 +2813,8 @@ against the fit *before* the row is learned, so both stay out-of-sample.
 Both take `ewridge`'s `ridge=` as a single number, and refuse a list.
 
 `r` is the row's residual, `σ` the plain exponentially weighted standard
-deviation of the residuals (1 until one exists), `δ` is `huber_delta` and
-`τ` the `quantile` level. The *Gram* is `ewridge`'s `S`, and the
-cross-moment its `r_j`:
+deviation of the residuals, `δ` is `huber_delta` and `τ` the `quantile`
+level. The *Gram* is `ewridge`'s `S`, and the cross-moment its `r_j`:
 
 ```
 huber:     the ridge update at weight  w · min(1, δσ / |r|)
@@ -2825,6 +2824,11 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
                      bounded so the fit at the row moves by at most the row's residual
            h is never narrower than (k/n)^{2/5} · σ, for the target's effective sample n
 ```
+
+**Until a target has a `σ` above 0, `huber` down-weights no row.** That is
+before its first residual, or while every residual so far is exactly zero:
+there is nothing to judge an outlier against. `quantile` takes `σ` as 1
+there.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,

@@ -570,6 +570,19 @@ class TestRobustOracles:
         df, _ = synthetic(seed=96, n_groups=1, n_rows=250, k=2, null_frac=0.0)
         self._compare(df, ref_kw={"standardize": True}, standardize=True)
 
+    def test_huber_down_weights_no_row_before_a_scale_exists(self):
+        """Task 177: until a target has a residual scale -- no residual yet,
+        or every one so far exactly zero -- Huber down-weights no row. The
+        targets are in millions, so their first residuals are far outside
+        ``huber_delta`` times 1, the cut the old rule drew there, and the
+        first opens on twenty rows at exactly zero, so its residuals are
+        exactly zero until it moves. The other cases' first residuals all
+        fall inside that cut, where the two rules agree."""
+        df, _ = synthetic(seed=97, n_groups=1, n_rows=250, k=2, n_targets=2, null_frac=0.0)
+        y0 = pl.when(pl.int_range(pl.len()) < 20).then(0.0).otherwise(pl.col("y0"))
+        df = df.with_columns(y0.alias("y0")).with_columns(pl.col("y0", "y1") * 1e6)
+        self._compare(df, targets=("y0", "y1"))
+
 
 class TestFtrlOracle:
     """T-A4: FTRL vs `tests/reference.py::ftrl_ref`."""

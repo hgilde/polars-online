@@ -1748,8 +1748,13 @@ def huber(
     forgets them. ``huber_delta`` is in units of that std, not of a robust one
     such as a MAD. Its weight ages on every row the model sees, a row with no
     prediction or with weight 0 included, so it forgets across a gap as the clock
-    says. Until a residual exists ``s`` is taken as 1, so the first rows are
-    weighted in the residual's own units.
+    says.
+
+    Until a target has an ``s`` above 0, no row is down-weighted. That is before
+    its first residual, or while every residual so far is exactly zero, and
+    there is then nothing to judge an outlier against. ``s`` was taken as 1
+    there, a cut in the target's own units, so a target in millions had its
+    first predicted rows down-weighted and one in millionths none.
 
     .. rubric:: Parameters
 

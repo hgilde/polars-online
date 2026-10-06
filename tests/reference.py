@@ -764,18 +764,23 @@ def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps
     Both are counts, so a weight's scale reaches neither (docs/PLAN.md task
     147).
 
+    ``scale`` is ``None`` while the target has no residual scale (no
+    residual yet, or every one so far exactly zero): Huber then has nothing
+    to draw its cut in and down-weights nothing (task 177), and the quantile
+    band takes 1 for it.
+
     Returns ``(kind, value, target)``: ``("fit", weight, target)`` or
     ``("nudge", nudge, None)``.
     """
     if loss == "huber":
-        if np.isnan(pred):
+        if np.isnan(pred) or scale is None:
             return "fit", weight, y
         cut = delta * scale
         a = abs(y - pred)
         return "fit", weight * (1.0 if (a <= cut or a == 0.0) else cut / a), y
     if np.isnan(pred) or present < 3.0 * kt or aged < kt:
         return "fit", weight, y
-    h = scale * max(eps, (kt / present) ** 0.4)
+    h = (1.0 if scale is None else scale) * max(eps, (kt / present) ** 0.4)
     r = y - pred
     if abs(r) < h:
         return "fit", weight, y + 2.0 * h * (tau - 0.5)
@@ -895,8 +900,9 @@ def robust_ref(
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
-            sigma = np.sqrt(max(st["sig2"][j], 0.0))
-            scale = sigma if sigma > 0.0 else 1.0
+            # The residual scale exists once sigma2 is finite and above 0.
+            s2 = st["sig2"][j]
+            scale = float(np.sqrt(s2)) if 0.0 < s2 < np.inf else None
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
             aged_rows = aged_wj * (rows / present) if present > 0.0 else 0.0
             kind, value, target = _row_update(

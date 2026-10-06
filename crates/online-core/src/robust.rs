@@ -77,9 +77,17 @@
 //! band, and a band the floor keeps at a share of the sample is never near
 //! one row in steady state, so the warm-up's bias does not return.
 //!
-//! `s` is the EW residual std of that target as the row arrives, and is taken
-//! as 1 until one exists (no rows yet, or every residual so far exactly zero),
-//! so the first rows are weighted in the residual's own units.
+//! `s` is the EW residual std of that target as the row arrives. The target
+//! has one once `s²` is finite and above 0; before that -- no residual yet,
+//! or every one so far exactly zero -- there is nothing to judge an outlier
+//! against, and Huber down-weights no row: its weight is 1. `s` was taken as
+//! 1 there, a cut in the target's own units, so a target in millions had
+//! its first predicted rows down-weighted as outliers and one in millionths
+//! none (task 177). `s²`'s weight is not consulted: `s²` is written only by
+//! a row of positive weight, and a mean-form estimate keeps its value
+//! across a gap while its weight ages, as the fit itself does (CLAUDE.md
+//! hard rule 8). The quantile band still takes 1 for `s` until a scale
+//! exists.
 //!
 //! **`s` is not itself robust.** It is the plain EW mean of squared
 //! residuals, in which the rows Huber down-weights count at full weight, so
@@ -391,6 +399,15 @@ impl Robust {
         &self.sig2
     }
 
+    /// Target `j`'s residual scale, the EW std `s = √σ²` of its residuals,
+    /// once it has one: `σ²` finite and above 0. `None` before -- no
+    /// residual yet, or every one so far exactly zero -- where the Huber
+    /// cut has nothing to be drawn in (the module docs; task 177).
+    fn residual_scale(&self, j: usize) -> Option<f64> {
+        let s2 = self.sig2[j];
+        (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+    }
+
     /// EW count of observations under the raw row weights (`w_raw`).
     pub fn n_eff(&self) -> f64 {
         self.w_raw
@@ -403,12 +420,15 @@ impl Robust {
     /// What a row does to one target's accumulators (the module docs).
     ///
     /// Huber reweights it: an ordinary least-squares row at `min(1, delta*s/|r|)`,
-    /// a weight bounded by 1. The quantile loss linearises it instead, inside
-    /// the band or outside it, and the two arms are [`RowUpdate`]'s.
+    /// a weight bounded by 1, and at weight 1 while the target has no scale
+    /// to draw the cut in (task 177). The quantile loss linearises it
+    /// instead, inside the band or outside it, and the two arms are
+    /// [`RowUpdate`]'s.
     ///
     /// `pred` is the prediction the row was scored with, so both stay
-    /// out-of-sample, and `scale` is the EW residual std, taken as 1 until one
-    /// exists. `present` is the count of the rows this target was present
+    /// out-of-sample, and `scale` is the EW residual std, `None` until one
+    /// exists ([`Self::residual_scale`]); the quantile band takes 1 there.
+    /// `present` is the count of the rows this target was present
     /// on, decayed to the row (`nobs`): under `WARM_ROWS` of them per
     /// coefficient the quantile fit takes ordinary least-squares rows, since a
     /// Newton step needs a Hessian to lean on and a band around a fit built
@@ -424,19 +444,23 @@ impl Robust {
         &self,
         yj: f64,
         pred: f64,
-        scale: f64,
+        scale: Option<f64>,
         weight: f64,
         present: f64,
         aged: f64,
     ) -> RowUpdate {
         match self.cfg.loss {
             RobustLoss::Huber { delta } => {
-                let w_rob = if pred.is_finite() {
-                    let cut = delta * scale;
-                    let a = (yj - pred).abs();
-                    if a <= cut || a == 0.0 { 1.0 } else { cut / a }
-                } else {
-                    1.0
+                // No prediction is no residual, and no scale is nothing to
+                // judge one against: either way the row is down-weighted by
+                // nothing.
+                let w_rob = match scale {
+                    Some(scale) if pred.is_finite() => {
+                        let cut = delta * scale;
+                        let a = (yj - pred).abs();
+                        if a <= cut || a == 0.0 { 1.0 } else { cut / a }
+                    }
+                    _ => 1.0,
                 };
                 RowUpdate::Fit {
                     w: weight * w_rob,
@@ -452,7 +476,7 @@ impl Robust {
                     };
                 }
                 let floor = (k / present).powf(0.4);
-                let h = scale * self.cfg.quantile_eps.max(floor);
+                let h = scale.unwrap_or(1.0) * self.cfg.quantile_eps.max(floor);
                 let r = yj - pred;
                 if r.abs() < h {
                     RowUpdate::Fit {
@@ -908,8 +932,7 @@ impl OnlineModel for Robust {
             let counts = weight > 0.0 && weight.is_finite();
             self.wobs[j] = present + if counts { weight } else { 0.0 };
             self.nobs[j] = rows + if counts { 1.0 } else { 0.0 };
-            let sigma = self.sig2[j].max(0.0).sqrt();
-            let scale = if sigma > 0.0 { sigma } else { 1.0 };
+            let scale = self.residual_scale(j);
             let aged = lam * self.wj[j];
             // The band's weight in rows of the target's mean weight.
             let aged_rows = if present > 0.0 {
@@ -2396,8 +2419,7 @@ mod tests {
     /// model's state before the row, as `step` forms its inputs.
     fn is_nudge(m: &Robust, pred: f64, y: f64, d: f64, w: f64) -> bool {
         let lam = m.cfg.decay.factor(d);
-        let sigma = m.sig2[0].max(0.0).sqrt();
-        let scale = if sigma > 0.0 { sigma } else { 1.0 };
+        let scale = m.residual_scale(0);
         let (present, rows, aged) = (lam * m.wobs[0], lam * m.nobs[0], lam * m.wj[0]);
         let aged_rows = if present > 0.0 {
             aged * (rows / present)
@@ -3024,5 +3046,194 @@ mod tests {
             Robust::restore(&jittered.unwrap()).is_ok(),
             "a jittered factor is read"
         );
+    }
+
+    /// Until a target has a residual scale, Huber down-weights no row: it is
+    /// least squares to the bit, through the row that gives the scale its
+    /// first residual (task 177). The target is held at exactly zero for ten
+    /// rows, so every residual is exactly zero and no scale exists, and then
+    /// jumps by 1 000, which the old cut of `delta` times the literal 1
+    /// weighed at 0.0015. From that row the scale exists, and the next jump
+    /// it judges is cut: the fits part.
+    #[test]
+    fn before_a_scale_exists_huber_is_least_squares() {
+        let run = |delta: f64| {
+            let mut c = cfg(1, 1, RobustLoss::Huber { delta });
+            c.min_weight = 2.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 131u64;
+            let mut out = Vec::new();
+            for i in 0..30 {
+                let x = [lcg(&mut s)];
+                let y = if i < 10 { 0.0 } else { 1000.0 + x[0] };
+                let scaled = m.residual_scale(0).is_some();
+                let p = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                out.push((p.pred[0], scaled));
+            }
+            out
+        };
+        let (hub, ls) = (run(1.5), run(f64::INFINITY));
+        for (i, (_, scaled)) in hub.iter().enumerate() {
+            assert_eq!(*scaled, i > 10, "row {i}: a scale from row 11 on");
+        }
+        for (i, ((h, _), (l, _))) in hub.iter().zip(&ls).enumerate().take(12) {
+            assert!(
+                h.to_bits() == l.to_bits() || (h.is_nan() && l.is_nan()),
+                "row {i}: huber {h} against least squares {l}"
+            );
+        }
+        assert!(hub[10].0 == 0.0 && hub[11].0 > 50.0, "{:?}", &hub[9..12]);
+        assert!(
+            (hub[12].0 - ls[12].0).abs() > 1.0,
+            "row 12: huber {} against least squares {}: the scale cut row 11",
+            hub[12].0,
+            ls[12].0
+        );
+    }
+
+    /// A row of [`units_rows`]: features, targets, clock step, weight.
+    type UnitsRow = ([f64; 2], [Option<f64>; 3], f64, f64);
+
+    /// The stream [`scaling_the_targets_scales_every_prediction_to_the_bit`]
+    /// runs: three targets on two features. The first is held at exactly
+    /// zero for twelve rows, so its residuals are exactly zero until it
+    /// moves; the second joins on row 3 and misses one row in five; the
+    /// third carries an outlier one row in seven, for the cut to act on once
+    /// a scale exists. A row of weight 0 and a gap of five clock units fall
+    /// before any residual, a gap of 300 takes the weight under
+    /// `min_weight`, and one of 40 000 (1 333 half-lives) ages every weight
+    /// to exactly 0.
+    fn units_rows() -> Vec<UnitsRow> {
+        let mut s = 113u64;
+        (0..260)
+            .map(|i| {
+                let x = [lcg(&mut s), 1.0 + lcg(&mut s)];
+                let y0 = 0.5 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s);
+                let y1 = -x[0] + 0.7 * x[1] + 0.3 * lcg(&mut s);
+                let kick = if i % 7 == 3 { 25.0 * lcg(&mut s) } else { 0.0 };
+                let y2 = 1.0 + 2.0 * x[0] + 0.1 * lcg(&mut s) + kick;
+                let ys = [
+                    match i {
+                        _ if i < 12 => Some(0.0),
+                        _ if i % 11 == 7 => None,
+                        _ => Some(y0),
+                    },
+                    (i >= 3 && i % 5 != 2).then_some(y1),
+                    Some(y2),
+                ];
+                let d = match i {
+                    0 => 0.0,
+                    4 => 5.0,
+                    150 => 300.0,
+                    200 => 40_000.0,
+                    _ => 1.0,
+                };
+                let w = if i == 2 { 0.0 } else { 1.5 + lcg(&mut s) };
+                (x, ys, d, w)
+            })
+            .collect()
+    }
+
+    /// Scaling every target by `c` scales every prediction by `c`, `σ²` by
+    /// `c²` and every coefficient by `c`: the fit has no unit of its own.
+    /// Until a target had a residual scale -- no residual yet, or every one
+    /// so far exactly zero -- its Huber cut was `delta` times the literal 1,
+    /// in the target's units, so a target in millions had its first
+    /// predicted rows down-weighted as outliers and one in millionths none
+    /// (task 177; `kalman`'s twin is task 172's). Now such a row is
+    /// down-weighted by nothing. Powers of two keep every operation exact,
+    /// so the comparison is to the bit, over the warm-up and after
+    /// ([`units_rows`] says what the stream holds), with an intercept and
+    /// without, standardized and not.
+    #[test]
+    fn scaling_the_targets_scales_every_prediction_to_the_bit() {
+        let rows = units_rows();
+        // Predictions, the model after the stream, the rows judged before
+        // their target had a scale (a prediction, a weight and a residual
+        // other than 0, and `σ²` still 0), and the rows the scale cut.
+        let run = |base: &RobustCfg, c: f64| {
+            let mut m = Robust::new(base.clone()).unwrap();
+            let (mut preds, mut unscaled, mut cut) = (Vec::new(), 0, 0);
+            for (x, ys, d, w) in &rows {
+                let ys: Vec<Option<f64>> = ys.iter().map(|y| y.map(|v| v * c)).collect();
+                let p = m.predict(x, *d).pred;
+                for (j, y) in ys.iter().enumerate() {
+                    let Some(y) = *y else { continue };
+                    let r = y - p[j];
+                    if !r.is_finite() || *w <= 0.0 || r == 0.0 {
+                        continue;
+                    }
+                    let RobustLoss::Huber { delta } = m.cfg.loss else {
+                        unreachable!()
+                    };
+                    if m.sig2[j] == 0.0 {
+                        unscaled += 1;
+                    } else if r.abs() > delta * m.sig2[j].sqrt() {
+                        cut += 1;
+                    }
+                }
+                preds.push(m.step(x, &ys, *d, *w).pred);
+            }
+            (preds, m, unscaled, cut)
+        };
+        let mut cases = Vec::new();
+        for intercept in [true, false] {
+            for standardize in [false, true] {
+                let mut c = cfg(2, 3, RobustLoss::Huber { delta: 1.5 });
+                c.decay = Decay::Halflife(30.0);
+                c.min_weight = 3.0;
+                c.fit_intercept = intercept;
+                c.standardize = standardize;
+                cases.push((
+                    format!("intercept {intercept}, standardize {standardize}"),
+                    c,
+                ));
+            }
+        }
+        // The first predictions later in the stream, at another cut.
+        let mut c = cfg(2, 3, RobustLoss::Huber { delta: 1.345 });
+        c.decay = Decay::Halflife(30.0);
+        c.min_weight = 20.0;
+        cases.push(("min_weight 20, delta 1.345".into(), c));
+
+        for (name, base) in &cases {
+            let (want, m1, unscaled, cut) = run(base, 1.0);
+            // Every target is judged once before it has a scale: the first
+            // when it leaves zero, the others on their first prediction.
+            assert!(unscaled >= 3, "{name}: {unscaled} rows before a scale");
+            assert!(cut >= 20, "{name}: the scale cut {cut} rows");
+            let predicted = want
+                .iter()
+                .filter(|p| p.iter().all(|v| v.is_finite()))
+                .count();
+            assert!(predicted > 200, "{name}: {predicted} rows predicted");
+            for c in [2f64.powi(20), 2f64.powi(-20)] {
+                let (got, mc, _, _) = run(base, c);
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    for j in 0..3 {
+                        let scaled = w[j] * c;
+                        assert!(
+                            g[j].to_bits() == scaled.to_bits() || (g[j].is_nan() && w[j].is_nan()),
+                            "{name}, c = {c:e}, row {i}, target {j}: {} against {} \
+                             ({:.2e} apart, relative)",
+                            g[j],
+                            scaled,
+                            ((g[j] - scaled) / scaled).abs()
+                        );
+                    }
+                }
+                let (bc, b1) = (mc.coefficients().unwrap(), m1.coefficients().unwrap());
+                for j in 0..3 {
+                    assert_eq!(
+                        mc.sig2[j].to_bits(),
+                        (m1.sig2[j] * c * c).to_bits(),
+                        "{name}, c = {c:e}, target {j}"
+                    );
+                    for (a, b) in bc[j].iter().zip(&b1[j]) {
+                        assert_eq!(a.to_bits(), (b * c).to_bits(), "{name}, c = {c:e}");
+                    }
+                }
+            }
+        }
     }
 }
