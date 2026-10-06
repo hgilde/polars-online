@@ -941,6 +941,7 @@ impl OnlineModel for Robust {
             || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
+        let readable = x.iter().all(|v| v.is_finite());
         for j in 0..m {
             // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
             // it only with a target, a weight and a prediction to measure the
@@ -974,7 +975,11 @@ impl OnlineModel for Robust {
             match self.row_update(yj, pred[j], scale, weight, rows, aged_rows) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
-                RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
+                // Nor can a row with a feature that is not a finite number:
+                // with no finite prediction it arrives as a least-squares row,
+                // and learned, its NaN reached the Gram and the cross-moment,
+                // and every solve after it failed (task 182).
+                RowUpdate::Fit { w, .. } if !readable || w.is_nan() || w <= 0.0 => {
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
                     continue;
@@ -2719,6 +2724,68 @@ mod tests {
             m.zbuf[off + 1] = 0.5;
             let q = m.nudge_movement(0);
             assert!(q.is_finite() && q > 1.0, "intercept {fit_intercept}: {q}");
+        }
+    }
+
+    /// A row with a feature that is not a finite number has no finite
+    /// prediction, so it reached the loss as a least-squares row and was
+    /// learned: its NaN went into the Gram and the cross-moment, every solve
+    /// after it failed -- the 40 of 40 rows that followed one -- and the fit
+    /// froze where it stood. It is refused as a row the loss cannot learn
+    /// from is: counted where every row is, in `n_eff` and the target's
+    /// present weight, and learned nowhere, the Gram aged and the
+    /// cross-moment and the target's mean untouched (task 182). Huber and
+    /// the quantile loss alike, a NaN and an infinity alike.
+    #[test]
+    fn a_row_that_is_not_a_number_is_not_learned() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.0 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            for bad in [[f64::NAN, 0.5], [0.5, f64::NEG_INFINITY]] {
+                let case = format!("{loss:?}, {bad:?}");
+                let mut c = cfg(2, 1, loss);
+                c.decay = Decay::Halflife(50.0);
+                c.ridge = 1e-6;
+                c.min_weight = 3.0;
+                let lam = c.decay.factor(1.0);
+                let mut m = Robust::new(c).unwrap();
+                let mut s = 9u64;
+                let mut at_the_row = None;
+                for i in 0..80 {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = 1.0 + x[0] + 2.0 * x[1] + 0.1 * lcg(&mut s);
+                    if i == 40 {
+                        let before = m.clone();
+                        let out = m.step(&bad, &[Some(1.0)], 1.0, 1.0);
+                        assert!(!out.pred[0].is_finite(), "{case}: {out:?}");
+                        assert_eq!(m.cross, before.cross, "{case}");
+                        assert_eq!(m.ybar, before.ybar, "{case}");
+                        assert_eq!(m.cov[0].means(), before.cov[0].means(), "{case}");
+                        assert_eq!(m.cov[0].comoments(), before.cov[0].comoments(), "{case}");
+                        assert_eq!(m.wj[0], lam * before.wj[0], "{case}");
+                        assert_eq!(m.w_raw, lam * before.w_raw + 1.0, "{case}");
+                        assert_eq!(m.wobs[0], lam * before.wobs[0] + 1.0, "{case}");
+                        assert_eq!(m.sig2, before.sig2, "{case}");
+                        at_the_row = m.coefficients().map(<[_]>::to_vec);
+                        continue;
+                    }
+                    let out = m.step(&x, &[Some(y)], 1.0, 1.0);
+                    if i > 40 {
+                        assert!(out.pred[0].is_finite(), "{case}, row {i}: {out:?}");
+                    }
+                }
+                assert_eq!(m.solve_failures, 0, "{case}");
+                let beta = m.coefficients().unwrap()[0].clone();
+                assert_ne!(
+                    Some(vec![beta.clone()]),
+                    at_the_row,
+                    "{case}: the fit moved on"
+                );
+                for (b, want) in beta.iter().zip([1.0, 1.0, 2.0]) {
+                    assert!((b - want).abs() < 0.1, "{case}: {beta:?}");
+                }
+            }
         }
     }
 

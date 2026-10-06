@@ -465,7 +465,8 @@ impl EwCov {
         &self.m
     }
 
-    /// Centered variance, floored at zero against rounding.
+    /// Centered variance, floored at zero against rounding; a NaN stays NaN,
+    /// where the floor read it as no spread at all (task 182).
     #[inline]
     pub fn var(&self, i: usize) -> f64 {
         debug_assert!(
@@ -473,7 +474,7 @@ impl EwCov {
             "EwCov: read the moments with a block still pending; call `flush()` first \
              (docs/PLAN.md task 71)"
         );
-        self.cov(i, i).max(0.0)
+        crate::solve::clamp_rounding(self.cov(i, i))
     }
 
     /// The row's mixing factors `(a, b)` and the new weight, or `None` when
@@ -2803,6 +2804,27 @@ mod tests {
         }
         let z = (2.5 - one.cov().mean(0)) / one.cov().var(0).sqrt();
         assert!((one.mahal(&[2.5]) - z.abs()).abs() < 1e-9);
+    }
+
+    /// A variance of NaN stays NaN. The floor against rounding was
+    /// `max(0.0)`, which returns its other argument when one is NaN, so a
+    /// co-moment a NaN had reached read as a variance of 0, a column with
+    /// no spread: `ew_cov` emitted 0 for its `var` and `std`, and a
+    /// diagonal `hmm` or `ew_class` scored on its ridge alone (task 182).
+    /// A rounding below zero is still 0, and so is `-0.0`, which `f64::max`
+    /// may order either way.
+    #[test]
+    fn a_variance_of_nan_stays_nan() {
+        let mut c = EwCov::new(4);
+        let mut centred = vec![0.0; 16];
+        for (i, v) in [f64::NAN, -1e-18, -0.0, 2.5].into_iter().enumerate() {
+            centred[i * 4 + i] = v;
+        }
+        c.set_moments(&[0.0; 4], &centred, 1.0, None);
+        assert!(c.var(0).is_nan(), "{}", c.var(0));
+        assert_eq!(c.var(1).to_bits(), 0f64.to_bits());
+        assert_eq!(c.var(2).to_bits(), 0f64.to_bits());
+        assert_eq!(c.var(3), 2.5);
     }
 
     #[test]

@@ -64,6 +64,12 @@
 //! every column, and is NaN on such a row. Until the decision, a row with
 //! any such column taught no value anything.
 //!
+//! A feature that is not a finite number is read the same way, its column
+//! left out and `loglik` NaN, but the row is learned as a row of no weight:
+//! it teaches no value and not the standardiser, whose moments a NaN would
+//! never leave, and it ages the weights as any row of no weight does (task
+//! 182).
+//!
 //! # The log-likelihood
 //!
 //! `loglik` is the row's Gaussian log-density in standardised coordinates
@@ -448,6 +454,15 @@ impl crate::OnlineModel for Deco {
         // for the same row.
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);
+        // A row with a feature that is not a finite number is read as a row
+        // with that column missing, and learned as a row of no weight: the
+        // standardiser learned the NaN, that column had no standardised
+        // value again, and `loglik` was NaN on every row after (task 182).
+        let weight = if x.iter().all(|v| v.is_finite()) {
+            weight
+        } else {
+            0.0
+        };
         let mut r = Vec::with_capacity(x.len());
         self.standardise(x, &mut r);
         let (s1, s2, n, _) = self.block_sums(&r);
@@ -656,6 +671,59 @@ mod tests {
             beta: None,
             blocks: Vec::new(),
             min_weight: 0.0,
+        }
+    }
+
+    /// A row with a feature that is not a finite number is a row of no
+    /// weight. It is read as a row with that column missing -- left out of
+    /// its block, `loglik` NaN -- and teaches nothing, the standardiser
+    /// included: the state it leaves is the one a row of no weight leaves,
+    /// each weight aged by the row's `lam`. The standardiser learned the
+    /// NaN, that column had no standardised value again, and `loglik` was
+    /// NaN on every row after it: rows 30 to 59 of 60 (task 182). Under
+    /// both dynamics, and for an infinity as for a NaN.
+    #[test]
+    fn a_row_that_is_not_a_number_teaches_nothing() {
+        for (dynamics, alpha, beta) in [
+            (DecoDynamics::Ew, None, None),
+            (DecoDynamics::Linear, Some(0.05), Some(0.9)),
+        ] {
+            for bad in [[f64::NAN, 0.1, 0.2], [0.1, f64::INFINITY, 0.2]] {
+                let case = format!("{dynamics:?}, {bad:?}");
+                let mut m = Deco::new(DecoCfg {
+                    dynamics,
+                    alpha,
+                    beta,
+                    ..cfg(3)
+                })
+                .unwrap();
+                let mut s = 5u64;
+                for i in 0..60 {
+                    let z = lcg(&mut s);
+                    let x = [
+                        z + 0.5 * lcg(&mut s),
+                        z + 0.5 * lcg(&mut s),
+                        z + 0.5 * lcg(&mut s),
+                    ];
+                    if i == 30 {
+                        let mut no_weight = m.clone();
+                        no_weight.step(&x, &[], 1.0, 0.0);
+                        let out = m.step(&bad, &[], 1.0, 1.0);
+                        assert!(out.pred[0].is_finite(), "{case}: u {out:?}");
+                        assert!(out.pred[1].is_finite(), "{case}: rho {out:?}");
+                        assert!(out.pred[2].is_nan(), "{case}: loglik {out:?}");
+                        assert_eq!(m, no_weight, "{case}");
+                        continue;
+                    }
+                    let out = m.step(&x, &[], 1.0, 1.0);
+                    if i > 30 {
+                        assert!(
+                            out.pred.iter().all(|v| v.is_finite()),
+                            "{case}, row {i}: {out:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 

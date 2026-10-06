@@ -608,10 +608,10 @@ impl Hmm {
     /// A row with a feature that is not a finite number ages them by
     /// [`EwCov::decay`] instead, the same ageing without reading the row:
     /// the update forms `0 · d` in each co-moment, and `0 · NaN` is NaN.
-    /// Such a row reaches here unscored -- its density is NaN, the quadratic
-    /// form keeping the NaN (task 181) -- or at weight 0; either way the
-    /// update wrote a NaN into every state, which no later row washes out
-    /// (CLAUDE.md hard rule 9).
+    /// Such a row reaches here refused, before the states are seeded (task
+    /// 182) or after, its density NaN, the quadratic form keeping the NaN
+    /// (task 181), or at weight 0; either way the update wrote a NaN into
+    /// every state, which no later row washes out (CLAUDE.md hard rule 9).
     fn age_states(&mut self, x: &[f64], lam: f64) {
         let readable = x.iter().all(|v| v.is_finite());
         for s in self.states.iter_mut() {
@@ -658,17 +658,20 @@ impl crate::OnlineModel for Hmm {
         }
         let before = self.n_eff;
         self.n_eff = lam * before + weight;
-        if !self.seeded {
+        // A row that is not finite is not buffered either: seeding replayed
+        // it into a state, and every row after the seeding failed (task 182).
+        let readable = x.iter().all(|v| v.is_finite());
+        if !self.seeded && readable {
             self.buffer.push((x.to_vec(), weight));
             if self.buffer.len() >= self.cfg.warm_rows {
                 self.seed();
             }
             return out;
         }
-        let Some((post, logf)) = extra else {
-            // A density was not finite, so the row cannot be scored or
-            // learned: a row past the double's range, or one with a feature
-            // that is not a number, whose quadratic form keeps the NaN
+        let Some((post, logf)) = extra.filter(|_| readable) else {
+            // The row cannot be scored or learned: a feature is not finite,
+            // seeded or not, or a density was not -- a row past the double's
+            // range, or one holding a NaN, whose quadratic form keeps it
             // (task 181). It still happened, so it ages the clock like a
             // zero-weight row -- `n_eff`, the counts and the states all decay
             // by `lam`, nothing is added -- rather than `n_eff` advancing on
@@ -1753,6 +1756,53 @@ mod tests {
                     "{case}"
                 );
             }
+        }
+    }
+
+    /// A row that is not finite before the states are seeded is refused as
+    /// one after them is (`a_row_that_is_not_a_number_moves_nothing_in_any_
+    /// shape`): nulls, a failure if it carries weight, the clock aged --
+    /// `n_eff` and every buffered weight by the row's `lam` -- and it is
+    /// not buffered, so seeding never replays it into a state. It was
+    /// buffered, the replay put its NaN in a state, and every row after the
+    /// seeding was a failure: rows 21 to 39 of 40 (task 182).
+    #[test]
+    fn a_warm_up_row_that_is_not_a_number_is_refused_and_not_buffered() {
+        let decay = Decay::Halflife(10.0);
+        let lam = decay.factor(1.0);
+        for (bad, w) in [
+            ([f64::NAN, 0.5], 1.0),
+            ([0.5, f64::INFINITY], 1.0),
+            ([f64::NAN, 0.5], 0.0),
+        ] {
+            let case = format!("{bad:?} at weight {w}");
+            let mut m = Hmm::new(HmmCfg { decay, ..cfg(2, 2) }).unwrap();
+            for (i, (row, _)) in stream(40, 3, 10).iter().enumerate() {
+                if i != 5 {
+                    let out = m.step(row, &[], 1.0, 1.0);
+                    if i > 20 {
+                        assert!(
+                            out.pred.iter().all(|v| v.is_finite()),
+                            "{case}, row {i}: {out:?}"
+                        );
+                    }
+                    continue;
+                }
+                let before = m.clone();
+                let out = m.step(&bad, &[], 1.0, w);
+                assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                assert_eq!(m.solve_failures, u64::from(w > 0.0), "{case}");
+                assert_eq!(m.n_eff, lam * before.n_eff, "{case}");
+                let aged: Vec<(Vec<f64>, f64)> = before
+                    .buffer
+                    .iter()
+                    .map(|(x, v)| (x.clone(), lam * v))
+                    .collect();
+                assert_eq!(m.buffer, aged, "{case}");
+                assert!(!m.seeded, "{case}");
+            }
+            assert!(m.seeded, "{case}");
+            assert_eq!(m.solve_failures, u64::from(w > 0.0), "{case}");
         }
     }
 

@@ -140,10 +140,11 @@ impl EwDiag {
         self.c[i] + self.m[i] * self.m[i]
     }
 
-    /// Centered variance, floored at zero against rounding ([`EwCov::var`]).
+    /// Centered variance, floored at zero against rounding, a NaN kept
+    /// ([`EwCov::var`]).
     #[inline]
     pub fn var(&self, i: usize) -> f64 {
-        self.c[i].max(0.0)
+        crate::solve::clamp_rounding(self.c[i])
     }
 
     /// The moments as they will stand once one more row is admitted at unit
@@ -241,7 +242,11 @@ impl Including<'_> {
         let c = self.a * self.sc.c[i] + self.a * self.b * d * d;
         let (mut hi, mut lo) = (self.sc.m[i], lo);
         crate::comp::add(&mut hi, &mut lo, self.b * d);
-        (hi, c.max(0.0), crate::comp::dev(x, hi, lo))
+        (
+            hi,
+            crate::solve::clamp_rounding(c),
+            crate::comp::dev(x, hi, lo),
+        )
     }
 }
 
@@ -389,13 +394,36 @@ mod tests {
 
     /// A row of weight 0 carrying the mean itself: the variance term is
     /// `a·b·d·d` with `b` and `d` both zero, and stays zero, not NaN. Read
-    /// from the accumulator: `var` clamps with `max`, which reads a NaN as 0.
+    /// from the accumulator, as `var` read a NaN as 0 until task 182.
     #[test]
     fn a_row_of_no_weight_carrying_the_mean_changes_nothing() {
         let mut d = EwDiag::new(1);
         d.update(&[2.0], 0.9, 1.0);
         d.update(&[2.0], 0.9, 0.0);
         assert_eq!((d.mean(0), d.c[0]), (2.0, 0.0));
+    }
+
+    /// A variance of NaN stays NaN, in `var` and in the moments a row would
+    /// leave (`including`). The floor against rounding was `max(0.0)`,
+    /// which returns its other argument when one is NaN, so a moment a NaN
+    /// had reached read as a variance of 0, a column with no spread (task
+    /// 182). A rounding below zero is still 0, and so is `-0.0`.
+    #[test]
+    fn a_variance_of_nan_stays_nan() {
+        let mut d = EwDiag::new(4);
+        d.update(&[1.0, 2.0, 3.0, 4.0], 1.0, 1.0);
+        d.c = vec![f64::NAN, -1e-18, -0.0, 2.5];
+        assert!(d.var(0).is_nan(), "{}", d.var(0));
+        assert_eq!(d.var(1).to_bits(), 0f64.to_bits());
+        assert_eq!(d.var(2).to_bits(), 0f64.to_bits());
+        assert_eq!(d.var(3), 2.5);
+        // The row at the means: no deviation, so the moments a row leaves
+        // are the old ones aged by `a`, a half here.
+        let inc = d.including(1.0);
+        assert!(inc.moments(0, 1.0).1.is_nan());
+        assert_eq!(inc.moments(1, 2.0).1.to_bits(), 0f64.to_bits());
+        assert_eq!(inc.moments(2, 3.0).1.to_bits(), 0f64.to_bits());
+        assert_eq!(inc.moments(3, 4.0).1, 1.25);
     }
 
     /// `EwDiag`'s own skip (review 2026-09-25): the rows 0.7 and

@@ -429,21 +429,24 @@ impl SpdFactor {
     }
 }
 
-/// A quadratic form as the solves leave it, `acc`, with rounding below zero
-/// lifted to 0: a form is a squared norm, so a negative one is the solve's
-/// rounding, and the caller must not be handed it. A NaN is kept. The clamp
-/// was `acc.max(0.0)`, and `f64::max` returns its other argument when one is
-/// NaN, so a vector holding a NaN read as a form of 0 -- a row sitting on
-/// every mean, which `bocpd` learned until task 179 checked for it -- and a
-/// NaN in a model's state never washes out (CLAUDE.md hard rule 9). Kept, it
-/// reaches the caller, which refuses the row by its own rule (task 181).
+/// A quantity that cannot be negative -- a quadratic form as the solves
+/// leave it, a variance as the moments do -- with rounding below zero lifted
+/// to `+0.0`, and a NaN kept. A negative one is rounding, and the caller
+/// must not be handed it. The clamp was `max(0.0)`, and `f64::max` returns
+/// its other argument when one is NaN: a vector holding a NaN read as a form
+/// of 0, a row sitting on every mean, which `bocpd` learned until task 179
+/// checked for it (task 181), and a NaN variance as a column with no spread
+/// (task 182). A NaN in a model's state never washes out (CLAUDE.md hard
+/// rule 9); kept, it reaches the caller, which refuses the row by its own
+/// rule.
 ///
-/// `acc` is a sum begun at `+0.0`, and under rounding to nearest a sum is
-/// `-0.0` only when both its terms are, so `acc` is never `-0.0`, the one
-/// number `f64::max` may order either way against `0.0`: for every number,
-/// infinities included, this is `acc.max(0.0)` to the bit.
-fn clamp_rounding(acc: f64) -> f64 {
-    if acc < 0.0 { 0.0 } else { acc }
+/// For every number but `-0.0` this is `v.max(0.0)` to the bit, infinities
+/// included. `-0.0`, which `f64::max` may order either way against `0.0`,
+/// is `+0.0` here. Neither a form nor a moment the updates write is ever
+/// `-0.0`: each is a sum begun at `+0.0`, and under rounding to nearest a
+/// sum is `-0.0` only when both its terms are.
+pub(crate) fn clamp_rounding(v: f64) -> f64 {
+    if v <= 0.0 { 0.0 } else { v }
 }
 
 /// The working space of [`SpdFactor::quad_form`]: one column, faer's own
@@ -775,10 +778,10 @@ mod tests {
         let mut work = QuadWork::default();
         assert_eq!(f.quad_form(&d, &mut work).to_bits(), 0f64.to_bits());
         // The clamp itself: every negative to `+0.0`, the smallest
-        // subnormal and `−∞` among them; a number at or above zero, and an
-        // infinity, as it is, which is `max(0.0)`'s answer to the bit; and a
-        // NaN kept, where `max(0.0)` answered 0.
-        for v in [-f64::from_bits(1), -1e-300, -0.125, f64::NEG_INFINITY] {
+        // subnormal, `−∞` and `-0.0` among them; a number at or above zero,
+        // and an infinity, as it is, which is `max(0.0)`'s answer to the bit;
+        // and a NaN kept, where `max(0.0)` answered 0.
+        for v in [-f64::from_bits(1), -1e-300, -0.125, f64::NEG_INFINITY, -0.0] {
             assert_eq!(clamp_rounding(v).to_bits(), 0f64.to_bits(), "{v:e}");
         }
         for v in [0.0, f64::from_bits(1), 15.0 / 11.0, 1e300, f64::INFINITY] {
