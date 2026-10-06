@@ -236,7 +236,7 @@ hand as a ridge oracle: "Is there no third party oracle library?"
 
 | where the test is | library oracles | example |
 |---|---|---|
-| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, and independent of the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `faer`'s LU |
+| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, through `crates/online-core/src/oracle.rs`: its LU and eigensolver, never the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `oracle::solve`, `faer`'s LU |
 | Python | scikit-learn, scipy, statsmodels, pandas, numpy | `TestEwRidgeIsSklearnsRidge` holds every `ewridge` solve to `sklearn.linear_model.Ridge`, 20 cases to 1e-8 |
 
 **A mutant can be killed only from Rust**, because `cargo mutants` runs

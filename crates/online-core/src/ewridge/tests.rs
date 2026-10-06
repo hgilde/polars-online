@@ -4,6 +4,7 @@
 //! did at task 158.
 
 use super::*;
+use crate::oracle;
 
 fn cfg(k: usize, m: usize) -> EwRidgeCfg {
     EwRidgeCfg {
@@ -244,11 +245,8 @@ fn a_blend_fits_a_share_of_the_long_run() {
         let my = mean(&|i| rows[i].1);
         let cov = |p: usize, q: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].0[q] - mx[q]));
         let cxy = |p: usize| mean(&|i| (rows[i].0[p] - mx[p]) * (rows[i].1 - my));
-        let b = oracle_solve(
-            &[
-                vec![cov(0, 0) + ridge, cov(0, 1)],
-                vec![cov(1, 0), cov(1, 1) + ridge],
-            ],
+        let b = oracle::solve(
+            &[cov(0, 0) + ridge, cov(0, 1), cov(1, 0), cov(1, 1) + ridge],
             &[cxy(0), cxy(1)],
         );
         let want = [my - mx[0] * b[0] - mx[1] * b[1], b[0], b[1]];
@@ -923,7 +921,7 @@ fn a_blend_keeps_the_decaying_prior_with_the_weight() {
     let b: Vec<f64> = (0..3)
         .map(|p| w * raw(&|i| rows[i].0[p] * rows[i].1))
         .collect();
-    let want = oracle_solve(&a, &b);
+    let want = oracle::solve(&a.concat(), &b);
     let got = full.coefficients().unwrap()[0].clone();
     for i in 0..3 {
         assert!(
@@ -2655,19 +2653,6 @@ type OracleRow = (Vec<f64>, [f64; 2], f64);
 /// A weighted row of [`fitted`]: features, the targets, the weight.
 type FitRow = (Vec<f64>, Vec<Option<f64>>, f64);
 
-/// `a x = b` by `faer`'s partial-pivot LU: a third-party solver for the
-/// oracle, sharing nothing with the model's own Cholesky
-/// ([`crate::solve::solve_spd`]).
-fn oracle_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-    use faer::linalg::solvers::Solve;
-    use faer::prelude::*;
-    let n = b.len();
-    let mat = Mat::from_fn(n, n, |i, j| a[i][j]);
-    let rhs = Mat::from_fn(n, 1, |i, _| b[i]);
-    let x = mat.partial_piv_lu().solve(&rhs);
-    (0..n).map(|i| x[(i, 0)]).collect()
-}
-
 /// Every solve against its closed form, from weighted sums written out
 /// here (mutation baseline, docs/PLAN.md task 113): two targets and a
 /// ridge grid of two (one under `ridge_scale`, which refuses a grid), so
@@ -2766,7 +2751,7 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
                                 mean(&|r| (r.0[a] - mx[a]) * (r.1[j] - my)) + pen(a) * c0[a + 1]
                             })
                             .collect();
-                        let slopes = oracle_solve(&a, &rhs);
+                        let slopes = oracle::solve(&a.concat(), &rhs);
                         let b0 = my - (0..k).map(|i| mx[i] * slopes[i]).sum::<f64>();
                         std::iter::once(b0).chain(slopes).collect()
                     } else {
@@ -2791,7 +2776,7 @@ fn every_solve_is_its_closed_form_across_targets_and_ridges() {
                         let rhs: Vec<f64> = (0..kz)
                             .map(|a| scale * mean(&|r| z(r, a) * r.1[j]) + pen(a) * c0[a])
                             .collect();
-                        oracle_solve(&a, &rhs)
+                        oracle::solve(&a.concat(), &rhs)
                     };
                     let got = &beta[j * grid.len() + ci];
                     let zx: Vec<f64> = if intercept {
@@ -3156,8 +3141,7 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
                 })
                 .collect();
             let v: Vec<f64> = (0..4).map(|i| z(&x, i)).collect();
-            let u = oracle_solve(&a, &v);
-            let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum::<f64>() * ws;
+            let q = oracle::quad_form(&a.concat(), &v) * ws;
             (1.0 + q / n).sqrt()
         } else {
             let mx: Vec<f64> = (0..3).map(|i| mean(&|r| r[i])).collect();
@@ -3171,8 +3155,7 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
                 })
                 .collect();
             let v: Vec<f64> = (0..3).map(|i| (x[i] - mx[i]) / sd[i]).collect();
-            let u = oracle_solve(&a, &v);
-            let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum();
+            let q = oracle::quad_form(&a.concat(), &v);
             (1.0 + (1.0 + q) / n).sqrt()
         };
         assert!(
@@ -3737,8 +3720,7 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
                 })
                 .collect();
             let v: Vec<f64> = (0..2).map(|i| x_new[i] - mx[i]).collect();
-            let u = oracle_solve(&a, &v);
-            let q: f64 = v.iter().zip(&u).map(|(a, b)| a * b).sum();
+            let q = oracle::quad_form(&a.concat(), &v);
             let want = (1.0 + (1.0 + q) / n).sqrt();
             let got = out[j * 3 + ci];
             assert!(
@@ -3777,9 +3759,9 @@ fn the_support_under_ridge_decay_is_the_sum_scale_systems() {
         })
         .collect();
     let support = &m.support_coef().unwrap()[0];
+    let inv = oracle::inverse(&a.concat());
     for (i, &share) in support.iter().enumerate().skip(1) {
-        let e: Vec<f64> = (0..3).map(|k| f64::from(k == i)).collect();
-        let want = 1.0 - lam * oracle_solve(&a, &e)[i];
+        let want = 1.0 - lam * inv[i * 3 + i];
         assert!(
             (share - want).abs() <= 1e-9,
             "slot {i}: {share} against {want}"

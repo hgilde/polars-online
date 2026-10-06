@@ -852,46 +852,11 @@ mod tests {
             .collect()
     }
 
-    /// Gauss-Jordan inverse and determinant of a small dense matrix.
-    fn inverse_det(m: &[f64], k: usize) -> (Vec<f64>, f64) {
-        let mut a: Vec<Vec<f64>> = (0..k)
-            .map(|i| {
-                let mut r: Vec<f64> = m[i * k..(i + 1) * k].to_vec();
-                r.extend((0..k).map(|j| if i == j { 1.0 } else { 0.0 }));
-                r
-            })
-            .collect();
-        let mut det = 1.0;
-        for col in 0..k {
-            let piv = (col..k)
-                .max_by(|&p, &q| a[p][col].abs().partial_cmp(&a[q][col].abs()).unwrap())
-                .unwrap();
-            if piv != col {
-                a.swap(piv, col);
-                det = -det;
-            }
-            let p = a[col][col];
-            det *= p;
-            for v in a[col].iter_mut() {
-                *v /= p;
-            }
-            for r in 0..k {
-                if r != col {
-                    let f = a[r][col];
-                    let pivot_row = a[col].clone();
-                    for (v, pv) in a[r].iter_mut().zip(&pivot_row) {
-                        *v -= f * pv;
-                    }
-                }
-            }
-        }
-        let inv = (0..k).flat_map(|i| a[i][k..].to_vec()).collect();
-        (inv, det)
-    }
-
     /// The posteriors at `x` from scratch: explicit decayed weights per row,
     /// the per-class prior scale by its own recursion, and the log-density
-    /// through a Gauss-Jordan inverse. Shares no code with the model.
+    /// from the test oracle (`crate::oracle`): `ln det` from faer's
+    /// eigenvalues, the quadratic form from its LU. Shares no code with the
+    /// model, whose densities go through `solve.rs`'s Cholesky.
     fn oracle(rows: &[Row], upto: usize, cfg: &EwClassCfg, x: &[f64]) -> Option<Vec<f64>> {
         let k = cfg.n_features;
         let nc = cfg.n_classes;
@@ -998,15 +963,10 @@ mod tests {
                     })
                     .collect(),
             };
-            let (inv, det) = inverse_det(&m, k);
             let d: Vec<f64> = (0..k).map(|j| x[j] - mu[c][j]).collect();
-            let mut q = 0.0;
-            for a in 0..k {
-                for b in 0..k {
-                    q += d[a] * inv[a * k + b] * d[b];
-                }
-            }
-            ell[c] = (n[c] / total).ln() - 0.5 * det.ln() - 0.5 * q;
+            ell[c] = (n[c] / total).ln()
+                - 0.5 * crate::oracle::log_det(&m)
+                - 0.5 * crate::oracle::quad_form(&m, &d);
         }
         let top = ell.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let z: f64 = ell.iter().map(|l| (l - top).exp()).sum();

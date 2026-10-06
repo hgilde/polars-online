@@ -1717,13 +1717,7 @@ mod tests {
         let e = m.estimate();
         let cov = e.rcov.unwrap();
         // Whatever happened, the result is PSD.
-        let ev = {
-            use faer::Side;
-            use faer::prelude::*;
-            let mat = Mat::from_fn(k, k, |i, j| cov[i * k + j]);
-            let evd = mat.self_adjoint_eigen(Side::Lower).unwrap();
-            (0..k).map(|i| evd.S()[i]).collect::<Vec<_>>()
-        };
+        let (ev, _) = crate::oracle::sym_eigen(&cov);
         assert!(ev.iter().all(|v| *v >= -1e-9), "{ev:?}");
     }
 

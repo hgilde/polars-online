@@ -1783,17 +1783,17 @@ mod tests {
     /// `t_{νₙ−d+1}(μₙ, Ψₙ(κₙ+1)/(κₙ(νₙ−d+1)))`, with `κₙ = κ₀ + n`,
     /// `νₙ = ν₀ + n`, `μₙ = (κ₀μ₀ + n·x̄)/κₙ` and `Ψₙ = Ψ₀ + S +
     /// (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`. Written out here from each run's own
-    /// rows, two-pass, with `faer`'s LU for the determinant and the quadratic
-    /// form, the gamma function by its recurrence, and Algorithm 1 in
-    /// probabilities: nothing is shared with the model's Cholesky, its
-    /// Lanczos series or its centred updates. Three correlated columns, a
-    /// full `Ψ₀` that is not diagonal, `κ₀ = 1/2` and a prior mean away from
-    /// zero, so every term of the predictive is live; and every output is
-    /// checked, the run length's mode and mean among them.
+    /// rows, two-pass, with the test oracle's eigenvalues for the determinant
+    /// and its LU for the quadratic form (`crate::oracle`), the gamma
+    /// function by its recurrence, and Algorithm 1 in probabilities: nothing
+    /// is shared with the model's Cholesky, its Lanczos series or its
+    /// centred updates. Three correlated columns, a full `Ψ₀` that is not
+    /// diagonal, `κ₀ = 1/2` and a prior mean away from zero, so every term
+    /// of the predictive is live; and every output is checked, the run
+    /// length's mode and mean among them.
     #[test]
     fn the_gaussian_emission_is_the_longhand_normal_inverse_wishart() {
-        use faer::linalg::solvers::Solve;
-        use faer::prelude::*;
+        use crate::oracle;
         let d = 3usize;
         let (hazard, k0, nu0) = (40.0, 0.5, 5u64);
         let h = 1.0 / hazard;
@@ -1828,19 +1828,21 @@ mod tests {
             let dof = nu0 + n as u64 + 1 - d as u64;
             let dof_f = dof as f64;
             let scale = (kn + 1.0) / (kn * dof_f);
-            let sigma = Mat::from_fn(d, d, |i, j| {
-                let s: f64 = rows.iter().map(|r| (r[i] - bar[i]) * (r[j] - bar[j])).sum();
-                let g = k0 * nf / kn * (bar[i] - mu0[i]) * (bar[j] - mu0[j]);
-                (psi0[i * d + j] + s + g) * scale
-            });
-            let delta = Mat::from_fn(d, 1, |i, _| x[i] - mun[i]);
-            let sol = sigma.partial_piv_lu().solve(&delta);
-            let q: f64 = (0..d).map(|i| delta[(i, 0)] * sol[(i, 0)]).sum();
-            let det = sigma.determinant();
+            let sigma: Vec<f64> = (0..d * d)
+                .map(|ij| {
+                    let (i, j) = (ij / d, ij % d);
+                    let s: f64 = rows.iter().map(|r| (r[i] - bar[i]) * (r[j] - bar[j])).sum();
+                    let g = k0 * nf / kn * (bar[i] - mu0[i]) * (bar[j] - mu0[j]);
+                    (psi0[i * d + j] + s + g) * scale
+                })
+                .collect();
+            let delta: Vec<f64> = (0..d).map(|i| x[i] - mun[i]).collect();
+            let q = oracle::quad_form(&sigma, &delta);
+            let log_det = oracle::log_det(&sigma);
             let lp = ln_gamma_half(dof + d as u64)
                 - ln_gamma_half(dof)
                 - 0.5 * d as f64 * (dof_f * std::f64::consts::PI).ln()
-                - 0.5 * det.ln()
+                - 0.5 * log_det
                 - 0.5 * (dof_f + d as f64) * (q / dof_f).ln_1p();
             (lp, mun)
         };

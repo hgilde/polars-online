@@ -813,7 +813,12 @@ mod tests {
     }
 
     /// The Woodbury path against a dense `n x n` density, built from the
-    /// block correlations by hand.
+    /// block correlations by hand and read off faer's eigendecomposition
+    /// `R = Σ λᵢ vᵢvᵢᵀ` (`crate::oracle`): `ln det R = Σ ln λᵢ` and
+    /// `rᵀR⁻¹r = Σ (vᵢᵀr)²/λᵢ`. It was read off `SpdFactor`, the Cholesky the
+    /// model's own `loglik` runs, so an error in `solve.rs` that reached both
+    /// sides alike -- a constant in `log_det`, or in `quad_forms` -- passed
+    /// (docs/PLAN.md task 169).
     #[test]
     fn the_block_loglik_is_the_dense_gaussian_density() {
         let blocks = vec![vec![0usize, 1, 2], vec![3, 4]];
@@ -842,9 +847,7 @@ mod tests {
                 };
             }
         }
-        let f = SpdFactor::of(&dense, n).unwrap();
-        let quad = f.quad_forms(&r, n, 1)[0];
-        let want = -0.5 * (n as f64 * std::f64::consts::TAU.ln() + f.log_det() + quad);
+        let want = crate::oracle::gaussian_log_density(&dense, &r);
         assert!((got - want).abs() < 1e-9, "{got} vs {want}");
     }
 
@@ -1316,14 +1319,12 @@ mod tests {
 
     /// The Woodbury path over three blocks against the dense `n x n`
     /// Gaussian density, the determinant from `faer`'s eigenvalues and the
-    /// quadratic form from its LU, sharing nothing with the model's own
-    /// factorization. Three blocks have three pairs, so each pair's value
-    /// must reach its own entries.
+    /// quadratic form from its LU (`crate::oracle`), sharing nothing with
+    /// the model's own factorization. Three blocks have three pairs, so each
+    /// pair's value must reach its own entries.
     #[test]
     fn the_block_loglik_of_three_blocks_is_the_dense_gaussian_density() {
-        use faer::Side;
-        use faer::linalg::solvers::Solve;
-        use faer::prelude::*;
+        use crate::oracle;
         let blocks = vec![vec![0usize, 1], vec![2, 3, 4], vec![5, 6]];
         let m = Deco::new(DecoCfg {
             blocks: blocks.clone(),
@@ -1344,26 +1345,25 @@ mod tests {
             (0, 2) => 4,
             _ => 5,
         };
-        let dense = Mat::from_fn(n, n, |i, j| {
-            if i == j {
-                1.0
-            } else if of(i) == of(j) {
-                rho[of(i)]
-            } else {
-                rho[pair(of(i), of(j))]
-            }
-        });
-        let evd = dense.self_adjoint_eigen(Side::Lower).unwrap();
-        let eig: Vec<f64> = (0..n).map(|i| evd.S()[i]).collect();
+        let dense: Vec<f64> = (0..n * n)
+            .map(|ij| {
+                let (i, j) = (ij / n, ij % n);
+                if i == j {
+                    1.0
+                } else if of(i) == of(j) {
+                    rho[of(i)]
+                } else {
+                    rho[pair(of(i), of(j))]
+                }
+            })
+            .collect();
+        let (eig, _) = oracle::sym_eigen(&dense);
         assert!(
             eig.iter().all(|&v| v > 0.0),
             "a correlation matrix: {eig:?}"
         );
-        let log_det: f64 = eig.iter().map(|v| v.ln()).sum();
-        let x = dense
-            .partial_piv_lu()
-            .solve(Mat::from_fn(n, 1, |i, _| r[i]));
-        let quad: f64 = (0..n).map(|i| r[i] * x[(i, 0)]).sum();
+        let log_det = oracle::log_det(&dense);
+        let quad = oracle::quad_form(&dense, &r);
         let want = -0.5 * (n as f64 * std::f64::consts::TAU.ln() + log_det + quad);
         assert!((got - want).abs() < 1e-9, "{got} vs {want}");
     }

@@ -185,8 +185,12 @@ dependencies; `crate-type` is the publisher's choice).
   quantity** (the user, 2026-09-27: "Is there no third party oracle
   library?"). Write only the definition by hand, from the paper; let the
   library compute it. In Rust tests, the only ones `cargo mutants` sees, use
-  `faer` (already an `online-core` dependency, independent of `solve.rs`);
-  in Python, scikit-learn, scipy or statsmodels, in
+  `crate::oracle` (`crates/online-core/src/oracle.rs`, compiled for tests
+  only; the user, 2026-10-06): faer's partial-pivot LU and self-adjoint
+  eigensolver, which share no arithmetic with `solve.rs`'s Cholesky. Add a
+  helper there rather than computing a matrix result in a test module. Its
+  eigensolver is the one `Pca::of` and `rcov`'s PSD repair run, so it is no
+  oracle for them. In Python, scikit-learn, scipy or statsmodels, in
   `tests/test_second_opinion.py`. Where the library is Python's alone, write
   both. `docs/TESTING.md` has the rule beside the one above.
 - Docstrings state the math (update equations) for every model.

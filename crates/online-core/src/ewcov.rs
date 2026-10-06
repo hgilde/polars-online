@@ -916,54 +916,6 @@ impl EwCov {
             self.decay(lam);
         }
     }
-
-    /// Reference inverse of `C + prior·prior_scale·I` by Gauss-Jordan with
-    /// partial pivoting, so the tests can check [`Self::precision`] against
-    /// something that shares none of its code.
-    #[cfg(test)]
-    fn inverse_from_scratch(&self, prior: f64, prior_scale: f64) -> Option<Vec<f64>> {
-        let k = self.k;
-        let mut a = vec![0.0; k * 2 * k];
-        for i in 0..k {
-            for j in 0..k {
-                a[i * 2 * k + j] = self.c[i * k + j];
-            }
-            a[i * 2 * k + i] += prior * prior_scale;
-            a[i * 2 * k + k + i] = 1.0;
-        }
-        for col in 0..k {
-            let piv = (col..k).max_by(|&r1, &r2| {
-                a[r1 * 2 * k + col]
-                    .abs()
-                    .partial_cmp(&a[r2 * 2 * k + col].abs())
-                    .unwrap()
-            })?;
-            if a[piv * 2 * k + col].abs() < 1e-300 {
-                return None;
-            }
-            for j in 0..2 * k {
-                a.swap(col * 2 * k + j, piv * 2 * k + j);
-            }
-            let d = a[col * 2 * k + col];
-            for j in 0..2 * k {
-                a[col * 2 * k + j] /= d;
-            }
-            for r in 0..k {
-                if r != col {
-                    let f = a[r * 2 * k + col];
-                    for j in 0..2 * k {
-                        a[r * 2 * k + j] -= f * a[col * 2 * k + j];
-                    }
-                }
-            }
-        }
-        Some(
-            (0..k)
-                .flat_map(|i| (0..k).map(move |j| (i, j)))
-                .map(|(i, j)| a[i * 2 * k + k + j])
-                .collect(),
-        )
-    }
 }
 
 /// Per-target first and second moments, and `Sum w^2`, kept beside a model's
@@ -2804,24 +2756,27 @@ mod tests {
 
     #[test]
     fn mahal_matches_the_precision_matrix_quadratic_form() {
-        // Against `precision()`, which the partial correlations already trust:
-        // d² = δᵀ P δ, with P the regularized inverse.
-        let mut m = EwCovModel::new(mahal_cfg(3, 0.01)).unwrap();
+        // Against the definition, d² = δᵀ(C + s·prior·I)⁻¹δ, the quadratic
+        // form by the test oracle's LU (`crate::oracle`). It was read off
+        // `precision()`, which solves by the same Cholesky as `mahal`, so an
+        // error in that factorization reached both sides alike and passed
+        // (docs/PLAN.md task 169).
+        let prior = 0.01;
+        let mut m = EwCovModel::new(mahal_cfg(3, prior)).unwrap();
         let mut s = 7u64;
         for i in 0..50 {
             let a = lcg(&mut s);
             let x = [a, 0.5 * a + lcg(&mut s), lcg(&mut s) - 0.2 * a];
             step(&mut m, &x, i == 0);
         }
-        let p = m.cov().precision().unwrap();
+        let cov = m.cov();
+        let ridge = prior * cov.precision_scale();
+        let a: Vec<f64> = (0..9)
+            .map(|ij| cov.cov(ij / 3, ij % 3) + if ij / 3 == ij % 3 { ridge } else { 0.0 })
+            .collect();
         let x = [0.7, -0.4, 1.1];
-        let delta: Vec<f64> = (0..3).map(|i| x[i] - m.cov().mean(i)).collect();
-        let mut d2 = 0.0;
-        for i in 0..3 {
-            for j in 0..3 {
-                d2 += delta[i] * p[i * 3 + j] * delta[j];
-            }
-        }
+        let delta: Vec<f64> = (0..3).map(|i| x[i] - cov.mean(i)).collect();
+        let d2 = crate::oracle::quad_form(&a, &delta);
         assert!((m.mahal(&x) - d2.sqrt()).abs() < 1e-9);
         // A single column is the |z| of the row.
         let mut one = EwCovModel::new(mahal_cfg(1, 1e-12)).unwrap();
@@ -3886,10 +3841,25 @@ mod tests {
         }
     }
 
+    /// `C + prior·prior_scale·I`, row-major: the matrix `EwCov::precision`
+    /// inverts, from the co-moments, for the test oracle to invert by faer's
+    /// partial-pivot LU (`crate::oracle::inverse`), which shares none of the
+    /// Cholesky `precision()` runs (docs/PLAN.md task 169).
+    fn regularized(ew: &EwCov, prior: f64, prior_scale: f64) -> Vec<f64> {
+        let k = ew.k();
+        (0..k * k)
+            .map(|ij| {
+                let (i, j) = (ij / k, ij % k);
+                ew.cov(i, j) + if i == j { prior * prior_scale } else { 0.0 }
+            })
+            .collect()
+    }
+
     #[test]
     fn the_from_scratch_inverse_really_inverts() {
-        // `precision_matches_a_from_scratch_solve` uses this as its reference,
-        // so it has to be checked against something else -- the definition.
+        // `precision_matches_a_from_scratch_solve` takes its reference from
+        // the test oracle (`crate::oracle::inverse`, faer's LU), so that has
+        // to be checked against something else -- the definition.
         // A · A⁻¹ = I, where A = C + s·prior·I.
         let (prior, k) = (0.5, 3usize);
         let mut ew = EwCov::with_precision_prior(k, prior).unwrap();
@@ -3899,7 +3869,7 @@ mod tests {
             ew.update(&x, 0.97, 0.5 + lcg(&mut s).abs());
         }
         let scale = ew.precision_scale();
-        let inv = ew.inverse_from_scratch(prior, scale).unwrap();
+        let inv = crate::oracle::inverse(&regularized(&ew, prior, scale));
         for i in 0..k {
             for j in 0..k {
                 let mut acc = 0.0;
@@ -3914,13 +3884,15 @@ mod tests {
                 );
             }
         }
-        // A singular matrix with no prior has no inverse to report.
+        // A singular matrix with no prior has no inverse to report: the
+        // oracle's is not finite.
         let mut flat = EwCov::new(2);
         for _ in 0..10 {
             flat.update(&[1.0, 2.0], 1.0, 1.0);
         }
+        let none = crate::oracle::inverse(&regularized(&flat, 0.0, 1.0));
         assert!(
-            flat.inverse_from_scratch(0.0, 1.0).is_none(),
+            none.iter().any(|v| !v.is_finite()),
             "a rank-deficient matrix with no prior cannot be inverted"
         );
     }
@@ -3949,8 +3921,8 @@ mod tests {
     #[test]
     fn partial_corr_is_the_textbook_formula_on_the_precision_matrix() {
         // -P_ij / sqrt(P_ii P_jj), against a precision matrix obtained the
-        // other way (Gauss-Jordan), so the formula and the solve cannot agree
-        // by both being wrong.
+        // other way (the test oracle's LU, `crate::oracle`), so the formula
+        // and the solve cannot agree by both being wrong.
         let (prior, k) = (1e-4, 4usize);
         let mut ew = EwCov::with_precision_prior(k, prior).unwrap();
         let mut s = 107u64;
@@ -3961,9 +3933,7 @@ mod tests {
             let x = [a, b, a + b + 0.3 * lcg(&mut s), 0.5 * lcg(&mut s)];
             ew.update(&x, 0.99, 1.0);
         }
-        let reference = ew
-            .inverse_from_scratch(prior, ew.precision_scale())
-            .unwrap();
+        let reference = crate::oracle::inverse(&regularized(&ew, prior, ew.precision_scale()));
         let p = ew.precision().unwrap();
         for i in 0..k {
             for j in 0..k {
@@ -3992,8 +3962,9 @@ mod tests {
 
     #[test]
     fn precision_matches_a_from_scratch_solve() {
-        // The Cholesky solve must equal a Gauss-Jordan inversion of the same
-        // matrix at every step, prior scale included.
+        // The Cholesky solve must equal the test oracle's inversion of the
+        // same matrix (faer's partial-pivot LU, `crate::oracle`) at every
+        // step, prior scale included.
         let prior = 0.5;
         let mut ew = EwCov::with_precision_prior(3, prior).unwrap();
         let mut state = 7u64;
@@ -4006,16 +3977,14 @@ mod tests {
         for step in 0..60 {
             let x = [lcg(), lcg(), lcg() * 3.0];
             ew.update(&x, 0.97, 0.5 + lcg().abs());
-            let want = ew
-                .inverse_from_scratch(prior, ew.precision_scale())
-                .expect("reference inverse should exist");
+            let want = crate::oracle::inverse(&regularized(&ew, prior, ew.precision_scale()));
             let got = ew.precision().unwrap();
             for i in 0..3 {
                 for j in 0..3 {
                     let (g, w) = (got[i * 3 + j], want[i * 3 + j]);
                     assert!(
                         (g - w).abs() < 1e-9 * (1.0 + w.abs()),
-                        "step {step}, ({i},{j}): cholesky {g}, gauss-jordan {w}"
+                        "step {step}, ({i},{j}): cholesky {g}, lu {w}"
                     );
                 }
             }
@@ -4852,12 +4821,11 @@ mod tests {
     /// `(0.7, −0.714)` (dot 0.13) keeps it `(0.8, 0.6)`. A previous loading
     /// exactly orthogonal (here zero) falls to the rule for none: the
     /// largest-magnitude entry positive, on a matrix whose raw eigenvector
-    /// faer gives with that entry negative. And eigenvalues that overflow
-    /// leave no components.
+    /// faer gives with that entry negative (`crate::oracle::sym_eigen`, the
+    /// eigensolver `Pca::of` runs, its signs untouched). And eigenvalues
+    /// that overflow leave no components.
     #[test]
     fn pca_signs_follow_the_previous_component() {
-        use faer::Side;
-        use faer::prelude::*;
         let c = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
         let prev = Pca {
             eig: vec![3.0, 2.0],
@@ -4897,9 +4865,7 @@ mod tests {
             -0.33794526671041136,
             0.8238902915440387,
         ];
-        let raw = Mat::from_fn(4, 4, |i, j| c[i * 4 + j])
-            .self_adjoint_eigen(Side::Lower)
-            .unwrap();
+        let (_, raw) = crate::oracle::sym_eigen(&c);
         let lead = |v: &[f64]| {
             let mut l = 0;
             for (i, vi) in v.iter().enumerate() {
@@ -4909,7 +4875,8 @@ mod tests {
             }
             v[l]
         };
-        let top: Vec<f64> = (0..4).map(|i| raw.U()[(i, 3)]).collect();
+        // The top component's: the eigenvalues come ascending.
+        let top: Vec<f64> = raw[3].clone();
         assert!(
             lead(&top) < 0.0,
             "faer's own vector leads negative: {top:?}"

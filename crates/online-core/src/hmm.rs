@@ -1306,20 +1306,6 @@ mod tests {
 
     // The mutation survivors of the weekly pass (docs/PLAN.md task 158).
 
-    /// The Gaussian log density `−(d/2)ln 2π − ½ ln det M − ½ δ'M⁻¹δ`, with
-    /// `faer`'s LU for the determinant and the solve: nothing shared with the
-    /// model's Cholesky.
-    fn gaussian_log_density(m: &[f64], delta: &[f64]) -> f64 {
-        use faer::linalg::solvers::Solve;
-        use faer::prelude::*;
-        let d = delta.len();
-        let mat = Mat::from_fn(d, d, |i, j| m[i * d + j]);
-        let rhs = Mat::from_fn(d, 1, |i, _| delta[i]);
-        let sol = mat.partial_piv_lu().solve(&rhs);
-        let q: f64 = (0..d).map(|i| delta[i] * sol[(i, 0)]).sum();
-        -0.5 * d as f64 * std::f64::consts::TAU.ln() - 0.5 * mat.determinant().ln() - 0.5 * q
-    }
-
     /// Two states given at `±3` in two columns, unit covariances.
     fn given(c: HmmCfg) -> HmmCfg {
         HmmCfg {
@@ -1568,8 +1554,9 @@ mod tests {
     /// `shared` pools the states' covariances by their weights, `πₛ = nₛ/Σn`
     /// -- and by `1/K` when no state has any weight, here after a gap the
     /// decay took the whole history in -- and scores every state against the
-    /// pool: the Gaussian written out with `faer`, from the model's own
-    /// states.
+    /// pool: the Gaussian from the test oracle's eigendecomposition
+    /// (`crate::oracle`), nothing shared with the model's Cholesky, from the
+    /// model's own states.
     #[test]
     fn shared_pools_the_states_by_their_weights_or_evenly_with_none() {
         let mut m = Hmm::new(given(HmmCfg {
@@ -1598,7 +1585,10 @@ mod tests {
             }
             m.states
                 .iter()
-                .map(|s| gaussian_log_density(&pool, &[s.deviation(0, x[0]), s.deviation(1, x[1])]))
+                .map(|s| {
+                    let delta = [s.deviation(0, x[0]), s.deviation(1, x[1])];
+                    crate::oracle::gaussian_log_density(&pool, &delta)
+                })
                 .collect()
         };
         let w: Vec<f64> = m.states.iter().map(EwCov::n_eff).collect();

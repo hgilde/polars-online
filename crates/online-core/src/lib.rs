@@ -85,6 +85,10 @@ mod margbins;
 mod marginal;
 mod marglag;
 mod model;
+/// Test oracles' dense linear algebra, on faer's LU and eigensolver: never
+/// `solve.rs` (docs/PLAN.md task 169).
+#[cfg(test)]
+mod oracle;
 mod pa;
 mod rcov;
 mod rls;

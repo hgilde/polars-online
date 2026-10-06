@@ -1720,17 +1720,6 @@ mod tests {
     /// A weighted row: features, two targets, the weight.
     type Row = (Vec<f64>, [Option<f64>; 2], f64);
 
-    /// `a x = b` by `faer`'s partial-pivot LU: a third-party oracle.
-    fn oracle_solve(a: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
-        use faer::linalg::solvers::Solve;
-        use faer::prelude::*;
-        let n = b.len();
-        let mat = Mat::from_fn(n, n, |i, j| a[i][j]);
-        let rhs = Mat::from_fn(n, 1, |i, _| b[i]);
-        let x = mat.partial_piv_lu().solve(&rhs);
-        (0..n).map(|i| x[(i, 0)]).collect()
-    }
-
     /// Weighted rows: `k` features at levels, two targets, the second absent
     /// on every third row.
     fn weighted_rows(k: usize, n: usize, seed: u64) -> Vec<Row> {
@@ -1784,7 +1773,7 @@ mod tests {
             .map(|i| (0..3).map(|j| e(&|r| r.0[i] * r.0[j])).collect())
             .collect();
         let b: Vec<f64> = (0..3).map(|i| e(&|r| r.0[i] * r.1[0].unwrap())).collect();
-        let want = oracle_solve(&a, &b);
+        let want = crate::oracle::solve(&a.concat(), &b);
         let got = &m.coefficients().unwrap()[0][0];
         for (g, w) in got.iter().zip(&want) {
             assert!(
@@ -1955,7 +1944,7 @@ mod tests {
             .iter()
             .map(|&i| e(&|r| r.0[i] * r.1[0].unwrap()))
             .collect();
-        let want = oracle_solve(&a, &b);
+        let want = crate::oracle::solve(&a.concat(), &b);
         let got = &m.coefficients().unwrap()[0][0];
         assert_eq!(got[1], 0.0, "{got:?}");
         for (g, w) in [got[0], got[2]].iter().zip(&want) {
