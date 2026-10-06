@@ -3218,8 +3218,13 @@ mod tests {
 
     /// `pca_every` counts every row the model is stepped with, rows of
     /// weight zero included, as the window's snapshots do (review
-    /// 2026-09-26, C7): the library has one cadence rule. A stream
-    /// alternating weight 1 and 0
+    /// 2026-09-26, C7): the rule of the cadences that refresh what a model
+    /// reads out -- the components, the window's snapshots, `coef_every`.
+    /// The cadences that act on what new rows taught -- `kmeans`'
+    /// `update_every` and `split_merge_every`, `micro`'s
+    /// `max_rows_between_prunes` -- count learned rows, since a row of
+    /// weight zero gives them nothing to act on (the user, 2026-10-06, PLAN
+    /// task 165). A stream alternating weight 1 and 0
     /// under `pca_every = 4` refreshes the components every fourth row, two
     /// learned rows apart. The docs said learned rows (review 2026-10-05,
     /// CB3; C7 settled `window_every`'s same mismatch by keeping the code

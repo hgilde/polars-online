@@ -144,17 +144,18 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 33,
+- **Every saved bank must be refit.** A bank file now carries schema 35,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
-  its version, naming the way out: refit from the input. Seven changes
+  its version, naming the way out: refit from the input. Nine changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
   keeps (task 104, then review rounds R4 and R6), the PCA, pruning and
   window cadences of `ew_cov`, `micro` and the windowed models (tasks 161,
   163 and 162), `lasso`'s threshold per target (task 174), the stamps a
-  model window keys its snapshots by (task 175), and `quantile`'s band
-  factor (task 170). An `ew_cov` state with `mahal_quantiles` is refused
-  too.
+  model window keys its snapshots by (task 175), `quantile`'s band factor
+  (task 170), the elapsed clock an embargo's held rows are measured on
+  (task 176), and where each stream's `coef` cadence stands (task 178). An
+  `ew_cov` state with `mahal_quantiles` is refused too.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -285,6 +286,33 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   a residual variance, the shared noise is the mean of the squared
   innovations of the targets the row observes. Warm-up predictions move,
   and so do the comparisons that read them, such as `seqtest`.
+- **`coef_every` counts the clock, as `solve_every` does** (task 178). A
+  number of the clock column's units, or a duration on a temporal clock
+  (`"5m"`), writes `coef` once the clock has moved that far since the
+  group's last `coef` row, measured on the exact decayed clock (task 175);
+  `max_rows_between_coefs` writes it after that many accepted rows, counted
+  as `coef_every` counted them; whichever comes first. **`coef_every=0`,
+  which meant the default, now means every row**; leave it unset (`None`)
+  for the default, each group's last row in each chunk. A spec with a clock
+  that gave `coef_every=N` now means N clock units: write
+  `max_rows_between_coefs=N` for N rows. Without a clock column the clock
+  is the row's number, so `coef_every=N` still writes every N-th row,
+  skipped rows counted. Under a cadence the `coef` rows no longer include
+  each chunk's last row, so they no longer depend on the chunking; a clock
+  reset starts the cadence over. Both are refused on a model without
+  coefficients, `coef_every=0` included. No model's numbers move: only
+  which rows carry `coef` and `support_coef`.
+- **`huber` and `quantile` warm up without the target's units** (task 177).
+  Before a target has a residual scale (its residual variance above 0),
+  `huber` down-weights no row, and `quantile` draws no band but takes
+  least-squares rows, as in its warm-up. Both read the scale `s` as a
+  literal 1 in the target's units there: `huber`'s cut `huber_delta·s`
+  down-weighted every early row of a target in millions as an outlier and
+  none of one in millionths (predictions up to 35 times apart), and
+  `quantile`'s band put a target in millionths up to 2e5 of its own units
+  off. Scaling every target by `c` now scales every prediction by `c`, bit
+  for bit at powers of two. Outputs move only from a row judged without a
+  scale whose residual exceeded the old cut; no pinned value moved.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec
@@ -534,6 +562,21 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **An `embargo` is decided on the elapsed clock held exactly** (task 176;
+  found by task 175's worker). The countdown subtracted each row's elapsed
+  time from the embargo in doubles, so it drifted both ways: on rows 1 ms
+  apart under `embargo="2s"` every row was learned 2.001 s after it arrived,
+  a row late; on a clock of tenths under `embargo=2.0` the row at 0.3 was
+  learned at 2.3, though `2.3 − 0.3` is 1.9999999999999998, a row early; and
+  under `"100d2ns"` a row was learned a nanosecond early. The release now
+  compares two rows' places on the elapsed clock: integer nanoseconds on a
+  temporal clock, one subtraction of raw values on a number clock, the
+  row's place without a clock column, inclusive at exactly the embargo as
+  before. What counts as elapsed (a gap in full, task 153), a break
+  releasing nothing early, a reset clearing what is held and a formula
+  target's release are unchanged. Where the countdown drifted, every output
+  from the release on moves by one row's learning; a clock with no column,
+  or with whole-number steps, releases where it did.
 - **`rcov`'s pre-averaged estimate forms every one of CKP's terms** (task
   159). It never formed the first, `Ȳ₀`, over a stretch's first `k_n − 1`
   returns, so each stretch summed one term fewer than its scale counted:

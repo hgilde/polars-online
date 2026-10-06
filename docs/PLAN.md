@@ -7617,10 +7617,13 @@ tick, and that the series holding it up has a count near 1.
       counts each group's accepted rows (measured: `coef_every = 3` filled
       rows 2, 5, 8, ... of a stream whose every third learned row was 8 and
       16).
-- [ ] 165. **The user's decisions on §17.** Size S each, once decided: the
+- [x] 165. **The user's decisions on §17.** Size S each, once decided: the
       two rules for counting a cadence's rows, `micro`'s default cadence
       (100 learned rows, or DenStream's `Tp`), `coef_every` on the clock and
       the spelling of its default, and `bocpd`'s hazard in clock units.
+      *Decided 2026-10-06 (§17's list): the sentence narrowed, `micro` kept
+      at 100 learned rows, `coef_every` built as task 178, the duration
+      hazard as task 179.*
 - [x] 166. **The mutation and canary failures examined -- requested
       2026-10-06.** Size M. The user's words: "Examine mutants and canary
       fails". *Mutants.* The changed-lines runs on `a7a8f3c` and `e6b70a2`
@@ -7850,7 +7853,7 @@ tick, and that the series holding it up has a count near 1.
       through the bank resumes to the bit, where three save points went off
       before; a JSON round trip carries the moved factor; thirteen damaged
       states are each refused. About 670 bytes a target at ten features.
-- [ ] 176. **`embargo` counts down in doubles, so an embargo of exactly k
+- [x] 176. **`embargo` counts down in doubles, so an embargo of exactly k
       steps can release a row a row late -- found 2026-10-06 by task 175.**
       `apply_label_delay` (`stream.rs`) subtracts each row's `elapsed` from
       the remaining embargo in doubles: on 1 ms Datetime rows under
@@ -7859,7 +7862,68 @@ tick, and that the series holding it up has a count near 1.
       the elapsed (uncapped) clock: the fix holds the elapsed time exactly
       in `ClockState` and `PendingRow`, as task 175 holds the decayed one.
       Reproduction: the session scratchpad's `review3/fixwork/cb1/embargo_probe.py`.
+      *Built 2026-10-06 on the user's word ("Follow your reco on all").*
+      `ClockState::advance_stamped` gives each accepted row its place on the
+      elapsed clock (`ClockAdvance::elapsed_stamp`, task 175's `Stamp`):
+      integer ns summed from the raw steps, uncapped, skipped rows counted,
+      a restarting session counting its gap; on a number clock the raw value
+      beside what the elapsed clock does not count; else the row's place. A
+      held row keeps its arrival (`PendingRow.arrived`) and is released when
+      an accepted row's place is at least the embargo past it
+      (`Stamp::cmp_span_ns`, with the embargo's ns when a duration),
+      inclusive as before. The old countdown also released rows early (a
+      clock of tenths under 2.0; `"100d2ns"` by 1 ns). Tests in
+      `crates/online-polars/tests/embargo_exact.rs` (six, each failing on
+      the old code: 600 rows late in every unit under `"2s"`; early rows on
+      tenths; 1,236 rows across a capped gap, skipped rows, session changes
+      and a reset; chunking and 12 save points; a formula target on both
+      paths) and `test_label_delay.py::TestTheReleaseIsExact`. A held row
+      with no place is refused at load. Schema 34. No pinned value moved.
+- [x] 178. **`coef_every` counts the clock, as `solve_every` does --
+      requested 2026-10-06.** Size M. §17's decision 3. Unset (`None`, the
+      new default) is the old default, each group's last row in each chunk;
+      `0` is every row (it meant the default); a number of clock units or a
+      duration is a `coef` row once the clock has moved that far since the
+      group's last, measured on task 175's exact stamps, so `"2s"` on 1 ms
+      rows writes rows 2000, 4000, ... where summed doubles would write each
+      a row late; `max_rows_between_coefs` caps the accepted rows, counted
+      as `coef_every` counted them; whichever comes first. Without a clock
+      column the clock is the row's number from 1, so `coef_every=N` keeps
+      its N-th, 2N-th, ... timing. A reset starts the cadence over. Under an
+      explicit cadence the `coef` rows no longer include each chunk's last
+      row, so they are chunk-invariant; `predict` still writes the chunk's
+      last row. Refused: a duration on a number spec and the reverse, a
+      negative or infinite `coef_every`, `max_rows_between_coefs=0`, either
+      on a model without coefficients (`coef_every=0` there used to pass).
+      No model's numbers move. `tests/test_coef_cadence.py` (111 tests,
+      through all 15 kinds with a `coef`, chunking and save/resume, held to
+      the rule written out over the stream's own clock) failed 91 of 107 on
+      the old build. The README's first fit and every clocked use that
+      meant every row now write `coef_every=0`; `examples/bank.toml` uses
+      `max_rows_between_coefs`. Schema 35 (task 176 took 34 the same day).
+- [ ] 180. **`solve_every`, `pca_every` and `prune_every` sum their clock in
+      doubles -- found 2026-10-06 by task 178.** CB1's class of bug (tasks
+      175, 176): two thousand steps of 1 ms sum to 1.9999999999998905 s, so
+      a cadence of `"2s"` fires a row late. `window_every` (task 175) and
+      `coef_every` (task 178) read exact stamps; these three should too.
       Awaits the user's word.
+- [x] 177. **`huber` and `quantile` down-weight nothing until a residual
+      scale exists -- requested 2026-10-06.** Size S. The user's word
+      ("Follow your reco on all"), option (a): a row's Huber weight is 1
+      until σ² is finite and above 0 (`Robust::residual_scale`; σ²'s weight
+      is not also required, since only a weighted residual writes σ² and the
+      weight only decays, so a gap of 1,333 half-lives keeps its scale). The
+      same literal reached `quantile`'s band, `h = s·max(quantile_eps,
+      floor)`, past its warm-up (on a delayed first prediction, and while
+      every residual was exactly 0): with no scale a quantile row is a
+      least-squares row, a separate commit since it extends the decision.
+      Equivariance tests (every target by `2^±20`, bit for bit, five Huber
+      and four quantile configurations) failed on the old code (up to 35
+      times apart, and 2e5 of a target's units). Found on the way and fixed
+      in the test oracles, no library code: `robust_ref` aged σ²'s weight
+      unlike the core on rows of weight 0 (S13, N6, CC5; 4.6e-2 off on such
+      a stream, now 5e-15), and `kalman_ref` on a row with no prediction
+      (N6; 1.75e-3, now 1e-15). No pinned value moved.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -11820,7 +11884,7 @@ recommendation. Nothing below is built.
 
 | Parameter | Today | Clock-aware | Recommendation |
 |---|---|---|---|
-| `bocpd`'s `hazard` | "the per-row chance of a break", `1/hazard` | the chance grows with the time since the last row: `H(d) = 1 - exp(-d / tau)`, `tau` the expected time between breaks, in clock units | worth building as an option (a duration `hazard` on a temporal clock): on irregular rows the per-row hazard says breaks follow the row rate. `hazard_col` can carry such a per-row value today, computed from the clock |
+| `bocpd`'s `hazard` | "the per-row chance of a break", `1/hazard` | the chance grows with the time since the last row: `H(d) = 1 - exp(-d / tau)`, `tau` the expected time between breaks, in clock units | worth building as an option (a duration `hazard` on a temporal clock): on irregular rows the per-row hazard says breaks follow the row rate. `hazard_col` can carry such a per-row value today, computed from the clock -- from the step *after* its row, since a row's hazard is the chance of a break after it (corrected 2026-10-06: task 179's worker found the step into the row dates every break a row late) |
 | `hmm`'s transition matrix | a per-row Markov chain | a continuous-time chain, `P(d) = exp(Q d)` | record only: estimating `Q` from soft counts over irregular gaps is a larger change, needed only for irregular data whose regimes switch on the clock |
 | `deco`'s `alpha`, `beta` | per-row dynamics | dynamics per unit of time | record only, as for `hmm` |
 | `sgd`, `pa`, `ftrl` coefficients | learn per row; `n_eff` decays on the clock (hard rule 8) | -- | by design, documented |
@@ -11866,3 +11930,11 @@ recommendation. Nothing below is built.
 3. **`coef_every` on the clock**, and the spelling of its "last row of a
    chunk" default (above).
 4. **`bocpd`'s hazard in clock units** (above).
+
+*Decided 2026-10-06, the user's word ("Follow your reco on all"):* (1) the
+sentence narrowed, in `ewcov.rs`'s cadence test: the cadences that refresh a
+readout count every row, the ones that act on what new rows taught count
+learned rows; (2) `micro` keeps every 100 learned rows; (3) built, task 178
+(unset is the old default, `0` every row, `max_rows_between_coefs` the row
+cap); (4) built, task 179, as a duration `hazard` applied before the row it
+leads into (a row's hazard is the chance of a break after it).
