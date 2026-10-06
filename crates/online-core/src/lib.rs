@@ -96,6 +96,7 @@ mod robust;
 mod runs;
 mod seqtest;
 mod sgd;
+mod since;
 mod solve;
 mod stats;
 mod window;
@@ -454,7 +455,16 @@ pub use window::{
 ///   loads 35. A 36 file whose `hazard` is a duration is one a 35 build
 ///   would read as a number of rows, so the version moves and a 35 build
 ///   refuses it by number.
-pub const SCHEMA_VERSION: u32 = 36;
+/// - 37 (2026-10-06, task 180): `solve_every` (`ewridge`, `lasso`, `huber`,
+///   `quantile`), `pca_every` (`ew_cov`) and `prune_every` (`micro`) are
+///   decided on the decayed clock held exactly, as `window_every` and
+///   `coef_every` are: each of those states keeps the stamp of its last
+///   solve, refresh or checkpoint, and the stamp of the last row, beside
+///   the clock summed since, where it kept that sum alone. A state of the
+///   five from before 37 does not decode, compactly or named; the bank
+///   refuses a file older than 37 by number, and pre-1.0 no loader is
+///   written. Every other model's state loads as it did at 36.
+pub const SCHEMA_VERSION: u32 = 37;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

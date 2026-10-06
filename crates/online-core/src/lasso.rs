@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::since::Since;
 use crate::solve::dot_aug;
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
@@ -63,6 +64,9 @@ pub struct LassoCfg {
     /// CA3). Empty: `min_weight` for every target.
     #[serde(default)]
     pub target_min_weight: Vec<f64>,
+    /// Solve cadence in clock units; <= 0 solves every row. Measured from
+    /// the last solve on the rows' stamps, the decayed clock held exactly,
+    /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
@@ -192,7 +196,9 @@ pub struct Lasso {
     /// argmin of `sel_err`, the first point on a tie, so the heavier
     /// penalty of two that predict alike (review 2026-10-05, CA4).
     sel_idx: Vec<usize>,
-    clock_since_solve: f64,
+    /// Where `solve_every`'s clock stands: the stamp of the last solve, the
+    /// decayed clock held exactly (docs/PLAN.md task 180).
+    since_solve: Since,
     rows_since_solve: u32,
     /// Weight learned since the last solve, for `solve_share`.
     #[serde(default)]
@@ -266,7 +272,7 @@ impl Lasso {
             sel_err: vec![vec![0.0; np]; m],
             sel_w: vec![0.0; m],
             sel_idx: vec![np - 1; m],
-            clock_since_solve: 0.0,
+            since_solve: Since::default(),
             rows_since_solve: 0,
             weight_since_solve: 0.0,
             solve_failures: 0,
@@ -681,7 +687,7 @@ impl Lasso {
         }
         self.solve_failures += unconverged;
         self.beta = Some(out);
-        self.clock_since_solve = 0.0;
+        self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
     }
@@ -696,10 +702,13 @@ impl OnlineModel for Lasso {
         self.cfg.solve_share
     }
 
+    /// The window keys the row's snapshot by its stamp (task 175), and the
+    /// solve cadence measures its clock by it (task 180).
     fn stamp_next(&mut self, stamp: crate::Stamp) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.stamp_next(stamp);
         }
+        self.since_solve.stamp_next(stamp);
     }
 
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
@@ -833,14 +842,15 @@ impl OnlineModel for Lasso {
         self.acc
             .learn(&self.zbuf, y, lam_decay, weight, self.cfg.target_gaps);
 
-        self.clock_since_solve += d_clock;
+        // The clock since the last solve, on the row's stamp (task 180).
+        self.since_solve.step(d_clock);
         self.rows_since_solve += 1;
         if weight.is_finite() && weight > 0.0 {
             self.weight_since_solve += weight;
         }
         let by_cadence = match self.cfg.solve_share {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
-            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
@@ -2345,5 +2355,30 @@ mod tests {
             over += usize::from(m.window_over_budget().is_some());
         }
         assert!(over > 0, "the ring went past its budget");
+    }
+
+    /// Task 180: `solve_every` reads the stamps its caller hands: every
+    /// 2,000th 1 ms row under 2 s after the first solve, where the clock
+    /// summed since the last solve, read when none is handed, is a row late
+    /// each time, as it always was.
+    #[test]
+    fn solve_every_measures_the_stamps_it_is_handed() {
+        use crate::OnlineModel;
+        for (stamped, want) in [(true, [0, 2000, 4000]), (false, [0, 2001, 4002])] {
+            let mut c = cfg(1, 1, vec![0.0]);
+            c.min_weight = 0.0;
+            c.solve_every = 2.0;
+            c.max_rows_between_solves = u32::MAX;
+            let mut m = Lasso::new(c).unwrap();
+            let got = crate::since::events_on_millisecond_rows(4_100, stamped, |i, stamp, d| {
+                if let Some(s) = stamp {
+                    m.stamp_next(s);
+                }
+                let x = (i % 7) as f64;
+                m.step(&[x], &[Some(1.0 + 2.0 * x)], d, 1.0);
+                m.rows_since_solve == 0
+            });
+            assert_eq!(got, want, "stamped: {stamped}");
+        }
     }
 }

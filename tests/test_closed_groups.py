@@ -789,8 +789,11 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 36 since
-    2026-10-06 (task 179: ``bocpd``'s configuration says whether its hazard
+    """The version a bank file names, held to the library's: 37 since
+    2026-10-06 (task 180: the solve, component and checkpoint cadences keep
+    the stamp of their last event, the decayed clock held exactly, where a
+    36 file keeps a summed clock; the bank refuses 36), after 36 the same
+    day (task 179: ``bocpd``'s configuration says whether its hazard
     is a duration, which a 35 build would read as a number of rows; the bank
     still loads 35), after 35 the same day (task 178: ``coef_every`` reads
     the clock, its old default ``0`` is every row, and a stream keeps where
@@ -828,7 +831,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 36
+    assert po.schema_version() == 37
     assert sys.version_info >= (3, 12)
 
 

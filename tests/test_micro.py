@@ -1023,6 +1023,46 @@ class TestTheCheckpointClock:
             tail = unnested(resumed.fit_predict(df.slice(cut)))
             assert tail.select(FIELDS).equals(whole.select(FIELDS).slice(cut)), cut
 
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_millisecond_rows_checkpoint_on_the_exact_clock(self, unit):
+        """Task 180: two thousand steps of 1 ms summed in doubles are
+        1.9999999999998905 s, so ``prune_every="2s"`` checkpointed a row
+        late, and every checkpoint after it a row later again. The cadence is
+        decided on the decayed clock held exactly: a checkpoint at the first
+        row whose instant is two seconds past the last's, the first row's at
+        the start, from the raw nanoseconds -- every 2,000th row, in every
+        unit. Each row opens a summary of its own (``eps`` is tiny), none is
+        evicted, and a checkpoint prunes the faded ones, so it shows as a
+        fall in ``n_micro`` from a row to the next."""
+        n = 6_100
+        ns = 1_704_067_200_000_000_000 + np.arange(n, dtype=np.int64) * 1_000_000
+        X = np.random.default_rng(9).standard_normal((n, 2))
+        df = pl.DataFrame(
+            {
+                "ts": pl.Series(ns).cast(pl.Datetime("ns")).cast(pl.Datetime(unit)),
+                "x0": X[:, 0],
+                "x1": X[:, 1],
+            }
+        )
+        s = spec(
+            eps=1e-6,
+            max_clusters=6_000,
+            clock="ts",
+            half_life="50ms",
+            gap_cap="1h",
+            min_weight=0.0,
+            prune_every="2s",
+        )
+        live = unnested(po.ModelBank([s]).fit_predict(df))["n_micro"].to_list()
+        got = [t for t in range(n - 1) if live[t + 1] < live[t]]
+        want, last = [], 0
+        for t in range(1, n - 1):
+            if int(ns[t]) - int(ns[last]) >= 2_000_000_000:
+                want.append(t)
+                last = t
+        assert got == want
+        assert want == [2_000, 4_000, 6_000]
+
     def test_the_state_exports_to_json_under_every_schedule(self):
         """The default's clock cadence is infinite, which serde_json writes
         as null and cannot read back without the tag (task 163)."""

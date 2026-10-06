@@ -58,6 +58,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::since::Since;
 use crate::solve::{SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
@@ -120,7 +121,9 @@ pub struct EwRidgeCfg {
     pub long_half_life: Option<f64>,
     /// Outputs are null until `n_eff` (before the row's update) reaches this.
     pub min_weight: f64,
-    /// Solve cadence in clock units; <= 0 solves every row.
+    /// Solve cadence in clock units; <= 0 solves every row. Measured from
+    /// the last solve on the rows' stamps, the decayed clock held exactly,
+    /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
     pub solve_every: f64,
     /// Row cap between solves; 1 solves every row.
     pub max_rows_between_solves: u32,
@@ -364,7 +367,9 @@ pub struct EwRidge {
     /// `long_half_life`, representing the long-run relationship.
     #[serde(default)]
     slow: Option<Box<Acc>>,
-    clock_since_solve: f64,
+    /// Where `solve_every`'s clock stands: the stamp of the last solve, the
+    /// decayed clock held exactly (docs/PLAN.md task 180).
+    since_solve: Since,
     rows_since_solve: u32,
     /// Weight learned since the last solve, for `solve_share`.
     #[serde(default)]
@@ -464,7 +469,7 @@ impl EwRidge {
             wsig: vec![0.0; m],
             sig2: vec![0.0; m],
             beta: None,
-            clock_since_solve: 0.0,
+            since_solve: Since::default(),
             rows_since_solve: 0,
             weight_since_solve: 0.0,
             solve_failures: 0,
@@ -718,7 +723,7 @@ impl EwRidge {
             self.beta = Some(vec![vec![f64::NAN; k_total]; m * nc]);
             self.ready = ready;
             self.factors = Factors(factors);
-            self.clock_since_solve = 0.0;
+            self.since_solve.restart();
             self.rows_since_solve = 0;
             self.weight_since_solve = 0.0;
             return;
@@ -951,7 +956,7 @@ impl EwRidge {
         self.beta = Some(beta);
         self.ready = ready;
         self.factors = Factors(factors);
-        self.clock_since_solve = 0.0;
+        self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
     }
@@ -1620,10 +1625,13 @@ impl OnlineModel for EwRidge {
         self.cfg.solve_share
     }
 
+    /// The window keys the row's snapshot by its stamp (task 175), and the
+    /// solve cadence measures its clock by it (task 180).
     fn stamp_next(&mut self, stamp: crate::Stamp) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.stamp_next(stamp);
         }
+        self.since_solve.stamp_next(stamp);
     }
 
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
@@ -1798,14 +1806,15 @@ impl OnlineModel for EwRidge {
         self.acc.learn(&self.zbuf, y, lam, weight, gaps);
 
         // ---- solve schedule ----
-        self.clock_since_solve += d_clock;
+        // The clock since the last solve, on the row's stamp (task 180).
+        self.since_solve.step(d_clock);
         self.rows_since_solve += 1;
         if weight.is_finite() && weight > 0.0 {
             self.weight_since_solve += weight;
         }
         let by_cadence = match self.cfg.solve_share {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
-            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves

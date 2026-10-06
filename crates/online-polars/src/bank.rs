@@ -65,7 +65,7 @@ impl std::fmt::Display for GroupKey {
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable; a
 /// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
-/// as every file written before schema 34 is. Version 3 lets a spec
+/// as every file written before schema 37 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -118,8 +118,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// **35 since task 178** (the same day): `coef_every` reads the clock, where a
 /// 34 file's spec counted rows with it and wrote `0` for its default, which
 /// now means every row; and a stream keeps where its `coef` cadence stands.
-/// A 34 file is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 35;
+/// A 34 file is refit. **37 since task 180** (the same day): the solve,
+/// component and checkpoint cadences of `ewridge`, `lasso`, `huber`,
+/// `quantile`, `ew_cov` and `micro` keep the stamp of their last event,
+/// where a 36 file's keep a summed clock, so a 36 file holding one would
+/// not decode; it is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 37;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

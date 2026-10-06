@@ -24,6 +24,7 @@
 //! uncentered normal equations).
 
 use crate::Runs;
+use crate::since::Since;
 use serde::{Deserialize, Serialize};
 
 /// Is a centered variance large enough to standardize by, given the raw second
@@ -1182,7 +1183,9 @@ pub struct EwCovCfg {
     /// row, and `inf` never by the clock, leaving `max_rows_between_pca`
     /// the cadence. The clock is the one the model is stepped on, so a gap
     /// capped at `gap_cap` counts as the cap, a row of weight zero advances
-    /// it, and without a clock column it is the row index. Between
+    /// it, and without a clock column it is the row index; it is measured
+    /// from the last refresh on the rows' stamps, the decayed clock held
+    /// exactly, where the caller hands them (task 180). Between
     /// refreshes the loadings are frozen, so a row's scores do not depend
     /// on how the stream was chunked. Infinite under a row cap alone, which
     /// a JSON export writes as a tag (`crate::humanfloat`), where serde_json
@@ -1489,9 +1492,9 @@ pub struct EwCovModel {
     /// Rows stepped since the last refresh, rows of weight zero included.
     #[serde(default)]
     rows_since_pca: usize,
-    /// Clock units stepped since the last refresh (docs/PLAN.md task 161).
-    #[serde(default)]
-    clock_since_pca: f64,
+    /// Where `pca_every`'s clock stands (docs/PLAN.md task 161): the stamp
+    /// of the last refresh, the decayed clock held exactly (task 180).
+    since_pca: Since,
     /// Lagged cross-moments, when the spec asks for lags (E56). Written as
     /// `nil` when absent: the compact encoding is positional, so at most one
     /// field may be skipped and it must be the last, which is `win`. With
@@ -1550,7 +1553,7 @@ impl EwCovModel {
             mahal_q,
             pca: None,
             rows_since_pca: 0,
-            clock_since_pca: 0.0,
+            since_pca: Since::default(),
             lag,
             win: match cfg_window {
                 Some(w) => Some(Windowed {
@@ -1679,7 +1682,7 @@ impl EwCovModel {
             self.pca = Some(p);
         }
         self.rows_since_pca = 0;
-        self.clock_since_pca = 0.0;
+        self.since_pca.restart();
     }
 
     /// The accumulator itself, for callers that want the whole matrix rather
@@ -1914,9 +1917,15 @@ impl EwCovModel {
 }
 
 impl crate::OnlineModel for EwCovModel {
+    /// The window keys the row's snapshot by its stamp (task 175), and the
+    /// components' cadence measures its clock by it (task 180), only when
+    /// there are components: without, the cadence never moves.
     fn stamp_next(&mut self, stamp: crate::Stamp) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.stamp_next(stamp);
+        }
+        if self.cfg.pca > 0 {
+            self.since_pca.stamp_next(stamp);
         }
     }
 
@@ -1998,10 +2007,11 @@ impl crate::OnlineModel for EwCovModel {
             // zero included -- the rule the window's snapshots keep (review
             // 2026-09-26, C7; review 2026-10-05, CB3) -- so the components a
             // row is scored on never depend on the chunking and `predict`
-            // sees the same frozen ones `step` does.
+            // sees the same frozen ones `step` does. The clock is measured on
+            // the row's stamp (task 180).
             self.rows_since_pca += 1;
-            self.clock_since_pca += d_clock;
-            let by_clock = self.cfg.pca_every <= 0.0 || self.clock_since_pca >= self.cfg.pca_every;
+            self.since_pca.step(d_clock);
+            let by_clock = self.cfg.pca_every <= 0.0 || self.since_pca.reached(self.cfg.pca_every);
             let by_rows = self.rows_since_pca >= self.cfg.max_rows_between_pca as usize;
             if self.n_eff() >= self.cfg.min_weight && (self.pca.is_none() || by_clock || by_rows) {
                 self.refresh_pca();
@@ -3328,7 +3338,7 @@ mod tests {
         let (mut want, mut mid) = (Vec::new(), Vec::new());
         for (x, d) in &rows {
             want.push(crate::OnlineModel::step(&mut a, x, &[], *d, 1.0).pred);
-            mid.push(a.clock_since_pca > 0.0);
+            mid.push(a.since_pca.summed() > 0.0);
         }
         // Each cut where the run is between refreshes, so there is a clock
         // since the last to keep.
@@ -3340,7 +3350,7 @@ mod tests {
             let mut b = EwCovModel::new(c.clone()).unwrap();
             for (i, (x, d)) in rows.iter().enumerate() {
                 if i == cut {
-                    assert!(b.clock_since_pca > 0.0, "cut {cut}: nothing to keep");
+                    assert!(b.since_pca.summed() > 0.0, "cut {cut}: nothing to keep");
                     let bytes = rmp_serde::to_vec(&b).unwrap();
                     b = rmp_serde::from_slice(&bytes).unwrap();
                 }
@@ -5059,7 +5069,9 @@ mod tests {
     }
 
     /// A model without components keeps no component counter in its state
-    /// (task 158).
+    /// (task 158), and takes no stamp for one (task 180): a stamp left
+    /// waiting would part the model from its own restored copy, which holds
+    /// none.
     #[test]
     fn a_model_without_components_counts_no_refreshes() {
         use crate::OnlineModel;
@@ -5067,9 +5079,11 @@ mod tests {
         c.min_weight = 10.0;
         let mut m = EwCovModel::new(c).unwrap();
         for i in 0..5 {
+            m.stamp_next(crate::Stamp::Ns(i128::from(i) * 1_000_000_000));
             m.step(&[1.0, f64::from(i)], &[], 1.0, 1.0);
         }
-        assert_eq!((m.rows_since_pca, m.clock_since_pca), (0, 0.0));
+        assert_eq!(m.rows_since_pca, 0);
+        assert_eq!(m.since_pca, Since::default());
     }
 
     /// A state with components loads when they are its cfg's (here `k = 3`

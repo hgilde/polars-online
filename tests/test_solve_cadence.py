@@ -106,3 +106,62 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
     assert model["cfg"]["solve_share"] == pytest.approx(math.log(2) / 50, rel=1e-12)
     gaps = set(np.diff(solved).tolist())
     assert len(solved) >= 18 and gaps <= {10, 11}, gaps
+
+
+#: Nanoseconds since the Unix epoch of 2024-01-01T00:00:00.
+T0_NS = 1_704_067_200_000_000_000
+
+
+def millisecond_rows(n: int, unit: str) -> tuple[pl.DataFrame, np.ndarray]:
+    """``n`` rows 1 ms apart on a ``Datetime`` clock in ``unit``, with a
+    feature and a target, and the same instants in integer nanoseconds."""
+    ns = T0_NS + np.arange(n, dtype=np.int64) * 1_000_000
+    rng = np.random.default_rng(7)
+    x = rng.standard_normal(n)
+    clock = pl.Series("t", ns).cast(pl.Datetime("ns")).cast(pl.Datetime(unit))
+    return pl.DataFrame({"t": clock, "x0": x, "y": 2.0 * x + rng.standard_normal(n)}), ns
+
+
+def solves(out: pl.DataFrame) -> list[int]:
+    """The rows a solve happened at: where ``coef``, written on every row,
+    changes (a row's ``coef`` is the fit after it)."""
+    coef = out["m"].struct.field("coef").to_list()
+    return [i for i, c in enumerate(coef) if c is not None and (i == 0 or c != coef[i - 1])]
+
+
+def on_the_clock(first: int, ns: np.ndarray, span_ns: int) -> list[int]:
+    """The definition over the raw nanoseconds: after the first solve, each
+    at the first row whose instant is at least ``span_ns`` past the last
+    solve's."""
+    rows, last = [first], first
+    for i in range(first + 1, len(ns)):
+        if int(ns[i]) - int(ns[last]) >= span_ns:
+            rows.append(i)
+            last = i
+    return rows
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+def test_a_clock_cadence_is_decided_on_the_exact_clock(model, extra, unit):
+    """Task 180: two thousand steps of 1 ms summed in doubles are
+    1.9999999999998905 s, so ``solve_every="2s"`` solved a row late, and
+    every solve after it a row later again. The cadence is now decided on
+    the decayed clock held exactly, so the solves fall every 2,000th row, as
+    the raw nanoseconds say, in every unit."""
+    df, ns = millisecond_rows(6_100, unit)
+    spec = getattr(po.spec, model)(
+        "m",
+        targets=["y"],
+        features=["x0"],
+        clock="t",
+        gap_cap="1h",
+        half_life="inf",
+        min_weight=0.0,
+        solve_every="2s",
+        coef_every=0,
+        **extra,
+    )
+    got = solves(po.ModelBank([spec]).fit_predict(df))
+    assert got == on_the_clock(got[0], ns, 2_000_000_000)
+    assert np.diff(got).tolist() == [2_000] * 3, got

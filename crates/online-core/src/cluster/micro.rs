@@ -96,6 +96,7 @@ use serde::{Deserialize, Serialize};
 use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, dist, dist2, merged_radius2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::since::Since;
 
 /// Configuration for [`Micro`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,8 +116,10 @@ pub struct MicroCfg {
     /// `inf` never by the clock. DenStream checks every `Tp` clock units
     /// (the module docs). A row of weight zero advances the clock, so a quiet
     /// spell still checkpoints, and a gap capped at `gap_cap` counts as the
-    /// cap. Infinite under the row cap alone, the default, which a JSON
-    /// export writes as a tag (`crate::humanfloat`).
+    /// cap; it is measured from the last checkpoint on the rows' stamps, the
+    /// decayed clock held exactly, where the caller hands them (task 180).
+    /// Infinite under the row cap alone, the default, which a JSON export
+    /// writes as a tag (`crate::humanfloat`).
     #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub prune_every: f64,
     /// At most this many learned rows between checkpoints, `u32::MAX` for
@@ -230,8 +233,9 @@ pub struct Micro {
     next_id: u64,
     /// Learned rows since the last checkpoint.
     rows_since_prune: u32,
-    /// Clock units since the last checkpoint (docs/PLAN.md task 163).
-    clock_since_prune: f64,
+    /// Where `prune_every`'s clock stands (docs/PLAN.md task 163): the stamp
+    /// of the last checkpoint, the decayed clock held exactly (task 180).
+    since_prune: Since,
     /// Distinct labels among the potential summaries.
     n_clusters: usize,
     /// The linkage threshold² in force, from the last checkpoint.
@@ -264,7 +268,7 @@ impl Micro {
             mc: Vec::new(),
             next_id: 0,
             rows_since_prune: 0,
-            clock_since_prune: 0.0,
+            since_prune: Since::default(),
             n_clusters: 0,
             link2,
             n_evicted: 0,
@@ -642,6 +646,12 @@ impl Micro {
 }
 
 impl OnlineModel for Micro {
+    /// The checkpoint's cadence measures its clock by the row's stamp (task
+    /// 180).
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        self.since_prune.stamp_next(stamp);
+    }
+
     fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.moments.w;
@@ -672,13 +682,15 @@ impl OnlineModel for Micro {
         // first (task 163). The clock passes on every row, so a quiet spell
         // prunes on time, where the learned rows alone waited for the next
         // learned row; it runs where it did, after the row and before the
-        // metric for the next one.
-        self.clock_since_prune += d_clock;
-        if self.clock_since_prune >= self.cfg.prune_every
+        // metric for the next one. The clock is the row's stamp (task 180),
+        // and `0` checkpoints on every row whatever the stamps say.
+        self.since_prune.step(d_clock);
+        if self.cfg.prune_every <= 0.0
+            || self.since_prune.reached(self.cfg.prune_every)
             || self.rows_since_prune >= self.cfg.max_rows_between_prunes
         {
             self.rows_since_prune = 0;
-            self.clock_since_prune = 0.0;
+            self.since_prune.restart();
             self.checkpoint();
         }
         self.moments
@@ -827,10 +839,10 @@ mod tests {
             .unwrap();
             let mut got = Vec::new();
             for (i, (x, d, w)) in rows.iter().enumerate() {
-                let before = (m.rows_since_prune, m.clock_since_prune);
+                let before = (m.rows_since_prune, m.since_prune.summed());
                 crate::OnlineModel::step(&mut m, x, &[], *d, *w);
                 let moved = before.0 + u32::from(*w > 0.0) > 0 || before.1 + d > 0.0;
-                if moved && (m.rows_since_prune, m.clock_since_prune) == (0, 0.0) {
+                if moved && (m.rows_since_prune, m.since_prune.summed()) == (0, 0.0) {
                     got.push(i);
                 }
             }
@@ -885,6 +897,32 @@ mod tests {
         assert_eq!(left, 0, "the clock prunes the faded summaries");
     }
 
+    /// Task 180: `prune_every` reads the stamps its caller hands: every
+    /// 2,000th 1 ms row under 2 s, the clock running from the first row,
+    /// where the clock summed since the last checkpoint, read when none is
+    /// handed, is a row late each time, as it always was. Every row is
+    /// learned, so the learned rows since the last are none only there.
+    #[test]
+    fn prune_every_measures_the_stamps_it_is_handed() {
+        for (stamped, want) in [(true, [2000, 4000]), (false, [2001, 4002])] {
+            let mut m = Micro::new(MicroCfg {
+                prune_every: 2.0,
+                max_rows_between_prunes: u32::MAX,
+                ..cfg()
+            })
+            .unwrap();
+            let mut g = crate::SplitMix64::new(6);
+            let got = crate::since::events_on_millisecond_rows(4_100, stamped, |_, stamp, d| {
+                if let Some(s) = stamp {
+                    crate::OnlineModel::stamp_next(&mut m, s);
+                }
+                crate::OnlineModel::step(&mut m, &[g.uniform(), g.uniform()], &[], d, 1.0);
+                m.rows_since_prune == 0
+            });
+            assert_eq!(got, want, "stamped: {stamped}");
+        }
+    }
+
     /// A save between checkpoints keeps the clock and the learned rows since
     /// the last, so a resumed run checkpoints where the unbroken one does
     /// (task 163).
@@ -907,7 +945,7 @@ mod tests {
         let (mut want, mut mid) = (Vec::new(), Vec::new());
         for (x, d, w) in &rows {
             want.push(crate::OnlineModel::step(&mut a, x, &[], *d, *w).pred);
-            mid.push(a.clock_since_prune > 0.0);
+            mid.push(a.since_prune.summed() > 0.0);
         }
         let cuts: Vec<usize> = [10, 37, 61]
             .iter()

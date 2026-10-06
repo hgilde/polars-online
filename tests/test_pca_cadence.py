@@ -183,6 +183,28 @@ class TestTheSchedule:
         out = run(s, frame(steps))
         assert set(np.diff(observed(out))) == {7}
 
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_millisecond_rows_refresh_on_the_exact_clock(self, unit):
+        """Task 180: two thousand steps of 1 ms summed in doubles are
+        1.9999999999998905 s, so ``pca_every="2s"`` refreshed a row late,
+        and every refresh after it a row later again. The cadence is decided
+        on the decayed clock held exactly: after the first refresh, one at
+        the first row whose instant is two seconds past the last's, from the
+        raw nanoseconds -- every 2,000th row, in every unit."""
+        n = 6_100
+        ns = 1_704_067_200_000_000_000 + np.arange(n, dtype=np.int64) * 1_000_000
+        df = frame(np.zeros(n)).with_columns(
+            pl.Series("ts", ns).cast(pl.Datetime("ns")).cast(pl.Datetime(unit))
+        )
+        got = observed(run(spec(pca_every="2s"), df))
+        want, last = [got[0]], got[0]
+        for t in range(last + 1, n - 1):
+            if int(ns[t]) - int(ns[last]) >= 2_000_000_000:
+                want.append(t)
+                last = t
+        assert got == want
+        assert np.diff(got).tolist() == [2_000] * 3, got
+
     def test_a_number_clock_counts_its_own_units(self):
         steps = irregular()
         s = po.spec.ew_cov(

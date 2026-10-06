@@ -104,6 +104,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::since::Since;
 use crate::solve::{QuadWork, dot_aug};
 use crate::{Decay, EwCov, SpdFactor};
 
@@ -126,6 +127,9 @@ pub struct RobustCfg {
     pub ridge: f64,
     pub standardize: bool,
     pub min_weight: f64,
+    /// Solve cadence in clock units; <= 0 solves every row. Measured from
+    /// the last solve on the rows' stamps, the decayed clock held exactly,
+    /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
@@ -310,7 +314,9 @@ pub struct Robust {
     /// counting them inflated `n_eff` by ~1000x -- T-A5.)
     w_raw: f64,
     beta: Option<Vec<Vec<f64>>>,
-    clock_since_solve: f64,
+    /// Where `solve_every`'s clock stands: the stamp of the last solve, the
+    /// decayed clock held exactly (docs/PLAN.md task 180).
+    since_solve: Since,
     rows_since_solve: u32,
     /// Weight learned since the last solve, for `solve_share`.
     #[serde(default)]
@@ -381,7 +387,7 @@ impl Robust {
             wsig: vec![0.0; m],
             w_raw: 0.0,
             beta: None,
-            clock_since_solve: 0.0,
+            since_solve: Since::default(),
             rows_since_solve: 0,
             weight_since_solve: 0.0,
             solve_failures: 0,
@@ -528,7 +534,7 @@ impl Robust {
             }
         }
         self.beta = Some(beta);
-        self.clock_since_solve = 0.0;
+        self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
     }
@@ -887,6 +893,11 @@ impl OnlineModel for Robust {
         self.cfg.solve_share
     }
 
+    /// The solve cadence measures its clock by the row's stamp (task 180).
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        self.since_solve.stamp_next(stamp);
+    }
+
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
         out.extend_from_slice(&self.wobs);
@@ -915,14 +926,15 @@ impl OnlineModel for Robust {
         // it reads nothing they move, and a band row whose system the solve
         // at the end of the row rebuilds need not move it first (task 170) ----
         self.w_raw = lam * self.w_raw + weight;
-        self.clock_since_solve += d_clock;
+        // The clock since the last solve, on the row's stamp (task 180).
+        self.since_solve.step(d_clock);
         self.rows_since_solve += 1;
         if weight.is_finite() && weight > 0.0 {
             self.weight_since_solve += weight;
         }
         let by_cadence = match self.cfg.solve_share {
             Some(share) => self.weight_since_solve >= share * self.w_raw,
-            None => self.cfg.solve_every <= 0.0 || self.clock_since_solve >= self.cfg.solve_every,
+            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
@@ -2296,6 +2308,37 @@ mod tests {
         c.max_rows_between_solves = 4;
         let mut m = Robust::new(c).unwrap();
         assert_eq!(solve_rows(&mut m, 20), [1, 5, 9, 13, 17]);
+    }
+
+    /// Task 180: `solve_every` reads the stamps its caller hands, for both
+    /// losses: every 2,000th 1 ms row under 2 s after the first solve, where
+    /// the clock summed since the last solve, read when none is handed, is
+    /// a row late each time, as it always was.
+    #[test]
+    fn solve_every_measures_the_stamps_it_is_handed() {
+        let losses = [
+            RobustLoss::Huber { delta: 1.0 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ];
+        for loss in losses {
+            for (stamped, want) in [(true, [0, 2000, 4000]), (false, [0, 2001, 4002])] {
+                let mut c = cfg(1, 1, loss);
+                c.min_weight = 0.0;
+                c.solve_every = 2.0;
+                c.max_rows_between_solves = u32::MAX;
+                let mut m = Robust::new(c).unwrap();
+                let got =
+                    crate::since::events_on_millisecond_rows(4_100, stamped, |i, stamp, d| {
+                        if let Some(s) = stamp {
+                            m.stamp_next(s);
+                        }
+                        let x = (i % 7) as f64;
+                        m.step(&[x], &[Some(1.0 + 2.0 * x)], d, 1.0);
+                        m.rows_since_solve == 0
+                    });
+                assert_eq!(got, want, "{loss:?}, stamped: {stamped}");
+            }
+        }
     }
 
     /// The share cadence, set as the spec sets it (`set_solve_share`, after

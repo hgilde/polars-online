@@ -4224,3 +4224,27 @@ fn the_window_shadow_follows_the_ring() {
     }
     assert!(over > 0, "the ring went past its budget");
 }
+
+/// Task 180: `solve_every` reads the stamps its caller hands. On 1 ms rows
+/// under 2 s it solves every 2,000th row after the first, as the stamps'
+/// nanoseconds say; handed none, it reads the clock summed since the last
+/// solve, which is a row late each time, as it always was.
+#[test]
+fn solve_every_measures_the_stamps_it_is_handed() {
+    for (stamped, want) in [(true, [0, 2000, 4000]), (false, [0, 2001, 4002])] {
+        let mut c = cfg(1, 1);
+        c.min_weight = 0.0;
+        c.solve_every = 2.0;
+        c.max_rows_between_solves = u32::MAX;
+        let mut m = EwRidge::new(c).unwrap();
+        let got = crate::since::events_on_millisecond_rows(4_100, stamped, |i, stamp, d| {
+            if let Some(s) = stamp {
+                m.stamp_next(s);
+            }
+            let x = (i % 7) as f64;
+            m.step(&[x], &[Some(1.0 + 2.0 * x)], d, 1.0);
+            m.rows_since_solve == 0
+        });
+        assert_eq!(got, want, "stamped: {stamped}");
+    }
+}
