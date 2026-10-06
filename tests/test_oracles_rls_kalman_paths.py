@@ -34,8 +34,9 @@ MAX_DCLOCK = 6.0
 
 # Measured over the cases below as |got - expected| / (1 + |expected|): rls
 # pred 5.8e-15, resid 2.1e-14, weight_sum 2.4e-15, coef 1.1e-14; kalman pred
-# 4.9e-15, weight_sum exact. The tolerance is 100x the largest, rounded up to a
-# power of ten.
+# 6.1e-15 (task 172's noise and prior from the data; 4.9e-15 before them),
+# weight_sum exact. The tolerance is 100x the largest, rounded up to a power of
+# ten.
 #
 # Seeded into a copy of rls_paths_ref: each target learned where it is
 # present (in place of the any-null rule) moves pred by 2.6-4.0; a prior

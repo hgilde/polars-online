@@ -915,19 +915,24 @@ const GOLDEN_HUBER_ORIGIN_STD: &[f64] = &[
     1.924195894463372,
     -0.31922560537078165,
 ];
-const GOLDEN_KALMAN_PLAIN: &[f64] = &[0.23992705127794417, 2.216447265582766, -0.06980999429287246];
+// The three `kalman` signatures, regenerated 2026-10-06 (review 2026-10-05,
+// CC4): before a target's first residual its noise is the row's innovation
+// squared, where it was the literal 1, and its prior variance is `p0` times
+// that first noise, where it was `p0` in the target's units. Each matches
+// `tests/reference.py`'s `kalman_ref`, with the same rules, on this stream to
+// 1.3e-14; the old values matched the old `kalman_ref` to 6.3e-16.
+const GOLDEN_KALMAN_PLAIN: &[f64] = &[0.2534302289666238, 2.226426987212936, -0.05944106082324331];
 const GOLDEN_RLS: &[f64] = &[
     0.24355619170018697,
     2.1844587322364037,
     -0.06708586579330882,
 ];
 const GOLDEN_KALMAN: &[f64] = &[
-    -0.07791204926408624,
-    2.0961677119635134,
-    0.00626157681682938,
+    0.08051708612823805,
+    1.9517466851899055,
+    0.026207278510925018,
 ];
-const GOLDEN_KALMAN_REVERT: &[f64] =
-    &[0.19803392372898188, 1.196636583815521, 0.010856380277134052];
+const GOLDEN_KALMAN_REVERT: &[f64] = &[0.3098186122738434, 1.153918160782199, 0.028098479936384025];
 const GOLDEN_LASSO: &[f64] = &[
     0.25359037757905656,
     2.1511829817060866,

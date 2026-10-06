@@ -1555,10 +1555,13 @@ class TestKalmanZeroWeightRow:
     recursion for ``σ²``: ``predict(Q)`` on every row, ``update(y, R = σ²/w,
     H = z)`` only where there is a target and a positive weight, and ``σ²``
     the EW mean of the squared out-of-sample residuals with its weight
-    decayed on every row. Unstandardized, so ``kf.x`` is our coefficient
-    vector; ``filterpy`` updates ``P`` in Joseph form and ``kalman`` in the
-    simple form, so the two agree to rounding. The same rows with the target
-    null instead of the weight zero are the control."""
+    decayed on every row. Until ``σ²`` exists, the row's innovation squared
+    stands in for it, and ``P`` is unsized until the first row with a noise
+    sets it to ``p0 = 1`` times that noise (review 2026-10-05, CC4).
+    Unstandardized, so ``kf.x``
+    is our coefficient vector; ``filterpy`` updates ``P`` in Joseph form and
+    ``kalman`` in the simple form, so the two agree to rounding. The same
+    rows with the target null instead of the weight zero are the control."""
 
     @staticmethod
     def filterpy_pred(
@@ -1576,27 +1579,38 @@ class TestKalmanZeroWeightRow:
         n, k1 = Z.shape
         kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
         kf.x = np.zeros((k1, 1))
-        kf.P = np.eye(k1)
         kf.F = np.eye(k1)
+        sized = False
         sig2 = wsig = wj = 0.0
         pred = np.full(n, np.nan)
         for i in range(n):
             d = 0.0 if i == 0 else t[i] - t[i - 1]
             lam = 0.5 ** (d / half_life)
-            s2 = sig2 if sig2 > 0.0 else 1.0
-            # The process noise of a step d clock units long, as the
-            # docstring states it: sigma^2 * (ln 2 * d / coef_half_life)^2.
-            kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
             z = Z[i]
+            seen = not np.isnan(y[i]) and w[i] > 0.0
+            # The noise is sigma^2, and before there is one, the row's own
+            # innovation squared, before the update. None where that is 0 or
+            # the row has no innovation: no process noise and no update
+            # (review 2026-10-05, CC4).
+            first = (y[i] - z @ kf.x[:, 0]) ** 2 if seen else 0.0
+            s2 = sig2 if sig2 > 0.0 else first
+            if sized:
+                # The process noise of a step d clock units long, as the
+                # docstring states it: sigma^2 * (ln 2 * d / coef_half_life)^2.
+                kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
+            elif s2 > 0.0:
+                # The prior, p0 = 1 times the first noise, on this row.
+                kf.P, sized = np.eye(k1) * s2, True
             if wj > 0.0:
                 pred[i] = z @ kf.x[:, 0]
-            if np.isnan(y[i]) or w[i] <= 0.0:
+            if not seen:
                 # A prediction step and no update, and time passes for both
                 # weights.
                 wj *= lam
                 wsig *= lam
                 continue
-            kf.update(y[i], R=s2 / w[i], H=z[None, :])
+            if s2 > 0.0:
+                kf.update(y[i], R=s2 / w[i], H=z[None, :])
             if not np.isnan(pred[i]):
                 r = y[i] - pred[i]
                 ws_new = lam * wsig + w[i]
@@ -2719,19 +2733,27 @@ class TestAMeanRevertingKalmanIsFilterpy:
 
         r = np.broadcast_to(np.asarray(revert, dtype=float), (3,))
         kf = kalman.KalmanFilter(dim_x=3, dim_z=1)
-        kf.x, kf.P = np.zeros((3, 1)), np.eye(3)
+        kf.x = np.zeros((3, 1))
+        sized = False
         sig2 = wsig = wj = 0.0
         want = np.full(n, np.nan)
         for i in range(n):
             d = 0.0 if i == 0 else t[i] - t[i - 1]
             lam = 0.5 ** (d / half_life)
-            s2 = sig2 if sig2 > 0.0 else 1.0
             kf.F = np.diag(0.5 ** (d / r))
-            kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
             z = np.array([1.0, x[i, 0], x[i, 1]])
+            # Before there is a sigma^2, the row's innovation squared against
+            # the coefficients after the transition (CC4), which also sizes
+            # the prior, p0 = 1 times it.
+            s2 = sig2 if sig2 > 0.0 else (y[i] - z @ (kf.F @ kf.x)[:, 0]) ** 2
+            if sized:
+                kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
+            elif s2 > 0.0:
+                kf.P, sized = np.eye(3) * s2, True
             if wj > 0.0:
                 want[i] = z @ kf.x[:, 0]
-            kf.update(y[i], R=s2, H=z[None, :])
+            if s2 > 0.0:
+                kf.update(y[i], R=s2, H=z[None, :])
             if not np.isnan(want[i]):
                 res = y[i] - want[i]
                 ws_new = lam * wsig + 1.0

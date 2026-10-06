@@ -113,6 +113,39 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
+@pytest.mark.parametrize("p0", [None, 0.25])
+@pytest.mark.parametrize("share_p", [False, True])
+def test_the_targets_units_do_not_matter(share_p, p0):
+    """Review 2026-10-05, CC4. Scaling every target by ``c`` scales every
+    prediction by ``c``, at the default ``p0`` and at another. Powers of two
+    keep each operation exact, so the comparison is to the bit, nulls in the
+    same places. Before a target's first residual its noise was the literal
+    1.0, in the target's units, and its prior variance was ``p0`` in the
+    same units, so the warm-up's gains, and every prediction after them,
+    moved with them. The prior is now ``p0`` times the first noise
+    estimate."""
+    df, _ = synthetic(seed=46, n_groups=2, n_rows=200, k=3, n_targets=2, null_frac=0.05)
+
+    def preds(c: float) -> dict[str, np.ndarray]:
+        spec = _spec(
+            targets=["y0", "y1"],
+            group="group",
+            clock="t",
+            gap_cap=50.0,
+            weight="w",
+            p0=p0,
+            share_p=share_p,
+        )
+        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
+
+    base = preds(1.0)
+    assert all(np.isfinite(p).sum() > 250 for p in base.values())
+    for c in (2.0**20, 2.0**-20):
+        for t, got in preds(c).items():
+            np.testing.assert_array_equal(got, base[t] * c, err_msg=f"c = {c}, {t}")
+
+
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="coef_half_life"):
         _spec(coef_half_life=[1.0, 2.0])  # wrong length for k=3 + intercept

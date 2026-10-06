@@ -140,7 +140,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `ewridge` | every solve against scikit-learn's `Ridge` (`TestEwRidgeIsSklearnsRidge`, 20 cases), and in Rust against its closed form solved by `faer` (`every_solve_is_its_closed_form_across_targets_and_ridges`) | 1e-8, relative; 1e-9 | |
 | `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref` (`tests/test_oracles_ewridge_paths.py`), recomputing every statistic from the raw rows at each solve, as the lasso's below does | pred 1.1e-14 | |
 | `rls` | `rls ≡ ewridge(ridge_scale="sum", solve_every=1)` | <1e-9 | |
-| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 4.9e-15 | |
+| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 6.1e-15 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | `kalman` | filterpy's `KalmanFilter`, across a zero-weight row (`TestKalmanZeroWeightRow`) and with a mean-reverting transition (`TestAMeanRevertingKalmanIsFilterpy`) | 1e-9 | T-S5 |
 | `kalman` standardized, the default | filterpy's `KalmanFilter` fed the rows standardized in numpy from the documented pre-row moments (`TestAStandardizedKalmanIsFilterpy`), and `coef[t]·x[t+1] = pred[t+1]` asserted directly (review 2026-10-05, TC1) | 1e-9; 1e-12 | |
@@ -1024,8 +1024,9 @@ rather than left as a surprise. Vowpal Wabbit's `--ftrl` recomputes its
 weights after each update, as Algorithm 1 does, so the end-to-end
 comparison is with it, in `tests/test_second_opinion.py`.
 
-**T-R2.** `TestKalmanIsBayesianLinearRegression` maps `p0 = 1/alpha` and
-`obs_var = 1/beta`, and matches exactly, to 3.6e-15, across three (alpha,
+**T-R2.** `TestKalmanIsBayesianLinearRegression` maps `obs_var = 1/beta`
+and `p0 = beta/alpha`, the prior `p0 * obs_var = 1/alpha` (task 172), and
+matches exactly, to 3.6e-15, across three (alpha,
 beta) settings. It includes a guard that turning standardization on breaks
 the match, so the switch cannot silently become a no-op. The class was
 deleted in `509c6cf` and restored in task 90 (2026-09-23).

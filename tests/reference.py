@@ -565,6 +565,17 @@ def kalman_ref(
       observation precision);
     - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
       only on rows where a prediction was emitted;
+    - before a target has a ``sigma2_j`` above 0, its noise (``R`` and the
+      ``sigma2`` of ``Q``) is the row's own innovation squared, ``(y_j -
+      z' b_j) ** 2`` before the update; under ``share_p``, while the mean
+      ``sigma2`` is 0, the mean of those squares over the targets the row
+      observes. A noise of 0 (an innovation of exactly 0, or none: a null
+      target, a zero weight) corrects nothing and adds no ``Q`` from
+      ``coef_half_life`` (review 2026-10-05, CC4);
+    - ``P`` starts unsized, all zero, and takes nothing until the first row
+      with a noise sets it to ``p0`` times that noise, in place of that row's
+      ``Q``; with ``obs_var`` given it is ``p0 * obs_var * I`` from the start
+      (CC4);
     - the EW stats update last, so this row's z used the prior stats.
 
     Coefficients come back in the ORIGINAL feature units, read with the
@@ -600,7 +611,10 @@ def kalman_ref(
             "mean": np.zeros(kt),
             "raw": np.zeros((kt, kt)),
             "beta": np.zeros((m, kt)),
-            "P": [np.eye(kt) * p0 for _ in range(1 if share_p else m)],
+            "P": [
+                np.eye(kt) * (p0 * obs_var if obs_var is not None else 0.0)
+                for _ in range(1 if share_p else m)
+            ],
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "wj": np.zeros(m),
@@ -651,14 +665,32 @@ def kalman_ref(
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
 
+        # Each observed target's innovation squared, before any update: the
+        # noise before there is a residual variance (CC4). NaN where the row
+        # does not observe the target, and a square that is not finite sizes
+        # nothing.
+        seen = ~np.isnan(Y[i]) & (w[i] > 0.0)
+        e2 = np.where(seen, (Y[i] - st["beta"] @ zs) ** 2, np.nan)
+        e2 = np.where(np.isfinite(e2), e2, np.nan)
+        first_shared = float(np.nanmean(e2)) if np.isfinite(e2).any() else 0.0
+
         for j in range(m):
             pi = 0 if share_p else j
             if obs_var is not None:
                 sigma2 = obs_var
             else:
                 s2 = st["sig2"].mean() if share_p else st["sig2"][j]
-                sigma2 = s2 if s2 > 0.0 else 1.0
-            if (not share_p) or j == 0:
+                if s2 > 0.0:
+                    sigma2 = s2
+                elif share_p:
+                    sigma2 = first_shared
+                else:
+                    sigma2 = e2[j] if np.isfinite(e2[j]) else 0.0
+            if ((not share_p) or j == 0) and not np.diag(st["P"][pi]).any():
+                # Unsized: the first row with a noise sizes the prior.
+                if sigma2 > 0.0:
+                    st["P"][pi] = np.eye(kt) * (p0 * sigma2)
+            elif (not share_p) or j == 0:
                 qv = (
                     np.asarray(q, dtype=float)
                     if q is not None
@@ -673,7 +705,7 @@ def kalman_ref(
                 continue
             pz = st["P"][pi] @ zs
             s_inn = zs @ pz + sigma2 / w[i]
-            if s_inn > 0.0:
+            if sigma2 > 0.0 and s_inn > 0.0:
                 gain = pz / s_inn
                 err = Y[i, j] - zs @ st["beta"][j]
                 st["beta"][j] = st["beta"][j] + gain * err

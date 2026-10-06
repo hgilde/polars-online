@@ -2732,6 +2732,21 @@ s   = zᵀP_j z + R_j/w                   K   = P_j z / s
 A row's weight scales its observation's precision: the rule divides `R_j`
 by `w`, so with a fixed `obs_var=` the observation's variance is
 `obs_var / w`.
+
+**Until a target has a residual variance, each row takes its noise from
+its own innovation:** `R_j = (y_j − zᵀβ_j)²`, computed before the update,
+so the prediction stays out of sample. The process noise reads the same
+number. The residual variance starts at the target's first prediction. A
+row whose innovation is exactly 0 says nothing about the size of the noise,
+and changes nothing.
+
+**The prior variance comes from the first noise estimate:** the first row
+with a noise sets `P_j = p0·R_j·I` before its correction. So `p0` is a
+multiple of that noise, and the default `p0=1` gives a prior as uncertain
+as one observation. Since both the noise and the prior come from the data,
+the warm-up does not depend on the target's units. With a fixed
+`obs_var=`, the prior is `p0·obs_var·I` from the start.
+
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -2741,7 +2756,7 @@ revert = po.spec.kalman(
     coef_half_life=100.0,              # required: how fast a coefficient may drift
     revert_half_life=[float("inf"), 50.0, 50.0],   # inf leaves the intercept alone; the slopes revert at 50
     standardize=True,                  # the default
-    p0=1.0,                            # the default: P starts at p0 * I
+    p0=1.0,                            # the default: the prior variance is p0 times the first noise estimate
     share_p=False,                     # the default: one P per target; True keeps one for all, driven by their mean σ²
 )
 fit = po.ModelBank([revert]).fit_predict(df)

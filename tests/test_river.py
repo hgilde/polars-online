@@ -436,9 +436,10 @@ class TestKalmanIsBayesianLinearRegression:
     filter *is* a Bayesian linear regression, and river implements the same
     recursion independently (Bishop 3.51 via Sherman-Morrison).
 
-    The mapping: river's `alpha` is the prior precision, so `p0 = 1/alpha`;
-    river's `beta` is the observation precision, so `obs_var = 1/beta`. river
-    has no intercept, hence `fit_intercept=False`.
+    The mapping: river's `beta` is the observation precision, so
+    `obs_var = 1/beta`; its `alpha` is the prior precision, and our prior is
+    `p0` times the noise, `p0 * obs_var` (review 2026-10-05, CC4), so
+    `p0 = beta/alpha`. river has no intercept, hence `fit_intercept=False`.
 
     Unblocked by ENHANCEMENTS E19 (the `standardize` switch); before it, the
     filter always standardized internally and the correspondence was only
@@ -461,7 +462,7 @@ class TestKalmanIsBayesianLinearRegression:
             coef_half_life=float("inf"),
             q=[0.0, 0.0],
             obs_var=1.0 / beta,
-            p0=1.0 / alpha,
+            p0=beta / alpha,
             standardize=False,
             half_life=float("inf"),
             min_weight=0.0,

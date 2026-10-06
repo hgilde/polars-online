@@ -1584,6 +1584,17 @@ def kalman(
     included. Such a row, and a row whose target is null, ages the target's weight
     the same way and learns nothing for it.
 
+    Until a target has a residual variance, each row takes its noise from its own
+    innovation, ``R_j = (y_j - z' b_j) ** 2``, computed before the update, so the
+    prediction stays out of sample. The process noise from ``coef_half_life``
+    reads the same number. The residual variance starts at the target's first
+    prediction. A row whose innovation is exactly 0 says nothing about the size
+    of the noise, and changes nothing. Under ``share_p``, until some target has a
+    residual variance, the noise is the mean of the squared innovations of the
+    targets the row observes. The prior is sized from the same first noise
+    (``p0`` below), so the filter never sees the target's units: scaling a
+    target by ``c`` scales its predictions by ``c``.
+
     .. rubric:: Parameters
 
     ``coef_half_life``
@@ -1601,7 +1612,13 @@ def kalman(
     ``obs_var``
         A fixed observation noise, in place of the EW residual variance.
     ``p0``
-        The initial coefficient covariance, ``P_0 = p0 * I``. Default 1.0.
+        The prior variance of each coefficient, as a multiple of the noise:
+        ``P_0 = p0 * R * I``, set on the target's first row with a noise, from
+        that row's noise, before its correction. Until then ``P`` is unsized,
+        and no process noise is added to it. Default 1.0, a prior as uncertain
+        as one observation. With ``obs_var`` given, ``P_0 = p0 * obs_var * I``
+        from the start, and with no process noise the filter is the ridge
+        regression with penalty ``1 / p0``.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
