@@ -14,6 +14,18 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Added
 
+- **`bocpd`'s hazard can be a duration** (task 179): on a temporal clock,
+  `hazard="1h"` is the expected time between changepoints. The step `d`
+  into each row carries the chance `1 − exp(−d/τ)` of a break, computed as
+  `-expm1(-d/τ)` and applied before the row is read, on the decayed clock
+  (a gap past `gap_cap` counts as the cap). Under it `p_change` is the
+  chance that the row began a run, a row whose step is 0 reports 0, and a
+  row of weight 0 applies its step's chance and learns nothing: two steps
+  with nothing learned between them give the posterior one step of their
+  sum. A duration is refused without a temporal clock, beside plain-number
+  clock parameters, at 0 or below, and beside `hazard_col`. A number keeps
+  its per-row meaning on any spec, bit for bit. `hazard_col`'s value at a
+  row is the chance of a break after that row, as its docs now say.
 - **Window operators, as Polars expressions** (tasks 78, 143 and 144):
   `po.ewm_mean`, `po.rewm_mean`, `po.ewm_sum`, `po.rewm_sum`, `po.ewm_rate`,
   `po.rewm_rate` and `po.increment` each return a `pl.Expr`. The
@@ -144,7 +156,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 35,
+- **Every saved bank must be refit.** A bank file now carries schema 36,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Nine changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -155,7 +167,8 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   model window keys its snapshots by (task 175), `quantile`'s band factor
   (task 170), the elapsed clock an embargo's held rows are measured on
   (task 176), and where each stream's `coef` cadence stands (task 178). An
-  `ew_cov` state with `mahal_quantiles` is refused too.
+  `ew_cov` state with `mahal_quantiles` is refused too. Schema 36 (task
+  179's duration `hazard`) still loads a 35 file.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -562,6 +575,12 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`bocpd`'s `gaussian` emission refuses a row whose feature is NaN**
+  (task 179), as its other emission does. It learned such a row, read
+  through a quadratic form that clamps with `max(0.0)` -- which turns NaN
+  into 0, as on every run's mean -- and every learned row after it was a
+  solve failure. Reachable only through the Rust API: the bank passes no
+  NaN feature.
 - **An `embargo` is decided on the elapsed clock held exactly** (task 176;
   found by task 175's worker). The countdown subtracted each row's elapsed
   time from the embargo in doubles, so it drifted both ways: on rows 1 ms

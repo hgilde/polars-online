@@ -7924,6 +7924,33 @@ tick, and that the series holding it up has a count near 1.
       unlike the core on rows of weight 0 (S13, N6, CC5; 4.6e-2 off on such
       a stream, now 5e-15), and `kalman_ref` on a row with no prediction
       (N6; 1.75e-3, now 1e-15). No pinned value moved.
+- [x] 179. **`bocpd`'s hazard takes a duration, applied before the row it
+      leads into -- requested 2026-10-06.** Size M. §17's decision 4. The
+      first brief put the chance on the step into a row, which dated every
+      break a row late: a row's hazard is the chance of a break after it
+      (the worker's enumeration oracle, Murphy 2007, from the definition).
+      The user then chose the streaming form and applying the step on rows
+      of weight 0 ("Build, apply on 0-weight rows"): under a duration `τ`,
+      `before_row` moves `h = -expm1(-d/τ)` of every run's mass to the empty
+      run before the row is read; `p_change` is the chance the row began a
+      run; a row of weight 0, or one the predictive cannot read, applies its
+      step and learns nothing (`held_values.rs`' named exception); a step of
+      0 has no chance (`-inf` flows through; with `prune_below = 0` each
+      leaves a dead run until `max_run` folds it). `ln(1 − h) = −d/τ`, no
+      libm; `ln h` from `ln(-expm1(-d/τ))`, as the log joint's other terms.
+      `BocpdCfg.hazard_on_clock` is last and skipped when false, so per-row
+      states write the bytes they did and the bank still loads 35; schema
+      36. A second table beside `CLOCK_FIELDS` names fields that take a
+      duration or a unit-free number. Tests: the oracle on five cases
+      (`p_change` to 1.1e-14, `run_mean` to 8e-14), the composition of two
+      steps, the per-row form from row 1 on regular steps, chunking and
+      resume, the refusals, a proptest and a golden checked against a
+      longhand in probabilities. A number `hazard` is byte-identical in
+      outputs and state over five configurations. Found and fixed: the
+      `gaussian` emission learned a NaN row, since `SpdFactor::quad_forms`
+      clamps with `max(0.0)`, which turns NaN into 0; that clamp in
+      `solve.rs` can swallow a NaN for other Rust-API callers too, left for
+      the user.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
