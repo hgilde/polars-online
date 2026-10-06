@@ -270,6 +270,32 @@ fn kish_size_inside_a_window_is_the_rows_inside_or_nothing() {
     }
 }
 
+/// The floor is `64 ε` of the live sum, and exclusive: a remainder of
+/// exactly that is no size, and one of twice that a size. The Kish sums are
+/// set by hand, the live one at 2 and every snapshot's below it by the
+/// remainder, so both subtractions are exact and the floor is `2^-45`.
+#[test]
+fn the_windowed_kish_floor_is_sixty_four_epsilons_of_the_live_sum() {
+    for (left, kept) in [(2f64.powi(-45), false), (2f64.powi(-44), true)] {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.window = Some(10.0);
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 5u64;
+        for i in 0..30 {
+            let x = lcg(&mut s);
+            let y = 0.7 * x + lcg(&mut s);
+            m.step(&[x], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        for snap in m.win.as_mut().unwrap().snaps.iter_mut() {
+            snap.qt[0] = 2.0 - left;
+        }
+        m.qt[0] = 2.0;
+        let got = m.pair(0, 0).n_kish;
+        assert_eq!(got.is_nan(), !kept, "{left:e}: {got}");
+    }
+}
+
 /// A row without the target ages its runs as it ages its weight, so a run
 /// that began inside the window is not credited with weight it no longer
 /// carries: a feature that moved inside the window keeps its spread there

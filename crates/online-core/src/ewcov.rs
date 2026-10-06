@@ -1374,7 +1374,9 @@ impl EwCovCfg {
                 self.pca, self.n_features
             ));
         }
-        if self.pca > 0 && (self.pca_every.is_nan() || self.pca_every < 0.0) {
+        // With `pca` or without: a cadence below 0 is no cadence, and the
+        // spec refuses one either way.
+        if self.pca_every.is_nan() || self.pca_every < 0.0 {
             return Err(format!(
                 "ew_cov: pca_every must be >= 0 clock units (0 refreshes on every row), got {}",
                 self.pca_every
@@ -2735,10 +2737,12 @@ mod tests {
         too_many.pca_every = 1.0;
         err(too_many, "4 components of 3 columns");
         for bad in [-1.0, f64::NAN] {
-            let mut no_cadence = model_cfg(3, vec![Mean]);
-            no_cadence.pca = 2;
-            no_cadence.pca_every = bad;
-            err(no_cadence, "pca_every must be >= 0 clock units");
+            for pca in [2, 0] {
+                let mut no_cadence = model_cfg(3, vec![Mean]);
+                no_cadence.pca = pca;
+                no_cadence.pca_every = bad;
+                err(no_cadence, "pca_every must be >= 0 clock units");
+            }
         }
         let mut ok = model_cfg(3, vec![Mean]);
         ok.pca = 3;
@@ -3036,6 +3040,80 @@ mod tests {
                 .unwrap();
             assert!(p.loadings[i * k + lead] > 0.0);
         }
+    }
+
+    /// The window's target floor at its own scale (review 2026-10-05, CB2;
+    /// the mutation run on `c134b4a` left both products of `terms` alive): a
+    /// variance at or below `64 eps (g v + ratio v_u)` is 0, one above it is
+    /// kept, to the bit. With `g = 2`, `ratio = 0.5`, `v_u = 1e6` and
+    /// `g v = 5e5 + var`, the threshold is `64 eps 1e6`; `g + v` would put it
+    /// at 0.75 of that, `g / v` at 0.5 and `ratio + v_u` at 1.5, so a variance
+    /// at 0.88 of it must read 0 and one at 1.27 must be kept.
+    #[test]
+    fn the_target_floor_is_sixty_four_epsilons_of_the_terms_it_subtracts() {
+        let (g, ratio) = (2.0, 0.5);
+        let moments = |var: f64| TargetMoments {
+            mean: vec![3.0],
+            var: vec![var],
+            q: vec![1.0],
+            mean_lo: vec![0.0],
+        };
+        let old = moments(1e6);
+        let threshold = 64.0 * f64::EPSILON * 1e6;
+        for (share, kept) in [(0.88, false), (1.27, true)] {
+            let gv = 5e5 + share * threshold;
+            // What the subtraction gives, exactly: `g v` is `gv` (a power of
+            // two), `ratio v_u` is 5e5, and their difference is exact.
+            let var = gv - 5e5;
+            let out = moments(gv / g).truncated(&old, 1.0, &[Some((ratio, g))]);
+            let want = if kept { var } else { 0.0 };
+            assert_eq!(
+                out.var[0].to_bits(),
+                want.to_bits(),
+                "{share}: {:e}",
+                out.var[0]
+            );
+        }
+    }
+
+    /// The Kish sum's floor is `64 eps` of the live sum, and exclusive: a
+    /// remainder of exactly that keeps no digit and is 0, and one of twice
+    /// that is kept. A live sum of 2 puts the floor at `2^-45`, and both
+    /// subtractions are exact.
+    #[test]
+    fn the_target_kish_floor_is_sixty_four_epsilons_of_the_live_sum() {
+        let moments = |q: f64| TargetMoments {
+            mean: vec![3.0],
+            var: vec![1.0],
+            q: vec![q],
+            mean_lo: vec![0.0],
+        };
+        for (left, kept) in [(2f64.powi(-45), false), (2f64.powi(-44), true)] {
+            let out = moments(2.0).truncated(&moments(2.0 - left), 1.0, &[Some((0.5, 2.0))]);
+            let want = if kept { left } else { 0.0 };
+            assert_eq!(
+                out.q[0].to_bits(),
+                want.to_bits(),
+                "{left:e}: {:e}",
+                out.q[0]
+            );
+        }
+    }
+
+    /// A cfg read without `max_rows_between_pca` -- a caller's own, or a JSON
+    /// written before task 161 -- has no row cap, so its components refresh
+    /// on `pca_every` alone (`no_row_cap`).
+    #[test]
+    fn a_cfg_read_without_the_pca_row_cap_has_none() {
+        let mut c = model_cfg(3, vec![EwCovStat::Mean]);
+        c.pca = 2;
+        c.pca_every = 5.0;
+        let mut v = serde_json::to_value(&c).unwrap();
+        let fields = v.as_object_mut().unwrap();
+        assert!(fields.remove("max_rows_between_pca").is_some(), "written");
+        let read: EwCovCfg = serde_json::from_value(v).unwrap();
+        assert_eq!(read.max_rows_between_pca, u32::MAX);
+        assert_eq!(read, c);
     }
 
     fn pca_cfg(k: usize, r: usize, every: usize) -> EwCovCfg {

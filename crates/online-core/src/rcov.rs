@@ -536,8 +536,9 @@ impl RcovCfg {
         within_block("jitter", self.jitter, None)?;
         within_block("noise_stride", self.noise_stride, None)?;
         within_block("iv_stride", self.iv_stride, None)?;
-        let automatic = self.bandwidth.is_none() && self.max_bandwidth.is_none();
-        if let (Some(h), Some(b), true) = (self.ring_rows(), self.block_rows, automatic)
+        // Only an automatic bandwidth's ring can be past the ceiling here: a
+        // given `bandwidth` or `max_bandwidth` is the ring, held to it above.
+        if let (Some(h), Some(b)) = (self.ring_rows(), self.block_rows)
             && self.kind == RcovKind::Kernel
             && h > MAX_RING as f64
         {
@@ -1973,8 +1974,10 @@ mod tests {
             bad(c, msg);
         }
         // `theta` sizes the window from `block_rows`, and the window is read
-        // in a double before it is a count, so no `theta` saturates it.
-        for theta in [1e6, 1e15, 1e300, f64::MAX] {
+        // in a double before it is a count, so no `theta` saturates it. At
+        // 100 the window is past the block and under the ceiling; above, past
+        // both.
+        for theta in [100.0, 1e6, 1e15, 1e300, f64::MAX] {
             for psd in [true, false] {
                 bad(
                     RcovCfg {
@@ -1986,8 +1989,52 @@ mod tests {
                 );
             }
         }
-        // At the ceilings, and the default `theta` on a short block.
+        // And a window inside its block but past the ceiling: `1000 · 2^11`.
+        bad(
+            RcovCfg {
+                theta: 1000.0,
+                block_rows: Some(1 << 22),
+                ..cfg(2, RcovKind::Preavg)
+            },
+            "theta = 1000 sets is 2.048e6 returns",
+        );
+        // An automatic ring of exactly the ceiling is allowed, and the first
+        // block whose ring is a lag past it refused.
+        let automatic = |n: usize| RcovCfg {
+            bandwidth: None,
+            block_rows: Some(n),
+            ..cfg(2, RcovKind::Kernel)
+        };
+        let ring = |n: usize| automatic(n).ring_rows().unwrap();
+        let (mut at, mut hi) = (1usize, 1usize << 40);
+        while at < hi {
+            let mid = at + (hi - at) / 2;
+            if ring(mid) >= MAX_RING as f64 {
+                hi = mid;
+            } else {
+                at = mid + 1;
+            }
+        }
+        assert_eq!(ring(at), MAX_RING as f64, "a block at the ceiling");
+        let past = (at..).find(|&n| ring(n) > MAX_RING as f64).unwrap();
+        bad(
+            automatic(past),
+            "an automatic bandwidth's ring of 1.048577e6 lags",
+        );
+        // At the ceilings, and the default `theta` on a short block: a
+        // window of exactly the block (`⌊20 · √400⌋`), one of exactly the
+        // ceiling in a block past it (`512 · 2^11`), and the ring above.
         for c in [
+            RcovCfg {
+                theta: 20.0,
+                ..cfg(2, RcovKind::Preavg)
+            },
+            RcovCfg {
+                theta: 512.0,
+                block_rows: Some(1 << 22),
+                ..cfg(2, RcovKind::Preavg)
+            },
+            automatic(at),
             RcovCfg {
                 bandwidth: Some(400),
                 ..cfg(2, RcovKind::Kernel)

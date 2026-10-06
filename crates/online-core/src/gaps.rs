@@ -1433,6 +1433,19 @@ mod tests {
         let (acc, snap) = windowed(1.0, Some(3.0));
         let got = acc.window_kish(&snap, 1.0).unwrap()[0].unwrap();
         assert!(close(got, 1.0, 1e-12), "{got}");
+        // The floor is `64 ε` of the live sum, and exclusive: a remainder of
+        // exactly that is no count, one of twice that the count, `1² / Q_R`.
+        // Two unit rows put the live sum at 2 and the floor at `2^-45`, and
+        // both subtractions are exact.
+        for (left, count) in [
+            (2f64.powi(-45), None),
+            (2f64.powi(-44), Some(2f64.powi(44))),
+        ] {
+            let (acc, mut snap) = windowed(1.0, Some(1.0));
+            assert_eq!(acc.grams.grams[0].q_sum(), Some(2.0), "the fixture");
+            snap.grams.grams[0].q = Some(2.0 - left);
+            assert_eq!(acc.window_kish(&snap, 1.0), Some(vec![count]), "{left:e}");
+        }
     }
 
     /// Kish's sizes inside a window, `W_R² / Q_R` for a Gram and for each

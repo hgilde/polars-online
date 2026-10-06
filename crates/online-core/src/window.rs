@@ -2066,4 +2066,94 @@ mod tests {
             }
         }
     }
+
+    /// The windowed Kish sum's floor is `64 eps` of the live sum, and
+    /// exclusive, as `TargetMoments::truncated`'s is: a remainder of exactly
+    /// that keeps no digit and is 0, and one of twice that is kept. Two unit
+    /// rows put the live sum at 2 and the floor at `2^-45`; the snapshot's
+    /// sum is set by hand, so both subtractions are exact.
+    #[test]
+    fn the_windowed_kish_floor_is_sixty_four_epsilons_of_the_live_sum() {
+        let mut cov = EwCov::new(1);
+        cov.update(&[1.0], 1.0, 1.0);
+        cov.update(&[3.0], 1.0, 1.0);
+        assert_eq!(cov.q_sum(), Some(2.0), "the fixture");
+        for (left, kept) in [(2f64.powi(-45), false), (2f64.powi(-44), true)] {
+            let mut old = Moments::of(&cov, 1.0);
+            old.w = 1.0;
+            old.q = Some(2.0 - left);
+            let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
+            let want = if kept { left } else { 0.0 };
+            assert_eq!(
+                cut.q_sum().map(f64::to_bits),
+                Some(want.to_bits()),
+                "{left:e}"
+            );
+        }
+    }
+
+    /// A model's cadence is checked where its window is: `window_every` and
+    /// `max_rows_between_snapshots` need `window_size`, and `window_every` is
+    /// a finite number of clock units, at least 0 (0 snapshots every row).
+    #[test]
+    fn a_cadence_needs_a_window_and_a_finite_spacing() {
+        for (window, every, rows) in [
+            (None, None, None),
+            (Some(10.0), Some(0.0), None),
+            (Some(10.0), Some(2.5), Some(4)),
+            (Some(10.0), None, Some(1)),
+        ] {
+            let got = check_cadence("m", window, every, rows);
+            assert!(got.is_ok(), "{window:?} {every:?} {rows:?}: {got:?}");
+        }
+        for (window, every, rows, want) in [
+            (None, Some(1.0), None, "m: window_every needs `window_size`"),
+            (
+                None,
+                None,
+                Some(3),
+                "m: max_rows_between_snapshots needs `window_size`",
+            ),
+            (
+                Some(10.0),
+                Some(-1.0),
+                None,
+                "window_every must be finite and >= 0",
+            ),
+            (
+                Some(10.0),
+                Some(f64::INFINITY),
+                None,
+                "window_every must be finite",
+            ),
+            (
+                Some(10.0),
+                Some(f64::NAN),
+                None,
+                "window_every must be finite",
+            ),
+        ] {
+            match check_cadence("m", window, every, rows) {
+                Err(e) => assert!(e.contains(want), "{every:?}: {e}"),
+                Ok(()) => panic!("{window:?} {every:?} {rows:?} is accepted"),
+            }
+        }
+    }
+
+    /// A ring written without a clock spacing -- a JSON from before task 162
+    /// -- reads as one spaced by its rows alone (`no_spacing`), so it goes on
+    /// taking the snapshots it took.
+    #[test]
+    fn a_ring_written_without_a_spacing_is_spaced_by_its_rows() {
+        let mut ring: Snapshots<usize> = Snapshots::new(10.0, 3).unwrap();
+        for i in 0..7 {
+            ring.offer(i as f64, || i);
+            ring.trim(i as f64);
+        }
+        let mut v = serde_json::to_value(&ring).unwrap();
+        let fields = v.as_object_mut().unwrap();
+        assert!(fields.remove("spacing").is_some(), "written");
+        let read: Snapshots<usize> = serde_json::from_value(v).unwrap();
+        assert_eq!(read, ring);
+    }
 }

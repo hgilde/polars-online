@@ -122,8 +122,11 @@ def test_every_documented_target_form_type_checks(tmp_path, monkeypatch):
     snippet = tmp_path / "forms.py"
     snippet.write_text(_TARGET_FORMS)
     # The package's own source and stub, as `uv run mypy` reads them, so
-    # nothing built is needed.
-    monkeypatch.setenv("MYPYPATH", str(Path(_spec.__file__).parents[1]))
+    # nothing built is needed. An installed wheel is found where it is
+    # (it ships `py.typed`), and mypy refuses a site-packages in MYPYPATH.
+    root = Path(_spec.__file__).parents[1]
+    if root.name not in ("site-packages", "dist-packages"):
+        monkeypatch.setenv("MYPYPATH", str(root))
     out, err, status = api.run(
         [str(snippet), "--cache-dir", str(tmp_path / "cache"), "--python-version", "3.12"]
     )

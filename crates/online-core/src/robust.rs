@@ -1760,6 +1760,28 @@ mod tests {
         }
     }
 
+    /// The band systems are not state: the next nudge rebuilds them from the
+    /// Gram, so two models that differ only in them are equal -- a model
+    /// holding one and its copy with none, which is what a restore makes
+    /// ([`BandSystems`]).
+    #[test]
+    fn models_that_differ_only_in_their_band_systems_are_equal() {
+        let mut m = Robust::new(cfg(3, 1, RobustLoss::Quantile { tau: 0.5 })).unwrap();
+        let mut s = 7u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let y = x[0] - x[2] + 0.3 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(
+            m.systems.0.iter().any(Option::is_some),
+            "the case needs a system"
+        );
+        let mut bare = m.clone();
+        bare.systems = BandSystems::default();
+        assert_eq!(bare, m);
+    }
+
     #[test]
     fn new_surfaces_the_validation_error() {
         let e = Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 0.0 })).unwrap_err();

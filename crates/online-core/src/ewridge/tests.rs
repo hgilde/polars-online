@@ -2579,7 +2579,7 @@ fn a_state_whose_fit_or_readiness_is_the_wrong_shape_is_refused() {
     };
     assert!(restored(&|_| {}).is_ok(), "the state as saved");
     type Damage<'a> = (&'a str, &'a dyn Fn(&mut EwRidge));
-    let damage: [Damage; 9] = [
+    let damage: [Damage; 12] = [
         ("no slot", &|r: &mut EwRidge| r.beta = Some(Vec::new())),
         ("a slot short", &|r: &mut EwRidge| {
             r.beta.as_mut().unwrap().pop();
@@ -2596,7 +2596,23 @@ fn a_state_whose_fit_or_readiness_is_the_wrong_shape_is_refused() {
         ("a system_of past the systems", &|r: &mut EwRidge| {
             r.ready.system_of[0] = 7;
         }),
+        ("a system_of one past the systems", &|r: &mut EwRidge| {
+            r.ready.system_of[0] = r.acc.grams.grams.len() * r.cfg.n_combos();
+        }),
         ("readiness without a fit", &|r: &mut EwRidge| r.beta = None),
+        // Each part of the readiness on its own: no fit needs all three
+        // empty, not one.
+        ("readiness without a fit or an edf", &|r: &mut EwRidge| {
+            r.beta = None;
+            r.ready.edf.clear();
+        }),
+        (
+            "readiness without a fit or a system_of",
+            &|r: &mut EwRidge| {
+                r.beta = None;
+                r.ready.system_of.clear();
+            },
+        ),
     ];
     for (what, f) in damage {
         match restored(f) {
@@ -3823,6 +3839,45 @@ fn a_combo_skipped_for_no_weight_reports_no_shares() {
     assert_eq!(inflation[1], f64::INFINITY, "{inflation:?}");
 }
 
+/// The same with two combos, the one without a ridge second, so the slot
+/// skipped is the second target's second, `j * nc + ci = 3` of four, and
+/// not a slot one combo or the first target would name: it alone reports no
+/// shares, and the first target's combo without a ridge keeps its own.
+#[test]
+fn a_combo_skipped_for_no_weight_is_its_own_slot_among_several() {
+    let mut c = cfg(1, 2);
+    c.ridge = vec![0.5, 0.0];
+    c.decay = Decay::Halflife(1.0);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    let mut s = 41u64;
+    for i in 0..40 {
+        let x = [lcg(&mut s)];
+        let y1 = (i % 3 != 1).then(|| 2.0 * x[0] + 0.1 * lcg(&mut s));
+        m.step(
+            &x,
+            &[Some(1.0 - x[0]), y1],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+    }
+    let before = m.support_coef().expect("solved");
+    assert!(
+        before[3][1].is_finite(),
+        "the case needs a share: {before:?}"
+    );
+    let x = [lcg(&mut s)];
+    m.step(&x, &[Some(1.0 - x[0]), None], 1100.0, 1.0);
+    assert_eq!(m.acc.grams.grams[m.acc.grams.of[1]].n_eff(), 0.0, "emptied");
+    let shares = m.support_coef().unwrap();
+    assert!(shares[3].iter().all(|v| v.is_nan()), "{shares:?}");
+    assert!(
+        shares[1][1].is_finite(),
+        "the first target's own: {shares:?}"
+    );
+    assert_eq!(m.coefficients().unwrap()[3], vec![0.0, 0.0], "an empty fit");
+}
+
 /// A first solve that fails leaves no fit: every slot it could not solve
 /// holds NaN, so it predicts nothing, and the slots it solved hold their
 /// fit. The fit was the zeros `beta` starts at, so the slot predicted
@@ -3849,6 +3904,17 @@ fn a_first_solve_that_fails_leaves_no_fit() {
         );
     }
     assert!(m.predict(&[0.5, 1.0], 1.0).pred[0].is_nan());
+    // Two targets and two ridges: every one of the four slots, each
+    // `j * nc + ci`, holds NaN, and none keeps the zeros it started at.
+    let mut c = cfg(2, 2);
+    c.ridge = vec![0.1, 1.0];
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    m.step(&[f64::NAN, 1.0], &[Some(2.0), Some(1.0)], 0.0, 1.0);
+    assert!(m.solve_failures > 0, "the first solve failed");
+    let beta = m.coefficients().expect("a solve ran");
+    assert_eq!(beta.len(), 4);
+    assert!(beta.iter().flatten().all(|v| v.is_nan()), "{beta:?}");
 }
 
 /// A system that cannot be factorized keeps the fit it had, slot by

@@ -7619,6 +7619,38 @@ tick, and that the series holding it up has a count near 1.
       two rules for counting a cadence's rows, `micro`'s default cadence
       (100 learned rows, or DenStream's `Tp`), `coef_every` on the clock and
       the spelling of its default, and `bocpd`'s hazard in clock units.
+- [x] 166. **The mutation and canary failures examined -- requested
+      2026-10-06.** Size M. The user's words: "Examine mutants and canary
+      fails". *Mutants.* The changed-lines runs on `a7a8f3c` and `e6b70a2`
+      failed on survivors task 160 had already killed. The run on
+      `c134b4a` left 3 in `TargetMoments::truncated`'s variance floor, and
+      stopped at its 100-minute cap after 75 of 656 mutants, so the rest
+      were run here: all 747 mutants in `e6b70a2..HEAD`, two hours at
+      `-j 5`, from an export of the tracked files. 661 caught, 48 unviable,
+      1 timed out (a hang, which counts as caught), 9 named equivalents and
+      28 survivors. Each survivor is killed by a Rust test: the four Kish
+      floors (`ew_cov`'s target and window sums, the Grams', `marginal`'s)
+      at a remainder of exactly `64 ε` of the live sum, set in powers of two
+      so the subtraction is exact; `ewridge`'s slots `j * nc + ci` with two
+      targets and two combos, for a first solve that fails and for a combo
+      skipped for no weight; `fit_has_shape` on a state with no fit and one
+      part of its readiness left; `rcov`'s window and automatic ring at
+      exactly the block and the `2^20` ceiling; the window cadence's
+      refusals in the core; the serde defaults `no_row_cap` and
+      `no_spacing`; and two `robust` models that differ only in their band
+      systems. Two survivors were redundant conditions, now gone: `rcov`'s
+      `automatic` (a given `bandwidth` or `max_bandwidth` is the ring, and
+      was held to the ceiling already) and `ew_cov`'s `pca > 0` before the
+      `pca_every` check, which now refuses a negative or NaN cadence with or
+      without `pca`, as the spec does. A rerun of the 30 mutants on those
+      lines caught every one. *Canary.* Run 37327376335 (py-polars
+      2.0.0-rc.2) failed seven `test_windows.py` tests, a source's
+      `ValueError` that 1.x wraps in `ComputeError`; task 158 fixed them in
+      `a7a8f3c`. A local run at `HEAD` against py-polars 2.0.0 final passed
+      4,163 tests and failed one: `test_kwargs_typing` put the package's
+      parent in `MYPYPATH`, which for an installed wheel is site-packages,
+      and mypy refuses it. The test now leaves an installed package where
+      mypy finds it; the snippet type-checks under 2.0.0 either way.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
