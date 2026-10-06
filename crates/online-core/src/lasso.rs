@@ -28,7 +28,9 @@
 //!
 //! Lambda selection is free: predictions for every path point are computed
 //! anyway, so `penalty_selected_j` is the argmin over the path of an EW mean of
-//! squared out-of-sample error with half-life `select_half_life`.
+//! squared out-of-sample error with half-life `select_half_life`, over the
+//! rows from the one where target `j`'s own weight reaches its own
+//! `min_weight` (`LassoCfg::target_min_weight`; review 2026-10-05, CA3).
 
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +52,17 @@ pub struct LassoCfg {
     /// Half-life of the EW squared-error used to pick lambda; defaults to the
     /// model half-life when None.
     pub select_half_life: Option<f64>,
+    /// The weight, over every row, the model predicts from: the smallest
+    /// of the targets' thresholds in a bank, which then withholds each
+    /// target's output until its own weight reaches its own.
     pub min_weight: f64,
+    /// Per target, the threshold its own weight before a row is checked
+    /// against, as a bank checks it on the output (hard rule 8): a row
+    /// below it adds no error to the target's selection, so one target's
+    /// choice does not depend on another's threshold (review 2026-10-05,
+    /// CA3). Empty: `min_weight` for every target.
+    #[serde(default)]
+    pub target_min_weight: Vec<f64>,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
@@ -104,6 +116,14 @@ impl LassoCfg {
         self.lasso_path.len()
     }
 
+    /// Target `j`'s own threshold ([`Self::target_min_weight`]).
+    pub fn min_weight_of(&self, j: usize) -> f64 {
+        self.target_min_weight
+            .get(j)
+            .copied()
+            .unwrap_or(self.min_weight)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
@@ -116,6 +136,13 @@ impl LassoCfg {
         }
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
+        }
+        let own = &self.target_min_weight;
+        let bad = |t: &f64| t.is_nan() || *t < 0.0;
+        if !(own.is_empty() || own.len() == self.n_targets) || own.iter().any(bad) {
+            return Err(
+                "lasso: target_min_weight must be empty or one value >= 0 per target".into(),
+            );
         }
         if self.lasso_path.is_empty() {
             return Err("lasso_path must have at least one value".into());
@@ -376,6 +403,37 @@ impl Lasso {
         let (u, old) = win.snaps.boundary()?;
         let f = self.cfg.decay.factor(win.clock - u);
         self.acc.window_weights(&old.acc, f)
+    }
+
+    /// `predict` from the window's weights, [`Self::window_weights`], which
+    /// `step` reads once for this and for its selection.
+    fn predict_with(&self, x: &[f64], weights: Option<&(f64, Vec<f64>)>) -> Step {
+        let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
+        // Under a `window`, the `n_eff` reported and gated on is the weight
+        // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
+        // The weights alone for that and for the per-target test (C2), not
+        // the O(k²) view, which is the solve's (review 2026-09-12, P1).
+        let (n_eff, wj) = match weights {
+            Some((w, wj)) => (*w, wj.as_slice()),
+            None => (self.acc.cross.w, self.acc.wj.as_slice()),
+        };
+        let mut pred = vec![f64::NAN; m * np];
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
+            for j in 0..m {
+                if wj[j] > 0.0 {
+                    for li in 0..np {
+                        pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.fit_intercept);
+                    }
+                }
+            }
+        }
+        Step {
+            pred,
+            n_eff,
+            extra: Some(Extra::Lasso {
+                lam_selected: self.lam_selected(),
+            }),
+        }
     }
 
     /// Target `j`'s selection errors inside the window, as it stands at the
@@ -687,8 +745,13 @@ impl OnlineModel for Lasso {
         // `lam_selected` is read here too: the selection as it stood coming
         // into this row, like everything else a `Step` reports, so pairing it
         // with this row's `pred_<lambda>` slots is an out-of-sample choice.
-        let out = self.predict(x, d_clock);
+        let weights = self.window_weights();
+        let out = self.predict_with(x, weights.as_ref());
         let pred = &out.pred;
+        // Each target's own weight before the row, inside the window under
+        // one: what its own `min_weight` is checked against, here as on the
+        // output (hard rule 8).
+        let own: &[f64] = weights.as_ref().map_or(&self.acc.wj, |(_, wj)| wj);
 
         // ---- the window moves to this row ----
         // The snapshot is every accumulator before this row, decayed to this
@@ -712,9 +775,15 @@ impl OnlineModel for Lasso {
         }
 
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
+        // A target's errors count from the row where its own weight reaches
+        // its own `min_weight`: a row its threshold withholds from the
+        // output adds none, so its choice is the same whatever the other
+        // targets' thresholds, which the model's own gate takes the least of
+        // (review 2026-10-05, CA3).
         for j in 0..m {
             let aged = sel_lam * self.sel_w[j];
-            match y[j].filter(|_| pred[j * np].is_finite()) {
+            let shown = own[j] >= self.cfg.min_weight_of(j);
+            match y[j].filter(|_| shown && pred[j * np].is_finite()) {
                 Some(yj) if weight > 0.0 => {
                     let w_new = aged + weight;
                     let (a, b) = (aged / w_new, weight / w_new);
@@ -725,13 +794,13 @@ impl OnlineModel for Lasso {
                     self.sel_w[j] = w_new;
                 }
                 _ => {
-                    // No error to fold -- the target is null or not predicted,
-                    // or the row has no weight -- so the errors only age. A
-                    // zero-weight row folded in the mean form is `0/0` before
-                    // the first error, and the NaN it left in every `sel_err`
-                    // never washed out: every comparison below false, the
-                    // choice stuck at the heaviest penalty (hard rule 9;
-                    // review 2026-09-12, C7).
+                    // No error to fold -- the target is null, not predicted
+                    // or below its own threshold, or the row has no weight --
+                    // so the errors only age. A zero-weight row folded in the
+                    // mean form is `0/0` before the first error, and the NaN
+                    // it left in every `sel_err` never washed out: every
+                    // comparison below false, the choice stuck at the
+                    // heaviest penalty (hard rule 9; review 2026-09-12, C7).
                     self.sel_w[j] = aged;
                     if aged <= 0.0 {
                         continue;
@@ -780,33 +849,7 @@ impl OnlineModel for Lasso {
     }
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
-        let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
-        // Under a `window`, the `n_eff` reported and gated on is the weight
-        // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
-        // The weights alone for that and for the per-target test (C2), not
-        // the O(k²) view, which is the solve's (review 2026-09-12, P1).
-        let weights = self.window_weights();
-        let (n_eff, wj) = match weights.as_ref() {
-            Some((w, wj)) => (*w, wj.as_slice()),
-            None => (self.acc.cross.w, self.acc.wj.as_slice()),
-        };
-        let mut pred = vec![f64::NAN; m * np];
-        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
-            for j in 0..m {
-                if wj[j] > 0.0 {
-                    for li in 0..np {
-                        pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.fit_intercept);
-                    }
-                }
-            }
-        }
-        Step {
-            pred,
-            n_eff,
-            extra: Some(Extra::Lasso {
-                lam_selected: self.lam_selected(),
-            }),
-        }
+        self.predict_with(x, self.window_weights().as_ref())
     }
 
     fn state(&self) -> State {
@@ -828,6 +871,7 @@ impl OnlineModel for Lasso {
                     && m.sel_w.len() == n
                     && m.sel_idx.len() == n
                     && m.sel_idx.iter().all(|&i| i < np)
+                    && (m.cfg.target_min_weight.is_empty() || m.cfg.target_min_weight.len() == n)
                     && m.beta.as_ref().is_none_or(|b| {
                         b.len() == n
                             && b.iter()
@@ -886,19 +930,26 @@ mod tests {
     use super::*;
 
     /// A selection index past the path is refused, where it loaded and
-    /// panicked in `lam_selected` (review 2026-09-18, B3).
+    /// panicked in `lam_selected` (review 2026-09-18, B3); so is a threshold
+    /// for a target there is not (CA3).
     #[test]
     fn a_state_of_the_wrong_shape_is_refused() {
         use crate::{ModelState, OnlineModel, StateError};
         let m = Lasso::new(cfg(2, 1, vec![0.1, 0.01])).unwrap();
-        let mut s = m.state();
-        let ModelState::Lasso(inner) = &mut s.model else {
-            unreachable!()
-        };
-        inner.sel_idx[0] = 2;
-        match Lasso::restore(&s) {
-            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
-            other => panic!("{other:?}"),
+        let corrupt: [fn(&mut Lasso); 2] = [
+            |l| l.sel_idx[0] = 2,
+            |l| l.cfg.target_min_weight = vec![1.0; 2],
+        ];
+        for f in corrupt {
+            let mut s = m.state();
+            let ModelState::Lasso(inner) = &mut s.model else {
+                unreachable!()
+            };
+            f(inner);
+            match Lasso::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                other => panic!("{other:?}"),
+            }
         }
     }
 
@@ -968,6 +1019,7 @@ mod tests {
             l1_ratio: 1.0,
             select_half_life: None,
             min_weight: (k + 1) as f64,
+            target_min_weight: Vec::new(),
             solve_every: 0.0,
             max_rows_between_solves: 1,
             solve_share: None,
@@ -1222,6 +1274,62 @@ mod tests {
         assert_eq!(m.lam_selected(), vec![m.cfg.lasso_path[best]]);
     }
 
+    /// Each target's selection counts its errors from the row where its own
+    /// weight before the row reaches its own `min_weight` (review 2026-10-05,
+    /// CA3; hard rule 8). `y1`, present on every other row, waits for six
+    /// rows of its own, where it counted from the model's first prediction;
+    /// and one target's selection is the same whatever the other's threshold.
+    #[test]
+    fn each_targets_selection_counts_from_its_own_min_weight() {
+        let t = 6.0;
+        let run = |own: [f64; 2]| {
+            let mut c = cfg(2, 2, vec![1.0, 0.1, 0.0]);
+            c.min_weight = own[0].min(own[1]);
+            c.target_min_weight = own.to_vec();
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 7u64;
+            (0..40)
+                .map(|i| {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = [1.0 + 2.0 * x[0], -1.0 + x[1]].map(|v| v + 0.3 * lcg(&mut s));
+                    let own_before = m.acc.wj[1];
+                    let y1 = (i % 2 == 0).then_some(y[1]);
+                    m.step(&x, &[Some(y[0]), y1], f64::from(u8::from(i > 0)), 1.0);
+                    (own_before, m.sel_w.clone(), m.sel_err.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let (hi, lo, none) = (run([t, t]), run([0.0, t]), run([0.0, 0.0]));
+        for (i, (own, sel_w, _)) in hi.iter().enumerate() {
+            // Row 12 is `y1`'s first with six of its rows before it.
+            assert_eq!(
+                sel_w[1] > 0.0,
+                i >= 12,
+                "row {i}: own weight {own}, {sel_w:?}"
+            );
+            // `y1` alike under `[0, t]` and `[t, t]`, `y0` under `[0, t]`
+            // and `[0, 0]`, to the bit.
+            let pick = |r: &(f64, Vec<f64>, Vec<Vec<f64>>), j: usize| (r.1[j], r.2[j].clone());
+            assert_eq!(pick(&lo[i], 1), pick(&hi[i], 1), "row {i}");
+            assert_eq!(pick(&lo[i], 0), pick(&none[i], 0), "row {i}");
+        }
+        assert!(
+            none[11].1[1] > 0.0,
+            "with no threshold `y1` counts from the start"
+        );
+        // None, or one threshold of at least 0 per target.
+        let with = |own: Vec<f64>| {
+            let mut c = cfg(2, 2, vec![1.0]);
+            c.target_min_weight = own;
+            c.validate()
+        };
+        for bad in [vec![t], vec![t, -1.0], vec![f64::NAN, t]] {
+            let err = with(bad).unwrap_err();
+            assert!(err.contains("target_min_weight"), "{err}");
+        }
+        with(vec![0.0, f64::INFINITY]).unwrap();
+    }
+
     /// Coordinate descent that runs out of sweeps before it meets `tol`
     /// is the failure this model has, and `solve_failures` counts it: one
     /// per target and path point left unconverged (review 2026-09-12, S11:
@@ -1253,7 +1361,9 @@ mod tests {
     /// window (the builder's docstring): each scored row at `w *
     /// 0.5^(age / select_half_life)`, its age counted from the last row
     /// learned, and the rows inside the window those at most `window`
-    /// older. Recomputed here from each row's own predictions, which `step`
+    /// older; a row scores a target once the target's own weight inside the
+    /// window, before the row, reaches `min_weight` (review 2026-10-05,
+    /// CA3). Recomputed here from each row's own predictions, which `step`
     /// reports, it is held on every row where it is decided: not a tie,
     /// and not an empty window. Three departures moved it on 14 to 90 rows
     /// of 277 in `tests/test_oracles_lasso_paths.py`: the snapshot took the
@@ -1278,8 +1388,11 @@ mod tests {
             let mut s = 11u64;
             let (mut t, mut t_prev) = (0.0, 0.0);
             // Per target, (clock, weight, squared error per path point) of
-            // each row that scored it.
+            // each row that scored it, and (clock, weight) of each it was on:
+            // a row scores it once that weight inside the window, before
+            // the row, reaches `min_weight` (CA3).
             let mut scored: Vec<Vec<(f64, f64, Vec<f64>)>> = vec![Vec::new(), Vec::new()];
+            let mut on: Vec<Vec<(f64, f64)>> = vec![Vec::new(), Vec::new()];
             let mut held = [0usize; 2];
             for i in 0..300usize {
                 let x = [lcg(&mut s), lcg(&mut s)];
@@ -1321,6 +1434,13 @@ mod tests {
                         want[j] = Some(path[order[0]]);
                     }
                 }
+                let own = on.iter().map(|rows| {
+                    rows.iter()
+                        .filter(|(tr, _)| *tr >= t_prev - window)
+                        .map(|(tr, wr)| wr * (-((t_prev - tr) / 20.0)).exp2())
+                        .sum::<f64>()
+                });
+                let own: Vec<f64> = own.collect();
                 let out = m.step(&x, &y, d, w);
                 let Some(Extra::Lasso { lam_selected }) = &out.extra else {
                     panic!("a lasso reports its selection");
@@ -1333,8 +1453,12 @@ mod tests {
                         );
                         held[j] += 1;
                     }
+                    if y[j].is_some() {
+                        on[j].push((t, w));
+                    }
                     if let (Some(yv), true) = (y[j], out.pred[j * np].is_finite())
                         && w > 0.0
+                        && own[j] >= 2.0
                     {
                         let e2 = out.pred[j * np..(j + 1) * np]
                             .iter()

@@ -284,6 +284,7 @@ fn lasso_golden() {
         l1_ratio: 1.0,
         select_half_life: None,
         min_weight: 3.0,
+        target_min_weight: Vec::new(),
         solve_every: 0.0,
         max_rows_between_solves: 1,
         solve_share: None,

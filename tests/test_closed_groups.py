@@ -789,8 +789,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 30 since
-    2026-10-06 (task 162: a model window's snapshots are spaced on the
+    """The version a bank file names, held to the library's: 31 since
+    2026-10-06 (task 174: `lasso` keeps each target's own `min_weight` for
+    its selection), after 30 the same day (task 162: a model window's snapshots are spaced on the
     clock, `window_every` in clock units beside `max_rows_between_snapshots`),
     after 29 the same day (task 163: `micro`'s pruning on the clock) and 28
     (task 161: `ew_cov`'s configuration and state carry its PCA cadence on
@@ -815,7 +816,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 30
+    assert po.schema_version() == 31
     assert sys.version_info >= (3, 12)
 
 

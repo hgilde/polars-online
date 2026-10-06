@@ -1447,13 +1447,13 @@ def lasso(
         over every row so far. ``penalty_selected_<t>`` is reported as it stood before
         the row -- the point this row was scored with, not the one its own error
         then elected. A row of weight 0 adds no error and ages the errors so far,
-        so the selection moves only by what the ageing forgets. The errors are
-        the model's own predictions', from its first prediction for the target:
-        rows the target's own ``min_weight`` still withholds from the output
-        count, since a threshold gates the output and not the model. Before
-        the first scored row ``penalty_selected_<t>`` is the path's last
-        point, and a tie between points keeps the first in ``lasso_path``
-        order.
+        so the selection moves only by what the ageing forgets. A target's
+        errors count from the row where its own weight reaches its own
+        ``min_weight``. A row that threshold withholds from the output adds
+        no error, so one target's choice does not depend on another's
+        threshold. Before the first scored row ``penalty_selected_<t>`` is
+        the path's last point, and a tie between points keeps the first in
+        ``lasso_path`` order.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``

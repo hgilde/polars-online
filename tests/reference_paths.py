@@ -129,15 +129,13 @@ def lasso_paths_ref(
     **``lam_selected``.** Per target, the path point with the least weighted
     sum of squared out-of-sample errors so far, each at ``w * 0.5 ** (age /
     select_half_life)`` (default the half-life) and, under a window, inside it
-    -- as it stood before the row. The errors are the model's own
-    predictions' wherever the target is present: the model predicts once
-    ``weight_sum`` reaches the smallest threshold (docs/ENHANCEMENTS.md E7) and a
-    target once it has any weight, and what the target's own threshold
-    withholds is the output, not the model (review 2026-09-12, S2, as
-    ``ewridge_ref``'s ``sigma2`` folds it). NaN where there is no error yet,
-    where the best two are within 1e-9 of each other (a tie is not something
-    to hold a library to), and for good once an error came from a fit the
-    reference does not hold.
+    -- as it stood before the row. The errors are those of the predictions
+    ``pred`` shows, on the rows the target is present: from the row where the
+    target's own weight reaches its own ``min_weight``, so a row its threshold
+    withholds adds none, whatever the other targets' thresholds (review
+    2026-10-05, CA3). NaN where there is no error yet, and where the best two
+    are within 1e-9 of each other (a tie is not something to hold a library
+    to).
 
     Returns ``pred`` (n, m, P), ``weight_sum`` (n,), ``w_target`` (n, m), each
     target's weight before the row, ``coef`` (n, m, P, kt), the last solve's
@@ -232,7 +230,6 @@ def lasso_paths_ref(
     Xr: list[np.ndarray] = []
     Yr: list[np.ndarray] = []
     errs: list[list[tuple[float, float, np.ndarray]]] = [[] for _ in range(m)]
-    unheld = np.zeros(m, dtype=bool)
 
     fit = None
     t_last, pending = 0.0, 0.0
@@ -257,17 +254,19 @@ def lasso_paths_ref(
         else:
             weight_sum[i] = 0.0
             w_target[i] = 0.0
-        own = np.full((m, npath), np.nan)
         for j in range(m):
-            if fit is not None and w_target[i, j] > 0.0 and weight_sum[i] >= float(np.min(mp)):
-                own[j] = fit[j] @ z
-                if w_target[i, j] >= mp[j]:
-                    if np.isnan(own[j]).any():
-                        raise ValueError(
-                            f"row {i}, target {j} is scored with a fit the reference does not hold"
-                        )
-                    pred[i, j] = own[j]
-            if errs[j] and not unheld[j]:
+            # The model predicts the target once ``weight_sum`` reaches the
+            # smallest threshold and the target has weight; the output shows
+            # it once its own weight reaches its own.
+            model = fit is not None and w_target[i, j] > 0.0 and weight_sum[i] >= float(np.min(mp))
+            if model and w_target[i, j] >= mp[j]:
+                p = fit[j] @ z
+                if np.isnan(p).any():
+                    raise ValueError(
+                        f"row {i}, target {j} is scored with a fit the reference does not hold"
+                    )
+                pred[i, j] = p
+            if errs[j]:
                 te, we, ee = (np.asarray(v) for v in zip(*errs[j], strict=True))
                 ages_e = t_last - te
                 wt = np.where(ages_e <= horizon, we * decay(ages_e, select_half_life), 0.0)
@@ -283,12 +282,9 @@ def lasso_paths_ref(
         Xr.append(X[i].copy())
         Yr.append(Y[i].copy())
         for j in range(m):
-            if fit is None or np.isnan(Y[i, j]) or not w[i] > 0.0:
+            if np.isnan(pred[i, j]).any() or np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
-            if w_target[i, j] > 0.0 and weight_sum[i] >= float(np.min(mp)):
-                if np.isnan(own[j]).any():
-                    unheld[j] = True
-                errs[j].append((t_now, float(w[i]), Y[i, j] - own[j]))
+            errs[j].append((t_now, float(w[i]), Y[i, j] - pred[i, j]))
         t_last = t_now
 
         # ---- solve, on the schedule ----

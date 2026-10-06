@@ -398,7 +398,16 @@ pub use window::{
 ///   compactly; named, as a bank file is, it decodes with no spacing and
 ///   its rows, but its `window_every` counted rows, so the bank refuses a
 ///   file older than 30 by number, and pre-1.0 no loader is written.
-pub const SCHEMA_VERSION: u32 = 30;
+/// - 31 (2026-10-06, task 174): `lasso`'s configuration carries each
+///   target's own `min_weight`, from which the target's selection counts
+///   its errors (review 2026-10-05, CA3); it counted from the model's first
+///   prediction, which the smallest threshold gates. A `lasso` state from
+///   before 31 decodes named with every target at the model's `min_weight`,
+///   the default, and does not decode compactly. A bank file's states from
+///   before 31 carry only the smallest of a spec's thresholds, so the bank
+///   refuses a file older than 31 by number, and pre-1.0 no loader is
+///   written. Every other model's state from 14 on still loads.
+pub const SCHEMA_VERSION: u32 = 31;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

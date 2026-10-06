@@ -65,7 +65,7 @@ impl std::fmt::Display for GroupKey {
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable; a
 /// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
-/// as every file written before schema 29 is. Version 3 lets a spec
+/// as every file written before schema 31 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -99,8 +99,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// task 162** (the same day): a window's snapshots are spaced on the clock,
 /// so `window_every` in a 29 file's spec counts rows where this build reads
 /// clock units, and its rings carry no spacing; the five windowed models'
-/// configurations changed shape with them.
-const MIN_BANK_SCHEMA_VERSION: u32 = 30;
+/// configurations changed shape with them. **31 since task 174** (the same
+/// day): a `lasso` keeps each target's own `min_weight` for its selection,
+/// and a 30 file's lasso holds only the smallest.
+const MIN_BANK_SCHEMA_VERSION: u32 = 31;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

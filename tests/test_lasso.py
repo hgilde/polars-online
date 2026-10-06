@@ -138,3 +138,62 @@ def test_chunk_invariance():
 def test_path_must_be_decreasing():
     with pytest.raises(ValueError, match="decreasing"):
         _spec([0.1, 1.0])
+
+
+class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
+    """A target's ``penalty_selected`` counts its errors from the row where its
+    own weight reaches its own ``min_weight`` (review 2026-10-05, CA3). They
+    counted from the model's first prediction, which the list's smallest
+    threshold gates, so one target's choice moved with another's threshold:
+    ``[0, 60]`` and ``[60, 60]`` chose apart for ``y1`` on 84 rows from row 60."""
+
+    @staticmethod
+    def _out(min_weight) -> pl.DataFrame:
+        rng = np.random.default_rng(4)
+        n = 300
+        x = rng.normal(size=(n, 3))
+        y0 = 0.5 + 2.0 * x[:, 0] + 0.3 * rng.normal(size=n)
+        y1 = -1.0 + x[:, 1] + 0.5 * x[:, 2] + 0.6 * rng.normal(size=n)
+        df = pl.DataFrame(
+            {"t": np.arange(n, dtype=float), "x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2]}
+            | {"y0": y0, "y1": y1}
+        )
+        spec = po.spec.lasso(
+            "l",
+            targets=["y0", "y1"],
+            features=["x0", "x1", "x2"],
+            clock="t",
+            gap_cap=5.0,
+            half_life=float("inf"),
+            lasso_path=[0.5, 0.1, 0.01, 0.0],
+            select_half_life=float("inf"),
+            min_weight=min_weight,
+            solve_every=0.0,
+            max_rows_between_solves=1,
+        )
+        return po.ModelBank([spec]).fit_predict(df)["l"].struct.unnest()
+
+    def test_another_targets_threshold_does_not_move_a_targets_choice(self):
+        a, b = (
+            self._out(mw)["penalty_selected_y1"].to_numpy() for mw in ([0.0, 60.0], [60.0, 60.0])
+        )
+        wrong = np.flatnonzero(a != b)
+        assert wrong.size == 0, f"{wrong.size} rows differ, the first {wrong[:5]}"
+        assert len(set(a[60:])) > 1, "the choice never moves, so this compares nothing"
+
+    def test_a_list_moves_only_the_targets_above_its_minimum(self):
+        listed, low = self._out([0.0, 60.0]), self._out([0.0, 0.0])
+        # `y0`'s threshold is the list's minimum both times: nothing of it
+        # moves, and the model's predictions are the same ones throughout.
+        assert listed["penalty_selected_y0"].equals(low["penalty_selected_y0"])
+        shown = listed["pred_y1__l0"].is_not_null()
+        for c in (c for c in listed.columns if c.startswith("pred_")):
+            got, want = listed[c], low[c]
+            if c.startswith("pred_y1"):
+                got, want = got.filter(shown), want.filter(shown)
+            assert got.equals(want), c
+        # `y1`'s is above it, so its choice moves.
+        assert not listed["penalty_selected_y1"].equals(low["penalty_selected_y1"])
+
+    def test_a_scalar_and_a_list_of_equal_values_agree(self):
+        assert self._out(30.0).equals(self._out([30.0, 30.0]), null_equal=True)

@@ -21,12 +21,11 @@ this file was written:
   its weight aged twice, chose on the window as it stood a row earlier and
   not at all on a row it did not score, and aged the snapshot by the model's
   half-life where ``select_half_life`` differs;
-- with a ``min_weight`` list (task 96). The model predicts once ``weight_sum``
-  reaches the smallest threshold, and a target's selection error folds its
-  own predictions from then on, on rows its own larger threshold still
-  withholds: a gate on the output, not on the model (review S2). The user
-  kept that reading on 2026-09-24, and docs/ENHANCEMENTS.md E7, which said
-  otherwise, was corrected.
+- with a ``min_weight`` list (task 96), and on a target with gaps. A target's
+  selection error counts from the row where its own weight reaches its own
+  threshold, on the rows the output shows (task 174, review 2026-10-05 CA3,
+  the user's call). From task 96 it folded the model's predictions from the
+  first one, which the smallest threshold gates, so withheld rows counted.
 
 A window that holds one row of a target drops every feature of that
 target's problem, which then fits its intercept alone (task 94); under a
@@ -56,8 +55,8 @@ MAX_DCLOCK = 6.0
 # 0.30-0.39, or no window 0.80-1.1; the decay at twice the half-life
 # 0.04-0.12; each target gated on the shared weight_sum (S2) moves the null
 # pattern on 18-162 rows; the selection at the model's half-life instead of
-# its own moves lam_selected on 133 rows, and from emitted rows only on
-# 15-39.
+# its own moves lam_selected on 140 rows, and counting the rows a target's
+# own threshold withholds (the rule before task 174) on 14-33.
 PRED_TOL = 1e-10
 COEF_TOL = 1e-9
 
@@ -212,8 +211,8 @@ class TestSeveralTargetsWithGaps:
         spec, out, ref = _fit(
             df, half_life=40.0, min_weight=[20.0, 12.0, 25.0], solve_every=2.5, l1_ratio=1.0
         )
-        # A list of thresholds: a target's selection folds the model's own
-        # predictions for it, whatever its own threshold withholds (task 96).
+        # A list of thresholds: a target's selection counts the rows its own
+        # threshold shows, and no others (CA3).
         _held_to_the_reference(df, spec, out, ref)
         # Each target reports from its own weight, not the shared one: the
         # gappy target waits for its own rows to reach its threshold, after

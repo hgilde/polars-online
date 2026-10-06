@@ -582,6 +582,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 l1_ratio: l1_ratio.unwrap_or(1.0),
                 select_half_life: select_half_life.as_ref().map(Span::value),
                 min_weight: spec.min_periods_or_default(),
+                // Each target's own, which its selection counts errors
+                // from, as this layer gates its output (CA3).
+                target_min_weight: spec.min_periods_per_target(),
                 solve_every: solve_every
                     .as_ref()
                     .map_or_else(|| spec.solve_every_default(decay), Span::value),
