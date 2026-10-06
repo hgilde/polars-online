@@ -2328,13 +2328,13 @@ mod tests {
     /// refuses an older form by number, not at a group's first chunk.
     #[test]
     fn a_windows_state_version_moves_the_banks_schema_with_it() {
-        // 28, 29, 30, 31, 32 and 33 moved for `ew_cov`'s PCA cadence,
+        // 28, 29, 30, 31, 32, 33 and 34 moved for `ew_cov`'s PCA cadence,
         // `micro`'s pruning, the models' window cadence, `lasso`'s
-        // per-target thresholds, the windows' stamps and the quantile fit's
-        // band systems (tasks 161, 163, 162, 174, 175, 170), the windows
-        // state unchanged: a schema may move alone, a windows version may
-        // not.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 33));
+        // per-target thresholds, the windows' stamps, the quantile fit's
+        // band systems and the embargo's elapsed clock (tasks 161, 163, 162,
+        // 174, 175, 170, 176), the windows state unchanged: a schema may
+        // move alone, a windows version may not.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 34));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

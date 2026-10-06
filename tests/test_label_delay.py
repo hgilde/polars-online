@@ -590,6 +590,71 @@ class TestBreaksOnSkippedRows:
         assert delayed.gram("m")[0]["weight_sum"] == plain.gram("m")[0]["weight_sum"]
 
 
+T0_NS = 1_704_067_200_000_000_000
+
+
+def _first_differences(got, want):
+    bad = [i for i, (a, b) in enumerate(zip(got, want, strict=True)) if a != b]
+    return len(bad), [(i, got[i], want[i]) for i in bad[:3]]
+
+
+class TestTheReleaseIsExact:
+    """docs/PLAN.md task 176: a row is released on the elapsed clock held
+    exactly, as a window's edge is (task 175): integer nanoseconds on a
+    temporal clock, one subtraction of the raw values on a number clock. The
+    countdown in doubles drifted: on rows 1 ms apart under ``embargo="2s"``
+    every row was learned 2.001 s after it arrived, a row late. The oracles
+    are the raw integer nanoseconds and the raw numbers."""
+
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_a_row_is_learned_exactly_one_embargo_later(self, unit):
+        n = 2_600
+        ns = T0_NS + np.arange(n, dtype=np.int64) * 1_000_000
+        rng = np.random.default_rng(12)
+        df = pl.DataFrame(
+            {"t": ns, "x": rng.standard_normal(n), "y": rng.standard_normal(n)}
+        ).with_columns(pl.col("t").cast(pl.Datetime("ns")).cast(pl.Datetime(unit)))
+        s = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            clock="t",
+            gap_cap="1d",
+            half_life="1h",
+            embargo="2s",
+            emit_clocks=True,
+        )
+        out = po.ModelBank([s]).fit_predict(df)["m"].struct
+        learned = out.field("learned_clock").cast(pl.Datetime("ns")).cast(pl.Int64).to_list()
+        # The newest row at least 2 s before each row, from the integers.
+        newest = np.searchsorted(ns, ns - 2_000_000_000, side="right") - 1
+        want = [int(ns[u]) if u >= 0 else None for u in newest]
+        assert want[1_999] is None and want[2_000] == int(ns[0]), "2,000 rows back"
+        count, first = _first_differences(learned, want)
+        assert count == 0, (count, first)
+
+    @pytest.mark.parametrize("embargo", [0.3, 0.5, 1.0, 2.0])
+    def test_a_number_clocks_release_is_one_subtraction(self, embargo):
+        """Under 0.3 the countdown happened to agree with the subtraction on
+        every row of this clock; under 0.5 and 1.0 it learned two rows a row
+        late, and under 2.0 two rows a row early (2.3 - 0.3 is
+        1.9999999999999998)."""
+        n = 400
+        t = np.arange(n) / 10.0
+        df = frame(n=n, seed=13).with_columns(t=pl.Series(t))
+        s = spec(embargo=embargo, gap_cap=1.0, emit_clocks=True)
+        learned = po.ModelBank([s]).fit_predict(df)["m"].struct.field("learned_clock").to_list()
+        want = []
+        for row in range(n):
+            back = [u for u in range(row) if t[row] - t[u] >= embargo]
+            want.append(float(t[back[-1]]) if back else None)
+        if embargo == 0.3:
+            # 0.7 - 0.4 is 0.29999999999999993, so the row at 0.4 waits for 0.8.
+            assert want[7] == 0.3 and want[8] == 0.5
+        count, first = _first_differences(learned, want)
+        assert count == 0, (count, first)
+
+
 class TestTheSurfaces:
     def test_the_lazy_plan_and_the_bank_agree(self):
         df = frame(n=300, seed=11)

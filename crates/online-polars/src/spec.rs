@@ -2398,8 +2398,11 @@ pub struct Spec {
     /// skipped rows' time included, not the capped delta the models decay by
     /// (`gap_cap` and `session_gap` say how much a model forgets across a
     /// break, not how long it lasted), and the session's gap where a session
-    /// change restarts the clock (docs/PLAN.md task 153). Release depends on
-    /// the rows alone, which makes it chunk-invariant. With no `clock`
+    /// change restarts the clock (docs/PLAN.md task 153). A row exactly the
+    /// delay later releases a row, and the time is held exactly: in integer
+    /// nanoseconds on a temporal clock, by one subtraction of the two rows'
+    /// raw values on a number clock (task 176). Release depends on the rows
+    /// alone, which makes it chunk-invariant. With no `clock`
     /// column that is one unit per row of the group, a skipped row included,
     /// so `embargo = 20` is twenty rows. A reset drops the buffer (the
     /// state it would teach is gone). A break releases nothing early: its

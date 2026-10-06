@@ -110,8 +110,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// quantile fit's state keeps its band systems, the factors its nudges read
 /// their leverage from, which a band row at `ridge = 0` moves in place; a
 /// 32 file holds none, and a bank loading it would build them afresh where
-/// the saved bank held moved ones, a rounding apart, so it is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 33;
+/// the saved bank held moved ones, a rounding apart, so it is refit. **34
+/// since task 176** (the same day): an `embargo` is decided on the elapsed
+/// clock held exactly, which each stream's clock keeps and each held row
+/// keeps its place on, where a 33 file's held rows keep the time still to
+/// wait as a double; it is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 34;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

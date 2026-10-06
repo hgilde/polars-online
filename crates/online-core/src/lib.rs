@@ -429,7 +429,15 @@ pub use window::{
 ///   Gram. A `robust` state from before 33 decodes with no systems, which
 ///   its first nudge builds; the bank refuses a file older than 33 by
 ///   number, and pre-1.0 no loader is written.
-pub const SCHEMA_VERSION: u32 = 33;
+/// - 34 (2026-10-06, task 176): an `embargo` is decided on the elapsed
+///   clock held exactly ([`ClockAdvance::elapsed_stamp`]): integer
+///   nanoseconds on a temporal clock, the raw value beside the steps it
+///   does not count on a number clock. A stream's exact clock keeps the
+///   elapsed clock beside the decayed one, and each row a stream holds
+///   keeps its place on it where it kept the time still to wait, so a 33
+///   file's streams are another shape. The bank refuses a file older than
+///   34 by number; pre-1.0 no loader is written. No model's state moved.
+pub const SCHEMA_VERSION: u32 = 34;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

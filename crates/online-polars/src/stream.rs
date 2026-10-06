@@ -1696,16 +1696,23 @@ impl HeldBreak {
 /// It carries everything the models need to be stepped with later: the row
 /// itself, the clock delta it arrived with -- so replaying the buffer in
 /// order gives the models exactly the gap sequence they would have seen
-/// without the delay -- the time still to pass before it is released, and
-/// the break it arrived after, whose events run when it is learned
-/// (docs/PLAN.md task 153).
+/// without the delay -- its place on the elapsed clock, which its release
+/// is measured from, and the break it arrived after, whose events run when
+/// it is learned (docs/PLAN.md task 153).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingRow {
-    /// Time still to pass before this row is learned from: every accepted
-    /// row's elapsed time ([`online_core::ClockAdvance::elapsed`]) counts it
-    /// down, the clock column's own steps rather than the capped delta, so
-    /// a break never releases a row before its delay has passed.
-    pub remaining: f64,
+    /// The row's place on the elapsed clock, held exactly
+    /// ([`online_core::ClockAdvance::elapsed_stamp`]): it is learned from
+    /// once an accepted row's place is at least `embargo` past it. The
+    /// elapsed clock counts the clock column's own steps rather than the
+    /// capped delta, so a break never releases a row before its delay has
+    /// passed (task 153), and two places compare exactly -- in integer
+    /// nanoseconds on a temporal clock, by one subtraction of raw values on
+    /// a number clock -- where an embargo counted down in doubles released
+    /// rows a row late or early (task 176). `None` only in a damaged state,
+    /// which [`Stream::restore`] refuses.
+    #[serde(default)]
+    pub arrived: Option<Stamp>,
     /// The delta the row arrived with, replayed when it is released.
     pub d_clock: f64,
     /// The row's stamp, its decayed clock held exactly, which a window keys
@@ -1744,6 +1751,41 @@ pub struct PendingRow {
 
 fn yes() -> bool {
     true
+}
+
+/// A spec's `embargo` as the release compares the elapsed clock with it
+/// (docs/PLAN.md task 176): its clock units, and its integer nanoseconds
+/// where it is a duration, so two temporal places compare as integers at
+/// any length ([`Stamp::cmp_span_ns`]), as a window operator's edge does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Embargo {
+    units: f64,
+    ns: Option<i128>,
+}
+
+impl Embargo {
+    fn of(span: &Span) -> Self {
+        Embargo {
+            units: span.value(),
+            ns: match span {
+                Span::Duration(d) => Some(i128::from(d.nanos)),
+                Span::Units(_) => None,
+            },
+        }
+    }
+
+    /// Whether a row that arrived at `then` on the elapsed clock has waited
+    /// the embargo out at `now`: inclusive, so a row exactly one embargo
+    /// back is learned, as the countdown's `<= 0` learned it. A place
+    /// missing on either side, which no stream hands over, waits.
+    fn passed(self, now: Option<Stamp>, then: Option<Stamp>) -> bool {
+        match (now, then) {
+            (Some(now), Some(then)) => {
+                now.cmp_span_ns(then, self.units, self.ns) != std::cmp::Ordering::Less
+            }
+            _ => false,
+        }
+    }
 }
 
 /// What a spec's window core resolved in one chunk for one group
@@ -1974,9 +2016,10 @@ pub struct Stream {
     /// inside each `Step` is the one per-row allocation left, and it is cheap
     /// (docs/IMPROVEMENTS.md P2).
     scratch: Vec<Scratch>,
-    /// Clock units a row waits before the models learn from it (E47);
-    /// `None` for the ordinary "learn where it sits".
-    embargo: Option<f64>,
+    /// The time a row waits on the elapsed clock before the models learn
+    /// from it (E47, docs/PLAN.md task 176); `None` for the ordinary "learn
+    /// where it sits".
+    embargo: Option<Embargo>,
     /// The spec's `gap_cap` and `session_gap` in integer nanoseconds, where
     /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
     /// configuration from the spec, like `embargo`.
@@ -2582,7 +2625,7 @@ impl Stream {
             decay_time: vec![0.0; slots.len()],
             pending_clock: vec![0.0; slots.len()],
             notified: vec![Notified::default(); slots.len()],
-            embargo: spec.embargo.as_ref().map(Span::value),
+            embargo: spec.embargo.as_ref().map(Embargo::of),
             exact_caps: spec.exact_caps(),
             pending: Vec::new(),
             held_break: HeldBreak::default(),
@@ -2772,12 +2815,14 @@ impl Stream {
         // gets whatever the file holds, which is what "resume this stream"
         // means (E47).
         // Each waiting row is replayed into `step` with the spec's columns,
-        // so it must carry exactly them (review 2026-09-18, B3).
+        // so it must carry exactly them (review 2026-09-18, B3), and its
+        // place on the elapsed clock, which its release is measured from
+        // (task 176): every row a stream holds has one.
         let (nf, nt) = (spec.features.len(), spec.targets.len());
         if saved
             .pending
             .iter()
-            .any(|r| r.xs.len() != nf || r.ys.len() != nt)
+            .any(|r| r.xs.len() != nf || r.ys.len() != nt || r.arrived.is_none())
         {
             return Err("saved state's pending rows do not fit this spec".into());
         }
@@ -2948,7 +2993,7 @@ impl Stream {
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
                 stamp: adv.stamp,
-                elapsed: adv.elapsed,
+                elapsed: adv.elapsed_stamp,
                 clock: shown,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
@@ -3301,6 +3346,15 @@ impl Stream {
     /// forgets across a break, not how long it lasted. Release therefore
     /// depends on the rows alone, which is what makes it chunk-invariant.
     ///
+    /// A row's wait has run out when the accepted row's place on the
+    /// elapsed clock is at least the embargo past the row's own
+    /// ([`online_core::ClockAdvance::elapsed_stamp`], docs/PLAN.md task
+    /// 176): two integers of nanoseconds on a temporal clock, one
+    /// subtraction of raw values on a number clock, two row counts without a
+    /// clock. Each held row counted its embargo down in doubles until then,
+    /// and the rounded steps drifted: on rows 1 ms apart under `"2s"` every
+    /// row was learned a row late.
+    ///
     /// A break releases nothing early (docs/PLAN.md task 153). Its events --
     /// the lag rings' clear at a gap past `gap_cap` or a session change,
     /// and `session_shrink`'s blend -- wait in the buffer with the row that
@@ -3330,7 +3384,7 @@ impl Stream {
     /// Returns the released rows' values, indexed by `RowPlan::pending`.
     #[allow(clippy::too_many_arguments)]
     fn apply_label_delay(
-        embargo: Option<f64>,
+        embargo: Option<Embargo>,
         pending: &mut Vec<PendingRow>,
         held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
@@ -3338,10 +3392,9 @@ impl Stream {
         targets: &[Vec<f64>],
         formulas: Option<FormulaTargets<'_>>,
     ) -> Vec<PendingRow> {
-        let delay = match (embargo, formulas) {
-            (None, None) => return Vec::new(),
-            (d, _) => d.unwrap_or(0.0),
-        };
+        if embargo.is_none() && formulas.is_none() {
+            return Vec::new();
+        }
         let mut released: Vec<PendingRow> = Vec::new();
         let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
         // One template for every replayed row: only `pending` and the
@@ -3354,7 +3407,7 @@ impl Stream {
             pending: slot,
             d_clock: row.d_clock,
             stamp: row.stamp,
-            elapsed: 0.0,
+            elapsed: None,
             clock: row.clock,
             reset: false,
             blend: row.blend,
@@ -3415,8 +3468,8 @@ impl Stream {
             }
             if !plan.accept {
                 // A skipped row teaches nothing and waits for nothing; its
-                // time is folded into the next accepted row's, which is what
-                // counts the buffer down, and its events wait with that row.
+                // time passes on the elapsed clock, which the next accepted
+                // row's place carries, and its events wait with that row.
                 held_break.session_changed |= plan.session_changed;
                 held_break.blend |= plan.blend;
                 held_break.capped |= plan.capped;
@@ -3424,12 +3477,11 @@ impl Stream {
                 continue;
             }
             if !plan.reset {
-                for row in pending.iter_mut() {
-                    row.remaining -= plan.elapsed;
-                }
+                // With no embargo a formula row waits for its window alone.
+                let now = plan.elapsed;
                 let ready = pending
                     .iter()
-                    .take_while(|r| r.remaining <= 0.0 && r.resolved)
+                    .take_while(|r| r.resolved && embargo.is_none_or(|e| e.passed(now, r.arrived)))
                     .count();
                 for row in pending.drain(..ready) {
                     released.push(row);
@@ -3441,11 +3493,11 @@ impl Stream {
                 }
             }
             // The row itself: scored from the state as it now stands, and
-            // buffered with the delta it arrived with and the break before
-            // it.
+            // buffered with the delta it arrived with, its place on the
+            // elapsed clock and the break before it.
             let i = plan.i;
             pending.push(PendingRow {
-                remaining: delay,
+                arrived: plan.elapsed,
                 d_clock: plan.d_clock,
                 stamp: plan.stamp,
                 w: plan.w,
@@ -3545,9 +3597,9 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
-                // Scored, never learned: no window moves.
+                // Scored, never learned: no window moves, no row is held.
                 stamp: None,
-                elapsed: 0.0,
+                elapsed: None,
                 // Without a clock column, the row's index in its group: the
                 // rows learned, then this call's rows in order, as
                 // `fit_predict` counts them (task 159, B2: every scored row
@@ -3914,9 +3966,12 @@ struct RowPlan {
     /// decides its edge from ([`online_core::Stamp`], docs/PLAN.md task
     /// 175): `None` for a skipped row and a row only scored.
     stamp: Option<Stamp>,
-    /// The time that passed since the previous accepted row, uncapped: what
-    /// counts the `embargo` buffer down (docs/PLAN.md task 153).
-    elapsed: f64,
+    /// The row's place on the elapsed clock, held exactly: every step of the
+    /// clock column since the stream began, uncapped (docs/PLAN.md task
+    /// 153), from which the `embargo` buffer measures each held row's wait
+    /// (task 176). `None` for a skipped row, a row only scored and a row
+    /// replayed out of the buffer.
+    elapsed: Option<Stamp>,
     /// The row's clock as the clock fields show it (task 152): the column's
     /// value, or the group's row index with no column.
     clock: Option<ClockValue>,

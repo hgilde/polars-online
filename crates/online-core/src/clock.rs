@@ -6,7 +6,8 @@
 //! into the next accepted row so that decay still covers skipped time.
 //! [`ClockState::advance_stamped`] also gives each accepted row its [`Stamp`]:
 //! the same decayed clock held exactly, which a model's window decides its
-//! edge from (docs/PLAN.md task 175).
+//! edge from (docs/PLAN.md task 175); and its place on the elapsed clock held
+//! exactly, which a delay decides its release from (task 176).
 
 use std::cmp::Ordering;
 
@@ -192,11 +193,30 @@ pub struct ClockAdvance {
     /// say how much a model forgets across a break, not how long it lasted,
     /// so `d_clock` runs slower than the clock across a capped gap and
     /// faster across a session gap longer than its step. `0` on the first
-    /// row and at a reset; only meaningful when `accepted`.
+    /// row and at a reset; only meaningful when `accepted`. A double, for a
+    /// caller to report: a delay is decided on [`Self::elapsed_stamp`],
+    /// where these steps add up exactly.
     pub elapsed: f64,
     /// The row's place on the decayed clock, held exactly: `Some` for an
     /// accepted row of [`ClockState::advance_stamped`], `None` otherwise.
     pub stamp: Option<Stamp>,
+    /// The row's place on the elapsed clock, held exactly (docs/PLAN.md task
+    /// 176): `Some` for an accepted row of [`ClockState::advance_stamped`],
+    /// `None` otherwise. The elapsed clock adds up every row's
+    /// [`Self::elapsed`] step, a skipped row's included: in integer
+    /// nanoseconds on a temporal clock ([`Stamp::Ns`]); on a number clock as
+    /// the row's raw value beside the steps the elapsed clock does not count
+    /// ([`Stamp::Raw`]) -- a session restart's step back, for which it counts
+    /// the session's gap -- so two rows with no session restart between them
+    /// differ by one subtraction of their raw values; without a clock column,
+    /// the row's place in the stream. A reset starts it over.
+    ///
+    /// What a delay is decided on: a row held under `embargo` is learned
+    /// once an accepted row's place is at least the embargo past its own
+    /// ([`Stamp::cmp_span_ns`]). Counted down in doubles, the embargo drifted:
+    /// two thousand steps of 1 ms left a sliver of `"2s"`, and every row was
+    /// learned a row late.
+    pub elapsed_stamp: Option<Stamp>,
 }
 
 /// An accepted row's place on the decayed clock, held exactly (docs/PLAN.md
@@ -321,7 +341,8 @@ pub fn ns_of_seconds(s: f64) -> Option<i128> {
 
 /// The decayed clock held exactly between rows, beside the doubles
 /// [`ClockState::advance`] hands out: what [`ClockState::advance_stamped`]
-/// keeps (docs/PLAN.md task 175). Each stamp form reads its own part.
+/// keeps (docs/PLAN.md task 175); and the elapsed clock held exactly beside
+/// it (task 176). Each stamp form reads its own part.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Exact {
     /// A temporal clock: the decayed clock of the last accepted row, in
@@ -336,15 +357,25 @@ struct Exact {
     removed: f64,
     /// No clock column: the rows advanced, the next row's place.
     rows: u64,
+    /// A temporal clock: the elapsed clock of the last row, skipped or not,
+    /// in integer nanoseconds: every step uncapped.
+    elapsed_ns: i128,
+    /// A number clock or none: the raw steps the elapsed clock does not
+    /// count, through the last row -- at a session change that restarts the
+    /// clock, the step back less the session's gap, which it counts instead.
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
+    elapsed_removed: f64,
 }
 
 impl Exact {
-    /// One row, after [`ClockState`] has decided its step `d` (and `raw`,
-    /// its clock's step, `None` on the first row): the same decisions, in
-    /// integer nanoseconds on a temporal clock, and as removed time beside
-    /// the raw value on a number clock or none. The stamp of an accepted
-    /// row, its skipped predecessors' steps folded in under the cap as
-    /// [`ClockState::advance`] folds them; `None` for a skipped row.
+    /// One row, after [`ClockState`] has decided its step `d` and its
+    /// elapsed time `elapsed` (and `raw`, its clock's step, `None` on the
+    /// first row): the same decisions, in integer nanoseconds on a temporal
+    /// clock, and as removed time beside the raw value on a number clock or
+    /// none. The stamp of an accepted row, its skipped predecessors' steps
+    /// folded in under the cap as [`ClockState::advance`] folds them, and its
+    /// place on the elapsed clock, every row's step counted whole; `None`
+    /// for both on a skipped row.
     #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
@@ -355,12 +386,14 @@ impl Exact {
         session_changed: bool,
         raw: Option<f64>,
         d: f64,
+        elapsed: f64,
         pending: f64,
         reset: bool,
         accept: bool,
-    ) -> Option<Stamp> {
+    ) -> (Option<Stamp>, Option<Stamp>) {
         if reset {
-            // The stamps start over with the model.
+            // The stamps start over with the model, and the elapsed clock
+            // with them: a reset drops every row a delay holds.
             *self = Exact::default();
         }
         let place = self.rows as f64;
@@ -371,51 +404,79 @@ impl Exact {
                 .map(i128::from)
                 .or_else(|| ns_of_seconds(cfg.gap_cap));
             let capped = |v: i128| cap.map_or(v, |c| v.min(c));
-            let d_ns = match (now, prev, raw) {
-                _ if reset => 0,
-                (_, _, None) => 0,
+            let (d_ns, e_ns) = match (now, prev, raw) {
+                _ if reset => (0, 0),
+                (_, _, None) => (0, 0),
                 (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p)), Some(_)) => {
                     let r = i128::from(c) - i128::from(p);
-                    if session_changed {
+                    // The session's gap in nanoseconds, where a session
+                    // change takes one.
+                    let gap = match cfg.session_gap {
+                        Some(SessionGap::Gap(g)) => Some(
+                            caps.session_gap_ns
+                                .map(i128::from)
+                                .or_else(|| ns_of_seconds(g))
+                                .unwrap_or(0)
+                                .max(0),
+                        ),
+                        _ => None,
+                    };
+                    let d_ns = if session_changed {
                         match cfg.session_gap {
                             Some(SessionGap::Reset) => 0,
-                            Some(SessionGap::Gap(g)) => {
-                                let g = caps
-                                    .session_gap_ns
-                                    .map(i128::from)
-                                    .or_else(|| ns_of_seconds(g))
-                                    .unwrap_or(0);
-                                capped(g.max(0))
-                            }
+                            Some(SessionGap::Gap(_)) => capped(gap.unwrap_or(0)),
                             None => capped(r.max(0)),
                         }
                     } else if r < 0 {
                         0
                     } else {
                         capped(r)
-                    }
+                    };
+                    // The time that passed, as `ClockState::step` counts it:
+                    // the column's forward step; the session's gap across a
+                    // session change that restarts the clock; nothing for a
+                    // step back within a session.
+                    let e_ns = if r >= 0 {
+                        r
+                    } else if session_changed {
+                        gap.unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (d_ns, e_ns)
                 }
                 // A step from a value of the other form, which only a direct
-                // caller hands: the step decided in seconds.
-                _ => ns_of_seconds(d).unwrap_or(0),
+                // caller hands: the steps decided in seconds.
+                _ => (
+                    ns_of_seconds(d).unwrap_or(0),
+                    ns_of_seconds(elapsed).unwrap_or(0),
+                ),
             };
+            // Every row's time passes, a skipped row's too.
+            self.elapsed_ns = self.elapsed_ns.saturating_add(e_ns);
             if !accept {
                 self.skipped_ns = self.skipped_ns.saturating_add(d_ns);
-                return None;
+                return (None, None);
             }
             let total = self.skipped_ns.saturating_add(d_ns);
             self.skipped_ns = 0;
             self.ns = self.ns.saturating_add(capped(total));
-            return Some(Stamp::Ns(self.ns));
+            return (Some(Stamp::Ns(self.ns)), Some(Stamp::Ns(self.elapsed_ns)));
         }
         // A number clock, or none: the row's step less what the model sees of
         // it is removed time, and nothing else is -- an uncapped step is its
-        // own `d`, so a stretch without a break removes exactly nothing.
+        // own `d`, so a stretch without a break removes exactly nothing. The
+        // elapsed clock removes only what it does not count of the step: a
+        // forward step is its own `elapsed`, and removes nothing, one that
+        // overflows to infinity included (`inf − inf` would be NaN).
         if let Some(raw) = raw.filter(|_| !reset) {
             self.removed += raw - d;
+            if raw != elapsed {
+                self.elapsed_removed += raw - elapsed;
+            }
         }
         if !accept {
-            return None;
+            return (None, None);
         }
         // The cap on the folded total, as `advance` applies it.
         let total = pending + d;
@@ -426,7 +487,10 @@ impl Exact {
             Some(c) => c.seconds(),
             None => place,
         };
-        Some(Stamp::Raw(value, self.removed))
+        (
+            Some(Stamp::Raw(value, self.removed)),
+            Some(Stamp::Raw(value, self.elapsed_removed)),
+        )
     }
 }
 
@@ -606,7 +670,9 @@ impl ClockState {
     /// step folded into the next accepted one under the cap. On a number
     /// clock, or none, it is the row's raw value, or its place in the
     /// stream, beside the time the caps and session steps removed. A reset
-    /// starts it over.
+    /// starts it over. Beside it, [`ClockAdvance::elapsed_stamp`] holds the
+    /// elapsed clock the same way, every step uncapped (docs/PLAN.md task
+    /// 176).
     ///
     /// A stream stamps every row it advances, or none: a row advanced by
     /// [`Self::advance`] leaves the exact clock where it was, so stamps after
@@ -757,8 +823,9 @@ impl ClockState {
             elapsed = 0.0;
         }
         // The same step held exactly, for a caller that stamps its rows
-        // (task 175): read before this row's clock replaces the last.
-        let stamp = caps.and_then(|caps| {
+        // (task 175), and the time that passed held exactly beside it (task
+        // 176): read before this row's clock replaces the last.
+        let (stamp, elapsed_stamp) = caps.map_or((None, None), |caps| {
             self.exact.get_or_insert_with(Exact::default).step(
                 cfg,
                 caps,
@@ -767,6 +834,7 @@ impl ClockState {
                 session_changed,
                 raw,
                 d,
+                elapsed,
                 self.pending,
                 reset,
                 accept,
@@ -796,6 +864,7 @@ impl ClockState {
                 capped: capped || total > cfg.gap_cap,
                 elapsed,
                 stamp,
+                elapsed_stamp,
             }
         } else {
             self.pending += d;
@@ -810,6 +879,7 @@ impl ClockState {
                 capped,
                 elapsed: 0.0,
                 stamp,
+                elapsed_stamp,
             }
         }
     }
@@ -1144,7 +1214,175 @@ mod tests {
                 None => Stamp::Raw(0.0, 0.0),
             };
             assert_eq!(adv.stamp, Some(start), "{clock:?}");
+            assert_eq!(adv.elapsed_stamp, Some(start), "{clock:?}: elapsed");
         }
+    }
+
+    /// Task 176: on a temporal clock a row's place on the elapsed clock is
+    /// every step since the stream began, uncapped, summed in integer
+    /// nanoseconds, the oracle being the steps written out in integers: two
+    /// thousand steps of 1 ms are two seconds exactly, where their doubles
+    /// do not sum to 2; a gap past `gap_cap` counts whole, where the decayed
+    /// stamp adds the cap; a session change with the clock running on
+    /// counts its step, not `session_gap`; one with the clock an hour back
+    /// counts `session_gap`'s own nanoseconds (a hundred days and one, which
+    /// no double holds); skipped rows' steps count whole; a reset starts it
+    /// over; and only an accepted row of a stamped advance has one.
+    #[test]
+    fn a_temporal_elapsed_stamp_counts_every_step_whole_in_integer_nanoseconds() {
+        let gap_ns: i64 = 100 * 86_400 * 1_000_000_000 + 1;
+        let cfg = ClockCfg {
+            gap_cap: 1.0,
+            session_gap: Some(SessionGap::Gap(seconds_of_ns(i128::from(gap_ns)))),
+            on_clock_reset: OnClockReset::ResetState,
+            min_backwards_jump: 60.0,
+        };
+        assert_ne!(
+            ns_of_seconds(seconds_of_ns(i128::from(gap_ns))),
+            Some(i128::from(gap_ns))
+        );
+        let caps = ExactCaps {
+            gap_cap_ns: Some(1_000_000_000),
+            session_gap_ns: Some(gap_ns),
+        };
+        let mut c = ClockState::new();
+        let mut adv = stamp_at(&mut c, &cfg, &caps, 0, Some(1), true);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(0)), "the first row");
+        let mut summed = 0.0;
+        for ms in 1..=2000 {
+            adv = stamp_at(&mut c, &cfg, &caps, ms * 1_000_000, Some(1), true);
+            summed += adv.elapsed;
+        }
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(2_000_000_000)));
+        assert_ne!(summed, 2.0, "the doubles drift");
+        // A gap of 200 days: whole, where the decayed stamp adds the cap.
+        let day: i64 = 86_400 * 1_000_000_000;
+        let mut at = 2_000_000_000 + 200 * day;
+        let before = adv.stamp.unwrap();
+        adv = stamp_at(&mut c, &cfg, &caps, at, Some(1), true);
+        let mut want = i128::from(at);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(want)));
+        assert_eq!(
+            adv.stamp
+                .unwrap()
+                .cmp_span_ns(before, 1.0, Some(1_000_000_000)),
+            Ordering::Equal
+        );
+        // A session change a millisecond on, the clock running on: the step.
+        at += 1_000_000;
+        adv = stamp_at(&mut c, &cfg, &caps, at, Some(2), true);
+        want += 1_000_000;
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(want)));
+        // One at the same instant: no time passed, whatever the session's
+        // gap makes the model forget.
+        adv = stamp_at(&mut c, &cfg, &caps, at, Some(4), true);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(want)));
+        // A session change with the clock an hour back: the session's gap.
+        at -= 3_600_000_000_000;
+        adv = stamp_at(&mut c, &cfg, &caps, at, Some(3), true);
+        want += i128::from(gap_ns);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(want)));
+        // Three skipped rows 40 days apart, then an accepted row a
+        // nanosecond on: every step whole.
+        for _ in 0..3 {
+            at += 40 * day;
+            adv = stamp_at(&mut c, &cfg, &caps, at, Some(3), false);
+            assert_eq!(adv.elapsed_stamp, None, "a skipped row has no place");
+        }
+        at += 1;
+        adv = stamp_at(&mut c, &cfg, &caps, at, Some(3), true);
+        want += i128::from(120 * day + 1);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(want)));
+        // A step back past `min_backwards_jump` restarts it.
+        adv = stamp_at(&mut c, &cfg, &caps, at - 3_600_000_000_000, Some(3), true);
+        assert!(adv.reset);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(0)));
+        adv = stamp_at(&mut c, &cfg, &caps, at - 3_599_999_999_999, Some(3), true);
+        assert_eq!(adv.elapsed_stamp, Some(Stamp::Ns(1)));
+        // An unstamped advance hands out none.
+        let plain = c.advance(&cfg, Some(ClockValue::Ns(T0 + at)), Some(3), true);
+        assert_eq!(plain.elapsed_stamp, None);
+    }
+
+    /// On a number clock a row's place on the elapsed clock is its raw value
+    /// beside the steps the elapsed clock does not count: none within a
+    /// stretch, across a capped gap or at a session change with the clock
+    /// running on, so any two such rows differ by one subtraction of their
+    /// raw values; at a session change that restarts the clock, the step
+    /// back less the session's gap, which it counts instead.
+    #[test]
+    fn a_number_clocks_elapsed_stamp_is_its_raw_value_and_what_it_does_not_count() {
+        let cfg = ClockCfg {
+            gap_cap: 5.0,
+            session_gap: Some(SessionGap::Gap(2.0)),
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut row = |t: f64, s: u64, accept: bool| {
+            c.advance_stamped(&cfg, &caps, Some(ClockValue::F64(t)), Some(s), accept)
+                .elapsed_stamp
+        };
+        let first = row(0.0, 1, true).unwrap();
+        for i in 1..10 {
+            assert_eq!(
+                row(f64::from(i) / 10.0, 1, true),
+                Some(Stamp::Raw(f64::from(i) / 10.0, 0.0))
+            );
+        }
+        // A gap of 100 past the cap, a session change one on with the clock
+        // running on, and two skipped rows: nothing the elapsed clock drops.
+        assert_eq!(row(100.9, 1, true), Some(Stamp::Raw(100.9, 0.0)));
+        assert_eq!(row(101.9, 2, true), Some(Stamp::Raw(101.9, 0.0)));
+        assert_eq!(row(104.9, 2, false), None);
+        assert_eq!(row(107.9, 2, false), None);
+        let last = row(108.9, 2, true).unwrap();
+        assert_eq!(last, Stamp::Raw(108.9, 0.0));
+        assert_eq!(last.cmp_span(first, 108.9), Ordering::Equal);
+        // The clock restarts at a session change: the session's gap counts.
+        let restart = row(3.0, 3, true).unwrap();
+        assert_eq!(restart, Stamp::Raw(3.0, (3.0 - 108.9) - 2.0));
+        assert_eq!(restart.cmp_span(last, 2.0 - 1e-9), Ordering::Greater);
+        assert_eq!(restart.cmp_span(last, 2.0 + 1e-9), Ordering::Less);
+        // Within the new stretch, one subtraction again.
+        let on = row(3.3, 3, true).unwrap();
+        assert_eq!(on.cmp_span(restart, 3.3 - 3.0), Ordering::Equal);
+        // A step that overflows to infinity passed more than any embargo,
+        // and leaves the places after it whole.
+        let mut c = ClockState::new();
+        let mut row = |t: f64| {
+            c.advance_stamped(&cfg, &caps, Some(ClockValue::F64(t)), None, true)
+                .elapsed_stamp
+                .unwrap()
+        };
+        let low = row(-1e308);
+        let high = row(1e308);
+        assert_eq!(high, Stamp::Raw(1e308, 0.0));
+        assert_eq!(high.cmp_span(low, 1e300), Ordering::Greater);
+        assert_eq!(row(1e308).cmp_span(high, 0.0), Ordering::Equal);
+    }
+
+    /// Without a clock column a row's place on the elapsed clock is its
+    /// place in the stream, skipped rows counted, a session change included:
+    /// a session's gap of half a row is what a model forgets, not time that
+    /// passed.
+    #[test]
+    fn a_row_count_elapsed_stamp_is_the_rows_place() {
+        let cfg = ClockCfg {
+            session_gap: Some(SessionGap::Gap(0.5)),
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut row = |s: u64, accept: bool| {
+            c.advance_stamped(&cfg, &caps, None, Some(s), accept)
+                .elapsed_stamp
+        };
+        assert_eq!(row(1, true), Some(Stamp::Raw(0.0, 0.0)));
+        assert_eq!(row(1, true), Some(Stamp::Raw(1.0, 0.0)));
+        assert_eq!(row(1, false), None);
+        assert_eq!(row(1, true), Some(Stamp::Raw(3.0, 0.0)));
+        assert_eq!(row(2, true), Some(Stamp::Raw(4.0, 0.0)));
     }
 
     /// The comparison of two stamps against a span: two temporal stamps by

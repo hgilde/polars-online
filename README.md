@@ -970,6 +970,7 @@ fwd = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 | case | what `embargo` does |
 |---|---|
 | what the delay counts | the time that passed on the clock column, skipped rows included, and `session_gap` where a session restarts the clock. It is not the capped step the model decays by, so the release depends on the rows alone and survives any chunking |
+| exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
 | with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
 | at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
 | at the end of the stream | the rows still waiting are not learned, unless the state is saved and another run resumes from it |

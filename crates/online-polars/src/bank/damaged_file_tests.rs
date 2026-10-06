@@ -78,6 +78,28 @@ fn a_file_whose_states_do_not_match_its_specs_is_refused() {
     assert!(Bank::load_bytes(&bytes, Some(&specs)).is_ok());
 }
 
+/// Task 176: a row held under `embargo` keeps its place on the elapsed
+/// clock, which its release is measured from. A file whose held row has
+/// none is refused at load, rather than left to hold the row for good.
+#[test]
+fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0, "embargo": 2}"#,
+    );
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let damaged = reencoded(&bytes, |f| {
+        let held = &mut f.states[0][0].1.pending;
+        assert!(!held.is_empty(), "the group holds rows");
+        held[0].arrived = None;
+    });
+    let err = Bank::load_bytes(&damaged, None).err().expect("loaded");
+    assert!(err.contains("pending rows do not fit"), "{err}");
+    assert!(Bank::load_bytes(&bytes, None).is_ok());
+}
+
 /// PA2: a closed row whose spec index, targets or Gram do not fit its
 /// spec loaded, saved again, and panicked in `closed_groups`.
 #[test]

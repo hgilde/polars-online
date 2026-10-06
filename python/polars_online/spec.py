@@ -118,10 +118,13 @@ sees a stream* is the guide to them. This is the reference.
     the conformal band, ``weight_sum`` and ``min_weight`` all see it then.
     The delay counts the time that passed on the clock column, skipped rows
     included, not the capped step the models decay by. Where a session
-    change restarts the clock it counts ``session_gap``. A break releases
-    nothing early: its events wait with the row after it, and run when that
-    row is learned. A reset drops the held rows. Units: clock units, or
-    without a ``clock`` the group's rows, a skipped row included.
+    change restarts the clock it counts ``session_gap``. A row exactly the
+    delay later releases a row, and the time is held exactly: in integer
+    nanoseconds on a temporal clock, and by one subtraction of the two rows'
+    values on a number clock. A break releases nothing early: its events
+    wait with the row after it, and run when that row is learned. A reset
+    drops the held rows. Units: clock units, or without a ``clock`` the
+    group's rows, a skipped row included.
 ``group``, ``group_close``
     One model state per value of the ``group`` column. ``group_close`` says
     when a key is finished, so its state can be dropped. ``"monotone"``: the
