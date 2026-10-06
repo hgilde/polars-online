@@ -341,7 +341,7 @@ much of its input it consumed:
 
 | what is resumed | the claim | held by |
 |---|---|---|
-| a bank of any kind | saved mid-stream and loaded, it goes on exactly as the one that was not | `tests/test_every_kind.py` (task 111); `model_contract.rs`'s generated streams, at any row |
+| a bank of any kind | saved mid-stream and loaded, it goes on exactly as the one that was not | `tests/test_every_kind.py` (task 111); `model_contract.rs`'s generated streams, at any row; a `quantile` fit holding a moved band factor, at 101 save points (`robust.rs`) and at every row from 990 to 1010 through the bank (`test_robust.py::TestTheBandFactorIsState`; task 170) |
 | a bank on input that overlaps its state | `ModelBank.skip_learned` keeps each row after its group's last clock, so the rerun learns each row once | `tests/test_skip_learned.py` (task 120) |
 | a formula target with a window open | a state saved mid-window resumes as one run | `a_state_saved_mid_window_resumes_as_one_run`, in `formula_targets.rs` and in `test_formula_targets.py` |
 | a window run, saved at a row | a save and load at row 1, 2, 17, 33 or 59 is one run | `test_a_save_and_load_at_every_row_is_one_run` |

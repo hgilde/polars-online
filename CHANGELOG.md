@@ -144,16 +144,17 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 32,
+- **Every saved bank must be refit.** A bank file now carries schema 33,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
-  its version, naming the way out: refit from the input. Six changes
+  its version, naming the way out: refit from the input. Seven changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
   keeps (task 104, then review rounds R4 and R6), the PCA, pruning and
   window cadences of `ew_cov`, `micro` and the windowed models (tasks 161,
-  163 and 162), `lasso`'s threshold per target (task 174), and the stamps
-  a model window keys its snapshots by (task 175). An `ew_cov` state with
-  `mahal_quantiles` is refused too.
+  163 and 162), `lasso`'s threshold per target (task 174), the stamps a
+  model window keys its snapshots by (task 175), and `quantile`'s band
+  factor (task 170). An `ew_cov` state with `mahal_quantiles` is refused
+  too.
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -519,9 +520,17 @@ The output names task 144 renamed:
   the default schedule, and 1.17M against 1.01M solving every row, measured
   side by side. The core's `SpdFactor` can now be moved in place to the
   factor of `c·A + v vᵀ` or of `E·A·E` in O(k²), held to faer's fresh
-  factorization. No model uses it yet: under forgetting a ridge shifts the
-  matrix off a rank-one step, and at ridge 0 a moved factor, which a saved
-  state does not carry, would break a resume's last bit.
+  factorization. At `ridge=0` a `quantile` fit uses it: a row inside the
+  band moves the kept band factor instead of refactorizing it at the next
+  nudge, about 4% more through the bank (2.97M rows a second against
+  2.85M), and the factor is saved with the state, so a resumed fit goes on
+  to the bit (about 670 bytes more per target at ten features). A moved
+  factor holds its matrix to rounding, not to the bit, so at `ridge=0`
+  predictions move at that level where a nudge's bound binds: 1,357 of
+  3,000 on a stream with features correlated at 0.999, by at most
+  3.4e-13 relative. Under a ridge the factor is rebuilt as before, since
+  forgetting shifts a ridge off a rank-one step, and `huber` keeps no band
+  system.
 
 ### Fixed
 

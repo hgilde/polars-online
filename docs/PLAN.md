@@ -7838,7 +7838,18 @@ tick, and that the series holding it up has a count near 1.
       state, so a resumed model refactors where the unbroken one holds a
       moved factor, and 1,357 predictions part by up to 3.4e-13 relative.
       Options: accept rounding-level resume for `quantile(ridge=0)`, make
-      the band factor state (a schema bump), or leave it parked.
+      the band factor state (a schema bump), or leave it parked. *Decided
+      2026-10-06, the user's word: "Save the band factor in the state".*
+      Built: each target's band system (the factor as its packed lower
+      triangle, jitter rung and shift and move count, refused on reading
+      if incomplete, non-positive, non-finite or inconsistent; the kept
+      columns and scales, held to the Gram's own to the bit) is `robust`'s
+      state, schema 33, compared in equality, never refactored on restore;
+      `huber` keeps no band system, and the row buffer compares equal
+      whatever it holds. A fit saved at any of 101 rows (Rust) and 21 rows
+      through the bank resumes to the bit, where three save points went off
+      before; a JSON round trip carries the moved factor; thirteen damaged
+      states are each refused. About 670 bytes a target at ten features.
 - [ ] 176. **`embargo` counts down in doubles, so an embargo of exactly k
       steps can release a row a row late -- found 2026-10-06 by task 175.**
       `apply_label_delay` (`stream.rs`) subtracts each row's `elapsed` from
