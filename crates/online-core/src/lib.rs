@@ -372,7 +372,13 @@ pub use window::{
 /// - 27 (2026-10-05, task 159): the windows state's version 7 form, which
 ///   carries the group and session columns' dtypes; the bank refuses one
 ///   older than 27 by number. The models' own states are unchanged.
-pub const SCHEMA_VERSION: u32 = 27;
+/// - 28 (2026-10-06, task 161): `ew_cov`'s configuration carries
+///   `pca_every` in clock units and `max_rows_between_pca`, and its state
+///   the clock since the last refresh. The compact encoding is positional,
+///   so an `ew_cov` state from before 28 does not decode; the bank refuses
+///   a file older than 28 by number, and pre-1.0 no loader is written.
+///   Every other model's state from 14 on still loads.
+pub const SCHEMA_VERSION: u32 = 28;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

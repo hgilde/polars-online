@@ -7540,6 +7540,28 @@ tick, and that the series holding it up has a count near 1.
       core and polars layer), and the last, CI4's Rust 1.95 with the clippy
       lints it turns on.
 
+- [x] 161. **`ew_cov`'s PCA refreshes on the clock, as the regressions'
+      solves do -- requested 2026-10-06.** Size S. The user's words: "Does
+      pca ever take a clock value as well?", then "I want this feature",
+      choosing to mirror the solve schedule. `pca_every` counted rows,
+      where `solve_every` counts clock units and `max_rows_between_solves`
+      rows, whichever comes first. Now `pca_every` is clock units, a number
+      or a duration (`"5m"`), `0` every row, and `max_rows_between_pca`
+      caps the rows between refreshes; whichever comes first refreshes, and
+      with neither the components refresh every row, as before. A spec
+      without a clock column is unchanged (its clock is the row index); a
+      clocked spec that gave `pca_every = N` now means `N` clock units. The
+      model's configuration and state change shape (`clock_since_pca`), so
+      the schema is bumped and older states are refused (rule 5's pre-1.0
+      exception). Tests: the clock cadence on a temporal clock with a
+      duration, the row cap, both together, a capped gap counting as its
+      cap, weight-zero rows counting, chunk invariance and resume mid-
+      cadence, and the refusals. Built 2026-10-06: `tests/test_pca_cadence.py`
+      holds the refresh rows read from the output to the rule written out
+      over the stream's own clock (13 tests), and `ewcov.rs` holds the core
+      to it over irregular steps and through a save mid-cadence (which fails
+      if the clock since the last refresh is not saved). Schema 28.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

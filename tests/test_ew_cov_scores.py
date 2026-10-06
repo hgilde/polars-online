@@ -684,10 +684,16 @@ class TestValidation:
     def test_pca_bounds(self):
         with pytest.raises(ValueError, match="pca asks for 3 components of 2 features"):
             spec(2, pca=3)
-        with pytest.raises(ValueError, match="pca_every must be >= 1"):
-            spec(2, pca=1, pca_every=0)
+        with pytest.raises(ValueError, match="pca_every must be finite and >= 0 clock units"):
+            spec(2, pca=1, pca_every=-1.0)
+        with pytest.raises(ValueError, match="pca_every must not be NaN"):
+            spec(2, pca=1, pca_every=float("nan"))
+        # 0 is every row, as `solve_every = 0` is (task 161).
+        assert spec(2, pca=1, pca_every=0)["model"]["pca_every"] == 0
         with pytest.raises(ValueError, match="pca_every needs `pca`"):
             spec(2, pca_every=3)
+        with pytest.raises(ValueError, match="max_rows_between_pca needs `pca`"):
+            spec(2, max_rows_between_pca=3)
         with pytest.raises(ValueError, match="pca_every needs `pca`"):
             spec(2, pca=0, pca_every=3)
         with pytest.raises(ValueError, match="pca must be >= 0"):

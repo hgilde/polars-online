@@ -298,7 +298,6 @@ _AT_LEAST_ONE = frozenset(
         "cross_lags",
         "shards",
         "window_every",
-        "pca_every",
         "update_every",
         "split_merge_every",
         "prune_every",
@@ -2068,7 +2067,8 @@ def ew_cov(
     precision_prior: float | None = None,
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
-    pca_every: int | None = None,
+    pca_every: float | Duration | None = None,
+    max_rows_between_pca: int | None = None,
     lags: list[int] | None = None,
     window_size: float | Duration | None = None,
     window_every: int | None = None,
@@ -2126,7 +2126,7 @@ def ew_cov(
         That is a threshold from the stream's own history instead of a
         table, so ``mahal > mahal_q0.99`` is one row in a hundred without
         assuming a distribution. The row's own score joins after it is read.
-    ``pca``, ``pca_every``
+    ``pca``
         Track the top ``pca`` principal components of the covariance, per
         component ``j``:
 
@@ -2145,11 +2145,18 @@ def ew_cov(
            * - ``pc<j>_score``
              - the row's coordinate ``v_j . (x - m)``
 
-        The eigendecomposition is refreshed every ``pca_every`` rows,
-        weight-zero rows included, as ``window_every`` counts them (default 1,
-        O(k³) each), after the row is folded in. Between refreshes
-        the loadings are frozen, so a row's scores never depend on chunking.
         Each refresh keeps the previous sign, so a loading never flips.
+    ``pca_every``, ``max_rows_between_pca``
+        The eigendecomposition, O(k³), is refreshed after the row is folded
+        in, every ``pca_every`` clock units or every ``max_rows_between_pca``
+        rows, whichever comes first, as ``solve_every`` and
+        ``max_rows_between_solves`` schedule a regression's solve.
+        ``pca_every`` is a number of the clock's units, a duration on a
+        temporal clock (``"5m"``), or ``0`` for every row; without a clock
+        column the clock is the row's number. With neither given, every row.
+        A row of weight zero advances both, as ``window_every`` counts it,
+        and a gap capped at ``gap_cap`` counts as the cap. Between refreshes
+        the loadings are frozen, so a row's scores never depend on chunking.
     ``lags``
         Lagged cross-moments beside the contemporaneous ones. With ``W`` and
         ``m`` the weight and mean before the row, and both deviations against
@@ -2262,7 +2269,7 @@ def ew_cov(
             stats=["mean", "std", "corr", "partial_corr", "mahal"],
             precision_prior=1e-6,        # needed by partial_corr and mahal
             mahal_quantiles=[0.99],      # mahal_q0.99: one row in a hundred, from the history
-            pca=1, pca_every=20,         # pc0_var, pc0_share, pc0_loading_<feature>, pc0_score
+            pca=1, pca_every=20,         # refreshed every 20 units of t; pc0_var, pc0_share, ...
         )
         scores = po.ModelBank([mv]).fit_predict(df).unnest("mv")
         odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers
@@ -2285,6 +2292,7 @@ def ew_cov(
         "mahal_quantiles": mahal_quantiles,
         "pca": pca,
         "pca_every": pca_every,
+        "max_rows_between_pca": max_rows_between_pca,
         "lags": lags,
         "window_size": window_size,
         "window_every": window_every,

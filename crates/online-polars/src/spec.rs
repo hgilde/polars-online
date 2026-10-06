@@ -782,9 +782,18 @@ pub enum ModelKind {
         /// `pc<j>_<feature>` per feature and `pc<j>_score` (E38).
         #[serde(default)]
         pca: Option<usize>,
-        /// Learned rows between refreshes of the components (default 1).
+        /// Clock units between refreshes of the components, as `solve_every`
+        /// is the regressions': a number of the clock column's units, or a
+        /// duration on a temporal clock, `0` every row (docs/PLAN.md task
+        /// 161). With `max_rows_between_pca` too, whichever comes first;
+        /// with neither, every row.
         #[serde(default)]
-        pca_every: Option<u32>,
+        pca_every: Option<Span>,
+        /// At most this many rows between refreshes, as
+        /// `max_rows_between_solves` is the regressions'; `0` or `1` is every
+        /// row (task 161).
+        #[serde(default)]
+        max_rows_between_pca: Option<u32>,
         /// Lags to accumulate cross-moments at, in output order
         /// (docs/ENHANCEMENTS.md E56): strictly increasing and `>= 1`,
         /// counted in *learned rows within the group*. Read from `gram()`
@@ -1651,7 +1660,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
     ("kalman", &["coef_half_life", "revert_half_life"]),
     ("huber", &["solve_every"]),
     ("quantile", &["solve_every"]),
-    ("ew_cov", &["window_size"]),
+    ("ew_cov", &["pca_every", "window_size"]),
     ("holt", &["level_half_life", "trend_half_life"]),
     ("ew_class", &["window_size"]),
     ("marginal", &["window_size"]),
@@ -1875,10 +1884,14 @@ impl Spec {
                 put(&mut out, "solve_every", solve_every.as_ref());
             }
             ModelKind::EwCov {
+                pca_every,
                 window_size: window,
                 ..
+            } => {
+                put(&mut out, "pca_every", pca_every.as_ref());
+                put(&mut out, "window_size", window.as_ref());
             }
-            | ModelKind::EwClass {
+            ModelKind::EwClass {
                 window_size: window,
                 ..
             }
@@ -3274,6 +3287,7 @@ impl Spec {
                 mahal_quantiles,
                 pca,
                 pca_every,
+                max_rows_between_pca,
                 lags,
                 window_size: window,
                 window_every,
@@ -3387,17 +3401,26 @@ impl Spec {
                         self.k()
                     ));
                 }
-                if pca_every.is_some_and(|e| e == 0) {
+                if pca_every
+                    .as_ref()
+                    .is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite())
+                {
                     return Err(format!(
-                        "spec {:?}: ew_cov pca_every must be >= 1",
+                        "spec {:?}: ew_cov pca_every must be finite and >= 0 clock units (0 \
+                         refreshes on every row)",
                         self.name
                     ));
                 }
-                if pca_every.is_some() && pca.is_none_or(|r| r == 0) {
-                    return Err(format!(
-                        "spec {:?}: ew_cov pca_every needs `pca` (the number of components)",
-                        self.name
-                    ));
+                for (key, given) in [
+                    ("pca_every", pca_every.is_some()),
+                    ("max_rows_between_pca", max_rows_between_pca.is_some()),
+                ] {
+                    if given && pca.is_none_or(|r| r == 0) {
+                        return Err(format!(
+                            "spec {:?}: ew_cov {key} needs `pca` (the number of components)",
+                            self.name
+                        ));
+                    }
                 }
             }
             ModelKind::KMeans {

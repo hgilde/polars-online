@@ -144,13 +144,23 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Changed
 
-- **Every saved bank must be refit.** A bank file now carries schema 27,
+- **Every saved bank must be refit.** A bank file now carries schema 28,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
-  its version, naming the way out: refit from the input. Three changes
+  its version, naming the way out: refit from the input. Four changes
   moved the layout: the stream's diagnostics (task 146), the names the
-  specs a file stores carry (task 144), and the window core a formula
-  target keeps (task 104, then review rounds R4 and R6). An `ew_cov` state
-  with `mahal_quantiles` is refused too.
+  specs a file stores carry (task 144), the window core a formula target
+  keeps (task 104, then review rounds R4 and R6), and `ew_cov`'s PCA
+  cadence (task 161). An `ew_cov` state with `mahal_quantiles` is refused
+  too.
+- **`ew_cov`'s principal components refresh on the clock** (task 161), as a
+  regression's solve does. `pca_every` counts the clock's units, as
+  `solve_every` does: a number of the clock column's units, a duration on a
+  temporal clock (`"5m"`), or `0` for every row. `max_rows_between_pca`
+  caps the rows between refreshes, as `max_rows_between_solves` does, and
+  whichever comes first refreshes. With neither, the components refresh
+  every row, as before. A spec without a clock column is unchanged, its
+  clock being the row's number; a clocked spec that gave `pca_every=N` now
+  refreshes every `N` clock units, not every `N` rows.
 - **The public names follow Polars, and say what they do** (task 144; the
   user, 2026-10-02: "Add all", and no backward compatibility for outputs).
   No aliases: an old parameter is refused naming the new one, from a spec

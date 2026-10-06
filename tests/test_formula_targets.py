@@ -852,17 +852,18 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     the first and the last (25 since round six), so a file before it is
     refused at load by its number, not at a group's first chunk by the
     windows message. Round five moved the windows version alone, and a 24
-    file holding a version-4 core failed late."""
+    file holding a version-4 core failed late. 28 since task 161, for
+    `ew_cov`, the windows state unchanged."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 27, state[i]
-    for before in (25, 26):
+    assert state[i] == 28, state[i]
+    for before in (25, 26, 27):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 27"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 28"
         ):
             po.ModelBank.load_bytes(old)
 

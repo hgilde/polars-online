@@ -2239,7 +2239,9 @@ mod tests {
     /// refuses an older form by number, not at a group's first chunk.
     #[test]
     fn a_windows_state_version_moves_the_banks_schema_with_it() {
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 27));
+        // 28 moved for `ew_cov`'s PCA cadence (task 161), the windows state
+        // unchanged: a schema may move alone, a windows version may not.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 28));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

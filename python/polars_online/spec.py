@@ -173,9 +173,9 @@ number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
 ``session_gap`` and ``embargo`` above, and in the models ``window_size``,
-``solve_every`` and the model half-lives: ``long_half_life``,
-``select_half_life``, ``coef_half_life``, ``revert_half_life``,
-``level_half_life`` and ``trend_half_life``.
+``solve_every``, ``ew_cov``'s ``pca_every`` and the model half-lives:
+``long_half_life``, ``select_half_life``, ``coef_half_life``,
+``revert_half_life``, ``level_half_life`` and ``trend_half_life``.
 
 Each mixture is refused, naming the column, the parameter and the fix: a
 temporal clock with a clock parameter given as a plain number, a numeric clock

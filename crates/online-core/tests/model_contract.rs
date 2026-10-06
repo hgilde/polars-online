@@ -486,7 +486,8 @@ fn ew_cov_model_cfg() -> EwCovCfg {
         precision_prior: None,
         mahal_quantiles: Vec::new(),
         pca: 0,
-        pca_every: 0,
+        pca_every: 0.0,
+        max_rows_between_pca: u32::MAX,
         // The probe carries lags so that the save/restore and `clear_lags`
         // arms above see a model with a ring in them (L1).
         lags: vec![1, 3],

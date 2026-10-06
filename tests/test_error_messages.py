@@ -192,15 +192,19 @@ VALUES = [
     ),
     (
         po.spec.ew_cov,
-        dict(features=["x0", "y"], targets=None, pca=1, pca_every=0),
-        # The builder says the floor now, before the core does (review
-        # 2026-09-12, D8).
-        "pca_every must be >= 1, got 0",
+        # Clock units since task 161, 0 for every row, as `solve_every`.
+        dict(features=["x0", "y"], targets=None, pca=1, pca_every=-1.0),
+        "ew_cov pca_every must be finite and >= 0 clock units",
     ),
     (
         po.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, pca_every=2),
         "ew_cov pca_every needs `pca`",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, max_rows_between_pca=20),
+        "ew_cov max_rows_between_pca needs `pca`",
     ),
     (
         po.spec.ew_class,

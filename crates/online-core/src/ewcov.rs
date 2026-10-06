@@ -1225,14 +1225,24 @@ pub struct EwCovCfg {
     /// variance, its share of the total, its `k` loadings and the row's score.
     #[serde(default)]
     pub pca: usize,
-    /// Rows between refreshes of the components, counted on every row the
-    /// model is stepped with, rows of weight zero included -- the cadence
-    /// rule `window_every` keeps (review 2026-09-26, C7; review 2026-10-05,
-    /// CB3). Between refreshes the loadings are frozen, so a row's scores
-    /// do not depend on how the stream was chunked. `1` refreshes on every
-    /// row.
+    /// Clock units between refreshes of the components, as `solve_every`
+    /// is the regressions' (docs/PLAN.md task 161): `0` refreshes on every
+    /// row, and `inf` never by the clock, leaving `max_rows_between_pca`
+    /// the cadence. The clock is the one the model is stepped on, so a gap
+    /// capped at `gap_cap` counts as the cap, a row of weight zero advances
+    /// it, and without a clock column it is the row index. Between
+    /// refreshes the loadings are frozen, so a row's scores do not depend
+    /// on how the stream was chunked.
     #[serde(default)]
-    pub pca_every: usize,
+    pub pca_every: f64,
+    /// At most this many rows between refreshes, as `max_rows_between_solves`
+    /// is the regressions': counted on every row the model is stepped with,
+    /// rows of weight zero included -- the cadence rule `window_every` keeps
+    /// (review 2026-09-26, C7; review 2026-10-05, CB3). `u32::MAX` for none;
+    /// `0` or `1` refreshes on every row. Whichever of the two comes first
+    /// refreshes.
+    #[serde(default = "no_row_cap")]
+    pub max_rows_between_pca: u32,
     /// Lags to accumulate cross-moments at, in output order
     /// (docs/ENHANCEMENTS.md E56): strictly increasing and `>= 1`. Empty for
     /// none, which is what every accumulator did before task 48 -- so a
@@ -1255,6 +1265,11 @@ pub struct EwCovCfg {
     /// `[window - the snapshot spacing, window]` -- never longer than asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_every: Option<usize>,
+}
+
+/// No row cap on the components' refreshes (`max_rows_between_pca`).
+fn no_row_cap() -> u32 {
+    u32::MAX
 }
 
 impl EwCovCfg {
@@ -1343,8 +1358,11 @@ impl EwCovCfg {
                 self.pca, self.n_features
             ));
         }
-        if self.pca > 0 && self.pca_every == 0 {
-            return Err("ew_cov: pca_every must be >= 1".into());
+        if self.pca > 0 && (self.pca_every.is_nan() || self.pca_every < 0.0) {
+            return Err(format!(
+                "ew_cov: pca_every must be >= 0 clock units (0 refreshes on every row), got {}",
+                self.pca_every
+            ));
         }
         Ok(())
     }
@@ -1494,13 +1512,16 @@ pub struct EwCovModel {
     /// which kept P² markers here and is refused where it has levels.
     #[serde(default, deserialize_with = "sketch_or_p2_markers")]
     mahal_q: Option<crate::EwQuantile>,
-    /// The components in force, refreshed every `pca_every` rows, rows of
-    /// weight zero included.
+    /// The components in force, refreshed every `pca_every` clock units or
+    /// every `max_rows_between_pca` rows, whichever comes first.
     #[serde(default)]
     pca: Option<Pca>,
     /// Rows stepped since the last refresh, rows of weight zero included.
     #[serde(default)]
-    since_pca: usize,
+    rows_since_pca: usize,
+    /// Clock units stepped since the last refresh (docs/PLAN.md task 161).
+    #[serde(default)]
+    clock_since_pca: f64,
     /// Lagged cross-moments, when the spec asks for lags (E56). Written as
     /// `nil` when absent: the compact encoding is positional, so at most one
     /// field may be skipped and it must be the last, which is `win`. With
@@ -1556,7 +1577,8 @@ impl EwCovModel {
             cov,
             mahal_q,
             pca: None,
-            since_pca: 0,
+            rows_since_pca: 0,
+            clock_since_pca: 0.0,
             lag,
             win: match cfg_window {
                 Some(w) => Some(Windowed {
@@ -1684,7 +1706,8 @@ impl EwCovModel {
         if let Some(p) = fresh {
             self.pca = Some(p);
         }
-        self.since_pca = 0;
+        self.rows_since_pca = 0;
+        self.clock_since_pca = 0.0;
     }
 
     /// The accumulator itself, for callers that want the whole matrix rather
@@ -1991,16 +2014,18 @@ impl crate::OnlineModel for EwCovModel {
         }
         self.cov.update(x, lam, weight);
         if self.cfg.pca > 0 {
-            // A checkpoint after the update, counted on every row the model
-            // is stepped with, rows of weight zero included -- the cadence
-            // rule `window_every` keeps (review 2026-09-26, C7; review
-            // 2026-10-05, CB3) -- so the components a row is scored on never
-            // depend on the chunking and `predict` sees the same frozen ones
-            // `step` does.
-            self.since_pca += 1;
-            if self.n_eff() >= self.cfg.min_weight
-                && (self.pca.is_none() || self.since_pca >= self.cfg.pca_every)
-            {
+            // A checkpoint after the update, on the clock or the rows,
+            // whichever comes first, as the regressions' solves (task 161).
+            // Both count every row the model is stepped with, rows of weight
+            // zero included -- the cadence rule `window_every` keeps (review
+            // 2026-09-26, C7; review 2026-10-05, CB3) -- so the components a
+            // row is scored on never depend on the chunking and `predict`
+            // sees the same frozen ones `step` does.
+            self.rows_since_pca += 1;
+            self.clock_since_pca += d_clock;
+            let by_clock = self.cfg.pca_every <= 0.0 || self.clock_since_pca >= self.cfg.pca_every;
+            let by_rows = self.rows_since_pca >= self.cfg.max_rows_between_pca as usize;
+            if self.n_eff() >= self.cfg.min_weight && (self.pca.is_none() || by_clock || by_rows) {
                 self.refresh_pca();
             }
         }
@@ -2204,7 +2229,8 @@ mod tests {
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
-            pca_every: 0,
+            pca_every: 0.0,
+            max_rows_between_pca: u32::MAX,
             lags: Vec::new(),
             window: None,
             window_every: None,
@@ -2679,21 +2705,25 @@ mod tests {
         levels.mahal_quantiles = vec![0.5, 0.99];
         levels.validate().unwrap();
 
-        // pca: at most k components, and a cadence of at least one row.
+        // pca: at most k components, and a cadence that is clock units, 0
+        // for every row (task 161).
         let mut too_many = model_cfg(3, vec![Mean]);
         too_many.pca = 4;
-        too_many.pca_every = 1;
+        too_many.pca_every = 1.0;
         err(too_many, "4 components of 3 columns");
-        let mut no_cadence = model_cfg(3, vec![Mean]);
-        no_cadence.pca = 2;
-        err(no_cadence, "pca_every must be >= 1");
+        for bad in [-1.0, f64::NAN] {
+            let mut no_cadence = model_cfg(3, vec![Mean]);
+            no_cadence.pca = 2;
+            no_cadence.pca_every = bad;
+            err(no_cadence, "pca_every must be >= 0 clock units");
+        }
         let mut ok = model_cfg(3, vec![Mean]);
         ok.pca = 3;
-        ok.pca_every = 5;
+        ok.pca_every = 5.0;
         ok.validate().unwrap();
         let mut off = model_cfg(3, vec![Mean]);
         off.pca = 0;
-        off.pca_every = 0;
+        off.pca_every = 0.0;
         off.validate().unwrap();
     }
 
@@ -2988,7 +3018,7 @@ mod tests {
     fn pca_cfg(k: usize, r: usize, every: usize) -> EwCovCfg {
         let mut c = model_cfg(k, vec![EwCovStat::Mean]);
         c.pca = r;
-        c.pca_every = every;
+        c.pca_every = every as f64;
         c
     }
 
@@ -3139,9 +3169,9 @@ mod tests {
             let a = lcg(&mut s);
             let x = [a, 2.0 * a + 0.3 * lcg(&mut s)];
             let w = if i % 2 == 0 { 1.0 } else { 0.0 };
-            let before = (m.pca.is_some(), m.since_pca);
+            let before = (m.pca.is_some(), m.rows_since_pca);
             crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, w);
-            if m.pca.is_some() && m.since_pca == 0 && before != (true, 0) {
+            if m.pca.is_some() && m.rows_since_pca == 0 && before != (true, 0) {
                 refreshed.push(i);
             }
         }
@@ -3151,6 +3181,104 @@ mod tests {
             gaps.iter().all(|&g| g == 4),
             "refreshed at rows {refreshed:?}"
         );
+    }
+
+    /// The regressions' solve schedule, for the components (task 161): a
+    /// refresh once `pca_every` clock units have passed since the last, or
+    /// once `max_rows_between_pca` rows have, whichever comes first, and on
+    /// every row at `pca_every = 0`. Held to that rule written out over the
+    /// same clock steps: irregular ones, a stretch too close together for
+    /// the clock, rows at one stamp, and long steps. The first refresh is the
+    /// first row with `min_weight`, the second here.
+    #[test]
+    fn pca_refreshes_on_the_clock_or_the_rows_whichever_comes_first() {
+        let steps = [
+            0.0, 1.0, 0.5, 2.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 3.0, 0.2, 1.4, 1.0, 0.0, 0.0,
+            2.6, 0.3, 0.3,
+        ];
+        for (every, cap) in [
+            (2.5, u32::MAX),
+            (f64::INFINITY, 4),
+            (2.5, 4),
+            (0.0, u32::MAX),
+        ] {
+            let mut c = pca_cfg(2, 1, 1);
+            c.pca_every = every;
+            c.max_rows_between_pca = cap;
+            let mut m = EwCovModel::new(c).unwrap();
+            let mut s = 5u64;
+            let mut got = Vec::new();
+            for (i, &d) in steps.iter().enumerate() {
+                let a = lcg(&mut s);
+                let x = [a, 2.0 * a + 0.3 * lcg(&mut s)];
+                crate::OnlineModel::step(&mut m, &x, &[], d, 1.0);
+                if m.pca.is_some() && m.rows_since_pca == 0 {
+                    got.push(i);
+                }
+            }
+            let (mut want, mut clock, mut rows) = (Vec::<usize>::new(), 0.0, 0u32);
+            for (i, &d) in steps.iter().enumerate() {
+                clock += d;
+                rows += 1;
+                let due = if want.is_empty() {
+                    i + 1 >= 2
+                } else {
+                    every <= 0.0 || clock >= every || rows >= cap
+                };
+                if due {
+                    want.push(i);
+                    (clock, rows) = (0.0, 0);
+                }
+            }
+            assert_eq!(got, want, "pca_every {every}, max_rows_between_pca {cap}");
+            assert!(want.len() >= 5, "{want:?}");
+        }
+    }
+
+    /// A save between rows keeps the clock and the rows since the last
+    /// refresh, so a resumed run refreshes where the unbroken one does, and
+    /// every output is the same to the bit (task 161).
+    #[test]
+    fn the_clock_since_the_last_refresh_survives_a_save() {
+        let mut c = pca_cfg(3, 2, 1);
+        c.pca_every = 2.5;
+        c.max_rows_between_pca = 7;
+        let mut s = 9u64;
+        let rows: Vec<([f64; 3], f64)> = (0..60)
+            .map(|i| {
+                let d = if i == 0 {
+                    0.0
+                } else {
+                    0.1 + f64::from(i % 5) * 0.4
+                };
+                ([lcg(&mut s), lcg(&mut s), lcg(&mut s)], d)
+            })
+            .collect();
+        let mut a = EwCovModel::new(c.clone()).unwrap();
+        let (mut want, mut mid) = (Vec::new(), Vec::new());
+        for (x, d) in &rows {
+            want.push(crate::OnlineModel::step(&mut a, x, &[], *d, 1.0).pred);
+            mid.push(a.clock_since_pca > 0.0);
+        }
+        // Each cut where the run is between refreshes, so there is a clock
+        // since the last to keep.
+        let cuts: Vec<usize> = [5, 17, 33]
+            .iter()
+            .map(|&from| (from..rows.len()).find(|&i| mid[i - 1]).unwrap())
+            .collect();
+        for cut in cuts {
+            let mut b = EwCovModel::new(c.clone()).unwrap();
+            for (i, (x, d)) in rows.iter().enumerate() {
+                if i == cut {
+                    assert!(b.clock_since_pca > 0.0, "cut {cut}: nothing to keep");
+                    let bytes = rmp_serde::to_vec(&b).unwrap();
+                    b = rmp_serde::from_slice(&bytes).unwrap();
+                }
+                let out = crate::OnlineModel::step(&mut b, x, &[], *d, 1.0).pred;
+                assert!(same_bits(&out, &want[i]), "cut {cut}, row {i}");
+            }
+            assert_eq!(a, b, "cut {cut}");
+        }
     }
 
     #[test]
@@ -3431,7 +3559,7 @@ mod tests {
         // PCA and Mahalanobis slots stand on their own, without a statistic.
         let mut cfg = model_cfg(3, vec![]);
         cfg.pca = 1;
-        cfg.pca_every = 1;
+        cfg.pca_every = 1.0;
         cfg.validate().unwrap();
         assert_eq!(cfg.n_outputs(), 3 + 3);
         let mut cfg = model_cfg(3, vec![]);
@@ -4136,7 +4264,8 @@ mod tests {
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
-            pca_every: 0,
+            pca_every: 0.0,
+            max_rows_between_pca: u32::MAX,
             lags: Vec::new(),
             window: Some(30.0),
             window_every: None,
@@ -4183,7 +4312,8 @@ mod tests {
             precision_prior: None,
             mahal_quantiles: Vec::new(),
             pca: 0,
-            pca_every: 0,
+            pca_every: 0.0,
+            max_rows_between_pca: u32::MAX,
             lags: Vec::new(),
             window: Some(7.0),
             window_every: None,
@@ -4731,7 +4861,7 @@ mod tests {
         c.precision_prior = Some(1e-3);
         c.min_weight = 0.0;
         c.pca = 2;
-        c.pca_every = 5;
+        c.pca_every = 5.0;
         let mut m = EwCovModel::new(c).unwrap();
         let mut s = 131u64;
         for i in 0..20 {
@@ -4795,7 +4925,7 @@ mod tests {
         for i in 0..5 {
             m.step(&[1.0, f64::from(i)], &[], 1.0, 1.0);
         }
-        assert_eq!(m.since_pca, 0);
+        assert_eq!((m.rows_since_pca, m.clock_since_pca), (0, 0.0));
     }
 
     /// A state with components loads when they are its cfg's (here `k = 3`

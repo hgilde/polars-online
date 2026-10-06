@@ -3103,7 +3103,7 @@ mv = po.spec.ew_cov(
     stats=["mean", "std", "corr", "partial_corr", "mahal"],   # what each row writes
     precision_prior=1e-6,        # needed by partial_corr and mahal; fades as data arrives
     mahal_quantiles=[0.99],      # adds mahal_q0.99; needs "mahal" in stats
-    pca=1, pca_every=20,         # one principal component, its loadings refreshed every 20 rows
+    pca=1, pca_every=20,         # one principal component, refreshed every 20 units of t (a row each here)
 )
 scores = po.ModelBank([mv]).fit_predict(df).unnest("mv")   # mean_x0, ..., corr_x0_x1, ..., mahal, pc0_*
 odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers: every column in range, the combination not
@@ -3124,9 +3124,12 @@ adds a little.
 at the `half_life` and within 0.78%.
 
 **Each eigendecomposition takes O(k³) time, so give `pca_every` to refresh
-the principal components on a schedule.** `pca_every=20` refreshes them every
-20 learned rows, where the default is every row, and scores the rows in
-between on the last loadings. With `pca=1`, each row writes `pc0_var`,
+the principal components on a schedule.** It counts the clock's units, as a
+regression's `solve_every` does: `pca_every=20` refreshes them every 20 units
+of `t`, a row each here, and a temporal clock takes a duration such as
+`"5m"`. `max_rows_between_pca` caps the rows between refreshes, and
+whichever comes first refreshes. The default is every row, and the rows
+between refreshes are scored on the last loadings. With `pca=1`, each row writes `pc0_var`,
 `pc0_share` (of the trace), `pc0_loading_<feature>` and `pc0_score`. Each
 refresh keeps the previous sign, so a loading never flips.
 

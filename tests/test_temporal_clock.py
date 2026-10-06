@@ -499,6 +499,7 @@ class TestEveryClockParameterTakesADuration:
         "revert_half_life": ("1h", {}),
         "level_half_life": ("5m", {"half_life": None}),
         "trend_half_life": ("20m", {}),
+        "pca_every": ("10m", {"pca": 1}),
     }
 
     def _cases(self):
@@ -528,6 +529,7 @@ class TestEveryClockParameterTakesADuration:
         "solve_every": None,
         "embargo": None,
         "restart_after_step_back": None,
+        "pca_every": None,
     }
 
     # The noise gate's notice is about the tiny frame, not about durations.

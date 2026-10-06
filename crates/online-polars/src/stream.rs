@@ -710,6 +710,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             mahal_quantiles,
             pca,
             pca_every,
+            max_rows_between_pca,
             lags,
             window_size: window,
             window_every,
@@ -744,7 +745,14 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),
-                pca_every: pca_every.map_or(1, |e| e as usize),
+                // The regressions' schedule (task 161): the clock, the rows,
+                // or every row when neither is given.
+                pca_every: match (pca_every, max_rows_between_pca) {
+                    (Some(e), _) => e.value(),
+                    (None, Some(_)) => f64::INFINITY,
+                    (None, None) => 0.0,
+                },
+                max_rows_between_pca: max_rows_between_pca.unwrap_or(u32::MAX),
                 lags: lags.clone().unwrap_or_default(),
                 window: window.as_ref().map(Span::value),
                 window_every: *window_every,

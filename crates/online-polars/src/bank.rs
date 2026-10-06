@@ -65,7 +65,7 @@ impl std::fmt::Display for GroupKey {
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable; a
 /// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
-/// as every file written before schema 27 is. Version 3 lets a spec
+/// as every file written before schema 28 is. Version 3 lets a spec
 /// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
 /// and is written only by a bank whose specs do: every other file is still
 /// version 2, byte for byte, so a build from before durations reads it,
@@ -92,7 +92,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// bank holding a version-4 core failed late. A windows state version
 /// moves this number with it
 /// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
-const MIN_BANK_SCHEMA_VERSION: u32 = 27;
+/// **28 since task 161** (2026-10-06): `ew_cov`'s configuration and state
+/// changed shape (its PCA refreshes on the clock), and the encoding is
+/// positional, so a 27 file holding one would not decode.
+const MIN_BANK_SCHEMA_VERSION: u32 = 28;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
