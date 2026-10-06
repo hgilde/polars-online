@@ -291,6 +291,17 @@ from, and build it (the user, 2026-10-05).
 `test_an_example_on_the_example_data_says_so_just_above_it` holds every
 block to it.
 
+**An example's query reads a file, never a frame made lazy.** The library
+is for streams too large to hold, and `df.lazy()` is a query over rows
+already in memory. So an example saves its table to disk and reads it
+back with `pl.scan_parquet`, as a reader's own stream is read. *Example
+data* saves each frame it builds, and `lf` and `later` are scans of those
+files. The user, 2026-10-06: "We don't want the example code in the readme
+or anywhere else to be sprinkled with calls to .lazy(), show the example by
+saving tables to disk and then reading them from a lazy frame".
+`test_no_example_calls_lazy` holds the README, every document's examples
+and the docstrings to it.
+
 **An example matches each part of its claim, and says which part it
 shows.** *Features and targets can be windows over the stream* promised
 two things. Its examples, *the last minute's time-weighted mean or the next

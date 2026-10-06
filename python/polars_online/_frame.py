@@ -1140,7 +1140,7 @@ class LazyFrameOnlineNamespace:
         .. code-block:: python
 
             fitted = (
-                trades.lazy()
+                pl.scan_parquet("trades.parquet")
                 .online.with_windows(
                     mid_5s=po.ewm_mean("mid", half_life="5s", window_size="1m"),
                     clock="ts", gap_cap="5m", group="symbol",

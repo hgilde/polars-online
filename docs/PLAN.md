@@ -7651,6 +7651,25 @@ tick, and that the series holding it up has a count near 1.
       parent in `MYPYPATH`, which for an installed wheel is site-packages,
       and mypy refuses it. The test now leaves an installed package where
       mypy finds it; the snippet type-checks under 2.0.0 either way.
+- [x] 167. **No `.lazy()` in the examples: each query reads a file --
+      requested 2026-10-06.** Size S. The user's words: "We don't want the
+      example code in the readme or anywhere else to be sprinkled with calls
+      to .lazy(), show the example by saving tables to disk and then reading
+      them from a lazy frame." The README had fifteen, and one docstring
+      (`LazyFrame.online.with_windows`) had one. The first fit saves its day
+      to `prices.parquet` and each fit scans it; *Example data* saves `df`,
+      `today` and `trades` to parquet, and `lf` and `later` are scans of
+      those files; every `trades.lazy()` is `pl.scan_parquet("trades.parquet")`,
+      the line above each such block naming the file; and the closed-groups
+      example saves `by_block` and fits on a scan of it. The README test's
+      namespace builds what *Example data* builds, files included, and its
+      link check counts a block that reads `trades.parquet` or
+      `today.parquet` as reading the example data. WRITING §3 has the rule,
+      and `test_no_example_calls_lazy` holds the README, every document's
+      python blocks and the docstrings to it. Left alone: prose that says
+      what `df.lazy()` does (STATE-WORKFLOW R3, a `_frame.py` comment), a
+      quotation in PHRASING's log, the code that accepts a frame and makes
+      it lazy, and the tests' own inputs.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

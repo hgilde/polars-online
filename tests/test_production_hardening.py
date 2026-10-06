@@ -823,6 +823,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     today = df.with_columns(pl.col("t") - df["t"].min() + df["t"].max() + 1.0)
     df.write_parquet(tmp_path / "ticks.parquet")
     today.write_parquet(tmp_path / "today.parquet")
+    _trades().write_parquet(tmp_path / "trades.parquet")
     (tmp_path / "ticks").mkdir()  # the `ticks/*.parquet` glob: a stream in two files
     df[:200].write_parquet(tmp_path / "ticks" / "part-0.parquet")
     df[200:].write_parquet(tmp_path / "ticks" / "part-1.parquet")
@@ -889,17 +890,15 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "trades": _trades(),
         # The "relative and look-ahead targets" section builds it in its first
         # block, and its `po.target` block reuses it.
-        "flows": _trades()
-        .lazy()
-        .with_columns(
+        "flows": pl.scan_parquet(tmp_path / "trades.parquet").with_columns(
             flow=pl.when(pl.col("side") == "buy")
             .then(pl.col("quantity"))
             .otherwise(-pl.col("quantity"))
         ),
         "today": today,
-        # The query form of `today`: the rows after the stream's.
-        "later": today.lazy(),
-        "lf": df.lazy(),
+        # The query forms, as *Example data* makes them: each file read back.
+        "later": pl.scan_parquet(tmp_path / "today.parquet"),
+        "lf": pl.scan_parquet(tmp_path / "ticks.parquet"),
         "spec": spec,
         "grid": grid,
         "bank": po.ModelBank([spec]),
@@ -947,14 +946,20 @@ class TestReadmeExamples:
         any example. It must build exactly the frames the namespace above
         gives every block, or the README would show one stream and test its
         examples on another."""
-        monkeypatch.chdir(tmp_path)  # the block writes ticks.parquet and ticks/
         ns = _readme_namespace(tmp_path)
+        # The block runs where the fixture wrote nothing, so the files read
+        # back below are the ones it writes.
+        readme = tmp_path / "readme"
+        readme.mkdir()
+        monkeypatch.chdir(readme)
         shown: dict[str, object] = {}
         exec(compile(_example_data_block(), "README.md: Example data", "exec"), shown)
         for name in ("df", "trades", "today"):
             assert shown[name].equals(ns[name]), name
         assert shown["lf"].collect().equals(ns["df"])
         assert shown["later"].collect().equals(ns["today"])
+        for file, name in [("ticks", "df"), ("today", "today"), ("trades", "trades")]:
+            assert pl.read_parquet(readme / f"{file}.parquet").equals(ns[name]), file
 
     #: The names the namespace hands out that the README also builds, and
     #: which of the README blocks that assign one it copies.
@@ -1035,7 +1040,7 @@ class TestReadmeExamples:
         *Example data* writes."""
         text = (REPO / "README.md").read_text(encoding="utf-8").split("\n")
         built = {"df", "lf", "trades", "today", "later"}
-        written = re.compile(r"[\"']ticks(/|\.parquet[\"'])")
+        written = re.compile(r"[\"'](ticks/|(ticks|today|trades)\.parquet[\"'])")
         missing = []
         for path, line, code in README_BLOCKS:
             if path != "README.md":
@@ -1056,6 +1061,24 @@ class TestReadmeExamples:
             "README blocks that read the example data with no line just above linking "
             f"*Example data*, at the lines of their fences: {missing}"
         )
+
+    def test_no_example_calls_lazy(self):
+        """The user, 2026-10-06: "We don't want the example code in the readme
+        or anywhere else to be sprinkled with calls to .lazy(), show the
+        example by saving tables to disk and then reading them from a lazy
+        frame." An example's query reads a file with `pl.scan_parquet`, as a
+        stream too large to hold is read, and *Example data* saves each frame
+        it builds (docs/WRITING.md §3)."""
+        docs = sorted(
+            str(p.relative_to(REPO))
+            for p in (REPO / "docs").rglob("*.md")
+            if "_build" not in p.parts
+        )
+        blocks = [*_doc_blocks("README.md"), *(b for d in docs for b in _doc_blocks(d))]
+        blocks += _docstring_blocks()
+        assert len(blocks) > 100, "the examples were not found"
+        found = [f"{where}:{line}" for where, line, code in blocks if ".lazy()" in code]
+        assert not found, f"examples that call .lazy(): {found}"
 
     def test_there_are_shell_blocks_to_check(self):
         assert len(SHELL_BLOCKS) >= 4, SHELL_BLOCKS

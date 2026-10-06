@@ -58,6 +58,7 @@ prices = pl.DataFrame({
     # beta 0.2 rising to 0.8 on signal_a, and -0.2 on signal_b
     "ret": np.linspace(0.2, 0.8, n) * signal_a - 0.2 * signal_b + rng.standard_normal(n),
 })
+prices.write_parquet("prices.parquet")          # on disk: every fit below reads it back as a query
 
 # 2. One fit over every row: fit the rows before 15:30, save the state, read it back, serve the rest.
 whole = po.spec.ewridge(
@@ -67,7 +68,7 @@ whole = po.spec.ewridge(
     group="stock_id",                           # one regression per stock
 )
 flat = (
-    prices.head(21_600).lazy()                  # a query over the rows before 15:30
+    pl.scan_parquet("prices.parquet").head(21_600)   # a query over the file's rows before 15:30
     .online.fit_predict([whole], save_state="bank.state")   # adds a column "whole", saves the state
     .online.unnest([whole])                     # as columns: pred_<target>, resid_<target>, ...
     .collect()                                  # runs the query
@@ -76,7 +77,7 @@ saved = (
     po.ModelBank.load("bank.state").coef()      # the fit in the file, a row per coefficient
     .pivot("term", index="group", values="coef")   # a row per stock, a column per term
 )
-served = prices.tail(1_800).lazy().online.predict("bank.state").collect()   # scores the last half hour, learns nothing
+served = pl.scan_parquet("prices.parquet").tail(1_800).online.predict("bank.state").collect()   # scores the last half hour, learns nothing
 
 # 3. A fit that follows the recent rows, and its betas on every row.
 local = po.spec.ewridge(
@@ -85,7 +86,7 @@ local = po.spec.ewridge(
     gap_cap="5m",                               # and a gap longer than five minutes decays as five
     coef_every=1,                               # the coefficients on every row
 )
-betas = prices.lazy().online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
+betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
 
 # 4. A target that looks ahead: each row's mean return over the next ten minutes.
 fwd_ret = po.rewm_mean("ret", half_life=float("inf"), window_size="10m").alias("fwd_ret")
@@ -94,7 +95,7 @@ ahead = po.spec.ewridge(
     clock="ts", half_life="10m", gap_cap="5m",
     embargo="10m",                              # learn each row once its ten minutes have passed
 )
-forecast = prices.lazy().online.fit_predict([ahead]).online.unnest([ahead]).collect()   # each row's forecast of fwd_ret
+forecast = pl.scan_parquet("prices.parquet").online.fit_predict([ahead]).online.unnest([ahead]).collect()   # each row's forecast of fwd_ret
 ```
 
 The input, `prices`, begins with these rows:
@@ -279,7 +280,9 @@ Most examples after the first fit read one of two made-up frames: `df`,
 400 rows of numbers and labels a minute apart, and `trades`, a stream of
 quotes with trades between them. The examples that serve or resume a bank
 also read `today`, the rows that follow `df`'s. Before running an example,
-build all three, and the files some examples scan, with this code:
+build all three with this code. It saves each to a parquet file, and an
+example that runs a query reads the file back with `pl.scan_parquet`, as a
+stream too large to hold would be read:
 
 ```python
 from datetime import datetime, timedelta
@@ -299,11 +302,12 @@ df = pl.DataFrame({
     "session": ["m"] * 200 + ["a"] * 200,                        # a morning session, then an afternoon one
     "venue": ["X", "Y"] * 200,
 })
-lf = df.lazy()                                                   # the same rows, as a query
+df.write_parquet("ticks.parquet")                                # df on disk, as one file
+lf = pl.scan_parquet("ticks.parquet")                            # the same rows, read back from the file as a query
 today = df.with_columns(pl.col("t") + 400.0)                     # the 400 rows that follow df's, on the clock t
-later = today.lazy()                                             # today, as a query
-df.write_parquet("ticks.parquet")                                # df as one file, for the examples that scan one
-Path("ticks").mkdir(exist_ok=True)                               # and as two, for the examples that scan ticks/*.parquet
+today.write_parquet("today.parquet")
+later = pl.scan_parquet("today.parquet")                         # today, read back as a query
+Path("ticks").mkdir(exist_ok=True)                               # and df as two files, for the examples that scan ticks/*.parquet
 df.head(200).write_parquet("ticks/part-0.parquet")
 df.tail(200).write_parquet("ticks/part-1.parquet")
 
@@ -321,6 +325,7 @@ trades = pl.DataFrame({
 }).with_columns(
     pl.when(pl.Series(is_trade)).then(pl.col("side", "quantity", "price"))   # null on a quote
 )
+trades.write_parquet("trades.parquet")                           # on disk, for the examples that scan it
 ```
 
 The numbers in `df` are independent random draws, so a model fitted on
@@ -394,11 +399,11 @@ the output fields, as `pred_fwd_move`. The bank learns each row once the
 expression's window has closed, so give the spec an `embargo` of at least
 the window's `window_size`. [Windows as a model's inputs and
 target](#windows-as-a-models-inputs-and-target) gives the rule in full,
-with what to do for a shorter one. This example runs on `trades`, the
-quotes and trades built in [Example data](#example-data):
+with what to do for a shorter one. This example runs on `trades.parquet`, the
+quotes and trades saved in [Example data](#example-data):
 
 ```python
-flows = trades.lazy().with_columns(                                        # a query, and a feature in it: a trade's signed size
+flows = pl.scan_parquet("trades.parquet").with_columns(                   # a query, and a feature in it: a trade's signed size
     flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
 )
 fwd_move = (
@@ -433,10 +438,10 @@ the bank, and name it in `targets`.** The bank's refusal names
 the call that makes the column. Here the target, how far from the mid each
 trade printed, is known at the trade's own row, so the spec needs no
 embargo.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
-edges = trades.lazy().with_columns(edge=(pl.col("price") - pl.col("mid")).abs())   # the target as a column, null on the quotes
+edges = pl.scan_parquet("trades.parquet").with_columns(edge=(pl.col("price") - pl.col("mid")).abs())   # the target as a column, null on the quotes
 by_size = po.spec.ewridge("by_size", targets=["edge"], features=["quantity"],
                           clock="ts", gap_cap="5m", half_life="30m", group="symbol")
 printed = edges.online.fit_predict([by_size]).online.unnest([by_size]).collect()   # does a larger trade print farther from the mid?
@@ -1071,7 +1076,7 @@ again for every row ([Window operators](#window-operators)):
 
 Every operator except `po.increment` takes these keywords, `half_life` and
 `window_size` in the clock's units.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
 mid_mean = po.ewm_mean(
@@ -1082,7 +1087,7 @@ mid_mean = po.ewm_mean(
     min_samples=3,      # the fewest rows with a value the window must hold; fewer give null
     partial="keep",     # what a window gives when a gap or a session change cuts it short
 )
-windowed_mid = trades.lazy().online.with_windows(mid_mean=mid_mean, clock="ts", gap_cap="5m", group="symbol").collect()
+windowed_mid = pl.scan_parquet("trades.parquet").online.with_windows(mid_mean=mid_mean, clock="ts", gap_cap="5m", group="symbol").collect()
 ```
 
 **A window holds the rows Polars' `rolling_*_by` would give it.** Windows
@@ -1112,12 +1117,12 @@ included, but not another operator.** So to window an operator's output,
 make it a column in one `with_windows` call, and window that column in a
 second. Here a rate of traded volume comes from a column of cumulative
 volume.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
 volume = (
-    trades.lazy()
+    pl.scan_parquet("trades.parquet")
     .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume, as a feed prints it: null on the quotes
     .online.with_windows(                                                    # the first call: an operator over an increment
         volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # the volume traded per second
@@ -1159,7 +1164,7 @@ For a weighted mean such as a VWAP (volume-weighted average price), divide
 one decayed sum by another: decayed notional (price times quantity) by
 decayed volume, to which the quotes add nothing. For one side's VWAP, put
 the same `when/then` inside both sums.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades` and `trades.parquet` from [Example data](#example-data):
 
 ```python
 notional = pl.col("price") * pl.col("quantity")
@@ -1174,7 +1179,7 @@ windowed = po.stream.with_windows(
 )
 # every input column, then mid_trend, fwd_vwap, fwd_buy_vwap
 
-(trades.lazy()
+(pl.scan_parquet("trades.parquet")
     .online.with_windows(fwd_vwap=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute),
                          clock="ts", gap_cap="5m", group="symbol")
     .sink_parquet("with_windows.parquet"))     # streams, holding about one window of rows
@@ -1217,11 +1222,11 @@ in `targets`.
 Make it with `with_windows` if it reads a window that looks back, or with
 Polars' `with_columns` if it reads only its own row. The builder refuses
 `group_close` beside a window target.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
-clock = dict(clock="ts", gap_cap="5m", group="symbol")    # one clock for the windows and the model
-trends = trades.lazy().online.with_windows(               # the features: windows that look back
+clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
+trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the features: windows that look back
     trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
     trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
     **clock,
@@ -1277,7 +1282,7 @@ serving](#saving-loading-and-serving)).
 Under a slice such as `head(500)`, the run reads the input only until the
 windows of the last row asked for have closed, and the state records how
 many input rows it consumed.
-This code uses `trades` from [Example data](#example-data):
+This code uses `trades` and `trades.parquet` from [Example data](#example-data):
 
 ```python
 next_minute = dict(half_life="10s", window_size="1m")
@@ -1290,8 +1295,8 @@ first = po.stream.with_windows(day1, **vwap, **clock, save_state="w.state")    #
 second = po.stream.with_windows(day2, **vwap, **clock, load_state="w.state")   # they come out first
 assert pl.concat([first, second]).equals(one_run)
 
-head = trades.lazy().online.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()
-rest = trades.lazy().online.with_windows(**vwap, **clock, load_state="h.state").collect()
+head = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()
+rest = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()
 assert pl.concat([head, rest]).equals(one_run)                       # the same input, unsliced: it skips them
 ```
 
@@ -2122,11 +2127,13 @@ own `sort` agrees, so sort the input by the key before the bank.
 `fit`, or `--closed-groups` to the command line
 ([docs/RUNNER.md](docs/RUNNER.md)). With `fit`, which keeps no per-row
 output, the file is the run's whole product: a stream too large for memory
-goes in, and one row per block comes out. Here `blocks` learns from
-`by_block`, and each closed block's row goes to `blocks.parquet`:
+goes in, and one row per block comes out. Here `by_block` is saved to
+disk, `blocks` learns from the file as it is read back, and each closed
+block's row goes to `blocks.parquet`:
 
 ```python
-po.ModelBank([blocks]).fit(by_block.lazy(), closed_groups="blocks.parquet")
+by_block.write_parquet("by_block.parquet")                                             # the stream, on disk
+po.ModelBank([blocks]).fit(pl.scan_parquet("by_block.parquet"), closed_groups="blocks.parquet")   # read back as a query
 ```
 
 ### Reading a correlation matrix
