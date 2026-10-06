@@ -710,7 +710,8 @@ impl Robust {
     /// first nudge after it makes the `O(k³)` factorization again. A kept
     /// feature with no spread in the band, on which the row deviates, has no
     /// curvature to lean on: the movement is unbounded and the step 0 (G2),
-    /// as for a system no jitter factorizes.
+    /// as for a system no jitter factorizes, and for a form that is not a
+    /// number (task 181).
     fn nudge_movement(&mut self, j: usize) -> f64 {
         let n = self.cfg.n_targets;
         if self.systems.slot(n, j).is_none() {
@@ -754,6 +755,15 @@ impl Robust {
             Some(f) => f.quad_form(u, &mut self.nudge.work),
             None => 0.0,
         };
+        // A form that is not a number -- terms past the double's range at
+        // `+∞` and `−∞` -- reads no leverage either: unbounded, the step 0.
+        // `f64::max` took it to 0, a leverage of 1 with an intercept and 0
+        // through the origin, and the step was bounded by the whole residual
+        // or by nothing; NaN would bound nothing, `|r| / NaN` failing every
+        // comparison (task 181).
+        if q.is_nan() {
+            return f64::INFINITY;
+        }
         if intercept { 1.0 + q } else { q }
     }
 
@@ -2613,6 +2623,60 @@ mod tests {
         off.step(&[2.0], &[Some(p2 + 0.5)], 1.0, 1e4);
         assert_eq!(off.wj[0], m.wj[0], "the row was a nudge");
         assert_eq!(off.coefficients(), m.coefficients(), "and moved nothing");
+    }
+
+    /// A leverage whose quadratic form is not a number is unbounded, and
+    /// the nudge's step 0, as for a feature with no spread. Features
+    /// correlated at 0.99 and a row at `(1e160, 5e159)`: `A⁻¹u` has entries
+    /// of opposite signs, so the form's two terms overflow to `+∞` and `−∞`,
+    /// and their sum is NaN. `f64::max(NaN, 0.0)` read it as 0: with an
+    /// intercept a leverage of 1, the least there is, bounding the step by
+    /// the whole residual, and through the origin a leverage of 0, bounding
+    /// it by nothing -- the overshoot the bound is there to stop (review
+    /// 2026-09-26, G2). Read as NaN, `|r| / NaN` bounds nothing either
+    /// (task 181). With an intercept and through the origin.
+    #[test]
+    fn a_leverage_that_is_not_a_number_is_unbounded() {
+        for fit_intercept in [true, false] {
+            let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.5 });
+            c.fit_intercept = fit_intercept;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 29u64;
+            for i in 0..50 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            // The band Gram set to unit variances correlated at 0.99, about
+            // means of 0: centred with an intercept, raw through the origin.
+            let off = usize::from(fit_intercept);
+            let k = 2 + off;
+            let mut mean = vec![0.0; k];
+            let mut moments = vec![0.0; k * k];
+            if fit_intercept {
+                mean[0] = 1.0;
+            }
+            for i in 0..2 {
+                for j in 0..2 {
+                    moments[(i + off) * k + j + off] = if i == j { 1.0 } else { 0.99 };
+                }
+            }
+            let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
+            m.cov[0].set_moments(&mean, &moments, w, q);
+            m.systems.0[0] = None;
+            let row = [1e160, 0.5e160];
+            m.zbuf = RowBuf(if fit_intercept {
+                vec![1.0, row[0], row[1]]
+            } else {
+                row.to_vec()
+            });
+            let q = m.nudge_movement(0);
+            assert_eq!(q, f64::INFINITY, "intercept {fit_intercept}: {q}");
+            // The same system reads a row at the data's scale.
+            m.zbuf[off] = 1.0;
+            m.zbuf[off + 1] = 0.5;
+            let q = m.nudge_movement(0);
+            assert!(q.is_finite() && q > 1.0, "intercept {fit_intercept}: {q}");
+        }
     }
 
     // --- task 170: the band factor moved where the move is exact ---------

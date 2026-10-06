@@ -1679,7 +1679,10 @@ impl OnlineModel for EwRidge {
     /// system the mean's own `1` plus the centred, scaled row's quadratic
     /// form; for a raw one the row's form alone, scaled back to the
     /// mean-form Gram's units under `ridge_scale`. Infinite before the first
-    /// solve, and where no system was kept ([`EwRidge::set_keep_factor`]).
+    /// solve, and where no system was kept ([`EwRidge::set_keep_factor`]);
+    /// NaN where a feature the system kept is not a number, whose form is
+    /// NaN, not the 0 the form's clamp once made of it (task 181). Read for
+    /// output only: nothing here reaches the state.
     fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
         out.clear();

@@ -3104,6 +3104,53 @@ fn the_kept_factors_follow_the_setting_and_survive_a_load() {
     assert_eq!(off, vec![f64::INFINITY]);
 }
 
+/// A row whose feature is not a number has no leverage to read: its row
+/// inflation is NaN in every slot, centred and standardized, raw and
+/// through the origin. The quadratic form's clamp, `f64::max(NaN, 0.0)`,
+/// read it as a form of 0, so the row reported the least inflation a row
+/// can have, `sqrt(1 + 1/n)` with an intercept (task 181). The bank never
+/// hands the model a NaN feature; the Rust API does.
+#[test]
+fn a_row_that_is_not_a_number_has_no_row_inflation() {
+    for (fit_intercept, standardize, ridge_scale) in [
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+        (false, false, false),
+        (false, true, false),
+    ] {
+        let case = format!(
+            "intercept {fit_intercept}, standardize {standardize}, ridge_scale {ridge_scale}"
+        );
+        let mut c = cfg(3, 2);
+        c.min_weight = 0.0;
+        c.fit_intercept = fit_intercept;
+        c.standardize = standardize;
+        c.ridge_scale = ridge_scale;
+        // A grid of two ridges, but one under `ridge_scale`, which takes no grid.
+        c.ridge = if ridge_scale {
+            vec![3.0]
+        } else {
+            vec![1e-3, 0.5]
+        };
+        let slots = 2 * c.ridge.len();
+        let (mut m, _) = fitted(c, 40, 13);
+        m.set_keep_factor(true);
+        m.solve();
+        let mut out = Vec::new();
+        m.row_error_inflation_into(&[0.3, 1.1, 2.4], &mut out);
+        assert_eq!(out.len(), slots, "{case}");
+        assert!(
+            out.iter().all(|v| v.is_finite() && *v >= 1.0),
+            "{case}: {out:?}"
+        );
+        for x in [[f64::NAN, 1.1, 2.4], [0.3, 1.1, f64::NAN]] {
+            m.row_error_inflation_into(&x, &mut out);
+            assert!(out.iter().all(|v| v.is_nan()), "{case}, {x:?}: {out:?}");
+        }
+    }
+}
+
 /// `sqrt(1 + h)`, `h` the row's leverage over Kish's sample size, from
 /// the definition: centred and standardized, `h = (1 + v'(R + λI)⁻¹v)/n`
 /// with `v` the row centred and scaled and `R` the correlation; under

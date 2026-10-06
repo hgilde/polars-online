@@ -417,7 +417,9 @@ impl Hmm {
         m
     }
 
-    /// `ln fₗ` per state, or `None` when a factorization failed.
+    /// `ln fₗ` per state, or `None` when a factorization failed or a density
+    /// is not finite: a row past the double's range, or one holding a NaN,
+    /// whose quadratic form is NaN in every shape (task 181).
     ///
     /// The Gaussian constant `−(d/2)·ln 2π` is included, so `loglik` is a
     /// density and not a density up to a constant.
@@ -600,6 +602,26 @@ impl Hmm {
         self.seeded = true;
         self.factors.clear();
     }
+
+    /// Age every state over a row it does not learn: a zero-weight update,
+    /// which moves no mean and no co-moment and ages the weights by `lam`.
+    /// A row with a feature that is not a finite number ages them by
+    /// [`EwCov::decay`] instead, the same ageing without reading the row:
+    /// the update forms `0 · d` in each co-moment, and `0 · NaN` is NaN.
+    /// Such a row reaches here unscored -- its density is NaN, the quadratic
+    /// form keeping the NaN (task 181) -- or at weight 0; either way the
+    /// update wrote a NaN into every state, which no later row washes out
+    /// (CLAUDE.md hard rule 9).
+    fn age_states(&mut self, x: &[f64], lam: f64) {
+        let readable = x.iter().all(|v| v.is_finite());
+        for s in self.states.iter_mut() {
+            if readable {
+                s.update(x, lam, 0.0);
+            } else {
+                s.decay(lam);
+            }
+        }
+    }
 }
 
 impl crate::OnlineModel for Hmm {
@@ -629,9 +651,7 @@ impl crate::OnlineModel for Hmm {
             self.n_eff *= lam;
             if self.cfg.learn {
                 self.a.iter_mut().for_each(|v| *v *= lam);
-                for s in self.states.iter_mut() {
-                    s.update(x, lam, 0.0);
-                }
+                self.age_states(x, lam);
                 self.factors.clear();
             }
             return out;
@@ -646,8 +666,10 @@ impl crate::OnlineModel for Hmm {
             return out;
         }
         let Some((post, logf)) = extra else {
-            // The densities were all non-finite, so the row cannot be scored
-            // or learned. It still happened, so it ages the clock like a
+            // A density was not finite, so the row cannot be scored or
+            // learned: a row past the double's range, or one with a feature
+            // that is not a number, whose quadratic form keeps the NaN
+            // (task 181). It still happened, so it ages the clock like a
             // zero-weight row -- `n_eff`, the counts and the states all decay
             // by `lam`, nothing is added -- rather than `n_eff` advancing on
             // its own (review 2026-09-18).
@@ -655,9 +677,7 @@ impl crate::OnlineModel for Hmm {
             self.n_eff = lam * before;
             if self.cfg.learn {
                 self.a.iter_mut().for_each(|v| *v *= lam);
-                for s in self.states.iter_mut() {
-                    s.update(x, lam, 0.0);
-                }
+                self.age_states(x, lam);
                 self.factors.clear();
             }
             return out;
@@ -1671,6 +1691,68 @@ mod tests {
             let halved: Vec<f64> = a.iter().map(|v| 0.5 * v).collect();
             assert_eq!(m.a, halved, "weight {w}");
             assert_eq!(m.solve_failures, fails + u64::from(w > 0.0), "weight {w}");
+        }
+    }
+
+    /// A row whose feature is not a number cannot be scored or learned, in
+    /// every covariance shape: it reports nulls, counts a failure if it
+    /// carries weight, and ages the clock as a row that fails to score
+    /// does -- `n_eff`, the counts and each state's weight decay by the
+    /// row's `lam`, no mean or co-moment moves, `p` stays -- and the rows
+    /// after it are scored. Under `full` and `shared` the quadratic form's
+    /// clamp, `f64::max(NaN, 0.0)`, read the row as a form of 0, sitting
+    /// on every state's mean, and it was learned; under `diagonal` its NaN
+    /// density refused it, and the ageing's zero-weight update formed
+    /// `0 · NaN` in every co-moment, as it did on a row of no weight in
+    /// every shape (task 181).
+    #[test]
+    fn a_row_that_is_not_a_number_moves_nothing_in_any_shape() {
+        let decay = Decay::Halflife(10.0);
+        let lam = decay.factor(1.0);
+        for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            for (x, w) in [
+                ([f64::NAN, 0.5], 1.0),
+                ([0.5, f64::NAN], 1.0),
+                ([f64::NAN, 0.5], 0.0),
+            ] {
+                let case = format!("{covariance:?}, {x:?} at weight {w}");
+                let mut m = Hmm::new(HmmCfg {
+                    decay,
+                    covariance,
+                    ..cfg(2, 2)
+                })
+                .unwrap();
+                for (row, _) in stream(200, 11, 40) {
+                    m.step(&row, &[], 1.0, 1.0);
+                }
+                let before = m.clone();
+                let out = m.step(&x, &[], 1.0, w);
+                assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                assert_eq!(
+                    m.solve_failures,
+                    before.solve_failures + u64::from(w > 0.0),
+                    "{case}"
+                );
+                assert_eq!(m.n_eff, lam * before.n_eff, "{case}");
+                assert_eq!(m.p, before.p, "{case}");
+                let aged: Vec<f64> = before.a.iter().map(|v| lam * v).collect();
+                assert_eq!(m.a, aged, "{case}");
+                for s in 0..2 {
+                    let (now, was) = (m.state_cov(s), before.state_cov(s));
+                    assert_eq!(now.means(), was.means(), "{case}, state {s}");
+                    assert_eq!(now.comoments(), was.comoments(), "{case}, state {s}");
+                    assert_eq!(now.n_eff(), lam * was.n_eff(), "{case}, state {s}");
+                }
+                for (row, _) in stream(20, 12, 40) {
+                    let out = m.step(&row, &[], 1.0, 1.0);
+                    assert!(out.pred.iter().all(|v| v.is_finite()), "{case}: {out:?}");
+                }
+                assert_eq!(
+                    m.solve_failures,
+                    before.solve_failures + u64::from(w > 0.0),
+                    "{case}"
+                );
+            }
         }
     }
 

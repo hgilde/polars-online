@@ -386,6 +386,8 @@ impl SpdFactor {
     /// Quadratic forms `d_jᵀ A⁻¹ d_j` for the `m` column vectors of `d`
     /// (column-major `k x m`), each clamped at zero: it is a squared norm,
     /// and rounding in the solve must not hand the caller a negative one.
+    /// The form of a vector holding a NaN is NaN, never 0, and the caller
+    /// refuses its row (`clamp_rounding`; task 181).
     pub fn quad_forms(&self, d: &[f64], k: usize, m: usize) -> Vec<f64> {
         debug_assert_eq!(d.len(), k * m);
         let mut x = Mat::from_fn(k, m, |i, j| d[j * k + i]);
@@ -396,12 +398,13 @@ impl SpdFactor {
             for i in 0..k {
                 acc += d[j * k + i] * x[(i, j)];
             }
-            *qj = acc.max(0.0);
+            *qj = clamp_rounding(acc);
         }
         q
     }
 
-    /// `dᵀ A⁻¹ d` for one vector `d` of the factor's order, clamped at zero:
+    /// `dᵀ A⁻¹ d` for one vector `d` of the factor's order, clamped at zero
+    /// and NaN for a `d` holding one, as [`Self::quad_forms`] has it:
     /// `quad_forms(d, k, 1)[0]` to the bit -- the same column, solved by the
     /// same two triangular solves, summed in the same order -- but solved in
     /// `work`, a column kept between calls, where `quad_forms` allocates a
@@ -422,8 +425,25 @@ impl SpdFactor {
         for (i, &di) in d.iter().enumerate() {
             acc += di * x[(i, 0)];
         }
-        acc.max(0.0)
+        clamp_rounding(acc)
     }
+}
+
+/// A quadratic form as the solves leave it, `acc`, with rounding below zero
+/// lifted to 0: a form is a squared norm, so a negative one is the solve's
+/// rounding, and the caller must not be handed it. A NaN is kept. The clamp
+/// was `acc.max(0.0)`, and `f64::max` returns its other argument when one is
+/// NaN, so a vector holding a NaN read as a form of 0 -- a row sitting on
+/// every mean, which `bocpd` learned until task 179 checked for it -- and a
+/// NaN in a model's state never washes out (CLAUDE.md hard rule 9). Kept, it
+/// reaches the caller, which refuses the row by its own rule (task 181).
+///
+/// `acc` is a sum begun at `+0.0`, and under rounding to nearest a sum is
+/// `-0.0` only when both its terms are, so `acc` is never `-0.0`, the one
+/// number `f64::max` may order either way against `0.0`: for every number,
+/// infinities included, this is `acc.max(0.0)` to the bit.
+fn clamp_rounding(acc: f64) -> f64 {
+    if acc < 0.0 { 0.0 } else { acc }
 }
 
 /// The working space of [`SpdFactor::quad_form`]: one column, faer's own
@@ -549,8 +569,9 @@ impl TryFrom<SpdFactorState> for SpdFactor {
 /// the log-determinant is that of the matrix actually factorized; returns
 /// `(quad_forms, log_det, jitter_attempts)`, or `None` if every jitter fails.
 /// A quadratic form is clamped at zero: it is a squared norm, and rounding in
-/// the solve must not hand the caller a negative one. [`SpdFactor`] is the
-/// same computation split so the factor can be kept.
+/// the solve must not hand the caller a negative one. The form of a column
+/// holding a NaN is NaN, never 0, and the caller refuses its row (task 181).
+/// [`SpdFactor`] is the same computation split so the factor can be kept.
 pub fn quad_forms_logdet(a: &[f64], d: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, f64, u32)> {
     let f = SpdFactor::of(a, k)?;
     Some((f.quad_forms(d, k, m), f.log_det(), f.attempts))
@@ -683,6 +704,89 @@ mod tests {
         assert!(q.iter().all(|v| v.is_finite() && *v >= 0.0));
         // The zero vector has a zero form, exactly.
         assert_eq!(q[1], 0.0);
+    }
+
+    /// A quadratic form of a vector holding a NaN is NaN, under the kept
+    /// factor (`quad_forms`, `quad_form`) and the one-shot path
+    /// (`quad_forms_logdet`), and the other columns of the batch are their
+    /// own forms to the bit. The clamp against rounding was `acc.max(0.0)`,
+    /// and `f64::max` returns its other argument when one is NaN, so such a
+    /// vector read as a form of 0: a row sitting on every mean, which
+    /// `bocpd` learned until task 179 (task 181).
+    #[test]
+    fn a_quadratic_form_of_a_nan_is_nan() {
+        let (a, k) = ([4.0, 1.0, 1.0, 3.0], 2);
+        let f = SpdFactor::of(&a, k).unwrap();
+        // A NaN in the first column and in the last, around `[1, 2]`, whose
+        // form is 15/11 (`quad_forms_and_log_det_by_hand`).
+        let d = [f64::NAN, 1.0, 1.0, 2.0, 1.0, f64::NAN];
+        let alone = f.quad_forms(&[1.0, 2.0], k, 1)[0];
+        assert!((alone - 15.0 / 11.0).abs() < 1e-14, "{alone}");
+        let (once, log_det, _) = quad_forms_logdet(&a, &d, k, 3).unwrap();
+        for q in [f.quad_forms(&d, k, 3), once] {
+            assert!(q[0].is_nan() && q[2].is_nan(), "{q:?}");
+            assert_eq!(q[1].to_bits(), alone.to_bits(), "{q:?}");
+        }
+        assert_eq!(log_det.to_bits(), f.log_det().to_bits());
+        let mut work = QuadWork::default();
+        for v in [[f64::NAN, 1.0], [1.0, f64::NAN], [f64::NAN, f64::NAN]] {
+            let q = f.quad_form(&v, &mut work);
+            assert!(q.is_nan(), "{v:?}: {q}");
+        }
+        // The kept column carries nothing of the NaN into the next form.
+        assert_eq!(
+            f.quad_form(&[1.0, 2.0], &mut work).to_bits(),
+            alone.to_bits()
+        );
+    }
+
+    /// A form that rounding takes below zero is still lifted to 0, by the
+    /// kept factor's forms and by its one-column form alike. A factor
+    /// needs a pivot far below its column's scale for that -- here `2⁻⁵⁸`
+    /// under unit pivots, which a state may hold (`SpdFactorState`) -- and a
+    /// vector that pivot's row nearly cancels: the form's terms reach
+    /// `7e14` and their sum rounds to `-0.125`. In some 800,000 random
+    /// tries -- near-singular matrices of order 2 and 3 conditioned up to
+    /// `1e16`, and unit factors moved by a decay down to `2⁻¹¹⁰` and a row
+    /// -- no factorization or move made one: the clamp is a guarantee, not
+    /// a path a stream takes often.
+    #[test]
+    fn a_form_rounding_takes_below_zero_is_lifted_to_zero() {
+        let (a, b, l) = (-0.2209010847544407, 0.004177471509723141, 2f64.powi(-58));
+        let f = SpdFactor::try_from(SpdFactorState {
+            order: 3,
+            lower: vec![1.0, 0.0, a, 1.0, b, l],
+            attempts: 0,
+            jitter: 0.0,
+            moves: 0,
+        })
+        .unwrap();
+        let d = [
+            -0.0674612348766509,
+            0.07253625718759793,
+            0.015205278110949433,
+        ];
+        assert_eq!(d[2], a * d[0] + b * d[1], "the row the pivot cancels");
+        // The form as the solves leave it, summed in `quad_forms`' order.
+        let x = f.solve(&d, 3, 1);
+        let raw = d[0] * x[0] + d[1] * x[1] + d[2] * x[2];
+        assert_eq!(raw, -0.125, "{x:?}");
+        assert_eq!(f.quad_forms(&d, 3, 1)[0].to_bits(), 0f64.to_bits());
+        let mut work = QuadWork::default();
+        assert_eq!(f.quad_form(&d, &mut work).to_bits(), 0f64.to_bits());
+        // The clamp itself: every negative to `+0.0`, the smallest
+        // subnormal and `−∞` among them; a number at or above zero, and an
+        // infinity, as it is, which is `max(0.0)`'s answer to the bit; and a
+        // NaN kept, where `max(0.0)` answered 0.
+        for v in [-f64::from_bits(1), -1e-300, -0.125, f64::NEG_INFINITY] {
+            assert_eq!(clamp_rounding(v).to_bits(), 0f64.to_bits(), "{v:e}");
+        }
+        for v in [0.0, f64::from_bits(1), 15.0 / 11.0, 1e300, f64::INFINITY] {
+            assert_eq!(clamp_rounding(v).to_bits(), v.to_bits(), "{v:e}");
+            assert_eq!(clamp_rounding(v).to_bits(), v.max(0.0).to_bits(), "{v:e}");
+        }
+        assert!(clamp_rounding(f64::NAN).is_nan());
+        assert_eq!(f64::NAN.max(0.0), 0.0, "the clamp this replaced");
     }
 
     #[test]

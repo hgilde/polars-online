@@ -729,10 +729,12 @@ impl Bocpd {
             sigma.iter_mut().for_each(|v| *v *= scale);
             let f = SpdFactor::of(&sigma, d)?;
             let delta: Vec<f64> = x.iter().zip(&mun).map(|(a, b)| a - b).collect();
-            // The quadratic form is clamped at 0, and `f64::max` takes a NaN
-            // to that 0: a row that is not a number read as sitting on the
-            // mean, and was learned. Refused here, as the diagonal
-            // emission's NaN density refuses it.
+            // A row that is not a number has no density: refused here, as
+            // the diagonal emission's NaN density refuses it. The quadratic
+            // form's clamp took a NaN to 0, and the row read as sitting on
+            // the mean and was learned (task 179). The form keeps the NaN
+            // now (task 181), but the refusal is said here rather than left
+            // to how `log_sum_exp`'s `f64::max` reads a NaN density.
             if delta.iter().any(|v| v.is_nan()) {
                 return None;
             }

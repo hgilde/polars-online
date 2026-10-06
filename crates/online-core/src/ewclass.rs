@@ -431,7 +431,10 @@ impl EwClass {
 
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state; NaN
     /// throughout before `min_weight`, before any labelled row, on a
-    /// non-finite `x`, and when a covariance cannot be factorized.
+    /// non-finite `x`, when a covariance cannot be factorized, and when a
+    /// class's score is not a number. Only the factorization is counted
+    /// (`solve_failures`). A non-finite `x` never reaches a quadratic form,
+    /// whose answer for it would be NaN (task 181).
     ///
     /// `factors` is the `full` shape's cache of class factors: `step` hands
     /// its own in and gets the stale ones rebuilt; `predict` has only `&self`
@@ -547,6 +550,14 @@ impl EwClass {
                     ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q;
                 }
             }
+        }
+        // A class score that is not a number -- a quadratic form whose terms
+        // overflowed to `+∞` and `−∞`, which the form keeps as NaN (task
+        // 181) -- leaves the row unread, as a feature that is not a number
+        // does: the comparisons below pass over a NaN, and the class was
+        // reported beside posteriors that were not numbers.
+        if ell.iter().any(|l| l.is_nan()) {
+            return nan();
         }
         // Softmax about the maximum; the first maximum is the class.
         let mut best = 0;
@@ -1185,26 +1196,48 @@ mod tests {
         assert_eq!(m.class_cov(0).means(), &[1.0, 2.0]);
     }
 
+    /// In every shape: the two that read a quadratic form, `full` and
+    /// `shared`, never hand it the row, whose form would be NaN (task 181).
     #[test]
     fn a_non_finite_feature_row_ticks_the_clock_and_learns_nothing() {
-        let cfg = cfg(2, 2, Covariance::Diagonal);
-        let mut m = EwClass::new(cfg.clone()).unwrap();
-        for i in 0..10 {
-            let x = [i as f64, 1.0];
-            m.step(
-                &x,
-                &[Some((i % 2) as f64)],
-                if i == 0 { 0.0 } else { 1.0 },
-                1.0,
+        for covariance in [Covariance::Diagonal, Covariance::Full, Covariance::Shared] {
+            let cfg = cfg(2, 2, covariance);
+            let mut m = EwClass::new(cfg.clone()).unwrap();
+            for i in 0..10 {
+                let x = [i as f64, 1.0];
+                m.step(
+                    &x,
+                    &[Some((i % 2) as f64)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            let before = m.clone();
+            let s = m.step(&[f64::NAN, 1.0], &[Some(0.0)], 1.0, 1.0);
+            assert!(s.pred.iter().all(|v| v.is_nan()), "{covariance:?}");
+            let lam = cfg.decay.factor(1.0);
+            assert_eq!(m.n_eff(), lam * before.n_eff(), "{covariance:?}");
+            assert_eq!(
+                m.class_weights()[0],
+                lam * before.class_weights()[0],
+                "{covariance:?}"
             );
+            for c in 0..2 {
+                assert_eq!(
+                    m.class_cov(c).means(),
+                    before.class_cov(c).means(),
+                    "{covariance:?}"
+                );
+                assert_eq!(
+                    m.class_cov(c).comoments(),
+                    before.class_cov(c).comoments(),
+                    "{covariance:?}"
+                );
+            }
+            assert_eq!(m.solve_failures, 0, "{covariance:?}");
+            let next = m.step(&[3.0, 1.2], &[Some(1.0)], 1.0, 1.0);
+            assert!(next.pred.iter().all(|v| v.is_finite()), "{covariance:?}");
         }
-        let before = m.clone();
-        let s = m.step(&[f64::NAN, 1.0], &[Some(0.0)], 1.0, 1.0);
-        assert!(s.pred.iter().all(|v| v.is_nan()));
-        let lam = cfg.decay.factor(1.0);
-        assert_eq!(m.n_eff(), lam * before.n_eff());
-        assert_eq!(m.class_weights()[0], lam * before.class_weights()[0]);
-        assert_eq!(m.class_cov(0).means(), before.class_cov(0).means());
     }
 
     #[test]
@@ -1735,6 +1768,57 @@ mod tests {
         let out = m.step(&[0.0, 0.0], &[None], 1.0, 1.0);
         assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
         assert_eq!(m.solve_failures, 1);
+    }
+
+    /// A class score that is not a number withholds the row, as a feature
+    /// that is not one does: NaN throughout, uncounted. Class 0 is learned
+    /// at `(1e160, 5e159)`, one point at that scale, and class 1 at the
+    /// origin, its two features correlated at 0.99, so a row on class 0 has
+    /// a finite score there and, against class 1's matrix, a quadratic form
+    /// whose terms overflow to `+∞` and `−∞`: NaN. `f64::max` clamped it to
+    /// 0, the row sitting on class 1's mean, and it was classed by that;
+    /// read as NaN, class 0 was reported with posteriors that are not
+    /// numbers. In both shapes that read a form (task 181). Under `full` a
+    /// row at the origin is scored, class 0's diagonal matrix taking its
+    /// form to `+∞`; under `shared` class 0 reads the pooled, correlated
+    /// matrix, and that row is withheld too.
+    #[test]
+    fn a_class_score_that_is_not_a_number_withholds_the_row() {
+        for covariance in [Covariance::Full, Covariance::Shared] {
+            let mut m = EwClass::new(cfg(2, 2, covariance)).unwrap();
+            let mut s = 61u64;
+            let mut u = || {
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+            };
+            let far = [1e160, 0.5e160];
+            for i in 0..40 {
+                let (z, n) = (u(), u());
+                let (x, label) = if i % 2 == 0 {
+                    (far, 0.0)
+                } else {
+                    ([z, 0.99 * z + 0.14 * n], 1.0)
+                };
+                m.step(&x, &[Some(label)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let near = m.predict(&[0.1, 0.1], 1.0).pred;
+            if covariance == Covariance::Full {
+                assert!(near.iter().all(|v| v.is_finite()), "{near:?}");
+                assert_eq!(near[0], 1.0, "{near:?}");
+            } else {
+                assert!(near.iter().all(|v| v.is_nan()), "{near:?}");
+            }
+            let out = m.predict(&far, 1.0).pred;
+            assert!(out.iter().all(|v| v.is_nan()), "{covariance:?}: {out:?}");
+            let stepped = m.step(&far, &[None], 1.0, 1.0).pred;
+            assert!(
+                stepped.iter().all(|v| v.is_nan()),
+                "{covariance:?}: {stepped:?}"
+            );
+            assert_eq!(m.solve_failures, 0, "{covariance:?}");
+        }
     }
 
     /// A row of weight 0 learns nothing whatever its label: the whole state
