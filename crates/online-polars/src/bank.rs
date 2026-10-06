@@ -102,7 +102,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// configurations changed shape with them. **31 since task 174** (the same
 /// day): a `lasso` keeps each target's own `min_weight` for its selection,
 /// and a 30 file's lasso holds only the smallest.
-const MIN_BANK_SCHEMA_VERSION: u32 = 31;
+/// **32 since task 175** (the same
+/// day): a window's snapshots are keyed by each row's stamp beside the
+/// summed clock, so a 31 file's rings are another shape, and its streams
+/// keep no exact clock to stamp the next row from; pre-1.0, no loader is
+/// written, and a 31 file is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 32;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

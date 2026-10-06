@@ -3942,7 +3942,7 @@ fn the_windows_shadow_foresees_its_overrun() {
     let mut shadow = m.window_shadow().expect("a window has a ring");
     assert_eq!(shadow.over_budget(), None);
     for i in 0..4 {
-        shadow.learn(step_clock(i));
+        shadow.learn(step_clock(i), None);
         let v = i as f64;
         OnlineModel::step(&mut m, &[v, 1.0], &[Some(v)], step_clock(i), 1.0);
         assert_eq!(shadow.over_budget(), m.window_over_budget(), "row {i}");

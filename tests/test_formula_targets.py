@@ -927,18 +927,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     windows message. Round five moved the windows version alone, and a 24
     file holding a version-4 core failed late. 28 since task 161, for
     `ew_cov`, 29 since task 163, for `micro`, 30 since task 162, for the
-    models' window cadence, and 31 since task 174, for `lasso`'s per-target
-    thresholds, the windows state unchanged each time."""
+    models' window cadence, 31 since task 174, for `lasso`'s per-target
+    thresholds, and 32 since task 175, for their windows' stamps, the
+    windows state unchanged each time."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 31, state[i]
-    for before in (25, 26, 27, 28, 29, 30):
+    assert state[i] == 32, state[i]
+    for before in (25, 26, 27, 28, 29, 30, 31):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 31"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 32"
         ):
             po.ModelBank.load_bytes(old)
 

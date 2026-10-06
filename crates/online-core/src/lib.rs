@@ -102,8 +102,8 @@ mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use clock::{
-    ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, OnClockReset, SessionGap,
-    seconds_of_ns,
+    ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
+    SessionGap, Stamp, ns_of_seconds, seconds_of_ns,
 };
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
@@ -152,7 +152,7 @@ pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, SlotMetrics};
 pub use window::{
-    Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated,
+    At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated,
     truncated_mean, truncated_scalar,
 };
 
@@ -407,7 +407,17 @@ pub use window::{
 ///   before 31 carry only the smallest of a spec's thresholds, so the bank
 ///   refuses a file older than 31 by number, and pre-1.0 no loader is
 ///   written. Every other model's state from 14 on still loads.
-pub const SCHEMA_VERSION: u32 = 31;
+/// - 32 (2026-10-06, task 175): a window's edge is decided on each row's
+///   stamp, its decayed clock held exactly ([`Stamp`]): integer nanoseconds
+///   on a temporal clock, the raw value beside the time the caps removed on
+///   a number clock. The ring keys each snapshot by the stamp beside the
+///   model's summed clock, `(clock, stamp, snapshot)` where it was `(clock,
+///   snapshot)`, so a windowed state from before 32 does not decode, and a
+///   stream's clock keeps the exact clock it stamps the next row from, which
+///   a 31 file lacks. The bank refuses a file older than 32 by number;
+///   pre-1.0 no loader is written. A model without a window loads its state
+///   as it did at 31.
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

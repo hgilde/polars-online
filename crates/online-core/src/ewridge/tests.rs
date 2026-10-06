@@ -4170,7 +4170,7 @@ fn the_window_shadow_follows_the_ring() {
     let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
     let mut over = 0;
     for (x, y, w) in &rows {
-        shadow.learn(1.0);
+        shadow.learn(1.0, None);
         m.step(x, y, 1.0, *w);
         assert_eq!(shadow.over_budget(), m.window_over_budget());
         over += usize::from(m.window_over_budget().is_some());

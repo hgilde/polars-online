@@ -696,6 +696,12 @@ impl OnlineModel for Lasso {
         self.cfg.solve_share
     }
 
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -762,16 +768,13 @@ impl OnlineModel for Lasso {
         // below read the window as it stood a row earlier (PLAN task 95).
         let sel_lam = self.select_decay().factor(d_clock);
         if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
             // Built inside the closure so the snapshot is only formed on the
             // rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.offer(t, || LassoMoments {
+            win.snaps.learn(&mut win.clock, d_clock, || LassoMoments {
                 acc: self.acc.snapshot(lam_decay),
                 sel_w: self.sel_w.iter().map(|w| w * sel_lam).collect(),
                 sel_err: self.sel_err.clone(),
             });
-            win.clock = t;
-            win.snaps.trim(t);
         }
 
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
@@ -2336,7 +2339,7 @@ mod tests {
         let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
         let mut over = 0;
         for (x, y, w) in &rows[10..] {
-            shadow.learn(1.0);
+            shadow.learn(1.0, None);
             m.step(x, &y[..1], 1.0, *w);
             assert_eq!(shadow.over_budget(), m.window_over_budget());
             over += usize::from(m.window_over_budget().is_some());

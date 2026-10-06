@@ -571,6 +571,12 @@ impl EwClass {
 }
 
 impl OnlineModel for EwClass {
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -612,13 +618,12 @@ impl OnlineModel for EwClass {
         let label = if learn { self.label(y) } else { None };
         // The snapshot is every class's moments as they stand *before* this
         // row, decayed to this row's clock, so subtracting it later retains
-        // this row and everything after.
+        // this row and everything after; keyed by the row's stamp (task 175).
         if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
             // Built inside the closure so the per-class snapshot is only
             // formed on the rows `offer` keeps, not on every row (review
             // 2026-09-18, P1).
-            win.snaps.offer(t, || ClassMoments {
+            win.snaps.learn(&mut win.clock, d_clock, || ClassMoments {
                 n_eff: self.n_eff * lam,
                 classes: self
                     .classes
@@ -626,8 +631,6 @@ impl OnlineModel for EwClass {
                     .map(|c| crate::Moments::of(c, lam))
                     .collect(),
             });
-            win.clock = t;
-            win.snaps.trim(t);
             // A window's truncated covariance moves every row, because the
             // decay carried to the boundary does, so no cached factor
             // survives a row. This is the cost the `window` doc states.
@@ -1512,7 +1515,7 @@ mod tests {
             }
             let inside = |class: Option<usize>| -> f64 {
                 rows.iter()
-                    .filter(|r| r.0 >= *u && class.is_none_or(|c| r.2 == c))
+                    .filter(|r| r.0 >= u && class.is_none_or(|c| r.2 == c))
                     .map(|r| r.1 * decay.factor(clock - r.0))
                     .sum()
             };
@@ -1564,7 +1567,7 @@ mod tests {
                 OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 2.0, 0.0);
                 let win = m.win.as_ref().unwrap();
                 let (u, old) = win.snaps.boundary().unwrap();
-                if *u <= last {
+                if u <= last {
                     continue;
                 }
                 // The window holds no weighted row: what the subtraction
@@ -1700,13 +1703,13 @@ mod tests {
         assert_eq!(m.window_over_budget(), None);
         // Half a snapshot of room: the next snapshot is refused.
         let snaps = &m.win.as_ref().unwrap().snaps;
-        let snapshot = crate::Footprint::footprint(&snaps.boundary().unwrap().1);
+        let snapshot = crate::Footprint::footprint(snaps.boundary().unwrap().1);
         let room = snaps.bytes() as f64 + 0.5 * snapshot as f64;
         m.set_window_budget(Some(crate::WindowBudget::Refuse(room / (1024.0 * 1024.0))));
         let mut shadow = m.window_shadow().expect("a window has a shadow");
         assert_eq!(shadow.over_budget(), None);
         for i in 0..6 {
-            shadow.learn(2.0);
+            shadow.learn(2.0, None);
             row(&mut m, 2.0);
             assert_eq!(shadow.over_budget(), m.window_over_budget(), "row {i}");
         }

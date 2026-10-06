@@ -1284,27 +1284,25 @@ impl Marginal {
     /// The window's snapshot, when the row is one it keeps: every
     /// accumulator as it stands *before* this row, decayed to this row's
     /// clock, so subtracting it later retains this row and everything
-    /// after. Keyed by a clock the model accumulates itself, so the boundary
-    /// cannot depend on the chunking.
+    /// after. Keyed by the row's stamp (task 175) beside a clock the model
+    /// accumulates itself, so the boundary cannot depend on the chunking.
     fn offer_snapshot(&mut self, d_clock: f64, lam: f64) {
         if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
             // Built inside the closure so the snapshot is only formed on the
             // rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.offer(t, || MarginalMoments {
-                w_sum: self.w_sum * lam,
-                wt: self.wt.iter().map(|w| w * lam).collect(),
-                qt: self.qt.iter().map(|q| q * lam * lam).collect(),
-                my: self.my.clone(),
-                syy: self.syy.clone(),
-                mx: self.mx.clone(),
-                sxx: self.sxx.clone(),
-                sxy: self.sxy.clone(),
-                rows: Some(self.rows_t.clone()),
-                lag: self.lag.as_ref().map(|l| l.moments()),
-            });
-            win.clock = t;
-            win.snaps.trim(t);
+            win.snaps
+                .learn(&mut win.clock, d_clock, || MarginalMoments {
+                    w_sum: self.w_sum * lam,
+                    wt: self.wt.iter().map(|w| w * lam).collect(),
+                    qt: self.qt.iter().map(|q| q * lam * lam).collect(),
+                    my: self.my.clone(),
+                    syy: self.syy.clone(),
+                    mx: self.mx.clone(),
+                    sxx: self.sxx.clone(),
+                    sxy: self.sxy.clone(),
+                    rows: Some(self.rows_t.clone()),
+                    lag: self.lag.as_ref().map(|l| l.moments()),
+                });
         }
     }
 
@@ -1350,7 +1348,7 @@ impl Marginal {
         if self
             .win
             .as_ref()
-            .is_some_and(|w| w.snaps.takes(w.clock + d_clock))
+            .is_some_and(|w| w.snaps.takes_next(w.clock, d_clock))
         {
             self.flush_rows(shards, true);
         }
@@ -2202,6 +2200,12 @@ fn deal<'a, E>(
 }
 
 impl OnlineModel for Marginal {
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);

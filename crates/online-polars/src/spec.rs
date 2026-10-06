@@ -2,7 +2,7 @@
 //! (Python) and TOML (CLI), with common-parameter validation and the output
 //! struct layout.
 
-use online_core::{ClockCfg, Decay, OnClockReset, SessionGap, TargetGaps};
+use online_core::{ClockCfg, Decay, ExactCaps, OnClockReset, SessionGap, TargetGaps};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -2581,6 +2581,24 @@ impl Spec {
                         .collect())
                 }
             }
+        }
+    }
+
+    /// `gap_cap` and `session_gap` in integer nanoseconds where they are
+    /// durations, which only a temporal clock reads: what a row's stamp, its
+    /// decayed clock held exactly, caps a step at ([`ExactCaps`],
+    /// docs/PLAN.md task 175).
+    pub fn exact_caps(&self) -> ExactCaps {
+        let nanos = |s: &Span| match s {
+            Span::Duration(d) => Some(d.nanos),
+            Span::Units(_) => None,
+        };
+        ExactCaps {
+            gap_cap_ns: self.gap_cap.as_ref().and_then(nanos),
+            session_gap_ns: match &self.session_gap {
+                Some(SessionGapSpec::Gap(g)) => nanos(g),
+                _ => None,
+            },
         }
     }
 

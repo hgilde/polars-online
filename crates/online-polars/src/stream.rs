@@ -1,7 +1,6 @@
 //! One (spec, group) stream: clock state + model instances (one per half-life
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
-use online_core::ClockValue;
 use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
@@ -12,6 +11,7 @@ use online_core::{
     Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
     SgdLoss, SlotMetrics, State, StateError, WindowShadow,
 };
+use online_core::{ClockValue, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::ClockCol;
@@ -199,6 +199,13 @@ impl AnyModel {
     /// a model that keeps none.
     pub fn clear_lags(&mut self) {
         dispatch!(self, m => m.clear_lags())
+    }
+
+    /// Hand the model the next learned row's stamp, its decayed clock held
+    /// exactly ([`OnlineModel::stamp_next`], docs/PLAN.md task 175); a no-op
+    /// for a model without a window.
+    pub fn stamp_next(&mut self, stamp: Stamp) {
+        dispatch!(self, m => m.stamp_next(stamp))
     }
 
     /// Bound the model's window ([`OnlineModel::set_window_budget`]).
@@ -1701,6 +1708,10 @@ pub struct PendingRow {
     pub remaining: f64,
     /// The delta the row arrived with, replayed when it is released.
     pub d_clock: f64,
+    /// The row's stamp, its decayed clock held exactly, which a window keys
+    /// the row's snapshot by when it is released (docs/PLAN.md task 175).
+    #[serde(default)]
+    pub stamp: Option<Stamp>,
     pub w: f64,
     pub xs: Vec<f64>,
     /// `None` for a target that was null on the row.
@@ -1966,6 +1977,10 @@ pub struct Stream {
     /// Clock units a row waits before the models learn from it (E47);
     /// `None` for the ordinary "learn where it sits".
     embargo: Option<f64>,
+    /// The spec's `gap_cap` and `session_gap` in integer nanoseconds, where
+    /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
+    /// configuration from the spec, like `embargo`.
+    exact_caps: ExactCaps,
     /// Rows accepted but not yet released into the models, oldest first.
     pending: Vec<PendingRow>,
     /// The break skipped rows raised since the last accepted row, waiting
@@ -2568,6 +2583,7 @@ impl Stream {
             pending_clock: vec![0.0; slots.len()],
             notified: vec![Notified::default(); slots.len()],
             embargo: spec.embargo.as_ref().map(Span::value),
+            exact_caps: spec.exact_caps(),
             pending: Vec::new(),
             held_break: HeldBreak::default(),
             last_learned: None,
@@ -2897,7 +2913,15 @@ impl Stream {
             // what to do about it; the summary counts them (task 35).
             let prev = clock_state.last_clock();
             let below = matches!((c, prev), (Some(c), Some(p)) if c.is_before(p));
-            let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
+            // Stamped: every row this stream commits is, so the exact clock
+            // a window's edge reads never misses a step (task 175).
+            let adv = clock_state.advance_stamped(
+                cfg,
+                &self.exact_caps,
+                c,
+                session.map(|s| s[i]),
+                accept,
+            );
             // A step back the policy refuses: hand the offending delta (and,
             // for a late row, the minimum) back so the caller can name the
             // row and column.
@@ -2923,6 +2947,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                stamp: adv.stamp,
                 elapsed: adv.elapsed,
                 clock: shown,
                 reset: adv.reset,
@@ -3006,13 +3031,13 @@ impl Stream {
                     })
                     .clone();
             }
-            // The rows `run_instance` steps the models on, with the delta it
-            // steps them with.
+            // The rows `run_instance` steps the models on, with the delta and
+            // the stamp it steps them with.
             if !(plan.accept && plan.learn) {
                 continue;
             }
             for shadow in &mut live {
-                shadow.learn(plan.d_clock);
+                shadow.learn(plan.d_clock, plan.stamp);
                 if let Some(over) = shadow.over_budget() {
                     return Some(over);
                 }
@@ -3328,6 +3353,7 @@ impl Stream {
             i: usize::MAX,
             pending: slot,
             d_clock: row.d_clock,
+            stamp: row.stamp,
             elapsed: 0.0,
             clock: row.clock,
             reset: false,
@@ -3421,6 +3447,7 @@ impl Stream {
             pending.push(PendingRow {
                 remaining: delay,
                 d_clock: plan.d_clock,
+                stamp: plan.stamp,
                 w: plan.w,
                 xs: features.row(i).to_vec(),
                 ys: targets
@@ -3518,6 +3545,8 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                // Scored, never learned: no window moves.
+                stamp: None,
                 elapsed: 0.0,
                 // Without a clock column, the row's index in its group: the
                 // rows learned, then this call's rows in order, as
@@ -3881,6 +3910,10 @@ struct RowPlan {
     /// for a row read from the columns.
     pending: usize,
     d_clock: f64,
+    /// The row's place on the decayed clock, held exactly, which a window
+    /// decides its edge from ([`online_core::Stamp`], docs/PLAN.md task
+    /// 175): `None` for a skipped row and a row only scored.
+    stamp: Option<Stamp>,
     /// The time that passed since the previous accepted row, uncapped: what
     /// counts the `embargo` buffer down (docs/PLAN.md task 153).
     elapsed: f64,
@@ -4176,6 +4209,11 @@ fn run_instance(
                 .row_error_inflation_into(xs, &mut sc.row_infl);
 
         let mut step = if learn {
+            // The row's stamp, for a window to key its snapshot by and
+            // decide its edge from (task 175); decay reads `d_clock`.
+            if let Some(stamp) = plan.stamp {
+                inst.model.get_mut().stamp_next(stamp);
+            }
             inst.model
                 .get_mut()
                 .step_sharded(xs, &sc.ys, plan.d_clock, w, inst.shards)
@@ -4336,10 +4374,12 @@ fn run_instance(
                 }
             }
             if learn {
-                // The spread as the row finds it, before its own residual.
+                // The spread as the row finds it, before its own residual,
+                // keyed by the stamp the model's window was (task 175).
                 if let Some(ring) = inst.resid_win.as_mut() {
                     ring.get_mut().learn(
                         plan.d_clock,
+                        plan.stamp,
                         lam,
                         inst.resid_w.as_slice(),
                         inst.resid_var.as_slice(),

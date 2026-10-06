@@ -2329,10 +2329,11 @@ mod tests {
     #[test]
     fn a_windows_state_version_moves_the_banks_schema_with_it() {
         // 28, 29, 30 and 31 moved for `ew_cov`'s PCA cadence, `micro`'s
-        // pruning, the models' window cadence and `lasso`'s per-target
-        // thresholds (tasks 161, 163, 162, 174), the windows state unchanged:
-        // a schema may move alone, a windows version may not.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 31));
+        // pruning, the models' window cadence, `lasso`'s per-target
+        // thresholds and the windows' stamps (tasks 161, 163, 162, 174,
+        // 175), the windows state unchanged: a schema may move alone, a
+        // windows version may not.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 32));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

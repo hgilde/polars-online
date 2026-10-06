@@ -264,6 +264,17 @@ pub trait OnlineModel: Sized {
     /// are untouched. Only the lags go.
     fn clear_lags(&mut self) {}
 
+    /// The next learned row's place on the decayed clock, held exactly
+    /// ([`crate::Stamp`], docs/PLAN.md task 175). A caller that keeps one
+    /// hands it before each [`Self::step`] -- the stream does, from
+    /// [`crate::ClockState::advance_stamped`] -- and a model with a window
+    /// keys that row's snapshot by it, and decides its edge and its snapshot
+    /// spacing from it. A step handed none takes the model's own clock,
+    /// summed from the `d_clock`s it is stepped with, as every window did
+    /// before. Decay reads `d_clock` either way. A model without a window has
+    /// no edge to decide -- hence the default, which ignores it.
+    fn stamp_next(&mut self, _stamp: crate::Stamp) {}
+
     /// Bound this model's window, if it has one ([`crate::WindowBudget`]).
     /// Configuration, not state: a caller sets it after building or
     /// restoring the model, and a model without a window ignores it --

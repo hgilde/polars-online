@@ -41,12 +41,49 @@
 //! excludes stayed in the fit. So a row that finds the newest snapshot
 //! outside the window is snapshotted whatever the cadence (review
 //! 2026-09-12, S6).
+//!
+//! **The edge is decided on each row's stamp, the decayed clock held
+//! exactly** ([`crate::Stamp`]; docs/PLAN.md task 175). A snapshot is keyed
+//! by two clocks of the row it precedes ([`At`]). The model's own clock,
+//! summed from the steps it decays by, decays the snapshot forward, as it
+//! always did. The stamp decides everything a comparison with `window` or
+//! `spacing` decides: which snapshots are trimmed, and when one is due. The
+//! summed clock drifted: a thousand steps of 1 ms came to
+//! 1.0000000000000007 s, and a row exactly one window old was dropped on
+//! some rows and kept on others (review CB1). On a temporal clock a stamp is
+//! integer nanoseconds; on a number clock, two rows without a capped gap
+//! between them differ by one subtraction of their raw values, as the window
+//! operators decide their edge.
 
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use crate::EwCov;
+use crate::{EwCov, Stamp};
+
+/// Where a snapshot sits: the two clocks of the row it precedes
+/// (docs/PLAN.md task 175). `clock` is the model's own, summed from the
+/// steps it decays by, and a snapshot is decayed forward by the difference
+/// of two of these, as it always was. `stamp` is the row's decayed clock
+/// held exactly, and it alone places the snapshot against the window's edge
+/// and the cadence's spacing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct At {
+    pub clock: f64,
+    pub stamp: Stamp,
+}
+
+impl From<f64> for At {
+    /// A clock that is its own stamp: what every window was keyed by before
+    /// task 175, and a row's whose caller hands no stamp.
+    fn from(clock: f64) -> Self {
+        At {
+            clock,
+            stamp: Stamp::from(clock),
+        }
+    }
+}
 
 /// What a window does when its snapshots pass a memory budget, and the
 /// budget in MiB (review 2026-09-12, P4; the user's decision of
@@ -202,7 +239,7 @@ impl WindowShadow {
     /// of the one `make` forms: the closure the model hands `offer`.
     pub fn new<S: Footprint>(clock: f64, ring: &Snapshots<S>, make: impl FnOnce() -> S) -> Self {
         let snapshot = match ring.ring.back() {
-            Some((_, s)) => s.footprint(),
+            Some((_, _, s)) => s.footprint(),
             None => make().footprint(),
         };
         Self {
@@ -215,22 +252,25 @@ impl WindowShadow {
                 ring: ring
                     .ring
                     .iter()
-                    .map(|(t, s)| (*t, Bytes(s.footprint())))
+                    .map(|(t, stamp, s)| (*t, *stamp, Bytes(s.footprint())))
                     .collect(),
                 limit: ring.limit.clone(),
+                next: None,
             },
             snapshot,
         }
     }
 
-    /// A learned row `d_clock` after the last: the ring's offer and trim, as
-    /// the model's step makes them.
-    pub fn learn(&mut self, d_clock: f64) {
-        let t = self.clock + d_clock;
+    /// A learned row `d_clock` after the last, at `stamp` (the summed clock
+    /// for `None`): the ring's offer and trim, as the model's step makes
+    /// them ([`Snapshots::learn`]).
+    pub fn learn(&mut self, d_clock: f64, stamp: Option<Stamp>) {
+        if let Some(stamp) = stamp {
+            self.ring.stamp_next(stamp);
+        }
         let snapshot = self.snapshot;
-        self.ring.offer(t, || Bytes(snapshot));
-        self.clock = t;
-        self.ring.trim(t);
+        self.ring
+            .learn(&mut self.clock, d_clock, || Bytes(snapshot));
     }
 
     /// What the ring would report: [`Snapshots::over_budget`].
@@ -409,13 +449,21 @@ pub struct Snapshots<S> {
     /// Rows since the last snapshot, so the cadence is counted in the
     /// *stream* and never in the chunk (hard rule 3).
     since: usize,
-    /// `(clock of the row the snapshot precedes, snapshot)`.
-    ring: VecDeque<(f64, S)>,
+    /// `(clock of the row the snapshot precedes, its stamp, snapshot)`: the
+    /// model's summed clock, which decays the snapshot forward, and the
+    /// row's decayed clock held exactly, which places it against the
+    /// window's edge and the spacing ([`At`]; docs/PLAN.md task 175).
+    ring: VecDeque<(f64, Stamp, S)>,
     /// The budget, and a refusing budget's overrun: configuration the caller
     /// sets after building or restoring the model, so not part of the
     /// state, and two rings that differ only here are equal.
     #[serde(skip)]
     limit: Limit,
+    /// The next learned row's stamp, which the caller hands before it steps
+    /// the model ([`Self::stamp_next`]) and the step takes. Never state:
+    /// nothing is pending between two rows.
+    #[serde(skip)]
+    next: Option<Stamp>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -477,6 +525,7 @@ impl<S> Snapshots<S> {
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
             limit: Limit::default(),
+            next: None,
         })
     }
 
@@ -493,36 +542,60 @@ impl<S> Snapshots<S> {
         }
     }
 
-    /// Whether a row at `clock`, `since` rows after the newest snapshot,
-    /// takes one: the clock `spacing` past the newest's or the rows at
-    /// `every`, whichever comes first, and whatever the cadence when the
-    /// newest has left the window or there is none (the module docs).
-    fn due(&self, since: usize, clock: f64) -> bool {
-        self.newest().is_none_or(|t| {
-            since >= self.every || clock - t >= self.spacing || t < clock - self.window
+    /// Whether a row at `now`, `since` rows after the newest snapshot, takes
+    /// one: its stamp `spacing` past the newest's or the rows at `every`,
+    /// whichever comes first, and whatever the cadence when the newest has
+    /// left the window or there is none (the module docs). Both comparisons
+    /// are the stamps' exact difference ([`Stamp::cmp_span`]).
+    fn due(&self, since: usize, now: Stamp) -> bool {
+        self.newest().is_none_or(|at| {
+            since >= self.every
+                || now.cmp_span(at.stamp, self.spacing) != Ordering::Less
+                || now.cmp_span(at.stamp, self.window) == Ordering::Greater
         })
     }
 
     /// The snapshots, oldest first.
     pub fn iter(&self) -> impl Iterator<Item = &S> {
-        self.ring.iter().map(|(_, s)| s)
+        self.ring.iter().map(|(_, _, s)| s)
     }
 
     /// Every snapshot held, oldest first, for a caller that must rewrite them
     /// in place: a state converted as it is read.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
-        self.ring.iter_mut().map(|(_, s)| s)
+        self.ring.iter_mut().map(|(_, _, s)| s)
     }
 
-    /// The snapshot to subtract, and the clock it is referenced at.
-    pub fn boundary(&self) -> Option<&(f64, S)> {
-        self.ring.front()
+    /// The snapshot to subtract, and the model's clock it is referenced at,
+    /// which decays it forward.
+    pub fn boundary(&self) -> Option<(f64, &S)> {
+        self.ring.front().map(|(t, _, s)| (*t, s))
     }
 
-    /// The newest snapshot's clock, which the clock spacing is measured
-    /// from.
-    pub(crate) fn newest(&self) -> Option<f64> {
-        self.ring.back().map(|(t, _)| *t)
+    /// The newest snapshot's place, which the spacing is measured from.
+    pub(crate) fn newest(&self) -> Option<At> {
+        self.ring
+            .back()
+            .map(|&(clock, stamp, _)| At { clock, stamp })
+    }
+
+    /// The next learned row's stamp, its decayed clock held exactly
+    /// (docs/PLAN.md task 175), for the step that learns it to key its
+    /// snapshot by and trim at ([`Self::learn`]). A step with none handed
+    /// takes the model's summed clock as its stamp.
+    pub fn stamp_next(&mut self, stamp: Stamp) {
+        self.next = Some(stamp);
+    }
+
+    /// The place of the next learned row, `d_clock` past the model's
+    /// `clock`: that clock moved on by `d_clock`, and the stamp
+    /// [`Self::stamp_next`] handed, or the moved clock where none was.
+    pub fn next_at(&self, clock: f64, d_clock: f64) -> At {
+        let clock = clock + d_clock;
+        At {
+            clock,
+            stamp: self.next.unwrap_or(Stamp::from(clock)),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -536,44 +609,52 @@ impl<S> Snapshots<S> {
 
 impl<S: Footprint> Snapshots<S> {
     /// Drop what can never be the boundary again: everything strictly older
-    /// than `now - window`. What is left at the front is the oldest snapshot
-    /// inside the window, which is the boundary; [`Self::offer`] at `now`
-    /// has seen to it that there is one. (A stale front did not "subtract
-    /// the whole accumulator", as the comment here said: it subtracts the
-    /// state before the row it precedes, which keeps that row -- review
-    /// 2026-09-12, S6.)
-    pub fn trim(&mut self, now: f64) {
-        let oldest = now - self.window;
-        while self.ring.len() > 1 && self.ring[0].0 < oldest {
-            if let Some((_, s)) = self.ring.pop_front() {
+    /// than `window` before `now`, by the stamps' exact difference
+    /// ([`Stamp::cmp_span`]), so a snapshot exactly one window old stays.
+    /// What is left at the front is the oldest snapshot inside the window,
+    /// which is the boundary; [`Self::offer`] at `now` has seen to it that
+    /// there is one. (A stale front did not "subtract the whole
+    /// accumulator", as the comment here said: it subtracts the state before
+    /// the row it precedes, which keeps that row -- review 2026-09-12, S6.)
+    pub fn trim(&mut self, now: impl Into<Stamp>) {
+        let now = now.into();
+        while self.ring.len() > 1 && now.cmp_span(self.ring[0].1, self.window) == Ordering::Greater
+        {
+            if let Some((_, _, s)) = self.ring.pop_front() {
                 self.limit.held = self.limit.held.saturating_sub(s.footprint());
             }
         }
     }
 
-    /// Whether [`Self::offer`] at `clock` would form a snapshot: for a
-    /// caller that holds work back and must finish it before the snapshot
-    /// copies the state (`Marginal::step_sharded`). A refusing budget may
-    /// then keep none of what it formed, and the work finished early was
-    /// harmless.
-    pub fn takes(&self, clock: f64) -> bool {
-        self.limit.over.is_none() && self.due(self.since.saturating_add(1), clock)
+    /// Whether [`Self::offer`] at `now` would form a snapshot: for a caller
+    /// that holds work back and must finish it before the snapshot copies
+    /// the state (`Marginal::step_sharded`). A refusing budget may then keep
+    /// none of what it formed, and the work finished early was harmless.
+    pub fn takes(&self, now: impl Into<Stamp>) -> bool {
+        self.limit.over.is_none() && self.due(self.since.saturating_add(1), now.into())
     }
 
-    /// Offer a snapshot of the state *as it stands before* the row at
-    /// `clock`, already decayed to that row. Taken when the cadence is due
-    /// -- the clock `spacing` past the newest snapshot's, or `every` rows
+    /// Whether [`Self::learn`] `d_clock` past the model's `clock` would form
+    /// a snapshot ([`Self::takes`] at [`Self::next_at`]).
+    pub fn takes_next(&self, clock: f64, d_clock: f64) -> bool {
+        self.takes(self.next_at(clock, d_clock).stamp)
+    }
+
+    /// Offer a snapshot of the state *as it stands before* the row at `at`,
+    /// already decayed to that row. Taken when the cadence is due -- the
+    /// row's stamp `spacing` past the newest snapshot's, or `every` rows
     /// since it, whichever comes first -- and whatever the cadence when the
     /// newest snapshot is older than the window, so the boundary is always
     /// inside it (the module docs); `make` is not called otherwise. Past a
     /// thinning budget the ring then thins; a refusing one keeps no snapshot
     /// that would cross it, and makes none after ([`WindowBudget`]).
-    pub fn offer(&mut self, clock: f64, make: impl FnOnce() -> S) {
+    pub fn offer(&mut self, at: impl Into<At>, make: impl FnOnce() -> S) {
+        let at = at.into();
         self.since = self.since.saturating_add(1);
         if self.limit.over.is_some() {
             return;
         }
-        if self.due(self.since, clock) {
+        if self.due(self.since, at.stamp) {
             self.since = 0;
             let snap = make();
             let held = self.limit.held + snap.footprint();
@@ -588,9 +669,22 @@ impl<S: Footprint> Snapshots<S> {
                 return;
             }
             self.limit.held = held;
-            self.ring.push_back((clock, snap));
+            self.ring.push_back((at.clock, at.stamp, snap));
             self.enforce();
         }
+    }
+
+    /// What a learned row does to the ring, `d_clock` past the model's
+    /// `clock`: offer the snapshot `make` forms at the row's place
+    /// ([`Self::next_at`]), move `clock` to the row, and trim at its stamp.
+    /// Every windowed model's step does exactly this, before it learns the
+    /// row.
+    pub fn learn(&mut self, clock: &mut f64, d_clock: f64, make: impl FnOnce() -> S) {
+        let at = self.next_at(*clock, d_clock);
+        self.next = None;
+        self.offer(at, make);
+        *clock = at.clock;
+        self.trim(at.stamp);
     }
 
     /// Bound the ring ([`WindowBudget`]), `None` for no bound. A ring already
@@ -614,7 +708,7 @@ impl<S: Footprint> Snapshots<S> {
 
     /// The bytes the ring's snapshots hold.
     pub fn bytes(&self) -> usize {
-        self.ring.iter().map(|(_, s)| s.footprint()).sum()
+        self.ring.iter().map(|(_, _, s)| s.footprint()).sum()
     }
 
     fn enforce(&mut self) {
@@ -917,7 +1011,7 @@ mod tests {
             snaps.trim(t);
             assert!(snaps.bytes() <= 80, "row {i}: {} bytes", snaps.bytes());
             assert_eq!(snaps.limit.held, snaps.bytes(), "row {i}: the count");
-            let &(b, _) = snaps.boundary().unwrap();
+            let (b, _) = snaps.boundary().unwrap();
             assert!(b >= t - window, "row {i}: bounded at {b}");
         }
         assert!(snaps.every > 1, "and it takes its snapshots less often");
@@ -985,7 +1079,7 @@ mod tests {
             "one snapshot is left after a gap of twice the window"
         );
         let (clock, old) = snaps.boundary().unwrap();
-        assert_eq!(*clock, t);
+        assert_eq!(clock, t);
         let kept = truncated(&cov, old, 1.0).expect("the row after the gap is in the window");
         assert!(
             (kept.n_eff() - 1.0).abs() < 1e-12,
@@ -1425,7 +1519,7 @@ mod tests {
             for (i, &t) in clocks.iter().enumerate() {
                 snaps.offer(t, || i);
                 snaps.trim(t);
-                let &(b, _) = snaps.boundary().unwrap();
+                let (b, _) = snaps.boundary().unwrap();
                 assert!(
                     b >= t - window,
                     "every {every}, window {window}: the row at {t} is bounded at {b}, \
@@ -1564,7 +1658,7 @@ mod tests {
                 clock += 1.0;
                 ring.offer(clock, || i);
                 ring.trim(clock);
-                shadow.learn(1.0);
+                shadow.learn(1.0, None);
                 let case = format!("window {window}, from {start}, row {i}");
                 assert_eq!(shadow.over_budget(), ring.over_budget(), "{case}");
                 if tripped.is_none() && ring.over_budget().is_some() {
@@ -1727,7 +1821,7 @@ mod tests {
 
     /// The clocks of a ring's snapshots, oldest first.
     fn clocks_of<S>(r: &Snapshots<S>) -> Vec<f64> {
-        r.ring.iter().map(|(t, _)| *t).collect()
+        r.ring.iter().map(|(t, _, _)| *t).collect()
     }
 
     /// A ring fed `clocks`, a snapshot offered and the ring trimmed at each
@@ -1843,7 +1937,7 @@ mod tests {
                 r.offer(t, || i as usize);
                 r.trim(t);
                 assert!(r.bytes() <= 80, "row {i}: {} bytes", r.bytes());
-                let &(b, _) = r.boundary().unwrap();
+                let (b, _) = r.boundary().unwrap();
                 assert!(b >= t - 100.0, "row {i}: bounded at {b}");
             }
             let now = r.cadence();
@@ -1891,7 +1985,7 @@ mod tests {
                 for (i, w) in clocks.windows(2).enumerate() {
                     ring.offer(w[1], || i + 1);
                     ring.trim(w[1]);
-                    shadow.learn(w[1] - w[0]);
+                    shadow.learn(w[1] - w[0], None);
                     let case = format!("{cadence:?}, {budget:?}, row {}", i + 1);
                     assert_eq!(clocks_of(&shadow.ring), clocks_of(&ring), "{case}");
                     assert_eq!(shadow.over_budget(), ring.over_budget(), "{case}");
@@ -1917,7 +2011,7 @@ mod tests {
         let mid = |r: &Snapshots<usize>, t: f64| {
             r.ring
                 .back()
-                .is_some_and(|&(u, _)| t - u > 0.0 && t - u < cadence.spacing)
+                .is_some_and(|&(u, _, _)| t - u > 0.0 && t - u < cadence.spacing)
         };
         // Cuts where the last row learned is part of a spacing past the
         // newest snapshot, and the next row takes none.
@@ -2155,5 +2249,94 @@ mod tests {
         assert!(fields.remove("spacing").is_some(), "written");
         let read: Snapshots<usize> = serde_json::from_value(v).unwrap();
         assert_eq!(read, ring);
+    }
+
+    /// Task 175 (review CB1): a ring keyed by stamps keeps a snapshot
+    /// exactly one window old. Rows 1 ms apart under a window of a second,
+    /// a snapshot every row: from the 1001st row on, the boundary is the
+    /// snapshot before the row exactly a second older than the newest, every
+    /// row, where the same ring keyed by the summed clock dropped it once
+    /// the sum had drifted. Decay still reads the summed clock: a boundary's
+    /// clock is the sum's.
+    #[test]
+    fn a_stamped_ring_keeps_a_snapshot_exactly_one_window_old() {
+        let step = crate::seconds_of_ns(1_000_000);
+        let mut stamped: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap();
+        let mut summed: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap();
+        let (mut at_stamped, mut at_summed) = (0.0, 0.0);
+        let mut clocks = Vec::new();
+        let mut dropped = 0;
+        for i in 0..1400usize {
+            let d = if i == 0 { 0.0 } else { step };
+            stamped.stamp_next(Stamp::Ns(i as i128 * 1_000_000));
+            stamped.learn(&mut at_stamped, d, || i);
+            summed.learn(&mut at_summed, d, || i);
+            assert_eq!(at_stamped, at_summed, "row {i}: one summed clock");
+            clocks.push(at_stamped);
+            if i >= 1000 {
+                let (u, &row) = stamped.boundary().unwrap();
+                assert_eq!(row, i - 1000, "row {i}: the snapshot a second old");
+                assert_eq!(u, clocks[row], "row {i}: decayed from the summed clock");
+                dropped += usize::from(*summed.boundary().unwrap().1 != i - 1000);
+            }
+        }
+        assert!(dropped > 0, "the summed clock never dropped it");
+    }
+
+    /// Thinning keeps the boundary inside the window on the stamps too: rows
+    /// 1 ms apart under a window of a second and a thinning budget of a
+    /// hundred snapshots, every row's boundary is at most a second behind
+    /// the row by the integer nanoseconds, and the ring fits (task 175).
+    #[test]
+    fn a_thinned_ring_keeps_its_boundary_inside_the_window_on_the_stamps() {
+        let mut ring: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap();
+        ring.set_budget(Some(WindowBudget::Thin(800.0 / (1024.0 * 1024.0))));
+        let step = crate::seconds_of_ns(1_000_000);
+        let mut clock = 0.0;
+        for i in 0..3_000usize {
+            let now = i as i128 * 1_000_000;
+            ring.stamp_next(Stamp::Ns(now));
+            ring.learn(&mut clock, if i == 0 { 0.0 } else { step }, || i);
+            let &row = ring.boundary().unwrap().1;
+            assert!(
+                now - row as i128 * 1_000_000 <= 1_000_000_000,
+                "row {i}: bounded at row {row}"
+            );
+            assert!(ring.bytes() <= 800, "row {i}: {} bytes", ring.bytes());
+        }
+        assert!(ring.cadence().rows > 1, "the ring thinned");
+    }
+
+    /// The spacing is decided on the stamps too: rows 1 ms apart under a
+    /// spacing of 300 ms take a snapshot every 300 rows exactly, where the
+    /// summed clock took the fifth a row late (1201) and drifted on.
+    #[test]
+    fn a_ring_spaces_its_snapshots_on_the_stamps() {
+        let cadence = Cadence {
+            spacing: crate::seconds_of_ns(300_000_000),
+            rows: usize::MAX,
+        };
+        let step = crate::seconds_of_ns(1_000_000);
+        let want: Vec<usize> = (0..3_000).step_by(300).collect();
+        for stamp in [true, false] {
+            let mut ring: Snapshots<usize> = Snapshots::with_cadence(100.0, cadence).unwrap();
+            let mut clock = 0.0;
+            let mut taken = Vec::new();
+            for i in 0..3_000usize {
+                if stamp {
+                    ring.stamp_next(Stamp::Ns(i as i128 * 1_000_000));
+                }
+                let before = ring.len();
+                ring.learn(&mut clock, if i == 0 { 0.0 } else { step }, || i);
+                if ring.len() > before {
+                    taken.push(i);
+                }
+            }
+            if stamp {
+                assert_eq!(taken, want, "the stamps' spacing");
+            } else {
+                assert_eq!(taken[4], 1_201, "the summed clock's spacing drifts");
+            }
+        }
     }
 }

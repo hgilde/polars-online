@@ -237,3 +237,35 @@ fn under_drift_resets_the_ring_still_stops_the_run() {
     let again = bank.save_bytes().unwrap_err();
     assert!(again.contains("cannot go on"), "{again}");
 }
+
+/// The replay decides the window's edge on the rows' stamps, as the ring
+/// does (docs/PLAN.md task 175). Rows 1 ms apart under a window of a
+/// second, a snapshot of 40 bytes every row, and a refusing budget between
+/// 1001 and 1002 snapshots: the ring keeps the snapshot exactly a second
+/// old, holds 1001 from row 1000 on and crosses the budget at row 1001's
+/// snapshot. A replay on the summed clock dropped that snapshot until row
+/// 1007 and would cross only at row 1008, so it let the first piece of 1004
+/// rows through, and the ring refused it half learned.
+#[test]
+fn the_prepass_decides_the_windows_edge_on_the_stamps() {
+    let n = 1_100usize;
+    let t = Series::new(
+        "t".into(),
+        (0..n as i64)
+            .map(|i| 1_704_067_200_000_000_000 + i * 1_000_000)
+            .collect::<Vec<i64>>(),
+    )
+    .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+    .unwrap();
+    let x: Vec<f64> = (0..n).map(|i| ((i * 37) % 101) as f64 / 101.0).collect();
+    let df = df!("t" => t, "x0" => x.clone(), "x1" => x).unwrap();
+    // 40,060 bytes: between 1001 snapshots of 40 and 1002.
+    let s: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ew_cov", "stats": ["mean"], "window_size": "1s",
+            "window_budget": {"refuse": 0.038204193115234375}},
+            "features": ["x0"], "clock": "t", "gap_cap": "1d", "half_life": "1h",
+            "min_weight": 0.0}"#,
+    )
+    .unwrap();
+    assert_eq!(prepass_against_the_ring(&s, &df, 1_004), Some(0));
+}

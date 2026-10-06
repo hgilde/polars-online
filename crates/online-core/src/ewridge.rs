@@ -1620,6 +1620,12 @@ impl OnlineModel for EwRidge {
         self.cfg.solve_share
     }
 
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -1753,22 +1759,20 @@ impl OnlineModel for EwRidge {
         }
         // The snapshot is every accumulator as it stands *before* this row,
         // decayed to this row's clock, so subtracting it later retains this
-        // row and everything after. Keyed by a clock the model accumulates
-        // itself, so the boundary cannot depend on the chunking.
+        // row and everything after. Keyed by the row's stamp (task 175)
+        // beside a clock the model accumulates itself, so the boundary cannot
+        // depend on the chunking.
         if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
             // Built inside the closure, so the O(k²) snapshot is only formed
             // on the rows `offer` actually keeps -- the cadence's --
             // rather than on every row and then dropped (review 2026-09-18,
             // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
             // `win`, so the borrows do not collide.
-            win.snaps.offer(t, || RidgeMoments {
+            win.snaps.learn(&mut win.clock, d_clock, || RidgeMoments {
                 acc: self.acc.snapshot(lam),
                 wsig: self.wsig.iter().map(|w| w * lam).collect(),
                 sig2: self.sig2.clone(),
             });
-            win.clock = t;
-            win.snaps.trim(t);
         }
         // EW residual variance from the primary (first-combo) pred. Its
         // weight ages on every row, and a row with a target, a weight and a

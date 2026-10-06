@@ -1511,8 +1511,10 @@ pub struct EwCovModel {
 /// and the snapshots to subtract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Windowed {
-    /// Clock of the last learned row, which is the reference the statistics
-    /// are read at (the state is pre-decay for the row being reported on).
+    /// Clock of the last learned row, summed from the steps, which is the
+    /// reference the statistics are read at (the state is pre-decay for the
+    /// row being reported on): what decays a snapshot forward. The edge is
+    /// the snapshots' stamps' ([`crate::Stamp`], task 175).
     clock: f64,
     snaps: crate::Snapshots<crate::Moments>,
 }
@@ -1912,6 +1914,12 @@ impl EwCovModel {
 }
 
 impl crate::OnlineModel for EwCovModel {
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+    }
+
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
@@ -1971,16 +1979,16 @@ impl crate::OnlineModel for EwCovModel {
         }
         // The snapshot is the state *before* this row, decayed to this row's
         // clock, so subtracting it later retains this row and everything
-        // after it. Taken before the update, and keyed by a clock the model
-        // accumulates itself, so the cadence is counted in the stream and the
-        // boundary cannot depend on how the data was chunked (hard rule 3).
+        // after it. Taken before the update, and keyed by the row's stamp
+        // (task 175) beside the clock the model accumulates itself, so the
+        // cadence is counted in the stream and the boundary cannot depend on
+        // how the data was chunked (hard rule 3).
         if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
             // Built inside the closure so the O(k²) snapshot is only formed on
             // the rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.offer(t, || crate::Moments::of(&self.cov, lam));
-            win.clock = t;
-            win.snaps.trim(t);
+            win.snaps.learn(&mut win.clock, d_clock, || {
+                crate::Moments::of(&self.cov, lam)
+            });
         }
         self.cov.update(x, lam, weight);
         if self.cfg.pca > 0 {
@@ -3369,7 +3377,7 @@ mod tests {
             let out = crate::OnlineModel::step(&mut a, x, &[], *d, 1.0);
             want.push((out.pred, out.n_eff));
             let win = a.win.as_ref().unwrap();
-            let since = win.clock - win.snaps.newest().unwrap();
+            let since = win.clock - win.snaps.newest().unwrap().clock;
             mid.push(since > 0.0 && since < 2.5);
         }
         let cuts: Vec<usize> = [5, 17, 40, 66]
@@ -4918,7 +4926,7 @@ mod tests {
             assert_eq!(m.n_eff().to_bits(), want.to_bits(), "row {i}");
             if let Some((u, old)) = m.win.as_ref().and_then(|win| {
                 let (u, old) = win.snaps.boundary()?;
-                Some((*u, old.w))
+                Some((u, old.w))
             }) {
                 let live = m.cov.n_eff();
                 let f = m.cfg.decay.factor(m.win.as_ref().unwrap().clock - u);
@@ -4972,7 +4980,7 @@ mod tests {
         let mut shadow = m.window_shadow().expect("a windowed model has a shadow");
         let mut over = 0;
         for _ in 0..30 {
-            shadow.learn(1.0);
+            shadow.learn(1.0, None);
             m.step(&[lcg(&mut s), lcg(&mut s)], &[], 1.0, 1.0);
             assert_eq!(shadow.over_budget(), m.window_over_budget());
             over += usize::from(m.window_over_budget().is_some());

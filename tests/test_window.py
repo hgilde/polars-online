@@ -13,6 +13,7 @@ The oracle is polars, which computes the same thing a different way: one
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 
 import numpy as np
 import polars as pl
@@ -254,6 +255,61 @@ def test_a_row_exactly_one_window_old_is_inside_it():
     # The rule is what the test measures: leaving the boundary row out moves
     # the fit by orders of magnitude more than the tolerance.
     assert np.abs(inside - outside).max() > 1e-4 * np.abs(inside).max()
+
+
+@pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+def test_a_row_exactly_one_window_old_is_inside_it_on_a_temporal_clock(unit):
+    """Task 175 (review CB1): every windowed model decides its edge on the
+    decayed clock held exactly, integer nanoseconds on a temporal clock.
+    Rows 1 ms apart under ``window_size="1s"`` and no decay, so
+    ``weight_sum`` counts the rows inside: 1001 from row 1001 on, the row
+    exactly a second old included. The oracle counts the rows at most 10⁹
+    ns behind the last learned row. The windows summed their own clock from
+    the steps, a thousand of 1 ms came to 1.0000000000000007 s, and they
+    dropped that row on rows 1001 to 1007."""
+    n = 1_100
+    rng = np.random.default_rng(11)
+    ts = pl.datetime_range(
+        datetime(2024, 1, 1),
+        datetime(2024, 1, 1) + timedelta(milliseconds=n - 1),
+        interval="1ms",
+        eager=True,
+    ).dt.cast_time_unit(unit)
+    df = pl.DataFrame(
+        {
+            "t": ts,
+            "x": rng.standard_normal(n),
+            "y": rng.standard_normal(n),
+            "c": np.where(rng.random(n) < 0.5, "a", "b"),
+        }
+    )
+    ns = ts.dt.cast_time_unit("ns").cast(pl.Int64).to_numpy()
+    want = np.array([i - np.searchsorted(ns[:i], ns[i - 1] - 10**9) for i in range(1, n)])
+    assert want[1000] == 1001, "a row sits exactly one window back"
+    common = dict(clock="t", gap_cap="1d", half_life=float("inf"), min_weight=0.0)
+    window = dict(window_size="1s")
+    specs = [
+        po.spec.ewridge("ewridge", targets=["y"], features=["x"], **window, **common),
+        po.spec.lasso(
+            "lasso", targets=["y"], features=["x"], lasso_path=[0.1, 0.01], **window, **common
+        ),
+        po.spec.ew_cov("ew_cov", features=["x"], stats=["mean"], **window, **common),
+        po.spec.ew_class(
+            "ew_class",
+            features=["x"],
+            label="c",
+            classes=["a", "b"],
+            precision_prior=1.0,
+            **window,
+            **common,
+        ),
+        po.spec.marginal("marginal", targets=["y"], features=["x"], **window, **common),
+    ]
+    out = po.ModelBank(specs).fit_predict(df)
+    for s in specs:
+        got = out[s["name"]].struct.field("weight_sum").to_numpy()[1:]
+        bad = np.flatnonzero(got != want)
+        assert bad.size == 0, f"{s['name']}: rows {bad[:8] + 1} hold {got[bad[:8]]}"
 
 
 def test_a_windowed_fit_is_chunk_invariant():

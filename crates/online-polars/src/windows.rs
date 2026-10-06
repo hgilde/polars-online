@@ -54,7 +54,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
-use online_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, seconds_of_ns};
+use online_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, Stamp, seconds_of_ns};
 use serde::{Deserialize, Serialize};
 
 use crate::stream::usable;
@@ -1021,24 +1021,30 @@ fn gap(exact: bool, from_off: i64, to_off: i64) -> Gap {
 }
 
 impl Gap {
-    /// The gap against the kernel's window.
+    /// The gap against the kernel's window, by the comparison a model's
+    /// window decides its edge with ([`Stamp::cmp_span_ns`], task 175): in
+    /// integer nanoseconds against a window written as a duration, through
+    /// `seconds_of_ns` against one written as a number, and on a number
+    /// clock the one subtraction of the raw values. No answer (a NaN) is
+    /// `Equal`.
     #[inline]
     fn cmp_window(self, k: &KernelDef) -> Ordering {
         let w = k.window_size.expect("a windowed kernel");
-        let secs = match (self, k.window_ns) {
-            (Gap::Ns(n), Some(w_ns)) => return n.cmp(&w_ns),
-            (Gap::Ns(n), None) => seconds_of_ns(i128::from(n)),
-            (Gap::Secs(s), _) => s,
-        };
-        secs.partial_cmp(&w).unwrap_or(Ordering::Equal)
+        self.cmp_span(w, k.window_ns.map(i128::from))
     }
 
-    /// The gap against zero.
+    /// The gap against zero, by the same comparison.
     #[inline]
     fn cmp_zero(self) -> Ordering {
+        self.cmp_span(0.0, Some(0))
+    }
+
+    /// The gap as the newer of two stamps, the older at zero.
+    #[inline]
+    fn cmp_span(self, span: f64, span_ns: Option<i128>) -> Ordering {
         match self {
-            Gap::Ns(n) => n.cmp(&0),
-            Gap::Secs(s) => s.partial_cmp(&0.0).unwrap_or(Ordering::Equal),
+            Gap::Ns(n) => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, span_ns),
+            Gap::Secs(s) => Stamp::Raw(s, 0.0).cmp_span_ns(Stamp::Raw(0.0, 0.0), span, None),
         }
     }
 }

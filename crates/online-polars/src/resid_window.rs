@@ -12,13 +12,16 @@
 //! the rows the model learns, with its `window` and its snapshot cadence
 //! (`window_every` clock units or `max_rows_between_snapshots` rows,
 //! whichever comes first: [`online_core::Cadence`], docs/PLAN.md task 162),
-//! keyed by a clock summed from the deltas the model was stepped with, and
-//! read before the row, where the model reads its window -- so its boundary
-//! is the fit's. A thinning budget can move the two boundaries apart, each
-//! still inside the window, which is the promise.
+//! keyed by the stamps the model's window is keyed by, each row's decayed
+//! clock held exactly ([`online_core::Stamp`], task 175), beside a clock
+//! summed from the deltas the model was stepped with, which decays a
+//! snapshot forward; and read before the row, where the model reads its
+//! window -- so its boundary is the fit's. A thinning budget can move the
+//! two boundaries apart, each still inside the window, which is the
+//! promise.
 
 use online_core::{
-    Cadence, Decay, Footprint, Snapshots, WindowBudget, WindowShadow, truncated_scalar,
+    Cadence, Decay, Footprint, Snapshots, Stamp, WindowBudget, WindowShadow, truncated_scalar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,15 +75,16 @@ impl ResidWindow {
 
     /// Before a learned row's residuals are folded: offer the spread as it
     /// stands, decayed to the row by `lam`, move the clock to the row, and
-    /// drop what can no longer be the boundary.
-    pub fn learn(&mut self, d_clock: f64, lam: f64, w: &[f64], var: &[f64]) {
-        let t = self.clock + d_clock;
-        self.snaps.offer(t, || Spread {
+    /// drop what can no longer be the boundary, at the row's `stamp` -- the
+    /// one the model's window was handed -- or the summed clock for `None`.
+    pub fn learn(&mut self, d_clock: f64, stamp: Option<Stamp>, lam: f64, w: &[f64], var: &[f64]) {
+        if let Some(stamp) = stamp {
+            self.snaps.stamp_next(stamp);
+        }
+        self.snaps.learn(&mut self.clock, d_clock, || Spread {
             w: w.iter().map(|w| w * lam).collect(),
             var: var.to_vec(),
         });
-        self.clock = t;
-        self.snaps.trim(t);
     }
 
     /// Whether this ring's snapshots are `n_slots` wide: a file written for
@@ -165,7 +169,7 @@ mod tests {
                 );
             }
             let lam = decay.factor(d);
-            ring.learn(d, lam, &w, &var);
+            ring.learn(d, None, lam, &w, &var);
             clock += d;
             let w_new = lam * w[0] + 1.0;
             var[0] = (lam * w[0] * var[0] + r * r) / w_new;
