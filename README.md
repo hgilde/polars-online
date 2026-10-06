@@ -2827,8 +2827,8 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 
 **Until a target has a `σ` above 0, `huber` down-weights no row.** That is
 before its first residual, or while every residual so far is exactly zero:
-there is nothing to judge an outlier against. `quantile` takes `σ` as 1
-there.
+there is nothing to judge an outlier against. `quantile` has no band to draw
+there, and takes least-squares rows.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
@@ -2844,13 +2844,14 @@ the convergence, and a much larger one smooths the quantile toward the
 mean. The floor on `h` keeps a short half-life from leaving too few rows
 inside the band.
 
-`quantile` takes least-squares rows in three cases:
+`quantile` takes least-squares rows in four cases:
 
 | case | `quantile` takes least-squares rows |
 |---|---|
 | a target's first rows | until the target has three rows per coefficient, its present rows counted one each, decayed, whatever their weights |
 | after a gap or a reset | by the same rule, which rebuilds the fit |
 | a band holding less than one row per coefficient | until the band holds rows again, which rebuilds a fit that a row near the input bound, `1e100`, has moved |
+| a target with no `σ` above 0 | until a residual other than 0 gives it one, since the band is a width in units of `σ` |
 
 **Both models are held to numpy references of their own recursions within
 1e-14.** Against batch fits of the same objectives, scikit-learn's

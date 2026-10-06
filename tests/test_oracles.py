@@ -583,6 +583,20 @@ class TestRobustOracles:
         df = df.with_columns(y0.alias("y0")).with_columns(pl.col("y0", "y1") * 1e6)
         self._compare(df, targets=("y0", "y1"))
 
+    def test_quantile_draws_no_band_before_a_scale_exists(self):
+        """Task 177: until a target has a residual scale, a quantile row is
+        least squares, as in the warm-up, since a band is a width in units of
+        the scale. The first target opens on twenty rows at exactly zero,
+        past the warm-up's nine, so its residuals are exactly zero, and the
+        band the literal scale of 1 drew took them as band rows aimed above
+        the target. The targets are in millions."""
+        df, _ = synthetic(seed=98, n_groups=1, n_rows=250, k=2, n_targets=2, null_frac=0.0)
+        y0 = pl.when(pl.int_range(pl.len()) < 20).then(0.0).otherwise(pl.col("y0"))
+        df = df.with_columns(y0.alias("y0")).with_columns(pl.col("y0", "y1") * 1e6)
+        self._compare(
+            df, targets=("y0", "y1"), model="quantile", ref_kw={"quantile": 0.9}, quantile=0.9
+        )
+
 
 class TestFtrlOracle:
     """T-A4: FTRL vs `tests/reference.py::ftrl_ref`."""

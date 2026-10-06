@@ -97,6 +97,44 @@ def test_the_targets_units_do_not_matter(fit_intercept, standardize):
             np.testing.assert_array_equal(got, base[t] * c, err_msg=f"c = {c}, {t}")
 
 
+@pytest.mark.parametrize(("tau", "min_weight"), [(0.9, None), (0.5, 20.0), (0.25, 20.0)])
+def test_the_quantile_targets_units_do_not_matter(tau, min_weight):
+    """Task 177, for the quantile loss. Its band is ``quantile_eps``, or the
+    floor, times ``s``, and ``s`` was the literal 1 until the target had a
+    residual scale, so a band drawn before one was in the target's units.
+    Such a band is drawn past the warm-up only: on a target's first
+    prediction when ``min_weight`` holds it back past three rows per
+    coefficient, and while every residual is exactly zero, as on the first
+    target's thirty rows a group at zero. Now such a row is a least-squares
+    row, as in the warm-up. Scaling every target by ``c`` scales every
+    prediction by ``c``, to the bit."""
+    df, _ = synthetic(seed=48, n_groups=2, n_rows=200, k=3, n_targets=2, null_frac=0.05)
+    opening = pl.int_range(pl.len()).over("group") < 30
+    df = df.with_columns(pl.when(opening).then(0.0).otherwise(pl.col("y0")).alias("y0"))
+
+    def preds(c: float) -> dict[str, np.ndarray]:
+        spec = po.spec.quantile(
+            "m",
+            targets=["y0", "y1"],
+            features=["x0", "x1", "x2"],
+            group="group",
+            clock="t",
+            gap_cap=50.0,
+            weight="w",
+            half_life=300.0,
+            quantile=tau,
+            min_weight=min_weight,
+        )
+        out = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("y0", "y1") * c))
+        return {t: _pred(out, f"pred_{t}") for t in ("y0", "y1")}
+
+    base = preds(1.0)
+    assert all(np.isfinite(p).sum() > 250 for p in base.values())
+    for c in (2.0**20, 2.0**-20):
+        for t, got in preds(c).items():
+            np.testing.assert_array_equal(got, base[t] * c, err_msg=f"c = {c}, {t}")
+
+
 def test_quantile_levels_are_ordered():
     rng = np.random.default_rng(12)
     n = 6000
@@ -335,7 +373,8 @@ class TestTheQuantileFitsDefinition:
     arithmetic (`tests/reference.py`'s `robust_ref` restates the core; review
     2026-10-05, TC1). `robust.rs`'s module doc defines each row's part in
     the Newton system: under three rows per coefficient, or a band holding
-    under one row per coefficient, a least-squares row; inside the band of
+    under one row per coefficient, or before ``s`` is above 0, a
+    least-squares row (task 177: a band needs a scale); inside the band of
     half-width ``h = s max(quantile_eps, (k/n)^(2/5))`` a least-squares row
     with target ``y + 2h(tau - 1/2)``; outside it a nudge ``2h psi(r) z``
     into the cross-moment only, with ``psi = tau - 1{r < 0}``, its step
@@ -393,15 +432,14 @@ class TestTheQuantileFitsDefinition:
                 s = np.array(scored)
                 d = lam ** (t - s)
                 sig2 = float((d * (y[s] - pred[s]) ** 2).sum() / d.sum())
-            scale = np.sqrt(sig2) if sig2 > 0.0 else 1.0
             f = np.array(fit_rows, dtype=int)
             fw = lam ** (t - f)
             band_w = float(fw.sum())
-            if not np.isfinite(pred[t]) or rows < 3 * k or band_w < k:
+            if not np.isfinite(pred[t]) or rows < 3 * k or band_w < k or sig2 == 0.0:
                 kinds.append("ols")
                 fit_rows.append(t)
             else:
-                h = scale * max(self.EPS, (k / rows) ** 0.4)
+                h = np.sqrt(sig2) * max(self.EPS, (k / rows) ** 0.4)
                 r = y[t] - pred[t]
                 h_at[t] = h
                 if abs(r) < h:

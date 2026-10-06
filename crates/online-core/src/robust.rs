@@ -80,14 +80,16 @@
 //! `s` is the EW residual std of that target as the row arrives. The target
 //! has one once `s²` is finite and above 0; before that -- no residual yet,
 //! or every one so far exactly zero -- there is nothing to judge an outlier
-//! against, and Huber down-weights no row: its weight is 1. `s` was taken as
-//! 1 there, a cut in the target's own units, so a target in millions had
-//! its first predicted rows down-weighted as outliers and one in millionths
-//! none (task 177). `s²`'s weight is not consulted: `s²` is written only by
-//! a row of positive weight, and a mean-form estimate keeps its value
-//! across a gap while its weight ages, as the fit itself does (CLAUDE.md
-//! hard rule 8). The quantile band still takes 1 for `s` until a scale
-//! exists.
+//! against, and Huber down-weights no row: its weight is 1. Nor is there a
+//! band to draw, and a quantile row is a least-squares row, as in its
+//! warm-up. `s` was taken as 1 there, a cut and a band in the target's own
+//! units, so a target in millions had its first predicted rows
+//! down-weighted as outliers and one in millionths none, and a quantile
+//! band drawn there, past the warm-up, put a target in millionths up to 2e5
+//! of its own units off on the scaling test's stream (task 177). `s²`'s
+//! weight is not consulted: `s²` is written only by a row of positive
+//! weight, and a mean-form estimate keeps its value across a gap while its
+//! weight ages, as the fit itself does (CLAUDE.md hard rule 8).
 //!
 //! **`s` is not itself robust.** It is the plain EW mean of squared
 //! residuals, in which the rows Huber down-weights count at full weight, so
@@ -423,11 +425,12 @@ impl Robust {
     /// a weight bounded by 1, and at weight 1 while the target has no scale
     /// to draw the cut in (task 177). The quantile loss linearises it
     /// instead, inside the band or outside it, and the two arms are
-    /// [`RowUpdate`]'s.
+    /// [`RowUpdate`]'s; while the target has no scale to draw the band in,
+    /// it takes a least-squares row, as in its warm-up.
     ///
     /// `pred` is the prediction the row was scored with, so both stay
     /// out-of-sample, and `scale` is the EW residual std, `None` until one
-    /// exists ([`Self::residual_scale`]); the quantile band takes 1 there.
+    /// exists ([`Self::residual_scale`]).
     /// `present` is the count of the rows this target was present
     /// on, decayed to the row (`nobs`): under `WARM_ROWS` of them per
     /// coefficient the quantile fit takes ordinary least-squares rows, since a
@@ -469,14 +472,20 @@ impl Robust {
             }
             RobustLoss::Quantile { tau } => {
                 let k = self.cfg.k_total() as f64;
+                let least_squares = RowUpdate::Fit {
+                    w: weight,
+                    target: yj,
+                };
                 if !pred.is_finite() || present < WARM_ROWS * k || aged < k {
-                    return RowUpdate::Fit {
-                        w: weight,
-                        target: yj,
-                    };
+                    return least_squares;
                 }
+                // A band is a width in units of the scale: with none yet
+                // there is no band, and the row is least squares.
+                let Some(scale) = scale else {
+                    return least_squares;
+                };
                 let floor = (k / present).powf(0.4);
-                let h = scale.unwrap_or(1.0) * self.cfg.quantile_eps.max(floor);
+                let h = scale * self.cfg.quantile_eps.max(floor);
                 let r = yj - pred;
                 if r.abs() < h {
                     RowUpdate::Fit {
@@ -2146,9 +2155,12 @@ mod tests {
 
     /// The band is open, `|r| < h`: a residual of exactly `h` is outside it.
     /// Rows of zeros keep the fit at 0 and every residual exactly 0, so the
-    /// scale is 1 and `h` is `quantile_eps` itself once the floor `(k/n)^(2/5)`
-    /// is under it; a row at `h` then nudges (the band's weight stays) and
-    /// one just under it is a fit row (the band's weight takes it).
+    /// target has no scale, and a row is least squares whatever its residual
+    /// (task 177). With an `s²` of 1 put in, `h` is `quantile_eps` itself
+    /// once the floor `(k/n)^(2/5)` is under it; a row at `h` then nudges
+    /// (the band's weight stays) and one just under it is a fit row (the
+    /// band's weight takes it). The test read the band at the literal scale
+    /// of 1 the model took before a residual, which is gone.
     #[test]
     fn the_band_is_open_at_its_edge() {
         let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
@@ -2165,6 +2177,10 @@ mod tests {
             "the floor is under quantile_eps"
         );
         let wj = m.wj[0];
+        let mut unscaled = m.clone();
+        unscaled.step(&[0.0], &[Some(0.5)], 1.0, 1.0);
+        assert_eq!(unscaled.wj[0], wj + 1.0, "with no scale, least squares");
+        m.sig2[0] = 1.0;
         let mut edge = m.clone();
         edge.step(&[0.0], &[Some(0.5)], 1.0, 1.0);
         assert_eq!(edge.wj[0], wj, "a residual of h is outside the band");
@@ -2414,20 +2430,32 @@ mod tests {
         }
     }
 
-    /// Whether target 0's next row, `y` scored at `pred` at weight `w` after
-    /// a clock step of `d`, is a nudge: `row_update`'s own reading of the
-    /// model's state before the row, as `step` forms its inputs.
-    fn is_nudge(m: &Robust, pred: f64, y: f64, d: f64, w: f64) -> bool {
+    /// What `row_update` makes of target `j`'s next row, `y` scored at
+    /// `pred` at weight `w` after a clock step of `d`, under `scale`: its
+    /// other inputs read from the model's state before the row, as `step`
+    /// forms them.
+    fn update_of(
+        m: &Robust,
+        j: usize,
+        (pred, y, d, w): (f64, f64, f64, f64),
+        scale: Option<f64>,
+    ) -> RowUpdate {
         let lam = m.cfg.decay.factor(d);
-        let scale = m.residual_scale(0);
-        let (present, rows, aged) = (lam * m.wobs[0], lam * m.nobs[0], lam * m.wj[0]);
+        let (present, rows, aged) = (lam * m.wobs[j], lam * m.nobs[j], lam * m.wj[j]);
         let aged_rows = if present > 0.0 {
             aged * (rows / present)
         } else {
             0.0
         };
+        m.row_update(y, pred, scale, w, rows, aged_rows)
+    }
+
+    /// Whether target 0's next row, `y` scored at `pred` at weight `w` after
+    /// a clock step of `d`, is a nudge: `row_update`'s own reading of the
+    /// model's state before the row, as `step` forms its inputs.
+    fn is_nudge(m: &Robust, pred: f64, y: f64, d: f64, w: f64) -> bool {
         matches!(
-            m.row_update(y, pred, scale, w, rows, aged_rows),
+            update_of(m, 0, (pred, y, d, w), m.residual_scale(0)),
             RowUpdate::Nudge { .. }
         )
     }
@@ -3091,6 +3119,59 @@ mod tests {
         );
     }
 
+    /// Until a target has a residual scale, a quantile row past the warm-up
+    /// is least squares, to the bit, through the row that gives the scale
+    /// its first residual (task 177): a band is a width in units of the
+    /// scale, and there is none to draw. The target is held at exactly zero
+    /// for twenty rows, well past the warm-up, so every residual is exactly
+    /// zero; the band the literal scale of 1 drew took them as band rows
+    /// aimed `2h(tau - 1/2)` above the target, and the fit left zero. Then
+    /// the target jumps by 1 000. From that row the scale exists, and the
+    /// band shapes the rows after it: the fits part.
+    #[test]
+    fn before_a_scale_exists_a_quantile_row_is_least_squares() {
+        let run = |loss: RobustLoss| {
+            let mut c = cfg(1, 1, loss);
+            c.min_weight = 2.0;
+            c.quantile_eps = 0.2;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 137u64;
+            let mut out = Vec::new();
+            for i in 0..40 {
+                let x = [lcg(&mut s)];
+                let y = if i < 20 {
+                    0.0
+                } else {
+                    1000.0 + x[0] + lcg(&mut s)
+                };
+                let scaled = m.residual_scale(0).is_some();
+                let p = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                out.push((p.pred[0], scaled));
+            }
+            out
+        };
+        let q = run(RobustLoss::Quantile { tau: 0.9 });
+        let ls = run(RobustLoss::Huber {
+            delta: f64::INFINITY,
+        });
+        for (i, ((a, _), (b, _))) in q.iter().zip(&ls).enumerate().take(22) {
+            assert!(
+                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan()),
+                "row {i}: quantile {a} against least squares {b}"
+            );
+        }
+        for (i, (_, scaled)) in q.iter().enumerate() {
+            assert_eq!(*scaled, i > 20, "row {i}: a scale from row 21 on");
+        }
+        assert!(q[20].0 == 0.0 && q[21].0 > 20.0, "{:?}", &q[19..22]);
+        assert!(
+            (q[22].0 - ls[22].0).abs() > 1.0,
+            "row 22: quantile {} against least squares {}: the band shaped row 21",
+            q[22].0,
+            ls[22].0
+        );
+    }
+
     /// A row of [`units_rows`]: features, targets, clock step, weight.
     type UnitsRow = ([f64; 2], [Option<f64>; 3], f64, f64);
 
@@ -3209,31 +3290,129 @@ mod tests {
             assert!(predicted > 200, "{name}: {predicted} rows predicted");
             for c in [2f64.powi(20), 2f64.powi(-20)] {
                 let (got, mc, _, _) = run(base, c);
-                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
-                    for j in 0..3 {
-                        let scaled = w[j] * c;
-                        assert!(
-                            g[j].to_bits() == scaled.to_bits() || (g[j].is_nan() && w[j].is_nan()),
-                            "{name}, c = {c:e}, row {i}, target {j}: {} against {} \
-                             ({:.2e} apart, relative)",
-                            g[j],
-                            scaled,
-                            ((g[j] - scaled) / scaled).abs()
-                        );
-                    }
-                }
-                let (bc, b1) = (mc.coefficients().unwrap(), m1.coefficients().unwrap());
-                for j in 0..3 {
-                    assert_eq!(
-                        mc.sig2[j].to_bits(),
-                        (m1.sig2[j] * c * c).to_bits(),
-                        "{name}, c = {c:e}, target {j}"
-                    );
-                    for (a, b) in bc[j].iter().zip(&b1[j]) {
-                        assert_eq!(a.to_bits(), (b * c).to_bits(), "{name}, c = {c:e}");
-                    }
-                }
+                assert_scaled(name, c, (&want, &m1), (&got, &mc));
             }
+        }
+    }
+
+    /// The run on targets scaled by `c` (`got` and its model) is the run on
+    /// the targets as they are (`want`) scaled by `c`, to the bit: every
+    /// prediction by `c`, a NaN where `want` has one, and after the stream
+    /// `σ²` by `c²` and every coefficient by `c`.
+    fn assert_scaled(
+        name: &str,
+        c: f64,
+        (want, m1): (&[Vec<f64>], &Robust),
+        (got, mc): (&[Vec<f64>], &Robust),
+    ) {
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            for (j, (g, w)) in g.iter().zip(w).enumerate() {
+                let scaled = w * c;
+                assert!(
+                    g.to_bits() == scaled.to_bits() || (g.is_nan() && w.is_nan()),
+                    "{name}, c = {c:e}, row {i}, target {j}: {g} against {scaled} \
+                     ({:.2e} apart, relative)",
+                    ((g - scaled) / scaled).abs()
+                );
+            }
+        }
+        let (bc, b1) = (mc.coefficients().unwrap(), m1.coefficients().unwrap());
+        for j in 0..m1.cfg.n_targets {
+            assert_eq!(
+                mc.sig2[j].to_bits(),
+                (m1.sig2[j] * c * c).to_bits(),
+                "{name}, c = {c:e}, target {j}"
+            );
+            for (a, b) in bc[j].iter().zip(&b1[j]) {
+                assert_eq!(a.to_bits(), (b * c).to_bits(), "{name}, c = {c:e}");
+            }
+        }
+    }
+
+    /// [`scaling_the_targets_scales_every_prediction_to_the_bit`] for the
+    /// quantile loss. Its band is `quantile_eps`, or the floor, times `s`,
+    /// and `s` was the literal 1 until the target had a residual scale, so a
+    /// band drawn before one was in the target's own units. Such a band is
+    /// drawn past the warm-up only: on a target's first prediction when
+    /// `min_weight` holds it back past three rows per coefficient, and while
+    /// every residual so far is exactly zero (the first target, held at zero
+    /// here past its warm-up). Now such a row is a least-squares row, as in
+    /// the warm-up (task 177). At `tau = 0.5` an in-band row is a
+    /// least-squares row anyway, so only a nudge parted the units there.
+    #[test]
+    fn scaling_the_targets_scales_every_quantile_prediction_to_the_bit() {
+        let mut rows = units_rows();
+        for row in rows.iter_mut().take(24) {
+            row.1[0] = Some(0.0);
+        }
+        // Predictions, the model after the stream, the rows before a scale
+        // that the literal 1 would have decided otherwise (a band row, or a
+        // nudge, in place of a least-squares row), and the rows after one
+        // that the band shaped (a band row or a nudge).
+        let run = |base: &RobustCfg, c: f64| {
+            let mut m = Robust::new(base.clone()).unwrap();
+            let (mut preds, mut decided, mut banded) = (Vec::new(), 0, 0);
+            for (x, ys, d, w) in &rows {
+                let ys: Vec<Option<f64>> = ys.iter().map(|y| y.map(|v| v * c)).collect();
+                let p = m.predict(x, *d).pred;
+                for (j, y) in ys.iter().enumerate() {
+                    let Some(y) = *y else { continue };
+                    if !p[j].is_finite() || *w <= 0.0 {
+                        continue;
+                    }
+                    let row = (p[j], y, *d, *w);
+                    let scale = m.residual_scale(j);
+                    let update = update_of(&m, j, row, scale);
+                    if scale.is_none() {
+                        decided += usize::from(update_of(&m, j, row, Some(1.0)) != update);
+                    } else {
+                        banded += usize::from(update != RowUpdate::Fit { w: *w, target: y });
+                    }
+                }
+                preds.push(m.step(x, &ys, *d, *w).pred);
+            }
+            (preds, m, decided, banded)
+        };
+        let quantile = |tau: f64, min_weight: f64, intercept: bool, standardize: bool| {
+            let mut c = cfg(2, 3, RobustLoss::Quantile { tau });
+            c.decay = Decay::Halflife(30.0);
+            c.quantile_eps = 0.2;
+            c.min_weight = min_weight;
+            c.fit_intercept = intercept;
+            c.standardize = standardize;
+            c
+        };
+        let mut ridge_free = quantile(0.25, 20.0, false, false);
+        ridge_free.ridge = 0.0;
+        let cases = [
+            ("tau 0.9, min_weight 3", quantile(0.9, 3.0, true, false)),
+            (
+                "tau 0.5, min_weight 20, standardized",
+                quantile(0.5, 20.0, true, true),
+            ),
+            ("tau 0.25, through the origin, ridge 0", ridge_free),
+            (
+                "tau 0.75, through the origin, standardized",
+                quantile(0.75, 3.0, false, true),
+            ),
+        ];
+        for (name, base) in &cases {
+            let (want, m1, _, banded) = run(base, 1.0);
+            assert!(banded >= 100, "{name}: the band shaped {banded} rows");
+            let predicted = want
+                .iter()
+                .filter(|p| p.iter().all(|v| v.is_finite()))
+                .count();
+            assert!(predicted > 200, "{name}: {predicted} rows predicted");
+            let mut decided = 0;
+            for c in [2f64.powi(20), 2f64.powi(-20)] {
+                let (got, mc, d, _) = run(base, c);
+                assert_scaled(name, c, (&want, &m1), (&got, &mc));
+                decided += d;
+            }
+            // At `2^20` a residual before a scale is far outside the band
+            // the literal drew, so a row past the warm-up was a nudge.
+            assert!(decided >= 1, "{name}: the literal decided {decided} rows");
         }
     }
 }

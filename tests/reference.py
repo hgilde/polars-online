@@ -766,8 +766,8 @@ def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps
 
     ``scale`` is ``None`` while the target has no residual scale (no
     residual yet, or every one so far exactly zero): Huber then has nothing
-    to draw its cut in and down-weights nothing (task 177), and the quantile
-    band takes 1 for it.
+    to draw its cut in and down-weights nothing, and the quantile loss has no
+    band to draw and takes a least-squares row, as in its warm-up (task 177).
 
     Returns ``(kind, value, target)``: ``("fit", weight, target)`` or
     ``("nudge", nudge, None)``.
@@ -778,9 +778,9 @@ def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps
         cut = delta * scale
         a = abs(y - pred)
         return "fit", weight * (1.0 if (a <= cut or a == 0.0) else cut / a), y
-    if np.isnan(pred) or present < 3.0 * kt or aged < kt:
+    if np.isnan(pred) or present < 3.0 * kt or aged < kt or scale is None:
         return "fit", weight, y
-    h = (1.0 if scale is None else scale) * max(eps, (kt / present) ** 0.4)
+    h = scale * max(eps, (kt / present) ** 0.4)
     r = y - pred
     if abs(r) < h:
         return "fit", weight, y + 2.0 * h * (tau - 0.5)

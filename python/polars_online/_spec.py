@@ -1889,6 +1889,12 @@ def quantile(
     weight 100 left the warm-up on their first row, where the fit reached 1e51
     (docs/PLAN.md task 147).
 
+    Until a target has an ``s`` above 0, its rows are least squares too. That
+    is before its first residual, or while every residual so far is exactly
+    zero, and the band, a width in units of ``s``, has nothing to be drawn in.
+    ``s`` was taken as 1 there, so a band drawn past the warm-up was in the
+    target's own units, and a target in millionths was thrown far off.
+
     .. rubric:: Parameters
 
     ``quantile``
