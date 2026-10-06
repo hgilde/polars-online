@@ -7634,8 +7634,17 @@ user lifts it:
   (open-source test libraries are task 121).
 - C8's mimalloc option (a new statically linked library, rule 12).
 - Reports to other projects, which wait on the user in any case: pyarrow
-  25.0.1's cast bug (pinned by a test), river's `EpsilonInsensitiveHinge`,
-  the Polars patch and its report (parked since 2026-09-22).
+  25.0.1's cast bug (pinned by a test), river's `EpsilonInsensitiveHinge`.
+
+**Dropped by the user on 2026-10-06: both proposed Polars patches.** The
+parquet reader's projection-order patch, with its report, and the
+polars-arrow ask (whose premise had already proved false, ARROW-SOURCES
+§4). The user's words: "We do not want either of the two proposed polars
+patches, they can be removed along with everything supporting them." Their
+working directory went with them: the polars clone and its two branches,
+the drafts, the probe scripts and the generated data. PERFORMANCE.md's
+account of the pushed-down filter's memory stays, because it documents
+polars' own behaviour, which no patch changed.
 
 ## 11a. Decisions made while implementing
 
