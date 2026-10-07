@@ -245,11 +245,24 @@ class TestHowADurationIsWritten:
         fields = po.spec.output_fields(spec)
         assert any("@h5m" in f for f in fields) and any("@h1h" in f for f in fields), fields
 
-    def test_zero_and_infinity_mean_the_same_in_every_unit(self):
-        df = _temporal(_frame())
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_zero_and_infinity_mean_the_same_in_every_unit(self, unit):
+        """``0`` and ``inf`` say nothing about a unit, so they may stay plain
+        numbers beside durations on a clock of any unit, and mean what the
+        duration ``"0s"`` and the word ``"inf"`` mean. It tested infinity
+        alone, on one unit (review 2026-10-06, TB10)."""
+        df = _temporal(_frame(), unit)
         free = _fit(df, _ridge("t", half_life=float("inf"), gap_cap="365d"))
         # weight_sum is the weight before the row's own update (hard rule 8).
         assert free.struct.field("weight_sum")[-1] == pytest.approx(df.height - 1)
+        assert free.equals(_fit(df, _ridge("t", half_life="inf", gap_cap="365d")), null_equal=True)
+        timed = dict(half_life="10m", gap_cap="30m")
+        for key in ("coef_every", "solve_every", "restart_after_step_back"):
+            zero = _fit(df, _ridge("t", **{key: 0}, **timed))
+            assert zero.equals(_fit(df, _ridge("t", **{key: "0s"}, **timed)), null_equal=True), key
+        # And a zero `coef_every` is every row, where unset is the last.
+        every = _fit(df, _ridge("t", coef_every=0, **timed)).struct.field("coef")
+        assert every.null_count() == 0
 
     @pytest.mark.parametrize(
         ("value", "exc", "says"),

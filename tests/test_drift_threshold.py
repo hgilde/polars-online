@@ -76,6 +76,24 @@ def test_the_old_default_flagged_noise_and_a_threshold_in_minutes_does_not():
     assert hits.size and 2000 <= hits[0] < 2100, hits
 
 
+@pytest.mark.parametrize("half_life", [float("inf"), 1000.0, 100.0])
+def test_a_stationary_stream_at_the_row_default_flags_nothing(half_life):
+    """The defaults without a clock, ``drift_delta`` 0.5 and a threshold of
+    20 rows, on 200,000 rows of Gaussian residuals: no flag at all. The only
+    stationary test was 3,000 rows under ``"20m"`` (review 2026-10-06, CE6).
+    The rate rests on the residual's tail: on ``t`` residuals with 3 degrees
+    of freedom the same defaults flagged 3 to 11 times per 200,000 rows,
+    about 4e-5 a row, at each of these half-lives (the review's three seeds,
+    and this stream's ``x`` with a ``t₃`` noise: 10, 11 and 9)."""
+    rng = np.random.default_rng(17)
+    n = 200_000
+    x = rng.standard_normal(n)
+    df = pl.DataFrame({"x": x, "y": 2 * x + rng.standard_normal(n)})
+    got = flags(df, half_life=half_life)
+    assert got.size == n
+    assert not got.any(), np.flatnonzero(got)[:10]
+
+
 def test_without_a_clock_the_default_is_20_rows():
     """A row is one unit without a clock column, so 20 is the classic test,
     and the default stays."""

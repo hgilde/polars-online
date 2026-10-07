@@ -259,6 +259,7 @@ def test_a_sort_by_several_keys_without_maintain_order_is_warned_about():
     quiet(lambda: po.ModelBank([SPEC]).fit(left().sort("t")))
 
 
+@pytest.mark.pins
 def test_the_measurement_behind_the_sort_warning():
     """Measured on polars 1.44.2: 2,109 of 10,000 rows came out elsewhere than
     a stable sort puts them when sorted by two keys, none by one. If polars

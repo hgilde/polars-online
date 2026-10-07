@@ -30,6 +30,8 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from test_every_kind import frame_for
+from test_model_registry import MINIMAL
 
 REASONS = {"below_min_settled_frac", "above_max_error_inflation", "below_min_weight"}
 
@@ -256,6 +258,62 @@ class TestMaxErrorInflation:
         s = spec(half_life=10.0, min_settled_frac=0.5)
         out = po.ModelBank([s]).fit_predict(frame(20))
         assert reasons(out)[1] == "below_min_settled_frac"
+
+    def test_min_weight_is_named_ahead_of_the_noise_gate_where_both_bind(self):
+        """The precedence `docs/OUTPUTS.md` states, settled > `min_weight` >
+        inflation, where the last two bind together. With no floor set, rows
+        0 to 2 are withheld by the noise gate alone: its ratio is infinite
+        until the model has solved. With `min_weight = 20` the same rows are
+        withheld by both, and the floor is named; the floor alone holds the
+        rows after them (review 2026-10-06, TB8: only row 10, where the
+        noise gate had opened, was asserted)."""
+        df = frame(60)
+        alone = po.ModelBank([spec(half_life=math.inf)]).fit_predict(df)
+        assert reasons(alone)[:4] == ["above_max_error_inflation"] * 3 + [None]
+        both = po.ModelBank([spec(half_life=math.inf, min_weight=20.0)]).fit_predict(df)
+        assert reasons(both)[:21] == ["below_min_weight"] * 20 + [None]
+
+
+#: The kinds that write a row: `marginal` and `rcov` report through the
+#: state alone.
+ROW_KINDS = sorted(set(MINIMAL) - {"marginal", "rcov"})
+
+
+@pytest.mark.parametrize("name", ROW_KINDS)
+def test_every_kind_settles_by_the_formula_and_withholds_until_it(name):
+    """`settled_frac` is ``1 - 2 ** (-T / half_life)`` on every kind that
+    writes a row, ``T = i - 1`` on a row-count clock (a group's first row
+    decays by nothing), and ``min_settled_frac = 0.5`` withholds rows 0 to
+    10, naming that gate, with the kind's first field null there, and no row
+    after them for that reason. `seqtest` and `bocpd` take no half-life and
+    are refused by name: an e-process does not forget, and a run-length
+    posterior is what forgets. It was value-tested on `ewridge` alone, the
+    rest for the fields' presence (review 2026-10-06, TB7)."""
+    kw: dict[str, object] = dict(
+        targets=["y"], features=["x0", "x1"], half_life=10.0, min_settled_frac=0.5
+    )
+    kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life"}
+    if name == "corrchange":
+        kw["scalar"] = True  # its half-life parametrises the scalar form's standardiser
+
+    def build() -> dict:
+        return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+
+    if name in ("seqtest", "bocpd"):
+        with pytest.raises(ValueError, match=f"half_life/lam do not apply to {name}"):
+            build()
+        return
+    out = po.ModelBank([build()]).fit_predict(frame_for(name))["m"].struct.unnest()
+    got = out["settled_frac"].to_list()
+    assert got == pytest.approx(
+        [1.0 - 2.0 ** (-max(i - 1, 0) / 10.0) for i in range(len(got))], abs=1e-12
+    )
+    why = out["withheld_reason"].cast(pl.String).to_list()
+    assert why[:11] == ["below_min_settled_frac"] * 11
+    assert "below_min_settled_frac" not in why[11:]
+    skip = ("weight_sum", "settled_frac", "withheld_reason", "coef", "support_coef")
+    first = next(c for c in out.columns if c not in skip)
+    assert out[first][:11].null_count() == 11, first
 
 
 class TestErrorInflationField:

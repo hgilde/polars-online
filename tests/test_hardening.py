@@ -489,7 +489,6 @@ class TestRunnerErrorPaths:
 
         assert out.read_bytes() == before, "the failed run overwrote the good output"
         assert pl.read_parquet(out).height == n
-        assert [p.name for p in tmp_path.iterdir()] != [], "sanity"
         assert not [p for p in tmp_path.iterdir() if ".tmp" in p.name], "temporary left behind"
 
 

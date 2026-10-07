@@ -64,7 +64,12 @@ def test_the_platform_specific_benchmarks_import_everywhere(name):
 def test_the_memory_measure_runs_on_this_platform():
     out, peak_gb = _load("parallel_bench").timed("print(41 + 1)", {})
     assert out == "42"
-    if sys.platform == "darwin" or sys.platform.startswith("linux"):
+    # As `timed` decides: BSD `time` on macOS, GNU `time` on Linux only where
+    # `/usr/bin/time` is installed (a slim image lacks it), and nothing else.
+    measured = sys.platform == "darwin" or (
+        sys.platform.startswith("linux") and Path("/usr/bin/time").exists()
+    )
+    if measured:
         assert peak_gb > 0, peak_gb
     else:
         assert math.isnan(peak_gb), peak_gb

@@ -13,10 +13,6 @@ def test_native_extension_loads() -> None:
     assert polars_online.native_version() == polars_online.__version__
 
 
-def test_schema_version_is_positive() -> None:
-    assert polars_online.schema_version() >= 1
-
-
 # The version the wheel is built and tested against: Cargo.toml pins rust
 # polars =0.55.2, which is what py-polars 1.44.x is built from. `uv.lock` holds
 # the dev environment to it. Moved 1.44.1 -> 1.44.2 for 0.5.1: every golden

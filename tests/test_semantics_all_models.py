@@ -48,6 +48,10 @@ IDS = [m for m, _ in MODELS] + [f"{m}-blocked" for m, _ in VARIANTS]
 #: Models that treat a null in *any* target as predict-only for all targets.
 SHARED_STATE_MODELS = {"rls"}
 
+#: What a refusal raises, wrapped or not by version, as `test_frame._REFUSAL`
+#: says: a refusal is one of these, never a panic nor any other exception.
+_REFUSAL = (pl.exceptions.ComputeError, ValueError)
+
 
 def build(model, extra, **kw):
     opts = dict(targets=["y0"], features=["x0", "x1"], half_life=200.0, min_weight=2.0)
@@ -155,7 +159,7 @@ class TestNullPolicy:
         w = df["w"].to_list()
         w[5] = -1.0
         df = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
-        with pytest.raises(Exception, match="negative"):
+        with pytest.raises(_REFUSAL, match="negative"):
             run(model, extra, df, weight="w")
 
 
@@ -217,8 +221,12 @@ class TestWarmup:
             lengths = c.list.len().drop_nulls().to_list()
             assert lengths, f"{model}.{name}: every row is null"
             assert all(n > 0 for n in lengths), f"{model}.{name}: an empty coef list"
-            # And the access pattern the docstrings show works on every row.
-            assert c.list.get(0).len() == df.height
+            # And the access pattern the docstrings show works on every row:
+            # the call itself is the test, since it raised "index out of
+            # bounds" on an empty list. What it gives is null exactly where
+            # the row has no coefficients.
+            first = c.list.get(0)
+            assert first.is_null().to_list() == c.is_null().to_list(), f"{model}.{name}"
             if delay:
                 assert c[0] is None, f"{model}.{name}: unsolved row is not null"
 

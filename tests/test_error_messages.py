@@ -528,13 +528,17 @@ def _members(hint) -> tuple:
 def _inf_shaped_like(hint):
     """``"inf"`` in the shape the annotation asks for: bare for a float, nested
     once per ``list[...]`` otherwise (``q`` -> ``["inf"]``, ``coef_prior`` ->
-    ``[["inf"]]``)."""
+    ``[["inf"]]``), and ``None`` for a list of anything else: ``stats``,
+    ``classes``, ``lags`` and ``cross_lags`` were swept as ``[None]``, a
+    refusal of the list's type that said nothing of ``inf`` (review
+    2026-10-06, YA10)."""
     members = _members(hint)
     if float in members:
         return "inf"
     for m in members:
         if typing.get_origin(m) is list:
-            return [_inf_shaped_like(typing.get_args(m)[0])]
+            inner = _inf_shaped_like(typing.get_args(m)[0])
+            return None if inner is None else [inner]
     return None
 
 
@@ -548,31 +552,63 @@ def _float_parameters(builder) -> dict[str, typing.Any]:
     return out
 
 
+#: What a parameter needs beside it to be refused for its value rather than
+#: for a companion it lacks: a clock under ``gap_cap`` (with a finite cap to
+#: build with), a window under ``window_every``.
+COMPANIONS: dict[str, dict[str, typing.Any]] = {
+    "gap_cap": {"clock": "t", "gap_cap": 1.0},
+    "window_every": {"window_size": 10.0},
+    # `q` is the process noise `coef_half_life` would derive, and `kalman`
+    # takes exactly one of the two (review round 4, PC6): a finite `q`, one
+    # entry per coefficient of `BASE`'s, stands in until the sweep's own.
+    "q": {"coef_half_life": None, "q": [0.0, 0.0]},
+}
+
+#: A refusal that speaks of the value being infinite.
+_SAYS_INF = re.compile(r"finite|\binf\b|infinit")
+
+
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda b: b.__name__)
 def test_the_inf_table_matches_the_rust_side(builder):
     """``_INF_OK`` says which parameters may be infinite. Feed ``"inf"``
     straight to Rust for every float parameter: an allowed one must get past
     the parser *and* past ``validate``'s finiteness checks (a refusal for want
     of another parameter is fine), and a refused one must be refused by Rust
-    too, or the Python check is inventing a rule. It checked the parser alone,
-    which is the field's type, while ``validate`` refused two of the table's
-    entries (review 2026-09-12, S27)."""
+    too, for being infinite, or the Python check is inventing a rule. It
+    checked the parser alone, which is the field's type, while ``validate``
+    refused two of the table's entries (review 2026-09-12, S27).
+
+    And it took any ``ValueError`` as that refusal: 39 of 330 pairs were
+    refused for something else, ``gap_cap`` for want of a clock,
+    ``window_every`` of a window, ``q`` for its length (review 2026-10-06,
+    YA10). Each now has its companion and the right shape, and the refusal
+    must speak of the value being infinite, or, for a parameter the kind
+    does not take at all (``coef_every`` where there is no coefficient,
+    ``embargo`` beside a closed group), name it."""
     allowed = _spec._INF_OK["*"] | _spec._INF_OK.get(builder.__name__, frozenset())
     kwargs = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
     for key, inf in _float_parameters(builder).items():
-        spec = builder("m", **kwargs)
+        spec = builder("m", **{**kwargs, **COMPANIONS.get(key, {})})
         where = spec if key in spec else spec["model"]
         # A key the Rust spec skips when absent is written only when given.
         assert key in where or key in _spec._SKIPPED_WHEN_ABSENT.get(builder.__name__, ()), (
             f"{builder.__name__}.{key} is not a key of the spec dict"
         )
+        if key == "q":
+            # One entry per coefficient: the features and the intercept.
+            inf = ["inf"] * (len(spec["features"]) + 1)
         where[key] = inf
         try:
             po.ModelBank([spec])
         except ValueError as e:
+            msg = str(e)
             if key in allowed:
-                assert "invalid spec" not in str(e), (key, str(e))
-                assert "finite" not in str(e), (key, str(e))
+                assert "invalid spec" not in msg, (key, msg)
+                assert "finite" not in msg, (key, msg)
+            else:
+                about_inf = _SAYS_INF.search(msg) is not None
+                not_taken = key in msg and key not in COMPANIONS and key != "q"
+                assert about_inf or not_taken, (builder.__name__, key, msg)
         else:
             assert key in allowed, f"{builder.__name__}.{key} accepts inf but is not in _INF_OK"
 

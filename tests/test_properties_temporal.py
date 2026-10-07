@@ -45,7 +45,7 @@ from hypothesis import strategies as st
 
 import polars_online as po
 from polars_online._polars_online import format_duration, parse_duration
-from test_model_registry import MINIMAL, _build
+from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
 
 #: The longest duration, and the latest instant, an i64 of nanoseconds holds.
@@ -573,14 +573,15 @@ class TestTemporalClockStreams:
         _assert_same_numbers(po.ModelBank([spec]).fit_predict(df)["m"], pl.concat([head, tail]))
 
 
-#: The models a delayed label is fitted with, and what each needs besides.
-DELAYED_MODELS = {
-    "ewridge": {},
-    "rls": {},
-    "kalman": {"coef_half_life": "1h"},
-    "huber": {},
-    "quantile": {"quantile": 0.5},
-}
+#: What a regression needs beside `MINIMAL`'s arguments on a temporal
+#: clock: a plain-number ``coef_half_life`` beside a duration is refused.
+DELAYED_ARGS: dict[str, dict] = {"kalman": {"coef_half_life": "1h"}}
+
+#: The models a delayed label is fitted with, and what each needs besides:
+#: every regression, since ``embargo`` is a parameter they all share. Built
+#: from `test_model_registry.REGRESSIONS`, so a new regression is swept
+#: without an edit here (a hand-kept list held five of the ten).
+DELAYED_MODELS = {name: MINIMAL[name] | DELAYED_ARGS.get(name, {}) for name in sorted(REGRESSIONS)}
 
 
 @st.composite
@@ -608,16 +609,17 @@ def delayed_streams(draw):
         schema_overrides={"y": pl.Float64},
     )
     model = draw(st.sampled_from(sorted(DELAYED_MODELS)), label="model")
-    spec = getattr(po.spec, model)(
-        "m",
+    kw: dict[str, object] = dict(
         targets=["y"],
         features=["x0"],
         clock="t",
         half_life=format_duration(draw(st.integers(1, 30)) * step),
         gap_cap=format_duration(cap * step),
         embargo=format_duration(draw(st.integers(1, 12), label="delay in steps") * step),
-        **DELAYED_MODELS[model],
     )
+    kw |= DELAYED_MODELS[model]
+    # `MINIMAL`'s ``None`` drops an argument, as `test_model_registry._build` reads it.
+    spec = getattr(po.spec, model)("m", **{k: v for k, v in kw.items() if v is not None})
     return df, spec
 
 

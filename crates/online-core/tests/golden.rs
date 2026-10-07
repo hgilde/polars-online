@@ -78,7 +78,9 @@ fn signature_of<M: OnlineModel>(model: &mut M, pick: usize, features: bool) -> V
 }
 
 fn check(name: &str, got: &[f64], want: &[f64]) {
-    if std::env::var("PRINT_GOLDEN").is_ok() {
+    // `1` and nothing else: any value, the empty string included, turned
+    // every golden off with only stdout to say so (review 2026-10-06, CF9).
+    if std::env::var("PRINT_GOLDEN").is_ok_and(|v| v == "1") {
         // `{v:?}` prints the shortest representation that round-trips, which
         // avoids clippy's excessive-precision lint on the embedded constants.
         let vals: Vec<String> = got.iter().map(|v| format!("{v:?}")).collect();

@@ -415,7 +415,9 @@ class TestDriftDetection:
         df = self._df()
         eager, _ = self._flags(df, drift_threshold=2.0)
         patient, _ = self._flags(df, drift_threshold=200.0)
-        assert eager.sum() >= patient.sum()
+        # Strictly: an equality let a detector that never fires pass (116
+        # flags against 1 measured; review 2026-10-06, TB10).
+        assert eager.sum() > patient.sum()
 
     def test_delta_absorbs_small_shifts(self):
         df = self._df()
@@ -734,7 +736,9 @@ class TestResidualDistribution:
         out = self._fit(df, half_life=1e9, resid_quantiles=[0.9])
         r = np.abs(np.array(out["m"].struct.field("resid_y0").to_list(), dtype=float))
         truth = np.nanquantile(r[np.isfinite(r)], 0.9)
-        assert self._last(out, "abs_resid_q0.9_y0") == pytest.approx(truth, rel=0.15)
+        # 1.4e-3 measured, inside the sketch's own accuracy tanh(1/128) =
+        # 7.8e-3; 0.15 admitted a quantile at another level.
+        assert self._last(out, "abs_resid_q0.9_y0") == pytest.approx(truth, rel=0.03)
 
     def test_the_quantile_forgets_on_the_clock(self):
         """Task 146: each level is the exponentially weighted quantile of
@@ -902,14 +906,77 @@ class TestStreamingMetrics:
         assert self._last(out, "r2_y0") < 0.05
         assert abs(self._last(out, "hit_rate_y0") - 0.5) < 0.08
 
-    def test_metrics_are_out_of_sample(self):
-        # The metric reported on a row must not include that row's own outcome.
+    @pytest.mark.parametrize("row", [25, 100, 777, 1999])
+    def test_metrics_are_out_of_sample(self, row):
+        """The metrics and the autocorrelation reported on a row do not
+        include that row's own outcome: move ``y`` on the row by 50, across
+        zero, and every one of them on that row is the same to the bit, as
+        ``sigma`` is held above, while the next row's moves (the hit rate
+        with it, since the sign flips). It asserted only that the first
+        reported row was not row 0, which an in-sample metric passes too
+        (review 2026-10-06, TB4)."""
         df = self._learnable(n=2000)
-        out = self._out(df)
-        ic = out["m"].struct.field("ic_y0").to_list()
-        first = next(i for i, v in enumerate(ic) if v is not None)
-        # the first reported value comes from earlier rows only
-        assert first > 0
+        fields = ("ic_y0", "r2_y0", "hit_rate_y0", "autocorr_y0")
+
+        def fit(frame):
+            return self._out(frame, emit_autocorr=True)["m"].struct.unnest().select(fields)
+
+        y = df["y0"].to_numpy()
+        moved = y - 50.0 * np.sign(y) * (np.arange(df.height) == row)
+        base = fit(df)
+        bumped = fit(df.with_columns(pl.Series("y0", moved)))
+        for name in fields:
+            here, there = base[name][row], bumped[name][row]
+            assert here is not None and here == there, (name, here, there)
+            if row + 1 < df.height:
+                assert base[name][row + 1] != bumped[name][row + 1], (
+                    f"{name}: the bump never arrived"
+                )
+
+    @pytest.mark.parametrize("model", ["sgd", "ftrl"])
+    def test_a_logistic_fit_reads_the_metrics_as_a_classifiers(self, model):
+        """The README's table for a logistic fit: ``hit_rate`` is the accuracy
+        at a 0.5 threshold, ``r2`` the Brier skill score against the running
+        base rate, ``ic`` the point-biserial correlation of probability and
+        label, each over the rows scored before the row. With no decay the EW
+        means are plain ones, so scikit-learn's ``accuracy_score`` and
+        ``brier_score_loss`` and scipy's ``pointbiserialr`` compute them
+        (review 2026-10-06, TB4: the table had no test)."""
+        from scipy.stats import pointbiserialr
+        from sklearn.metrics import accuracy_score, brier_score_loss
+
+        rng = np.random.default_rng(12)
+        n = 400
+        x = rng.standard_normal(n)
+        y = (rng.random(n) < 1.0 / (1.0 + np.exp(-1.5 * x))).astype(float)
+        df = pl.DataFrame({"x0": x, "y0": y})
+        loss = {"loss": "logistic"} if model == "sgd" else {}
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            half_life=float("inf"),
+            min_weight=5.0,
+            emit_metrics=True,
+            **loss,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        p = out["pred_y0"].to_numpy().astype(float)
+        scored = np.isfinite(p)
+        checked = 0
+        for i in range(n):
+            seen = scored[:i]
+            ps, ys = p[:i][seen], y[:i][seen]
+            if ys.size < 3 or ys.min() == ys.max():
+                continue
+            base = brier_score_loss(ys, np.full(ys.size, ys.mean()))
+            assert out["hit_rate_y0"][i] == pytest.approx(
+                accuracy_score(ys > 0.5, ps > 0.5), abs=1e-12
+            )
+            assert out["r2_y0"][i] == pytest.approx(1.0 - brier_score_loss(ys, ps) / base, abs=1e-9)
+            assert out["ic_y0"][i] == pytest.approx(pointbiserialr(ys, ps).statistic, abs=1e-9)
+            checked += 1
+        assert checked > 350, checked
 
     def test_decay_lets_metrics_forget(self):
         # A model that was good and then breaks should report a falling IC.

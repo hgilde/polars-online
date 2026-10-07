@@ -380,11 +380,16 @@ def test_output_index_names_every_dtype_it_declares():
 def _literal_templates(text: str) -> list[str]:
     """Each ``literal`` of ``text`` as a pattern a field name matches: a
     ``<placeholder>`` or a ``{placeholder}`` stands for any run of characters,
-    and so does a ``*``."""
+    and so does a ``*``. A literal counts only if it begins with text of its
+    own: ``<stat>_<column>`` matched every field with an underscore in it,
+    which made the test below vacuous for ``ew_cov`` (review 2026-10-06,
+    YA10)."""
     patterns = []
     for lit in re.findall(r"``([^`]+)``", text):
-        parts = re.split(r"(<[^>]*>|\{[^}]*\}|\*)", lit)
-        patterns.append("".join(".+" if p and p[0] in "<{*" else re.escape(p) for p in parts if p))
+        parts = [p for p in re.split(r"(<[^>]*>|\{[^}]*\}|\*)", lit) if p]
+        if not parts or parts[0][0] in "<{*":
+            continue
+        patterns.append("".join(".+" if p[0] in "<{*" else re.escape(p) for p in parts))
     return patterns
 
 

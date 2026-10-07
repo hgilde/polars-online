@@ -10,10 +10,12 @@ This is that comparison, made automatic: the numbers are committed, and CI runs
 this file on ubuntu, macOS and Windows. Locally the agreement is exact; the
 tolerance is what "the same answer on another platform" is allowed to mean.
 
-The constants come from the current implementation, which is independently
-verified against the numpy oracles in `tests/reference.py` (agreement ~1e-13
-for every model) -- the same bargain `golden.rs` makes. Regenerate only after
-confirming a change is intended:
+The constants come from the current implementation, which is held
+elsewhere to an oracle it cannot share a bug with: the ten regression models
+to the numpy references in `tests/reference.py` and `tests/reference_paths.py`,
+and the other kinds to the oracles `docs/TESTING.md`'s table lists (their
+definitions, papers and second opinions) -- the same bargain `golden.rs`
+makes. Regenerate only after confirming a change is intended:
 
     uv run python tests/test_golden_pipeline.py
 """

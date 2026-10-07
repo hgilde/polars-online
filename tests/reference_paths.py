@@ -404,7 +404,7 @@ def ewridge_paths_ref(
     fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     window_size: float | None = None,
-    min_weight: float | list[float] = 0.0,
+    min_weight: float | list[float] | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
     gap_cap: float = np.inf,
@@ -435,8 +435,10 @@ def ewridge_paths_ref(
 
     **Scoring.** Target ``j`` is scored with the last solve once its own
     weight (the rows it is present on) reaches its ``min_weight``, scalar or
-    one per target. ``weight_sum`` is the weight of every row. Both are seen from
-    the last accepted row, before the row's own decay (hard rule 8).
+    one per target. Left out, it is the builder's rule: a row per
+    coefficient, the features and the intercept (``stream.rs::build_one``).
+    ``weight_sum`` is the weight of every row. Both are seen from the last
+    accepted row, before the row's own decay (hard rule 8).
 
     **The schedule** is ``lasso_paths_ref``'s: after the row is learned a
     solve runs when the clock since the last one reaches ``solve_every``
@@ -444,8 +446,9 @@ def ewridge_paths_ref(
     the weight the fit holds under a finite half-life, docs/PLAN.md task 115
     (b); every row for ``inf``), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
-    none yet and ``weight_sum`` has reached the smallest ``min_weight`` -- which
-    with ``ewridge``'s default of 0 is the first row.
+    none yet and ``weight_sum`` has reached the smallest ``min_weight`` -- by
+    default the first row whose weight before it reaches the coefficient
+    count.
 
     **The combinations** are every feature set (column indices; ``None`` is
     all of them) crossed with every ridge value, set-major. Each is solved by
@@ -465,6 +468,8 @@ def ewridge_paths_ref(
     ridges = [ridge] if np.isscalar(ridge) else list(ridge)
     sets = [list(range(k))] if feature_sets is None else [list(s) for s in feature_sets]
     combos = [(s, r) for s in sets for r in ridges]
+    if min_weight is None:
+        min_weight = float(kt)
     mp = np.broadcast_to(np.asarray(min_weight, dtype=float), (m,))
     share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(half_life) else None
     if solve_every is None:

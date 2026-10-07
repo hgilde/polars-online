@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 
 from data import public_intraday_or_skip, synthetic
-from reference import compute_dclock, ewridge_ref, rls_ref
+from reference import compute_dclock, ewridge_ref, kalman_ref, rls_ref
 
 
 def _arrays(df: pl.DataFrame, k: int = 3):
@@ -91,6 +91,37 @@ def test_compute_dclock_semantics():
     assert d[2] == 7.5  # session change overrides the negative delta
     d, r = compute_dclock(t, ses, 5, gap_cap=50.0, session_gap="reset")
     assert r[2]
+
+
+def test_a_zero_weight_row_leaves_the_oracles_finite():
+    """Hard rule 9 holds of the oracles too: a row of weight 0 advances the
+    clock and teaches nothing, the stream's first row and its first scored
+    row included, and is never a 0/0 that poisons what follows. On this
+    stream ``kalman_ref`` divided its feature moments by the weight after a
+    zero-weight first row, so none of its 120 predictions was a number, and
+    ``ewridge_ref``'s sigma2 by its weight after a zero-weight first scored
+    row, NaN on each of the 114 rows after it (review 2026-10-06, TA1 and
+    TA10)."""
+    df, _ = synthetic(seed=71, n_groups=1, n_rows=120, k=3, null_frac=0.0)
+    x, y, t, _, w = _arrays(df)
+    dc, _ = compute_dclock(t, None, len(df), gap_cap=50.0)
+
+    first_row = w.copy()
+    first_row[0] = 0.0
+    pred = kalman_ref(x, y, dc, first_row, gap_cap=50.0)["pred"][:, 0]
+    scored = np.flatnonzero(np.isfinite(pred))
+    assert scored.size > 100, scored.size
+    assert np.isfinite(pred[scored[0] :]).all()
+
+    first_scored = int(np.argmax(np.isfinite(ewridge_ref(x, y, dc, w, gap_cap=50.0)["pred"][:, 0])))
+    zeroed = w.copy()
+    zeroed[first_scored] = 0.0
+    sig2 = ewridge_ref(x, y, dc, zeroed, gap_cap=50.0)["sig2"][:, 0]
+    assert np.isfinite(sig2).all()
+    # The rows after it still add their residuals.
+    added = np.flatnonzero(sig2 > 0.0)
+    assert added.size > 100 and added[0] > first_scored, added
+    assert (sig2[added[0] :] > 0.0).all()
 
 
 def test_null_policy_in_oracle():

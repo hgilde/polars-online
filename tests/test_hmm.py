@@ -248,10 +248,19 @@ def test_min_periods_gates_the_report_not_the_update():
     # And below it, nulls rather than numbers.
     assert gated["filtered_0"][:150].null_count() == 150
 
-    # Under decay `weight_sum` plateaus; a `min_weight` above the plateau must
-    # still be reached by the row count, not silently never.
-    decayed = run(df, half_life=20.0, min_weight=25.0)
-    assert decayed["filtered_0"].null_count() < df.height
+    # Under decay `weight_sum` plateaus, at 29.4 for a half-life of 20 rows: a
+    # `min_weight` under it opens the report at the first row whose weight
+    # before it meets it, row 56 by the recursion, and every row from there
+    # reports. A short warm-up, so the gate that binds is this one (with 100
+    # warm-up rows the seeding held the report to row 100 and a check of
+    # "some row reports" could not tell; review 2026-10-06, TB10).
+    decayed = run(df, half_life=20.0, min_weight=25.0, warm_rows=20)
+    lam = 0.5 ** (1 / 20)
+    before = (1 - lam ** np.arange(df.height)) / (1 - lam)
+    opens = int(np.argmax(before >= 25.0))
+    assert opens == 56
+    reported = decayed["filtered_0"].is_not_null().to_numpy()
+    assert not reported[:opens].any() and reported[opens:].all()
 
 
 def test_predict_reads_the_exogenous_column():

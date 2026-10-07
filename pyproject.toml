@@ -189,7 +189,7 @@ testpaths = ["tests"]
 addopts = "-ra -m 'not soak'"
 markers = [
     "soak: long-running stability tests (millions of rows)",
-    "pins: tests that can only pass on the polars this repo pins -- assertions about the pins themselves, and docs that record the version they were generated with; the canary unpins on purpose and runs `-m 'not soak and not pins'`",
+    "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins'`",
 ]
 [tool.ruff]
 line-length = 100

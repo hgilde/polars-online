@@ -1023,8 +1023,12 @@ mod tests {
     /// A longhand Hamilton filter at fixed parameters.
     /// Each state's log density is the Gaussian of its own moments, under
     /// every covariance kind, written out with explicit indices for two
-    /// features and two states: the deviation from the pair, the ridge added
-    /// to each variance, and the quadratic form through a 2x2 inverse.
+    /// features and two states: the deviation from the pair and the ridge
+    /// added to each variance. The full and shared densities are faer's
+    /// (`crate::oracle::gaussian_log_density`, an eigendecomposition no
+    /// model's Cholesky shares), where a 2x2 inverse by hand stood (review
+    /// 2026-10-06, CF8); the diagonal one is a product of the univariate
+    /// densities, its definition.
     #[test]
     fn log_densities_are_the_gaussians_of_each_state() {
         let (d, k) = (2usize, 2usize);
@@ -1040,13 +1044,6 @@ mod tests {
             .unwrap();
             let got = m.log_densities(&x).unwrap();
             let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
-            let quad = |mat: &[f64], dv: &[f64]| {
-                let det = mat[0] * mat[3] - mat[1] * mat[2];
-                let q = (mat[3] * dv[0] * dv[0] - (mat[1] + mat[2]) * dv[0] * dv[1]
-                    + mat[0] * dv[1] * dv[1])
-                    / det;
-                (det.ln(), q)
-            };
             let total: f64 = m.states.iter().map(EwCov::n_eff).sum();
             let mut shared = vec![0.0; 4];
             for (s, state) in m.states.iter().enumerate() {
@@ -1070,16 +1067,12 @@ mod tests {
                         base - 0.5 * (v0.ln() + v1.ln())
                             - 0.5 * (dv[0] * dv[0] / v0 + dv[1] * dv[1] / v1)
                     }
-                    Covariance::Shared => {
-                        let (log_det, q) = quad(&shared, &dv);
-                        base - 0.5 * log_det - 0.5 * q
-                    }
+                    Covariance::Shared => crate::oracle::gaussian_log_density(&shared, &dv),
                     Covariance::Full => {
                         let mut mat = state.comoments().to_vec();
                         mat[0] += r;
                         mat[3] += r;
-                        let (log_det, q) = quad(&mat, &dv);
-                        base - 0.5 * log_det - 0.5 * q
+                        crate::oracle::gaussian_log_density(&mat, &dv)
                     }
                 };
                 assert!(

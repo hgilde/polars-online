@@ -6,8 +6,9 @@ leave `0.5^(age/half-life)` of it. Inside the window the weights are still
 exponential — this is not a flat window, and the tests say so by comparing
 against a weighted sum rather than a plain mean.
 
-The oracle is polars, which computes the same thing a different way: one
-`rolling().agg()` per row, `O(n·W)` where the accumulator is `O(n)`.
+The oracle is a numpy loop, which computes the same thing a different way:
+the weighted sum over the rows inside the window, recomputed from the raw
+rows at each row, `O(n·W)` where the accumulator is `O(n)`.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ def run(df, window_size=None, chunks=1, **kw):
 
 
 def oracle(df, window):
-    """The same statistic in polars: exponential weights over the rows inside
+    """The same statistic in numpy: exponential weights over the rows inside
     the window, read at the previous row's clock, which is where every
     statistic in this library is referenced."""
     lam = 0.5 ** (1 / HALFLIFE)
@@ -137,6 +138,63 @@ def test_the_window_shrinks_n_eff_to_what_it_covers():
     # A geometric sum over the window, against one over the whole stream.
     assert windowed == pytest.approx((1 - lam**60) / (1 - lam), rel=0.02)
     assert plain > windowed * 1.4
+
+
+#: The row after which the clock steps by 81, past a `window_size` of 50.
+STEP_ROW = 60
+
+
+def _a_long_step(n=120, seed=3):
+    rng = np.random.default_rng(seed)
+    t = np.arange(n, dtype=float)
+    t[STEP_ROW:] += 80.0
+    x = rng.standard_normal(n) + 5.0
+    return pl.DataFrame({"t": t, "x": x, "y": 2 * x + rng.standard_normal(n)})
+
+
+@pytest.mark.parametrize(("kind", "field"), [("ew_cov", "mean_x"), ("ewridge", "pred_y")])
+def test_a_long_step_empties_the_window(kind, field):
+    """The README's "A hard window": a step longer than `window_size`, after
+    `gap_cap`, empties the window, and the model reports nulls from the row
+    after it, never stale numbers; a cap shorter than the window never
+    empties it. Here the step is 81 against a window of 50: under a cap of
+    100 the row after it holds the step's own row alone, `weight_sum` 1.0,
+    and the default `min_weight` withholds the field; from there on every
+    number is the one a model that never saw the rows before the step
+    gives. Under a cap of 30 the step counts as 30 and the window keeps its
+    rows (11.6 of weight). No test placed a gap past the window (review
+    2026-10-06, TB5, from the reviewer's TB3)."""
+    df = _a_long_step()
+
+    def fit(gap_cap, frame=df):
+        common = dict(clock="t", half_life=40.0, gap_cap=gap_cap, window_size=50.0)
+        if kind == "ew_cov":
+            s = po.spec.ew_cov("m", features=["x"], stats=["mean"], **common)
+        else:
+            s = po.spec.ewridge(
+                "m",
+                targets=["y"],
+                features=["x"],
+                max_rows_between_solves=1,
+                max_error_inflation=float("inf"),
+                **common,
+            )
+        return po.ModelBank([s]).fit_predict(frame).unnest("m")
+
+    after = STEP_ROW + 1
+    emptied = fit(100.0)
+    assert emptied["weight_sum"][after - 1] > 30.0
+    assert emptied["weight_sum"][after] == 1.0
+    assert emptied[field][after] is None
+    fresh = fit(100.0, df.slice(STEP_ROW))
+    for name in ("weight_sum", field):
+        got, want = emptied[name][after:].to_numpy(), fresh[name][1:].to_numpy()
+        assert (np.isnan(got.astype(float)) == np.isnan(want.astype(float))).all(), name
+        assert np.isfinite(got.astype(float)).sum() > 50, name
+        np.testing.assert_allclose(got.astype(float), want.astype(float), rtol=1e-12, atol=0)
+    capped = fit(30.0)
+    assert capped["weight_sum"][after] > 10.0
+    assert capped[field][after] is not None
 
 
 @pytest.mark.parametrize(

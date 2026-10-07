@@ -1206,8 +1206,19 @@ fn ew_class_classifies_the_same_at_every_level() {
                 at_stop[c]
             );
         }
+        // Every row after the stop is compared, and both sides are numbers:
+        // a filter on the base's alone counted nothing, and `f64::max`
+        // drops a NaN, so a model that stopped reporting passed (review
+        // 2026-10-06, CF7, as `holds` since CF6).
+        let compared = (MOVING..post.len())
+            .filter(|&i| base[i].is_finite() && post[i].is_finite())
+            .count();
+        assert_eq!(
+            compared,
+            post.len() - MOVING,
+            "level {level}: a posterior on every row after the stop, at 0.5 and here"
+        );
         let worst = (MOVING..post.len())
-            .filter(|&i| base[i].is_finite())
             .map(|i| (post[i] - base[i]).abs())
             .fold(0.0, f64::max);
         // Measured: 9.5e-15 at 1e3, 1.8e-9 at 1e8, 1.5e-5 at 1e12, about a
@@ -1273,15 +1284,18 @@ fn hmm_filters_the_same_at_every_level() {
                 base_end[s]
             );
         }
+        // Every row after the stop is compared, and both sides are numbers
+        // (review 2026-10-06, CF7): a skip of the base's NaN counted
+        // nothing, and `f64::max` drops a NaN on this side.
         let (mut worst_p, mut worst_ll) = (0.0f64, 0.0f64);
         for i in MOVING..out.len() {
             let ((p, ll), (bp, bll)) = (out[i], base[i]);
-            if bp.is_finite() {
-                worst_p = worst_p.max((p - bp).abs());
-            }
-            if bll.is_finite() {
-                worst_ll = worst_ll.max((ll - bll).abs() / (1.0 + bll.abs()));
-            }
+            assert!(
+                [p, ll, bp, bll].iter().all(|v| v.is_finite()),
+                "level {level}, row {i}: p {p} and loglik {ll} against {bp} and {bll} at 0.5"
+            );
+            worst_p = worst_p.max((p - bp).abs());
+            worst_ll = worst_ll.max((ll - bll).abs() / (1.0 + bll.abs()));
         }
         // Measured: p 3.7e-14 at -0.37, 1.0e-12 at 1e3, 1.1e-7 at 1e8,
         // 5.9e-4 at 1e12 -- a twentieth of `steps_of` and less, but for the
@@ -1489,28 +1503,44 @@ fn two_targets_under_pairwise_gaps_keep_their_slopes() {
     // cross-moments over a third fewer, and the two samples' mismatch leaks
     // between slopes (under `own_rows` it holds 0.19 to 0.29). What a stall
     // would do is move it with the level, so it is held to 0.5's.
+    // Every row after the stop is held, both targets, both slopes, and both
+    // sides of each comparison are numbers: `s[0].is_nan() || ...` passed a
+    // model with no coefficients at all, and the second target's checks
+    // skipped every NaN (review 2026-10-06, CF7).
     let (base, base_slope) = run(0.5);
     for level in LEVELS {
         let (pred, slope) = run(level);
         let mut worst_slope = 0.0f64;
         for (i, s) in slope.iter().enumerate().skip(MOVING) {
             assert!(
-                s[0].is_nan() || (0.2..0.8).contains(&s[0]),
+                (0.2..0.8).contains(&s[0]),
                 "level {level}, row {i}: slope {}",
                 s[0]
             );
-            if s[1].is_finite() {
-                worst_slope = worst_slope.max((s[1] - base_slope[i][1]).abs());
-            }
+            assert!(
+                s[1].is_finite() && base_slope[i][1].is_finite(),
+                "level {level}, row {i}: second slope {} against {} at 0.5",
+                s[1],
+                base_slope[i][1]
+            );
+            worst_slope = worst_slope.max((s[1] - base_slope[i][1]).abs());
         }
         // Measured: 4.8e-6 at 1e12, 9.7e-10 at 1e8.
         assert!(
             worst_slope <= steps_of(level),
             "level {level}: second slope {worst_slope:e}"
         );
-        let worst = (MOVING..pred.len())
-            .flat_map(|i| (0..2).map(move |t| (i, t)))
-            .filter(|&(i, t)| base[i][t].is_finite())
+        let rows = (MOVING..pred.len()).flat_map(|i| (0..2).map(move |t| (i, t)));
+        let compared = rows
+            .clone()
+            .filter(|&(i, t)| base[i][t].is_finite() && pred[i][t].is_finite())
+            .count();
+        assert_eq!(
+            compared,
+            2 * (pred.len() - MOVING),
+            "level {level}: both targets predicted on every row after the stop"
+        );
+        let worst = rows
             .map(|(i, t)| (pred[i][t] - base[i][t]).abs() / (1.0 + base[i][t].abs()))
             .fold(0.0, f64::max);
         assert!(

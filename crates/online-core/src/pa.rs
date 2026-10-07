@@ -624,6 +624,46 @@ mod tests {
         assert!((step_for(0.5) - 0.5 * step_for(1.0)).abs() < 1e-12);
     }
 
+    /// A weight above 1 counts as 1, `weight.min(1.0)`: the step is a
+    /// projection onto the row's constraint, and a projection repeated is
+    /// the same projection. A row at weight 2 moves every coefficient as the
+    /// same row at weight 1 does, to the bit, in each mode, where
+    /// `row_weight_scales_the_step`'s half-weight row holds of a step with
+    /// no cap as well (review 2026-10-06, CC10). The row is no passive one:
+    /// at weight 0.5 it moves the fit elsewhere.
+    #[test]
+    fn a_weight_above_one_steps_as_a_weight_of_one() {
+        for mode in [PaMode::Pa, PaMode::Pa1, PaMode::Pa2] {
+            let fit = |w: f64| {
+                let mut c = cfg(2, mode);
+                c.eps = 0.0;
+                c.min_weight = 0.0;
+                let mut m = Pa::new(c).unwrap();
+                let mut s = 11u64;
+                for i in 0..20 {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = 1.5 * x[0] - 0.5 * x[1] + 0.3;
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    m.step(&x, &[Some(y)], d, if i == 7 { w } else { 1.0 });
+                }
+                m.coefficients()[0].clone()
+            };
+            let bits = |b: &[f64]| b.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            let one = fit(1.0);
+            assert_eq!(bits(&fit(2.0)), bits(&one), "{mode:?}");
+            assert_eq!(
+                bits(&fit(1e100)),
+                bits(&one),
+                "{mode:?}: at the input bound"
+            );
+            assert_ne!(
+                bits(&fit(0.5)),
+                bits(&one),
+                "{mode:?}: the row moves the fit"
+            );
+        }
+    }
+
     #[test]
     fn null_target_is_predict_only() {
         let mut c = cfg(1, PaMode::Pa1);

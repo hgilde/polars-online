@@ -217,6 +217,49 @@ def test_the_psd_form_is_a_longer_window_without_the_bias_term():
     assert repaired["psd_repaired"][0] is False
 
 
+@pytest.mark.parametrize("kind", ["plain", "kernel"])
+def test_a_negative_eigenvalue_is_clipped_and_reported(kind):
+    """``psd_repaired``'s other side: a block with fewer returns than
+    features has a covariance of lower rank, whose zero eigenvalues come out
+    of the arithmetic a hair either side of 0. Under ``psd = True`` each
+    negative one is clipped and the block says so, and the matrix reported is
+    positive semi-definite and is the unrepaired estimate (``psd = False``)
+    with its negative eigenvalues set to 0, by numpy's ``eigh``. A block the
+    repair did not touch is the unrepaired estimate to the bit. Which of the
+    sixteen null eigenvalues land below 0 is rounding, so the platform's;
+    measured here, the repair fired on every such block for each estimator.
+    Only ``False`` was ever asserted (review 2026-10-06, TB13)."""
+    k, rows, blocks = 20, 4, 12
+    rng = np.random.default_rng(5)
+    ret = rng.standard_normal((rows * blocks, k)) * 0.01
+    cols = [f"x{i}" for i in range(k)]
+    df = pl.DataFrame(
+        {**{c: ret[:, i] for i, c in enumerate(cols)}, "b": np.arange(rows * blocks) // rows}
+    )
+    extra = {"bandwidth": 1} if kind == "kernel" else {}
+
+    def close(psd):
+        bank = po.ModelBank([spec(features=cols, kind=kind, block_rows=rows, psd=psd, **extra)])
+        bank.fit_predict(df)
+        return bank.closed_groups(drop=False)
+
+    repaired, raw = close(True), close(False)
+    assert repaired.height == blocks - 1  # the last group never closes
+    fired = repaired["psd_repaired"].to_list()
+    assert raw["psd_repaired"].to_list() == [False] * (blocks - 1)
+    assert any(fired), fired
+    for got, was, did in zip(repaired["rcov"].to_list(), raw["rcov"].to_list(), fired, strict=True):
+        if not did:
+            assert got == was
+            continue
+        got, was = unvech(got, k), unvech(was, k)
+        values, vectors = np.linalg.eigh(was)
+        scale = values.max()
+        assert np.linalg.eigvalsh(got).min() >= -1e-12 * scale
+        want = (vectors * np.maximum(values, 0.0)) @ vectors.T
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12 * scale)
+
+
 # --- the shared contract -----------------------------------------------------
 
 

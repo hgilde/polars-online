@@ -167,6 +167,7 @@ def test_the_struct_carries_the_array_dunder_and_not_the_stream_one() -> None:
     assert not hasattr(out, "__arrow_c_stream__")
 
 
+@pytest.mark.pins
 def test_duckdb_refuses_the_struct_directly() -> None:
     """Measured on duckdb 1.5.5. "Hand them straight to duckdb" was wrong, and
     this is the refusal that says so. If DuckDB ever grows array-interface

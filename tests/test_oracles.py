@@ -110,6 +110,19 @@ class TestKalmanOracle:
             withheld = np.isnan(pred[330:])
             assert withheld.any() and not withheld.all(), f"{t}: none withheld after the run"
 
+    def test_a_zero_weight_first_row(self):
+        """Hard rule 9 at the head of the stream: a first row of weight 0
+        advances the clock and teaches nothing, and the feature moments'
+        update after it is 0/0. kalman_ref divided by that weight unguarded,
+        so none of its 120 predictions was a number while the bank's 108
+        were (review 2026-10-06, TA1)."""
+        df, _ = synthetic(seed=71, n_groups=1, n_rows=120, k=3, null_frac=0.0)
+        w = df["w"].to_numpy().copy()
+        w[0] = 0.0
+        out = self._compare(df.with_columns(pl.Series("w", w)))
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        assert np.isfinite(pred).sum() > 100, "the row of weight 0 must not silence the model"
+
     def test_per_factor_halflife_with_pinning(self):
         df, _ = synthetic(seed=72, n_groups=1, n_rows=300, k=3, null_frac=0.0)
         # intercept pinned, x0 slow, x1 fast, x2 pinned

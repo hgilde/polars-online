@@ -2386,11 +2386,13 @@ def ew_cov(
     .. rubric:: Output
 
     One struct column named after the spec, holding the statistics ``stats``
-    asks for, each named ``<stat>_<column>`` or, for a pair,
-    ``<stat>_<column>_<column>`` (``mean_x0``, ``std_x0``, ``corr_x0_x1``;
-    pairs are unordered, ``i < j``, except ``lagcorr``'s), ``mahal`` and
-    ``mahal_q<p>``, the ``pc<j>_*`` fields, ``weight_sum``, and
-    ``settled_frac`` and ``withheld_reason`` as everywhere. The statistics are
+    asks for: ``mean_<column>``, ``var_<column>`` and ``std_<column>`` per
+    column; ``cov_<column>_<column>``, ``corr_<column>_<column>`` and
+    ``partial_corr_<column>_<column>`` per pair, unordered, ``i < j``
+    (``mean_x0``, ``corr_x0_x1``); ``lagcorr_<a>_<b>_l<l>`` per lag and
+    ordered pair; ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields,
+    ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as
+    everywhere. The statistics are
     null until ``min_weight``, which the bank floors at 2: a variance needs two
     rows, so a lower ``min_weight``, ``0`` included, is raised to 2 rather than
     refused. The plain spec's fields are listed in

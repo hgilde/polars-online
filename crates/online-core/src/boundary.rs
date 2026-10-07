@@ -320,15 +320,34 @@ mod tests {
             (0.25, [1.8001, 1.9924, 2.1684, 2.2467]),
             (0.45, [2.6282, 2.6844, 2.7215, 2.7660]),
         ];
+        // The module doc's claim, cell by cell: above theirs in 11 cells,
+        // below in the twelfth by 0.015, and within 0.03 in all. A bound on
+        // `|ours - theirs|` alone held none of it: every cell 0.03 below
+        // passed (review 2026-10-06, CD15).
+        let mut above = 0;
         for (gamma, row) in table {
             for (ratio, theirs) in [0.5, 1.0, 2.0, 4.0].into_iter().zip(row) {
                 let ours = sequential_crit(0.05, gamma, ratio);
+                let diff = ours - theirs;
                 assert!(
-                    (ours - theirs).abs() < 0.035,
+                    diff.abs() <= 0.03,
                     "γ = {gamma}, T = {ratio}: {ours} against {theirs}"
                 );
+                if gamma == 0.25 && ratio == 2.0 {
+                    assert!(
+                        (diff + 0.015).abs() < 5e-4,
+                        "the twelfth cell is below theirs by 0.015: {ours} against {theirs}"
+                    );
+                } else {
+                    assert!(
+                        diff > 0.0,
+                        "γ = {gamma}, T = {ratio}: {ours} is not above {theirs}"
+                    );
+                    above += 1;
+                }
             }
         }
+        assert_eq!(above, 11);
         // The γ = 0 row in closed form: √(T/(1+T))·2.2414.
         assert!((sequential_crit(0.05, 0.0, 1.0) - 0.5f64.sqrt() * 2.24140).abs() < 1e-4);
     }

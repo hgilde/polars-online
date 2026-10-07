@@ -1399,13 +1399,12 @@ mod tests {
                 }
             }
         }
+        // The ridge normal equations solved by faer's LU (`crate::oracle`),
+        // which the filter shares no arithmetic with, where Cramer's rule by
+        // hand stood (review 2026-10-06, CF8).
         let lam = 1.0 / p0;
-        let (a, b, c, d) = (xtx[0][0] + lam, xtx[0][1], xtx[1][0], xtx[1][1] + lam);
-        let det = a * d - b * c;
-        let want = [
-            (d * xty[0] - b * xty[1]) / det,
-            (-c * xty[0] + a * xty[1]) / det,
-        ];
+        let gram = [xtx[0][0] + lam, xtx[0][1], xtx[1][0], xtx[1][1] + lam];
+        let want = crate::oracle::solve(&gram, &xty);
         let got = &m.coefficients()[0];
         for i in 0..2 {
             assert!(

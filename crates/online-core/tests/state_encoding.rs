@@ -248,13 +248,26 @@ fn a_human_readable_float_does_not_move_the_msgpack() {
             rmp_serde::from_slice(&rmp_serde::to_vec_named(&tagged).unwrap()).unwrap();
         let json = serde_json::to_string(&tagged).unwrap();
         let from_json: Tagged = serde_json::from_str(&json).unwrap();
-        for (label, got) in [("msgpack", &back), ("json", &from_json)] {
-            assert_eq!(got.a.is_nan(), a.is_nan(), "{label}: NaN-ness of a");
-            if !a.is_nan() {
-                assert_eq!(got.a, a, "{label}: a");
+        // Bit for bit, but a NaN's payload: `==` took `0.0` for `-0.0`, so a
+        // sign lost in either encoding passed, and `b` and `c` were checked
+        // for their length and presence only (review 2026-10-06, CF9).
+        let same = |g: f64, w: f64| {
+            if w.is_nan() {
+                g.is_nan()
+            } else {
+                g.to_bits() == w.to_bits()
             }
+        };
+        for (label, got) in [("msgpack", &back), ("json", &from_json)] {
+            assert!(same(got.a, a), "{label}: a {:?} against {a:?}", got.a);
             assert_eq!(got.b.len(), b.len(), "{label}: b length");
+            for (g, w) in got.b.iter().zip(&b) {
+                assert!(same(*g, *w), "{label}: b {:?} against {b:?}", got.b);
+            }
             assert_eq!(got.c.is_some(), c.is_some(), "{label}: c presence");
+            if let (Some(g), Some(w)) = (got.c, c) {
+                assert!(same(g, w), "{label}: c {g:?} against {w:?}");
+            }
         }
 
         // JSON says the non-finite ones out loud rather than writing null

@@ -15,7 +15,8 @@ section 9). Conventions, shared with the core:
   no data.
 - Accumulators are EW *means* (stable under long runs): ``W = lam*W + w``,
   ``S = (lam*W_prev*S + w*x x^T)/W``. ``ridge`` is applied at solve time on the
-  mean scale (per-observation, stable). With ``ridge_scale=True`` the ridge is a
+  mean scale (per-observation, stable). With ``ridge_scale=True`` here (the
+  builder's ``ridge_scale="sum"``; ``False`` is its ``"mean"``) the ridge is a
   decaying prior on the *sum* scale, penalizing the intercept too -- exactly
   classic RLS regularization (used by the RLS agreement test).
 - ``sigma2_j`` (EW residual variance) accumulates only on rows where ``pred_j``
@@ -211,11 +212,20 @@ def ewridge_ref(
                     st["S"][j] = (keep * st["S"][j] + w[i] * np.outer(xi, xi)) / Wj_new
                     st["r"][:, j] = (keep * st["r"][:, j] + w[i] * xi * yij) / Wj_new
                 st["Wj"][j] = Wj_new
-                if not np.isnan(p_own[j]):
+                # sigma2, as `ewridge.rs` keeps it: its weight ages on every
+                # row, and a row with a weight and a prediction adds its
+                # squared residual. A row of weight 0 adds nothing (hard rule
+                # 9: with nothing carried, its update is 0/0, a NaN that
+                # never washed out), and nor does a row with no prediction,
+                # which ages the weight as a null target does (N6).
+                aged = lam * st["Wsig"][j]
+                if w[i] > 0.0 and not np.isnan(p_own[j]):
                     r_own = yij - p_own[j]
-                    Ws_new = lam * st["Wsig"][j] + w[i]
-                    st["sig2"][j] = (lam * st["Wsig"][j] * st["sig2"][j] + w[i] * r_own**2) / Ws_new
+                    Ws_new = aged + w[i]
+                    st["sig2"][j] = (aged * st["sig2"][j] + w[i] * r_own**2) / Ws_new
                     st["Wsig"][j] = Ws_new
+                else:
+                    st["Wsig"][j] = aged
             else:
                 st["Wj"][j] *= lam
                 st["Wsig"][j] *= lam
@@ -564,8 +574,10 @@ def kalman_ref(
       the prediction, on every accepted row (a null target or a zero weight
       still advances the clock); ``inf`` is ``Phi = I`` (E41);
     - features are standardized with the EW stats *before* the row's update,
-      using scale 1 for the intercept slot and for near-zero-variance features
-      (centered variance <= 1e-10 * raw second moment);
+      using scale 1 for the intercept slot and for a feature whose variance
+      is not positive (the core's ``variance_is_usable`` since T-E9; see
+      ``_kalman_scales``), and, with no intercept, scaled by each feature's
+      raw second moment and not centred;
     - ``P += Q * d_clock**2`` happens after the transition and before the gain
       (docs/PLAN.md task 150: the per-row noise that keeps ``coef_half_life``
       a clock half-life at any spacing),
@@ -744,10 +756,11 @@ def kalman_ref(
 
         # EW stats update last
         W_new = lam * st["W"] + w[i]
-        a = lam * st["W"] / W_new
-        b = w[i] / W_new
-        st["mean"] = a * st["mean"] + b * z
-        st["raw"] = a * st["raw"] + b * np.outer(z, z)
+        if W_new > 0.0:  # a zero-weight first row is 0/0 (hard rule 9)
+            a = lam * st["W"] / W_new
+            b = w[i] / W_new
+            st["mean"] = a * st["mean"] + b * z
+            st["raw"] = a * st["raw"] + b * np.outer(z, z)
         st["W"] = W_new
 
         # Coefficients back in original units, read with the stats as they

@@ -47,7 +47,9 @@ def test_predicts_the_next_value():
     df = _trending()
     out = _run(df)
     pred = out["m"].struct.field("pred_y0").to_list()[-1]
-    assert pred == pytest.approx(df["y0"].to_list()[-1], abs=2.0)
+    # 0.343 off measured; a forecast one step stale is the slope, 2.0, off,
+    # so a bound of 2.0 let that through.
+    assert pred == pytest.approx(df["y0"].to_list()[-1], abs=1.0)
 
 
 def test_an_infinite_trend_halflife_learns_the_whole_history_drift():

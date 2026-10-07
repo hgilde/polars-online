@@ -122,7 +122,10 @@ def test_the_power_is_at_least_the_papers():
         flags += int(out["flag"][n - 1])
     power = flags / reps
     se = (want * (1 - want) / reps) ** 0.5
-    assert power > want - 4 * se - 0.05, (power, want)
+    assert power > want - 4 * se, (power, want)
+    # And "well above" it, as measured: a floor of 0.7 where 0.83 is the
+    # rate at 1000 replications. The paper's figure less 4 se is 0.41.
+    assert power >= 0.7, (power, want)
 
 
 def test_the_scalar_form_tests_the_equicorrelations_level():

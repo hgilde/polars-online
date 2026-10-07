@@ -10,7 +10,6 @@ every chunking.
 
 import struct
 import subprocess
-import sys
 
 import numpy as np
 import polars as pl
@@ -835,7 +834,6 @@ def test_schema_version_is_current():
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
     assert po.schema_version() == 38
-    assert sys.version_info >= (3, 12)
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

@@ -233,6 +233,7 @@ def test_two_specs_are_two_outputs_read_in_either_order() -> None:
     assert out["equal"], "the same spec under two names gives the same output"
 
 
+@pytest.mark.pins
 def test_a_requested_schema_is_taken_when_it_fits_and_never_silently_cast() -> None:
     """`pa.array(obj, type=)` passes a requested schema, which the export
     ignores, as the protocol allows; pyarrow is then to cast what it got.

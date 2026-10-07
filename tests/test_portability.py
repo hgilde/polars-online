@@ -1,9 +1,11 @@
 """Determinism and cross-platform concerns testable without a Windows runner
 (docs/TESTING.md sections D and E).
 
-The parts that genuinely need Windows (T-W1, T-W2, T-W7, T-W8) run in CI; these
-are the parts that can be pinned anywhere, so that when CI does run, a failure
-points at the platform rather than at us.
+The parts that genuinely need Windows run elsewhere: T-W1, T-W7 and T-W8 in
+`ci.yml` at every push, and T-W2, the cross-OS state hand-off, in
+`release.yml`'s write-state and read-state legs, at each release only. These
+are the parts that can be pinned anywhere, so that when those runs fail, the
+failure points at the platform rather than at us.
 """
 
 import os
@@ -172,7 +174,13 @@ class TestThreadPoolKnob:
         assert out.split() == ["3", "3"]
 
     def test_other_pools_variables_do_not_size_it(self):
-        cores = os.cpu_count() or 1
+        # The pool takes Rust's `available_parallelism`, which honours the
+        # process's CPU affinity (and, on Linux, a cgroup CPU quota), where
+        # `os.cpu_count()` counts the machine's CPUs. `os.process_cpu_count()`
+        # (3.13+) honours the affinity too, so it is the count to compare
+        # with wherever Python has it.
+        count = getattr(os, "process_cpu_count", os.cpu_count)
+        cores = count() or 1
         out = self._python(
             "import polars_online as po; print(po.thread_pool_size())",
             RAYON_NUM_THREADS="1",
