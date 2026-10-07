@@ -2555,6 +2555,9 @@ pub struct LastRow {
     pub n_eff: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub lam_selected: Vec<f64>,
+    /// A slot no solve has fit is NaN (review round 4, CC1), as is the mean
+    /// of an `ew_class` class no row has carried, so the export tags them.
+    #[serde(with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
     pub coef: Vec<Option<Vec<f64>>>,
     #[serde(default, with = "online_core::humanfloat::vec_f64_or_tag")]
     pub settled: Vec<f64>,

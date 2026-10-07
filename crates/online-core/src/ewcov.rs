@@ -1056,7 +1056,11 @@ impl TargetMoments {
             );
             let d = (old.mean[t] - self.mean[t]) + (lo_old - lo);
             out.mean[t] = self.mean[t] + (lo - ratio * d);
-            let var = (g * self.var[t] - ratio * old.var[t] - ratio * g * d * d).max(0.0);
+            // Rounding below zero is zero, and a NaN stays one: `max(0.0)`
+            // read it as a target with no spread (review round 4, CB7).
+            let var = crate::solve::clamp_rounding(
+                g * self.var[t] - ratio * old.var[t] - ratio * g * d * d,
+            );
             let terms = g * self.var[t] + ratio * old.var[t];
             out.var[t] = if var <= 64.0 * f64::EPSILON * terms {
                 0.0
@@ -3114,6 +3118,29 @@ mod tests {
                 want.to_bits(),
                 "{left:e}: {:e}",
                 out.q[0]
+            );
+        }
+    }
+
+    /// A target variance that is not a number stays one through the
+    /// window's truncation, live or in the snapshot: the floor `max(0.0)`
+    /// read it as 0, a target with no spread inside the window, and the
+    /// rounding floor after it compares a NaN false (review round 4, CB7;
+    /// `crate::solve::clamp_rounding`, task 182).
+    #[test]
+    fn a_target_variance_that_is_not_a_number_stays_one_in_the_window() {
+        let moments = |var: f64| TargetMoments {
+            mean: vec![3.0],
+            var: vec![var],
+            q: vec![1.0],
+            mean_lo: vec![0.0],
+        };
+        for (live, then) in [(f64::NAN, 1.0), (1.0, f64::NAN)] {
+            let out = moments(live).truncated(&moments(then), 1.0, &[Some((0.5, 2.0))]);
+            assert!(
+                out.var[0].is_nan(),
+                "live {live}, snapshot {then}: {}",
+                out.var[0]
             );
         }
     }

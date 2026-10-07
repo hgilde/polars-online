@@ -1029,22 +1029,27 @@ impl crate::OnlineModel for Bocpd {
             }
             return out;
         }
-        self.n_eff += weight;
-        (self.w_mean, self.w_rows) = (w_mean, w_rows);
         let Some((new, weights)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
             // and no run sees it. A usable row that fails -- a run's
             // covariance no factorization takes, a usable hazard at or below
-            // 1 -- so counted, in `n_eff` and as a failure, so a run of them
-            // is visible in `diagnostics` rather than silent (B1). The time
-            // still passed: on the clock its chance of a break applies, as on
-            // a row of no weight.
+            // 1 -- is counted as a failure, so a run of them is visible in
+            // `diagnostics` rather than silent (B1). The time still passed:
+            // on the clock its chance of a break applies, as on a row of no
+            // weight -- which is all the row is: `n_eff` and the weight
+            // mean, which are those of the rows learned from, do not move.
+            // They moved before this refusal, so `n_eff` counted rows no
+            // run saw and the next rows' `w/w̄` read a mean holding one;
+            // `hmm` ages a failed row as a row of no weight too (review
+            // round 4, CE10).
             self.solve_failures += 1;
             if let Some(moved) = moved {
                 self.logjoint = moved;
             }
             return out;
         };
+        self.n_eff += weight;
+        (self.w_mean, self.w_rows) = (w_mean, w_rows);
         let full = self.full();
         // Algorithm 1's line 6, and the indexing is the whole of it:
         // `ν⁽ʳ⁺¹⁾_{t+1} = ν⁽ʳ⁾_t + u(xₜ)` and `ν⁽⁰⁾_{t+1} = ν_prior`. Slot
@@ -2493,6 +2498,69 @@ mod tests {
                     );
                 }
                 assert_eq!(m.solve_failures, 0, "{case}");
+            }
+        }
+    }
+
+    /// A usable row whose predictive cannot be evaluated is no row a run
+    /// learned from, so it moves neither `n_eff` nor the weight mean a
+    /// later row's `w/w̄` reads: it ages as a row of weight 0 does, and is
+    /// counted, as `hmm` treats one. Both moved before the refusal, so
+    /// `n_eff` counted rows no run saw (review round 4, CE10). Under a
+    /// per-row hazard the row brings a hazard of 1, which is no hazard; on
+    /// the clock its step is one the clock cannot read. A row at `1e300`
+    /// was the case first; past the input bound, it is now a row of weight 0
+    /// that counts nothing (task 183), and no usable row gives every run a
+    /// density of 0.
+    #[test]
+    fn a_finite_row_whose_predictive_fails_moves_no_weight() {
+        for emission in [BocpdEmission::Gaussian, BocpdEmission::Diag] {
+            for hazard_on_clock in [false, true] {
+                let case = format!("{emission:?}, hazard on the clock {hazard_on_clock}");
+                let mut base = Bocpd::new(BocpdCfg {
+                    emission,
+                    prior_nu: Some(5.0),
+                    hazard_on_clock,
+                    hazard_from_row: !hazard_on_clock,
+                    ..cfg(2)
+                })
+                .unwrap();
+                // The rows around it read the configured hazard.
+                let y: &[Option<f64>] = if hazard_on_clock { &[] } else { &[None] };
+                let (bad_y, bad_d): (&[Option<f64>], f64) = if hazard_on_clock {
+                    (&[], -1.0)
+                } else {
+                    (&[Some(1.0)], 1.0)
+                };
+                let mut n = Normals::new(89);
+                for _ in 0..30 {
+                    let w = 1.0 + n.unit();
+                    base.step(&[n.normal(), n.normal()], y, 1.0, w);
+                }
+                let (mut failed, mut quiet) = (base.clone(), base.clone());
+                let out = failed.step(&[0.5, -0.5], bad_y, bad_d, 2.5);
+                assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                assert_eq!(
+                    failed.solve_failures,
+                    base.solve_failures + 1,
+                    "{case}: the case needs a failure"
+                );
+                quiet.step(&[0.5, -0.5], bad_y, bad_d, 0.0);
+                assert_eq!(failed.n_eff.to_bits(), base.n_eff.to_bits(), "{case}");
+                assert_eq!(
+                    (failed.w_mean.to_bits(), failed.w_rows.to_bits()),
+                    (base.w_mean.to_bits(), base.w_rows.to_bits()),
+                    "{case}"
+                );
+                assert_eq!(failed.runs, quiet.runs, "{case}");
+                assert_eq!(failed.logjoint, quiet.logjoint, "{case}");
+                for t in 0..10 {
+                    let (x, w) = ([n.normal(), n.normal()], 1.0 + n.unit());
+                    let a = failed.step(&x, y, 1.0, w).pred;
+                    let b = quiet.step(&x, y, 1.0, w).pred;
+                    let bits = |v: &[f64]| v.iter().map(|p| p.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&a), bits(&b), "{case}, row {t} after");
+                }
             }
         }
     }

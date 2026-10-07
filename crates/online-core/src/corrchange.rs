@@ -137,7 +137,9 @@ pub struct CorrChangeCfg {
     /// kinds only differ in what they do with the block.
     pub span_rows: usize,
     /// Nominal level; under `monitor` and `sequential` the critical value is
-    /// `1 − alpha/npairs` under Bonferroni.
+    /// the quantile at `1 − alpha/npairs` under Bonferroni. Under
+    /// `sequential`, a share below `2^-52` with no `crit` is refused
+    /// ([`Self::validate`]).
     pub alpha: f64,
     /// `"bonferroni"` (default) or `"none"`: whether `monitor` and
     /// `sequential` split `alpha` over the pairs. Under `window` it changes
@@ -254,6 +256,33 @@ impl CorrChangeCfg {
                 }
                 if self.bandwidth == Some(0) {
                     return Err("corrchange: bandwidth must be >= 1".into());
+                }
+                // The critical value is a quantile at `1 − alpha/npairs`
+                // (`alpha` itself without Bonferroni), and below `2^-52`
+                // that is 1, or a double a step or two from it: the quantile
+                // of 1 is NaN, and the detector ran, reported its statistic
+                // and could never flag, saying nothing (review round 4,
+                // CD12). The tail cannot be read in its own right either:
+                // the series and the solve both give the mass inside the
+                // boundary, `1 −` the tail, and the solve's error is far
+                // above a tail that small. A configured `crit` reads no
+                // `alpha`.
+                let floor = 2f64.powi(-52);
+                if self.crit.is_none() && self.pair_alpha() < floor {
+                    let share = if self.alpha_adjust == "bonferroni" {
+                        format!(
+                            "alpha / {} pairs = {:e} (Bonferroni's share)",
+                            self.npairs(),
+                            self.pair_alpha()
+                        )
+                    } else {
+                        format!("alpha = {:e}", self.alpha)
+                    };
+                    return Err(format!(
+                        "corrchange: kind = \"sequential\" tests each pair at {share}, below \
+                         2^-52: as a double, 1 minus that is 1 or within two steps of it, where \
+                         no critical value can be read; raise alpha, or give crit"
+                    ));
                 }
             }
             CorrChangeKind::Window => {
@@ -1302,6 +1331,58 @@ mod tests {
             let b = rho * a + (1.0 - rho * rho).sqrt() * self.normal();
             vec![a, b]
         }
+    }
+
+    /// Under `"sequential"` an `alpha` whose share per pair is below
+    /// `2^-52` is refused, by name: `1 − alpha/npairs` rounds to 1 there,
+    /// the boundary's quantile of 1 is NaN, and the detector ran, reported
+    /// its statistic and could never flag, saying nothing (review round 4,
+    /// CD12). A share at the limit runs, and its critical value is a
+    /// number. A configured `crit` reads no `alpha`, and `"monitor"`'s
+    /// quantile saturates, so neither refuses one.
+    #[test]
+    fn an_alpha_too_small_for_its_quantile_is_refused_under_sequential() {
+        let limit = 2f64.powi(-52);
+        // Three columns: three pairs under Bonferroni.
+        let with = |alpha: f64, adjust: &str| CorrChangeCfg {
+            alpha,
+            alpha_adjust: adjust.into(),
+            ..seq_cfg(3, 50, 50, 0.0)
+        };
+        for (alpha, adjust) in [
+            (1e-17, "bonferroni"),
+            (2.9 * limit, "bonferroni"),
+            (1e-17, "none"),
+            (0.9 * limit, "none"),
+        ] {
+            let err = with(alpha, adjust).validate().unwrap_err();
+            assert!(
+                err.contains("alpha") && err.contains("2^-52"),
+                "{alpha:e} {adjust}: {err}"
+            );
+        }
+        for (alpha, adjust) in [
+            (3.0 * limit, "bonferroni"),
+            (limit, "none"),
+            (0.05, "bonferroni"),
+        ] {
+            let c = with(alpha, adjust);
+            c.validate().unwrap();
+            let crit = c.fixed_crit().expect("sequential has one");
+            assert!(crit.is_finite(), "{alpha:e} {adjust}: {crit}");
+        }
+        CorrChangeCfg {
+            crit: Some(2.0),
+            ..with(1e-300, "none")
+        }
+        .validate()
+        .unwrap();
+        CorrChangeCfg {
+            alpha: 1e-300,
+            ..cfg(3, CorrChangeKind::Monitor)
+        }
+        .validate()
+        .unwrap();
     }
 
     /// The Kolmogorov quantiles the paper's tables are read at.

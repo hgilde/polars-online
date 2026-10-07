@@ -627,6 +627,31 @@ impl OnlineModel for Sgd {
             // is 1 (`d * 1 * w` is `d * w` exactly), and it is not
             // penalised.
             let beta = &mut self.beta[j];
+            // A row any of whose gradients is not a finite number teaches
+            // nothing, and is skipped before `beta` moves, as a row with no
+            // weight is; under AdaGrad so is one whose squared gradient is
+            // not, which `g2` would keep for good (decay never takes an
+            // `inf` away; `ftrl`'s guard). With `clip_gradient = inf`, which
+            // disables the clip, two rows inside the input bound made a
+            // coefficient infinite and every later prediction null, where
+            // `pa`, `ftrl` and `kalman` each skip such a row (review round
+            // 4, CC2). The gradients are formed here as the update forms
+            // them, so a row that passes moves `beta` to the same bits.
+            let usable = |g: f64| {
+                if lr_row.is_some() {
+                    g.is_finite()
+                } else {
+                    (g * g).is_finite()
+                }
+            };
+            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip)))
+                || beta[off..]
+                    .iter()
+                    .zip(z)
+                    .any(|(b, &zi)| !usable((d * zi * weight + l2 * *b).clamp(-clip, clip)))
+            {
+                continue;
+            }
             match lr_row {
                 Some(lr) => {
                     if off == 1 {
@@ -1220,6 +1245,47 @@ mod tests {
             clipped.iter().all(|b| b.abs() < 1e3),
             "the cap should bound the coefficients, got {clipped:?}"
         );
+    }
+
+    /// A row any of whose gradients is not a finite number -- or, under
+    /// AdaGrad, one whose square is not, which `g2` never decays away --
+    /// teaches nothing, before `beta` moves, as `pa`, `ftrl` and `kalman`
+    /// skip theirs: with `clip_gradient = inf` ("disables it"), two rows
+    /// inside the input bound made a coefficient infinite and every later
+    /// prediction null (review round 4, CC2), and under AdaGrad one froze
+    /// the slope where it started, for good. The stream after them learns
+    /// the line.
+    #[test]
+    fn a_row_whose_gradient_overflows_teaches_nothing() {
+        for schedule in [LearningRate::Constant, LearningRate::AdaGrad] {
+            let mut c = cfg(1, SgdLoss::Squared);
+            c.clip_gradient = f64::INFINITY;
+            c.min_weight = 0.0;
+            c.schedule = schedule;
+            c.learning_rate = 0.2;
+            let mut m = Sgd::new(c).unwrap();
+            m.step(&[1e100], &[Some(1e100)], 0.0, 1.0);
+            let before = m.coefficients()[0].clone();
+            m.step(&[1e100], &[Some(0.0)], 1.0, 1.0);
+            assert_eq!(
+                m.coefficients()[0],
+                before,
+                "{schedule:?}: a row whose gradient overflows moved the fit"
+            );
+            let mut s = 37u64;
+            let mut last = f64::NAN;
+            for i in 0..20_000 {
+                let x = [lcg(&mut s)];
+                let p = m.step(&x, &[Some(1.0 + 0.5 * x[0])], 1.0, 1.0).pred[0];
+                assert!(p.is_finite(), "{schedule:?}, row {i}: {p}");
+                last = p - (1.0 + 0.5 * x[0]);
+            }
+            let beta = m.coefficients()[0].clone();
+            assert!(
+                (beta[0] - 1.0).abs() < 0.01 && (beta[1] - 0.5).abs() < 0.01,
+                "{schedule:?}: {beta:?}, last error {last}"
+            );
+        }
     }
 
     #[test]

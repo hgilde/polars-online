@@ -376,17 +376,23 @@ impl EwClass {
 
     /// The class means, one row of `n_features` per class in label order —
     /// what `coef` holds in the stream. A class no row has carried is NaN.
+    /// Under a `window` they are the window's means, read from the
+    /// accumulators a row is scored on, as [`Self::class_weights`] reads
+    /// its weights, so a class with no row inside the window is NaN. They
+    /// were the whole history's, beside a windowed weight and windowed
+    /// scores (review round 4, CE1).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
-        self.classes
-            .iter()
-            .map(|c| {
-                if c.n_eff() > 0.0 {
-                    c.means().to_vec()
-                } else {
-                    vec![f64::NAN; self.cfg.n_features]
-                }
-            })
-            .collect()
+        let means = |c: &EwCov| {
+            if c.n_eff() > 0.0 {
+                c.means().to_vec()
+            } else {
+                vec![f64::NAN; self.cfg.n_features]
+            }
+        };
+        match self.view() {
+            Some(v) => v.iter().map(means).collect(),
+            None => self.classes.iter().map(means).collect(),
+        }
     }
 
     /// Output names: `class`, then `p_<name>` per class.
@@ -861,6 +867,47 @@ mod tests {
             crate::OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 2.0, 0.0);
         }
         assert_eq!(m.n_eff(), 0.0, "n_eff is a crumb, not 0");
+    }
+
+    /// Under a `window` the class means `coefficients` reports -- `coef`,
+    /// and `ModelBank.coef()` -- are the window's, as the weights, the
+    /// scores and `n_eff` are, and a class with no row inside the window
+    /// has none. They read every row the model had learned (review round
+    /// 4, CE1). Class 0's first feature is 0 for 60 rows and 5 after, and
+    /// class 1 stops at row 60; a window of 30 rows at row 119 holds class
+    /// 0 at 5 alone, where the whole history's mean is 2.5.
+    #[test]
+    fn the_class_means_under_a_window_are_the_windows() {
+        for covariance in [Covariance::Full, Covariance::Diagonal] {
+            let mut c = cfg(2, 2, covariance);
+            c.decay = Decay::Halflife(1e6);
+            c.window = Some(30.0);
+            let mut m = EwClass::new(c).unwrap();
+            let mut s = 23u64;
+            for i in 0..120 {
+                let (label, x0) = match i {
+                    0..60 if i % 2 == 1 => (1.0, 2.0 + lcg(&mut s)),
+                    0..60 => (0.0, 0.0),
+                    _ => (0.0, 5.0),
+                };
+                OnlineModel::step(
+                    &mut m,
+                    &[x0, lcg(&mut s)],
+                    &[Some(label)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            assert!(m.view().is_some(), "rows have aged out of the window");
+            let means = m.coefficients();
+            assert_eq!(means[0][0], 5.0, "{covariance:?}: {means:?}");
+            assert!(means[0][1].is_finite(), "{covariance:?}: {means:?}");
+            assert!(
+                means[1].iter().all(|v| v.is_nan()),
+                "{covariance:?}: a class with no row inside the window: {means:?}"
+            );
+            assert_eq!(m.class_weights()[1], 0.0, "{covariance:?}");
+        }
     }
 
     /// A feature that held one value over every row inside the window has no

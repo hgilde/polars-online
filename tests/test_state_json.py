@@ -154,6 +154,31 @@ def test_a_column_that_never_held_a_value_exports(how):
     assert all(c["min"] == "inf" and c["max"] == "-inf" for c in empty), empty
 
 
+def test_a_coefficient_no_solve_gave_exports_tagged():
+    """A target no solve has fit has NaN coefficients (review round 4, CC1):
+    in the stream's last row and in a closed row the bank still holds, which
+    a bank file carries until it is drained. Both export tagged, as
+    ``"nan"``, where an untagged NaN made the export refuse the bank."""
+    df = _df().with_columns(
+        z=pl.when(pl.col("g") == "a").then(None).otherwise(pl.col("y")).cast(pl.Float64)
+    )
+    spec = po.spec.ewridge(
+        "s",
+        targets=["y", "z"],
+        features=["x0", "x1"],
+        half_life=10.0,
+        group="g",
+        group_close="monotone",
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    doc = json.loads(bank.to_json())
+    # Group a closed, undrained: one row per Gram, `z`'s on its own.
+    coefs = [row["coef"] for row in doc["closed"]]
+    assert ["nan"] * 3 in coefs, coefs
+    assert any(all(isinstance(v, float) for v in c) for c in coefs), coefs
+
+
 def test_the_export_is_the_state_and_not_a_summary():
     """Same envelope, same specs, one entry per (spec, group) as the bank
     holds -- not a digest of them."""

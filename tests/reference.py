@@ -459,6 +459,11 @@ def lasso_ref(
     w_sum = 0.0
     mean, raw, ry = np.zeros(kt), np.zeros((kt, kt)), np.zeros(kt)
     fit = None
+    # Whether a solve has fit the target: one with no weight and no fit
+    # before it has none, NaN (review round 4, CC1), where it was the fit of
+    # moments that hold no row, zeros. One with a fit before is solved from
+    # the moments that hold its history.
+    fitted = False
     since_clock, since_rows, pending = 0.0, 0, 0.0
     for i in range(n):
         if np.isnan(X[i]).any():
@@ -494,7 +499,11 @@ def lasso_ref(
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         if by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_weight):
-            fit = solve(mean, raw, ry)
+            if w_sum <= 0.0 and not fitted:
+                fit = np.full((npath, kt), np.nan)
+            else:
+                fit = solve(mean, raw, ry)
+                fitted = True
             solved[i] = True
             since_clock, since_rows, since_w = 0.0, 0, 0.0
         if fit is not None:
@@ -570,6 +579,9 @@ def kalman_ref(
       such as one after rows of weight 0 have taken the weight under
       ``min_weight`` (N6). That last row aged nothing here until task 177,
       1.75e-3 from the bank on a stream that withholds predictions;
+    - under ``share_p`` the noise is the mean ``sigma2`` across targets as
+      the row arrives, read once before any target's update (review round
+      4, CC3);
     - before a target has a ``sigma2_j`` above 0, its noise (``R`` and the
       ``sigma2`` of ``Q``) is the row's own innovation squared, ``(y_j -
       z' b_j) ** 2`` before the update; under ``share_p``, while the mean
@@ -678,13 +690,17 @@ def kalman_ref(
         e2 = np.where(seen, (Y[i] - st["beta"] @ zs) ** 2, np.nan)
         e2 = np.where(np.isfinite(e2), e2, np.nan)
         first_shared = float(np.nanmean(e2)) if np.isfinite(e2).any() else 0.0
+        # Under ``share_p`` every target's noise is the mean residual
+        # variance as the row arrives, read once, before any target's update
+        # moves its own (review round 4, CC3).
+        shared_s2 = st["sig2"].mean()
 
         for j in range(m):
             pi = 0 if share_p else j
             if obs_var is not None:
                 sigma2 = obs_var
             else:
-                s2 = st["sig2"].mean() if share_p else st["sig2"][j]
+                s2 = shared_s2 if share_p else st["sig2"][j]
                 if s2 > 0.0:
                     sigma2 = s2
                 elif share_p:

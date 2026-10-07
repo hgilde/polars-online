@@ -874,9 +874,11 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
             cen[ij] = g * c_now[ij] - ratio * old.c[ij] - ratio * g * d[i] * d[j];
         }
         // What is left to lose is a difference of positives; a variance it
-        // takes a hair below zero is zero (review V3).
+        // takes a hair below zero is zero (review V3), and one that is not a
+        // number stays one: `max(0.0)` read a NaN as no spread (review
+        // round 4, CB7; task 182's rule).
         let ii = i * k + i;
-        cen[ii] = cen[ii].max(0.0);
+        cen[ii] = crate::solve::clamp_rounding(cen[ii]);
         // And a variance no larger than the rounding of the terms it
         // is formed from carries no digit of the window's spread: the live
         // accumulator itself resolves the window's rows only to `ε` of its
@@ -2169,6 +2171,40 @@ mod tests {
                     "{case}: moments"
                 );
             }
+        }
+    }
+
+    /// A co-moment that is not a number stays one through the truncation:
+    /// the window's variance is NaN, where the floor `max(0.0)` read it as 0,
+    /// a feature with no spread inside the window, and every comparison the
+    /// floors after it make is false for a NaN (review round 4, CB7; task
+    /// 182's rule, `crate::solve::clamp_rounding`). A NaN reaches a live or
+    /// a snapshot's co-moment only from a state file; the other feature's
+    /// variance is a number either way.
+    #[test]
+    fn a_comoment_that_is_not_a_number_stays_one_in_the_window() {
+        let rows = [[1.0, 2.0], [3.0, -1.0], [0.5, 4.0], [2.0, 2.5]];
+        for broken in ["live", "snapshot"] {
+            let mut cov = EwCov::new(2);
+            let mut first = EwCov::new(2);
+            for (i, x) in rows.iter().enumerate() {
+                cov.update(x, 1.0, 1.0);
+                if i == 0 {
+                    first.update(x, 1.0, 1.0);
+                }
+            }
+            let mut old = Moments::of(&first, 1.0);
+            if broken == "live" {
+                let (m, mut c) = (cov.means().to_vec(), cov.comoments().to_vec());
+                c[0] = f64::NAN;
+                let (w, q) = (cov.n_eff(), cov.q_sum());
+                cov.set_moments(&m, &c, w, q);
+            } else {
+                old.c[0] = f64::NAN;
+            }
+            let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
+            assert!(cut.var(0).is_nan(), "{broken}: {}", cut.var(0));
+            assert!(cut.var(1) > 0.0, "{broken}: {}", cut.var(1));
         }
     }
 

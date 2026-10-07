@@ -465,7 +465,15 @@ pub use window::{
 ///   five from before 37 does not decode, compactly or named; the bank
 ///   refuses a file older than 37 by number, and pre-1.0 no loader is
 ///   written. Every other model's state loads as it did at 36.
-pub const SCHEMA_VERSION: u32 = 37;
+/// - 38 (2026-10-06, task 186): a system `ew_ridge` keeps for its readiness
+///   statistics carries no Gram index, a field written at every solve and
+///   read nowhere (review round 4, CA11), so a 37 state holding one, kept
+///   under `emit_error_inflation`, is another shape. A closed `rcov` row a
+///   bank holds undrained says `psd_repaired` as null where the repair could
+///   not run (CE9), which a 37 build cannot read. The bank refuses a file
+///   older than 38 by number, and pre-1.0 no loader is written. Every other
+///   model's state loads as it did at 37.
+pub const SCHEMA_VERSION: u32 = 38;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

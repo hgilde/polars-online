@@ -2384,9 +2384,10 @@ fn a_zero_weight_row_splits_no_gram() {
 }
 
 /// Under `own_rows` a target not seen yet is alone in a Gram with no
-/// weight. With `ridge = 0` there is no system there, so its
-/// coefficients stay zero and no failure is counted; a solve of the empty
-/// Gram was a jittered one, counted, on every row until the target came.
+/// weight. With `ridge = 0` there is no system there, so it has no fit,
+/// NaN (zeros until review round 4, CC1), and no failure is counted; a
+/// solve of the empty Gram was a jittered one, counted, on every row until
+/// the target came.
 #[test]
 fn a_target_not_seen_yet_costs_no_solve_failure() {
     let mut c = cfg(2, 2);
@@ -2410,7 +2411,7 @@ fn a_target_not_seen_yet_costs_no_solve_failure() {
     }
     assert_eq!(m.acc.grams.grams.len(), 2);
     assert_eq!(m.solve_failures, warm, "the empty Gram was solved");
-    assert!(m.coefficients().unwrap()[1].iter().all(|&b| b == 0.0));
+    assert!(m.coefficients().unwrap()[1].iter().all(|b| b.is_nan()));
     assert!(m.predict(&[0.1, 0.2], 1.0).pred[1].is_nan());
 }
 
@@ -2578,7 +2579,7 @@ fn a_state_whose_fit_or_readiness_is_the_wrong_shape_is_refused() {
     assert!(restored(&|_| {}).is_ok(), "the state as saved");
     type Damage<'a> = (&'a str, &'a dyn Fn(&mut EwRidge));
     let damage: [Damage; 12] = [
-        ("no slot", &|r: &mut EwRidge| r.beta = Some(Vec::new())),
+        ("no slot", &|r: &mut EwRidge| r.beta = Some(Fit(Vec::new()))),
         ("a slot short", &|r: &mut EwRidge| {
             r.beta.as_mut().unwrap().pop();
         }),
@@ -2721,11 +2722,10 @@ fn a_live_gram_or_target_moment_of_the_wrong_width_is_refused() {
 }
 
 /// The systems kept for the per-row leverage are held to the cfg's shape:
-/// a column index past the features, a scale or a mean short of the
-/// columns, or a Gram that is not there loaded, and
-/// `row_error_inflation_into`, which runs on every row the field is asked
-/// for, read `x[6]` or failed the factor's length assertion (review
-/// 2026-10-06, CA4).
+/// a column index past the features, or a scale or a mean short of the
+/// columns, loaded, and `row_error_inflation_into`, which runs on every row
+/// the field is asked for, read `x[6]` or failed the factor's length
+/// assertion (review 2026-10-06, CA4).
 #[test]
 fn a_kept_system_of_the_wrong_shape_is_refused() {
     let mut c = cfg(3, 1);
@@ -2739,7 +2739,7 @@ fn a_kept_system_of_the_wrong_shape_is_refused() {
     assert!(out[0].is_finite(), "the fixture reads a leverage: {out:?}");
     assert!(EwRidge::restore(&m.state()).is_ok(), "the state as saved");
     type Damage<'a> = (&'a str, &'a dyn Fn(&mut System));
-    let damage: [Damage; 4] = [
+    let damage: [Damage; 3] = [
         ("a column index past the features", &|s| s.z[0] = 7),
         ("a scale short", &|s| {
             s.s.pop();
@@ -2747,7 +2747,6 @@ fn a_kept_system_of_the_wrong_shape_is_refused() {
         ("a mean short", &|s| {
             s.mean.pop();
         }),
-        ("a Gram that is not there", &|s| s.gram = 5),
     ];
     for (what, f) in damage {
         let mut st = m.state();
@@ -3980,13 +3979,14 @@ fn the_support_under_ridge_decay_is_the_sum_scale_systems() {
 
 /// A combo with no ridge and no weight in its Gram is skipped, not
 /// solved -- under `own_rows`, a target whose Gram a gap past the
-/// underflow emptied and the next row did not refill -- and its slot
-/// keeps the zeros of an empty matrix's fit. It reports no readiness
-/// shares beside them: the previous solve's `edf` and data shares stood
-/// there, so a `coef` row read a share of data under zero coefficients
-/// (review 2026-10-05, CA6). Ridge 0, a half-life of one clock unit, a
-/// gap of 1100 of them (2^-1100 underflows to 0), then the second
-/// target absent.
+/// underflow emptied and the next row did not refill -- and its slot has
+/// no fit, NaN, where it kept the zeros of an empty matrix's fit and the
+/// target's next rows were predicted as 0.0 (review round 4, CC1). It
+/// reports no readiness shares either: the previous solve's `edf` and
+/// data shares stood there, so a `coef` row read a share of data under
+/// zero coefficients (review 2026-10-05, CA6). Ridge 0, a half-life of
+/// one clock unit, a gap of 1100 of them (2^-1100 underflows to 0), then
+/// the second target absent.
 #[test]
 fn a_combo_skipped_for_no_weight_reports_no_shares() {
     let mut c = cfg(1, 2);
@@ -4018,7 +4018,8 @@ fn a_combo_skipped_for_no_weight_reports_no_shares() {
         0.0,
         "the gap emptied its Gram"
     );
-    assert_eq!(m.coefficients().unwrap()[1], vec![0.0, 0.0], "an empty fit");
+    let beta = m.coefficients().unwrap();
+    assert!(beta[1].iter().all(|v| v.is_nan()), "no fit: {beta:?}");
     let shares = m.support_coef().unwrap();
     assert!(
         shares[1].iter().all(|v| v.is_nan()),
@@ -4032,8 +4033,10 @@ fn a_combo_skipped_for_no_weight_reports_no_shares() {
 
 /// The same with two combos, the one without a ridge second, so the slot
 /// skipped is the second target's second, `j * nc + ci = 3` of four, and
-/// not a slot one combo or the first target would name: it alone reports no
-/// shares, and the first target's combo without a ridge keeps its own.
+/// not a slot one combo or the first target would name: it reports no fit
+/// and no shares, and the first target's combo without a ridge keeps its
+/// own. (The second target's other slot has neither either, as a target
+/// with no row: CC1.)
 #[test]
 fn a_combo_skipped_for_no_weight_is_its_own_slot_among_several() {
     let mut c = cfg(1, 2);
@@ -4066,7 +4069,9 @@ fn a_combo_skipped_for_no_weight_is_its_own_slot_among_several() {
         shares[1][1].is_finite(),
         "the first target's own: {shares:?}"
     );
-    assert_eq!(m.coefficients().unwrap()[3], vec![0.0, 0.0], "an empty fit");
+    let beta = m.coefficients().unwrap();
+    assert!(beta[3].iter().all(|v| v.is_nan()), "no fit: {beta:?}");
+    assert!(beta[1].iter().all(|v| v.is_finite()), "{beta:?}");
 }
 
 /// A first solve that fails leaves no fit: every slot it could not solve
@@ -4195,6 +4200,176 @@ fn a_target_seen_since_the_last_solve_reads_infinite_inflation() {
     m.error_inflation_into(&mut out);
     assert!(out[0].is_finite(), "{out:?}");
     assert_eq!(out[1], f64::INFINITY, "{out:?}");
+}
+
+/// A target with no row at a solve has no fit: its slots are NaN, and
+/// carry no readiness shares, so once its rows arrive it predicts nothing
+/// until a solve has seen them. The solve read its cross-moments of zero
+/// as data and left it zeros -- a fit of nothing -- so it was predicted as
+/// exactly 0.0 until the next scheduled solve, 56 rows of 80 under
+/// `solve_every = 1000` (review round 4, CC1). It waits for the cadence's
+/// next solve (no first solve of its own, S9b): the row cap, 25 rows after
+/// the first solve at row 1. Both target layouts, standardized and not.
+#[test]
+fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
+    for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+        for standardize in [false, true] {
+            let case = format!("{gaps:?}, standardize {standardize}");
+            let mut c = cfg(1, 2);
+            c.ridge = vec![1e-6, 0.5];
+            c.min_weight = 2.0;
+            c.solve_every = f64::INFINITY;
+            c.max_rows_between_solves = 25;
+            c.target_gaps = gaps;
+            c.standardize = standardize;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 17u64;
+            for i in 0..40 {
+                let x = [lcg(&mut s)];
+                let b = (i >= 10).then(|| 1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s));
+                let p = m.step(
+                    &x,
+                    &[Some(0.5 + x[0]), b],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+                // Target 1's two slots, one per ridge.
+                let late = &p.pred[2..];
+                if i <= 26 {
+                    assert!(
+                        late.iter().all(|v| v.is_nan()),
+                        "{case}, row {i}: predicted {late:?} from a fit nobody solved"
+                    );
+                } else {
+                    assert!(
+                        (late[0] - (1.0 - 2.0 * x[0])).abs() < 0.2,
+                        "{case}, row {i}: {late:?}"
+                    );
+                }
+                // After the row: the solve at the end of row 26 has seen it.
+                if (2..=25).contains(&i) {
+                    let beta = m.coefficients().expect("solved at row 1");
+                    assert!(
+                        beta[2..].iter().flatten().all(|v| v.is_nan()),
+                        "{case}, row {i}: {beta:?}"
+                    );
+                    assert!(beta[..2].iter().flatten().all(|v| v.is_finite()), "{case}");
+                    let shares = m.support_coef().expect("solved");
+                    assert!(
+                        shares[2..].iter().flatten().all(|v| v.is_nan()),
+                        "{case}, row {i}: no shares beside no fit: {shares:?}"
+                    );
+                    let mut inflation = Vec::new();
+                    assert!(OnlineModel::error_inflation_into(&m, &mut inflation));
+                    assert_eq!(inflation[2..], [f64::INFINITY; 2], "{case}, row {i}");
+                }
+            }
+        }
+    }
+}
+
+/// A prior the caller gave is a fit before any row: a target with no row
+/// and a `coef_prior` under a ridge reports the prior's fit, as
+/// `coef0_with_ridge_decay_warms_the_start_then_fades` has the fresh model
+/// do, where one without a prior reports none (CC1). Under `own_rows` the
+/// late target's Gram holds no row, so the slope is the prior's; the
+/// intercept is free in the mean form, the target's mean of no rows less
+/// nothing.
+#[test]
+fn a_late_target_with_a_prior_reports_the_prior() {
+    let mut c = cfg(1, 2);
+    c.ridge = vec![0.5];
+    c.min_weight = 2.0;
+    c.solve_every = f64::INFINITY;
+    c.max_rows_between_solves = 25;
+    c.coef_prior = Some(vec![vec![0.0, 0.0], vec![1.0, -2.0]]);
+    let mut m = EwRidge::new(c).unwrap();
+    let mut s = 19u64;
+    for i in 0..5 {
+        let x = [lcg(&mut s)];
+        m.step(
+            &x,
+            &[Some(0.5 + x[0]), None],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+    }
+    let beta = m.coefficients().expect("solved at row 1");
+    assert_eq!(beta[1][0], 0.0, "{beta:?}");
+    assert!((beta[1][1] + 2.0).abs() < 1e-12, "{beta:?}");
+}
+
+/// An empty window has no fit and no readiness shares: the early return
+/// left the last solve's `edf` and data shares beside the NaN fit, so the
+/// `support_coef` of the row after a gap was the row before's, bit for bit
+/// (review round 4, CA1; the combo skipped for no weight is CA6's). A gap
+/// of 101 past a window of 10, on a row of weight 0, leaves nothing in it.
+#[test]
+fn an_empty_window_reports_no_shares() {
+    let mut c = cfg(1, 1);
+    c.decay = Decay::Halflife(20.0);
+    c.window = Some(10.0);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    m.set_keep_factor(true);
+    let mut s = 43u64;
+    for i in 0..40 {
+        let x = [lcg(&mut s)];
+        let y = 2.0 * x[0] + 0.1 * lcg(&mut s);
+        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+    }
+    let before = m.support_coef().expect("solved");
+    assert!(
+        before[0][1].is_finite(),
+        "the case needs a share: {before:?}"
+    );
+    let x = [lcg(&mut s)];
+    m.step(&x, &[Some(2.0 * x[0])], 101.0, 0.0);
+    assert_eq!(m.n_eff(), 0.0, "the window is empty");
+    let beta = m.coefficients().unwrap();
+    assert!(beta[0].iter().all(|v| v.is_nan()), "{beta:?}");
+    let shares = m.support_coef().unwrap();
+    assert!(
+        shares[0].iter().all(|v| v.is_nan()),
+        "no shares beside no fit: {shares:?}"
+    );
+    assert_eq!(
+        m.pending_readiness(),
+        0,
+        "no solve's shares wait to be read"
+    );
+    let mut rows = Vec::new();
+    assert!(OnlineModel::row_error_inflation_into(&m, &[0.3], &mut rows));
+    assert_eq!(rows, [f64::INFINITY], "no system to read a row against");
+}
+
+/// A kept system carries no Gram index: `System.gram` was written at every
+/// solve and read nowhere (review round 4, CA11), so it left the state at
+/// schema 38.
+#[test]
+fn a_kept_system_carries_only_what_is_read() {
+    let mut m = EwRidge::new(cfg(2, 1)).unwrap();
+    m.set_keep_factor(true);
+    let mut s = 47u64;
+    for i in 0..10 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        m.step(
+            &x,
+            &[Some(x[0] - x[1])],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+    }
+    let sys = m.ready.systems[0].as_ref().expect("kept");
+    let json = serde_json::to_value(sys).unwrap();
+    let mut keys: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["a", "centred", "mean", "s", "scale", "z"], "{json}");
 }
 
 // --- the weekly pass's survivors (docs/PLAN.md task 158) --------------

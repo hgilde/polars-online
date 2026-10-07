@@ -103,7 +103,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
 use crate::solve::{QuadWork, dot_aug};
 use crate::{Decay, EwCov, SpdFactor};
@@ -313,7 +313,9 @@ pub struct Robust {
     /// IRLS weights a quantile fit once used reached `2 / quantile_eps`, so
     /// counting them inflated `n_eff` by ~1000x -- T-A5.)
     w_raw: f64,
-    beta: Option<Vec<Vec<f64>>>,
+    /// The last solve's coefficients per target: NaN for a target no solve
+    /// gave a fit (review round 4, CC1).
+    beta: Option<Fit<Vec<Vec<f64>>>>,
     /// Where `solve_every`'s clock stands: the stamp of the last solve, the
     /// decayed clock held exactly (docs/PLAN.md task 180).
     since_solve: Since,
@@ -422,7 +424,7 @@ impl Robust {
     }
 
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
-        self.beta.as_deref()
+        self.beta.as_deref().map(Vec::as_slice)
     }
 
     /// What a row does to one target's accumulators (the module docs).
@@ -510,9 +512,25 @@ impl Robust {
 
     fn solve(&mut self) {
         let k = self.cfg.k_total();
-        let mut beta = vec![vec![0.0; k]; self.cfg.n_targets];
+        // A target nothing solved has no fit, NaN, which predicts nothing
+        // and which the bank writes as null: one with no weight in its
+        // accumulators that no solve has fit yet, and one whose first solve
+        // fails. Zeros, what `beta` started at, were predicted as exactly
+        // 0.0 until the next solve once the target's rows arrived -- 56 rows
+        // of 80 under `solve_every = 1000` -- since this solve spends the
+        // first-solve trigger (review round 4, CC1). Such a target waits for
+        // the next solve on the cadence. One a solve has fit is solved with
+        // no weight too: its mean-form moments hold the history it was fit
+        // from, which a gap ages and does not move (hard rule 8), and a
+        // weight that underflows to 0 forgets as one just short of it does
+        // (docs/PLAN.md task 115 (c)), where it took zeros too.
+        let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets];
         for j in 0..self.cfg.n_targets {
-            if self.wj[j] <= 0.0 {
+            let fit_before = self
+                .beta
+                .as_ref()
+                .is_some_and(|b| !b[j].iter().any(|v| v.is_nan()));
+            if self.wj[j] <= 0.0 && !fit_before {
                 continue;
             }
             // `None` is a solve that failed at every jitter: counted, and the
@@ -533,7 +551,7 @@ impl Robust {
                 }
             }
         }
-        self.beta = Some(beta);
+        self.beta = Some(Fit(beta));
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
@@ -1253,8 +1271,13 @@ mod tests {
                 "row {i}: {:?}",
                 out.pred
             );
+            // Row 0 carries no target: no fit yet (review round 4, CC1).
             let beta = &m.beta.as_ref().unwrap()[0];
-            assert!(beta.iter().all(|b| b.is_finite()), "row {i}: {beta:?}");
+            let none_yet = i == 0 && beta.iter().all(|b| b.is_nan());
+            assert!(
+                none_yet || beta.iter().all(|b| b.is_finite()),
+                "row {i}: {beta:?}"
+            );
         }
         // The last nudge brought the row toward its band rather than past
         // it: the fit at `x = 1e100` is within the residual it started from.
@@ -2398,6 +2421,145 @@ mod tests {
         }
         let p = m.predict(&[0.5], 1.0).pred;
         assert!(p[0].is_finite() && p[1].is_nan(), "{p:?}");
+    }
+
+    /// A target with no weight at a solve has no fit: its row of
+    /// coefficients is NaN, so once its rows arrive it predicts nothing
+    /// until a solve has seen them. The solve left it the zeros `beta`
+    /// starts at and spent the first-solve trigger, so the target was
+    /// predicted as exactly 0.0 until the next scheduled solve, 56 rows of
+    /// 80 under `solve_every = 1000` (review round 4, CC1). A late target
+    /// waits for the next solve on the cadence (no first solve of its own,
+    /// S9b): here the row cap, 25 rows after the first solve at row 1.
+    #[test]
+    fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.5 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            let mut c = cfg(1, 2, loss);
+            c.min_weight = 2.0;
+            c.solve_every = f64::INFINITY;
+            c.max_rows_between_solves = 25;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 11u64;
+            for i in 0..40 {
+                let x = [lcg(&mut s)];
+                let b = (i >= 10).then(|| 1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s));
+                let p = m.step(
+                    &x,
+                    &[Some(0.5 + x[0]), b],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+                match i {
+                    // No weight before its first row is learned.
+                    0..=10 => assert!(p.pred[1].is_nan(), "{loss:?}, row {i}: {:?}", p.pred),
+                    // Rows, but no solve since: no fit.
+                    11..=26 => assert!(
+                        p.pred[1].is_nan(),
+                        "{loss:?}, row {i}: predicted {} from a fit nobody solved",
+                        p.pred[1]
+                    ),
+                    // The solve at the end of row 26 saw them.
+                    _ => assert!(
+                        (p.pred[1] - (1.0 - 2.0 * x[0])).abs() < 0.1,
+                        "{loss:?}, row {i}: {:?}",
+                        p.pred
+                    ),
+                }
+                // After the row: the solve at the end of row 26 has seen it.
+                if (2..=25).contains(&i) {
+                    let beta = m.coefficients().expect("solved at row 1");
+                    assert!(
+                        beta[1].iter().all(|v| v.is_nan()),
+                        "{loss:?}, row {i}: {beta:?}"
+                    );
+                    assert!(beta[0].iter().all(|v| v.is_finite()), "{loss:?}, row {i}");
+                }
+            }
+        }
+    }
+
+    /// A target whose weight a gap takes to exactly 0 keeps the fit its
+    /// moments hold, as at one half-life short of the underflow: a fit does
+    /// not move on a gap (hard rule 8), and past the underflow the decay
+    /// forgets as just short of it (docs/PLAN.md task 115 (c)). The solve
+    /// on the row after the gap gave it zeros, predicted as 0.0 once rows
+    /// came (review round 4, CC1).
+    #[test]
+    fn a_target_whose_weight_underflows_keeps_its_fit() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.5 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            let fit = |gap: f64| {
+                let mut c = cfg(1, 1, loss);
+                c.decay = Decay::Halflife(10.0);
+                c.min_weight = 0.0;
+                let mut m = Robust::new(c).unwrap();
+                let mut s = 29u64;
+                for i in 0..60 {
+                    let x = [lcg(&mut s)];
+                    let y = 1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s);
+                    m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                }
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(1.0 - 2.0 * x[0])], gap, 0.0);
+                (m.wj[0], m.coefficients().unwrap()[0].clone())
+            };
+            let (w_forgot, forgot) = fit(10_750.0);
+            let (w_aged, aged) = fit(10_740.0);
+            assert!(w_forgot == 0.0 && w_aged > 0.0, "{loss:?}: the case");
+            for (a, b) in forgot.iter().zip(&aged) {
+                assert!(
+                    (a - b).abs() <= 1e-9 * (1.0 + b.abs()),
+                    "{loss:?}: {forgot:?} against {aged:?}"
+                );
+            }
+            assert!((aged[1] + 2.0).abs() < 0.05, "{loss:?}: {aged:?}");
+        }
+    }
+
+    /// A first solve that fails at every jitter leaves no fit: NaN, not the
+    /// zeros `beta` starts at, which predicted 0.0 as though learned (review
+    /// round 4, CC1; `ewridge`'s CA5). No stream of rows gives a
+    /// correlation matrix every jitter fails on, so the accumulator is
+    /// handed one, as `a_standardized_solve_that_fails_outright_is_counted`
+    /// hands it.
+    #[test]
+    fn a_first_solve_that_fails_leaves_no_fit() {
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.standardize = true;
+        c.min_weight = 1e9;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = u32::MAX;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 103u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert!(
+            m.coefficients().is_none(),
+            "min_weight held the first solve"
+        );
+        let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
+        m.cov[0].set_moments(
+            &[1.0, 0.0, 0.0],
+            &[0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 1.0],
+            w,
+            q,
+        );
+        m.solve();
+        assert_eq!(m.solve_failures, 1, "every jitter failed");
+        let beta = m.coefficients().expect("a solve ran");
+        assert!(beta[0].iter().all(|v| v.is_nan()), "{beta:?}");
     }
 
     /// A model deserialized on its own, outside `restore`, has no row buffer

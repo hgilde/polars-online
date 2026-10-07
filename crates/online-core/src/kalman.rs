@@ -93,7 +93,10 @@
 //!
 //! `P` is per target because the Riccati recursion depends on `R_j`. With
 //! `share_p` the filter keeps one `P` driven by the mean `sigma^2` across
-//! targets (docs/PLAN.md §4.4 [validate]).
+//! targets (docs/PLAN.md §4.4 [validate]), as it stands when the row
+//! arrives: every target's update on the row reads the same noise, and
+//! the targets update the shared `P` in turn, each a scalar observation of
+//! its own coefficients.
 
 use serde::{Deserialize, Serialize};
 
@@ -716,6 +719,16 @@ impl OnlineModel for Kalman {
         // `share_p`'s noise before the targets have a residual variance, read
         // at most once a row (the module doc, CC4).
         let mut shared_first: Option<f64> = None;
+        // And `share_p`'s noise once they have one: the mean residual
+        // variance as the row arrives, read once, before any target's update
+        // moves its own. Read inside the loop, a target read the variances
+        // the targets before it had already moved on this row, and the order
+        // of `targets` changed every prediction (review round 4, CC3).
+        let shared_s2 = if self.cfg.share_p {
+            self.sig2.iter().sum::<f64>() / m as f64
+        } else {
+            f64::NAN
+        };
         for j in 0..m {
             let pi = if self.cfg.share_p { 0 } else { j };
             // A null target, or a present one at weight zero -- an observation
@@ -732,7 +745,7 @@ impl OnlineModel for Kalman {
                 Some(v) => v,
                 None => {
                     let s2 = if self.cfg.share_p {
-                        self.sig2.iter().sum::<f64>() / m as f64
+                        shared_s2
                     } else {
                         self.sig2[j]
                     };
@@ -1948,7 +1961,8 @@ mod tests {
 
     /// The filter written from the module docs, unstandardized and without
     /// reversion: per target, `R` and the `Q` from `half_life` are both the
-    /// EW residual variance, the mean across targets under `share_p`; before
+    /// EW residual variance, the mean across targets under `share_p`, read
+    /// once a row before any target's update (review round 4, CC3); before
     /// there is one, the row's own innovation squared, under `share_p` the
     /// mean of the squares over the targets the row observes, and no noise
     /// (no `Q`, no correction) where there is none (CC4); `P` is unsized, 0,
@@ -2013,13 +2027,13 @@ mod tests {
                 } else {
                     seen.iter().sum::<f64>() / seen.len() as f64
                 };
+                // Under `share_p` every target's noise is the mean residual
+                // variance as the row arrives, read once, before any
+                // target's update moves one (review round 4, CC3).
+                let shared = (sig2[0] + sig2[1]) / 2.0;
                 for j in 0..2 {
                     let pi = if share { 0 } else { j };
-                    let s2 = if share {
-                        (sig2[0] + sig2[1]) / 2.0
-                    } else {
-                        sig2[j]
-                    };
+                    let s2 = if share { shared } else { sig2[j] };
                     let sigma2 = if s2 > 0.0 {
                         s2
                     } else if share {

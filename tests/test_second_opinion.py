@@ -415,6 +415,10 @@ class TestWindowedGaussian:
     @pytest.mark.parametrize("window", [None, 80.0])
     @pytest.mark.parametrize("shape", ["full", "diagonal", "shared"])
     def test_ew_class_is_the_scipy_gaussian_of_the_rows_inside_the_window(self, shape, window):
+        """And ``coef``, the class means, is ``numpy``'s mean of each class's
+        rows inside the window, on the row before: the whole history's
+        means stood there beside the windowed densities (review round 4,
+        CE1)."""
         from scipy.stats import multivariate_normal
 
         n = 400
@@ -430,6 +434,7 @@ class TestWindowedGaussian:
             half_life=float("inf"),
             window_size=window,
             min_weight=0,
+            coef_every=0,
         )
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": labels})
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
@@ -456,6 +461,10 @@ class TestWindowedGaussian:
             p = np.exp(logp - logp.max())
             p /= p.sum()
             assert out["p_a"][i] == pytest.approx(p[0], abs=1e-9), (shape, i)
+            # `coef` after row i - 1 is the class means the row i was scored on.
+            np.testing.assert_allclose(
+                out["coef"][i - 1].to_list(), np.concatenate(means), rtol=0, atol=1e-9
+            )
 
     @pytest.mark.parametrize("window", [None, 80.0])
     def test_ew_cov_mahal_and_components_are_scipy_and_numpy_of_the_window(self, window):
@@ -1757,6 +1766,133 @@ class TestAStandardizedKalmanIsFilterpy:
         coef = out["coef"].to_list()
         via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(1, n - 1)])
         np.testing.assert_allclose(via, got[2:], rtol=1e-12, atol=1e-12)
+
+
+class TestASharedCovarianceIsFilterpy:
+    """Review round 4, CC3. Under ``share_p`` the targets keep one ``P`` and
+    each its own coefficients, and a row's observations are sequential scalar
+    updates of that ``P``: ``filterpy``'s ``KalmanFilter.update``, one per
+    observed target in the order of ``targets``, each starting from the ``P``
+    the one before left. Every one of them reads the same noise, ``R = σ²/w``
+    with ``σ²`` the targets' mean residual variance as the row arrives (before
+    there is one, the mean squared innovation over the targets the row
+    observes; `kalman.rs`'s module doc, CC4), and the row's process noise
+    ``σ²·(ln 2 · d / coef_half_life)²`` goes in once, before the first update.
+    The filter read ``σ²`` inside its per-target loop, after the targets
+    before had moved theirs on the row, so the second target's ``R`` held the
+    first's residual of the same row and the order of ``targets`` changed
+    every prediction. Two targets an order of magnitude apart in noise, the
+    second missing one row in five, a zero-weight row one in nine, uneven
+    clock steps, unstandardized so ``kf.x`` is the coefficients; ``filterpy``
+    updates ``P`` in Joseph form and ``kalman`` in the simple form, so the two
+    agree to rounding."""
+
+    @staticmethod
+    def filterpy_pred(
+        kalman: Any,
+        t: np.ndarray,
+        Z: np.ndarray,
+        ys: list[np.ndarray],
+        w: np.ndarray,
+        half_life: float,
+        coef_hl: float,
+    ) -> list[np.ndarray]:
+        n, k1 = Z.shape
+        m = len(ys)
+        kfs = [kalman.KalmanFilter(dim_x=k1, dim_z=1) for _ in range(m)]
+        for kf in kfs:
+            kf.x = np.zeros((k1, 1))
+            kf.F = np.eye(k1)
+        P = np.zeros((k1, k1))
+        sized = False
+        sig2, wsig, wj = np.zeros(m), np.zeros(m), np.zeros(m)
+        preds = [np.full(n, np.nan) for _ in range(m)]
+        for i in range(n):
+            d = 0.0 if i == 0 else t[i] - t[i - 1]
+            lam = 0.5 ** (d / half_life)
+            z = Z[i]
+            zb = [z @ kf.x[:, 0] for kf in kfs]
+            for j in range(m):
+                if wj[j] > 0.0:
+                    preds[j][i] = zb[j]
+            seen = [not np.isnan(ys[j][i]) and w[i] > 0.0 for j in range(m)]
+            # The noise, read once for the row: the mean residual variance,
+            # or before there is one the mean squared innovation.
+            s2 = sig2.mean()
+            if not s2 > 0.0:
+                e2 = [(ys[j][i] - zb[j]) ** 2 for j in range(m) if seen[j]]
+                s2 = float(np.mean(e2)) if e2 else 0.0
+            if sized:
+                P = P + np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2
+            elif s2 > 0.0:
+                P, sized = np.eye(k1) * s2, True
+            for j in range(m):
+                if not seen[j]:
+                    wj[j] *= lam
+                    wsig[j] *= lam
+                    continue
+                if s2 > 0.0:
+                    kfs[j].P = P
+                    kfs[j].update(ys[j][i], R=s2 / w[i], H=z[None, :])
+                    P = kfs[j].P
+                aged = lam * wsig[j]
+                wsig[j] = aged
+                if not np.isnan(preds[j][i]):
+                    r = ys[j][i] - preds[j][i]
+                    sig2[j] = (aged * sig2[j] + w[i] * r * r) / (aged + w[i])
+                    wsig[j] = aged + w[i]
+                wj[j] = lam * wj[j] + w[i]
+        return preds
+
+    @pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+    def test_the_shared_filter_is_filterpy_reading_one_noise_a_row(self, order):
+        import filterpy.kalman as kalman
+
+        rng = np.random.default_rng(47)
+        n, half_life, coef_hl = 300, 30.0, 50.0
+        x = rng.normal(0.0, 1.0, (n, 2))
+        drift = np.arange(n) / n
+        targets = {
+            "a": 1.0 + (2.0 - drift) * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.3, n),
+            "b": -0.5 + 0.5 * x[:, 0] + (3.0 * drift) * x[:, 1] + rng.normal(0.0, 1.5, n),
+        }
+        targets["b"] = np.where(np.arange(n) % 5 == 3, np.nan, targets["b"])
+        w = np.where(np.arange(n) % 9 == 4, 0.0, rng.uniform(0.5, 1.5, n))
+        steps = np.ones(n)
+        steps[150] = 4.0
+        steps[230:] = 0.5
+        t = np.cumsum(steps) - steps[0]
+        frame = pl.DataFrame(
+            {
+                "t": t,
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                **{c: [None if np.isnan(v) else float(v) for v in y] for c, y in targets.items()},
+                "w": w,
+            },
+            schema={c: pl.Float64 for c in ("t", "x0", "x1", "a", "b", "w")},
+        )
+        spec = po.spec.kalman(
+            "k",
+            targets=list(order),
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=1e9,
+            coef_half_life=coef_hl,
+            standardize=False,
+            share_p=True,
+            p0=1.0,
+            weight="w",
+            half_life=half_life,
+            min_weight=0.0,
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        Z = np.column_stack([np.ones(n), x])
+        want = self.filterpy_pred(kalman, t, Z, [targets[c] for c in order], w, half_life, coef_hl)
+        for c, p in zip(order, want, strict=True):
+            got = out[f"pred_{c}"].to_numpy()
+            assert np.isfinite(got).sum() > 250, c
+            np.testing.assert_allclose(got, p, rtol=1e-9, atol=1e-12, err_msg=c)
 
 
 class TestAHopelessSerialFactorSaysSo:

@@ -498,8 +498,8 @@ impl Hmm {
         out.iter().all(|v| v.is_finite()).then_some(out)
     }
 
-    /// Output slot labels in emission order: `p_<k>`, `p1_<k>`, `state`,
-    /// `loglik`.
+    /// Output slot labels in emission order: `filtered_<k>`,
+    /// `predicted_<k>`, `state`, `loglik`.
     pub fn labels(k: usize) -> Vec<String> {
         let mut out: Vec<String> = (0..k).map(|s| format!("filtered_{s}")).collect();
         out.extend((0..k).map(|s| format!("predicted_{s}")));
@@ -1125,8 +1125,8 @@ mod tests {
                 .collect();
             let z: f64 = (0..k).map(|l| pred[l] * f[l]).sum();
             for c in 0..k {
-                assert!((step.pred[c] - p[c]).abs() < 1e-12, "p_{c}");
-                assert!((step.pred[k + c] - pred[c]).abs() < 1e-12, "p1_{c}");
+                assert!((step.pred[c] - p[c]).abs() < 1e-12, "filtered_{c}");
+                assert!((step.pred[k + c] - pred[c]).abs() < 1e-12, "predicted_{c}");
             }
             assert!((step.pred[2 * k + 1] - z.ln()).abs() < 1e-9, "loglik");
             p = (0..k).map(|l| pred[l] * f[l] / z).collect();
@@ -1561,7 +1561,10 @@ mod tests {
             let step = m.step(&x, &y, 1.0, 1.0).pred;
             assert_eq!(shown, step, "row {t}");
             for c in 0..k {
-                assert!((step[k + c] - pred[c]).abs() < 1e-12, "row {t}: p1_{c}");
+                assert!(
+                    (step[k + c] - pred[c]).abs() < 1e-12,
+                    "row {t}: predicted_{c}"
+                );
             }
             assert!(
                 (step[2 * k + 1] - zsum.ln()).abs() < 1e-9,

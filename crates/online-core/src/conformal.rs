@@ -35,11 +35,16 @@
 //!
 //! for *every* sequence of scores: the long-run miscoverage is `α` whatever
 //! the residual distribution is, and however it moves. The clamp at zero
-//! only ever raises `q`, so it can only add coverage; with weights the sum
-//! is `(w/w̄)`-weighted. The step here is `η_t = rate · σ_t`, with `σ_t` the
-//! slot's EW residual standard deviation before the row, so that `rate` is
-//! unit-free and the radius moves at the scale of the errors it brackets;
-//! the bound then holds in `σ`-weighted form, at the same rate.
+//! only ever raises `q`, so it can only add coverage. With weights the sum
+//! is `Σ (w_t/w̄_t)(err_t − α)`, so what is held to `α` is the miscoverage
+//! weighted by `w/w̄`: a heavy row's miss counts for more, and the share of
+//! rows missed can sit on either side of `α` when the weights follow the
+//! misses (0.954 of rows covered against 0.900 weighted, with weight 5 on
+//! the wild rows; review round 4, CA5). The step here is `η_t = rate ·
+//! σ_t`, with `σ_t` the slot's EW residual standard deviation before the
+//! row, so that `rate` is unit-free and the radius moves at the scale of
+//! the errors it brackets; the bound then holds in `σ`-weighted form, at
+//! the same rate.
 //!
 //! `q` starts where a Gaussian would put it, `σ · Φ⁻¹(1 − α/2)`, on the first
 //! row that has a residual and a finite `σ > 0`, and tracks from there. The

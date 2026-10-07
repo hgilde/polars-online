@@ -57,7 +57,7 @@ use std::sync::{Arc, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
-use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
 use crate::solve::{SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
@@ -361,8 +361,9 @@ pub struct EwRidge {
     wsig: Vec<f64>,
     sig2: Vec<f64>,
     /// Last solved coefficients per output slot (target-major, then combo),
-    /// each of length `k_total` (zeros outside a combo's feature set).
-    beta: Option<Vec<Vec<f64>>>,
+    /// each of length `k_total` (zeros outside a combo's feature set; NaN
+    /// in a slot no solve gave a fit).
+    beta: Option<Fit<Vec<Vec<f64>>>>,
     /// Slow-moving twin for `session_shrink`: the same accumulators under
     /// `long_half_life`, representing the long-run relationship.
     #[serde(default)]
@@ -509,10 +510,9 @@ impl EwRidge {
     /// The Grams the fit is read from, one entry per Gram with the targets
     /// that read it ([`GramPart`]), and the target moments: what `Bank::gram`
     /// and a closed row report. Under a `window` that has truncated the
-    /// accumulators, every number is the window's, so each Gram solves to the
-    /// fit `coef` reports (review 2026-09-12, S19), and the target moments
-    /// are `None`: the window's snapshots do not carry them, and the export
-    /// says it cannot give them rather than giving the whole history's.
+    /// accumulators, every number is the window's, the target moments
+    /// included (docs/PLAN.md task 136), so each Gram solves to the fit
+    /// `coef` reports (review 2026-09-12, S19).
     pub fn gram_parts(&self) -> (Vec<GramPart>, Option<TargetMoments>) {
         let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
         match self.view() {
@@ -570,7 +570,7 @@ impl EwRidge {
 
     /// Current coefficients per output slot, if solved.
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
-        self.beta.as_deref()
+        self.beta.as_deref().map(Vec::as_slice)
     }
 
     /// Gram `g` of the live accumulators. Test helper.
@@ -710,6 +710,10 @@ impl EwRidge {
         let m = self.cfg.n_targets;
         let combos = self.cfg.combos();
         let nc = combos.len();
+        // Zeros outside each combo's feature set, which no solve writes; a
+        // slot no system solves has no fit, NaN, which predicts nothing (a
+        // combo skipped for no weight, a first solve that fails, a target
+        // with no row: below).
         let mut beta = vec![vec![0.0; k_total]; m * nc];
         // The readiness statistics of the last solve, carried forward for a
         // combo whose solve fails at every jitter (it keeps its previous
@@ -727,8 +731,14 @@ impl EwRidge {
         // before anything has aged out, these borrow the live state.
         let view = self.view();
         if view.as_ref().is_some_and(|v| v.acc.cross.w <= 0.0) {
-            // An empty window has nothing to solve and no fit to report (C2).
-            self.beta = Some(vec![vec![f64::NAN; k_total]; m * nc]);
+            // An empty window has nothing to solve and no fit to report
+            // (C2), and no readiness shares beside it: the last solve's
+            // stood there, so the row after a gap reported the row before's
+            // `support_coef` beside a fit of NaN (review round 4, CA1).
+            self.beta = Some(Fit(vec![vec![f64::NAN; k_total]; m * nc]));
+            for slot in 0..m * nc {
+                ready.clear(slot);
+            }
             self.ready = ready;
             self.factors = Factors(factors);
             self.since_solve.restart();
@@ -764,19 +774,20 @@ impl EwRidge {
                 let ridge = self.cfg.ridge[r_idx];
                 // A Gram with no weight and no penalty has no system to
                 // solve: under `own_rows` a target not seen yet is alone in
-                // one, and its coefficients stay zero -- what the jittered
-                // solve of an empty matrix gave, at one counted failure a
-                // solve. With a penalty the fit is the prior, `coef_prior` or
-                // zero, and is solved. No system, so no readiness shares
-                // either: the last solve's stood beside the zeros, a share of
-                // data under no fit (review 2026-10-05, CA6).
+                // one, and its slots have no fit, NaN. They kept zeros --
+                // what the jittered solve of an empty matrix gave, at one
+                // counted failure a solve -- until review round 4 (CC1).
+                // With a penalty the fit is the prior, `coef_prior` or zero,
+                // and is solved; a target with no weight keeps that fit only
+                // where a solve fit it before or the caller gave the prior
+                // (below). No system, so no
+                // readiness shares either: the last solve's stood beside the
+                // zeros, a share of data under no fit (review 2026-10-05,
+                // CA6).
                 if ridge == 0.0 && cov.n_eff() <= 0.0 {
                     for &j in &readers {
-                        let slot = j * nc + ci;
-                        ready.edf[slot] = f64::NAN;
-                        ready.support[slot].fill(f64::NAN);
-                        ready.pending[slot] = None;
-                        ready.system_of[slot] = usize::MAX;
+                        beta[j * nc + ci].fill(f64::NAN);
+                        ready.clear(j * nc + ci);
                     }
                     continue;
                 }
@@ -926,7 +937,6 @@ impl EwRidge {
                             mean: solved.mean,
                             centred: solved.centred,
                             scale: solved.scale,
-                            gram: g,
                         });
                         factors[at] = kept;
                     }
@@ -946,14 +956,37 @@ impl EwRidge {
                 }
             }
         }
-        // A target the window holds no row of has no fit to report (C2).
-        if let Some(v) = view.as_ref() {
-            for (j, &w) in v.acc.wj.iter().enumerate() {
-                if w <= 0.0 {
-                    for ci in 0..nc {
-                        beta[j * nc + ci].fill(f64::NAN);
-                    }
+        // A target with no weight in the accumulators the fit is read from
+        // has no fit to report, and no readiness shares beside it, under a
+        // window -- no row inside it (C2) -- and without one where no solve
+        // has fit it: a target not seen yet, whose solve read cross-moments
+        // of zero as data. Once its rows arrived those zeros were predicted
+        // as exactly 0.0 until the next solve, 56 rows of 80 under
+        // `solve_every = 1000` (review round 4, CC1); it now waits for the
+        // cadence's next solve. Outside a window, a slot a solve has fit
+        // keeps this solve's fit: its mean-form moments hold the history,
+        // which a gap ages and does not move (hard rule 8), and a weight
+        // past the underflow forgets as one just short of it does
+        // (docs/PLAN.md task 115 (c)). So does a prior the caller gave
+        // (`coef_prior`, under a ridge that reads it), a fit before any row,
+        // as a fresh model's first solve reports it.
+        let wj = view.as_ref().map_or(&self.acc.wj, |v| &v.acc.wj);
+        for (j, &w) in wj.iter().enumerate() {
+            if w > 0.0 {
+                continue;
+            }
+            for (ci, &(_, r_idx)) in combos.iter().enumerate() {
+                let slot = j * nc + ci;
+                let prior = self.cfg.coef_prior.is_some() && self.cfg.ridge[r_idx] > 0.0;
+                let fit_before = self
+                    .beta
+                    .as_ref()
+                    .is_some_and(|b| !b[slot].iter().any(|v| v.is_nan()));
+                if view.is_none() && (prior || fit_before) {
+                    continue;
                 }
+                beta[slot].fill(f64::NAN);
+                ready.clear(slot);
             }
         }
         if !keep_factor {
@@ -961,7 +994,7 @@ impl EwRidge {
             factors.clear();
         }
         self.solve_failures += failures;
-        self.beta = Some(beta);
+        self.beta = Some(Fit(beta));
         self.ready = ready;
         self.factors = Factors(factors);
         self.since_solve.restart();
@@ -1230,19 +1263,16 @@ impl EwRidge {
     /// that solve has not sized, so a system's index is held to the Grams
     /// there are now. Each system kept for the per-row leverage maps a row
     /// into its space by `z`, `s` and `mean`, so its columns are inside the
-    /// features, a scale and a mean per column, and its Gram one there is:
-    /// a column past the features read `x[6]`, a short scale or mean failed
-    /// the factor's length assertion (review 2026-10-06, CA4).
+    /// features, with a scale and a mean per column: a column past the
+    /// features read `x[6]`, a short scale or mean failed the factor's
+    /// length assertion (review 2026-10-06, CA4).
     fn fit_has_shape(&self) -> bool {
         let (k, nc) = (self.cfg.k_total(), self.cfg.n_combos());
         let slots = self.cfg.n_targets * nc;
         let n_systems = self.acc.grams.grams.len() * nc;
         let r = &self.ready;
         let systems = r.systems.iter().flatten().all(|s| {
-            s.z.iter().all(|&zi| zi < k)
-                && s.s.len() == s.z.len()
-                && s.mean.len() == s.z.len()
-                && s.gram < self.acc.grams.grams.len()
+            s.z.iter().all(|&zi| zi < k) && s.s.len() == s.z.len() && s.mean.len() == s.z.len()
         });
         match &self.beta {
             None => {
@@ -1441,10 +1471,10 @@ struct System {
     /// Centred, the intercept eliminated: its share of the leverage is then
     /// the 1 of the mean.
     centred: bool,
-    /// See [`Solved::scale`].
+    /// See [`Solved::scale`]. The Gram the system was solved from was a
+    /// field here, written at every solve and read nowhere; it left the
+    /// state at schema 38 (review round 4, CA11).
     scale: f64,
-    /// The Gram this system was solved from.
-    gram: usize,
 }
 
 /// What the last solve left for the readiness statistics
@@ -1564,6 +1594,16 @@ impl Readiness {
 
     fn has_pending(&self) -> bool {
         self.pending.iter().any(Option::is_some)
+    }
+
+    /// Slot `s` has no fit, so no shares and no system: what a combo
+    /// skipped for no weight (review 2026-10-05, CA6), an empty window
+    /// (review round 4, CA1) and a target with no row (CC1) leave.
+    fn clear(&mut self, s: usize) {
+        self.edf[s] = f64::NAN;
+        self.support[s].fill(f64::NAN);
+        self.pending[s] = None;
+        self.system_of[s] = usize::MAX;
     }
 
     /// Take every pending solve's shares into the stored ones and drop the

@@ -379,9 +379,11 @@ The diagnostics add, per slot:
        by ``conformal_rate * sigma * coverage`` on a miss and shrinks by
        ``conformal_rate * sigma * (1 - coverage)`` on a hit. Each step is
        times the row's weight over the EW mean weight of every row with a
-       residual the layer has seen, scored or not, so the long-run
-       coverage is the number asked for whatever the residuals do, and the
-       weights' scale does not reach it. Null until the first
+       residual the layer has seen, scored or not, ``w / w̄``, so the
+       long-run coverage weighted by ``w / w̄`` is the number asked for
+       whatever the residuals do, and the weights' scale does not reach
+       it. With unequal weights the share of rows covered can sit on
+       either side of it. Null until the first
        ``sigma`` exists. The step is taken once per scored row, so ``q``
        moves faster in clock time where rows are denser; the delivered
        coverage decays on the clock.

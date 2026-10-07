@@ -19,7 +19,7 @@
 //!             the summary taken absorbs z with weight w, then r2 ← min(r2, E)
 //!             r2_after(j, z, w) = a r2_j + a b ‖z − c_j‖²_mw,  a = n_j/(n_j + w),  b = w/(n_j + w)
 //! outputs     cluster = label(j_p),  dist = ‖z − c_j_p‖_mw,
-//!             micro = the id the row goes to,  outlier = not taken by a
+//!             micro_id = the id the row goes to,  outlier = not taken by a
 //!             potential summary,  n_clusters, n_micro
 //! checkpoint  every prune_every clock units or max_rows_between_prunes
 //!             learned rows, whichever first: drop a potential summary with
@@ -65,7 +65,7 @@
 //!
 //! Three rules make a variable-count output honest (§6.5): ids are
 //! monotone and never reused — an evicted or pruned id never comes back;
-//! a row's `micro` is the id it *would* be absorbed by, read before the
+//! a row's `micro_id` is the id it *would* be absorbed by, read before the
 //! update, so the first row of a new summary already carries the new id;
 //! and the count of live clusters is an output, so churn is visible
 //! without diffing labels. The decision is made for a row of the mean
@@ -85,8 +85,10 @@
 //!
 //! Every output is read *before* the row is learned (CLAUDE.md rule 2),
 //! `n_eff` is the EW weight before the row and before its own decay (rule
-//! 8), and pruning runs on a learned-row schedule rather than a clock one
-//! so that a chunking of the stream cannot move it. Standardization scales
+//! 8), and the pruning checkpoint is decided on the rows' stamps, the
+//! decayed clock held exactly, and on the learned-row count (docs/PLAN.md
+//! tasks 163 and 180), neither of which a chunking of the stream can move.
+//! Standardization scales
 //! the metric, never the coordinates (§10), so the centres stay in the
 //! features' own units; a summary's radius is in the metric that was in
 //! force when its rows were absorbed.
@@ -422,7 +424,7 @@ impl Micro {
         }
     }
 
-    /// The six outputs: `cluster`, `dist`, `micro`, `outlier`,
+    /// The six outputs: `cluster`, `dist`, `micro_id`, `outlier`,
     /// `n_clusters`, `n_micro`; all NaN when not ready.
     fn score(&self, dec: Option<&Decision>, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 6];
@@ -763,7 +765,7 @@ impl OnlineModel for Micro {
         self.cfg.n_features
     }
 
-    /// `cluster`, `dist`, `micro`, `outlier`, `n_clusters`, `n_micro`.
+    /// `cluster`, `dist`, `micro_id`, `outlier`, `n_clusters`, `n_micro`.
     fn n_outputs(&self) -> usize {
         6
     }

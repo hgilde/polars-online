@@ -17,7 +17,9 @@
 //! u = (S₁² − S₂) / ((n − 1)·S₂)         = mean_{i≠j} rᵢrⱼ / mean_i rᵢ²
 //! ```
 //!
-//! in `(−1/(n−1), 1)`. With blocks it is the same ratio, restricted:
+//! in `[−1/(n−1), 1]`, both ends reached: every standardised value equal
+//! gives 1, and a row summing to 0 gives `−1/(n−1)`. With blocks it is the
+//! same ratio, restricted:
 //!
 //! ```text
 //! u_A  = (S₁ₐ² − S₂ₐ) / ((n_A − 1)·S₂ₐ)                    (within block A)

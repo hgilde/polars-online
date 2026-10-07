@@ -2335,11 +2335,13 @@ pub struct Spec {
     /// Emit `lo_<slot>`, `hi_<slot>` and `coverage_<slot>`: an
     /// adaptive conformal interval `pred ± q` at this coverage level, with
     /// the realized coverage beside it (ENHANCEMENTS E36). `q` is a tracked
-    /// quantile of `|resid|` — `q ← max(0, q + rate·sigma·w·(1{|resid| > q}
-    /// − α))`, `α = 1 − coverage` — so the long-run coverage is the target
+    /// quantile of `|resid|` — `q ← max(0, q + rate·sigma·(w/w̄)·(miss −
+    /// α))`, `miss = 1{|resid| > q}`, `α = 1 − coverage`, `w̄` the EW mean
+    /// weight — so the long-run coverage weighted by `w/w̄` is the target
     /// whatever the residual distribution is and however it moves, where
-    /// `sigma` gives a Gaussian interval. Read before the row, like every
-    /// other diagnostic. A coverage level strictly between 0 and 1.
+    /// `sigma` gives a Gaussian interval (review round 4, CA5). Read before
+    /// the row, like every other diagnostic. A coverage level strictly
+    /// between 0 and 1.
     #[serde(default)]
     pub conformal: Option<f64>,
     /// Step of the conformal radius per unit of the slot's `sigma`. Default

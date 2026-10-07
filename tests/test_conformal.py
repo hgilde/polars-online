@@ -429,6 +429,40 @@ class TestTheGuaranteeAtScale:
         cov = field(out, "coverage_y")
         assert abs(np.nanmean(cov[-20_000:]) - 0.9) < 0.02, f"{kind}: {np.nanmean(cov[-20_000:])}"
 
+    def test_under_a_weight_column_the_weighted_coverage_is_the_target(self):
+        """Each step is times ``w / w̄``, so the telescoped sum pins
+        ``Σ (w/w̄)(err − α)``: the coverage held to the level is the one
+        weighted by the rows' weights, which the docs say (review round 4,
+        CA5). Weight 5 on the wild rows: weighted, 0.90; by row count the
+        light, calm rows dominate, and 0.95 of the rows are covered."""
+        n = 60_000
+        rng = np.random.default_rng(3)
+        x0 = rng.standard_normal(n)
+        x1 = rng.standard_normal(n)
+        wild = np.abs(x1) > 1.0
+        y = 2.0 * x0 + 0.5 * x1 + np.where(wild, 3.0, 0.5) * rng.standard_normal(n)
+        w = np.where(wild, 5.0, 1.0)
+        df = pl.DataFrame({"x0": x0, "x1": x1, "y": y, "w": w})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=2000.0,
+            min_weight=20.0,
+            emit_sigma=True,
+            conformal=0.9,
+            conformal_rate=0.05,
+            weight="w",
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        lo, hi = field(out, "lo_y"), field(out, "hi_y")
+        m = np.isfinite(lo)
+        assert m.sum() > 59_000
+        hit = (y[m] >= lo[m]) & (y[m] <= hi[m])
+        weighted = np.sum(w[m] * hit) / np.sum(w[m])
+        assert abs(weighted - 0.9) < 0.01, f"weighted coverage {weighted}"
+        assert hit.mean() > 0.93, f"by row count {hit.mean()}"
+
     @pytest.mark.parametrize("kind", ["fat_tailed", "heteroskedastic"])
     def test_beats_the_gaussian_interval_where_the_residuals_are_not_gaussian(self, kind):
         """`pred ± Φ⁻¹(0.95)·sigma` is the interval `emit_sigma` implies. On

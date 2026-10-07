@@ -455,8 +455,14 @@ class TestLassoPredPath:
         expect_null = before_first | np.isnan(ref["weight_sum"])
         wrong = np.flatnonzero(np.array([r is None for r in rows]) != expect_null)
         assert wrong.size == 0, f"coef is null on the wrong rows, first {wrong[0]}"
+        # A solve with no row of the target and no fit before it has no fit,
+        # null inside the list (review round 4, CC1): NaN here, as the
+        # reference has it.
         empty = [np.nan] * (npath * kt)
-        coef = np.array([empty if r is None else r for r in rows]).reshape(n, npath, kt)
+        coef = np.array(
+            [empty if r is None else [np.nan if v is None else v for v in r] for r in rows],
+            dtype=float,
+        ).reshape(n, npath, kt)
         # The stream's first solves are NaN in the reference: from about as
         # few rows as features, their minimiser is not unique or barely is,
         # so there is nothing to hold the library to, and no row is scored

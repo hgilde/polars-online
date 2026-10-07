@@ -90,8 +90,9 @@ pub struct MarginalCfg {
     pub n_targets: usize,
     pub decay: Decay,
     /// Weight each target must have accumulated before its pairs' `corr`,
-    /// `beta` and `t` are reported, one entry per target; the moments never
-    /// wait.
+    /// `beta` and `t` are reported, with `t_serial`, which reads `corr`, and
+    /// the split statistics `split_gain`, `split_at` and `split_gain_t`; one
+    /// entry per target. The moments never wait.
     pub min_weight: Vec<f64>,
     /// Lags to accumulate pair moments at (docs/ENHANCEMENTS.md E66),
     /// strictly increasing and `>= 1`, counted in **learned rows within the

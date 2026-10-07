@@ -124,8 +124,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// component and checkpoint cadences of `ewridge`, `lasso`, `huber`,
 /// `quantile`, `ew_cov` and `micro` keep the stamp of their last event,
 /// where a 36 file's keep a summed clock, so a 36 file holding one would
-/// not decode; it is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 37;
+/// not decode; it is refit. **38 since task 186** (the same day): the
+/// systems `ew_ridge` keeps for its readiness statistics lost a Gram index
+/// nothing read, and a closed `rcov` row's `psd_repaired` can be null; a 37
+/// file is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 38;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -1604,8 +1607,13 @@ pub struct ClosedRow {
     pub gram: Option<Gram>,
     /// The flat `coef` list as of the last solve, for a kind that reports
     /// one; the exact solve on the closed Gram is
-    /// `po.gram.solve(po.gram.from_row(row))`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `po.gram.solve(po.gram.from_row(row))`. NaN in a slot no solve has
+    /// fit (review round 4, CC1), so the export tags it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "online_core::humanfloat::opt_vec_f64_or_tag"
+    )]
     pub coef: Option<Vec<f64>>,
     /// `ew_cov(pca = r)`: the eigenvalues of this row's own `comoments`,
     /// descending, and the loadings row-major `r * k`. Filled by the bank
@@ -2104,7 +2112,7 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
         cols.push(Column::new(
             "psd_repaired".into(),
             rows.iter()
-                .map(|r| r.rcov.as_ref().map(|b| b.psd_repaired))
+                .map(|r| r.rcov.as_ref().and_then(|b| b.psd_repaired))
                 .collect::<Vec<_>>(),
         ));
     }
@@ -2123,7 +2131,9 @@ pub struct RcovRow {
     pub omega2: Option<Vec<f64>>,
     pub iv_sparse: Option<Vec<f64>>,
     pub iq: Option<Vec<f64>>,
-    pub psd_repaired: bool,
+    /// `None` where the PSD repair could not run, as the core's estimate
+    /// says (review round 4, CE9).
+    pub psd_repaired: Option<bool>,
 }
 
 /// One decay instance's coefficients, from [`Bank::coef`].

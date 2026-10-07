@@ -348,6 +348,62 @@ class TestDegenerateSolves:
             bank.fit_predict(df)
             assert bank.solve_failures()["m"][""] == 0
 
+    @pytest.mark.parametrize(
+        ("model", "extra"),
+        [
+            ("ewridge", {}),
+            ("lasso", {"lasso_path": [0.0]}),
+            ("huber", {}),
+            ("quantile", {"quantile": 0.5}),
+        ],
+    )
+    def test_a_target_no_solve_has_fit_predicts_nothing(self, model, extra):
+        """Review round 4, CC1: a target that joins after the first solve had
+        no weight there, and the solve gave it zeros and spent the trigger, so
+        once its rows came it was predicted as exactly 0.0 until the next
+        scheduled solve, 56 rows of 80 under ``solve_every = 1000`` here. No
+        solve has fit it, so it predicts nothing and its ``coef`` is null; it
+        waits for the cadence's next solve, which here never comes."""
+        n = 80
+        rng = np.random.default_rng(0)
+        x0, x1 = rng.normal(size=n), rng.normal(size=n)
+        a = 1.0 + 2.0 * x0 - x1 + 0.1 * rng.normal(size=n)
+        b = -0.5 + 0.5 * x0 + 3.0 * x1 + 0.1 * rng.normal(size=n)
+        df = pl.DataFrame(
+            {
+                "t": np.arange(float(n)),
+                "x0": x0,
+                "x1": x1,
+                "a": a,
+                "b": [None] * 20 + [float(v) for v in b[20:]],
+            }
+        )
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["a", "b"],
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=10.0,
+            half_life=1000.0,
+            min_weight=3.0,
+            solve_every=1000.0,
+            coef_every=0,
+            **extra,
+        )
+        out = _run(df, spec)["m"].struct.unnest()
+        late = [c for c in out.columns if c.startswith("pred_b")]
+        early = [c for c in out.columns if c.startswith("pred_a")]
+        assert late and early, out.columns
+        for c in late:
+            assert (out[c] == 0.0).sum() == 0, f"{model}: {c} predicted from zeros"
+            assert out[c].null_count() == n, f"{model}: {c}"
+        for c in early:
+            assert out[c].drop_nulls().len() > 70, f"{model}: {c}"
+        coef = out["coef"][n - 1].to_list()
+        half = len(coef) // 2
+        assert all(v is not None for v in coef[:half]), (model, coef)
+        assert all(v is None for v in coef[half:]), (model, coef)
+
 
 class TestDegenerateClocks:
     """T-E6: duplicate clock values, a zero cap, and a half-life far below the

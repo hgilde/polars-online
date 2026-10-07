@@ -35,7 +35,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
-use crate::model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::model::{Extra, Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
 use crate::solve::dot_aug;
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
@@ -185,8 +185,10 @@ pub struct Lasso {
     /// The Grams, and per target its weight, centred cross-moments and
     /// moments (see `crate::gaps::Acc`), as `ewridge` keeps them.
     acc: Acc,
-    /// Per target, per path point: coefficients in original units (`k_total`).
-    beta: Option<Vec<Vec<Vec<f64>>>>,
+    /// Per target, per path point: coefficients in original units
+    /// (`k_total`); NaN for a target no solve gave a fit (review round 4,
+    /// CC1).
+    beta: Option<Fit<Vec<Vec<Vec<f64>>>>>,
     /// Per target, per path point: EW mean squared out-of-sample error.
     sel_err: Vec<Vec<f64>>,
     sel_w: Vec<f64>,
@@ -300,7 +302,7 @@ impl Lasso {
 
     /// Coefficients per (target, path point), in original units.
     pub fn coefficients(&self) -> Option<&Vec<Vec<Vec<f64>>>> {
-        self.beta.as_ref()
+        self.beta.as_deref()
     }
 
     /// Selected lambda per target.
@@ -622,13 +624,22 @@ impl Lasso {
             let readers = self.acc.grams.readers(g);
             let (c, d, s, means) = self.standardized(gram, cross, &readers);
             for (jj, &j) in readers.iter().enumerate() {
-                if wj[j] <= 0.0 {
-                    // Under a window, no row of this target is inside it: no
-                    // fit to report (C2). Without one, a target never seen
-                    // keeps the zeros it always had.
-                    if view.is_some() {
-                        out[j] = vec![vec![f64::NAN; k_total]; np];
-                    }
+                // No row of this target inside the window: no fit to report
+                // (C2). Without a window, no weight and no fit from an
+                // earlier solve -- a target not seen yet -- is no fit either:
+                // it kept the zeros `out` starts at, predicted as exactly 0.0
+                // at every path point until the next solve once its rows
+                // arrived (review round 4, CC1). One a solve has fit is
+                // solved with no weight too, from the moments that hold its
+                // history, which a gap ages and does not move (hard rule 8;
+                // a weight past the underflow forgets as one just short of
+                // it, docs/PLAN.md task 115 (c)).
+                let fit_before = self
+                    .beta
+                    .as_ref()
+                    .is_some_and(|b| !b[j].iter().flatten().any(|v| v.is_nan()));
+                if wj[j] <= 0.0 && (view.is_some() || !fit_before) {
+                    out[j] = vec![vec![f64::NAN; k_total]; np];
                     continue;
                 }
                 // Warm start from the previous solve's largest-penalty
@@ -698,7 +709,7 @@ impl Lasso {
             }
         }
         self.solve_failures += unconverged;
-        self.beta = Some(out);
+        self.beta = Some(Fit(out));
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
@@ -1100,6 +1111,100 @@ mod tests {
             let mj = &m.acc.cross.mj[0];
             assert!(mj[1] > 0.0 && mj[1] < 0.02, "{mj:?}");
             assert!(mj[2] > 1e97 && mj[2] < 1e98, "{mj:?}");
+        }
+    }
+
+    /// A target whose weight a gap takes to exactly 0 keeps the fit its
+    /// moments hold, as at one half-life short of the underflow: a fit does
+    /// not move on a gap (hard rule 8), and past the underflow the decay
+    /// forgets as just short of it (docs/PLAN.md task 115 (c)). The solve
+    /// on the row after the gap gave every path point zeros, predicted as
+    /// 0.0 once rows came (review round 4, CC1).
+    #[test]
+    fn a_target_whose_weight_underflows_keeps_its_fit() {
+        use crate::OnlineModel;
+        let fit = |gap: f64| {
+            let mut c = cfg(1, 1, vec![0.1, 0.0]);
+            c.decay = Decay::Halflife(10.0);
+            c.min_weight = 0.0;
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 31u64;
+            for i in 0..60 {
+                let x = [lcg(&mut s)];
+                let y = 1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let x = [lcg(&mut s)];
+            m.step(&x, &[Some(1.0 - 2.0 * x[0])], gap, 0.0);
+            (m.acc.wj[0], m.coefficients().unwrap()[0].clone())
+        };
+        let (w_forgot, forgot) = fit(10_750.0);
+        let (w_aged, aged) = fit(10_740.0);
+        assert!(w_forgot == 0.0 && w_aged > 0.0, "the case");
+        for (a, b) in forgot.iter().flatten().zip(aged.iter().flatten()) {
+            assert!(
+                (a - b).abs() <= 1e-9 * (1.0 + b.abs()),
+                "{forgot:?} against {aged:?}"
+            );
+        }
+        assert!((aged[1][1] + 2.0).abs() < 0.05, "{aged:?}");
+    }
+
+    /// A target with no row at a solve has no fit, windowed or not: every
+    /// path point of it is NaN, so once its rows arrive it predicts nothing
+    /// until a solve has seen them. Unwindowed it kept the zeros `beta`
+    /// starts at, and was predicted as exactly 0.0 at every path point
+    /// until the next scheduled solve (review round 4, CC1). It waits for
+    /// the cadence's next solve (S9b): the row cap, 25 rows after the first
+    /// solve at row 1. Both target layouts.
+    #[test]
+    fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
+        use crate::OnlineModel;
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let mut c = cfg(1, 2, vec![0.1, 0.0]);
+            c.min_weight = 2.0;
+            c.solve_every = f64::INFINITY;
+            c.max_rows_between_solves = 25;
+            c.target_gaps = gaps;
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 13u64;
+            for i in 0..40 {
+                let x = [lcg(&mut s)];
+                let b = (i >= 10).then(|| 1.0 - 2.0 * x[0]);
+                let p = m.step(
+                    &x,
+                    &[Some(0.5 + x[0]), b],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+                let late = &p.pred[2..];
+                if i <= 26 {
+                    assert!(
+                        late.iter().all(|v| v.is_nan()),
+                        "{gaps:?}, row {i}: predicted {late:?} from a fit nobody solved"
+                    );
+                } else if gaps == TargetGaps::OwnRows {
+                    // The unpenalized point is the target's least squares.
+                    assert!(
+                        (late[1] - (1.0 - 2.0 * x[0])).abs() < 1e-6,
+                        "{gaps:?}, row {i}: {late:?}"
+                    );
+                } else {
+                    // Pairwise scales a slope by the feature's variance
+                    // over the target's rows against every row's.
+                    assert!(late.iter().all(|v| v.is_finite()), "{gaps:?}, row {i}");
+                }
+                // After the row: the solve at the end of row 26 has seen it.
+                if (2..=25).contains(&i) {
+                    let beta = m.coefficients().expect("solved at row 1");
+                    assert!(
+                        beta[1].iter().flatten().all(|v| v.is_nan()),
+                        "{gaps:?}, row {i}: {:?}",
+                        beta[1]
+                    );
+                    assert!(beta[0].iter().flatten().all(|v| v.is_finite()));
+                }
+            }
         }
     }
 

@@ -86,7 +86,10 @@
 //! closed as the group's last one is -- leading jitter, interior, trailing
 //! jitter -- and `Γ̂_h` is the sum over stretches, so no product ever pairs
 //! two returns across the break. A stretch that ends before its tail is
-//! full contributes only what it had already emitted.
+//! full contributes only what it had already emitted. The subsampled grids
+//! behind the automatic bandwidth restart there too: each offset starts
+//! again at the new stretch's own `o`-th return, and a step in progress is
+//! dropped, so no step sums returns across the break.
 
 use std::collections::VecDeque;
 
@@ -256,6 +259,16 @@ impl StridedRv {
             }
         }
         self.t += 1;
+    }
+
+    /// A break in the block: the steps in progress are dropped, and each
+    /// offset starts again at the new stretch's own `o`-th return, as at
+    /// the block's start, so no step sums returns across the break. The
+    /// completed steps stay: `rv`, `rq` and `counts` pool the stretches,
+    /// as `Γ̂_h` does (review round 4, CE8).
+    fn restart(&mut self) {
+        self.partial.fill(0.0);
+        self.t = 0;
     }
 
     /// Mean over offsets of that offset's realised variance, per feature.
@@ -599,8 +612,13 @@ pub struct RcovEstimate {
     pub omega2: Option<Vec<f64>>,
     pub iv_sparse: Option<Vec<f64>>,
     pub iq: Option<Vec<f64>>,
-    /// A negative eigenvalue had to be clipped.
-    pub psd_repaired: bool,
+    /// A negative eigenvalue had to be clipped: `Some(true)`, and
+    /// `Some(false)` where none had to be or `psd` asked for no repair.
+    /// `None` where the repair could not run -- an entry that is not
+    /// finite, or an eigendecomposition that failed -- and the matrix is
+    /// reported as it stands, possibly indefinite. It read `false` there,
+    /// which says the matrix needed nothing (review round 4, CE9).
+    pub psd_repaired: Option<bool>,
 }
 
 /// The block estimator; see the module docs.
@@ -828,7 +846,7 @@ impl Rcov {
             omega2: omega2.clone(),
             iv_sparse: iv_sparse.clone(),
             iq: iq.clone(),
-            psd_repaired: false,
+            psd_repaired: Some(false),
         };
         let (mut cov, n_eff, bandwidth_used) = match self.cfg.kind {
             RcovKind::Plain => {
@@ -947,12 +965,15 @@ impl Rcov {
                 cov[j * k + i] = v;
             }
         }
-        let mut psd_repaired = false;
-        if self.cfg.psd
-            && let Some(fixed) = clip_psd(&cov, k)
-        {
-            psd_repaired = fixed.1;
-            cov = fixed.0;
+        // Without `psd` nothing is repaired; with it, a repair that could
+        // not run is unknown, not "nothing to repair" (review round 4, CE9).
+        let mut psd_repaired = Some(false);
+        if self.cfg.psd {
+            psd_repaired = None;
+            if let Some((fixed, clipped)) = clip_psd(&cov, k) {
+                psd_repaired = Some(clipped);
+                cov = fixed;
+            }
         }
         let rcorr = correlation(&cov, k);
         RcovEstimate {
@@ -1092,6 +1113,11 @@ impl crate::OnlineModel for Rcov {
         self.tail.clear();
         self.fin.clear();
         self.pre_ring.clear();
+        // The subsampled grids behind the automatic bandwidth pair returns
+        // as the rings do, so they restart too: their steps in progress ran
+        // on across the break (review round 4, CE8).
+        self.dense.restart();
+        self.sparse.restart();
     }
 
     fn state(&self) -> crate::State {
@@ -2298,10 +2324,20 @@ mod tests {
     /// `RV_o` and `(n_o / 3)·Σ run⁴`, with `RV_o = Σ run²` over offset
     /// `o`'s `n_o` runs.
     fn subsampled(rows: &[Vec<f64>], k: usize, stride: usize) -> [Vec<f64>; 3] {
+        subsampled_over(&[rows], k, stride)
+    }
+
+    /// [`subsampled`] over a block a break splits into `stretches`: offset
+    /// `o`'s runs are taken in each stretch from its own `o`-th return, so
+    /// none spans a break, and pooled over the stretches.
+    fn subsampled_over(stretches: &[&[Vec<f64>]], k: usize, stride: usize) -> [Vec<f64>; 3] {
         let mut out = [vec![0.0; k], vec![0.0; k], vec![0.0; k]];
         let mut live = 0.0;
         for o in 0..stride {
-            let r = runs(rows, k, stride, o);
+            let r: Vec<Vec<f64>> = stretches
+                .iter()
+                .flat_map(|rows| runs(rows, k, stride, o))
+                .collect();
             if r.is_empty() {
                 continue;
             }
@@ -2357,6 +2393,93 @@ mod tests {
         }
         let rows = returns(5, k, 41, 0.3);
         assert!(runs(&rows, k, 4, 1).len() == 1 && runs(&rows, k, 4, 2).is_empty());
+    }
+
+    /// A break restarts the subsampled grids behind the automatic bandwidth
+    /// as it restarts the kernel's rings: no stride-step sum pairs returns
+    /// across it, and each offset starts again at the new stretch's own
+    /// `o`-th return. The partial sums ran on across a break, so the noise
+    /// and sparse-variance estimates -- and the bandwidth read from them --
+    /// summed returns the kernel keeps apart (review round 4, CE8). Three
+    /// stretches whose lengths no stride divides, strides of one to twenty.
+    #[test]
+    fn a_break_restarts_the_subsampled_grids() {
+        let k = 3;
+        let rows = returns(71, k, 43, 0.3);
+        let stretches = [&rows[..23], &rows[23..54], &rows[54..]];
+        for (noise_stride, iv_stride) in [(3, 4), (1, 5), (4, 1), (2, 20)] {
+            let mut m = Rcov::new(RcovCfg {
+                noise_stride,
+                iv_stride,
+                ..cfg(k, RcovKind::Plain)
+            })
+            .unwrap();
+            for (i, s) in stretches.iter().enumerate() {
+                if i > 0 {
+                    m.clear_lags();
+                }
+                feed(&mut m, s);
+            }
+            let e = m.estimate();
+            let [omega2, _, _] = subsampled_over(&stretches, k, noise_stride);
+            let [_, iv, iq] = subsampled_over(&stretches, k, iv_stride);
+            for (name, got, want) in [
+                ("omega2", e.omega2.unwrap(), omega2),
+                ("iv_sparse", e.iv_sparse.unwrap(), iv),
+                ("iq", e.iq.unwrap(), iq),
+            ] {
+                for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        (g - w).abs() <= 1e-12 * w.abs(),
+                        "strides {noise_stride}/{iv_stride}, {name}[{i}]: {g} vs {w}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A PSD repair that cannot run -- a covariance with an entry that is
+    /// not finite, which no eigendecomposition takes -- reports
+    /// `psd_repaired` as unknown, not as `false`, which says the matrix
+    /// needed none; the matrix is reported as it stands (review round 4,
+    /// CE9). A return at `1e200`, past the input bound, overflowed the
+    /// products; every model now refuses such a row (task 183), and no
+    /// usable return overflows them, so the case holds the sum each kind's
+    /// estimate reads at infinity, as only a state built by hand can. A
+    /// repair that ran says whether it clipped, and without `psd` nothing
+    /// is clipped.
+    #[test]
+    fn a_repair_that_cannot_run_reports_none() {
+        for kind in [RcovKind::Plain, RcovKind::Kernel, RcovKind::Preavg] {
+            let mut m = Rcov::new(RcovCfg {
+                psd: true,
+                ..cfg(2, kind)
+            })
+            .unwrap();
+            feed(&mut m, &returns(60, 2, 47, 0.3));
+            match kind {
+                RcovKind::Plain => m.raw[0] = f64::INFINITY,
+                RcovKind::Kernel => m.gamma[0] = f64::INFINITY,
+                RcovKind::Preavg => m.pre_sum[0] = f64::INFINITY,
+            }
+            let e = m.estimate();
+            let cov = e.rcov.as_ref().expect("a block");
+            assert!(
+                cov.iter().any(|v| !v.is_finite()),
+                "{kind:?}: the case needs an entry that is not finite: {cov:?}"
+            );
+            assert_eq!(e.psd_repaired, None, "{kind:?}");
+        }
+        let rows = returns(60, 2, 47, 0.3);
+        for psd in [true, false] {
+            let mut m = Rcov::new(RcovCfg {
+                psd,
+                ..cfg(2, RcovKind::Plain)
+            })
+            .unwrap();
+            feed(&mut m, &rows);
+            assert_eq!(m.estimate().psd_repaired, Some(false), "psd {psd}");
+        }
     }
 
     /// Each check `restore` makes refuses a state on its own: the lag

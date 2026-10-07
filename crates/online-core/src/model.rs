@@ -174,6 +174,78 @@ pub(crate) fn restore_target_weights(w: &mut Vec<f64>, w_sum: f64, n_targets: us
     w.len() == n_targets
 }
 
+/// A solving model's coefficients, `ewridge`'s, `huber`'s and `quantile`'s
+/// and `lasso`'s, written as the vectors themselves and compared by their
+/// bits. A slot nothing solved is NaN by definition -- no fit, which
+/// predicts nothing (review round 4, CC1) -- so it is tagged in a
+/// human-readable export ([`crate::humanfloat`]; msgpack's bytes are the
+/// vectors' own), and `NaN != NaN` would make a model holding one unequal
+/// to its own clone, as the readiness shares' NaN would (`ewridge`'s
+/// `same_bits`).
+#[derive(Debug, Clone)]
+pub(crate) struct Fit<T>(pub(crate) T);
+
+impl Serialize for Fit<Vec<Vec<f64>>> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        crate::humanfloat::vec_vec_f64_or_tag::serialize(&self.0, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Fit<Vec<Vec<f64>>> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::humanfloat::vec_vec_f64_or_tag::deserialize(d).map(Fit)
+    }
+}
+
+impl Serialize for Fit<Vec<Vec<Vec<f64>>>> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        crate::humanfloat::vec_vec_vec_f64_or_tag::serialize(&self.0, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Fit<Vec<Vec<Vec<f64>>>> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::humanfloat::vec_vec_vec_f64_or_tag::deserialize(d).map(Fit)
+    }
+}
+
+/// Floats compared by their bits, through any nesting of vectors.
+pub(crate) trait SameBits {
+    fn same_bits(&self, other: &Self) -> bool;
+}
+
+impl SameBits for f64 {
+    fn same_bits(&self, other: &Self) -> bool {
+        self.to_bits() == other.to_bits()
+    }
+}
+
+impl<T: SameBits> SameBits for Vec<T> {
+    fn same_bits(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.same_bits(b))
+    }
+}
+
+impl<T: SameBits> PartialEq for Fit<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same_bits(&other.0)
+    }
+}
+
+impl<T> std::ops::Deref for Fit<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Fit<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Check a state's schema version before dispatching to a model's `restore`.
 ///
 /// Layout migrations do not live here: a model whose layout changed accepts
@@ -771,6 +843,40 @@ mod tests {
                 && newer.contains(&range)
                 && newer.contains("upgrade"),
             "{newer}"
+        );
+    }
+
+    /// A fit with a slot nothing solved, NaN (review round 4, CC1), writes
+    /// the vectors' own msgpack bytes, tags the NaN in JSON and reads both
+    /// back to the same bits; and two such fits are equal, where `NaN !=
+    /// NaN` made a model holding one unequal to its own clone.
+    #[test]
+    fn a_fit_of_nan_round_trips_and_equals_itself() {
+        let raw = vec![vec![1.5, -0.25], vec![f64::NAN, f64::NAN]];
+        let fit = Fit(raw.clone());
+        assert_eq!(fit, fit.clone());
+        assert_ne!(fit, Fit(vec![vec![1.5, -0.25], vec![0.0, 0.0]]));
+        let bytes = rmp_serde::to_vec(&fit).unwrap();
+        assert_eq!(
+            bytes,
+            rmp_serde::to_vec(&raw).unwrap(),
+            "msgpack is the vectors'"
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<Fit<Vec<Vec<f64>>>>(&bytes).unwrap(),
+            fit
+        );
+        let json = serde_json::to_string(&fit).unwrap();
+        assert_eq!(json, r#"[[1.5,-0.25],["nan","nan"]]"#);
+        assert_eq!(
+            serde_json::from_str::<Fit<Vec<Vec<f64>>>>(&json).unwrap(),
+            fit
+        );
+        let path = Fit(vec![raw.clone(), raw]);
+        let json = serde_json::to_string(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Fit<Vec<Vec<Vec<f64>>>>>(&json).unwrap(),
+            path
         );
     }
 }

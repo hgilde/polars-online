@@ -4487,7 +4487,10 @@ def corrchange(
         ``"sequential"``, how it is spread over the pairs (``"bonferroni"``,
         the default: ``alpha / npairs``). Under ``"window"`` one permutation
         statistic covers every pair at once, so there is nothing to spread,
-        and an ``alpha_adjust`` other than the default is refused.
+        and an ``alpha_adjust`` other than the default is refused. Under
+        ``"sequential"`` without ``crit`` each pair's share is refused below
+        ``2**-52``: one minus it is 1 as a double, or within two steps of
+        it, and there is no quantile to read there.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
         ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left.
@@ -4935,7 +4938,9 @@ def rcov(
     into stretches: the returns on either side of it are not adjacent, and a
     covariance of adjacent returns is the whole statistic. Each stretch is closed
     as the last one is (leading jitter, interior, trailing jitter), and the lagged
-    sums add over stretches, so no product pairs two returns across the break. A
+    sums add over stretches, so no product pairs two returns across the break.
+    The two subsampled grids start again at the break as well, so no step of
+    ``omega2``, ``iv_sparse`` or ``iq`` sums returns across it either. A
     stretch too short to reach its trailing jitter contributes only what it had
     already emitted, and ``rcov_n`` says how many effective returns there were in
     total. Nothing reads a future row: the jittered end point is formed at close
@@ -4964,7 +4969,9 @@ def rcov(
     ``iq``
         A realised-quarticity proxy, and labelled one.
     ``psd_repaired``
-        Whether a negative eigenvalue was clipped.
+        Whether a negative eigenvalue was clipped. Null where the repair
+        could not run, an entry that is not finite or an eigendecomposition
+        that failed; the matrix is then reported as it stands.
 
     All null for a block too short to estimate from.
 

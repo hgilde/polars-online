@@ -604,7 +604,7 @@ fn micro() {
     assert_eq!(
         m.n_outputs(),
         6,
-        "cluster, dist, micro, outlier, n_clusters, n_micro"
+        "cluster, dist, micro_id, outlier, n_clusters, n_micro"
     );
     let r = probe_with(m, 0, Some(&Micro::n_eff));
     assert_eq!(r.kind, "micro");

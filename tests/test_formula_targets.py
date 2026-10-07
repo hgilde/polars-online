@@ -932,19 +932,20 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     170, for the quantile fit's band systems, 34 since task 176, for the
     embargo's elapsed clock, 35 since task 178, for ``coef_every`` on the
     clock, 36 since task 179, for ``bocpd``'s hazard on the clock (35 still
-    loaded), and 37 since task 180, for the solve, component and checkpoint
-    cadences on the exact clock (36 refused), the windows state unchanged
-    each time."""
+    loaded), 37 since task 180, for the solve, component and checkpoint
+    cadences on the exact clock (36 refused), and 38 since task 186, for
+    ``ew_ridge``'s kept systems and ``rcov``'s ``psd_repaired`` (37
+    refused), the windows state unchanged each time."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 37, state[i]
-    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36):
+    assert state[i] == 38, state[i]
+    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 37"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 38"
         ):
             po.ModelBank.load_bytes(old)
 
