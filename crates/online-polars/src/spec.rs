@@ -1323,7 +1323,7 @@ pub enum ModelKind {
     /// to the next.
     #[serde(rename = "hmm")]
     Hmm {
-        /// Hidden states, `>= 2`.
+        /// Hidden states, `2 ..= 1024` (`online_core::Hmm::MAX_K`).
         k: usize,
         /// `"full"` (default), `"shared"` or `"diagonal"`, as `ew_class`.
         #[serde(default)]
@@ -4115,7 +4115,12 @@ impl Spec {
                     .and_then(|c| c.validate())
                     .map_err(|e| format!("spec {:?}: {e}", self.name))?;
             }
-            ModelKind::Hmm { exog_tvtp, .. } => {
+            ModelKind::Hmm { k, exog_tvtp, .. } => {
+                // `k` sizes the transition matrix and the states before the
+                // first row, as `kmeans`' sizes its centres; held here before
+                // the configuration is built from it (review 2026-10-06,
+                // CF2's sibling).
+                online_core::Hmm::check_k(*k).map_err(|e| format!("spec {:?}: {e}", self.name))?;
                 // As `bocpd`'s `hazard_col` (review 2026-09-12, C20).
                 if let Some(z) = exog_tvtp
                     && self.targets.defs() != [crate::targets::TargetDef::plain(z.clone())]

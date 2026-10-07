@@ -2289,7 +2289,10 @@ same names:
 
 **Use `conformal` for an interval when the residuals are not Gaussian.**
 It tracks the `conformal` quantile of `|resid|` directly, so its long-run
-coverage is the number you asked for, whatever the residuals do. On
+coverage is the number you asked for, whatever the residuals do. Under a
+`weight` column that coverage is weighted by `w/w̄`, each row's weight over
+the mean weight, so a heavy row's miss counts for more, and the share of
+rows covered can sit on either side of the number. On
 Gaussian residuals the interval `pred ± z·sigma`, built from `emit_sigma`'s
 field with Polars expressions after the bank, covers equally well. On
 fat-tailed or heteroskedastic residuals, that Gaussian interval over-covers
@@ -2361,6 +2364,15 @@ po.eval.unpack(out, "ridge")                                        # long form:
                                                                     # target, pred and y, for your own group_by
 ```
 
+**Pass the spec as `spec=` when a target is relative or renamed.** The
+output frame does not record how a target was formed, so without the spec
+each slot is scored against the column named after it. A target taken
+against another column, as `po.target("p", relative_to="mid")`, is then
+scored against the raw `p`, not the difference the bank learned. A target
+renamed with `name=` names no column, and the call asks for `spec=`.
+`metrics`, `rolling_metrics`, `sums` and `unpack` take `spec=`, and
+`compare_specs` takes the list as `specs=`.
+
 ### Evaluating a stream too large to hold
 
 `po.eval.metrics` needs the whole output in one frame. When the output is
@@ -2405,7 +2417,7 @@ sim = po.sim.regimes(
     design="step", smooth_rows=0,             # or "smooth": interpolate the matrix over smooth_rows rows at a boundary
     phi=0.3, noise=0.01,                      # returns correlated with their own past; observation noise
     async_rates=[1.0, 1.0, 0.4, 0.4],         # two series observed less often; a series with no observation is null
-    seed=0,                                   # the same seed twice is byte-identical
+    seed=0,                                   # the same seed twice is byte-identical, under one numpy version
 )
 rows, truth_rows, truth_blocks = sim["rows"], sim["truth_rows"], sim["truth_blocks"]
 ```
@@ -3576,7 +3588,8 @@ finished = bank.closed_groups()
 # rcov_n, rcov_kind, bandwidth_used
 # omega2, iv_sparse            the noise variance and sparse integrated variance behind the bandwidth
 # iq                           a realised-quarticity proxy, labelled one
-# psd_repaired                 whether the estimate had to be made positive semi-definite
+# psd_repaired                 whether the estimate had to be made positive semi-definite; null where
+#                              the repair could not run, on an estimate with an entry that is not finite
 # a block too short to estimate from gives nulls, not an error
 
 # A series not observed on every row: carry its last price forward within the block, then difference,
@@ -4289,8 +4302,8 @@ second for every model at its usual settings, all under these conditions:
 | | |
 |---|---|
 | machine | an Apple M4 Pro, one process |
-| runs | best of 3, 200k rows per run, measured on 2026-09-29 with `uv run python scripts/benchmark.py --markdown`; [PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29) has the run |
-| `ewridge` and `rls` | re-measured the same day, once `ewridge`'s solve had been made cheaper ([§30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)) |
+| runs | best of 3, 200k rows per run, measured on 2026-09-29 at commit `5e96018` with `uv run python scripts/benchmark.py --markdown`, beside one other process on about one core, with no load average recorded; run 2 of [PERFORMANCE §28](docs/PERFORMANCE.md#28-the-readmes-numbers-re-measured-2026-09-29) |
+| `ewridge` and `rls` | re-measured the same day at commit `d0f8616`, once `ewridge`'s solve had been made cheaper, beside a load average of 3.2 to 3.5 ([§30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)) |
 | noise | a run moves by up to about 11% from the last on this machine, so read a gap smaller than that as noise |
 | half-life | 1,000, in every row that gives none of its own |
 | `k`, `K` | the number of features; the number of clusters or hidden states |
@@ -4815,6 +4828,14 @@ of breaking it, and exit non-zero if either stops holding:
 |---|---|---|---|
 | DuckDB | a second query built on the same connection | the first query yields no rows | `ConsumedSourceWarning` |
 | ADBC | the cursor executed again before its first query is read | the newer query one batch short, in clock order, and the older one with that batch added out of order: on SQLite, 198,976 and 201,024 of 200,000 rows | nothing, for the newer query; for the older one, a spec with a `clock` refuses the step back |
+
+**Do not close an ADBC cursor just after a read of its stream stopped
+early.** A read stops early on an error, such as a spec refusing a clock
+that steps back, or when the consumer stops. Closing the cursor at once
+then crashed the process with a segmentation fault, measured on SQLite,
+`adbc_driver_manager` 1.12.0 and polars 1.44.2 at 200,000 rows. A wait of
+3 s before the close, or no close before the process exits, avoided it
+([docs/ARROW-SOURCES.md](docs/ARROW-SOURCES.md#adbc-measured)).
 
 ### Pathway
 

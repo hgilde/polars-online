@@ -62,7 +62,7 @@ use crate::{Covariance, Decay, EwCov, SeedRule};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HmmCfg {
     pub n_features: usize,
-    /// Hidden states, `>= 2`.
+    /// Hidden states, `2 ..= MAX_K`.
     pub k: usize,
     pub decay: Decay,
     pub covariance: Covariance,
@@ -110,6 +110,8 @@ impl HmmCfg {
         if self.k < 2 {
             return Err("hmm: k must be >= 2 (one state is not a Markov chain)".into());
         }
+        // Before anything reads `k * k` (review 2026-10-06, CF2's sibling).
+        Hmm::check_k(self.k)?;
         if !(self.precision_prior.is_finite() && self.precision_prior > 0.0) {
             return Err(
                 "hmm: precision_prior must be finite and > 0; a state's centred co-moments start \
@@ -272,6 +274,27 @@ pub struct Hmm {
 }
 
 impl Hmm {
+    /// The most hidden states. `k` sizes what is built before the first
+    /// row -- the transition matrix and its counts, `k²` cells each, and a
+    /// state's accumulators `k` times -- so a `k` past this is a spec's
+    /// mistake: `k = 2^62` with `warm_rows = 2^62` was accepted and grew
+    /// memory without bound, a state at a time (review 2026-10-06, CF2's
+    /// sibling, the ceiling kmeans' `k` has). At it the matrix is 8 MiB.
+    pub const MAX_K: usize = 1 << 10;
+
+    /// `k` held to [`Self::MAX_K`], in the words every layer that checks it
+    /// says: the core's `validate` and the spec's.
+    pub fn check_k(k: usize) -> Result<(), String> {
+        if k > Self::MAX_K {
+            return Err(format!(
+                "hmm: k must be at most {} (2^10), got {k}: the transition matrix holds k² cells \
+                 and every state its own moments, all sized before the first row",
+                Self::MAX_K
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(cfg: HmmCfg) -> Result<Self, String> {
         cfg.validate()?;
         let (k, d) = (cfg.k, cfg.n_features);
@@ -1278,6 +1301,13 @@ mod tests {
         bad(HmmCfg { k: 1, ..cfg(2, 1) }, "k must be >= 2");
         bad(
             HmmCfg {
+                warm_rows: 1025,
+                ..cfg(2, 1025)
+            },
+            "k must be at most 1024 (2^10), got 1025",
+        );
+        bad(
+            HmmCfg {
                 precision_prior: 0.0,
                 ..cfg(2, 2)
             },
@@ -1333,6 +1363,47 @@ mod tests {
             },
             "means and covs must be finite",
         );
+    }
+
+    /// `k` sizes the transition matrix, `k²` cells, its counts and `k`
+    /// states' accumulators before the first row, so it has a ceiling, 2^10,
+    /// refused by name with its value before anything is built: `k = 2^62`
+    /// with `warm_rows = 2^62` grew memory without bound, and a transition
+    /// beside it would have overflowed `k * k`. At the ceiling it builds, and
+    /// a state that carries a `k` past it is refused at load.
+    #[test]
+    fn k_past_the_ceiling_is_refused_by_name() {
+        for k in [Hmm::MAX_K + 1, 1 << 20, 1 << 62] {
+            for transition in [None, Some(vec![0.5; 4])] {
+                let Err(e) = Hmm::new(HmmCfg {
+                    warm_rows: k,
+                    transition,
+                    ..cfg(2, k)
+                }) else {
+                    panic!("accepted k = {k}")
+                };
+                assert!(
+                    e.contains("hmm: k must be at most 1024 (2^10)")
+                        && e.contains(&format!("got {k}")),
+                    "{e}"
+                );
+            }
+        }
+        let at = Hmm::new(HmmCfg {
+            warm_rows: Hmm::MAX_K,
+            ..cfg(2, Hmm::MAX_K)
+        })
+        .unwrap();
+        assert_eq!(at.transition().len(), Hmm::MAX_K * Hmm::MAX_K);
+        let mut state = Hmm::new(cfg(2, 2)).unwrap().state();
+        let crate::ModelState::Hmm(inner) = &mut state.model else {
+            unreachable!()
+        };
+        inner.cfg.k = Hmm::MAX_K + 1;
+        let Err(crate::StateError::Invalid(e)) = Hmm::restore(&state) else {
+            panic!("a state with k past the ceiling loaded")
+        };
+        assert!(e.contains("k must be at most 1024"), "{e}");
     }
 
     /// Under `tvtp` the matrix is `softmax(A + B·z)` and the counts are not

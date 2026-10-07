@@ -168,8 +168,8 @@ ALSO_NULL: dict[str, str] = {
 #: A model whose rule for a stem differs from `ALSO_NULL`'s.
 ALSO_NULL_BY_MODEL: dict[tuple[str, str], str] = {
     ("kmeans", "cluster"): (
-        "while withheld, and before seeding, which waits for `max(warm_rows, k)` learned rows "
-        "(default 500)"
+        "while withheld, and before seeding, which waits for `warm_rows` learned rows (at "
+        "least `k`; by default 500, or `k` where that is more)"
     ),
     ("micro", "cluster"): "while withheld, and while no micro-cluster is established",
     ("hmm", "loglik"): UNTIL_SEEDED,
@@ -183,7 +183,9 @@ STATE_ONLY = {
     ),
     "rcov": (
         "`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the "
-        "row `ModelBank.closed_groups()` gives when a group closes (`group_close`)."
+        "row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's "
+        "`psd_repaired` is null where the repair could not run, on an estimate with an entry "
+        "that is not finite."
     ),
 }
 
@@ -241,7 +243,8 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "the numbers behind the fit, as one flat list written after the row's update: a "
         "regression's coefficients, or what a model that is not a regression keeps in their "
         "place, such as its centres or state means. Its builder's docstring lays the list "
-        "out. A model that solves on a schedule (`solve_every`) shows its latest solve. "
+        "out. A model that solves on a schedule (`solve_every`) shows its latest solve, and "
+        "the entries of a target no solve has fit yet are null. "
         "Under an `embargo` the row's own update waits for the delay, so `coef` is written "
         "after the rows this row releases, and is the fit the next row is predicted with "
         "only when the next row releases none",

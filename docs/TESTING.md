@@ -655,14 +655,14 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file names 161
-equivalent mutants, each with the reason no input can tell it from the
+`scripts/mutants_equivalent.toml` does not list. That file names 168
+equivalent mutants, in 167 entries, each with the reason no input can tell it from the
 original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act
 on is tolerated, and listed apart** (task 158).
-`scripts/mutants_tolerated.toml` names 31, in 27 entries, each with its kind and the
+`scripts/mutants_tolerated.toml` names 32, in 28 entries, each with its kind and the
 measured size of the difference: last-bit rounding, a difference below the
 computation's own error (most are `boundary`'s solver stopping a settled
 solve, under 1e-7 where its grid error is 3e-5), an exact tie no input can

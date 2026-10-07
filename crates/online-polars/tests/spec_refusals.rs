@@ -94,7 +94,8 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
 }
 
 /// CF2: `k` has a ceiling and the warm-up buffer a budget, each refused by
-/// name with the value; micro's linkage is `O(m)` memory, so its cap needs
+/// name with the value; micro's linkage holds a matrix of 128 MiB at most
+/// (4,096 potential summaries) and `O(m)` memory past it, so its cap needs
 /// no ceiling.
 #[test]
 fn kmeans_sizes_have_ceilings_and_micro_needs_none() {
@@ -119,6 +120,26 @@ fn kmeans_sizes_have_ceilings_and_micro_needs_none() {
         r#"{"type": "micro", "eps": 0.3, "max_clusters": 10000000}"#,
         r#", "half_life": 10.0"#,
     ));
+}
+
+/// `hmm`'s `k` sizes its transition matrix, `k²` cells, and its states
+/// before the first row: 2^10, refused by name with the value, where
+/// `k = 2^62` grew memory without bound (review 2026-10-06, CF2's sibling).
+#[test]
+fn hmm_k_has_a_ceiling() {
+    let hmm = |k: u64| {
+        unsup(
+            &format!(r#"{{"type": "hmm", "k": {k}, "warm_rows": {k}, "precision_prior": 0.1}}"#),
+            r#", "half_life": 10.0"#,
+        )
+    };
+    for k in [1025u64, 1 << 62] {
+        refused(
+            &hmm(k),
+            &["hmm: k must be at most 1024 (2^10)", &format!("got {k}")],
+        );
+    }
+    accepted(&hmm(1024));
 }
 
 /// CE9: rcov's lagged products, `(ring + 1)·k²` doubles, are held to 256

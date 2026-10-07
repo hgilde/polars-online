@@ -30,7 +30,7 @@
   target(column: 'str', *, relative_to: 'str | None' = None, relative: 'str' = 'difference', name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 37
+  schema_version = 38
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -213,7 +213,7 @@
     name
     targets
     features
-    coef_half_life
+    coef_half_life = None
     q = None
     obs_var = None
     p0 = None
@@ -316,8 +316,8 @@
     kind = 'kernel'
     kernel = 'parzen'
     bandwidth = None
-    jitter = 2
-    theta = 1.0
+    jitter = None
+    theta = None
     psd = True
     block_rows = None
     max_bandwidth = None
@@ -912,11 +912,11 @@
     spectral(r: 'Any', k: 'int') -> 'tuple[Any, Any]'
     to_z(rho: 'Any') -> 'Any'
   eval:
-    compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, specs: 'Sequence[dict] | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
     from_sums(s: 'pl.DataFrame', *, min_obs: 'int' = 30) -> 'pl.DataFrame'
     merge_sums(first: 'pl.DataFrame', *rest: 'pl.DataFrame') -> 'pl.DataFrame'
-    metrics(df: 'pl.DataFrame', spec_name: 'str', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    rolling_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', window_size: 'float | Duration', by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    metrics(df: 'pl.DataFrame', spec_name: 'str', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    rolling_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', window_size: 'float | Duration', by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
     seqtest(df: 'pl.DataFrame', *, targets: 'Sequence[str] | None' = None, a: 'str | None' = None, b: 'str | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', by: 'Iterable[str]' = (), min_weight: 'float' = 0.0, name: 'str' = 'seqtest') -> 'pl.DataFrame'
     sums(df: 'pl.DataFrame', spec_name: 'str', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, weight: 'str | None' = None, binary: 'bool' = False) -> 'pl.DataFrame'
     unpack(df: 'pl.DataFrame', spec_name: 'str', *, spec: 'dict | None' = None, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'

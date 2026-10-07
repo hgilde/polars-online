@@ -80,7 +80,7 @@ Four fields appear in nearly every table below, and are defined here once:
 | `weight_sum` | `f64` | the accumulated weight before this row's update and before its own decay | never |
 | `settled_frac` | `f64` | how far the decay window had filled toward steady state before this row: `1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half-life and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight` or `above_max_error_inflation`. That order is their precedence, so the first that applies is the one named | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve. Under an `embargo` the row's own update waits for the delay, so `coef` is written after the rows this row releases, and is the fit the next row is predicted with only when the next row releases none | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last row in each chunk; and before the model has anything to report, such as a first solve |
+| `coef` | `list[f64]` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve, and the entries of a target no solve has fit yet are null. Under an `embargo` the row's own update waits for the delay, so `coef` is written after the rows this row releases, and is the fit the next row is predicted with only when the next row releases none | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last row in each chunk; and before the model has anything to report, such as a first solve |
 
 ### What is not listed
 
@@ -260,7 +260,7 @@ hand: change the generator, then run
 
 ## `rcov`
 
-`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`).
+`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's `psd_repaired` is null where the repair could not run, on an estimate with an entry that is not finite.
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -270,7 +270,7 @@ hand: change the generator, then run
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `cluster` | `i32` | the nearest cluster's label, read before the row is learned from | while withheld, and before seeding, which waits for `max(warm_rows, k)` learned rows (default 500) |
+| `cluster` | `i32` | the nearest cluster's label, read before the row is learned from | while withheld, and before seeding, which waits for `warm_rows` learned rows (at least `k`; by default 500, or `k` where that is more) |
 | `dist` | `f64` | distance from the row to the centre `cluster` was read from | where `cluster` is |
 | `dist2` | `f64` | distance to the second-nearest centre, so `dist2 - dist` is the margin | where `cluster` is |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |

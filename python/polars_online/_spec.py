@@ -344,9 +344,19 @@ _U32 = frozenset(
 #: list of counts, each entry's ceiling.
 _CEILING = {"lags": 2**20, "resid_autocorr_lag": 2**20, "n_perm": 2**20}
 
+#: A ceiling one builder's count has under a name another builder shares:
+#: ``hmm``'s ``k`` sizes its transition matrix, ``k^2`` cells, and its states
+#: before the first row (``online_core::Hmm::MAX_K``), where ``kmeans``' ``k``
+#: is held to 2^16 by the Rust side.
+_CEILING_OF = {"hmm": {"k": 2**10}}
 
-def _int_ceiling(key: str) -> int:
-    """The most an int parameter may be: its own ceiling, else its width."""
+
+def _int_ceiling(key: str, builder: str = "") -> int:
+    """The most an int parameter of ``builder`` may be: its own ceiling,
+    else its width."""
+    own = _CEILING_OF.get(builder, {})
+    if key in own:
+        return own[key]
     return _CEILING.get(key, 2**32 - 1 if key in _U32 else 2**64 - 1)
 
 
@@ -430,7 +440,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
                 # And at most its width, or the tighter ceiling of a count
                 # that sizes an allocation (review 2026-10-06, YA4 and CD10).
-                ceiling = _int_ceiling(key)
+                ceiling = _int_ceiling(key, fn.__name__)
                 if int(value) > ceiling:
                     raise ValueError(f"{who}: {key} must be <= {ceiling}, got {value}")
             # And each entry of a list of counts (review 2026-09-26, F7: a
@@ -444,7 +454,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 floor = 1 if key in _AT_LEAST_ONE else 0
                 if min(value) < floor:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {_got(value)}")
-                ceiling = _int_ceiling(key)
+                ceiling = _int_ceiling(key, fn.__name__)
                 if max(value) > ceiling:
                     raise ValueError(f"{who}: {key} must be <= {ceiling}, got {_got(value)}")
             if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):

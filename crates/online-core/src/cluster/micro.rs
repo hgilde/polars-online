@@ -61,10 +61,12 @@
 //! times [`LINK_FACTOR`], and never below [`LINK_FLOOR`] — DenStream's own
 //! rule that two summaries within `2 eps` of each other overlap. A value
 //! given is an override in the same units; `0` links nothing, so each
-//! potential summary is its own cluster. The step takes each pair's distance
-//! when it needs it: `O(m²)` time and `O(m)` memory over `m` potential
-//! summaries, where an `m × m` matrix of them was `max_clusters²` doubles at
-//! every checkpoint (review 2026-10-06, CF2).
+//! potential summary is its own cluster. The step is `O(m²)` time over `m`
+//! potential summaries. Up to [`LINK_MATRIX_MAX`] of them it keeps their
+//! squared distances in an `m × m` matrix, each computed once and read
+//! twice; past it, it takes each pair's distance when it needs it, in
+//! `O(m)` memory, where the matrix was `max_clusters²` doubles at every
+//! checkpoint (review 2026-10-06, CF2).
 //!
 //! Three rules make a variable-count output honest (§6.5): ids are
 //! monotone and never reused — an evicted or pruned id never comes back;
@@ -196,6 +198,57 @@ pub const LINK_FLOOR: f64 = 2.0;
 /// The quantile of the nearest-neighbour spacing the derived threshold
 /// reads (nearest rank).
 pub const LINK_QUANTILE: f64 = 0.9;
+
+/// The most potential summaries the linkage keeps a matrix of squared
+/// distances for: `4096²` doubles, 128 MiB. Up to it each pair's distance
+/// is computed once and read for both the spacing and the links; past it
+/// each is taken when wanted, twice, in `O(m)` memory, 14-18% slower a
+/// checkpoint at `m = 200` (review 2026-10-06, CF2). The two give the same
+/// threshold, links and labels to the bit.
+const LINK_MATRIX_MAX: usize = 4096;
+
+/// The derived link threshold, squared: [`LINK_FACTOR`] times the
+/// [`LINK_QUANTILE`] (nearest rank) of the nearest-neighbour distances,
+/// whose squares `nn` holds, and never below [`LINK_FLOOR`]` · eps √p`.
+fn derived_link2(mut nn: Vec<f64>, eps2: f64) -> f64 {
+    let m = nn.len();
+    nn.sort_by(f64::total_cmp);
+    let rank = ((LINK_QUANTILE * m as f64).ceil() as usize).clamp(1, m) - 1;
+    let p90 = nn[rank].sqrt();
+    let floor = LINK_FLOOR * eps2.sqrt();
+    let l = (LINK_FACTOR * p90).max(floor);
+    l * l
+}
+
+/// Each of `m` summaries' component under single linkage, as the index of
+/// its root, the smallest index in the component: `a` and `b` are linked
+/// when `d2(a, b) <= link2` (`a < b`), and nothing is linked at a threshold
+/// of 0.
+fn components(m: usize, link2: f64, d2: impl Fn(usize, usize) -> f64) -> Vec<usize> {
+    let mut parent: Vec<usize> = (0..m).collect();
+    fn find(parent: &mut [usize], mut a: usize) -> usize {
+        while parent[a] != a {
+            parent[a] = parent[parent[a]];
+            a = parent[a];
+        }
+        a
+    }
+    if link2 > 0.0 {
+        for a in 0..m {
+            for b in (a + 1)..m {
+                if d2(a, b) <= link2 {
+                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+                    if ra != rb {
+                        // Ids ascend with the index, so the smaller index is
+                        // the smaller id.
+                        parent[ra.max(rb)] = ra.min(rb);
+                    }
+                }
+            }
+        }
+    }
+    (0..m).map(|a| find(&mut parent, a)).collect()
+}
 
 /// One micro-cluster: a summary with its id, age, kind and cluster label.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -585,20 +638,58 @@ impl Micro {
     }
 
     /// Single linkage over the potential summaries; labels = the smallest
-    /// id in each component.
-    ///
-    /// In `O(m)` memory for `m` potential summaries: each pair's squared
-    /// distance is taken when it is wanted, once for the nearest-neighbour
-    /// spacing and once for the links, where an `m × m` matrix of them was
-    /// `max_clusters²` doubles at every checkpoint -- 8 TB at a cap of 10^6
-    /// (review 2026-10-06, CF2). The distances are the same numbers, taken
-    /// with the same arguments in the same order, so the threshold, the
-    /// links and the labels are the matrix's to the bit; the minimum over a
-    /// summary's neighbours does not depend on their order.
+    /// id in each component. Up to [`LINK_MATRIX_MAX`] of them through a
+    /// matrix of their squared distances, past it through each pair's
+    /// distance taken when it is wanted (review 2026-10-06, CF2).
     fn link_potential(&mut self) {
         let idx: Vec<usize> = (0..self.mc.len())
             .filter(|&j| self.mc[j].potential)
             .collect();
+        if idx.len() <= LINK_MATRIX_MAX {
+            self.link_by_matrix(&idx);
+        } else {
+            self.link_by_pairs(&idx);
+        }
+    }
+
+    /// The linkage over the potential summaries `idx` with each pair's
+    /// squared distance computed once, into an `m × m` matrix, and read for
+    /// the nearest-neighbour spacing and for the links: the step as it
+    /// always ran, `m²` doubles.
+    fn link_by_matrix(&mut self, idx: &[usize]) {
+        let m = idx.len();
+        // Pairwise squared distances, upper triangle by (a, b), a < b.
+        let mut d2 = vec![0.0; m * m];
+        for a in 0..m {
+            for b in (a + 1)..m {
+                let d = dist2(&self.mc[idx[a]].s.c, &self.mc[idx[b]].s.c, &self.mw);
+                d2[a * m + b] = d;
+                d2[b * m + a] = d;
+            }
+        }
+        if self.cfg.macro_link.is_none() && m >= 2 {
+            let nn: Vec<f64> = (0..m)
+                .map(|a| {
+                    (0..m)
+                        .filter(|&b| b != a)
+                        .map(|b| d2[a * m + b])
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .collect();
+            self.link2 = derived_link2(nn, self.eps2);
+        }
+        let roots = components(m, self.link2, |a, b| d2[a * m + b]);
+        self.label(idx, &roots);
+    }
+
+    /// The same linkage in `O(m)` memory: each pair's squared distance is
+    /// taken when it is wanted, once for the nearest-neighbour spacing and
+    /// once for the links, where the matrix would be `max_clusters²`
+    /// doubles -- 8 TB at a cap of 10^6 (review 2026-10-06, CF2). The
+    /// distances are the same numbers, taken with the same arguments, so the
+    /// threshold, the links and the labels are the matrix's to the bit; the
+    /// minimum over a summary's neighbours does not depend on their order.
+    fn link_by_pairs(&mut self, idx: &[usize]) {
         let m = idx.len();
         let (mc, mw) = (&self.mc, &self.mw);
         // The squared distance of the pair `(a, b)`, `a < b`.
@@ -612,38 +703,17 @@ impl Micro {
                     nn[b] = nn[b].min(d);
                 }
             }
-            nn.sort_by(f64::total_cmp);
-            let rank = ((LINK_QUANTILE * m as f64).ceil() as usize).clamp(1, m) - 1;
-            let p90 = nn[rank].sqrt();
-            let floor = LINK_FLOOR * self.eps2.sqrt();
-            let l = (LINK_FACTOR * p90).max(floor);
-            self.link2 = l * l;
+            self.link2 = derived_link2(nn, self.eps2);
         }
-        let mut parent: Vec<usize> = (0..m).collect();
-        fn find(parent: &mut [usize], mut a: usize) -> usize {
-            while parent[a] != a {
-                parent[a] = parent[parent[a]];
-                a = parent[a];
-            }
-            a
-        }
-        if self.link2 > 0.0 {
-            for a in 0..m {
-                for b in (a + 1)..m {
-                    if d2(a, b) <= self.link2 {
-                        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-                        if ra != rb {
-                            // Ids ascend with the index, so the smaller
-                            // index is the smaller id.
-                            parent[ra.max(rb)] = ra.min(rb);
-                        }
-                    }
-                }
-            }
-        }
+        let roots = components(m, self.link2, d2);
+        self.label(idx, &roots);
+    }
+
+    /// Each potential summary `idx[a]` labelled with the id of its
+    /// component's root `idx[roots[a]]`, and the clusters counted.
+    fn label(&mut self, idx: &[usize], roots: &[usize]) {
         let mut n_clusters = 0;
-        for a in 0..m {
-            let root = find(&mut parent, a);
+        for (a, &root) in roots.iter().enumerate() {
             if root == a {
                 n_clusters += 1;
             }
@@ -2146,6 +2216,64 @@ mod tests {
                 assert_eq!(m.mc[j].label, before[j], "trial {trial}: outlier {j}");
             }
         }
+    }
+
+    /// The two paths of the linkage give the same threshold, the same
+    /// clusters and the same labels, to the bit, on the same summaries: the
+    /// matrix kept up to `LINK_MATRIX_MAX` potential summaries, and the
+    /// pairs taken when wanted past it (review 2026-10-06, CF2). Random
+    /// placements, outliers among them, under each threshold rule; and the
+    /// rule `link_potential` takes by the count.
+    #[test]
+    fn the_matrix_and_the_pairs_link_alike() {
+        let mut s = 20261007u64;
+        let mut linked = 0;
+        for trial in 0..90 {
+            let n = 2 + trial % 53;
+            let macro_link = match trial % 3 {
+                0 => None,
+                1 => Some(1.5 + lcg(&mut s) * 4.0),
+                _ => Some(0.0),
+            };
+            let mut m = Micro::new(MicroCfg {
+                macro_link,
+                ..still()
+            })
+            .unwrap();
+            let spread = 2.0 + 10.0 * lcg(&mut s);
+            m.mc = (0..n)
+                .map(|i| {
+                    let c = vec![spread * lcg(&mut s), spread * lcg(&mut s)];
+                    placed(i as u64 * 3 + 7, c, lcg(&mut s) < 0.8)
+                })
+                .collect();
+            m.next_id = n as u64 * 3 + 7;
+            let idx: Vec<usize> = (0..n).filter(|&j| m.mc[j].potential).collect();
+            let (mut matrix, mut pairs, mut either) = (m.clone(), m.clone(), m.clone());
+            matrix.link_by_matrix(&idx);
+            pairs.link_by_pairs(&idx);
+            either.link_potential();
+            let labels = |m: &Micro| m.mc.iter().map(|c| c.label).collect::<Vec<_>>();
+            for (path, got) in [("pairs", &pairs), ("link_potential", &either)] {
+                assert_eq!(
+                    got.link2.to_bits(),
+                    matrix.link2.to_bits(),
+                    "trial {trial}, {path}: threshold"
+                );
+                assert_eq!(
+                    got.n_clusters, matrix.n_clusters,
+                    "trial {trial}, {path}: clusters"
+                );
+                assert_eq!(
+                    labels(got),
+                    labels(&matrix),
+                    "trial {trial}, {path}: labels"
+                );
+            }
+            linked += usize::from(matrix.n_clusters < idx.len());
+        }
+        assert!(linked >= 20, "too few trials linked anything: {linked}");
+        assert_eq!(LINK_MATRIX_MAX * LINK_MATRIX_MAX * 8, 128 << 20, "128 MiB");
     }
 
     /// The derived threshold: `LINK_FACTOR` times the 90th percentile

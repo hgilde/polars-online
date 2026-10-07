@@ -1247,7 +1247,7 @@ def test_an_int_past_the_rust_width_is_refused_by_name(builder):
     serde's words and no other is."""
     kwargs = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
     for key, is_list in _int_parameters(builder).items():
-        ceiling = _spec._int_ceiling(key)
+        ceiling = _spec._int_ceiling(key, builder.__name__)
         past = [ceiling + 1] if is_list else ceiling + 1
         with pytest.raises(ValueError, match=rf'spec "m": {key} must be <= {ceiling}, got'):
             builder("m", **{**kwargs, key: past})
@@ -1318,11 +1318,31 @@ def test_a_count_that_sizes_memory_has_a_ceiling(builder, kw, msg):
         po.ModelBank([spec])
 
 
+def test_hmm_k_has_a_ceiling():
+    """``hmm(k=2**62, warm_rows=2**62)`` was accepted and grew memory without
+    bound: ``k`` sizes the transition matrix, ``k^2`` cells, and the states
+    before the first row. 2^10 is its ceiling, refused by the builder and,
+    from a dict, by the Rust side in its own words (review 2026-10-06, CF2's
+    sibling). At the ceiling it builds."""
+    kw = dict(features=["x0", "y"], half_life=10.0, precision_prior=0.1)
+    with pytest.raises(ValueError, match=re.escape('spec "m": k must be <= 1024, got 1025')):
+        po.spec.hmm("m", k=1025, warm_rows=1025, **kw)
+    spec = po.spec.hmm("m", k=2, **kw)
+    spec["model"]["k"] = spec["model"]["warm_rows"] = 2**62
+    with pytest.raises(
+        ValueError,
+        match=re.escape(f'spec "m": hmm: k must be at most 1024 (2^10), got {2**62}'),
+    ):
+        po.ModelBank([spec])
+    po.ModelBank([po.spec.hmm("m", k=1024, warm_rows=1024, **kw)])
+
+
 def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
     """``kmeans(k=10**9)`` and ``warm_rows=10**9`` were accepted and held
     that many rows before seeding; micro's linkage held ``max_clusters^2``
     doubles at every checkpoint (review 2026-10-06, CF2). ``k`` has a
-    ceiling and the buffer a budget; micro's step is ``O(m)`` memory now, and
+    ceiling and the buffer a budget; micro's step holds a matrix of 128 MiB
+    at most (4,096 potential summaries) and is ``O(m)`` memory past it, so
     its cap needs none."""
     kw = dict(features=["x0", "y"], half_life=10.0)
     with pytest.raises(ValueError, match=r'spec "m": kmeans: k must be at most 65536 \(2\^16\)'):
