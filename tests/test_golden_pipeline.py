@@ -436,7 +436,13 @@ def switched_signature() -> dict[str, float | str | None]:
 #: zero mean, the identity and `nu = d + 2` -- every one of them but `pa`'s
 #: and `pa_box`'s comes back to the old value within `TOL`; `pa`'s are a
 #: replica of the standardized step with the sigma tube, written from the
-#: docstrings, to 5.4e-16 on all 104 rows it predicts.
+#: docstrings, to 5.4e-16 on all 104 rows it predicts. Task 202 (the same
+#: day) moved those 12 again, `pa`'s and `pa_box`'s `pred` and `resid`: the
+#: tube is in units of the target's own EW std. A replica written from the
+#: docstrings, the standardized PA-I step with that tube (its variance from
+#: the definition) and, for `pa_box`, the box clamped in standardized
+#: coordinates, gives `pa`'s to 1.2e-15 and `pa_box`'s to 5.6e-16 on all 104
+#: rows each predicts; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -588,12 +594,12 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd.withheld_reason@25": None,
     "sgd.withheld_reason@60": None,
     "sgd.withheld_reason@119": None,
-    "pa.pred_y0@25": -2.809381847472666,
-    "pa.pred_y0@60": 0.04812411584354903,
-    "pa.pred_y0@119": -0.23412788898815617,
-    "pa.resid_y0@25": -2.0422239767620503,
-    "pa.resid_y0@60": -0.520165244660627,
-    "pa.resid_y0@119": 0.18342911802992734,
+    "pa.pred_y0@25": -2.938681829189763,
+    "pa.pred_y0@60": 0.26076667206859616,
+    "pa.pred_y0@119": -0.14024278815240976,
+    "pa.resid_y0@25": -1.9129239950449533,
+    "pa.resid_y0@60": -0.7328078008856741,
+    "pa.resid_y0@119": 0.08954401719418092,
     "pa.weight_sum@25": 7.999488060097996,
     "pa.weight_sum@60": 12.473100285951407,
     "pa.weight_sum@119": 15.110060335371337,
@@ -618,12 +624,12 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd_simplex.withheld_reason@25": None,
     "sgd_simplex.withheld_reason@60": None,
     "sgd_simplex.withheld_reason@119": None,
-    "pa_box.pred_y0@25": -2.7289746774594175,
-    "pa_box.pred_y0@60": 0.7015758498582221,
-    "pa_box.pred_y0@119": -0.2232745987060396,
-    "pa_box.resid_y0@25": -2.1226311467752987,
-    "pa_box.resid_y0@60": -1.1736169786753,
-    "pa_box.resid_y0@119": 0.17257582774781077,
+    "pa_box.pred_y0@25": -2.8887175526845694,
+    "pa_box.pred_y0@60": 0.6389826867980481,
+    "pa_box.pred_y0@119": -0.21384610945433602,
+    "pa_box.resid_y0@25": -1.9628882715501468,
+    "pa_box.resid_y0@60": -1.111023815615126,
+    "pa_box.resid_y0@119": 0.16314733849610719,
     "pa_box.weight_sum@25": 7.999488060097996,
     "pa_box.weight_sum@60": 12.473100285951407,
     "pa_box.weight_sum@119": 15.110060335371337,

@@ -104,17 +104,18 @@ def test_bounded_variants_resist_outliers():
 
 
 def test_wide_tube_is_passive():
-    """Once the target has a residual spread to draw it in, a tube of a
-    million spreads holds every row and nothing moves. Before that there is
-    no tube: the ten rows ``min_weight`` withholds, whose residuals the
-    spread does not take, and the first predicted row teach (docs/PLAN.md
-    task 195, U1)."""
+    """Once the target has a spread to draw it in, a tube of a million
+    spreads holds every row and nothing moves. Before that there is no tube:
+    the target's spread reads `y` alone, whatever the fit and `min_weight`,
+    so the first two rows teach and the third is inside (docs/PLAN.md task
+    202)."""
     df = _linear(n=500)
     # Raw features, so a coefficient moves only where the fit does: under
     # `standardize` it is read through the scaler as it stands.
     c, out = _fit(df, eps=1e6, standardize=False)
     coef = out["m"].struct.field("coef").to_list()
-    assert coef[11] == list(c), "nothing should move inside a huge tube"
+    assert coef[1] == list(c), "nothing should move inside a huge tube"
+    assert coef[0] != coef[1], "the second row, before the spread, taught"
     assert np.abs(c).max() > 0.0, "the rows before the spread taught"
 
 
@@ -186,17 +187,75 @@ def _oos(df, **kw):
 
 
 def test_a_target_in_hundredths_fits_as_the_unscaled_one_does():
-    """docs/PLAN.md task 195 (U1; review round 4, CC4): `eps` is in units of
-    the target's EW residual standard deviation, as `huber`'s `huber_delta`
-    is. In the target's units, at the defaults, a target scaled by 0.01 sat
-    inside the tube on every row: passive for ever, every prediction 0.0 and
-    R² -0.051, against +0.961 unscaled."""
+    """docs/PLAN.md task 195 (U1; review round 4, CC4) and task 202: `eps` is
+    in units of the target's own EW standard deviation. In the target's units,
+    at the defaults, a target scaled by 0.01 sat inside the tube on every row:
+    passive for ever, every prediction 0.0 and R² -0.051, against +0.961
+    unscaled."""
     unscaled, _ = _oos(_cc4())
     scaled, p = _oos(_cc4(scale_y=0.01))
     assert unscaled > 0.95
     assert scaled > 0.95, scaled
     assert abs(scaled - unscaled) < 0.01
     assert np.sum(p == 0.0) == 0
+
+
+def _r2_from(p, y, start):
+    p, y = p[start:], y[start:]
+    ok = np.isfinite(p)
+    return 1.0 - np.sum((y[ok] - p[ok]) ** 2) / np.sum((y[ok] - y[ok].mean()) ** 2)
+
+
+@pytest.mark.parametrize("half_life", [1e9, 500.0])
+def test_a_target_far_from_zero_is_learned_with_or_without_decay(half_life):
+    """docs/PLAN.md task 202: at the defaults, a target at a level of 1,000 in
+    a spread of about 2 fits rows 10,000 to 20,000 as the same target at 0
+    does, with or without decay. The fit starts from zero coefficients, so its
+    first residuals are the whole level. A band in units of the residual's
+    spread, learned from them, was about 100 wide and held every later row;
+    without decay nothing narrowed it: R² -52 at a half-life of 1e9, +0.954 at
+    500 (task 195's report). The target's own spread is about 2 whatever the
+    fit."""
+    r2 = {}
+    for level in (0.0, 1000.0):
+        df = _cc4(n=20_000).with_columns(pl.col("y") + level)
+        spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=half_life)
+        p = po.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
+        r2[level] = _r2_from(p, df["y"].to_numpy(), 10_000)
+    assert r2[1000.0] > 0.9, r2
+    assert abs(r2[1000.0] - r2[0.0]) < 0.01, r2
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        dict(mode="pa", eps=0.1),
+        dict(loss="epsilon_insensitive", eps=0.1, schedule="inv_scaling"),
+    ],
+    ids=["pa", "sgd"],
+)
+def test_the_band_scales_with_the_target(kind):
+    """docs/PLAN.md task 202: the band is in units of the target's own spread,
+    which scales with the target, so a target at a level of 1,000 scaled by
+    2**-10 or 2**10 fits as the unscaled one does, scaled by it, to the bit:
+    `pa` under the unbounded step (a finite `c` caps the step in the target's
+    units), `sgd` with its rate scaled too (a sign-valued gradient's rate is
+    in the target's units) and its clip lifted."""
+    df = _cc4(n=2000).with_columns(pl.col("y") + 1000.0)
+    preds = {}
+    for c in (1.0, 2.0**-10, 2.0**10):
+        scaled = df.with_columns(pl.col("y") * c)
+        common = dict(targets=["y"], features=["x"], half_life=200.0)
+        if "loss" in kind:
+            spec = po.spec.sgd(
+                "m", learning_rate=5.0 * c, clip_gradient=float("inf"), **kind, **common
+            )
+        else:
+            spec = po.spec.pa("m", **kind, **common)
+        out = po.ModelBank([spec]).fit_predict(scaled)["m"].struct.field("pred_y")
+        preds[c] = out.to_numpy() / c
+    for c in (2.0**-10, 2.0**10):
+        np.testing.assert_array_equal(preds[c], preds[1.0])
 
 
 def test_standardize_is_offered_and_on_by_default():

@@ -731,6 +731,28 @@ def _accepted_steps(X: np.ndarray, dclock: np.ndarray, gap_cap: float):
         yield i, d
 
 
+def _ew_variance(history: list[list[float]]) -> float:
+    """The EW variance of a target around its EW mean, from its definition:
+    ``sum(v * (y - m) ** 2) / sum(v)`` with ``m = sum(v * y) / sum(v)``, over
+    the ``[y, v]`` pairs of the rows that carried it, ``v`` each row's weight
+    aged since. 0 before two rows."""
+    if len(history) < 2:
+        return 0.0
+    y = np.array([h[0] for h in history])
+    v = np.array([h[1] for h in history])
+    mean = float(np.sum(v * y) / np.sum(v))
+    return float(np.sum(v * (y - mean) ** 2) / np.sum(v))
+
+
+def _age_and_learn(history: list[list[float]], lam: float, y: float, w: float) -> None:
+    """One row of a target's spread: every weight aged by ``lam``, and the
+    row's ``y`` joining at its weight where it is present with one above 0."""
+    for h in history:
+        h[1] *= lam
+    if not np.isnan(y) and w > 0.0:
+        history.append([y, w])
+
+
 def pa_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -753,12 +775,13 @@ def pa_ref(
         pa: tau = loss / s    pa1: tau = min(c, loss / s)    pa2: tau = loss / (s + 1 / (2c))
         b += min(w, 1) * tau * sign(y - p) * z
 
-    per target, from zero. ``sigma`` is the EW std of the target's
-    out-of-sample residuals as the row arrives: ``sigma ** 2`` the EW mean of
-    ``(y - p) ** 2`` over the rows with the target, a weight above 0 and a
-    prediction, each joining after its own step, its weight aged by every
-    row's decay; before it is above 0 the tube has no width (docs/PLAN.md
-    task 195). A null target or a zero weight moves nothing; the
+    per target, from zero. ``sigma`` is the target's own EW std as the row
+    arrives: ``sigma ** 2`` the EW variance of ``y`` around its EW mean over
+    the rows with the target and a weight above 0, whatever the fit, each
+    ``y`` joining after its own row is judged, every weight aged by every
+    row's decay, written here as its definition, two passes over the
+    history; before it is above 0 the tube has no width (docs/PLAN.md task
+    202). A null target or a zero weight moves nothing; the
     coefficients never decay, ``weight_sum`` does. ``pred_j`` is null while the
     target's own weight, the rows that carried it, decayed, is below
     ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d)); ``weight_sum`` is
@@ -772,23 +795,21 @@ def pa_ref(
     b = np.zeros((m, kt))
     w_sum = 0.0
     w_target = np.zeros(m)
-    sig2, wsig = np.zeros(m), np.zeros(m)
+    history: list[list[list[float]]] = [[] for _ in range(m)]
     for i, d in _accepted_steps(X, dclock, gap_cap):
         lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
-        wsig *= lam
         z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
         weight_sum[i] = w_sum
         p = b @ z
         pred[i] = np.where(w_target >= min_weight, p, np.nan)
         s = z @ z
         for j in range(m):
+            sigma2 = _ew_variance(history[j])
+            _age_and_learn(history[j], lam, Y[i, j], w[i])
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
             r = Y[i, j] - p[j]
-            tube = eps * np.sqrt(sig2[j]) if sig2[j] > 0.0 else 0.0
-            if np.isfinite(pred[i, j]):
-                sig2[j] = (wsig[j] * sig2[j] + w[i] * r * r) / (wsig[j] + w[i])
-                wsig[j] += w[i]
+            tube = eps * np.sqrt(sigma2) if sigma2 > 0.0 else 0.0
             if s <= 0.0:
                 continue
             loss = max(0.0, abs(r) - tube)
@@ -829,15 +850,17 @@ def sgd_ref(
 
         eta = z . b    p = link(eta)    d = dL / d eta
         squared: p - y                huber: clamp(p - y, +/- delta * s)
-        quantile: 1{y < p} - tau      epsilon_insensitive: 0 within eps * s, else sign(p - y)
+        quantile: 1{y < p} - tau      epsilon_insensitive: 0 within eps * s_y, else sign(p - y)
         poisson: exp(eta) - y         logistic: sigmoid(eta) - clamp(y, 0, 1)
         g_i = clamp(d * z_i * w + l2 * b_i, +/- clip_gradient)    b_i -= lr_i * g_i
 
     ``s`` is the EW std of the target's out-of-sample residuals as the row
     arrives: ``s ** 2`` the EW mean of ``(y - p) ** 2`` over the rows with the
     target, a weight above 0 and a prediction, each joining after its own
-    step, its weight aged by every row's decay. Before it is above 0 the Huber
-    loss cuts nothing and the tube has no width (docs/PLAN.md task 195).
+    step, its weight aged by every row's decay (docs/PLAN.md task 195).
+    ``s_y`` is the target's own EW std as the row arrives, as ``pa_ref``
+    keeps it (docs/PLAN.md task 202). Before ``s`` is above 0 the Huber loss
+    cuts nothing, and before ``s_y`` is the tube has no width.
 
     the ridge on the slopes only (the intercept's ``g_0 = clamp(d * w)``),
     and the clip a cap on each coordinate of the gradient, not on its norm
@@ -866,6 +889,7 @@ def sgd_ref(
     w_sum = 0.0
     w_target = np.zeros(m)
     sig2, wsig = np.zeros(m), np.zeros(m)
+    history: list[list[list[float]]] = [[] for _ in range(m)]
     links = {
         "poisson": np.exp,
         "logistic": lambda e: 1.0 / (1.0 + np.exp(-e)),
@@ -879,13 +903,15 @@ def sgd_ref(
         p = links.get(loss, lambda e: e)(b @ z)
         pred[i] = np.where(w_target >= min_weight, p, np.nan)
         for j in range(m):
+            s_y2 = _ew_variance(history[j])
+            _age_and_learn(history[j], lam, Y[i, j], w[i])
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
             yj = min(max(Y[i, j], 0.0), 1.0) if loss == "logistic" else Y[i, j]
             e = p[j] - yj
             s = np.sqrt(sig2[j]) if sig2[j] > 0.0 else None
             cut = huber_delta * s if s is not None else np.inf
-            tube = eps * s if s is not None else 0.0
+            tube = eps * np.sqrt(s_y2) if s_y2 > 0.0 else 0.0
             dl = {
                 "squared": e,
                 "poisson": e,

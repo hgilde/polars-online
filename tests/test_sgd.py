@@ -540,10 +540,11 @@ def _oos_r2(df, **kw):
 
 class TestUnitFreeDefaults:
     """docs/PLAN.md task 195 (U1, U2; review round 4, CC4 and CC6): `sgd`
-    standardizes by default, as `kalman` does, and its `huber_delta` and
-    `eps` are in units of the target's EW residual standard deviation, as
-    `huber`'s `huber_delta` is. A default in the data's units fitted one
-    scale and failed the others."""
+    standardizes by default, as `kalman` does, and its `huber_delta` is in
+    units of the target's EW residual standard deviation, as `huber`'s is;
+    its `eps` is in units of the target's own EW standard deviation (task
+    202). A default in the data's units fitted one scale and failed the
+    others."""
 
     def test_standardize_is_on_by_default(self):
         """Features times 100 at the defaults: R² -71847 with a raw step."""

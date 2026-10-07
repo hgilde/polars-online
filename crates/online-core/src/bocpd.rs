@@ -74,6 +74,17 @@
 //! within five rows and date it to within a row; `0.3` and up never find
 //! it. The default the polars layer fills in is `0.1`.
 //!
+//! **`robust` is not free of the data's units; centre and scale its
+//! inputs.** A change of units multiplies every run's predictive density by
+//! one constant `c`. Under `gaussian` and `diag` that constant multiplies
+//! every joint alike, and the posterior's normalisation takes it out. The
+//! tempered message `πᵣ^{w(x)}` carries it as `c^{w(x)}`, and `w(x)` differs
+//! from run to run, so the runs' odds move with the units. Measured
+//! (docs/PLAN.md task 195): at a level of `1e4` with a spread of `1e-2`,
+//! `p_change` differed by up to 0.86 from the same stream at level 0 and
+//! spread 1, and `run_mode` on 427 of 596 rows; at a spread of `2e3` the
+//! break at row 200 was missed.
+//!
 //! **It is not the diffusion-score-matching posterior of Altamirano, Briol
 //! & Knoblauch (2023)**, and does not claim to be its equations. Read
 //! 2026-09-28 (docs/PLAN.md task 114): theirs is a Gaussian posterior over
@@ -230,7 +241,9 @@ pub enum BocpdEmission {
     Gaussian,
     /// Normal-inverse-gamma per feature; the predictive is their product.
     Diag,
-    /// `diag`'s pair with β-power-weighted rows; see the module docs.
+    /// `diag`'s pair with β-power-weighted rows; see the module docs. Not
+    /// free of the data's units, as `diag` and `gaussian` are: centre and
+    /// scale its inputs.
     Robust,
 }
 

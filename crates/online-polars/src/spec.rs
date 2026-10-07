@@ -925,13 +925,17 @@ pub enum ModelKind {
         loss: Option<String>,
         /// Huber cut, in units of the target's EW residual std, as
         /// `huber`'s; default 1.345. `"inf"` clips nothing, which is the
-        /// squared loss.
+        /// squared loss. The residual's std, where `eps` is in the target's
+        /// own: a clipped gradient keeps learning while early residuals
+        /// widen the cut, and a zero one inside a band does not
+        /// (docs/PLAN.md task 202).
         #[serde(default)]
         huber_delta: Option<Num>,
         #[serde(default)]
         quantile: Option<f64>,
-        /// Half-width of the insensitive tube, in units of the target's EW
-        /// residual std; default 0.1.
+        /// Half-width of the insensitive tube, in units of the target's
+        /// own EW std, the spread of `y` around its EW mean; default 0.1
+        /// (docs/PLAN.md task 202).
         #[serde(default)]
         eps: Option<f64>,
         #[serde(default)]
@@ -984,8 +988,9 @@ pub enum ModelKind {
         /// either bounded mode is "pa".
         #[serde(default)]
         c: Option<Num>,
-        /// Insensitive tube, in units of the target's EW residual std: rows
-        /// already this close leave the fit alone. Default 0.1.
+        /// Insensitive tube, in units of the target's own EW std, the
+        /// spread of `y` around its EW mean: rows already this close leave
+        /// the fit alone. Default 0.1 (docs/PLAN.md task 202).
         #[serde(default)]
         eps: Option<f64>,
         /// Bounds and sum on the slopes, as for `sgd` (ENHANCEMENTS E40).

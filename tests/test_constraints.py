@@ -300,10 +300,12 @@ def pa_replay(
     if constrained:
         beta[1:] = project(beta[1:], lo, hi, s)
     w_sum = 0.0
-    # The tube is `eps` of the residual's EW std (docs/PLAN.md task 195):
-    # its square the EW mean of the squared residuals of the rows with a
-    # target, a weight and a prediction, each joining after its own step.
-    sig2 = wsig = 0.0
+    # The tube is `eps` of the target's own EW std (docs/PLAN.md task 202):
+    # its square the EW variance of `y` around its EW mean over the rows with
+    # a target and a weight, whatever the fit, each `y` joining after its own
+    # row is judged; written as its definition, two passes over the aged
+    # history of `[y, weight]` pairs.
+    history = []
     pending = 0.0
     preds, neffs, coefs = [], [], []
     for i in range(n):
@@ -319,7 +321,6 @@ def pa_replay(
         d = min(pending, gap_cap)
         pending = 0.0
         lam = 1.0 if half_life == INF else math.exp2(-(d / half_life))
-        wsig *= lam
         z = [1.0, *map(float, X[i])]
         weight_sum = w_sum
         ready = weight_sum >= min_weight
@@ -332,6 +333,16 @@ def pa_replay(
         preds.append(p if ready else None)
         neffs.append(weight_sum)
         yi = y[i]
+        if len(history) < 2:
+            spread2 = 0.0
+        else:
+            total = math.fsum(v for _, v in history)
+            mean = math.fsum(v * yv for yv, v in history) / total
+            spread2 = math.fsum(v * (yv - mean) ** 2 for yv, v in history) / total
+        for h in history:
+            h[1] *= lam
+        if yi is not None and math.isfinite(yi) and wi > 0.0:
+            history.append([float(yi), wi])
         if (
             yi is not None
             and not math.isnan(yi)
@@ -340,10 +351,7 @@ def pa_replay(
             and math.isfinite(p)
         ):
             err = yi - p
-            tube = eps * math.sqrt(sig2) if sig2 > 0.0 else 0.0
-            if ready:
-                sig2 = (wsig * sig2 + wi * err * err) / (wsig + wi)
-                wsig += wi
+            tube = eps * math.sqrt(spread2) if spread2 > 0.0 else 0.0
             loss = max(abs(err) - tube, 0.0) if sq > 0.0 else 0.0
             if loss != 0.0:
                 if mode == "pa":

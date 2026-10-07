@@ -2961,18 +2961,27 @@ The loss sets the link and the gradient:
 | `squared` | identity | `p − y` | |
 | `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
-| `epsilon_insensitive` | identity | 0 within `eps·s` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.1 by default, in units of `s` |
+| `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.1 by default, in units of `s_y` |
 | `poisson` | log, for count targets | `p − y` | |
 | `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
 
 **`s` is the exponentially weighted standard deviation of the target's
-out-of-sample residuals**, as `huber`'s `σ` is, so a cut and a tube mean
-the same thing at any scale of the target: until the target has one, the
-Huber row is a squared-loss row and the tube has no width. In the target's
-own units a tube of 0.1 never let a target in thousandths be learned.
-`sgd` standardizes its features by default, as `kalman` does: one learning
-rate has to suit every feature, and raw, features in hundreds took the
-default fit's R² from 0.96 to below −70,000.
+out-of-sample residuals**, as `huber`'s `σ` is, and **`s_y` is the
+target's own**, the spread of `y` around its exponentially weighted mean.
+So a cut and a tube mean the same thing at any scale of the target. Until
+the target has an `s`, the Huber row is a squared-loss row; until it has
+an `s_y`, two weighted rows of different values, the tube has no width. In
+the target's own units a tube of 0.1 never let a target in thousandths be
+learned. `sgd` standardizes its features by default, as `kalman` does: one
+learning rate has to suit every feature, and raw, features in hundreds took
+the default fit's R² from 0.96 to below −70,000.
+
+**The cut reads the residuals and the tube does not, because the fit starts
+from zero.** Its first residuals are the target's whole level. Beyond the
+cut the gradient is clipped, not zero, so a cut those residuals widen still
+lets every row teach. Inside the tube the gradient is zero. A tube drawn in
+the residuals' spread on a target at 1,000 with a spread of 2 was about 100
+wide and held every row, and without decay it never narrowed.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
@@ -3017,9 +3026,9 @@ caller's units even under `standardize=True`.
 *API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](crates/online-core/src/pa.rs) — *Outputs:* [fields](docs/OUTPUTS.md#pa)
 
 Use `pa` to step on every row without tuning a learning rate. Each row asks
-the fit to come within `eps·σ` of its target, `σ` the exponentially weighted
-standard deviation of its residuals as `huber`'s and `sgd`'s, and the update
-is the smallest change that does so:
+the fit to come within `eps·σ` of its target, `σ` the target's own
+exponentially weighted standard deviation, as `sgd`'s tube is drawn in. The
+update is the smallest change that does so:
 
 ```
 loss = max(0, |y − p| − eps·σ)      s = ‖z‖²
@@ -3028,7 +3037,11 @@ pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s +
 ```
 
 In the target's units, a tube of 0.1 held a target in hundredths on every
-row, and the model never learned it. `pa` standardizes its features by
+row, and the model never learned it. In the residuals' spread, a fit from
+zero on a target at 1,000 drew a tube about 100 wide from its first
+residuals, and without decay stopped learning: R² −52. `σ` reads `y` alone,
+so until the target has two weighted rows of different values the tube has
+no width. `pa` standardizes its features by
 default, with `sgd`'s scaler, so `s` and `c` are not in the features'
 units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:
@@ -3044,13 +3057,14 @@ pa = po.spec.pa(
     "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
     mode="pa1",                  # the default
     c=0.1,
-    eps=0.05,                    # within 0.05 residual stds a row is "close enough", and nothing moves
+    eps=0.05,                    # within 0.05 of the target's std a row is "close enough", and nothing moves
 )
 ```
 
-**`pa` keeps no running sums, so its `half_life` changes when `min_weight`
-lets a target report, and nothing in the fit:** it decays only `weight_sum`
-and each target's own weight.
+**`pa`'s coefficients keep no running sums, so its `half_life` does not
+decay the fit.** It decays `weight_sum` and each target's own weight, which
+`min_weight` reads, and the scaler and the target's spread that `eps` is
+in.
 
 **When `coef_min`, `coef_max` or `coef_sum` bound the slopes, keep `c`
 small.** The projection that follows each update keeps the step from
@@ -4237,12 +4251,20 @@ Give `emission` to choose each run's model of the rows:
 |---|---|---|
 | `"diag"`, as in the example | a normal-inverse-gamma per feature | |
 | `"gaussian"` | a normal-inverse-Wishart over all of them, O(runs d²) a row | the one that can see a break in the *correlation* alone |
-| `"robust"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; without it, that row is a changepoint at `p_change` 0.91 |
+| `"robust"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; without it, that row is a changepoint at `p_change` 0.91. Not free of the data's units |
 
 **Keep `robust_beta` below about 0.2.** Above it, the weighting forgives the
 rows of a new regime one at a time, so no change is ever detected again. The
 default of 0.1 ignores a single 20-sigma row and still finds a four-sigma
 shift within three rows, dated to the right one.
+
+**Centre and scale the features for `emission="robust"`.** A change of
+units multiplies every run's predictive density by one constant. Under
+`"diag"` and `"gaussian"` the posterior's normalisation takes it out.
+`"robust"` tempers each run's message by a power that differs from run to
+run, so the constant does not cancel, and the runs' odds move with the
+units. At a level of 1e4 with a spread of 1e-2, `p_change` moved by up to
+0.86 against the same stream at level 0 and spread 1.
 
 Two settings bound the runs kept, and a third sets the hazard row by row:
 

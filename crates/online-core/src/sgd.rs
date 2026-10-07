@@ -12,7 +12,7 @@
 //! | `Squared` | identity | `eta` | `p − y` |
 //! | `Huber` | identity | `eta` | `clamp(p − y, ±delta·s)` |
 //! | `Quantile` | identity | `eta` | `1{y < p} − tau` |
-//! | `EpsilonInsensitive` | identity | `eta` | `0` if `|p − y| ≤ eps·s`, else `sign(p − y)` |
+//! | `EpsilonInsensitive` | identity | `eta` | `0` if `|p − y| ≤ eps·s_y`, else `sign(p − y)` |
 //! | `Poisson` | log | `exp(clamp(eta, −30, 30))` | `p − y` |
 //! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − clamp(y, 0, 1)` |
 //!
@@ -23,28 +23,44 @@
 //! that end does: the prediction and its gradient stay finite, where `exp`
 //! alone overflows past 709.
 //!
-//! **`delta` and `eps` are in units of `s`**, the target's EW residual
-//! standard deviation as the row arrives, as `huber`'s `huber_delta` is
-//! (`crate::Robust`): a cut and a tube in the target's own units fitted
-//! one scale and failed the others -- a target in thousandths never left a
-//! tube of 0.1, so the model was passive for ever, and one in thousands
-//! never entered it (docs/PLAN.md task 195, review round 4 CC4). `s²` is
-//! the EW mean of the squared out-of-sample residual `y − p`, aged on every
-//! row on the model's clock and learned from a row with the target, a
-//! weight above 0 and a prediction, after the row has used it:
+//! **`delta` is in units of `s`**, the target's EW residual standard
+//! deviation as the row arrives, as `huber`'s `huber_delta` is
+//! (`crate::Robust`); **`eps` is in units of `s_y`**, the target's own EW
+//! standard deviation as the row arrives. A cut and a tube in the target's
+//! own units fitted one scale and failed the others -- a target in
+//! thousandths never left a tube of 0.1, so the model was passive for
+//! ever, and one in thousands never entered it (docs/PLAN.md task 195,
+//! review round 4 CC4). Under `huber`, `s²` is the EW mean of the squared
+//! out-of-sample residual `y − p`, aged on every row on the model's clock
+//! and learned from a row with the target, a weight above 0 and a
+//! prediction, after the row has used it:
 //!
 //! ```text
 //! W_s ← lam·W_s;   s² ← (W_s·s² + w·(y − p)²) / (W_s + w),   W_s ← W_s + w
 //! ```
 //!
-//! skipped where it would not be finite, as `huber`'s is. Before the target
-//! has one -- no residual yet, or every one so far exactly 0 -- there is
-//! nothing to draw a cut or a tube in: the Huber row is a squared-loss row
-//! and the tube has no width, `huber`'s rule for its rows before a scale.
-//! The squared loss is then equivariant in the target's scale -- a target
-//! scaled by `c` fits as the unscaled one, scaled by `c` -- and so is the
-//! Huber loss; the quantile and epsilon-insensitive losses step by the
-//! sign of the residual, so their `learning_rate` is in the target's units.
+//! skipped where it would not be finite, as `huber`'s is. Under
+//! `epsilon_insensitive`, `s_y²` is the EW variance of `y` around its EW
+//! mean over the rows with the target and a weight above 0, whatever the
+//! fit, the row's own `y` joining after it is judged ([`crate::spread`]).
+//! Before the target has one -- no residual yet, or every one so far
+//! exactly 0, for `s`; fewer than two weighted rows, or every `y` the same,
+//! for `s_y` -- there is nothing to draw a cut or a tube in: the Huber row
+//! is a squared-loss row and the tube has no width, `huber`'s rule for its
+//! rows before a scale. The squared loss is then equivariant in the
+//! target's scale -- a target scaled by `c` fits as the unscaled one,
+//! scaled by `c` -- and so is the Huber loss; the quantile and
+//! epsilon-insensitive losses step by the sign of the residual, so their
+//! `learning_rate` is in the target's units.
+//!
+//! **Why two units.** The fit starts from zero coefficients, so its first
+//! residuals are the target's whole level. Outside the Huber cut the
+//! gradient is clipped, not zero, so a cut drawn wide by those residuals
+//! still lets every row teach, and narrows as they leave the mean. Inside
+//! the tube the gradient is zero: a tube drawn in the residual's spread on
+//! a target at 1,000 in a spread of 2 was about 100 wide, held every row,
+//! and without decay never narrowed, so the fit stopped where it stood
+//! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
 //! **A logistic label outside {0, 1}** is clamped into `[0, 1]`, as `ftrl`
 //! clamps it; `strict_binary` instead learns nothing from it, and the bank
@@ -62,6 +78,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::spread::TargetSpread;
 use crate::{Constraint, Decay, EwDiag};
 
 /// Loss function, and with it the link (see the module docs).
@@ -70,15 +87,17 @@ use crate::{Constraint, Decay, EwDiag};
 pub enum SgdLoss {
     Squared,
     /// `delta` is in units of the target's EW residual std, as `robust`'s
-    /// Huber is (the module docs).
+    /// Huber is: a clipped gradient keeps learning, so a cut a fit's first
+    /// residuals widen does not stop it (the module docs).
     Huber {
         delta: f64,
     },
     Quantile {
         tau: f64,
     },
-    /// Ignores residuals within `eps` of the target's EW residual std — the
-    /// SVR loss (the module docs).
+    /// Ignores residuals within `eps` of the target's own EW std — the SVR
+    /// loss. Not the residual's: inside the tube the gradient is zero, and
+    /// a tube a fit's first residuals widen stops it (the module docs).
     EpsilonInsensitive {
         eps: f64,
     },
@@ -259,10 +278,15 @@ pub struct Sgd {
     #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the EW variance of the out-of-sample residual, `s²`, and
-    /// its weight: the scale `huber_delta` and `eps` are in (the module
-    /// docs; docs/PLAN.md task 195).
+    /// its weight: the scale `huber_delta` is in (the module docs;
+    /// docs/PLAN.md task 195). Kept under the Huber loss only, and empty
+    /// under every other.
     sig2: Vec<f64>,
     wsig: Vec<f64>,
+    /// Per target, the EW mean and variance of the target itself: the unit
+    /// `eps` is in (the module docs; docs/PLAN.md task 202). Kept under the
+    /// epsilon-insensitive loss only, and empty under every other.
+    spread: TargetSpread,
     /// The standardized row `[1, z]` under a scaler; unused without one,
     /// where the model reads `x` in place.
     #[serde(skip)]
@@ -297,6 +321,7 @@ struct SgdV3 {
     w_target: Vec<f64>,
     sig2: Vec<f64>,
     wsig: Vec<f64>,
+    spread: TargetSpread,
 }
 
 impl TryFrom<SgdV3> for Sgd {
@@ -304,7 +329,7 @@ impl TryFrom<SgdV3> for Sgd {
 
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
-        let (sig2, wsig) = (v.sig2, v.wsig);
+        let (sig2, wsig, spread) = (v.sig2, v.wsig, v.spread);
         let mut w_target = v.w_target;
         let k = cfg.k_total();
         let m = cfg.n_targets;
@@ -335,8 +360,16 @@ impl TryFrom<SgdV3> for Sgd {
         if !crate::model::restore_target_weights(&mut w_target, w_sum, m) {
             return Err("sgd: the state's target weights have the wrong shape".into());
         }
-        if sig2.len() != m || wsig.len() != m {
-            return Err("sgd: the state's residual variances have the wrong shape".into());
+        // The scales a loss draws in, one per target, exactly under the
+        // loss that draws in it: the residual's under Huber, the target's
+        // own under epsilon-insensitive (docs/PLAN.md task 202).
+        let (residual, own) = scales_kept(&cfg.loss);
+        let scales = |kept: bool| if kept { m } else { 0 };
+        if sig2.len() != scales(residual) || wsig.len() != scales(residual) {
+            return Err("sgd: the state's residual variances do not match its cfg's loss".into());
+        }
+        if !spread.has_shape(scales(own)) {
+            return Err("sgd: the state's target spreads do not match its cfg's loss".into());
         }
         Ok(Self {
             cfg,
@@ -347,6 +380,7 @@ impl TryFrom<SgdV3> for Sgd {
             w_target,
             sig2,
             wsig,
+            spread,
             zbuf: vec![],
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
@@ -374,14 +408,21 @@ impl Sgd {
                 c.project(&mut b[off..], None, &mut scratch);
             }
         }
+        let (residual, own) = scales_kept(&cfg.loss);
+        let residual = if residual { m } else { 0 };
         Ok(Self {
             scaler,
             beta,
             g2,
             w_sum: 0.0,
             w_target: vec![0.0; m],
-            sig2: vec![0.0; m],
-            wsig: vec![0.0; m],
+            sig2: vec![0.0; residual],
+            wsig: vec![0.0; residual],
+            spread: if own {
+                TargetSpread::new(m)
+            } else {
+                TargetSpread::none()
+            },
             zbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
@@ -440,24 +481,41 @@ impl Sgd {
         }
     }
 
-    /// Per target, the EW variance of the out-of-sample residual, `s²` (the
-    /// module docs).
+    /// Per target, the EW variance of the out-of-sample residual, `s²`,
+    /// under the Huber loss; empty under every other (the module docs).
     pub fn sigma2(&self) -> &[f64] {
         &self.sig2
     }
 
-    /// Target `j`'s residual scale `s = √s²` once it has one: `s²` finite
-    /// and above 0. `None` before -- no residual yet, or every one so far
-    /// exactly 0 -- where there is no cut and no tube to draw (`huber`'s
-    /// rule, `Robust`).
-    fn residual_scale(&self, j: usize) -> Option<f64> {
-        let s2 = self.sig2[j];
-        (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+    /// Per target, the EW variance of the target itself, `s_y²`, under the
+    /// epsilon-insensitive loss; empty under every other (the module docs).
+    pub fn target_variance(&self) -> Vec<f64> {
+        self.spread.vars()
     }
 
-    /// `dL/d(eta)` for the configured loss, with `scale` the target's
-    /// residual scale `s` (`None` before it has one: no cut, and a tube of
-    /// no width).
+    /// The unit target `j`'s cut or tube is drawn in, as the row arrives:
+    /// under Huber the residual's scale `s = √s²` once `s²` is finite and
+    /// above 0; under epsilon-insensitive the target's own `s_y` once it has
+    /// a spread. `None` before -- and under every other loss -- where there
+    /// is no cut and no tube to draw (`huber`'s rule, `Robust`;
+    /// [`crate::spread`]).
+    fn scale(&self, j: usize) -> Option<f64> {
+        match self.cfg.loss {
+            SgdLoss::Huber { .. } => {
+                let s2 = self.sig2[j];
+                (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+            }
+            SgdLoss::EpsilonInsensitive { .. } => {
+                let unit = self.spread.band(j, 1.0);
+                (unit > 0.0).then_some(unit)
+            }
+            _ => None,
+        }
+    }
+
+    /// `dL/d(eta)` for the configured loss, with `scale` the unit its cut
+    /// or tube is drawn in ([`Sgd::scale`]; `None` before it has one: no
+    /// cut, and a tube of no width).
     fn dloss(&self, p: f64, y: f64, scale: Option<f64>) -> f64 {
         let r = p - y;
         match self.cfg.loss {
@@ -498,6 +556,17 @@ impl Sgd {
             self.rawbuf = vec![0.0; k];
         }
     }
+}
+
+/// Which scales `loss` draws in: `(residual, own)`, the residual's spread
+/// for the Huber cut and the target's own for the epsilon-insensitive tube
+/// (the module docs). A state keeps each, one per target, exactly under
+/// the loss that reads it.
+fn scales_kept(loss: &SgdLoss) -> (bool, bool) {
+    (
+        matches!(loss, SgdLoss::Huber { .. }),
+        matches!(loss, SgdLoss::EpsilonInsensitive { .. }),
+    )
 }
 
 thread_local! {
@@ -717,20 +786,28 @@ impl OnlineModel for Sgd {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
-            // `s²`'s weight ages on every row, as `huber`'s does, whatever
-            // the row then teaches (the module docs).
-            self.wsig[j] *= lam;
+            // The cut and the tube are drawn in their scale as the row
+            // arrives (the module docs). Under Huber, `s²`'s weight ages on
+            // every row, as `huber`'s does, whatever the row then teaches;
+            // under epsilon-insensitive the target's spread does, and
+            // learns the row's `y` at once, whatever the fit.
+            let scale = self.scale(j);
+            if let Some(ws) = self.wsig.get_mut(j) {
+                *ws *= lam;
+            }
+            if !self.spread.is_empty() {
+                self.spread.update(j, y[j], lam, weight);
+            }
             let Some(yj) = y[j] else { continue };
             if weight <= 0.0 || !yj.is_finite() {
                 continue;
             }
             let Some(yj) = self.label(yj) else { continue };
-            // The cut and the tube are drawn in the scale as the row
-            // arrives; the row's own residual joins it afterwards, from the
+            let d = self.dloss(p, yj, scale);
+            // The row's own residual joins `s²` afterwards, from the
             // prediction the row reports, as `huber`'s does: a row with no
             // prediction (`min_weight` unmet) adds nothing.
-            let d = self.dloss(p, yj, self.residual_scale(j));
-            if pred[j].is_finite() {
+            if !self.sig2.is_empty() && pred[j].is_finite() {
                 let resid = yj - p;
                 let ws_new = self.wsig[j] + weight;
                 let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
@@ -1030,8 +1107,8 @@ mod tests {
             "symmetric at 0.5"
         );
 
-        // Epsilon-insensitive: exactly zero inside the tube of eps residual
-        // stds, and a tube of no width before the target has a scale.
+        // Epsilon-insensitive: exactly zero inside the tube of eps of the
+        // target's std, and a tube of no width before the target has one.
         let e = m(SgdLoss::EpsilonInsensitive { eps: 1.0 });
         assert_eq!(e.dloss(0.5, 0.0, one), 0.0);
         assert_eq!(e.dloss(1.0, 0.0, one), 0.0, "the boundary is inside");
@@ -1289,7 +1366,11 @@ mod tests {
         // halves are asserted, because the constant-rate behaviour is a real
         // property of this loss rather than a bug. The band is the slope's
         // range over the last 2000 of 30000 rows: a final value alone is one
-        // draw from it.
+        // draw from it. The tube, `eps = 0.02` of the target's std of about
+        // 1.15, is narrower than the noise of up to 0.1, so most rows step;
+        // at `eps = 0.2` it held every residual once the slope reached 1.87
+        // under the constant rate and 1.89 under the annealed one, and both
+        // fits stopped there (docs/PLAN.md task 202).
         let band = |c: SgdCfg| {
             let mut m = Sgd::new(c).unwrap();
             let mut s = 19u64;
@@ -1305,11 +1386,11 @@ mod tests {
             }
             (lo, hi)
         };
-        let mut constant = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.2 });
+        let mut constant = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.02 });
         constant.learning_rate = 0.01;
         let (c_lo, c_hi) = band(constant);
 
-        let mut annealed = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.2 });
+        let mut annealed = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.02 });
         annealed.learning_rate = 0.5;
         annealed.schedule = LearningRate::InvScaling { power: 0.5 };
         let (a_lo, a_hi) = band(annealed);
@@ -1324,11 +1405,12 @@ mod tests {
         );
     }
 
-    /// A residual inside the tube, `eps` residual stds wide, leaves the fit
-    /// alone, and one outside it steps: the "insensitive" of the name. The
-    /// first row has no scale to draw a tube in, so it steps whatever its
-    /// residual; its residual, 1, is the scale the next rows are judged in
-    /// (docs/PLAN.md task 195, U1).
+    /// A residual inside the tube, `eps` of the target's own std wide,
+    /// leaves the fit alone, and one outside it steps: the "insensitive" of
+    /// the name. The first two rows, 1 and 3, have no spread to draw a tube
+    /// in, so each steps whatever its residual; they give the target a
+    /// spread of 1, the unit the next rows are judged in (docs/PLAN.md task
+    /// 202). The Huber scale is not kept under this loss.
     #[test]
     fn epsilon_insensitive_ignores_residuals_inside_the_tube() {
         let mut c = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.8 });
@@ -1336,15 +1418,68 @@ mod tests {
         c.min_weight = 0.0;
         let mut m = Sgd::new(c).unwrap();
         m.step(&[1.0], &[Some(1.0)], 0.0, 1.0);
-        let first = m.coefficients()[0].clone();
-        assert_eq!(first, vec![0.01, 0.01], "no scale yet: a step");
-        assert_eq!(m.sigma2(), &[1.0]);
-        // The prediction is now 0.02: a residual of 0.5 is inside 0.8 · 1.
-        m.step(&[1.0], &[Some(0.52)], 1.0, 1.0);
-        assert_eq!(m.coefficients()[0], first, "inside the tube");
-        // s² is now (1 + 0.25) / 2, so the tube is 0.8 · 0.79 = 0.63.
-        m.step(&[1.0], &[Some(0.72)], 1.0, 1.0);
-        assert_ne!(m.coefficients()[0], first, "outside the tube");
+        assert_eq!(m.coefficients()[0], vec![0.01, 0.01], "no spread: a step");
+        assert_eq!(m.target_variance(), vec![0.0]);
+        m.step(&[1.0], &[Some(3.0)], 1.0, 1.0);
+        let second = m.coefficients()[0].clone();
+        assert_eq!(second, vec![0.02, 0.02], "one row has no spread: a step");
+        assert_eq!(m.target_variance(), vec![1.0]);
+        assert!(m.sigma2().is_empty(), "no residual scale under this loss");
+        // The prediction is now 0.04: a residual of 0.5 is inside 0.8 · 1.
+        m.step(&[1.0], &[Some(0.54)], 1.0, 1.0);
+        assert_eq!(m.coefficients()[0], second, "inside the tube");
+        // The third row joined the spread; a residual just past the tube
+        // it draws now steps.
+        let tube = 0.8 * m.target_variance()[0].sqrt();
+        m.step(&[1.0], &[Some(0.04 + tube + 0.01)], 1.0, 1.0);
+        assert_ne!(m.coefficients()[0], second, "outside the tube");
+    }
+
+    /// Each scale a loss draws in is kept exactly under that loss, one per
+    /// target: the residual's under Huber, the target's own under
+    /// epsilon-insensitive, neither under the rest. A state carrying one
+    /// its loss does not read, or missing one it does, is refused as it is
+    /// read (docs/PLAN.md task 202).
+    #[test]
+    fn a_state_is_refused_when_its_scales_disagree_with_its_loss() {
+        let json = |loss: SgdLoss| {
+            let mut c = cfg(2, loss);
+            c.decay = Decay::Halflife(50.0); // JSON has no `inf`
+            c.n_targets = 2;
+            serde_json::to_value(Sgd::new(c).unwrap()).unwrap()
+        };
+        let loads = |v: &serde_json::Value| serde_json::from_value::<Sgd>(v.clone());
+        let huber = json(SgdLoss::Huber { delta: 1.345 });
+        let tube = json(SgdLoss::EpsilonInsensitive { eps: 0.1 });
+        let squared = json(SgdLoss::Squared);
+        for v in [&huber, &tube, &squared] {
+            assert!(loads(v).is_ok(), "the control");
+        }
+        assert_eq!(huber["sig2"].as_array().unwrap().len(), 2);
+        assert_eq!(tube["spread"].as_array().unwrap().len(), 2);
+        for field in ["sig2", "wsig", "spread"] {
+            assert!(squared[field].as_array().unwrap().is_empty(), "{field}");
+        }
+        assert!(huber["spread"].as_array().unwrap().is_empty());
+        assert!(tube["sig2"].as_array().unwrap().is_empty());
+
+        let mut lost = huber.clone();
+        lost["sig2"] = serde_json::json!([]);
+        let err = loads(&lost).unwrap_err().to_string();
+        assert!(err.contains("residual variances do not match"), "{err}");
+        let mut stray = squared.clone();
+        stray["wsig"] = huber["wsig"].clone();
+        let err = loads(&stray).unwrap_err().to_string();
+        assert!(err.contains("residual variances do not match"), "{err}");
+
+        let mut lost = tube.clone();
+        lost["spread"].as_array_mut().unwrap().pop();
+        let err = loads(&lost).unwrap_err().to_string();
+        assert!(err.contains("target spreads do not match"), "{err}");
+        let mut stray = huber.clone();
+        stray["spread"] = tube["spread"].clone();
+        let err = loads(&stray).unwrap_err().to_string();
+        assert!(err.contains("target spreads do not match"), "{err}");
     }
 
     #[test]
@@ -2122,10 +2257,140 @@ mod tests {
         }
     }
 
-    /// `eps` is in units of σ too: a target whose spread is under 0.1 of its
-    /// own units -- a return in decimal -- is learned. In the target's units
-    /// every residual sat inside the tube, so the model was passive for
-    /// ever and every coefficient stayed 0 (review round 4, CC4).
+    /// Under `epsilon_insensitive` a target scaled by a power of two, with
+    /// the learning rate scaled by it -- the rate of a sign-valued gradient
+    /// is in the target's units (the module docs) -- fits as the unscaled
+    /// one does, scaled by it, to the bit: the band is in units of the
+    /// target's own spread, which scales with it exactly. The stream sits at
+    /// a level of 1,000 in a spread of 2, under a decay and irregular
+    /// weights (docs/PLAN.md task 202).
+    #[test]
+    fn the_band_scales_with_the_target() {
+        let run = |c: f64| -> Vec<u64> {
+            let mut cf = cfg(2, SgdLoss::EpsilonInsensitive { eps: 0.1 });
+            cf.standardize = true;
+            cf.clip_gradient = f64::INFINITY;
+            cf.decay = Decay::Halflife(50.0);
+            cf.learning_rate = 5.0 * c;
+            cf.schedule = LearningRate::InvScaling { power: 0.5 };
+            let mut m = Sgd::new(cf).unwrap();
+            let mut s = 5u64;
+            (0..600)
+                .map(|i| {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = c * (1000.5 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s));
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let w = 0.5 + lcg(&mut s).abs();
+                    bits_of(m.step(&x, &[Some(y)], d, w).pred[0] / c)
+                })
+                .collect()
+        };
+        let one = run(1.0);
+        for c in [2f64.powi(-10), 2f64.powi(10)] {
+            let scaled = run(c);
+            let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
+            assert_eq!(differ, 0, "at scale {c}: {differ} of 600 rows differ");
+        }
+    }
+
+    /// A target held at one value has no spread, so under
+    /// `epsilon_insensitive` it has no band: every row teaches, and an
+    /// annealed rate takes the fit to the value from zero, at a level of
+    /// 1,000, with or without decay. A band in the residual's spread was
+    /// drawn from the first residuals, the whole level, and without decay
+    /// the fit stopped short of the value by most of it for good
+    /// (docs/PLAN.md task 202).
+    #[test]
+    fn a_target_held_constant_is_learned_under_epsilon_insensitive() {
+        for half_life in [f64::INFINITY, 500.0] {
+            let mut cf = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.1 });
+            cf.standardize = true;
+            cf.decay = Decay::Halflife(half_life);
+            cf.learning_rate = 10.0;
+            cf.schedule = LearningRate::InvScaling { power: 0.5 };
+            cf.min_weight = 2.0;
+            let mut m = Sgd::new(cf).unwrap();
+            let mut s = 3u64;
+            let mut last = f64::NAN;
+            for i in 0..20_000 {
+                let x = [lcg(&mut s)];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                last = m.step(&x, &[Some(1000.0)], d, 1.0).pred[0];
+            }
+            assert!(
+                (last - 1000.0).abs() < 1.0,
+                "half-life {half_life}: the last prediction {last}"
+            );
+        }
+    }
+
+    /// The Huber loss and the squared loss are where they were before the
+    /// band moved to the target's spread, to the bit: every prediction of a
+    /// 400-row stream, under a decay, irregular weights, null targets and
+    /// outliers the Huber cut binds on, digested, and three of them pinned
+    /// as they print. `huber_delta` stays in units of the residual's
+    /// spread: outside its cut the gradient is clipped, not zero, so a fit
+    /// from zero still learns from rows the cut holds (docs/PLAN.md task
+    /// 202). The digests are BASE's, task 195's build.
+    #[test]
+    fn the_huber_and_squared_losses_did_not_move() {
+        let run = |loss: SgdLoss| {
+            let mut cf = cfg(2, loss);
+            cf.standardize = true;
+            cf.decay = Decay::Halflife(80.0);
+            cf.learning_rate = 0.05;
+            cf.min_weight = 3.0;
+            let mut m = Sgd::new(cf).unwrap();
+            let mut s = 17u64;
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            let mut got = Vec::new();
+            for i in 0..400 {
+                let x = [lcg(&mut s), 3.0 + lcg(&mut s)];
+                let outlier = if i % 41 == 7 { 25.0 } else { 0.0 };
+                let y =
+                    (i % 17 != 3).then(|| 5.0 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s) + outlier);
+                let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+                let w = if i % 23 == 9 {
+                    0.0
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                let p = m.step(&x, &[y], d, w).pred[0];
+                for byte in bits_of(p).to_le_bytes() {
+                    h = (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                }
+                if matches!(i, 50 | 200 | 399) {
+                    got.push(p);
+                }
+            }
+            (h, got)
+        };
+        let huber = run(SgdLoss::Huber { delta: 1.345 });
+        let squared = run(SgdLoss::Squared);
+        println!("huber {huber:x?}\nsquared {squared:x?}");
+        assert_ne!(huber.0, squared.0, "the cut binds on the outliers");
+        for ((h, got), (digest, picks)) in [huber, squared].into_iter().zip([
+            (
+                0xda43_d932_d296_5ec1_u64,
+                [3.7976722379413657, 0.976978012937296, 0.6638305109704488],
+            ),
+            (
+                0x3120_f021_8fd9_4f0e_u64,
+                [7.130832799141092, 1.4237372852832841, 0.08038778685063219],
+            ),
+        ]) {
+            assert_eq!(h, digest, "picks {got:?}");
+            for (g, w) in got.iter().zip(picks) {
+                assert_eq!(g.to_bits(), f64::to_bits(w), "{got:?}");
+            }
+        }
+    }
+
+    /// `eps` is in units of the target's spread: a target whose spread is
+    /// under 0.1 of its own units -- a return in decimal -- is learned. In
+    /// the target's units every residual sat inside the tube, so the model
+    /// was passive for ever and every coefficient stayed 0 (review round 4,
+    /// CC4).
     #[test]
     fn a_target_smaller_than_the_tube_in_its_own_units_is_learned() {
         let mut cf = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.1 });
@@ -2242,5 +2507,63 @@ mod tests {
             );
         }
         assert!(seen.len() > 150, "{} rows taught it", seen.len());
+    }
+
+    /// Under `epsilon_insensitive` the tube's unit is its definition:
+    /// the target's EW variance around its EW mean, `Σ ωᵢ (yᵢ − m)² / Σ ωᵢ`
+    /// with `m = Σ ωᵢ yᵢ / Σ ωᵢ`, over the rows that carried the target
+    /// with a weight above 0, the rows before `min_weight` included, `ωᵢ`
+    /// aged by the model's decay over every row since, rebuilt from the
+    /// history at every row in two passes, not by the recursion. Irregular
+    /// steps and weights, null targets and rows of weight 0, at a level of
+    /// 1,000 (docs/PLAN.md task 202).
+    #[test]
+    fn the_target_variance_is_the_ew_variance_of_the_target() {
+        let mut c = cfg(2, SgdLoss::EpsilonInsensitive { eps: 0.1 });
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 3.0;
+        c.standardize = true;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        let mut s = 7u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i % 9 != 4).then(|| 1000.0 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s));
+            let w = if i % 13 == 6 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 + lcg(&mut s).abs() };
+            let lam = c.decay.factor(d);
+            m.step(&x, &[y], d, w);
+            for (_, wi) in seen.iter_mut() {
+                *wi *= lam;
+            }
+            if let Some(v) = y
+                && w > 0.0
+            {
+                seen.push((v, w));
+            }
+            let total: f64 = seen.iter().map(|(_, wi)| wi).sum();
+            let want = if seen.len() < 2 {
+                0.0
+            } else {
+                let mean = seen.iter().map(|(v, wi)| v * wi).sum::<f64>() / total;
+                seen.iter()
+                    .map(|(v, wi)| wi * (v - mean) * (v - mean))
+                    .sum::<f64>()
+                    / total
+            };
+            let got = m.target_variance()[0];
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "row {i}: s_y² {got} against {want}"
+            );
+            let unit = m.scale(0);
+            assert_eq!(unit, (got > 0.0).then(|| got.sqrt()), "row {i}");
+        }
+        assert!(seen.len() > 150, "{} rows taught it", seen.len());
+        assert!(m.sigma2().is_empty(), "no residual scale under this loss");
     }
 }

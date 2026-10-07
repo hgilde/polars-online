@@ -2434,7 +2434,7 @@ class TestPassiveAggressiveIsRivers:
     states (D10). Measured: ``2e-15`` on the predictions and ``9e-16`` on
     the coefficients over 500 rows, once river is given the loss it
     documents (see :func:`_river_pa`). River's ``eps`` is in the target's
-    units and ours in the residual's EW std (docs/PLAN.md task 195, U1), so
+    units and ours in the target's own EW std (docs/PLAN.md task 202), so
     the two are held at ``eps = 0``, which is no tube in either; and ours on
     the raw features, as river reads them."""
 
@@ -3506,9 +3506,10 @@ class TestSgdIsScikitLearnsSgd:
     weights with no decay, ``t`` counting rows from 1. Measured: 1.0e-15
     relative or less. The Poisson loss and the AdaGrad schedule have no
     scikit-learn twin and stay with ``sgd_ref``. Nor, since task 195, has a
-    Huber cut or a tube of positive width: ours are in units of the
-    residual's EW std (U1), scikit-learn's ``epsilon`` in the target's, so
-    the epsilon-insensitive loss is held at ``eps = 0`` -- the sign of the
+    Huber cut or a tube of positive width: our cut is in units of the
+    residual's EW std (U1) and our tube in the target's own EW std (task
+    202), where scikit-learn's ``epsilon`` is a fixed number in the target's
+    units, so the epsilon-insensitive loss is held at ``eps = 0`` -- the sign of the
     residual, which is the step's whole shape outside a tube -- and the
     clamp to ``sgd_ref``. Ours steps on the raw features here, as
     scikit-learn's ``partial_fit`` does."""

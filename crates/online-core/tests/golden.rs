@@ -1571,13 +1571,15 @@ const GOLDEN_SGD_SQUARED: &[f64] = &[
     -0.007974524370910653,
 ];
 // Regenerated for task 195 (2026-10-07): `eps` is in units of the residual's
-// EW std (U1), the tube 0.05·σ where it was 0.05 of the target.
-// `tests/reference_paths.py::pa_ref`, written from the docstring, gives
+// EW std (U1), the tube 0.05·σ where it was 0.05 of the target. Again for
+// task 202 (the same day): `eps` is in units of the target's own EW std, the
+// tube 0.05·σ_y. `tests/reference_paths.py::pa_ref`, written from the
+// docstring with `σ_y²` the EW variance of `y` from its definition, gives
 // these to the bit on this stream, and the same recursion with the box and
-// the sum projected gives `GOLDEN_PA_BOX`'s to 6e-16.
-const GOLDEN_PA: &[f64] = &[0.32828759676094155, 2.150099331537884, -0.05475595006868121];
+// the sum projected gives `GOLDEN_PA_BOX`'s to 8e-17.
+const GOLDEN_PA: &[f64] = &[0.3512828551618081, 2.136865004465535, -0.062000906653408974];
 const GOLDEN_SGD_SIMPLEX: &[f64] = &[0.5169094734826561, 1.109247996359838, -0.020146022626397198];
-const GOLDEN_PA_BOX: &[f64] = &[0.5437994410205795, 1.6916555501733417, 0.18817111678844467];
+const GOLDEN_PA_BOX: &[f64] = &[0.5262123538733023, 1.6796740252199436, 0.1566262229378625];
 // Re-frozen 2026-09-13: a null target is transparent to `holt` now -- the
 // next observed row forecasts over the clock since the last one -- where the
 // level stood still across it (review 2026-09-12, C22). Row 20 comes before

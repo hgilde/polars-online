@@ -5,7 +5,7 @@
 //! coefficients that satisfies it. Passive when the constraint already holds,
 //! aggressive when it does not; there is no learning rate to tune.
 //!
-//! With `p = z·b`, `loss = max(0, |y − p| − eps·σ)` and `s = ||z||²`:
+//! With `p = z·b`, `loss = max(0, |y − p| − eps·σ_y)` and `s = ||z||²`:
 //!
 //! ```text
 //! PA    tau = loss / s                    (unbounded step)
@@ -19,17 +19,23 @@
 //! `PARegressor` and sklearn keep the intercept outside the norm: the one
 //! difference T-S18 has to map (review 2026-09-12, D10).
 //!
-//! **The tube is in units of `σ`**, the target's EW residual standard
-//! deviation as the row arrives, as `huber`'s `huber_delta` is: `σ²` is
-//! the EW mean of the squared out-of-sample residual, aged on every row
-//! and learned from a row with the target, a weight above 0 and a
-//! prediction, after the row has used it -- `sgd`'s and `huber`'s rule,
-//! and before the target has one the tube has no width. A tube in the
-//! target's own units left a target in hundredths inside it on every row,
-//! passive for ever: every prediction 0.0 and R² -0.051 where the unscaled
-//! target scored 0.961 (docs/PLAN.md task 195, review round 4 CC4). Under
-//! the unbounded step a target scaled by `c` then fits as the unscaled one,
-//! scaled by `c`; `C` caps `tau` in the target's units over `s`'s.
+//! **The tube is in units of `σ_y`**, the target's own EW standard
+//! deviation as the row arrives: the spread of `y` around its EW mean, over
+//! the rows that carried the target with a weight above 0, on the model's
+//! clock, the row's own `y` joining after it is judged
+//! ([`crate::spread`]). Until the target has a spread -- fewer than two
+//! weighted rows, or every `y` the same -- the tube has no width and every
+//! row teaches. A tube in the target's own units left a target in
+//! hundredths inside it on every row, passive for ever: every prediction
+//! 0.0 and R² -0.051 where the unscaled target scored 0.961 (docs/PLAN.md
+//! task 195, review round 4 CC4). Under the unbounded step a target scaled
+//! by `c` then fits as the unscaled one, scaled by `c`; `C` caps `tau` in
+//! the target's units over `s`'s. The tube was drawn in the residual's
+//! spread at first, as `huber`'s cut is, and a fit from zero coefficients
+//! has the target's whole level for its first residuals: a target at 1,000
+//! in a spread of 2 drew a tube about 100 wide, held every later row in it,
+//! and without decay never narrowed it, R² −52 at a half-life of 1e9
+//! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
 //! **`standardize`** reads `z` as the features standardized against their
 //! EW moments with the row admitted, `sgd`'s scaler and its rule
@@ -46,23 +52,26 @@
 //! no weight, so a comparison with either holds for `w <= 1` only (T-S18;
 //! D10).
 //!
-//! **Decay note.** Unlike every other model here, PA keeps no accumulators, so
-//! there is nothing for the clock to decay: each step fully satisfies the
+//! **Decay note.** The coefficients keep no accumulators, so there is
+//! nothing in them for the clock to decay: each step fully satisfies the
 //! current row's constraint and older rows survive only through the
-//! coefficients they left behind. `n_eff` is still decayed on the clock so
-//! `min_weight` means the same thing as elsewhere, but the coefficients
-//! themselves have no half-life -- so after a gap `min_weight` can withhold
-//! a fit exactly as good as the one before it, which is `ewridge`'s behaviour
-//! too (a mean-form fit does not move on a gap either): the library's
-//! convention rather than `pa`'s (CLAUDE.md rule 8; D10). Use PA-I/PA-II (a
-//! finite `c`) when that aggressiveness is a problem: an outlier otherwise
-//! moves the fit as far as it takes to satisfy the outlier.
+//! coefficients they left behind. The clock decays `n_eff`, so
+//! `min_weight` means the same thing as elsewhere, and it decays each
+//! target's own weight, the scaler under `standardize` and the target's
+//! spread the tube is drawn in. The coefficients have no half-life -- so after
+//! a gap `min_weight` can withhold a fit exactly as good as the one before
+//! it, which is `ewridge`'s behaviour too (a mean-form fit does not move on
+//! a gap either): the library's convention rather than `pa`'s (CLAUDE.md
+//! rule 8; D10). Use PA-I/PA-II (a finite `c`) when that aggressiveness is
+//! a problem: an outlier otherwise moves the fit as far as it takes to
+//! satisfy the outlier.
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::sgd::{scales_of, standardized, unscaled};
 use crate::solve::dot_aug;
+use crate::spread::TargetSpread;
 use crate::{Constraint, Decay, EwDiag};
 
 /// Which passive-aggressive variant (see the module docs).
@@ -90,8 +99,9 @@ pub struct PaCfg {
     /// `standardize`. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
     /// either bounded mode is [`PaMode::Pa`] exactly.
     pub c: f64,
-    /// Half-width of the insensitive tube, in units of the target's EW
-    /// residual std: rows already this close are passive (the module docs).
+    /// Half-width of the insensitive tube, in units of the target's own EW
+    /// standard deviation: rows already this close are passive (the module
+    /// docs).
     pub eps: f64,
     pub min_weight: f64,
     /// Box and/or sum constraint on the slopes, imposed by Euclidean
@@ -146,10 +156,9 @@ pub struct Pa {
     /// `min_weight = 10` with every coefficient at zero.
     #[serde(default)]
     w_target: Vec<f64>,
-    /// Per target, the EW variance of the out-of-sample residual, `σ²`, and
-    /// its weight: the scale `eps` is in (the module docs).
-    sig2: Vec<f64>,
-    wsig: Vec<f64>,
+    /// Per target, the EW mean and variance of the target itself: the unit
+    /// `eps` is in (the module docs; docs/PLAN.md task 202).
+    spread: TargetSpread,
     /// The row the model sees, `[1, z]`: the features as they stand, or
     /// standardized under a scaler.
     #[serde(skip)]
@@ -188,8 +197,7 @@ impl Pa {
             beta,
             w_sum: 0.0,
             w_target: vec![0.0; m],
-            sig2: vec![0.0; m],
-            wsig: vec![0.0; m],
+            spread: TargetSpread::new(m),
             zbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
@@ -222,21 +230,17 @@ impl Pa {
         &self.w_target
     }
 
-    /// Per target, the EW variance of the out-of-sample residual, `σ²`.
-    pub fn sigma2(&self) -> &[f64] {
-        &self.sig2
+    /// Per target, the EW variance of the target itself, `σ_y²`: the
+    /// square of the unit `eps` is in (the module docs).
+    pub fn target_variance(&self) -> Vec<f64> {
+        self.spread.vars()
     }
 
-    /// Target `j`'s tube half-width: `eps·σ` once `σ²` is finite and above
-    /// 0, and no width before -- no residual yet, or every one exactly 0
-    /// (`huber`'s rule).
+    /// Target `j`'s tube half-width: `eps·σ_y` once `σ_y²` is finite and
+    /// above 0, and no width before -- fewer than two weighted rows, or
+    /// every `y` the same ([`crate::spread`]).
     fn tube(&self, j: usize) -> f64 {
-        let s2 = self.sig2[j];
-        if s2 > 0.0 && s2.is_finite() {
-            self.cfg.eps * s2.sqrt()
-        } else {
-            0.0
-        }
+        self.spread.band(j, self.cfg.eps)
     }
 
     fn ensure_buffers(&mut self) {
@@ -311,8 +315,12 @@ impl OnlineModel for Pa {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
-            // `σ²`'s weight ages on every row, as `huber`'s does.
-            self.wsig[j] *= lam;
+            // The tube is drawn in the target's spread as the row arrives;
+            // the row's own `y` joins it afterwards, whatever the fit, and
+            // a row without the target or of weight 0 only ages it (the
+            // module docs).
+            let tube = self.tube(j);
+            self.spread.update(j, y[j], lam, weight);
             let Some(yj) = y[j] else { continue };
             // `p` overflows when a feature at the input bound meets a large
             // coefficient; a step from an infinite loss would be permanent.
@@ -320,18 +328,6 @@ impl OnlineModel for Pa {
                 continue;
             }
             let err = yj - p;
-            // The tube is drawn in the scale as the row arrives; the row's
-            // own residual joins it afterwards, from the prediction the row
-            // reports, as `huber`'s does (the module docs).
-            let tube = self.tube(j);
-            if pred[j].is_finite() {
-                let ws_new = self.wsig[j] + weight;
-                let s2 = (self.wsig[j] * self.sig2[j] + weight * err * err) / ws_new;
-                if s2.is_finite() {
-                    self.sig2[j] = s2;
-                    self.wsig[j] = ws_new;
-                }
-            }
             if sq_norm <= 0.0 {
                 continue;
             }
@@ -455,9 +451,9 @@ impl OnlineModel for Pa {
                         "pa: the target weights have the wrong shape".into(),
                     ));
                 }
-                if m.sig2.len() != n || m.wsig.len() != n {
+                if !m.spread.has_shape(n) {
                     return Err(StateError::Invalid(
-                        "pa: the residual variances have the wrong shape".into(),
+                        "pa: the target spreads have the wrong shape".into(),
                     ));
                 }
                 // A scaler exactly when `standardize` is on, at the cfg's
@@ -613,8 +609,8 @@ mod tests {
             m.coefficients()[0].clone()
         };
         // z = [1, 2] (intercept first), so |z|^2 = 5. beta starts at 0, so
-        // err = y; and the target has no residual scale yet, so the tube has
-        // no width and loss = |y| (the module docs; docs/PLAN.md task 195).
+        // err = y; and the target has no spread yet, so the tube has no
+        // width and loss = |y| (the module docs; docs/PLAN.md task 202).
         let (y, sq_norm) = (3.0, 5.0);
         let loss = y;
 
@@ -650,24 +646,36 @@ mod tests {
 
     #[test]
     fn inside_the_insensitivity_band_nothing_moves() {
-        // `loss == 0.0 => continue`: an error smaller than eps residual stds
-        // leaves the coefficients untouched, which is the "passive" half of
-        // the name. The first row's residual is the target's scale: 5.
+        // `loss == 0.0 => continue`: an error smaller than eps of the
+        // target's std leaves the coefficients untouched, which is the
+        // "passive" half of the name. Two rows, 4 and 6, give the target a
+        // spread of 1, `((4 - 5)² + (6 - 5)²) / 2`; before it, no band, so
+        // both teach.
         let mut c = cfg(1, PaMode::Pa);
-        c.eps = 0.2;
+        c.eps = 0.5;
         c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
-        m.step(&[1.0], &[Some(5.0)], 0.0, 1.0);
+        m.step(&[1.0], &[Some(4.0)], 0.0, 1.0);
+        assert_eq!(m.target_variance(), vec![0.0], "one row: no spread");
+        let first = m.coefficients()[0].clone();
+        m.step(&[1.0], &[Some(6.0)], 1.0, 1.0);
         let moved = m.coefficients()[0].clone();
-        assert!(moved[1] != 0.0, "the first row is outside the band");
-        assert_eq!(m.sigma2(), &[25.0]);
+        assert!(moved != first, "the second row teaches: no band yet");
+        assert_eq!(m.target_variance(), vec![1.0]);
 
-        // Now feed a row it already predicts to within eps·σ = 1.
+        // Now feed a row it already predicts to within eps·σ_y = 0.5.
         let p: f64 = moved[0] + moved[1];
-        m.step(&[1.0], &[Some(p + 0.5)], 1.0, 1.0);
+        assert_eq!(p, 6.0, "the unbounded step lands on the row");
+        m.step(&[1.0], &[Some(p + 0.4)], 1.0, 1.0);
         assert_eq!(m.coefficients()[0], moved, "inside the band: passive");
-        // σ² is now (25 + 0.25) / 2, so the tube is 0.2·3.55 = 0.71.
-        m.step(&[1.0], &[Some(p + 1.5)], 1.0, 1.0);
+        // The third row joined the spread: `σ_y²` is the variance of 4, 6
+        // and 6.4 about their mean, written out below.
+        let ys = [4.0, 6.0, 6.4];
+        let mean = ys.iter().sum::<f64>() / 3.0;
+        let var = ys.iter().map(|y| (y - mean) * (y - mean)).sum::<f64>() / 3.0;
+        let band = 0.5 * m.target_variance()[0].sqrt();
+        assert!((band - 0.5 * var.sqrt()).abs() < 1e-12, "{band}");
+        m.step(&[1.0], &[Some(p + band + 0.01)], 1.0, 1.0);
         assert_ne!(m.coefficients()[0], moved, "outside the band: aggressive");
     }
 
@@ -701,19 +709,23 @@ mod tests {
     #[test]
     fn passive_inside_the_tube() {
         // With a wide tube and a target already inside it, nothing moves
-        // after the first row, which has no scale to draw a tube in and so
-        // teaches; its residual is the scale every later row is inside.
+        // after the first two rows, which have no spread to draw a tube in
+        // and so teach; their two values, 0.4 and 0.6, give the target a
+        // spread every later row is well inside.
         let mut c = cfg(1, PaMode::Pa1);
         c.eps = 10.0;
         c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
-        m.step(&[1.0], &[Some(0.5)], 0.0, 1.0);
+        m.step(&[1.0], &[Some(0.4)], 0.0, 1.0);
         let first = m.coefficients()[0].clone();
         assert_ne!(first, vec![0.0, 0.0], "the first row teaches");
+        m.step(&[1.0], &[Some(0.6)], 1.0, 1.0);
+        let second = m.coefficients()[0].clone();
+        assert_ne!(second, first, "and so does the second");
         for i in 0..100 {
             m.step(&[1.0], &[Some(0.5 + 0.01 * f64::from(i % 3))], 1.0, 1.0);
         }
-        assert_eq!(m.coefficients()[0], first);
+        assert_eq!(m.coefficients()[0], second);
     }
 
     #[test]
@@ -1083,41 +1095,148 @@ mod tests {
         );
     }
 
-    /// `eps` is in units of the target's EW residual standard deviation σ,
-    /// as `huber`'s `huber_delta` is: a target scaled by a power of two fits
-    /// as the unscaled one does, scaled by it, to the bit, under the
+    /// `eps` is in units of the target's own EW standard deviation, and
+    /// that unit scales with the target: a target scaled by a power of two
+    /// fits as the unscaled one does, scaled by it, to the bit, under the
     /// unbounded step, whose `tau = loss / |z|²` scales with the target (a
-    /// finite `c` caps it in the target's units). In the target's units a
-    /// target in thousandths sat inside the tube on every row, passive for
-    /// ever, and one in thousands never did (review round 4, CC4;
-    /// docs/PLAN.md task 195, U1).
+    /// finite `c` caps it in the target's units). The stream sits at a level
+    /// of 1,000 in a spread of 2, with and without the scaler. In the
+    /// target's units a target in thousandths sat inside the tube on every
+    /// row, passive for ever, and one in thousands never did (review round
+    /// 4, CC4; docs/PLAN.md task 195, U1, and task 202).
     #[test]
-    fn the_tube_is_in_units_of_the_residual_std() {
-        let run = |c: f64| -> Vec<u64> {
-            let mut cf = cfg(2, PaMode::Pa);
-            cf.eps = 0.1;
-            cf.min_weight = 0.0;
-            let mut m = Pa::new(cf).unwrap();
-            let mut s = 5u64;
-            (0..400)
-                .map(|i| {
-                    let x = [lcg(&mut s), lcg(&mut s)];
-                    let y = c * (0.5 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s));
-                    let d = if i == 0 { 0.0 } else { 1.0 };
-                    let p = m.step(&x, &[Some(y)], d, 1.0).pred[0] / c;
-                    if p.is_nan() {
-                        f64::NAN.to_bits()
-                    } else {
-                        p.to_bits()
-                    }
+    fn the_band_scales_with_the_target() {
+        for standardize in [false, true] {
+            let run = |c: f64| -> Vec<u64> {
+                let mut cf = cfg(2, PaMode::Pa);
+                cf.eps = 0.1;
+                cf.min_weight = 0.0;
+                cf.standardize = standardize;
+                let mut m = Pa::new(cf).unwrap();
+                let mut s = 5u64;
+                (0..400)
+                    .map(|i| {
+                        let x = [lcg(&mut s), lcg(&mut s)];
+                        let y = c * (1000.5 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s));
+                        let d = if i == 0 { 0.0 } else { 1.0 };
+                        let p = m.step(&x, &[Some(y)], d, 1.0).pred[0] / c;
+                        if p.is_nan() {
+                            f64::NAN.to_bits()
+                        } else {
+                            p.to_bits()
+                        }
+                    })
+                    .collect()
+            };
+            let one = run(1.0);
+            for c in [2f64.powi(-10), 2f64.powi(10)] {
+                let scaled = run(c);
+                let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
+                assert_eq!(
+                    differ, 0,
+                    "standardize {standardize}, at scale {c}: {differ} of 400 rows differ"
+                );
+            }
+        }
+    }
+
+    /// `y = level + 0.5 + 2x + 0.3·noise`, `x` and the noise of unit
+    /// variance: a spread of about 2 around `level`. Rows of `(x, y)`.
+    fn level_stream(level: f64, n: usize, seed: u64) -> Vec<(f64, f64)> {
+        let mut s = seed;
+        let root3 = 3f64.sqrt();
+        (0..n)
+            .map(|_| {
+                let x = root3 * lcg(&mut s);
+                (x, level + 0.5 + 2.0 * x + 0.3 * root3 * lcg(&mut s))
+            })
+            .collect()
+    }
+
+    /// R² of the predictions of rows `from..` against their targets.
+    fn r2_from(preds: &[f64], ys: &[f64], from: usize) -> f64 {
+        let (p, y) = (&preds[from..], &ys[from..]);
+        let mean = y.iter().sum::<f64>() / y.len() as f64;
+        let sse: f64 = p.iter().zip(y).map(|(p, y)| (y - p) * (y - p)).sum();
+        let sst: f64 = y.iter().map(|y| (y - mean) * (y - mean)).sum();
+        1.0 - sse / sst
+    }
+
+    /// `pa` at the builder's defaults -- `pa1`, `c = 1`, `eps = 0.1`, the
+    /// scaler on, `min_weight` 2 -- on a target at a level of 1,000 in a
+    /// spread of about 2 fits rows 10,000 to 20,000 as it fits the same
+    /// target at 0, with or without decay. The fit starts from zero
+    /// coefficients, so its first residuals are the whole level: a band in
+    /// units of the residual's spread learned from them was about 100 wide,
+    /// every later row inside it, and without decay nothing ever narrowed
+    /// it: R² -52 at a half-life of 1e9 against +0.954 at 500 (task 195's
+    /// report; docs/PLAN.md task 202). The target's own spread is about 2
+    /// from its second row on, whatever the fit.
+    #[test]
+    fn a_target_far_from_zero_is_learned_with_or_without_decay() {
+        for half_life in [1e9, 500.0] {
+            for level in [0.0, 1000.0] {
+                let mut m = Pa::new(PaCfg {
+                    n_features: 1,
+                    n_targets: 1,
+                    fit_intercept: true,
+                    decay: Decay::Halflife(half_life),
+                    mode: PaMode::Pa1,
+                    c: 1.0,
+                    eps: 0.1,
+                    min_weight: 2.0,
+                    constraint: None,
+                    standardize: true,
                 })
-                .collect()
-        };
-        let one = run(1.0);
-        for c in [2f64.powi(-10), 2f64.powi(10)] {
-            let scaled = run(c);
-            let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
-            assert_eq!(differ, 0, "at scale {c}: {differ} of 400 rows differ");
+                .unwrap();
+                let rows = level_stream(level, 20_000, 2);
+                let preds: Vec<f64> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (x, y))| {
+                        let d = if i == 0 { 0.0 } else { 1.0 };
+                        m.step(&[*x], &[Some(*y)], d, 1.0).pred[0]
+                    })
+                    .collect();
+                let ys: Vec<f64> = rows.iter().map(|(_, y)| *y).collect();
+                let r2 = r2_from(&preds, &ys, 10_000);
+                assert!(
+                    r2 > 0.9,
+                    "half-life {half_life}, level {level}: R² of rows 10k-20k {r2:.3}"
+                );
+            }
+        }
+    }
+
+    /// A target held at one value has no spread, so no band: every row
+    /// teaches, and the fit reaches the value, from zero, in every mode: at
+    /// a level of 1,000 under the default cap of 1, which takes a thousand
+    /// rows to climb, and at 1e8 under a cap that does not bind. A band in
+    /// the residual's spread was drawn from the climb's residuals, the
+    /// level itself, and without decay the capped fit stopped short of the
+    /// value by a share of it for good (docs/PLAN.md task 202).
+    #[test]
+    fn a_target_held_constant_is_learned() {
+        for mode in [PaMode::Pa, PaMode::Pa1, PaMode::Pa2] {
+            for (level, c) in [(1000.0, 1.0), (1e8, 1e9)] {
+                let mut cf = cfg(1, mode);
+                cf.c = c;
+                cf.eps = 0.1;
+                cf.min_weight = 2.0;
+                cf.standardize = true;
+                let mut m = Pa::new(cf).unwrap();
+                let mut s = 3u64;
+                let mut last = f64::NAN;
+                for i in 0..4000 {
+                    let x = [lcg(&mut s)];
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    last = m.step(&x, &[Some(level)], d, 1.0).pred[0];
+                }
+                assert!(
+                    (last - level).abs() <= 1e-9 * level,
+                    "{mode:?} at {level}: the last prediction {last}"
+                );
+            }
         }
     }
 
@@ -1165,5 +1284,62 @@ mod tests {
             );
             assert_ne!(run(128.0, false).0, run(1.0, false).0, "{mode:?}: raw");
         }
+    }
+
+    /// The tube's unit is its definition: target `j`'s EW variance around
+    /// its EW mean, `Σ ωᵢ (yᵢ − m)² / Σ ωᵢ` with `m = Σ ωᵢ yᵢ / Σ ωᵢ`, over
+    /// the rows that carried the target with a weight above 0 -- those before
+    /// `min_weight` and those the fit got wrong included, since it does not
+    /// read the fit -- `ωᵢ` aged by the model's decay over every row since,
+    /// rebuilt from the history at every row in two passes, not by the
+    /// recursion. Irregular steps and weights, null targets and rows of
+    /// weight 0, at a level of 1,000 (docs/PLAN.md task 202).
+    #[test]
+    fn the_target_variance_is_the_ew_variance_of_the_target() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, PaMode::Pa1);
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 3.0;
+        c.standardize = true;
+        let mut m = Pa::new(c.clone()).unwrap();
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        let mut s = 7u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i % 9 != 4).then(|| 1000.0 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s));
+            let w = if i % 13 == 6 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 + lcg(&mut s).abs() };
+            let lam = c.decay.factor(d);
+            m.step(&x, &[y], d, w);
+            for (_, wi) in seen.iter_mut() {
+                *wi *= lam;
+            }
+            if let Some(v) = y
+                && w > 0.0
+            {
+                seen.push((v, w));
+            }
+            let total: f64 = seen.iter().map(|(_, wi)| wi).sum();
+            let want = if seen.len() < 2 {
+                0.0
+            } else {
+                let mean = seen.iter().map(|(v, wi)| v * wi).sum::<f64>() / total;
+                seen.iter()
+                    .map(|(v, wi)| wi * (v - mean) * (v - mean))
+                    .sum::<f64>()
+                    / total
+            };
+            let got = m.target_variance()[0];
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "row {i}: σ_y² {got} against {want}"
+            );
+            assert_eq!(m.tube(0), c.eps * got.sqrt(), "row {i}");
+        }
+        assert!(seen.len() > 150, "{} rows taught it", seen.len());
     }
 }

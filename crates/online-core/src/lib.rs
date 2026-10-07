@@ -99,6 +99,7 @@ mod seqtest;
 mod sgd;
 mod since;
 mod solve;
+mod spread;
 mod stats;
 mod window;
 
@@ -526,7 +527,16 @@ pub use window::{
 ///   spec may hold such a table, and its metrics were kept on the other
 ///   centre, so the bank refuses a file older than 43 by number; pre-1.0 no
 ///   loader is written. No model's own state moved.
-pub const SCHEMA_VERSION: u32 = 43;
+/// - 44 (2026-10-07, task 202): an insensitivity band -- `pa`'s `eps`, and
+///   `sgd`'s under `epsilon_insensitive` -- is in units of the target's own
+///   EW standard deviation, so `pa` keeps each target's EW mean and
+///   variance of `y` where it kept a residual variance, and `sgd` keeps
+///   them under `epsilon_insensitive` alone and its residual variance under
+///   `huber` alone. A `pa` or `sgd` state from before 44 does not decode,
+///   and its band meant another number; the bank refuses a file older than
+///   44 by number, and pre-1.0 no loader is written. Every other model's
+///   state loads as it did before.
+pub const SCHEMA_VERSION: u32 = 44;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -554,11 +564,14 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///   spaces them on the clock since 30;
 /// - a windowed `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`, a
 ///   `kmeans` and a `corrchange` from before 41: a ring keeps its edge
-///   since 41, and the two others name their row counts `_rows`.
+///   since 41, and the two others name their row counts `_rows`;
+/// - `pa` and `sgd` from before 44: each keeps the scale its band is drawn
+///   in, the target's own spread, since 44 (task 202), and a residual
+///   scale since 40 (task 195).
 ///
 /// Every other model's state from 14 on decodes and loads. A bank file is
 /// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 43). How the number came
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 44). How the number came
 /// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the

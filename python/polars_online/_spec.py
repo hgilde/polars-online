@@ -1881,6 +1881,13 @@ def huber(
     prediction or with weight 0 included, so it forgets across a gap as the clock
     says.
 
+    The cut stays in the residual's std where the insensitivity bands of
+    :func:`pa` and :func:`sgd` are in the target's own. A row beyond the cut
+    still teaches, at a weight that shrinks with its miss, so a cut that early
+    residuals widen does not stop the fit learning. A row inside a band
+    teaches nothing, so a band that early residuals widen does: a fit from
+    zero coefficients has the target's whole level for its first residuals.
+
     Until a target has an ``s`` above 0, no row is down-weighted. That is before
     its first residual, or while every residual so far is exactly zero, and
     there is then nothing to judge an outlier against. ``s`` was taken as 1
@@ -2574,7 +2581,7 @@ def sgd(
        * - ``epsilon_insensitive``
          - identity
          - ``eta``
-         - 0 within ``eps * s`` of ``y``, else ``sign(p - y)``
+         - 0 within ``eps * s_y`` of ``y``, else ``sign(p - y)``
        * - ``poisson``
          - log
          - ``exp(clamp(eta, +/- 30))``
@@ -2594,12 +2601,24 @@ def sgd(
     residuals, as the row arrives, as for :func:`huber`. Its square is the EW
     mean of ``(y - p) ** 2`` over the rows with the target, a weight above 0
     and a prediction, each joining after its own step; its weight ages on
-    every row. Until the target has an ``s`` above 0 the Huber row is a
-    squared-loss row and the tube has no width. In the target's own units, a
-    cut and a tube fitted one scale and failed the others: a target in
-    thousandths never left a tube of 0.1, so it was never learned, and the
-    cut never bound on it. With ``s``, the squared and Huber losses fit a
-    target scaled by ``c`` as the unscaled one, scaled by ``c``.
+    every row. ``s_y`` is the target's own EW standard deviation as the row
+    arrives: the spread of ``y`` around its EW mean, over the rows with the
+    target and a weight above 0, whatever the fit. Until the target has an
+    ``s`` above 0 the Huber row is a squared-loss row, and until it has an
+    ``s_y`` above 0, two weighted rows of different values, the tube has no
+    width. In the target's own units, a cut and a tube fitted one scale and
+    failed the others: a target in thousandths never left a tube of 0.1, so
+    it was never learned, and the cut never bound on it. With ``s`` and
+    ``s_y``, the squared and Huber losses fit a target scaled by ``c`` as the
+    unscaled one, scaled by ``c``.
+
+    The cut and the tube are in different units because the fit starts from
+    zero coefficients, so its first residuals are the target's whole level.
+    Beyond the cut the Huber gradient is clipped, not zero, so a cut those
+    residuals widen still lets every row teach. Inside the tube the gradient
+    is zero. A tube drawn in the residual's std on a target at 1,000 with a
+    spread of 2 was about 100 wide and held every row. Without decay it never
+    narrowed, and the fit stopped where it stood.
 
     .. rubric:: Parameters
 
@@ -2614,7 +2633,8 @@ def sgd(
     ``quantile``
         The level for ``loss = "quantile"``; required for it.
     ``eps``
-        The half-width of the insensitive tube, in units of ``s``. Default 0.1.
+        The half-width of the insensitive tube, in units of ``s_y``, the
+        target's own std. Default 0.1.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
         ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power`` default 0.5)
@@ -2794,8 +2814,8 @@ def pa(
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Passive-aggressive regression (Crammer et al. 2006): each row asks the fit to
-    come within ``eps`` residual standard deviations of its target, and the update
-    is the smallest change that does so.
+    come within ``eps`` of the target's own standard deviation of its target, and
+    the update is the smallest change that does so.
 
     Passive when the constraint already holds, aggressive when it does not, and
     there is no learning rate to tune. O(k) per row, like :func:`sgd`.
@@ -2812,20 +2832,27 @@ def pa(
         pa2   tau = loss / (s + 1 / (2c))    (damped by c)
         b    += min(w, 1) * tau * sign(y - p) * z
 
-    ``sigma`` is the EW standard deviation of the target's out-of-sample
-    residuals, as the row arrives, as for :func:`huber` and :func:`sgd`: its
-    square is the EW mean of ``(y - p) ** 2`` over the rows with the target, a
-    weight above 0 and a prediction, each joining after its own step, and its
-    weight ages on every row. Before the target has a ``sigma`` above 0 the tube
-    has no width. In the target's own units a tube of 0.1 held a target in
+    ``sigma`` is the target's own EW standard deviation as the row arrives, as
+    for :func:`sgd`'s tube: the spread of ``y`` around its EW mean, over the
+    rows with the target and a weight above 0, whatever the fit, each ``y``
+    joining after its own row is judged. Before the target has a ``sigma`` above
+    0, two weighted rows of different values, the tube has no width and every
+    row teaches. In the target's own units a tube of 0.1 held a target in
     hundredths on every row: passive for ever, every prediction 0.0 and R² -0.05
     where the same target unscaled scored 0.96. Under ``"pa"`` a target scaled
     by ``k`` fits as the unscaled one, scaled by ``k``.
 
-    The model keeps no accumulators, so there is nothing for the clock to decay:
-    each step fully satisfies the current row, and older rows survive only through
-    the coefficients they left behind. ``weight_sum`` still decays, so ``min_weight``
-    means the same thing as elsewhere, but the coefficients have no half-life.
+    ``sigma`` is not the residual's std, as :func:`huber`'s cut is. The fit
+    starts from zero coefficients, so its first residuals are the target's
+    whole level. On a target at 1,000 with a spread of 2, a tube drawn from
+    them was about 100 wide and held every row. Without decay it never
+    narrowed: R² -52 at a half-life of 1e9.
+
+    The coefficients keep no accumulators, so there is nothing in them for the
+    clock to decay: each step fully satisfies the current row, and older rows
+    survive only through the coefficients they left behind. The clock decays
+    ``weight_sum``, so ``min_weight`` means the same thing as elsewhere, and
+    it decays the scaler and ``sigma``; the coefficients have no half-life.
 
     .. rubric:: Parameters
 
@@ -2895,7 +2922,7 @@ def pa(
         pa = po.spec.pa(
             "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
             mode="pa1", c=0.1,   # the step is capped at c
-            eps=0.05,            # within 0.05 residual stds nothing moves
+            eps=0.05,            # within 0.05 of the target's std nothing moves
         )
         out = po.ModelBank([pa]).fit_predict(df)
 
@@ -4404,10 +4431,19 @@ def bocpd(
              - each row weighted by ``(pi(x) / pi(mode)) ** robust_beta`` in
                what the run learns and in the message it passes on
              - a 20-sigma row is atypical under every run, every tempered
-               likelihood is about 1, and nothing moves
+               likelihood is about 1, and nothing moves. Not free of the
+               data's units: centre and scale the features for it
 
         Without ``"robust"`` that one row is a changepoint (``p_change``
         0.91), and the run it starts carries the outlier in its mean.
+        ``"gaussian"`` and ``"diag"`` are free of the data's units: a change of
+        units multiplies every run's predictive density by one constant, which
+        the posterior's normalisation takes out. ``"robust"`` is not. Its
+        tempered message ``pi ** w`` carries that constant as ``c ** w``, and
+        ``w`` differs from run to run, so the runs' odds move with the units. At
+        a level of ``1e4`` with a spread of ``1e-2``, ``p_change`` moved by up
+        to 0.86 against the same stream at level 0 and spread 1. Centre and
+        scale the features before a ``"robust"`` run.
     ``robust_beta``
         The tempering under ``"robust"``. A trade: a whole new regime is a
         run of individually forgiven rows, so above about 0.2 nothing is

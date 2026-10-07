@@ -151,8 +151,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// 201** (2026-10-07): relative targets were removed, so a 42 file's spec
 /// may hold a target table this build refuses, and a ratio target's metrics
 /// were kept about 1 where every target's are now kept about 0; a 42 file
-/// is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 43;
+/// is refit. **44 since task 202** (the same day): an insensitivity band,
+/// `pa`'s `eps` and `sgd`'s under `epsilon_insensitive`, is in units of the
+/// target's own spread, which each keeps where it kept a residual one; a
+/// file from before it is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 44;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
