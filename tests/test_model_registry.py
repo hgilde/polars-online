@@ -23,7 +23,6 @@ import test_edge_cases
 import test_golden_pipeline
 import test_kwargs_typing
 import test_portability
-import test_properties
 import test_semantics_all_models
 from polars_online import _polars_online as _native
 from polars_online import _spec
@@ -246,6 +245,11 @@ def test_the_api_snapshot_pins_every_models_output_fields():
 
 
 def test_the_sweeps_cover_every_regression_model():
+    # Here and not at the top: `test_properties` builds its lists from this
+    # module's `MINIMAL` and `REGRESSIONS`, so importing it at the top made a
+    # cycle that failed whenever this module was imported first.
+    import test_properties
+
     sweeps = {
         "test_semantics_all_models.MODELS": test_semantics_all_models.MODELS,
         "test_properties.MODELS": test_properties.MODELS,

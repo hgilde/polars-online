@@ -302,6 +302,14 @@ operating systems, so it sits in the dev group like the rest. None of the
 libraries checked forgets as a half-life does (river, VW, and Keras's
 `Ftrl`), so a finite half-life stays with `ftrl_ref` (T-A4).
 
+**hmmlearn and padasip are taken** (review 2026-10-06, TA4). hmmlearn's
+`GaussianHMM` holds `hmm`'s filter at fixed parameters, row by row, and
+padasip's `FilterRLS` holds `rls`. hmmlearn ships wheels up to CPython 3.13,
+so the 3.14 legs build its sdist, a small C++ extension. padasip is pure
+Python. In the same round scikit-learn's `SGDRegressor` and `SGDClassifier`
+took on `sgd`'s losses one row at a time, and filterpy the `kalman` settings
+`kalman_ref` alone held.
+
 **Pathway is parked.** It would run the Pathway half of
 `examples/pathway_integration.py`, but it is under the Business Source
 License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
