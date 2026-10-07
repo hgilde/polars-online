@@ -20,6 +20,8 @@ makes. Regenerate only after confirming a change is intended:
     uv run python tests/test_golden_pipeline.py
 """
 
+from datetime import datetime, timedelta
+
 import numpy as np
 import polars as pl
 
@@ -300,6 +302,122 @@ def signature() -> dict[str, float | str | None]:
         sig[f"{row['spec']}.bandwidth{where}"] = row["bandwidth_used"]
         for i, v in enumerate(row["rcov"] or []):
             sig[f"{row['spec']}.rcov{i}{where}"] = v
+    return sig
+
+
+def switched_stream(n: int = 120) -> pl.DataFrame:
+    """`stream()` with what the second bank reads beside it: the clock as a
+    `Datetime`, a minute for each unit of ``t``; a weight column with a row
+    of weight 0 every seventh row; and a drifting level ``mid`` for the
+    formula target."""
+    df = stream(n)
+    start = datetime(2024, 1, 2, 9, 30)
+    ts = [start + timedelta(minutes=float(v)) for v in df["t"].to_list()]
+    wz = [0.0 if i % 7 == 3 else v for i, v in enumerate(df["w"].to_list())]
+    mid = 100.0 + np.cumsum(0.1 * df["x0"].to_numpy())
+    return df.with_columns(
+        pl.Series("ts", ts, dtype=pl.Datetime("us")), pl.Series("wz", wz), pl.Series("mid", mid)
+    )
+
+
+def switched_specs() -> list[dict]:
+    """One spec per switch the first bank never turns (review 2026-10-06,
+    TA12), each on the paths most likely to part by platform: a window, an
+    embargo, a temporal clock read in integer nanoseconds with its
+    parameters as durations, ``session_shrink``'s blend, pairwise gaps, no
+    intercept, a coefficient prior, feature sets, every residual diagnostic,
+    a formula target, rows of weight 0 (every spec reads ``wz``), and
+    `bocpd`'s and `micro`'s clock parameters as durations. Clear of what task
+    186 moves: no target that starts late in a solving model, no windowed
+    `ew_class`, no `share_p`, no `rcov`."""
+    common = dict(
+        targets=["y0"],
+        features=["x0", "x1"],
+        clock="t",
+        gap_cap=6.0,
+        half_life=25.0,
+        weight="wz",
+        group="g",
+        min_weight=4.0,
+    )
+    timed = dict(common, clock="ts", gap_cap="6m", half_life="25m")
+    fwd = (po.rewm_mean("mid", half_life=5.0, window_size=10.0) - pl.col("mid")).alias("fwd")
+    unsupervised = {k: v for k, v in timed.items() if k not in ("targets", "min_weight")}
+    return [
+        po.spec.ewridge("window", window_size=20.0, max_rows_between_solves=1, **common),
+        po.spec.kalman("embargo", coef_half_life=80.0, embargo=3.0, **common),
+        po.spec.ewridge("datetime", max_rows_between_solves=1, **timed),
+        po.spec.ewridge(
+            "session_shrink",
+            session="session",
+            session_gap=3.0,
+            session_shrink=0.5,
+            long_half_life=100.0,
+            max_rows_between_solves=1,
+            **common,
+        ),
+        po.spec.ewridge("pairwise", target_gaps="pairwise", max_rows_between_solves=1, **common),
+        po.spec.ewridge("origin", fit_intercept=False, max_rows_between_solves=1, **common),
+        po.spec.rls("prior", ridge=1.0, coef_prior=[[0.2, 1.0, -0.5]], **common),
+        po.spec.ewridge(
+            "feature_sets",
+            feature_sets={"one": ["x0"], "both": ["x0", "x1"]},
+            max_rows_between_solves=1,
+            **common,
+        ),
+        po.spec.ewridge(
+            "diagnostics",
+            ridge=[1e-6, 0.5],
+            max_rows_between_solves=1,
+            emit_sigma=True,
+            emit_zscore=True,
+            emit_drift=True,
+            drift_threshold=20.0,
+            resid_quantiles=[0.5, 0.9],
+            emit_autocorr=True,
+            emit_metrics=True,
+            emit_selected=True,
+            emit_averaged=True,
+            emit_error_inflation=True,
+            emit_clocks=True,
+            **common,
+        ),
+        # A target resolved once its window has closed, so scored from early
+        # on (no `min_weight`) to pin rows 25 and 60 as well as 119.
+        po.spec.kalman(
+            "formula",
+            coef_half_life=80.0,
+            embargo=12.0,
+            **{**common, "targets": [fwd], "min_weight": 0.0},
+        ),
+        po.spec.bocpd(
+            "hazard",
+            hazard="40m",
+            emission="diag",
+            prior_scale=[1.0],
+            max_run=50,
+            **{k: v for k, v in unsupervised.items() if k != "half_life"},
+        ),
+        po.spec.micro("prune", eps=0.5, beta_mu=2.0, prune_every="10m", **unsupervised),
+    ]
+
+
+def switched_signature() -> dict[str, float | str | None]:
+    """Every non-coefficient output field of the second bank, at the same
+    three rows."""
+    bank = po.ModelBank(switched_specs())
+    out = bank.fit_predict(switched_stream())
+    sig: dict[str, float | str | None] = {}
+    for spec in switched_specs():
+        name = spec["name"]
+        for field in po.spec.output_fields(spec):
+            if field.startswith(("coef", "support_coef")):
+                continue
+            values = out[name].struct.field(field).to_list()
+            for row in PICKS:
+                value = values[row]
+                # A `Datetime` clock field, pinned as its text.
+                sig[f"{name}.{field}@{row}"] = str(value) if isinstance(value, datetime) else value
     return sig
 
 
@@ -812,16 +930,308 @@ GOLDEN: dict[str, float | str | None] = {
     "rcov.rcov2[rcov/b/m]": 762.0001389768797,
 }
 
+#: Produced by `uv run python tests/test_golden_pipeline.py`, as `GOLDEN` is.
+SWITCHED_GOLDEN: dict[str, float | str | None] = {
+    "window.pred_y0@25": -4.68515442331697,
+    "window.pred_y0@60": -0.2680628499022917,
+    "window.pred_y0@119": -0.15784967395919602,
+    "window.resid_y0@25": -0.16645140091774646,
+    "window.resid_y0@60": -0.20397827891478626,
+    "window.resid_y0@119": 0.10715090300096719,
+    "window.weight_sum@25": 5.170963014289502,
+    "window.weight_sum@60": 6.120750224253165,
+    "window.weight_sum@119": 5.240558540773436,
+    "window.settled_frac@25": 0.5136725262938573,
+    "window.settled_frac@60": 0.8564127056253706,
+    "window.settled_frac@119": 0.9782071302132749,
+    "window.withheld_reason@25": None,
+    "window.withheld_reason@60": None,
+    "window.withheld_reason@119": None,
+    "embargo.pred_y0@25": -0.297030662716732,
+    "embargo.pred_y0@60": -0.6184279290422761,
+    "embargo.pred_y0@119": -0.38922812978297516,
+    "embargo.resid_y0@25": -4.554575161517985,
+    "embargo.resid_y0@60": 0.14638680022519812,
+    "embargo.resid_y0@119": 0.33852935882474633,
+    "embargo.weight_sum@25": 5.255854811913398,
+    "embargo.weight_sum@60": 10.867042954248578,
+    "embargo.weight_sum@119": 12.473068731537921,
+    "embargo.settled_frac@25": 0.5136725262938573,
+    "embargo.settled_frac@60": 0.8564127056253706,
+    "embargo.settled_frac@119": 0.9782071302132749,
+    "embargo.withheld_reason@25": None,
+    "embargo.withheld_reason@60": None,
+    "embargo.withheld_reason@119": None,
+    "datetime.pred_y0@25": -4.660751915259962,
+    "datetime.pred_y0@60": -0.2697229622339732,
+    "datetime.pred_y0@119": -0.1594190668274919,
+    "datetime.resid_y0@25": -0.19085390897475385,
+    "datetime.resid_y0@60": -0.20231816658310475,
+    "datetime.resid_y0@119": 0.10872029586926307,
+    "datetime.weight_sum@25": 6.4723416348901885,
+    "datetime.weight_sum@60": 11.280849084162378,
+    "datetime.weight_sum@119": 12.473068731537921,
+    "datetime.settled_frac@25": 0.5136725262938573,
+    "datetime.settled_frac@60": 0.8564127056253706,
+    "datetime.settled_frac@119": 0.9782071302132749,
+    "datetime.withheld_reason@25": None,
+    "datetime.withheld_reason@60": None,
+    "datetime.withheld_reason@119": None,
+    "session_shrink.pred_y0@25": -4.660751915259962,
+    "session_shrink.pred_y0@60": -0.2701333033839248,
+    "session_shrink.pred_y0@119": -0.1597873898801008,
+    "session_shrink.resid_y0@25": -0.19085390897475385,
+    "session_shrink.resid_y0@60": -0.2019078254331531,
+    "session_shrink.resid_y0@119": 0.10908861892187197,
+    "session_shrink.weight_sum@25": 6.4723416348901885,
+    "session_shrink.weight_sum@60": 11.280849084162378,
+    "session_shrink.weight_sum@119": 12.429041490202788,
+    "session_shrink.settled_frac@25": 0.5136725262938573,
+    "session_shrink.settled_frac@60": 0.8564127056253706,
+    "session_shrink.settled_frac@119": 0.9788030573836302,
+    "session_shrink.withheld_reason@25": None,
+    "session_shrink.withheld_reason@60": None,
+    "session_shrink.withheld_reason@119": None,
+    "pairwise.pred_y0@25": -5.22128388930027,
+    "pairwise.pred_y0@60": -0.24393260276802842,
+    "pairwise.pred_y0@119": -0.15722900030899223,
+    "pairwise.resid_y0@25": 0.36967806506555423,
+    "pairwise.resid_y0@60": -0.22810852604904952,
+    "pairwise.resid_y0@119": 0.1065302293507634,
+    "pairwise.weight_sum@25": 6.4723416348901885,
+    "pairwise.weight_sum@60": 11.280849084162378,
+    "pairwise.weight_sum@119": 12.473068731537921,
+    "pairwise.settled_frac@25": 0.5136725262938573,
+    "pairwise.settled_frac@60": 0.8564127056253706,
+    "pairwise.settled_frac@119": 0.9782071302132749,
+    "pairwise.withheld_reason@25": None,
+    "pairwise.withheld_reason@60": None,
+    "pairwise.withheld_reason@119": None,
+    "origin.pred_y0@25": -4.451211194243234,
+    "origin.pred_y0@60": -0.76168400788369,
+    "origin.pred_y0@119": -0.3987697479966598,
+    "origin.resid_y0@25": -0.40039462999148245,
+    "origin.resid_y0@60": 0.289642879066612,
+    "origin.resid_y0@119": 0.348070977038431,
+    "origin.weight_sum@25": 6.4723416348901885,
+    "origin.weight_sum@60": 11.280849084162378,
+    "origin.weight_sum@119": 12.473068731537921,
+    "origin.settled_frac@25": 0.5136725262938573,
+    "origin.settled_frac@60": 0.8564127056253706,
+    "origin.settled_frac@119": 0.9782071302132749,
+    "origin.withheld_reason@25": None,
+    "origin.withheld_reason@60": None,
+    "origin.withheld_reason@119": None,
+    "prior.pred_y0@25": -4.562228076997657,
+    "prior.pred_y0@60": -0.2642888895255784,
+    "prior.pred_y0@119": -0.1593967799747384,
+    "prior.resid_y0@25": -0.2893777472370589,
+    "prior.resid_y0@60": -0.20775223929149955,
+    "prior.resid_y0@119": 0.10869800901650956,
+    "prior.weight_sum@25": 6.4723416348901885,
+    "prior.weight_sum@60": 11.280849084162378,
+    "prior.weight_sum@119": 12.473068731537921,
+    "prior.settled_frac@25": 0.5136725262938573,
+    "prior.settled_frac@60": 0.8564127056253706,
+    "prior.settled_frac@119": 0.9782071302132749,
+    "prior.withheld_reason@25": None,
+    "prior.withheld_reason@60": None,
+    "prior.withheld_reason@119": None,
+    "feature_sets.pred_y0__one@25": -1.6404570700536767,
+    "feature_sets.pred_y0__one@60": -2.012733190571163,
+    "feature_sets.pred_y0__one@119": -1.5914788198789864,
+    "feature_sets.resid_y0__one@25": -3.2111487541810395,
+    "feature_sets.resid_y0__one@60": 1.5406920617540854,
+    "feature_sets.resid_y0__one@119": 1.5407800489207575,
+    "feature_sets.pred_y0__both@25": -4.660751915259962,
+    "feature_sets.pred_y0__both@60": -0.2697229622339732,
+    "feature_sets.pred_y0__both@119": -0.1594190668274919,
+    "feature_sets.resid_y0__both@25": -0.19085390897475385,
+    "feature_sets.resid_y0__both@60": -0.20231816658310475,
+    "feature_sets.resid_y0__both@119": 0.10872029586926307,
+    "feature_sets.weight_sum@25": 6.4723416348901885,
+    "feature_sets.weight_sum@60": 11.280849084162378,
+    "feature_sets.weight_sum@119": 12.473068731537921,
+    "feature_sets.settled_frac@25": 0.5136725262938573,
+    "feature_sets.settled_frac@60": 0.8564127056253706,
+    "feature_sets.settled_frac@119": 0.9782071302132749,
+    "feature_sets.withheld_reason@25": None,
+    "feature_sets.withheld_reason@60": None,
+    "feature_sets.withheld_reason@119": None,
+    "diagnostics.pred_y0__r0.000001@25": -4.660751915259962,
+    "diagnostics.pred_y0__r0.000001@60": -0.2697229622339732,
+    "diagnostics.pred_y0__r0.000001@119": -0.1594190668274919,
+    "diagnostics.resid_y0__r0.000001@25": -0.19085390897475385,
+    "diagnostics.resid_y0__r0.000001@60": -0.20231816658310475,
+    "diagnostics.resid_y0__r0.000001@119": 0.10872029586926307,
+    "diagnostics.pred_y0__r0.5@25": -3.7561264196136572,
+    "diagnostics.pred_y0__r0.5@60": 0.31554261003977735,
+    "diagnostics.pred_y0__r0.5@119": -0.10871340902440046,
+    "diagnostics.resid_y0__r0.5@25": -1.095479404621059,
+    "diagnostics.resid_y0__r0.5@60": -0.7875837388568553,
+    "diagnostics.resid_y0__r0.5@119": 0.05801463806617163,
+    "diagnostics.error_inflation_y0__r0.000001@25": 1.4843176752158107,
+    "diagnostics.error_inflation_y0__r0.000001@60": 1.1812319980257089,
+    "diagnostics.error_inflation_y0__r0.000001@119": 1.040873973086321,
+    "diagnostics.error_inflation_y0__r0.5@25": 1.409364998814697,
+    "diagnostics.error_inflation_y0__r0.5@60": 1.157007244603655,
+    "diagnostics.error_inflation_y0__r0.5@119": 1.0393163626467838,
+    "diagnostics.sigma_y0__r0.000001@25": 0.04722546616544854,
+    "diagnostics.sigma_y0__r0.000001@60": 0.1372115392932475,
+    "diagnostics.sigma_y0__r0.000001@119": 0.10036314090241635,
+    "diagnostics.sigma_y0__r0.5@25": 0.2450256356138074,
+    "diagnostics.sigma_y0__r0.5@60": 0.763881587323822,
+    "diagnostics.sigma_y0__r0.5@119": 0.592950019155725,
+    "diagnostics.zscore_y0__r0.000001@25": -4.041334569490981,
+    "diagnostics.zscore_y0__r0.000001@60": -1.4744981918081381,
+    "diagnostics.zscore_y0__r0.000001@119": 1.0832691652702702,
+    "diagnostics.zscore_y0__r0.5@25": -4.470876697765937,
+    "diagnostics.zscore_y0__r0.5@60": -1.0310285676816366,
+    "diagnostics.zscore_y0__r0.5@119": 0.09784068840873988,
+    "diagnostics.ic_y0__r0.000001@25": None,
+    "diagnostics.ic_y0__r0.000001@60": 0.9978466202072177,
+    "diagnostics.ic_y0__r0.000001@119": 0.9990654533620151,
+    "diagnostics.ic_y0__r0.5@25": None,
+    "diagnostics.ic_y0__r0.5@60": 0.9056179764815633,
+    "diagnostics.ic_y0__r0.5@119": 0.9774853336299085,
+    "diagnostics.r2_y0__r0.000001@25": None,
+    "diagnostics.r2_y0__r0.000001@60": 0.9940917610083624,
+    "diagnostics.r2_y0__r0.000001@119": 0.9980194631696558,
+    "diagnostics.r2_y0__r0.5@25": None,
+    "diagnostics.r2_y0__r0.5@60": 0.816882915409759,
+    "diagnostics.r2_y0__r0.5@119": 0.9308693549353356,
+    "diagnostics.hit_rate_y0__r0.000001@25": 1.0,
+    "diagnostics.hit_rate_y0__r0.000001@60": 1.0,
+    "diagnostics.hit_rate_y0__r0.000001@119": 1.0,
+    "diagnostics.hit_rate_y0__r0.5@25": 1.0,
+    "diagnostics.hit_rate_y0__r0.5@60": 0.8988632650572276,
+    "diagnostics.hit_rate_y0__r0.5@119": 0.9354197371368904,
+    "diagnostics.abs_resid_q0.5_y0__r0.000001@25": 0.047117875647668395,
+    "diagnostics.abs_resid_q0.5_y0__r0.000001@60": 0.10400161384976526,
+    "diagnostics.abs_resid_q0.5_y0__r0.000001@119": 0.08544642857142856,
+    "diagnostics.abs_resid_q0.5_y0__r0.5@25": 0.24511329681274902,
+    "diagnostics.abs_resid_q0.5_y0__r0.5@60": 0.6288819875776398,
+    "diagnostics.abs_resid_q0.5_y0__r0.5@119": 0.39256840796019904,
+    "diagnostics.abs_resid_q0.9_y0__r0.000001@25": 0.047117875647668395,
+    "diagnostics.abs_resid_q0.9_y0__r0.000001@60": 0.1767524171270718,
+    "diagnostics.abs_resid_q0.9_y0__r0.000001@119": 0.17284604519774013,
+    "diagnostics.abs_resid_q0.9_y0__r0.5@25": 0.24511329681274902,
+    "diagnostics.abs_resid_q0.9_y0__r0.5@60": 1.0077519379844961,
+    "diagnostics.abs_resid_q0.9_y0__r0.5@119": 0.8710762331838565,
+    "diagnostics.autocorr_y0__r0.000001@25": None,
+    "diagnostics.autocorr_y0__r0.000001@60": -0.14548257378119903,
+    "diagnostics.autocorr_y0__r0.000001@119": -0.21134234792237652,
+    "diagnostics.autocorr_y0__r0.5@25": None,
+    "diagnostics.autocorr_y0__r0.5@60": -0.27944465526984763,
+    "diagnostics.autocorr_y0__r0.5@119": 0.0087558548905179,
+    "diagnostics.drift_y0__r0.000001@25": False,
+    "diagnostics.drift_y0__r0.000001@60": False,
+    "diagnostics.drift_y0__r0.000001@119": False,
+    "diagnostics.drift_y0__r0.5@25": False,
+    "diagnostics.drift_y0__r0.5@60": False,
+    "diagnostics.drift_y0__r0.5@119": False,
+    "diagnostics.weight_sum@25": 6.4723416348901885,
+    "diagnostics.weight_sum@60": 11.280849084162378,
+    "diagnostics.weight_sum@119": 12.473068731537921,
+    "diagnostics.settled_frac@25": 0.5136725262938573,
+    "diagnostics.settled_frac@60": 0.8564127056253706,
+    "diagnostics.settled_frac@119": 0.9782071302132749,
+    "diagnostics.withheld_reason@25": None,
+    "diagnostics.withheld_reason@60": None,
+    "diagnostics.withheld_reason@119": None,
+    "diagnostics.pred_y0__selected@25": -4.660751915259962,
+    "diagnostics.pred_y0__selected@60": -0.2697229622339732,
+    "diagnostics.pred_y0__selected@119": -0.1594190668274919,
+    "diagnostics.selected_y0@25": "r0.000001",
+    "diagnostics.selected_y0@60": "r0.000001",
+    "diagnostics.selected_y0@119": "r0.000001",
+    "diagnostics.pred_y0__averaged@25": -4.660751915254954,
+    "diagnostics.pred_y0__averaged@60": -0.2697229622339181,
+    "diagnostics.pred_y0__averaged@119": -0.15941906682749182,
+    "diagnostics.scored_clock@25": 42.0,
+    "diagnostics.scored_clock@60": 93.0,
+    "diagnostics.scored_clock@119": 184.0,
+    "diagnostics.learned_clock@25": 40.0,
+    "diagnostics.learned_clock@60": 91.0,
+    "diagnostics.learned_clock@119": 174.0,
+    "formula.pred_fwd@25": 0.03271607966199878,
+    "formula.pred_fwd@60": 0.13309799763766708,
+    "formula.pred_fwd@119": 0.06743285763369189,
+    "formula.resid_fwd@25": None,
+    "formula.resid_fwd@60": None,
+    "formula.resid_fwd@119": None,
+    "formula.weight_sum@25": 5.027057497905452,
+    "formula.weight_sum@60": 11.735722004229697,
+    "formula.weight_sum@119": 12.655749650116945,
+    "formula.settled_frac@25": 0.5136725262938573,
+    "formula.settled_frac@60": 0.8564127056253706,
+    "formula.settled_frac@119": 0.9782071302132749,
+    "formula.withheld_reason@25": None,
+    "formula.withheld_reason@60": None,
+    "formula.withheld_reason@119": None,
+    "hazard.p_change@25": 0.0004681453347220996,
+    "hazard.p_change@60": 0.08114600872229699,
+    "hazard.p_change@119": 0.49953476965881977,
+    "hazard.run_mode@25": 9,
+    "hazard.run_mode@60": 2,
+    "hazard.run_mode@119": 48,
+    "hazard.run_mean@25": 8.393438748878257,
+    "hazard.run_mean@60": 4.23258877953942,
+    "hazard.run_mean@119": 38.52801855413578,
+    "hazard.pred_x0@25": -0.08864658595956558,
+    "hazard.pred_x0@60": -0.19412382149063837,
+    "hazard.pred_x0@119": -0.02738389922469348,
+    "hazard.pred_x1@25": 1.8344075651155143,
+    "hazard.pred_x1@60": 0.0019720158188764325,
+    "hazard.pred_x1@119": 1.9647673780016708,
+    "hazard.loglik@25": -5.815347085481926,
+    "hazard.loglik@60": -7.656401840313578,
+    "hazard.loglik@119": -2.7181775723423183,
+    "hazard.weight_sum@25": 9.0,
+    "hazard.weight_sum@60": 26.0,
+    "hazard.weight_sum@119": 48.0,
+    "hazard.settled_frac@25": None,
+    "hazard.settled_frac@60": None,
+    "hazard.settled_frac@119": None,
+    "hazard.withheld_reason@25": None,
+    "hazard.withheld_reason@60": None,
+    "hazard.withheld_reason@119": None,
+    "prune.cluster@25": 1,
+    "prune.cluster@60": 6,
+    "prune.cluster@119": 6,
+    "prune.dist@25": 1.4476125796712394,
+    "prune.dist@60": 2.6659345467092606,
+    "prune.dist@119": 0.2743875309651686,
+    "prune.micro_id@25": 1,
+    "prune.micro_id@60": 12,
+    "prune.micro_id@119": 6,
+    "prune.outlier@25": False,
+    "prune.outlier@60": True,
+    "prune.outlier@119": False,
+    "prune.n_clusters@25": 2,
+    "prune.n_clusters@60": 1,
+    "prune.n_clusters@119": 1,
+    "prune.n_micro@25": 3,
+    "prune.n_micro@60": 3,
+    "prune.n_micro@119": 2,
+    "prune.weight_sum@25": 6.4723416348901885,
+    "prune.weight_sum@60": 11.280849084162378,
+    "prune.weight_sum@119": 12.473068731537921,
+    "prune.settled_frac@25": 0.5136725262938573,
+    "prune.settled_frac@60": 0.8564127056253706,
+    "prune.settled_frac@119": 0.9782071302132749,
+    "prune.withheld_reason@25": None,
+    "prune.withheld_reason@60": None,
+    "prune.withheld_reason@119": None,
+}
 
-# An emptied table fails here as a changed schema: a skip would have turned
-# the cross-platform check off without a word.
-def test_the_pipeline_produces_the_same_numbers_everywhere():
-    got = signature()
-    assert set(got) == set(GOLDEN), (
+
+def _same_numbers(got: dict[str, float | str | None], golden: dict[str, float | str | None]):
+    assert set(got) == set(golden), (
         "the output schema changed: "
-        f"added {sorted(set(got) - set(GOLDEN))}, removed {sorted(set(GOLDEN) - set(got))}"
+        f"added {sorted(set(got) - set(golden))}, removed {sorted(set(golden) - set(got))}"
     )
-    for key, want in GOLDEN.items():
+    for key, want in golden.items():
         have = got[key]
         if want is None or have is None:
             assert have == want, f"{key}: {have} vs {want} (null-ness must match)"
@@ -835,10 +1245,23 @@ def test_the_pipeline_produces_the_same_numbers_everywhere():
         )
 
 
+# An emptied table fails here as a changed schema: a skip would have turned
+# the cross-platform check off without a word.
+def test_the_pipeline_produces_the_same_numbers_everywhere():
+    _same_numbers(signature(), GOLDEN)
+
+
+def test_the_switches_produce_the_same_numbers_everywhere():
+    """The second bank's numbers, compared as the first bank's are: the
+    paths a platform is likeliest to move, which the first bank never ran
+    (review 2026-10-06, TA12)."""
+    _same_numbers(switched_signature(), SWITCHED_GOLDEN)
+
+
 def test_the_stream_exercises_what_it_claims_to():
     """A guard on the fixture: if it stopped containing nulls or a clock gap,
     the golden comparison would still pass while covering less."""
-    df = stream()
+    df = switched_stream()
     assert df["x1"].null_count() > 0, "no null feature"
     assert df["y0"].null_count() > 0, "no null target"
     assert df["label"].null_count() > 0, "no null label"
@@ -849,12 +1272,15 @@ def test_the_stream_exercises_what_it_claims_to():
     gaps = df["t"].diff().drop_nulls()
     assert gaps.max() > 6.0, "no gap beyond gap_cap"
     assert gaps.min() > 0.0, "the clock must be strictly increasing"
+    assert (df["wz"] == 0.0).sum() > 10, "no row of weight 0 for the second bank"
+    assert df["ts"].dtype == pl.Datetime("us"), "no temporal clock for the second bank"
 
 
 if __name__ == "__main__":
     # Regeneration, run as a script rather than a test that skips unless
     # asked: prints the table to paste over `GOLDEN` above.
-    print("GOLDEN = {")
-    for key, value in signature().items():
-        print(f"    {key!r}: {value!r},")
-    print("}")
+    for name, sig in (("GOLDEN", signature()), ("SWITCHED_GOLDEN", switched_signature())):
+        print(f"{name}: dict[str, float | str | None] = {{")
+        for key, value in sig.items():
+            print(f"    {key!r}: {value!r},")
+        print("}")

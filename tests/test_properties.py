@@ -4,6 +4,11 @@ Section C of docs/TESTING.md lists edge cases someone thought of. This file
 generates them instead: mixed nulls, duplicate and backwards clocks, constant
 and collinear features, weight extremes, tiny groups, unusual chunkings — and
 asserts the invariants that must hold for *every* model on *every* stream.
+The values reach the input bound (``1e100``, as weights too, beside
+``1e-100``) and past it (NaN and the infinities, which the bank reads as
+missing); every regression runs under each switch it takes; and the kinds
+that are not regressions run on a stream of their own (review 2026-10-06,
+TA3: none of that was drawn).
 
 Hypothesis shrinks a failure to a minimal reproducing frame, which is the point:
 these tests are meant to produce a small counterexample, not just a red mark.
@@ -16,6 +21,11 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 import polars_online as po
+from test_model_registry import MINIMAL, REGRESSIONS, _build
+
+#: The bank's bound on a value it learns from (`online_core::INPUT_BOUND`):
+#: a magnitude past it, NaN and the infinities are missing, as a null is.
+INPUT_BOUND = 1e100
 
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
@@ -37,16 +47,26 @@ SETTINGS = settings(
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )
 
-# Values that have historically caused trouble, plus ordinary floats.
+# Values that have historically caused trouble, plus ordinary floats: the
+# input bound on both sides, and what lies past it.
 _values = st.one_of(
     st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False),
     st.sampled_from([0.0, -0.0, 1e-12, 1e8, -1e8]),
+    st.sampled_from([INPUT_BOUND, -INPUT_BOUND, float("nan"), float("inf"), float("-inf")]),
     st.none(),
 )
 _weights = st.one_of(
     st.floats(min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False),
+    st.sampled_from([1e-100, INPUT_BOUND, float("nan"), float("inf")]),
     st.none(),
 )
+
+
+def _missing(col: str) -> pl.Expr:
+    """Where the bank reads ``col`` as missing: null, NaN, infinite or past
+    the bound (`stream.rs::usable`)."""
+    c = pl.col(col)
+    return c.is_null() | ~c.is_finite() | (c.abs() > INPUT_BOUND)
 
 
 @st.composite
@@ -71,6 +91,8 @@ def streams(draw, min_rows=1, max_rows=40, max_groups=3):
         "x1": draw(st.lists(_values, min_size=n, max_size=n)),
         "y0": draw(st.lists(_values, min_size=n, max_size=n)),
         "w": draw(st.lists(_weights, min_size=n, max_size=n)),
+        # A session that changes now and then, for the switch that reads it.
+        "s": [f"s{k}" for k in np.cumsum(draw(st.lists(st.booleans(), min_size=n, max_size=n)))],
     }
     floats = ["t", "x0", "x1", "y0", "w"]
     return pl.DataFrame(cols, schema_overrides={c: pl.Float64 for c in floats})
@@ -112,11 +134,12 @@ def build(model, extra, **kw):
 
 
 def binarize(df, model):
-    """ftrl needs a 0/1 target; keep nulls so the null policy is still exercised."""
+    """ftrl needs a 0/1 target; keep the missing ones missing, so the null
+    policy is still exercised."""
     if model != "ftrl":
         return df
     return df.with_columns(
-        y0=pl.when(pl.col("y0").is_null()).then(None).otherwise((pl.col("y0") > 0).cast(pl.Float64))
+        y0=pl.when(_missing("y0")).then(None).otherwise((pl.col("y0") > 0).cast(pl.Float64))
     )
 
 
@@ -225,10 +248,11 @@ class TestUniversalProperties:
         spec = build(model, extra)
         out = po.ModelBank([spec]).fit_predict(df)
         # Only the columns this spec actually declares can skip a row -- holt
-        # reads no features, so an unused null column must not disturb it.
-        cond = pl.col("w").is_null()
+        # reads no features, so an unused null column must not disturb it. A
+        # value the bank reads as missing skips a row as a null does.
+        cond = _missing("w")
         for f in spec["features"]:
-            cond = cond | pl.col(f).is_null()
+            cond = cond | _missing(f)
         skipped = df.select(cond).to_series().to_list()
         fields = out.select("m").unnest("m")
         for i, skip in enumerate(skipped):
@@ -294,3 +318,179 @@ class TestUniversalProperties:
         assert len(compared) >= 10, (
             f"only {len(compared)} streams compared a prediction that was there"
         )
+
+
+#: Each switch a regression may take, with what it needs beside it. A
+#: blocked Gram is `test_semantics_all_models`'s variant: a block of 5 that
+#: does not divide the solve cadence, so a solve merges a partial block.
+SWITCHES: dict[str, dict] = {
+    "plain": {},
+    "window": {"window_size": 15.0},
+    "blocked gram": {"solve_every": 4.0, "max_rows_between_solves": 8, "gram_block_rows": 5},
+    "pairwise gaps": {"target_gaps": "pairwise"},
+    "no intercept": {"fit_intercept": False},
+    "standardize": {"standardize": True},
+    "embargo": {"embargo": 3.0},
+    "session": {"session": "s", "session_gap": 2.0},
+}
+
+
+def _takes(model: str, extra: dict, switch: dict) -> bool:
+    """Whether the builder takes ``switch`` for ``model``: probed, so each
+    model draws only the switches it accepts and no case is a refusal."""
+    try:
+        build(model, extra, **switch)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+#: Per model, the switches it takes, probed from the builders.
+SWITCHES_FOR = {
+    model: [name for name, sw in SWITCHES.items() if _takes(model, extra, sw)]
+    for model, extra in MODELS
+}
+
+
+def test_every_switch_reaches_a_model_and_every_model_a_switch():
+    """The probe is no false skip: each switch is taken by some model, and
+    each model takes one besides the plain spec (task 189)."""
+    for name in SWITCHES:
+        assert any(name in got for got in SWITCHES_FOR.values()), name
+    for model, got in SWITCHES_FOR.items():
+        assert len(got) > 1, (model, got)
+    assert {m for m, _ in MODELS} == set(REGRESSIONS)
+
+
+@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+class TestEverySwitch:
+    """The universal properties under each switch a model takes: one chunk
+    or many give the same numbers, a save and load at any row is
+    transparent, every number is finite or null, and a skipped row reports
+    nothing (review 2026-10-06, TA3)."""
+
+    @SETTINGS
+    @given(df=streams(min_rows=2), chunk=st.integers(min_value=1, max_value=13), data=st.data())
+    def test_the_properties_hold_under_each_switch(self, model, extra, df, chunk, data):
+        switch = data.draw(st.sampled_from(SWITCHES_FOR[model]), label="switch")
+        split = data.draw(st.integers(1, df.height - 1), label="split")
+        df = binarize(df, model)
+        spec = build(model, extra, **SWITCHES[switch])
+        one = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
+        assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, split))
+        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        rest = df.slice(split)
+        assert unnested(a.fit_predict(rest)).equals(unnested(b.fit_predict(rest)), null_equal=True)
+        fields = one.select("m").unnest("m")
+        _finite_or_null(fields)
+        cond = _missing("w")
+        for f in spec["features"]:
+            cond = cond | _missing(f)
+        for i, skip in enumerate(df.select(cond).to_series().to_list()):
+            if skip:
+                present = [c for c in fields.columns if fields[c][i] is not None]
+                assert not present, f"row {i} was skipped but reported {present}"
+
+
+def _finite_or_null(fields: pl.DataFrame) -> None:
+    for name, dtype in fields.schema.items():
+        if name.startswith(("coef", "support_coef")) or not dtype.is_float():
+            continue
+        vals = np.array([v for v in fields[name].to_list() if v is not None], dtype=float)
+        assert np.isfinite(vals).all(), f"{name} produced a non-finite value"
+
+
+#: The kinds that are not regressions, from the registry: a new one is drawn
+#: the day it is registered.
+OTHER_KINDS = sorted(set(MINIMAL) - set(REGRESSIONS))
+
+#: What a kind needs beside `MINIMAL`'s arguments on a stream of at most 60
+#: rows: a short warm-up, so `kmeans` and `hmm` seed and report, and a
+#: short span, so `corrchange` closes some. Under `MINIMAL`'s settings they
+#: reported a number in 0, 1 and 6 of 60 such streams.
+KIND_ARGS: dict[str, dict] = {
+    "kmeans": {"warm_rows": 4},
+    "hmm": {"warm_rows": 4},
+    "corrchange": {"span_rows": 8},
+}
+
+
+def _kind_spec(kind: str) -> dict:
+    return {**_build(kind), "model": {**_build(kind)["model"], **KIND_ARGS.get(kind, {})}}
+
+
+def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
+    """What a kind that reports through its state reports: `marginal`'s
+    pairs and `rcov`'s closed blocks."""
+    if kind == "marginal":
+        return bank.marginal("m")
+    if kind == "rcov":
+        return bank.closed_groups("m", drop=False)
+    return None
+
+
+@st.composite
+def kind_streams(draw, kind: str, min_rows=2, max_rows=60):
+    """A stream any kind runs on, adversarial as `streams` is: features
+    ``x0`` and ``x1`` and a target ``y`` reaching the bound and past it, with
+    nulls; a group key ``g`` that only grows, for `rcov`'s monotone close;
+    and, for `ew_class`, ``y`` as its label, ``a`` or ``b``, null where the
+    number was missing."""
+    n = draw(st.integers(min_value=min_rows, max_value=max_rows))
+    df = pl.DataFrame(
+        {
+            "x0": draw(st.lists(_values, min_size=n, max_size=n)),
+            "x1": draw(st.lists(_values, min_size=n, max_size=n)),
+            "y": draw(st.lists(_values, min_size=n, max_size=n)),
+            "g": np.cumsum(draw(st.lists(st.integers(0, 1), min_size=n, max_size=n))),
+        },
+        schema_overrides={c: pl.Float64 for c in ("x0", "x1", "y")},
+    )
+    if kind == "ew_class":
+        df = df.with_columns(
+            y=pl.when(_missing("y"))
+            .then(None)
+            .otherwise(pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b")))
+        )
+    return df
+
+
+@pytest.mark.parametrize("kind", OTHER_KINDS)
+class TestEveryOtherKind:
+    """The universal properties on the eleven kinds the sweeps above leave
+    out, each as `MINIMAL` builds it, which had a fixed-stream chunking test
+    or none (review 2026-10-06, TA3)."""
+
+    @SETTINGS
+    @given(data=st.data(), chunk=st.integers(min_value=1, max_value=13))
+    def test_the_properties_hold(self, kind, data, chunk):
+        df = data.draw(kind_streams(kind), label="stream")
+        split = data.draw(st.integers(1, df.height - 1), label="split")
+        spec = _kind_spec(kind)
+        whole = po.ModelBank([spec])
+        one = whole.fit_predict(df)
+        bank = po.ModelBank([spec])
+        many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
+        assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
+        if (state := _state(whole, kind)) is not None:
+            assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, split))
+        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+        rest = df.slice(split)
+        assert unnested(a.fit_predict(rest)).equals(unnested(b.fit_predict(rest)), null_equal=True)
+        if (state := _state(a, kind)) is not None:
+            assert state.equals(_state(b, kind), null_equal=True), "a load moved the state"
+        fields = one.select("m").unnest("m")
+        _finite_or_null(fields)
+        cond = pl.lit(False)
+        for f in spec["features"]:
+            cond = cond | _missing(f)
+        for i, skip in enumerate(df.select(cond).to_series().to_list()):
+            if skip:
+                present = [c for c in fields.columns if fields[c][i] is not None]
+                assert not present, f"row {i} was skipped but reported {present}"

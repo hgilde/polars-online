@@ -887,6 +887,531 @@ fn ew_class_golden() {
     );
 }
 
+// --- second signatures: the settings the first never runs ---
+//
+// One per model, each over what its golden above leaves at a default, so a
+// mutant in those branches moves a number `cargo mutants` sees: the Python
+// golden pipeline pins most of them, which `cargo test` cannot see (review
+// 2026-10-06, CF10). Clear of what task 186 moves: no target that starts
+// late in a solving model, no windowed `ew_class` coefficient (its
+// posteriors only), no `share_p`, no `rcov` across a break.
+
+/// The fixed stream with `x1` held still from row 30 on: a feature gone
+/// quiet, where a clusterer's `scale_floor` binds.
+fn quiet_stream() -> Vec<Row> {
+    stream()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (x, y, d, w))| (if i >= 30 { [x[0], 0.3] } else { x }, y, d, w))
+        .collect()
+}
+
+/// [`signature`] on `rows`.
+fn signature_on<M: OnlineModel>(model: &mut M, pick: usize, rows: Vec<Row>) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (i, (x, y, d, w)) in rows.into_iter().enumerate() {
+        let step = model.step(&x, &y, d, w);
+        if matches!(i, 20 | 45 | 59) {
+            out.push(step.pred[pick]);
+        }
+    }
+    out
+}
+
+/// [`signature`] with a call between rows: `between(model, i)` runs before
+/// row `i`.
+fn signature_between<M: OnlineModel>(
+    model: &mut M,
+    pick: usize,
+    mut between: impl FnMut(&mut M, usize),
+) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
+        between(model, i);
+        let step = model.step(&x, &y, d, w);
+        if matches!(i, 20 | 45 | 59) {
+            out.push(step.pred[pick]);
+        }
+    }
+    out
+}
+
+/// `kmeans` seeded by farthest-first and by k-means++, on the raw metric,
+/// and on the standardized one with a scale floor, where a feature has gone
+/// quiet (`quiet_stream`): the floor moves the distances there.
+#[test]
+fn kmeans_seeding_and_metric_golden() {
+    let mut m = KMeans::new(kmeans_cfg(SeedRule::Farthest)).unwrap();
+    check(
+        "kmeans_farthest",
+        &signature(&mut m, 1),
+        GOLDEN_KMEANS_FARTHEST,
+    );
+    let mut m = KMeans::new(kmeans_cfg(SeedRule::Kmeanspp)).unwrap();
+    check(
+        "kmeans_kmeanspp",
+        &signature(&mut m, 1),
+        GOLDEN_KMEANS_KMEANSPP,
+    );
+    let mut m = KMeans::new(KMeansCfg {
+        standardize: false,
+        ..kmeans_cfg(SeedRule::Lloyd)
+    })
+    .unwrap();
+    check("kmeans_raw", &signature(&mut m, 1), GOLDEN_KMEANS_RAW);
+    let floored = |scale_floor| {
+        let mut m = KMeans::new(KMeansCfg {
+            scale_floor,
+            ..kmeans_cfg(SeedRule::Lloyd)
+        })
+        .unwrap();
+        signature_on(&mut m, 1, quiet_stream())
+    };
+    let got = floored(0.5);
+    assert_ne!(got, floored(0.0), "the floor binds on the quiet feature");
+    check("kmeans_floor", &got, GOLDEN_KMEANS_FLOOR);
+}
+
+/// `micro` pruned on the clock, every 5 units (the gap of 25 is one prune),
+/// and with a scale floor where a feature has gone quiet.
+#[test]
+fn micro_on_the_clock_golden() {
+    let mut m = Micro::new(MicroCfg {
+        prune_every: 5.0,
+        max_rows_between_prunes: u32::MAX,
+        ..micro_cfg()
+    })
+    .unwrap();
+    check("micro_clock", &signature(&mut m, 1), GOLDEN_MICRO_CLOCK);
+    let floored = |scale_floor| {
+        let mut m = Micro::new(MicroCfg {
+            scale_floor,
+            ..micro_cfg()
+        })
+        .unwrap();
+        signature_on(&mut m, 1, quiet_stream())
+    };
+    let got = floored(0.5);
+    assert_ne!(got, floored(0.0), "the floor binds on the quiet feature");
+    check("micro_floor", &got, GOLDEN_MICRO_FLOOR);
+}
+
+/// `ew_ridge` over feature sets, under `session_shrink` with a session
+/// boundary at row 30, with pairwise gaps, with the Gram blocked, and on
+/// the solve schedules: the clock, and the default share of the weight.
+#[test]
+fn ew_ridge_paths_golden() {
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.feature_sets = vec![("one".into(), vec![0]), ("both".into(), vec![0, 1])];
+    let mut m = EwRidge::new(c.clone()).unwrap();
+    check(
+        "ew_ridge_set_one",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_SET_ONE,
+    );
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_set_both",
+        &signature(&mut m, 1),
+        GOLDEN_EW_RIDGE_SET_BOTH,
+    );
+
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.session_shrink = Some(0.5);
+    c.long_half_life = Some(80.0);
+    let mut m = EwRidge::new(c).unwrap();
+    let got = signature_between(&mut m, 0, |m, i| {
+        if i == 30 {
+            m.blend_toward_long_run();
+        }
+    });
+    check(
+        "ew_ridge_session_shrink",
+        &got,
+        GOLDEN_EW_RIDGE_SESSION_SHRINK,
+    );
+
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.target_gaps = online_core::TargetGaps::Pairwise;
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_pairwise",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_PAIRWISE,
+    );
+
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.gram_block_rows = 5;
+    c.solve_every = 4.0;
+    c.max_rows_between_solves = 8;
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_blocked",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_BLOCKED,
+    );
+
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.solve_every = 3.0;
+    c.max_rows_between_solves = u32::MAX;
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_on_the_clock",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_ON_THE_CLOCK,
+    );
+
+    // A fifth of the fit's weight between solves: the default share, ln 2 /
+    // 50, solves after every row on a stream this short.
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.max_rows_between_solves = u32::MAX;
+    c.solve_share = Some(0.2);
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_by_weight",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_BY_WEIGHT,
+    );
+}
+
+/// The lasso under a window, and selecting on its own half-life.
+#[test]
+fn lasso_windowed_golden() {
+    let cfg = || LassoCfg {
+        n_features: 2,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: Decay::Halflife(20.0),
+        lasso_path: vec![0.2, 0.02, 0.0],
+        l1_ratio: 1.0,
+        select_half_life: None,
+        min_weight: 3.0,
+        target_min_weight: Vec::new(),
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        solve_share: None,
+        window: None,
+        window_every: None,
+        max_rows_between_snapshots: None,
+        max_iter: 200,
+        tol: 1e-12,
+        target_gaps: online_core::TargetGaps::OwnRows,
+    };
+    let mut m = Lasso::new(LassoCfg {
+        window: Some(30.0),
+        ..cfg()
+    })
+    .unwrap();
+    check(
+        "lasso_windowed",
+        &signature(&mut m, 1),
+        GOLDEN_LASSO_WINDOWED,
+    );
+    // The selection, read every fifth row from row 10: the penalty whose EW
+    // mean squared error, at `select_half_life`, is the least.
+    let selected = |select_half_life| {
+        let mut m = Lasso::new(LassoCfg {
+            select_half_life,
+            ..cfg()
+        })
+        .unwrap();
+        let mut out = Vec::new();
+        for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
+            m.step(&x, &y, d, w);
+            if i >= 10 && i % 5 == 0 {
+                out.push(m.lam_selected()[0]);
+            }
+        }
+        out
+    };
+    let got = selected(Some(3.0));
+    assert_ne!(
+        got,
+        selected(None),
+        "the selection's own half-life moves it"
+    );
+    check("lasso_select", &got, GOLDEN_LASSO_SELECT);
+}
+
+/// `kalman` with an explicit process noise, and with a fixed observation
+/// noise and its prior.
+#[test]
+fn kalman_noise_golden() {
+    let cfg = || KalmanCfg {
+        n_features: 2,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: Decay::Halflife(50.0),
+        half_life: vec![f64::INFINITY, 30.0, 100.0],
+        q: None,
+        obs_var: None,
+        p0: 1.0,
+        share_p: false,
+        min_weight: 3.0,
+        revert_half_life: vec![f64::INFINITY],
+        standardize: false,
+    };
+    let mut m = Kalman::new(KalmanCfg {
+        q: Some(vec![0.0, 0.01, 0.02]),
+        ..cfg()
+    })
+    .unwrap();
+    check("kalman_q", &signature(&mut m, 0), GOLDEN_KALMAN_Q);
+    let mut m = Kalman::new(KalmanCfg {
+        obs_var: Some(0.25),
+        p0: 4.0,
+        ..cfg()
+    })
+    .unwrap();
+    check(
+        "kalman_obs_var",
+        &signature(&mut m, 0),
+        GOLDEN_KALMAN_OBS_VAR,
+    );
+}
+
+/// `hmm` with a transition that moves with an exogenous column, the
+/// stream's target in the target slot.
+#[test]
+fn hmm_tvtp_golden() {
+    let mut m = Hmm::new(HmmCfg {
+        n_features: 2,
+        k: 2,
+        decay: Decay::Halflife(20.0),
+        covariance: Covariance::Full,
+        precision_prior: 1e-2,
+        min_weight: 3.0,
+        learn: true,
+        transition_prior: 1.0,
+        transition: None,
+        means: Some(vec![-0.5, -0.5, 0.5, 0.5]),
+        covs: Some(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
+        warm_rows: 10,
+        seed_rule: SeedRule::First,
+        seed: 1,
+        tvtp: Some((vec![2.0, 0.0, 0.0, 2.0], vec![0.0, 1.5, -1.0, 0.0])),
+    })
+    .unwrap();
+    check("hmm_tvtp", &signature(&mut m, 5), GOLDEN_HMM_TVTP);
+}
+
+/// `bocpd` with the full Gaussian emission, and the robust one at a
+/// `robust_beta` above 0.
+#[test]
+fn bocpd_emissions_golden() {
+    let cfg = |emission, robust_beta| BocpdCfg {
+        n_features: 2,
+        hazard: 30.0,
+        hazard_from_row: false,
+        emission,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(4.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta,
+        prune_below: 1e-8,
+        max_run: 100,
+        min_weight: 0.0,
+        hazard_on_clock: false,
+    };
+    let mut m = Bocpd::new(cfg(BocpdEmission::Gaussian, 0.0)).unwrap();
+    check(
+        "bocpd_gaussian",
+        &signature(&mut m, 0),
+        GOLDEN_BOCPD_GAUSSIAN,
+    );
+    let mut m = Bocpd::new(cfg(BocpdEmission::Robust, 0.2)).unwrap();
+    check("bocpd_robust", &signature(&mut m, 0), GOLDEN_BOCPD_ROBUST);
+}
+
+/// `corrchange`'s sequential monitor: a history of 20 rows, then 20
+/// monitored against W&G's boundary at `γ = 0.25`. Its signature is the
+/// statistic on every row it reports.
+#[test]
+fn corrchange_sequential_golden() {
+    let mut m = CorrChange::new(CorrChangeCfg {
+        n_features: 2,
+        kind: CorrChangeKind::Sequential,
+        span_rows: 20,
+        alpha: 0.05,
+        alpha_adjust: "bonferroni".into(),
+        bandwidth: None,
+        scalar: false,
+        decay: Decay::Halflife(20.0),
+        crit: None,
+        n_perm: 20,
+        permute_every: 10,
+        perm_block: 1,
+        norm: ChangeNorm::L1,
+        seed: 5,
+        reset: false,
+        monitor_rows: 20,
+        boundary_gamma: 0.25,
+    })
+    .unwrap();
+    let mut out = Vec::new();
+    for (x, y, d, w) in stream() {
+        let step = m.step(&x, &y, d, w);
+        if step.pred[0].is_finite() {
+            out.push(step.pred[0]);
+        }
+    }
+    assert!(out.len() >= 10, "the monitor reports: {}", out.len());
+    check("corrchange_sequential", &out, GOLDEN_CORRCHANGE_SEQUENTIAL);
+}
+
+/// `rcov`'s pre-averaged estimate in its PSD form: the longer window, and
+/// no bias term. (The kernel's PSD form clips a negative eigenvalue, which
+/// this stream's estimate does not have: it repeats `GOLDEN_RCOV`. The clip
+/// is held in `tests/test_rcov.py`.)
+#[test]
+fn rcov_psd_golden() {
+    let cfg = |kind, bandwidth, preavg_rows| RcovCfg {
+        n_features: 2,
+        kind,
+        kernel: "parzen".into(),
+        bandwidth,
+        jitter: 2,
+        theta: 1.0,
+        psd: true,
+        block_rows: Some(60),
+        max_bandwidth: None,
+        preavg_rows,
+        noise_stride: 1,
+        iv_stride: 20,
+    };
+    for (name, c, want) in [(
+        "rcov_preavg_psd",
+        cfg(RcovKind::Preavg, None, None),
+        GOLDEN_RCOV_PREAVG_PSD,
+    )] {
+        let mut m = Rcov::new(c).unwrap();
+        for (x, y, d, w) in stream() {
+            m.step(&x, &y, d, w);
+        }
+        let cov = m.estimate().rcov.expect("a block");
+        check(name, &[cov[0], cov[1], cov[3]], want);
+    }
+}
+
+/// `ew_cov` with lagged moments, with a principal component refreshed on
+/// every row, and under a window.
+#[test]
+fn ew_cov_paths_golden() {
+    let cfg = || EwCovCfg {
+        n_features: 2,
+        decay: Decay::Halflife(20.0),
+        stats: vec![EwCovStat::Corr],
+        min_weight: 3.0,
+        precision_prior: None,
+        mahal_quantiles: Vec::new(),
+        pca: 0,
+        pca_every: 0.0,
+        max_rows_between_pca: u32::MAX,
+        lags: Vec::new(),
+        window: None,
+        window_every: None,
+        max_rows_between_snapshots: None,
+    };
+    // Slots: corr, then lagcorr per lag and ordered pair; slot 3 is lag 1's
+    // (x0, x1).
+    let mut m = EwCovModel::new(EwCovCfg {
+        stats: vec![EwCovStat::Corr, EwCovStat::LagCorr],
+        lags: vec![1, 2],
+        ..cfg()
+    })
+    .unwrap();
+    check("ew_cov_lags", &signature(&mut m, 2), GOLDEN_EW_COV_LAGS);
+    // Slots: corr, then pc0's variance, share, two loadings and score; the
+    // score reads the eigenvectors and the means at once.
+    let mut m = EwCovModel::new(EwCovCfg { pca: 1, ..cfg() }).unwrap();
+    check("ew_cov_pca", &signature(&mut m, 5), GOLDEN_EW_COV_PCA);
+    let mut m = EwCovModel::new(EwCovCfg {
+        window: Some(30.0),
+        ..cfg()
+    })
+    .unwrap();
+    check(
+        "ew_cov_windowed",
+        &signature(&mut m, 0),
+        GOLDEN_EW_COV_WINDOWED,
+    );
+}
+
+/// `marginal` with lags and the serial count they feed, with bins and the
+/// best split, and under a window.
+#[test]
+fn marginal_paths_golden() {
+    let cfg = || MarginalCfg {
+        n_features: 2,
+        n_targets: 1,
+        decay: Decay::Halflife(20.0),
+        min_weight: vec![3.0],
+        lags: Vec::new(),
+        serial_rule: None,
+        cross_lags: None,
+        bins: None,
+        feature_moments: online_core::FeatureMomentLayout::PerTarget,
+        window: None,
+        window_every: None,
+        max_rows_between_snapshots: None,
+    };
+    let read = |m: &mut Marginal, f: &dyn Fn(&MarginalPair) -> [f64; 3]| {
+        let mut out = Vec::new();
+        for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
+            m.step(&x, &y, d, w);
+            if matches!(i, 20 | 45 | 59) {
+                out.extend(f(&m.pair(0, 1)));
+            }
+        }
+        out
+    };
+    let mut m = Marginal::new(MarginalCfg {
+        lags: vec![1, 2],
+        serial_rule: Some(online_core::SerialRule::Truncated),
+        ..cfg()
+    })
+    .unwrap();
+    let got = read(&mut m, &|p| [p.n_serial, p.t_serial, p.lagcorr_xy[0]]);
+    check("marginal_lags", &got, GOLDEN_MARGINAL_LAGS);
+    let mut m = Marginal::new(MarginalCfg {
+        bins: Some(Box::new(online_core::BinCfg {
+            n_bins: 4,
+            edges: None,
+            rule: online_core::BinRule::Quantile,
+            warm_rows: 10,
+            budget_mib: None,
+        })),
+        ..cfg()
+    })
+    .unwrap();
+    let got = read(&mut m, &|p| [p.split_gain, p.split_at, p.bin_mean_y[1]]);
+    check("marginal_bins", &got, GOLDEN_MARGINAL_BINS);
+    let mut m = Marginal::new(MarginalCfg {
+        window: Some(30.0),
+        ..cfg()
+    })
+    .unwrap();
+    let got = read(&mut m, &|p| [p.corr, p.beta, p.n_kish]);
+    check("marginal_windowed", &got, GOLDEN_MARGINAL_WINDOWED);
+}
+
+/// `ew_class` under a window: the posterior, which reads the window's
+/// class moments (its `coef` is task 186's).
+#[test]
+fn ew_class_windowed_golden() {
+    let mut m = EwClass::new(EwClassCfg {
+        window: Some(30.0),
+        ..ew_class_cfg(Covariance::Full)
+    })
+    .unwrap();
+    check(
+        "ew_class_windowed",
+        &labelled_signature(&mut m, 1),
+        GOLDEN_EW_CLASS_WINDOWED,
+    );
+}
+
 // --- generated; see the module docs ---
 const GOLDEN_BOCPD: &[f64] = &[
     0.04617202802926437,
@@ -1075,3 +1600,120 @@ const GOLDEN_EW_CLASS_SHARED: &[f64] =
     &[0.10145341892546339, 0.9999995909585125, 0.22525421810089402];
 const GOLDEN_EW_CLASS_DIAGONAL: &[f64] =
     &[0.9347724076192444, 0.004084196343630897, 0.8672014742687666];
+const GOLDEN_BOCPD_GAUSSIAN: &[f64] = &[
+    0.056219033365587236,
+    0.05468567337937875,
+    0.050622861481265845,
+];
+const GOLDEN_BOCPD_ROBUST: &[f64] = &[0.05647515197223256, 0.05942243315748, 0.05285901703185968];
+const GOLDEN_CORRCHANGE_SEQUENTIAL: &[f64] = &[
+    0.8316281190223411,
+    0.6909945046453919,
+    0.8717864537157914,
+    1.088107497209456,
+    1.122362938000111,
+    0.8341873826345729,
+    0.8805008348308133,
+    0.9496344256708152,
+    0.32833736423817417,
+    0.07921916384339617,
+    0.2074817753847168,
+    0.30015612602690156,
+    0.49240780002347756,
+    0.5101683171994119,
+    0.5007703521180233,
+    0.755536012901163,
+    0.8179783419406013,
+    1.073767937120612,
+    0.7304393221230613,
+];
+const GOLDEN_EW_CLASS_WINDOWED: &[f64] = &[0.7905217777831282, 1.0, 0.8827845147955854];
+const GOLDEN_EW_COV_LAGS: &[f64] = &[
+    0.42675674146655357,
+    -0.2941126260468523,
+    -0.23312910489114877,
+];
+const GOLDEN_EW_COV_PCA: &[f64] = &[
+    -0.31399435832348843,
+    1.2149616979919209,
+    -0.17449357703751237,
+];
+const GOLDEN_EW_COV_WINDOWED: &[f64] =
+    &[-0.3469363807058677, 0.06020754802385295, 0.0899414616598929];
+const GOLDEN_EW_RIDGE_BLOCKED: &[f64] =
+    &[0.23958810892448573, 2.20363868480897, -0.07344251215567098];
+const GOLDEN_EW_RIDGE_BY_WEIGHT: &[f64] =
+    &[0.23728591098765225, 2.20363868480897, -0.06946714940555972];
+const GOLDEN_EW_RIDGE_ON_THE_CLOCK: &[f64] =
+    &[0.2424004251925553, 2.2241093236471907, -0.06755913936964053];
+const GOLDEN_EW_RIDGE_PAIRWISE: &[f64] =
+    &[0.23958810892448573, 2.1830039922943563, -0.0678454894530192];
+const GOLDEN_EW_RIDGE_SESSION_SHRINK: &[f64] = &[
+    0.23958810892448573,
+    2.2036034970611253,
+    -0.06773477106376563,
+];
+const GOLDEN_EW_RIDGE_SET_BOTH: &[f64] =
+    &[0.23958810892448573, 2.20363868480897, -0.06755913936964053];
+const GOLDEN_EW_RIDGE_SET_ONE: &[f64] =
+    &[0.6226036377649254, 1.6401144565737151, -0.12394041898406416];
+const GOLDEN_HMM_TVTP: &[f64] = &[
+    -1.0643298399245595,
+    -1.8091334719187875,
+    -1.0356264682715979,
+];
+const GOLDEN_KALMAN_OBS_VAR: &[f64] = &[
+    0.24438391241807816,
+    2.2123547676208344,
+    -0.06081942698886093,
+];
+const GOLDEN_KALMAN_Q: &[f64] = &[0.2624940862221372, 2.1635957406955013, -0.08050613330500465];
+const GOLDEN_KMEANS_FARTHEST: &[f64] =
+    &[0.5834101526098997, 0.8292779994915372, 1.0040104663998375];
+const GOLDEN_KMEANS_FLOOR: &[f64] = &[0.5834101526098997, 1.1754072514037952, 0.7869506375655098];
+const GOLDEN_KMEANS_KMEANSPP: &[f64] =
+    &[0.5781848335106177, 0.8471048961306411, 0.9945561598807307];
+const GOLDEN_KMEANS_RAW: &[f64] = &[0.3137395740537139, 0.48742765492297646, 0.5466642991217668];
+const GOLDEN_LASSO_SELECT: &[f64] = &[0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0];
+const GOLDEN_LASSO_WINDOWED: &[f64] = &[
+    0.25359037757905656,
+    2.0887627806236106,
+    -0.07423130166085738,
+];
+const GOLDEN_MARGINAL_BINS: &[f64] = &[
+    0.2835419144684436,
+    -0.14863035120403767,
+    0.8850728014130631,
+    0.27125897159512596,
+    -0.5516946583900888,
+    0.37497034342253555,
+    0.2335678702944847,
+    -0.5516946583900888,
+    0.21387162829564357,
+];
+const GOLDEN_MARGINAL_LAGS: &[f64] = &[
+    16.268396176259806,
+    -3.308052338372048,
+    -0.043937176942903604,
+    19.5919219948599,
+    -2.9508446537440984,
+    0.10989778139661917,
+    26.18686633083888,
+    -2.437874678623021,
+    -0.012455077577307155,
+];
+const GOLDEN_MARGINAL_WINDOWED: &[f64] = &[
+    -0.658828097450141,
+    -1.2763707481988686,
+    16.974118022314695,
+    -0.4279581919553364,
+    -0.6817858147667967,
+    5.45319450047077,
+    -0.3564749745323196,
+    -0.6156300333085452,
+    16.500104235927783,
+];
+const GOLDEN_MICRO_CLOCK: &[f64] = &[0.3004267420269594, 0.8769688913202294, 1.4507685900691734];
+const GOLDEN_MICRO_FLOOR: &[f64] = &[0.3004267420269594, 1.161118351411367, 0.8126582237424175];
+const GOLDEN_RCOV_PREAVG_PSD: &[f64] =
+    &[11.307541539663788, -0.7389071190718174, 18.691806669414845];
