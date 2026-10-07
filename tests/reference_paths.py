@@ -435,10 +435,12 @@ def ewridge_paths_ref(
 
     **Scoring.** Target ``j`` is scored with the last solve once its own
     weight (the rows it is present on) reaches its ``min_weight``, scalar or
-    one per target. Left out, it is the builder's rule: a row per
-    coefficient, the features and the intercept (``stream.rs::build_one``).
-    ``weight_sum`` is the weight of every row. Both are seen from the last
-    accepted row, before the row's own decay (hard rule 8).
+    one per target. Left out, it is the builder's rule: the model's own
+    floor, a row per coefficient (the features and the intercept), on
+    ``weight_sum``, and no floor of a target's own beyond a weight above 0
+    (``stream.rs::build_one``; ``spec.rs::default_min_periods`` is 0 for
+    ``ewridge``). ``weight_sum`` is the weight of every row. Both are seen
+    from the last accepted row, before the row's own decay (hard rule 8).
 
     **The schedule** is ``lasso_paths_ref``'s: after the row is learned a
     solve runs when the clock since the last one reaches ``solve_every``
@@ -447,8 +449,7 @@ def ewridge_paths_ref(
     (b); every row for ``inf``), when
     ``max_rows_between_solves`` rows have gone by, or when there has been
     none yet and ``weight_sum`` has reached the smallest ``min_weight`` -- by
-    default the first row whose weight before it reaches the coefficient
-    count.
+    default the coefficient count.
 
     **The combinations** are every feature set (column indices; ``None`` is
     all of them) crossed with every ridge value, set-major. Each is solved by
@@ -469,8 +470,10 @@ def ewridge_paths_ref(
     sets = [list(range(k))] if feature_sets is None else [list(s) for s in feature_sets]
     combos = [(s, r) for s in sets for r in ridges]
     if min_weight is None:
-        min_weight = float(kt)
-    mp = np.broadcast_to(np.asarray(min_weight, dtype=float), (m,))
+        floor, mp = float(kt), np.zeros(m)
+    else:
+        mp = np.broadcast_to(np.asarray(min_weight, dtype=float), (m,))
+        floor = float(np.min(mp))
     share = np.log(2.0) / 50.0 if solve_every is None and np.isfinite(half_life) else None
     if solve_every is None:
         solve_every = 0.0
@@ -568,7 +571,8 @@ def ewridge_paths_ref(
         else:
             weight_sum[i], w_target = 0.0, np.zeros(m)
         for j in range(m):
-            if fit is not None and w_target[j] > 0.0 and w_target[j] >= mp[j]:
+            gated = w_target[j] >= mp[j] and weight_sum[i] >= floor
+            if fit is not None and w_target[j] > 0.0 and gated:
                 if np.isnan(fit[j]).any():
                     raise ValueError(f"row {i}, target {j} is scored with an unheld fit")
                 pred[i, j] = fit[j] @ z
@@ -596,7 +600,7 @@ def ewridge_paths_ref(
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         due = by_cadence or since_rows >= max_rows
         if not due and fit is None:
-            due = float(np.asarray(fast)[inside].sum()) >= float(np.min(mp))
+            due = float(np.asarray(fast)[inside].sum()) >= floor
         if due:
             fit = solve()
             solved[i] = True

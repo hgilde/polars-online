@@ -88,7 +88,7 @@ the classes do not name, and say where the suite runs.
 | 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, below |
 | 6b. `predict` ≡ `fit_predict` of the next row | Done (E31) | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
 | 6c. Runner ≡ bank, every source and format | Done (E32) | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run for every release since 0.1.0, and `ci.yml` loading states on all three OSes. It was defined but never executed before the repo had a remote |
+| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`; one `ew_ridge` spec until 2026-10-06, TA2). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own. It was defined but never executed before the repo had a remote |
 | 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
 **6. Arrow ≡ Polars output: retired, and replaced.** This row held the
@@ -172,8 +172,22 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly | T-S15 |
 | `kmeans`, `micro` | `tests/reference_cluster.py`, a transcription of the Rust held bit for bit: a regression check, which can share a mistake with the code | bit for bit | |
 | `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centres, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay (review 2026-10-05, TB1) | 1e-9; the partition at ARI 0.99995 and the centres to 5.4e-4 | |
-| `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | | |
+| `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | 1e-12 to 1e-9: `deco`'s pair sum, `hmm`'s probabilities, `corrchange`'s statistic and `bocpd`'s posterior to 1e-12; `hmm`'s log-likelihood and `rcov`'s three estimators to 1e-9, relative | |
 | a target with gaps | numpy's `lstsq` on the target's own rows, pandas' pairwise `cov`, and statsmodels' `WLS`, ridge and elastic net (`TestATargetWithGaps`) | 1e-10 to 1e-8; the elastic net 1e-7 | |
+| `kalman`'s explicit `q`, `obs_var` with `p0`, a `coef_half_life` per coefficient with `inf` pinning, and no intercept under `standardize` | filterpy's `KalmanFilter`, the last on rows scaled by each feature's EW root mean square from numpy (`TestKalmanSettingsAreFilterpy`; review 2026-10-06, TA4) | 1e-11 (1.0e-14 measured) | |
+| `sgd`'s Huber, epsilon-insensitive and logistic losses under `"constant"`, weighted or not; `"inv_scaling"` at unit weights | scikit-learn's `SGDRegressor` and `SGDClassifier(loss="log_loss")`, `partial_fit` one row at a time (`TestSgdIsScikitLearnsSgd`; TA4) | 1e-12 (1.0e-15 measured) | |
+| `hmm` at fixed parameters | hmmlearn's `GaussianHMM`: the filtered and predicted probabilities, and each row's log-likelihood (`TestHmmIsHmmlearns`; TA4) | 1e-10 (1.4e-13 measured) | |
+| `rls` | padasip's `FilterRLS`, at unit weights on a row clock (`TestRlsIsPadasips`; TA4) | 1e-11 (1.6e-14 measured) | |
+| `seqtest` | `reference.seqtest_ref`, the paper's betting recursion in scalar code, and its closed form where the clip never binds (`tests/test_seqtest.py`) | 1e-12, relative | |
+| `emit_drift` | river's `PageHinkley` at `half_life = inf` (`TestAZeroWeightRowIsNotSeen`) | flag for flag | |
+| a prediction under `embargo` | river's progressive validation with `delay` (`TestLabelDelayFoldsWhatWasScored`) | 1e-12 | T-S16 |
+| `r2` and `coverage` under `embargo` | scikit-learn's `r2_score` over the matured rows; the share of matured rows inside their interval | 1e-9 | |
+| `emit_metrics` and `emit_autocorr` | a row's own outcome moved across zero, which moves none of the row's own fields, to the bit; on a logistic fit, scikit-learn's `accuracy_score` and `brier_score_loss` and scipy's `pointbiserialr` (`TestStreamingMetrics`; TB4) | to the bit; 1e-9 | |
+| `resid_quantiles`, `mahal_quantiles` | the EW quantile by its definition, within the sketch's `tanh(1/128)` (`tests/test_diagnostics.py`); numpy's `quantile` of the past `mahal` scores (`TestMahalQuantiles`) | 3% (1.4e-3 measured); 10% | |
+| the `session_shrink` blend | numpy's `cov(aweights=)` of the rows at their blended weights (`TestSessionShrinkBlend`) | 1e-12 | |
+| `conformal` | **definition only**: a longhand replay of the recursion over the bank's own `pred`, `resid` and `sigma`, and the telescoped coverage bound (`tests/test_conformal.py`); no library computes an adaptive conformal radius | bit for bit | |
+| `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad (review 2026-10-06, TA4) | as each row above | |
+| `micro`, `seqtest`, `deco`, `corrchange`, `rcov` | **definition only**: the oracles above, each written from its paper. river's `DenStream` takes another macro step, so it could agree only statistically, and no Python library computes the other four | as each row above | |
 | the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([below](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly | |
 | a formula target | its column form | bit for bit, every prediction | |
 
@@ -223,7 +237,7 @@ separate question, and three kinds of need have come up:
 | need | libraries | example |
 |---|---|---|
 | an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
-| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit, hmmlearn, padasip | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4); `GaussianHMM` beside `hmm` (TA4) |
 | interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
 
 **An oracle comes from a third-party library wherever one computes the
@@ -1373,8 +1387,8 @@ the Windows failures in T-W1.
 streams: mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights,
 tiny groups. It asserts the universal invariants for all ten regression
 models. They are chunk invariance under any chunk size, save/load
-transparency at any split, outputs finite-or-null, no `weight_sum` reported
-by a skipped row, and group independence. The strongest is that **changing a
+transparency at any split, outputs finite-or-null, no field at all
+reported by a skipped row, and group independence. The strongest is that **changing a
 row's own target never changes that row's own prediction**: out-of-sample by
 construction, hard rule 2.
 

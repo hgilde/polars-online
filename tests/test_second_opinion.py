@@ -3294,3 +3294,419 @@ class TestNearestIsStatsmodelsCorrNearest:
             np.testing.assert_allclose(ours, theirs, rtol=0.0, atol=1e-10)
             repaired += iters > 1
         assert repaired >= 8, "most inputs were not correlation matrices to begin with"
+
+
+def _filterpy_kalman(
+    kalman: Any,
+    t: np.ndarray,
+    Z: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    half_life: float,
+    *,
+    coef_half_life: float | list[float],
+    q: list[float] | None = None,
+    obs_var: float | None = None,
+    p0: float = 1.0,
+) -> np.ndarray:
+    """filterpy's predictions over the regressor rows ``Z`` under `kalman`'s
+    documented recursion, as `TestKalmanZeroWeightRow.filterpy_pred` runs it,
+    with the three settings that one leaves at their defaults: an explicit
+    ``q`` makes the process noise ``diag(q) d**2`` whatever the residuals; an
+    ``obs_var`` is the observation noise on every row and sizes the prior
+    ``p0 * obs_var * I`` before the first row; and a ``coef_half_life`` per
+    coefficient, ``inf`` pinning one, gives each its own ``sigma**2 (ln 2 d /
+    h)**2``, 0 at ``inf``."""
+    n, k1 = Z.shape
+    hl = np.broadcast_to(np.asarray(coef_half_life, dtype=float), (k1,))
+    kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
+    kf.x = np.zeros((k1, 1))
+    kf.F = np.eye(k1)
+    sized = obs_var is not None
+    if obs_var is not None:
+        kf.P = np.eye(k1) * p0 * obs_var
+    sig2 = wsig = wj = 0.0
+    pred = np.full(n, np.nan)
+    for i in range(n):
+        d = 0.0 if i == 0 else t[i] - t[i - 1]
+        lam = 0.5 ** (d / half_life)
+        z = Z[i]
+        seen = not np.isnan(y[i]) and w[i] > 0.0
+        if obs_var is not None:
+            s2 = obs_var
+        else:
+            first = (y[i] - z @ kf.x[:, 0]) ** 2 if seen else 0.0
+            s2 = sig2 if sig2 > 0.0 else first
+        if sized:
+            if q is not None:
+                qv = np.asarray(q, dtype=float)
+            else:
+                finite = np.where(np.isinf(hl), 1.0, hl)
+                qv = np.where(np.isinf(hl), 0.0, s2 * (np.log(2.0) / finite) ** 2)
+            kf.predict(Q=np.diag(qv * d * d))
+        elif s2 > 0.0:
+            kf.P, sized = np.eye(k1) * p0 * s2, True
+        if wj > 0.0:
+            pred[i] = z @ kf.x[:, 0]
+        if not seen:
+            wj *= lam
+            wsig *= lam
+            continue
+        if s2 > 0.0:
+            kf.update(y[i], R=s2 / w[i], H=z[None, :])
+        aged = lam * wsig
+        wsig = aged
+        if not np.isnan(pred[i]):
+            r = y[i] - pred[i]
+            sig2 = (aged * sig2 + w[i] * r * r) / (aged + w[i])
+            wsig = aged + w[i]
+        wj = lam * wj + w[i]
+    return pred
+
+
+class TestKalmanSettingsAreFilterpy:
+    """The `kalman` settings `kalman_ref` alone held, which restates the
+    core (review 2026-10-06, TA4): an explicit ``q``, a fixed ``obs_var`` with
+    ``p0``, a ``coef_half_life`` per coefficient with ``inf`` pinning, and no
+    intercept under the default ``standardize``. Each is a plain
+    configuration of filterpy's ``KalmanFilter``. The first three run
+    unstandardized, so ``kf.x`` is the coefficient vector; the last on rows
+    scaled, not centred, by each feature's EW root mean square over the rows
+    before (``kalman.rs``'s module doc), computed here in numpy by sums over
+    the raw rows. Measured: 1.1e-15 relative or less, 1.0e-14 with no
+    intercept. ``share_p`` is task 186's."""
+
+    TOL = 1e-11
+
+    @staticmethod
+    def rows(seed: int, scaled: bool):
+        rng = np.random.default_rng(seed)
+        n = 300
+        raw = rng.normal(0.0, 1.0, (n, 2))
+        drift = np.arange(n) / n
+        y = 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
+        y = y + rng.normal(0.0, 0.3, n)
+        # Levels and scales of their own where standardizing is the point.
+        x = raw * np.array([5.0, 0.2]) + np.array([3.0, -40.0]) if scaled else raw
+        late = np.arange(n) > 20
+        y_seen = np.where((np.arange(n) % 9 == 4) & late, np.nan, y)
+        w = np.where((np.arange(n) % 11 == 7) & late, 0.0, rng.uniform(0.5, 1.5, n))
+        steps = np.ones(n)
+        steps[150] = 4.0
+        steps[230:] = 0.5
+        t = np.cumsum(steps) - steps[0]
+        frame = pl.DataFrame(
+            {
+                "t": t,
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": [None if np.isnan(v) else float(v) for v in y_seen],
+                "w": w,
+            },
+            schema={c: pl.Float64 for c in ("t", "x0", "x1", "y", "w")},
+        )
+        return frame, t, x, y_seen, w
+
+    @staticmethod
+    def ours(frame: pl.DataFrame, **kw: Any) -> np.ndarray:
+        spec = po.spec.kalman(
+            "k",
+            targets=["y"],
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            half_life=30.0,
+            min_weight=0.0,
+            **kw,
+        )
+        return po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+
+    CASES = {
+        # `q` alone: it is the process noise `coef_half_life` would derive,
+        # and `kalman` refuses the two together (review round 4, PC6); the
+        # oracle reads `q` and leaves the half-life unread.
+        "explicit q": (
+            dict(q=[0.0, 0.01, 0.02], standardize=False, p0=1.0),
+            dict(coef_half_life=50.0, q=[0.0, 0.01, 0.02]),
+        ),
+        "obs_var and p0": (
+            dict(coef_half_life=50.0, obs_var=0.25, p0=4.0, standardize=False),
+            dict(coef_half_life=50.0, obs_var=0.25, p0=4.0),
+        ),
+        "a half-life per coefficient, two pinned": (
+            dict(coef_half_life=[float("inf"), 30.0, float("inf")], standardize=False, p0=1.0),
+            dict(coef_half_life=[float("inf"), 30.0, float("inf")]),
+        ),
+    }
+
+    @pytest.mark.parametrize("case", sorted(CASES))
+    def test_the_filter_is_filterpys(self, case):
+        import filterpy.kalman as kalman
+
+        ours, theirs = self.CASES[case]
+        frame, t, x, y, w = self.rows(43, scaled=False)
+        got = self.ours(frame, **ours)
+        Z = np.column_stack([np.ones(len(t)), x])
+        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, **theirs)
+        assert np.isfinite(want[1:]).all()
+        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-13)
+
+    def test_with_no_intercept_the_rows_are_scaled_and_not_centred(self):
+        import filterpy.kalman as kalman
+
+        frame, t, x, y, w = self.rows(44, scaled=True)
+        got = self.ours(frame, coef_half_life=50.0, fit_intercept=False, p0=1.0)
+        n, k = x.shape
+        Z = x.copy()  # no moments before the first row: scale 1
+        for i in range(1, n):
+            u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / 30.0)
+            raw2 = (u[:, None] * x[:i] ** 2).sum(axis=0) / u.sum()
+            Z[i] = x[i] / np.where(raw2 > 0.0, np.sqrt(raw2), 1.0)
+        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0)
+        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-13)
+
+    def test_a_slip_in_the_mapping_misses(self):
+        """The control: filterpy with one entry of ``q`` a tenth off parts
+        from the bank by far more than the tolerance."""
+        import filterpy.kalman as kalman
+
+        frame, t, x, y, w = self.rows(43, scaled=False)
+        got = self.ours(frame, q=[0.0, 0.01, 0.02], standardize=False, p0=1.0)
+        Z = np.column_stack([np.ones(len(t)), x])
+        slip = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0, q=[0.0, 0.011, 0.02])
+        assert np.nanmax(np.abs(got - slip)) > 1e-6
+
+
+class TestSgdIsScikitLearnsSgd:
+    """`sgd`'s losses and schedules against scikit-learn's ``SGDRegressor``
+    and ``SGDClassifier(loss="log_loss")``, ``partial_fit`` one row at a
+    time, the prediction read before each (review 2026-10-06, TA4). Both
+    take one gradient step per row, ``b -= lr * d * z * w`` with the
+    intercept unpenalised and the weight scaling the step, so under
+    ``learning_rate="constant"`` they are the same recursion: Huber's
+    clamped residual, the epsilon-insensitive sign outside the tube, and
+    the logistic ``sigmoid(eta) - y``, which scikit-learn writes ``-y / (1 +
+    exp(y eta))`` on labels of +-1. ``inv_scaling``'s ``lr / (1 +
+    weight_sum) ** power`` is scikit-learn's ``eta0 / t ** power_t`` at unit
+    weights with no decay, ``t`` counting rows from 1. Measured: 1.0e-15
+    relative or less. The Poisson loss and the AdaGrad schedule have no
+    scikit-learn twin and stay with ``sgd_ref``."""
+
+    TOL = 1e-12
+    LR = 0.02
+
+    @staticmethod
+    def rows(n: int = 400, seed: int = 3) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        x = rng.normal(size=(n, 2))
+        y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.5 * rng.standard_t(3, n)
+        p = 1.0 / (1.0 + np.exp(-(0.3 + x @ np.array([1.2, -0.7]))))
+        yb = (rng.random(n) < p).astype(float)
+        w = rng.uniform(0.5, 1.5, n)
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "yb": yb, "w": w})
+
+    @staticmethod
+    def ours(frame: pl.DataFrame, target: str, weighted: bool, **kw: Any) -> np.ndarray:
+        spec = po.spec.sgd(
+            "s",
+            targets=[target],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            min_weight=0.0,
+            weight="w" if weighted else None,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["s"].struct
+        return out.field(f"pred_{target}").to_numpy().astype(float)
+
+    @staticmethod
+    def sklearns(est: Any, frame: pl.DataFrame, target: str, weighted: bool) -> np.ndarray:
+        x = frame.select("x0", "x1").to_numpy()
+        y, w = frame[target].to_numpy(), frame["w"].to_numpy()
+        classifier = hasattr(est, "predict_proba")
+        pred = np.full(len(y), 0.5 if classifier else 0.0)
+        for i in range(len(y)):
+            row = x[i : i + 1]
+            if i:
+                pred[i] = est.predict_proba(row)[0, 1] if classifier else est.predict(row)[0]
+            kw: dict[str, Any] = {"sample_weight": [w[i]]} if weighted else {}
+            if classifier:
+                kw["classes"] = [0.0, 1.0]
+            est.partial_fit(row, y[i : i + 1], **kw)
+        return pred
+
+    @pytest.mark.parametrize("weighted", [False, True], ids=["unit weights", "weighted"])
+    @pytest.mark.parametrize("loss", ["huber", "epsilon_insensitive", "logistic"])
+    def test_every_row_is_scikit_learns(self, loss, weighted):
+        from sklearn.linear_model import SGDClassifier, SGDRegressor
+
+        frame = self.rows()
+        sk: dict[str, Any] = dict(
+            penalty=None, learning_rate="constant", eta0=self.LR, shuffle=False
+        )
+        est: Any
+        if loss == "huber":
+            got = self.ours(frame, "y", weighted, loss=loss, huber_delta=1.0, learning_rate=self.LR)
+            est, target = SGDRegressor(loss="huber", epsilon=1.0, **sk), "y"
+        elif loss == "epsilon_insensitive":
+            got = self.ours(frame, "y", weighted, loss=loss, eps=0.3, learning_rate=self.LR)
+            est, target = SGDRegressor(loss="epsilon_insensitive", epsilon=0.3, **sk), "y"
+        else:
+            got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)
+            est, target = SGDClassifier(loss="log_loss", **sk), "yb"
+        want = self.sklearns(est, frame, target, weighted)
+        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
+
+    @pytest.mark.parametrize("loss", ["squared", "huber"])
+    def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self, loss):
+        from sklearn.linear_model import SGDRegressor
+
+        frame = self.rows()
+        extra = {"huber_delta": 1.0} if loss == "huber" else {}
+        got = self.ours(
+            frame,
+            "y",
+            False,
+            loss=loss,
+            learning_rate=0.1,
+            schedule="inv_scaling",
+            power=0.5,
+            **extra,
+        )
+        est = SGDRegressor(
+            loss="huber" if loss == "huber" else "squared_error",
+            epsilon=1.0,
+            penalty=None,
+            learning_rate="invscaling",
+            eta0=0.1,
+            power_t=0.5,
+            shuffle=False,
+        )
+        want = self.sklearns(est, frame, "y", False)
+        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
+
+    def test_a_slip_in_the_mapping_misses(self):
+        """The control: scikit-learn's Huber at a cut of 0.9 where ours is at
+        1.0 parts from the bank by far more than the tolerance."""
+        from sklearn.linear_model import SGDRegressor
+
+        frame = self.rows()
+        got = self.ours(frame, "y", False, loss="huber", huber_delta=1.0, learning_rate=self.LR)
+        est = SGDRegressor(
+            loss="huber",
+            epsilon=0.9,
+            penalty=None,
+            learning_rate="constant",
+            eta0=self.LR,
+            shuffle=False,
+        )
+        assert np.abs(got - self.sklearns(est, frame, "y", False)).max() > 1e-6
+
+
+class TestHmmIsHmmlearns:
+    """`hmm` at fixed parameters against hmmlearn's ``GaussianHMM`` (review
+    2026-10-06, TA4): the Hamilton filter's probabilities and each row's
+    log-likelihood, where the longhand in ``tests/test_hmm.py`` restated the
+    recursion. ``learn = False`` with given means, covariances and
+    transition: each state's emission is the Gaussian of its covariance plus
+    ``precision_prior`` on the diagonal, and the filter starts uniform, so
+    hmmlearn's start is ``[1/2, 1/2] @ Pi``. ``filtered_<k>`` on a row is
+    read before the row, so it is hmmlearn's filtered probability at the row
+    before, the last of ``predict_proba`` over the rows up to it;
+    ``predicted_<k>`` is that times ``Pi``; and ``loglik`` is ``log p(x_t |
+    x_<t)``, the difference of ``score`` over the rows up to it and up to the
+    row before. Measured: 1.4e-13, the probabilities absolute and the
+    log-likelihoods relative."""
+
+    TOL = 1e-10
+
+    def test_the_filter_and_the_loglik_are_hmmlearns(self):
+        from hmmlearn.hmm import GaussianHMM
+
+        rng = np.random.default_rng(23)
+        n = 500
+        state = (np.arange(n) // 40) % 2
+        mix = np.array([[1.0, 0.3], [0.0, 0.8]])
+        x = np.where(state[:, None] == 0, -1.0, 1.0) + rng.normal(size=(n, 2)) @ mix
+        means = [-1.0, -0.8, 1.2, 0.9]
+        covs = [1.0, 0.3, 0.3, 0.8, 1.4, -0.2, -0.2, 0.7]
+        pi = np.array([[0.93, 0.07], [0.12, 0.88]])
+        ridge = 1e-2
+        spec = po.spec.hmm(
+            "h",
+            features=["x0", "x1"],
+            k=2,
+            precision_prior=ridge,
+            half_life=1e9,
+            learn=False,
+            means=means,
+            covs=covs,
+            transition=pi.flatten().tolist(),
+            transition_prior=1.0,
+        )
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
+        out = po.ModelBank([spec]).fit_predict(frame)["h"].struct.unnest()
+
+        model = GaussianHMM(n_components=2, covariance_type="full", init_params="", params="")
+        model.startprob_ = np.array([0.5, 0.5]) @ pi
+        model.transmat_ = pi
+        model.means_ = np.array(means).reshape(2, 2)
+        model.covars_ = np.array(covs).reshape(2, 2, 2) + ridge * np.eye(2)
+        filtered = np.array([model.predict_proba(x[: t + 1])[-1] for t in range(n)])
+        scores = np.array([model.score(x[: t + 1]) for t in range(n)])
+        loglik = np.diff(scores, prepend=0.0)
+
+        got = out.select("filtered_0", "filtered_1").to_numpy()
+        np.testing.assert_allclose(got[0], [0.5, 0.5], rtol=0, atol=0)
+        np.testing.assert_allclose(got[1:], filtered[:-1], rtol=0, atol=self.TOL)
+        predicted = out.select("predicted_0", "predicted_1").to_numpy()
+        np.testing.assert_allclose(predicted[1:], filtered[:-1] @ pi, rtol=0, atol=self.TOL)
+        np.testing.assert_allclose(out["loglik"].to_numpy(), loglik, rtol=self.TOL, atol=self.TOL)
+        # And the states are told apart: the filter is no flat 1/2.
+        assert np.abs(got[1:, 0] - 0.5).max() > 0.45
+
+
+class TestRlsIsPadasips:
+    """`rls` against padasip's ``FilterRLS`` (review 2026-10-06, TA4), where
+    only ``rls_ref`` and ``rls == ewridge(ridge_scale="sum")`` held it.
+    ``FilterRLS(n, mu, eps)`` keeps ``R = A^-1`` from ``A_0 = eps I`` with
+    ``A_t = mu A_{t-1} + z z'`` and steps ``w += R z (y - w'z)``: the classic
+    exponentially weighted recursion, which at unit weights on a row clock is
+    `rls` at ``mu = 2 ** (-1 / half_life)``. The bank's first row takes no
+    decay (its step is 0), where ``FilterRLS`` decays ``A_0`` on every row,
+    so ``eps = ridge / mu`` gives both the same ``A`` after it. `rls`
+    withholds its first row, before any row is learned; padasip predicts 0
+    there. Measured: 1.6e-14 relative."""
+
+    TOL = 1e-11
+
+    @pytest.mark.parametrize(
+        ("half_life", "ridge"), [(50.0, 1.0), (200.0, 0.1), (float("inf"), 1.0)]
+    )
+    def test_every_row_is_padasips(self, half_life, ridge):
+        import padasip
+
+        rng = np.random.default_rng(31)
+        n = 400
+        x = rng.normal(size=(n, 2))
+        y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
+        spec = po.spec.rls(
+            "r",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=half_life,
+            ridge=ridge,
+            min_weight=0.0,
+        )
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        got = po.ModelBank([spec]).fit_predict(frame)["r"].struct.field("pred_y").to_numpy()
+        mu = 0.5 ** (1.0 / half_life)
+        rls = padasip.filters.FilterRLS(n=3, mu=mu, eps=ridge / mu, w="zeros")
+        want = np.empty(n)
+        for i in range(n):
+            z = np.array([1.0, *x[i]])
+            want[i] = rls.predict(z)
+            rls.adapt(y[i], z)
+        assert np.isnan(got[0]) and np.isfinite(got[1:]).all()
+        np.testing.assert_allclose(got[1:], want[1:], rtol=self.TOL, atol=1e-13)

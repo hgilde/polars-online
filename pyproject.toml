@@ -149,6 +149,15 @@ dev = [
     # own predictions. BSD-3-Clause, no dependencies, and wheels for every
     # Python and OS that CI runs. The floor is the version measured.
     "vowpalwabbit>=9.11.9",
+    # Second opinions for settings a self-referential oracle alone held
+    # (review 2026-10-06, TA4): hmmlearn's GaussianHMM (BSD-3-Clause) for
+    # `hmm`'s filter at fixed parameters, and padasip's FilterRLS (MIT) for
+    # `rls`. hmmlearn publishes wheels up to CPython 3.13; on 3.14 uv builds
+    # its sdist, a small C++ extension that every platform this repo builds
+    # on compiles. padasip is pure Python. The floors are the versions
+    # measured.
+    "hmmlearn>=0.3.3",
+    "padasip>=1.2.2",
     # scripts/doc_structure.py, WRITING's step-5 checks, run by
     # tests/test_doc_structure.py: a CommonMark parser with GitHub's tables
     # reads lists, code blocks and HTML as GitHub does, where a hand-rolled

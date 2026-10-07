@@ -195,6 +195,23 @@ class TestTheSchedule:
         coefficients that stale."""
         _check(_stream(46), 200.0, min_weight=12.0)
 
+    def test_the_default_min_weight_is_a_row_per_coefficient(self):
+        """No ``min_weight`` on either side: the builder's rule, the model's
+        floor of a row per coefficient on ``weight_sum``, gates every target
+        and the first solve, and no target has a floor of its own
+        (``stream.rs::build_one``). The reference said its default was
+        ``ewridge``'s 0, the first row, and no case left the argument out
+        (review 2026-10-06, TA9). Every target is present on the first 20
+        rows: with no floor of its own a target is scored from the row the
+        shared weight reaches 5, and on its gaps it would then have too few
+        rows of its own for the reference to hold its fit."""
+        early = pl.int_range(pl.len()) < 20
+        df = _stream(46).with_columns(
+            pl.when(early).then(pl.col(t).fill_null(0.5)).otherwise(pl.col(t)).alias(t)
+            for t in TARGETS
+        )
+        _check(df, 40.0)
+
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     def test_blocked_grams_keep_the_schedule(self):

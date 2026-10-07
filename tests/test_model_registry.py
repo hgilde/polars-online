@@ -312,6 +312,21 @@ def test_the_core_golden_file_pins_every_model():
     assert not missing, f"{CORE_GOLDEN.name} has no fn <kind>_golden() for {sorted(missing)}"
 
 
+def test_the_cross_os_hand_off_holds_every_kind():
+    """`crates/online-polars/tests/state_portability.rs` writes the state
+    `release.yml` hands from macOS to Windows and Linux, and hard rule 5
+    promises every kind's state loads on both. Its bank held one `ew_ridge`
+    spec (review 2026-10-06, TA2); it holds each builder's kind by name
+    now, each spec named after its builder, and this keeps it so."""
+    text = (ROOT / "crates" / "online-polars" / "tests" / "state_portability.rs").read_text(
+        encoding="utf-8"
+    )
+    table = text.split("const SPECS", 1)[1].split("];", 1)[0]
+    named = set(re.findall(r'\(\s*"([a-z_]+)",', table))
+    missing = set(MINIMAL) - named
+    assert not missing, f"the hand-off bank has no spec for {sorted(missing)}"
+
+
 def test_the_readme_documents_every_model():
     """Every builder gets a `#### \\`name\\`` heading under its family in
     "## Models"; the heading text is what the model table links to."""

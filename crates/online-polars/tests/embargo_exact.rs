@@ -299,6 +299,64 @@ fn a_number_clocks_release_is_one_subtraction_of_the_raw_values() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
+/// The embargo on a row-count clock: the `has_clock = false` branch, whose
+/// places are the rows themselves. With no clock column every row is one
+/// step, a skipped row's included, so row `u` is learned before row `s` is
+/// scored when `s - u` is at least the embargo, from the definition, whole
+/// and at chunks of 1, 7 and 37 rows; and `scored_clock` is the row's own
+/// number. Every embargo test ran a `Datetime` or a number clock (review
+/// 2026-10-06, PB6).
+#[test]
+fn on_a_row_count_clock_the_embargo_counts_rows_skipped_ones_included() {
+    let n = 300;
+    let skip: Vec<bool> = (0..n)
+        .map(|i| i % 11 == 4 || (100..106).contains(&i))
+        .collect();
+    let accepted: Vec<bool> = skip.iter().map(|s| !s).collect();
+    // `t` is in the frame and named by no spec here: the clock is the rows.
+    let df = frame(
+        Series::new("t".into(), vec![0.0; n]),
+        &skip,
+        &vec!["s"; n],
+        29,
+    );
+    let mut failures = Vec::new();
+    for embargo in [1usize, 3, 10, 40] {
+        let want = released(&accepted, &vec![false; n], |s, u| s - u >= embargo);
+        // Row 106, the first after six skipped rows, is learned exactly an
+        // embargo later and not a row sooner; counted in accepted rows alone
+        // it would go six rows later.
+        let newest = |s: usize| want[s].and_then(|(_, newest)| newest);
+        assert_eq!(newest(106 + embargo), Some(106), "embargo {embargo}");
+        assert!(newest(105 + embargo) < Some(106), "embargo {embargo}");
+        let text = format!(
+            r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6}}, "targets": ["y"],
+                "features": ["x"], "min_weight": 0.0, "half_life": "inf",
+                "emit_clocks": true, "embargo": {embargo}}}"#
+        );
+        let s: Spec = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        for size in [0, 1, 7, 37] {
+            let out = run(&s, &df, size);
+            let learned: Vec<Option<i64>> =
+                field(&out, "learned_clock").i64().unwrap().iter().collect();
+            let mut bad = mismatches(&want, &weight_sum(&out), &learned, |u| u as i64);
+            let scored: Vec<Option<i64>> =
+                field(&out, "scored_clock").i64().unwrap().iter().collect();
+            for s in (0..n).filter(|&s| accepted[s] && scored[s] != Some(s as i64)) {
+                bad.push(format!("row {s}: scored_clock {:?}", scored[s]));
+            }
+            if !bad.is_empty() {
+                failures.push(format!(
+                    "{embargo} rows, chunks of {size}: {} rows, first {}",
+                    bad.len(),
+                    bad[0]
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
 /// A temporal embargo is compared with the time that passed in integer
 /// nanoseconds at any length, the embargo's own duration against the rows'
 /// own steps. Past about 97 days a double of seconds no longer tells a
