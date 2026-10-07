@@ -15,6 +15,14 @@ what it is about?). What belongs here is instances — a specific quoted
 phrase that fails the standard, where it is, and (once decided) what it
 became.
 
+*Added 2026-10-06:* each report quotes the docs as they stood on its day,
+so the reports from before task 144 (2026-10-02) use the names that task
+renamed.
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+gives today's for each, such as `half_life` for `halflife`. Where `n_eff`
+names a field a model writes, it is `weight_sum` today; the models'
+accessor keeps the name `n_eff` (CLAUDE.md rule 8).
+
 ## Format
 
 One entry per problem, as the user reports it, in this shape:
@@ -1128,7 +1136,8 @@ ceiling", where seven others mean an error raised.
 briefly describing what is happening but not high detail since the section
 has good detail
 
-**Status:** fixed in the I5 working tree (uncommitted): each of the
+**Status:** fixed in the I5 working tree, which landed with I7 in
+`21b84a4` (task 157, 2026-10-05): each of the
 block's four steps opens with a one-line comment, numbered 1 to 4, and the
 lines that had none say what they give. The rule is `docs/WRITING.md` §3,
 "A long example names its steps in brief comments, and leaves the detail
@@ -1214,7 +1223,7 @@ minutes later*, *`w` later*) or order a list (*the intercept first*).
 
 **Reported, then:** We want to know why the reviewers missed it and how to make them catch it in the future
 
-**Status:** fixed in the I7 README (uncommitted). The frames get a
+**Status:** fixed in the I7 README, `21b84a4` (task 157). The frames get a
 subsection of their own, *Example data*, after *Install*. It says what the
 frames are for, then builds `df`, `lf`, `trades`, `today` and `later` in
 code a reader can run. The paragraph is gone from the section about
@@ -1251,7 +1260,7 @@ built in code.
 
 **Reported:** The paragraph starting with “To take one column against another of its row without “ looks like it should be a code example with comments instead
 
-**Status:** fixed in the I7 README (uncommitted). The bold lead stays, and
+**Status:** fixed in the I7 README, `21b84a4` (task 157). The bold lead stays, and
 an example follows it, run on `trades` with the section's first `flows`:
 three targets take `price` against `mid`, one per scale, each named with
 `name=`. Its comments give each scale and what it sits about, the ratio's
@@ -1272,7 +1281,7 @@ beside them.
 
 **Reported:** Be sure that when a code section references the example data, there is a line of prose just above the code block stating that it uses example data with a link to that section.
 
-**Status:** done in the I7 README (uncommitted). 57 python blocks read
+**Status:** done in the I7 README, `21b84a4` (task 157). 57 python blocks read
 the example data: a name *Example data* builds (`df`, `lf`, `trades`,
 `today`, `later`) that the block reads and does not assign, or a file it
 writes (`ticks.parquet`, `ticks/*.parquet`). Above each, the last sentence

@@ -3,11 +3,13 @@
 Every number in REGIMES.md comes from `scripts/regime_experiments.py`. Task
 159 re-ran section 8 and updated its table, and the prose beside it kept the
 old 0.151 where the table read 0.150 (task 160, SC2). The experiments behind
-sections 1, 5, 7 and 8 take seconds, so they run here: every body row of
-their output tables must be a row of the section's tables, and every
-three-decimal figure in the section's prose must be one of the output's.
-Blockquotes are the dated notes that keep a section's earlier figures on
-purpose, and are left out.
+sections 1 and 5 to 9 take under half a minute each, so they run here:
+every body row of their output tables must be a row of the section's
+tables, and every three-decimal figure in the section's prose must be one
+of the output's. Sections 6 and 9 joined in task 192, after their prose had
+drifted from their tables (review 2026-10-06, DB13). Blockquotes are the
+dated notes that keep a section's earlier figures on purpose, and are left
+out.
 
 macOS only: the document is generated there, and another platform's libm may
 move a figure in its third decimal, which an exact comparison would read as a
@@ -33,7 +35,14 @@ NUM = re.compile(r"(?<![\d.])-?\d+(?:\.\d+)?")
 SEPARATOR = re.compile(r"^\|[-| :]+\|$")
 
 #: Each section and the experiments its tables come from.
-SECTIONS = {"1": ["recovery", "switch"], "5": ["delay"], "7": ["deco"], "8": ["rcov"]}
+SECTIONS = {
+    "1": ["recovery", "switch"],
+    "5": ["delay"],
+    "6": ["epps"],
+    "7": ["deco"],
+    "8": ["rcov"],
+    "9": ["sequential"],
+}
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "darwin",

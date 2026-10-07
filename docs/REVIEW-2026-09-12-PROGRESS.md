@@ -5,6 +5,13 @@ Working status of `docs/REVIEW-2026-09-12.md` (passes 1–9) and
 V25). The review documents themselves are left as the reviewer wrote them;
 this file says what has been done about each finding.
 
+*Added 2026-10-06:* this file uses the names of its day, from before task
+144 (2026-10-02) renamed the parameters and fields.
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+gives today's for each, such as `half_life` for `halflife`. Where `n_eff`
+names a field a model writes, it is `weight_sum` today; the models'
+accessor keeps the name `n_eff` (CLAUDE.md rule 8).
+
 **The rule for this round** (the user, 2026-09-13): take every finding in
 turn; where the fix can be tested against an **independent library**,
 implement the fix and that test first; otherwise record the finding here

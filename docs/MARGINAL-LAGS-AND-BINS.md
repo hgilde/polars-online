@@ -4,8 +4,8 @@
 `ENHANCEMENTS.md` §12, E66 and E67. Both extend `marginal` (E44) — the
 model that keeps every (feature, target) pair's moments at `O(p·T)` per
 row — with one more accumulator family each, keep its contract (no per-row
-output but `n_eff`, pairs read back as a frame, closed-group rows, bit-level
-chunk invariance), and reuse mechanics that already exist in the crate
+output but `weight_sum`, pairs read back as a frame, closed-group rows,
+bit-level chunk invariance), and reuse mechanics that already exist in the crate
 (`ew_cov`'s lag ring, `ewlagcov.rs`; the Welford mean-form update every
 model uses). Each section gives the motivation, the API, the outputs in the
 field grammar, the state and cost, the invariance argument, and the tests
@@ -66,7 +66,7 @@ po.spec.marginal("m", features=[...], targets=[...],
 
 - `lags`: as on `ew_cov` — counted in learned rows within the group, not
   clock units; the ring is emptied on a session change and on a clock gap
-  beyond `max_dclock`. A zero-weight row holds the moments (its mix is
+  beyond `gap_cap`. A zero-weight row holds the moments (its mix is
   `a = 1, b = 0`) and does not enter the ring: it taught nothing, so it is
   not something a later row can be `ℓ` rows after. A row where a *target*
   is absent **is** pushed, since the ring is shared across targets, and
@@ -90,12 +90,12 @@ po.spec.marginal("m", features=[...], targets=[...],
   `n_serial`, are kept at every lag whatever it says, and are the same to
   the bit (docs/PERFORMANCE.md §23 has the cost).
 
-`label_delay` is **not** refused. The ring sits inside the model, downstream
+`embargo` is **not** refused. The ring sits inside the model, downstream
 of the delay buffer, and is fed rows in the order they are *learned* — the
 order the delay releases them in — so the lag it counts is the lag `corr`
 would count. `tests/test_marginal_bins.py::test_label_delay_is_the_doubled_stream_here_too`
-holds a spec with lags and bins to `stream.embargo`'s doubled stream to the
-bit.
+(named for `embargo`'s name before task 144) holds a spec with lags and
+bins to `stream.embargo`'s doubled stream to the bit.
 
 **Names, against the sketch.** `serial_n` became `serial_rule`: it picks a
 method, and `n_serial` is the output. `acf_x_l<ℓ>` became `lagcorr_xx`:
@@ -157,14 +157,14 @@ These are normalised moments, `E_w[·]`, and decay reaches them only through
 that has merely aged is the same number. The first version of `marglag.rs`
 *also* multiplied them by `λ` on a row where the target was absent — decay
 applied twice — and the review of task 65 found the consequence: at a
-halflife of twenty, a hundred rows without the target took a `lagcorr_xx`
+half-life of twenty, a hundred rows without the target took a `lagcorr_xx`
 of 0.75 to 0.023 (`0.75 · 2⁻⁵` exactly) while `corr` and `var_x` stood
 still, `n_serial` doubled, and `t_serial` inflated. At steady state every
 lagged correlation was biased toward zero by about the fraction of rows the
 target was missing. Invisible to the tests, which ran entirely at
-`halflife=inf`. Now a missing target holds, as the pair moments hold, and
+`half_life=inf`. Now a missing target holds, as the pair moments hold, and
 `tests/test_marginal_lags.py::test_lag_moments_hold_across_null_targets`
-keeps it so at a halflife of twenty.
+keeps it so at a half-life of twenty.
 
 ### State and cost
 
@@ -283,7 +283,7 @@ histogram could take a third more than the budget; a held target is an
 from what the model allocates: one array of `CELL_VALUES` per-cell vectors,
 and the size of a held row. A test holds each estimate to the bytes the
 buffers report. Each budget is **per model**, so every group keeps its own
-hold and histogram, as does every halflife of a grid. At the warm-up's last
+hold and histogram, as does every half-life of a grid. At the warm-up's last
 row the two exist at once, and that row's peak is their sum; a check on the
 sum was not taken, since it would refuse 10,000 features, 50 targets and 16
 bins, whose histogram alone fits.
@@ -314,9 +314,9 @@ remain share what is left. The rare-indicator test (one in twenty rows,
 `y = 5x` plus noise) now gets an edge at 1, two bins and a gain above 0.9;
 before, every quantile sat on zero and it got one bin and no split.
 
-`bins` and `window` are **refused together**. A window works by subtracting
+`bins` and `window_size` are **refused together**. A window works by subtracting
 an old snapshot of the accumulators, and a snapshot of the histogram is
-`bins` times the size of one — too much to keep per snapshot. `label_delay`
+`bins` times the size of one — too much to keep per snapshot. `embargo`
 is *not* refused: the hold sits inside the model, downstream of the delay
 buffer, and sees exactly the rows `learn` sees, so the pairing it bins is the
 pairing `corr` uses.
@@ -382,8 +382,8 @@ it. (It was `1e-150` until task 160, CE2: a cell's `M2` adds `u·δ²` at up to
 to this model. Three details the review added, each with a test that fails
 without it:
 
-- **A factor of zero.** A clock gap past `max_dclock` is capped there, and
-  at `halflife=10`, `max_dclock=1e5` that cap is a `λ` of `2^-10000 = 0`
+- **A factor of zero.** A clock gap past `gap_cap` is capped there, and
+  at `half_life=10`, `gap_cap=1e5` that cap is a `λ` of `2^-10000 = 0`
   exactly — reachable from any stream with one long pause. `s·0 = 0` would
   have every later row add `w/0 = ∞`. The fold handles it: a factor below the threshold is
   multiplied through, and a factor of zero wipes the histogram, which is what
@@ -393,7 +393,7 @@ without it:
   keep.
 - **An empty histogram takes no decay.** There is nothing to age, and a scale
   picked up while empty would divide every later row's weight and multiply
-  every later read, each by a rounding — `label_delay`'s doubled stream
+  every later read, each by a rounding — `embargo`'s doubled stream
   begins with a zero-weight prefix, and the pair moments carry no trace of
   one (their mix on such a row is `a = 1, b = 0`), so neither may the bins.
   This is what holds the doubled-stream test to the bit in the bin block.
@@ -449,11 +449,11 @@ replayed, not dropped; nothing is reported until the edges exist; ragged
 shapes; the fixed rule gives equal widths; `split_gain_t` uses `n_serial`
 when it has one; every refusal by name, `bin_edges` beside the learned
 kind's knobs included; the decayed histogram is the ew moments per bin; a
-tiny halflife folds the scale many times and changes nothing; weights and
+tiny half-life folds the scale many times and changes nothing; weights and
 null targets count as they do in the pair; each target gets its own
-histogram; a clock gap past `max_dclock` empties the histogram with the
+histogram; a clock gap past `gap_cap` empties the histogram with the
 moments; a bank saved during the warm-up resumes with its held rows;
-`label_delay` is the doubled stream here too; a rare indicator keeps its own
+`embargo` is the doubled stream here too; a rare indicator keeps its own
 bin and is split; quantile edges are weighted; a far-offset target keeps its
 variance; a fixed bin no row lands in is empty, not absent; the columns are
 there before any row and for a group never seen.

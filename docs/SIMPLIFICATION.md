@@ -6,6 +6,11 @@ five callers, and was done on 2026-09-27 (below). A read of the
 codebase after the P1–P8 performance work, looking for complexity that can go
 without costing features, performance, stability, or any stated goal.
 
+*Added 2026-10-06:* this review uses the names of its day, from before task
+144 (2026-10-02) renamed the parameters and fields.
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+gives today's for each, such as `half_life` for `halflife`.
+
 Outcome, measured rather than asserted:
 
 - `bank.rs` 1,134 → 1,113 lines, and its `format!` calls 28 → 17. The line

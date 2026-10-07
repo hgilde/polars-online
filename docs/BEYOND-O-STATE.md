@@ -3,8 +3,9 @@
 Status as of 2026-09-06: **survey; since then B1 was built as E36 (adaptive
 conformal intervals, task 25 — its memory is `O(1/ε)` and passes the O(state)
 rule as written), B5's multi-lag structure arrived as `ew_cov(lags=)` (E56)
-and B6 as `label_delay` (E47), buffering the row rather than the label; B2
-was built as `window` (PLAN task 63, §13), from snapshots of the accumulator
+and B6 as `embargo` (E47, `label_delay` until task 144), buffering the row
+rather than the label; B2 was built as `window_size` (PLAN task 63, §13;
+`window` until task 144), from snapshots of the accumulator
 under a memory budget (`window_budget`); B3 and B4 stay unbuilt (PLAN task
 118).** Written 2026-08-31 as a scoping
 question: if this library were willing to hold memory that grows with a *window* or a

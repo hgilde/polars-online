@@ -5,8 +5,8 @@
 against every target and its null targets, one `marginal` per warm-up
 class per block): `ENHANCEMENTS.md` §14, E70–E74. None
 changes what `marginal` reports or the contract it reports it under (no
-per-row output but `n_eff`, pairs read back as a frame, closed-group rows,
-bit-level chunk invariance). Three remove work the model repeats once per
+per-row output but `weight_sum`, pairs read back as a frame, closed-group
+rows, bit-level chunk invariance). Three remove work the model repeats once per
 target that depends on the feature alone; one lets a wide spec use the
 pool; one is about the loop order, which a measurement showed carries a
 fixed cost per feature per row larger than the pair's own step. Each
@@ -35,6 +35,15 @@ the model alone ran 5.4× on 14 threads and the bank 4.9×; the moments of
 one target, 1.8× and 1.2×, where each held row's copy and the bank's own
 row work do not split (`PERFORMANCE.md` §25).*
 
+*E72 was built on 2026-09-29 as task 125.
+`marginal(feature_moments="shared")` keeps one mean and one variance per
+feature over every learned row, the lagged autocovariance `cxx` per
+feature too, and each pair only its covariance. Where a target is absent on some learned rows that is the
+other estimator its section below examines, and the docstring says so. A
+window is refused by name. On the model alone it ran 2.7× at ten targets
+and 3.2× at thirty, level at one, and 4.6× with lags at ten
+(`PERFORMANCE.md` §27).*
+
 ---
 
 ## The caller's shape, and what it reads
@@ -42,7 +51,7 @@ row work do not split (`PERFORMANCE.md` §25).*
 **The first pass** runs one `marginal` per warm-up class (five to ten classes) over
 `p = 10,000` features against `T` target columns, per block of a
 1 Hz table: `lam = 1`, a weight column (0 on warm-up and purge rows),
-`clock` in seconds with `max_dclock` a day, no session, no window,
+`clock` in seconds with `gap_cap` a day, no session, no window,
 `lags = [1, 2, 5, 10, 20, 50]` (`[..., 100, 200]` under its `full`
 profile), `serial_rule = "geometric"`, `bins = 16`, `chunk_rows = 100,000`.
 `T` is 9 under its `lean` profile — three targets, each with two null
@@ -64,7 +73,7 @@ decision reads exactly these:
 | `n_serial` (`n_kish` where null) | the honest count behind that t (Bartlett) |
 | `split_gain` | the nonlinear route, paired against the null targets' gains |
 | `lagcorr_xy[0]`, `lagcorr_yx[0]` | the first lag only: the shift test (is a feature sampled late). *2026-09-27 (E75): the caller now reads `lagcorr_xy` at lag 1 and `lagcorr_yx` at lags 1 and 2, `cross_lags=[1, 2]`, about 3 % more state a pair* |
-| `n_eff`, `n_kish` | counts |
+| `weight_sum` (`n_eff` until task 144), `n_kish` | counts |
 
 Not read anywhere: the cross terms past the first lag, the `lagcorr_xx` /
 `lagcorr_yy` lists themselves (only through `n_serial`), `phi_x`, `phi_y`,
@@ -363,8 +372,8 @@ format version need not move if the field is optional.
   `var_x` and `corr` within the documented difference (and equal to a
   from-scratch weighted computation over every learned row).
 - Chunk invariance under `"shared"` at 1 and 1,000 chunks.
-- `label_delay`'s doubled stream (`test_label_delay_is_the_doubled_stream_here_too`)
-  under `"shared"`.
+- `embargo`'s doubled stream (`test_label_delay_is_the_doubled_stream_here_too`,
+  named for `embargo`'s name before task 144) under `"shared"`.
 - `marg_bench` at `T = 9` and `T = 50` under both settings.
 
 ---
@@ -479,7 +488,7 @@ index of `x_j[r]` is formed once per `(j, r)` for every target (E71 for
 free), and a lag is `x_j[r − ℓ]` inside the run with a per-feature ring of
 `max(lags)` values for the run's head (today's ring, kept per feature
 instead of per row). `x_runs` per `(t, j)` and `y_runs` per target run in
-the same order they run today. The per-row output, `n_eff`, is the
+the same order they run today. The per-row output, `weight_sum`, is the
 model's `w_sum` path and does not depend on the pairs.
 
 ### Invariance

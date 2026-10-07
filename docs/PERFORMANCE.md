@@ -9,7 +9,7 @@ it by that number. Most are dated, and each reads as of its date.
 
 | section | read it when | subsections |
 |---|---|---|
-| [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [how the numbers are made](#how-the-numbers-are-made) |
+| [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, today's name for each old one, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [names that changed](#names-that-changed) · [how the numbers are made](#how-the-numbers-are-made) |
 | **[The first pass, and the bank's plumbing](#the-first-pass-and-the-banks-plumbing)** | | |
 | [1. The measured baseline](#1-the-measured-baseline) | you want the numbers from before any change, 2026-08-30 | |
 | [2. What the numbers say](#2-what-the-numbers-say) | you want why the plumbing around the models, not the models, was the cost | |
@@ -54,8 +54,9 @@ it by that number. Most are dated, and each reads as of its date.
 
 ## Reading this document
 
-Every later section assumes three things: the short answer below, the
-words this document uses, and how the numbers were made.
+Every later section assumes four things: the short answer below, the
+words this document uses, today's name for each old one a dated section
+uses, and how the numbers were made.
 
 ### The headline
 
@@ -104,23 +105,39 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | pipeline, lane | the streaming engine runs a parallel stage as one pipeline, or lane, per thread (§11) |
 | distributor, linearizer | the stages that hand morsels out to the lanes, and gather them back in order (§11) |
 
-**The dated sections use the names of their day.** Task 144 (2026-10-02)
-renamed the public parameters to Polars' words, and tasks 83 and 85 removed
-two surfaces. A section written before then says:
+### Names that changed
 
-| it says | the name now |
-|---|---|
-| `halflife` | `half_life` |
-| `max_dclock` | `gap_cap` |
-| `label_delay` | `embargo` |
-| a model's `window` | `window_size` |
-| `min_periods` | `min_weight` |
-| `n_eff` | `weight_sum` |
-| `emit_resid_z` | `emit_zscore` |
-| `sgd`'s `scale_features` | `standardize` |
-| `lookahead_rewm` (§32) | the operators of §33, such as `po.rewm_sum` |
-| `po.run`, the Python runner | removed in task 83: the `online` command line, or `ModelBank.fit(lf)` |
-| the expression plugin | removed in task 85: a stateful expression is handed its whole column |
+**The dated sections use the names of their day, and so does every dated
+record under `docs/`.** Task 144 (2026-10-02) renamed the public
+parameters and output fields to Polars' words. A few other tasks renamed
+one name each, and tasks 83, 85 and 143 removed three surfaces. A spec
+that passes a parameter task 144 renamed is refused, and the message names
+the new one. A record that uses an old name points to this table:
+
+| a dated section or record says | the name now | changed in |
+|---|---|---|
+| `halflife`, alone or inside a name: `long_halflife`, `coef_halflife`, `revert_halflife`, `select_halflife`, `level_halflife`, `trend_halflife` | `half_life`, and so `long_half_life` and the rest | task 144 |
+| `max_dclock` | `gap_cap` | task 144 |
+| `label_delay` | `embargo` | task 144 |
+| a model's `window`, task 63's hard cutoff, and `po.eval.rolling_metrics`'s | `window_size` | task 144 |
+| `min_periods` | `min_weight` | task 144 |
+| `on_clock_reset` and its policies `"error"` and `"reset_state"`; `min_backwards_jump`; and before it `min_session_clock` | `restart_after_step_back`. Unset, every step back is refused, as `"error"` did; set, a step back larger than it restarts the stream, as `"reset_state"` did, and `0` restarts at every one | task 144; `min_session_clock` was removed in 0.9.0, and the policies `"max"` and `"zero"` in task 120 |
+| `emit_resid_z`, and its field `resid_z_<t>` | `emit_zscore`, and `zscore_<t>` | task 144 |
+| `sgd`'s `scale_features` | `standardize` | task 144 |
+| `ridge_decay=True`, and its default `False` | `ridge_scale="sum"`, and the default `"mean"` | task 144 |
+| `add_intercept` | `fit_intercept` | task 144 |
+| `lasso`'s `max_cd_iters` and `cd_tol` | `max_iter` and `tol` | task 144 |
+| `corrchange`'s `reset` | `reset_on_flag` | task 144 |
+| `n_eff`, as a field a model writes, or a column or key of `closed_groups()`, `coef()`, `last_row()`, `marginal()` or `gram()` | `weight_sum`, as in `weight_sum@h10` and `pair_weight_sum`. The models' accessor keeps the name `n_eff`, and means the same number (CLAUDE.md rule 8) | task 144 |
+| `lasso`'s `lam_selected_<t>` | `penalty_selected_<t>` | task 144 |
+| `pcorr_<a>_<b>`, `absresid_q<p>`, and the PCA loadings `pc<j>_<feature>` | `partial_corr_<a>_<b>`, `abs_resid_q<p>`, and `pc<j>_loading_<feature>` | task 144 |
+| `bocpd`'s `logscore`; `hmm`'s `p_<k>` and `p1_<k>` | `loglik`; `filtered_<k>` and `predicted_<k>` | task 144 |
+| `po.prep`, and `refresh_time`'s `time=` and `by=` | `po.stream`, and `clock=` and `group=` | task 105 |
+| `po.corr.signal_share`'s `n_eff_blocks` | `n_kish_blocks` | task 148 |
+| `corrchange`'s `horizon` and `window`; `rcov`'s `window` | `span_rows`; `preavg_rows` | task 63a |
+| `po.run`, the Python runner | removed: the `online` command line, or `ModelBank.fit(lf)` | task 83 |
+| the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | task 85 |
+| `po.window.ewm` and `po.window.lookahead_rewm` (`lookahead_rewm` in §32), with `split=` | removed: the operators of §33, such as `po.ewm_mean` and `po.rewm_sum`, run by `with_windows` or as a spec's target | task 143 |
 
 ### How the numbers are made
 
@@ -1564,7 +1581,7 @@ lf = pl.scan_parquet("ticks.parquet")
 lf = lf.with_columns(pl.when(cond).then(pl.col("w")).otherwise(0.0).alias("w2"))
 
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
-                       max_dclock=10.0, weight="w2", halflife=1000.0)
+                       gap_cap=10.0, weight="w2", half_life=1000.0)
 lf.online.fit_predict([spec]).sink_parquet("fit.parquet")
 ```
 
@@ -1575,9 +1592,9 @@ plain scan is 0.87. The cost is the documented one:
 
 | | what the model learns from | rows in the output | the clock | peak at 12M rows |
 |---|---|---|---|---|
-| filter before the bank | the kept rows | the kept rows | the filter leaves a `max_dclock` gap where the rows were | 2.53 GB |
+| filter before the bank | the kept rows | the kept rows | the filter leaves a gap where the rows were, which `gap_cap` caps | 2.53 GB |
 | filter after the bank | every row | the kept rows | | 0.78 GB |
-| a zero weight | the kept rows | every row, scored | advances through the skipped rows, so `n_eff` decays and `min_periods` can blank output; no `max_dclock` gap opens | 1.3–1.4 GB |
+| a zero weight | the kept rows | every row, scored | advances through the skipped rows, so `weight_sum` decays and `min_weight` can blank output; no gap opens | 1.3–1.4 GB |
 
 A branch holding an `.over()` drags the whole expression onto a collecting
 node (3.18 GB). `po.run(input=<a filtered plan>)` read the same way and had
@@ -3307,6 +3324,9 @@ since every job is finite work over its own slices.
 
 ### 27. `marginal`'s shared feature moments (E72, task 125, 2026-09-29)
 
+*Provenance: added in `ef592ac` (task 125). An Apple M4 Pro. Load not
+recorded.*
+
 `feature_moments="shared"` keeps one mean and one variance per feature over
 every learned row, and each pair only its covariance. On the model alone
 (`crates/online-core/examples/marg_bench.rs`, `moments=`), 4,000 rows at
@@ -3348,6 +3368,11 @@ Each release's numbers against the last, the README's numbers
 re-measured, and the slowdowns found and bisected on the way.
 
 ### 26. 0.11.1 against 0.10.0, two slowdowns fixed, and what the readers hold (2026-09-27)
+
+*Provenance: added in `862fe54` (task 112), whose build is "this build"
+below. An Apple M4 Pro, Python 3.12.13, Polars 1.44.2. Load: an idle
+machine for the three builds; not recorded for the thread sweep, the
+memory, the read-ahead or the plan inspection.*
 
 Task 112 owed a re-run of this document's timings, and three measurements
 left open: CSV's and NDJSON's read-ahead (§11), two states (§19) and a row
@@ -3486,6 +3511,12 @@ filter that skips the JSON saves nearly all of it.
 
 ### 28. The README's numbers, re-measured (2026-09-29)
 
+*Provenance: measured at `5e96018` and added in `80df0ac` (task 138). An
+Apple M4 Pro. Load: a load average of 21 for the benchmark's run 1, and
+one other process on about one core for run 2, the README's; about two
+busy cores, then five to eleven, for the Parallelism workloads; about one
+busy core for the thread sweep.*
+
 The README's throughput tables dated from 2026-09-06 and its Parallelism
 figures from 2026-09-04, and §26 had already measured `ewridge` 35–37%
 below the first. For the README's rewrite (docs/PLAN.md task 138) each was
@@ -3599,6 +3630,12 @@ The README's "about 19 MB to download and 59 MB installed" was measured on
 2026-09-02.
 
 ### 29. The drop since 0.2.0, bisected (2026-09-29)
+
+*Provenance: added in `3c9fbf6` (task 140); the builds compared, from the
+release wheels to `80df0ac` and task 140's, are named where they are
+timed. An Apple M4 Pro, py-polars 1.44.2. Load: 2 to 7 for the releases
+and the bisect; 3.9 to 4.1, 4.4, and 2.6 to 4.3 for task 140's three
+tables; not recorded for the ceiling at `80df0ac`.*
 
 §28 found `ewridge` at k=20 running 2.53M rows a second, where the README
 had said 4.12M since 2026-09-06. The user asked which change caused it.
@@ -3747,6 +3784,11 @@ and §28's eight specs, predate the fix and were not re-run: at load 4, a
 
 ### 30. Where every row solves (2026-09-29)
 
+*Provenance: added in `d0f8616` (task 141); the builds compared are named
+where they are timed. An Apple M4 Pro. Load: 1.7 to 4.8 for the bisect;
+2.7 to 3.5 where every row solves and 5.8 to 6.2 at the default cadence,
+for task 141's table; 3.2 to 3.5 for the README's figures.*
+
 §29 left one gap open: with a solve on every row, even its stub ran 23%
 below the rate §19 recorded on 2026-09-08. The user asked for it next
 ("Solve-every-row speed").
@@ -3844,6 +3886,12 @@ the same scripts as §29:
 
 ### 31. 0.13.0 against 0.12.0 (2026-09-29)
 
+*Provenance: added in `55ff8aa`, the 0.13.0 release commit, and its
+Parallelism figures in `d1251ff`, the commit `v0.13.0` tags. An Apple M4
+Pro. Load: 3.1 to 3.6 for the first pass, 9 to 11 for the seven
+configurations, 13 for `ftrl`'s table, and 1.9 to 2.1 for the Parallelism
+figures.*
+
 Before the release, `scripts/benchmark.py` ran under the 0.12.0 wheel and
 this build, two rounds each in turn, at load 3.1 to 3.6. Every `ewridge`
 configuration was 5 to 47% faster (§29, §30), `bocpd` with a full
@@ -3927,6 +3975,9 @@ the review rounds of 2026-10-03 measured.
 
 ### 32. Windowed means against the `rolling` recipe (task 78, 2026-09-30)
 
+*Provenance: added in `34af36f` (task 78). An Apple M4 Pro with 14 cores.
+Load: 2.9 before the sweep, and 4.6 rising to 9.5 for the second run.*
+
 A forward reverse-EWMA over a time window, `lookahead_rewm("price",
 weight="quantity", halflife="10s", horizon=H)`, weighs the next `H` of
 trades most on the next one. It runs on the stream task 78 measured
@@ -3970,6 +4021,10 @@ figure less than 7%, and every time of the window and the model less than
 times moved up to 13%, and the sub-second scan-and-sink's up to a third.
 
 ### 33. Window operators (task 143, 2026-10-03)
+
+*Provenance: added in `3af3e48` (task 143), and timed beside task 78's
+core rebuilt at `c061b7a`. An Apple M4 Pro. Load: 5.0 rising to 5.7 for
+the sweep, and 5.7 to 6.0 for the comparison with task 78's core.*
 
 The window core rewritten around operators (`po.ewm_mean`, `po.rewm_sum`
 and the rest, docs/PLAN.md task 143) on the stream §32 measured: about two
@@ -4039,6 +4094,9 @@ Operators sharing one kernel against as many kernels, 16M rows, `H` 1m:
 
 ### 34. A window expression as a target (task 104, 2026-10-03)
 
+*Provenance: added in `67535e2` (task 104). An Apple M4 Pro. Load: 6.0
+for the 4M and 16M rows, and 2.5 for the 1M rows.*
+
 The forward VWAP of §33, learned natively, against the column form §32
 and §33 measured as `embargoed`. Natively, the expression is in the spec's
 `targets` and the bank's own window core resolves it. The column form is
@@ -4091,6 +4149,9 @@ memory.
 
 ### 35. Two costs the review of 2026-10-03 named and did not change
 
+*Provenance: added in `cd1e8a0` (review R1), with the reviewer's figures.
+Platform and load not recorded.*
+
 Both are recorded here so a later measurement starts from a number; neither
 moves the §33 or §34 figures, which have dense inputs and one group.
 
@@ -4114,6 +4175,11 @@ moves the §33 or §34 figures, which have dense inputs and one group.
   is built. §34 measured one group.
 
 ### 36. The window core's edges from raw clocks (review R3, 2026-10-03)
+
+*Provenance: added in `7f0a12e` (review R3), the R2 and R3 extension
+modules swapped between runs. An Apple M4 Pro. Load: 4.2 to 5.0 for the
+first sweep (6.2 during the converting build's `target` run), and 3.1 to
+3.5 for the second.*
 
 Review R2's W1: a window's edge between two rows was decided from the
 difference of two policy times, each rounded once from the stretch's

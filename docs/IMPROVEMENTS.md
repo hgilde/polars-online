@@ -1,14 +1,20 @@
 # Improvements review: testing, performance, usability, extensibility
 
-Status as of 2026-09-06: **every item is done or rejected, except C8**, the
-CLI's NDJSON output under the system allocator, which waits on a decision
-that CLAUDE.md rule 12 reserves for the maintainer (an allocator for the
-CLI is a new static link). This is the record of a pre-release pass
-(2026-09-01 to 2026-09-02); items are cited from the code by their letters.
+Status as of 2026-10-06: **every item is done or rejected.** The last open
+one, C8, the CLI's NDJSON output under the system allocator, was done on
+2026-09-28 (task 115 (g)) with its second fix, which links nothing new, so
+the decision CLAUDE.md rule 12 reserves for the maintainer was not needed.
+This is the record of a pre-release pass (2026-09-01 to 2026-09-02); items
+are cited from the code by their letters.
 
 *Read since 2026-09-17:* `po.run` was removed in task 83 and the expression
 plugin in task 85. C1, C7, C8, P1, U4 and X1 name them as they stood when
-each was done.
+each was done. Items written before task 144 (2026-10-02) use the names of
+their day, and
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+gives today's for each, such as `half_life` for `halflife`. Where an
+item's `n_eff` names a field a model writes, it is `weight_sum` today; a
+model's accessor keeps the name `n_eff` (CLAUDE.md rule 8).
 
 A pre-release pass over the code with one question per axis: what would a
 user hit in the first week, what is slower than it needs to be, what is

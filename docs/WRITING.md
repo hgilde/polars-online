@@ -136,7 +136,7 @@ ten top-level sections suit a document the size of the README, which had
 seventeen. Group them by what the reader is doing: learning the idea,
 running a bank, reading what it produced, choosing a model, tuning it, and
 deciding whether to trust it. A catalogue goes one level down, under
-families, rather than flat. The twenty models sit under four families, and
+families, rather than flat. The twenty-one models sit under four families, and
 each family opens with one line on what its members share.
 
 **The contents is a table.** One row per section, with its subsections
@@ -359,7 +359,7 @@ moments local in it, and `marginal` does the same pair by pair* was one
 
 **A fact about some models is not a fact about the bank.** *With decay
 off, the bank is plain least squares* is true of the five models that
-solve a normal equation, and false of the fifteen that do not (PHRASING:
+solve a normal equation, and false of the sixteen that do not (PHRASING:
 "Or no clock at all"). *The order of the rows matters only when a model
 forgets* was false of the models that step, filter or test, which depend
 on the order either way (PHRASING: "the task 89 rewrite"). Shared sections

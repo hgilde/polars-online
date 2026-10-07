@@ -1,7 +1,14 @@
 # Arrow producers as sources, and what DuckDB already does — a plan
 
-**Status: research and a proposal, 2026-09-17. Nothing built.** The goal is to
-let anything that produces Arrow chunks feed a bank, DuckDB first. §1–§3 are
+**Status as of 2026-10-06: tier 0 is built, and the native import is
+parked.** This began on 2026-09-17 as research and a proposal, with nothing
+built. Tier 0 has since shipped: the README's *Databases: DuckDB and ADBC*
+section (task 89, 2026-09-23), `examples/duckdb_cursors.py` and
+`examples/adbc_cursors.py`, `ConsumedSourceWarning`, and the tests in
+`tests/test_consumed_source.py` and `tests/test_pyarrow_interop.py`.
+
+The goal is to let anything that produces Arrow chunks feed a bank, DuckDB
+first. §1–§3 are
 what the ecosystem actually offers, measured or quoted rather than recalled.
 §4, corrected on 2026-09-22, finds no blocker and asks for no decision; the
 native import it clears is parked by the user (2026-09-25, PLAN task 86). §5 compares DuckDB's own
@@ -59,8 +66,12 @@ be stated plainly because they are the whole justification for §4's cost:
 
 1. **Polars leaves the input path.** Task 86 took it off the output; the input
    still crosses on `PyDataFrame`, i.e. pyo3-polars' private `_export`/`_import`.
-   A native import finishes that job and removes the reason this package
-   carries a polars floor at all.
+   A native import finishes that job, and removes the reason `ModelBank`
+   alone carries a polars floor: 1.28.1, the release that added the
+   `PySeries._export` this crossing calls. The package's floor of 1.34.0
+   would stay. It is `LazyFrame.collect_batches`', which `ModelBank.fit(lf)`,
+   the IO plugin and `with_windows` read with whatever the input path is
+   (docs/RELEASE-READINESS.md, *The floor and the ceiling*).
 2. **One conversion instead of two.** Today a DuckDB chunk becomes a polars
    frame and then an `ArrowChunk`. Both hops are buffer-sharing, so the cost is
    metadata and validity handling, not data — and §4 of
@@ -495,7 +506,7 @@ The difference is not "which has more models". It is **what a fit is**.
 | **fit shape** | aggregate over a group; recomputed per query | one state per (spec, group), updated per row |
 | **state between queries** | none — "models are computed per query; no persistent state" | the state *is* the product; `save`/`load`, resume mid-stream |
 | **memory** | O(rows in the group) for the scan | O(state) in the bank; the *pipeline* is only as bounded as its source — see below |
-| **decay** | none | every row's weight halves every `halflife` **clock** units, on a column you name |
+| **decay** | none | every row's weight halves every `half_life` **clock** units, on a column you name |
 | **out-of-sample** | `*_fit_predict_agg` splits train/test by a column | by construction: every row predicted *before* its own target is learned |
 | **new data** | rescan and refit | feed the chunk; the state moves forward |
 | **drift** | refit on a window you choose | `emit_drift`, `drift_action="reset"` |
@@ -571,7 +582,9 @@ the relation *inside* the loop, not outside it.
    installed version. `pyarrow` and `adbc-driver-manager` have since joined
    the dev group, and the README's "straight to duckdb" claim was measured on
    2026-09-22 and corrected: duckdb takes the struct through `pl.Series`.
-   Still to do: the user-facing section.
+   **Done 2026-09-23:** the user-facing section is the README's *Databases:
+   DuckDB and ADBC* (task 89), with `examples/duckdb_cursors.py` and
+   `examples/adbc_cursors.py` running its steps against real databases.
 2. ~~**Document the single-use contract** beside the DuckDB precedent (§3).~~
    **Done — and the premise changed.** There is no DuckDB precedent any more
    (§3, measured on 1.5.5), so the contract is documented as *ours*. The
@@ -609,25 +622,26 @@ denominated in a clock. Three tiers, in the order to consider them:
 1. **No `clock` column at all — nothing can refuse.** The row count is the
    clock: `ClockState::advance` returns `Some(1.0)` for every row after the
    first, so Δ is never negative and the disorder branch is unreachable. All
-   three refusals are clock-gated — `on_clock_reset needs clock`,
-   `min_backwards_jump needs clock`, and `max_dclock is required when clock is
-   given`. What is given up is what a clock buys: the gap ceiling, sessions and
-   `session_gap`, `window`, `label_delay`, and a `halflife` that means elapsed
-   time rather than rows. Decay still works, per row.
+   three refusals are clock-gated, in the words task 144 gave them:
+   `restart_after_step_back needs clock`, `gap_cap needs clock`, and
+   `gap_cap is required when clock is given`. What is given up is what a
+   clock buys: the gap ceiling, sessions and `session_gap`, and a
+   `window_size`, an `embargo` and a `half_life` that mean elapsed time
+   rather than rows. Decay still works, per row.
 
 2. **`fit()` over an order-free spec — the state really is
    order-independent.** `ew_ridge` or `rls` with no decay (`lam = 1.0`, no
-   `halflife`; `huber` and `lasso` were listed until 2026-09-29, when a
+   `half_life`; `huber` and `lasso` were listed until 2026-09-29, when a
    reweighting `huber`'s sums and `lasso`'s selected penalty were measured to
    move with the order, docs/PLAN.md task 139) and every path-changing key at its neutral
-   value: no window, no session, no `label_delay`, no Gram blocking,
+   value: no window, no session, no `embargo`, no Gram blocking,
    `drift_action = "flag"`, the diagnostics off (`_ORDER_FREE_ONLY_WHEN` in
    `python/polars_online/_frame.py` is the full table). Then the sums commute
    and the fit reaches the same state whatever order the rows arrived in —
    measured 3.3e-16 over 200 rows. That table is conservative by construction
    ("unknown means no"), so several entries are denied as *unproven* rather
    than refuted — `weight` among them — while the refuted ones carry their
-   cost: `window` 8.3e-03, `gram_block_rows` 6.3e-04, `label_delay` 4.3e-04,
+   cost: `window_size` 8.3e-03, `gram_block_rows` 6.3e-04, `embargo` 4.3e-04,
    and `drift_action = "reset"` **8.9e-01**, the largest, and the one that read
    as harmless until a fixture made drift actually fire.
 

@@ -7,7 +7,13 @@ gradient-boosted trees can be pushed toward this library's contract — one
 row at a time, bounded memory, chunk-invariant, out-of-sample by
 construction, clock-decayed — and what that does to parallel fitting and
 memory. The answer is a design, the measurements behind it, the ideas that
-did not survive measurement, and what building it in Rust would take.
+did not survive measurement, and what building it in Rust would take. It
+keeps the names of its day: since task 144 (2026-10-02) `halflife` is
+`half_life` and `min_periods` is `min_weight`, and
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+lists every rename. Where `n_eff` names a field a model writes, it is
+`weight_sum` today; the models' accessor keeps the name `n_eff` (CLAUDE.md
+rule 8).
 
 The prototype is `scripts/ogbt_proto.py`; every number below comes from
 `scripts/ogbt_experiments.py` (§11 says how to run it). The XGBoost source,
@@ -875,13 +881,15 @@ plumbing is a day by the `EXTENDING.md` list; the measurement on real data
 ## 11. Reproducing the numbers
 
 ```
-uv run python scripts/ogbt_experiments.py all                                   # without XGBoost rows
-uv run --with xgboost --with scikit-learn python scripts/ogbt_experiments.py all # with them
+uv run python scripts/ogbt_experiments.py all                  # without XGBoost rows
+uv run --with xgboost python scripts/ogbt_experiments.py all   # with them
 ```
 
 On macOS the `xgboost` wheel needs `libomp`, which scikit-learn's wheel
-bundles; the script's docstring has the `DYLD_LIBRARY_PATH` line. Nothing is
-added to `pyproject.toml` or the lock file — the overlay is ephemeral. Each
+bundles; the script's docstring has the `DYLD_LIBRARY_PATH` line.
+scikit-learn is in the dev dependency group (`pyproject.toml`), so
+`uv sync` installs it. XGBoost is not, and `--with xgboost` adds it for one
+run only, leaving `pyproject.toml` and the lock file as they are. Each
 experiment takes one to five minutes in pure numpy.
 
 Sources (all under the gitignored `.cache/research/`): the XGBoost paper and

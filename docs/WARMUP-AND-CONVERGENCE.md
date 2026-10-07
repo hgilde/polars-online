@@ -9,7 +9,13 @@ reproducible from `bank.gram()` and the emitted `weight_sum`, the build-time
 ones from `crates/online-core/tests/readiness.rs` and
 `tests/test_readiness.py`. Section 5 is the evidence. Section 6 is what was
 tried and dropped, with the measurement that dropped it, so it is not
-proposed again without new evidence. Section 7 is open.
+proposed again without new evidence. Section 7 holds the questions the
+design left: six answered, and four still open, each part of PLAN task 116.
+The clock settings §4 and §6 name have since become one parameter,
+`restart_after_step_back`: `min_session_clock` gave way to
+`min_backwards_jump` in 0.9.0, and task 144 merged that with
+`on_clock_reset`
+([PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)).
 
 ---
 
@@ -279,8 +285,9 @@ Warnings, queued in Rust as notices (`Bank::take_notices`), raised in
 Python as `ReadinessWarning` and printed on stderr by the command line,
 **once per (spec, group)**:
 
-- **a coefficient more ridge than data** (`support_coef < 0.5`, if the
-  open point in §2.2 lands on warning), naming the feature(s);
+- **a coefficient more ridge than data** (`support_coef < 0.5`, on a row
+  whose prediction the gates let through, as settled on 2026-09-21, §2.2),
+  naming the feature(s);
 - **`max_error_inflation` unreachable**: the stream has settled and
   `error_inflation` is still above the ceiling, so output will never appear
   — with the fix in the message: raise the half-life, or raise
@@ -318,8 +325,9 @@ the default, and it came from two goods that genuinely conflict:
 
 The rule was too broad, and it is the reason the position kept moving:
 applied to this design it argues against its own purpose. What went wrong
-in 0.8.1 was not that a gate was on by default; `min_backwards_jump` is on
-by default and is right. What went wrong was that the default was derived
+in 0.8.1 was not that a gate was on by default; `min_backwards_jump` was on
+by default in 0.9.0, and was right then (superseded since, as the note
+below the rule says). What went wrong was that the default was derived
 from a quantity with the wrong meaning, and the refusal did not say which
 setting to change. The rule that actually separates the good defaults from
 the bad one is:
@@ -589,7 +597,7 @@ reported 0.00 for String and must not be trusted for it.
 
 | idea | why it fell |
 |---|---|
-| **`min_session_clock`** (0.8.0) and its **half-life default** (0.8.1, tagged, never published) | measured the span between two backwards jumps against a "session length" no parameter carries; `gap_cap` caught 0 of 2,965 engine-reordering jumps, the half-life refused every intraday stream whose sessions were shorter than the model's memory. Replaced by `min_backwards_jump` (branch `min-backwards-jump`). |
+| **`min_session_clock`** (0.8.0) and its **half-life default** (0.8.1, tagged, never published) | measured the span between two backwards jumps against a "session length" no parameter carries; `gap_cap` caught 0 of 2,965 engine-reordering jumps, the half-life refused every intraday stream whose sessions were shorter than the model's memory. Replaced by `min_backwards_jump` (branch `min-backwards-jump`), which task 144 merged with `on_clock_reset` into `restart_after_step_back`. |
 | **typical-step jitter rule** (0.8.0) | fed only by deltas within the cap, so it could refuse nothing `gap_cap` does not; cost two persisted fields and a warmup. |
 | **`obs_per_unknown`** | first a second number beside `min_weight`; reopened 2026-09-21 as a replacement; **dropped the same day** once the exact `h(x)` was on the table (§2.1): where theory gives `h` a count is dominated, and where it does not (`sgd`, `pa`) a count is a guess dressed as a gate. |
 | **`√(1 + k/weight_sum)` as the statistic** | the large-`n` stationary-Gaussian average, least trustworthy at `n ≈ k` where the gate operates; diverges exactly at today's default point (§5.8). Kept as the explanation, replaced by `h(x)`. |
@@ -605,82 +613,102 @@ reported 0.00 for String and must not be trusted for it.
 
 ---
 
-## 7. Open — to iterate on
+## 7. Questions the design left: answered, and still open
 
-1. **Coefficient stability — what theory gives (2026-09-21; proposal,
-   not built).** All of it rides on `M = Σ̂⁻¹ / n_Kish`, the coefficient
-   covariance up to `σ²` under the same assumption as `h` (§2.1), for the
-   linear-fit family:
-   - **Coefficient covariance** `Cov(β̂) = σ²M`, so `se_j = σ√M_jj` and
-     `t_j = β̂_j/se_j`. `h(x) = x'Mx` is this covariance seen through one
-     row. Emit `se` on the `coef` schedule (`k` floats per solve).
-   - **σ² unbiased under stable coefficients.** The one-step error
-     `e_t = y_t − x_t'β̂_{t−1}` has variance `σ²(1 + h(x_t))` when β is
-     constant (recursive residuals, Brown–Durbin–Evans 1975), so
-     `w_t = e_t/√(1 + h_t)` has variance exactly `σ²`; its EW mean of
-     squares is the estimator. One scalar of state. The raw residual's EW
-     variance is biased upward during warmup by exactly the `h` factor.
-   - **Stability test.** Under constant β (and Gaussian noise for the exact
-     null) the `w_t` are iid: that is the null of the CUSUM /
-     CUSUM-of-squares tests, and rejecting it *is* "coefficients unstable".
-     Today's detector (Page-Hinkley, `drift.rs`) is fed `|e_t|/σ̂_raw`
-     with `σ̂_raw` the slot's EW residual std (`stream.rs` ~3217). That raw
-     scaling already cancels most of the warmup inflation — numerator and
-     denominator both carry `√(1 + h)` — so it does *not* simply fire on
-     warmup; the std merely lags, averaging past, larger `h`. Minimal step:
-     feed it `|w_t|/σ̂` with `σ̂` from `w_t²`, so `drift_delta` means the
-     same thing during warmup as at steady state. Principled step: the BDE
-     CUSUM with its `√t` bound.
-   - **"Converged" defined.** Under stationarity β̂ never stops moving; it
-     fluctuates at the floor `σ²M` forever. So "stopped moving" is not a
-     criterion. Converged = the floor is small enough (`se_j`) **and** the
-     coefficients move no more than the floor (the test above). A
-     relative-change-below-ε rule has no null distribution and would be
-     tuned by sweep — ruled out by the standard in §2.1.
-   Caveats as for `h`: variance only, ridge bias excluded; lasso
-   post-selection; nothing for `sgd`/`pa`/`ftrl`. **Open:** whether any of
-   this gates (a `min_t` on coefficients is a coefficient-reader's setting,
-   not a prediction gate) or only reports.
-2. **Default of `min_settled_frac`.** Settled at `0` by §4.1.1 on a
-   theory argument (the mean-form fit is unbiased from row one under
-   stationarity; the gate guards a representativeness bias only the user
-   can size). Reopens only if a statistic for that bias is found.
-3. **Is `withheld_reason` needed** given `settled_frac` and `weight_sum` are
-   emitted? Answered: built, on every model that writes a row (the user
-   wanted it "more obvious"); an Enum keeps it cheap.
-4. **Verifying `h(x)` — identities, not calibration (done, 2026-09-21;
-   `crates/online-core/tests/readiness.rs`).** The tests hold the
-   implementation to what the theory predicts, and each fails loudly if
-   `s₂`, the weights or the ridge are wired wrongly. What they found:
-   (i) on a stationary design at `n_Kish/k_eff ≈ 12` the mean per-row `h`
-   is 10% above `edf/n_Kish`, and `edf/n_Kish` itself is within 5% of
-   `(k+1)/n_Kish` with `n_Kish = (1+λ)/(1−λ)`; (ii) the observed RMS/noise
-   at `n_Kish ≈ 2.3 k_eff` is 1.214 against the gate's 1.197 — within 2% —
-   while the per-row mean says 1.315: the per-row form is conservative, by
-   half there (§2.1 says why); (iii) scaling every weight by a constant
-   leaves `h` unchanged to 1e-9, and splitting every row into two halves
-   at the same clock halves it exactly; (iv) the §5.7 collinearity-break
-   row reads `h` more than 100× the in-sample rows'; (v) a duplicated pair
-   reads `support_coef` 0.5 each, a clean design 1, a ridge of 5 below 0.3,
-   and the standardized solve with `ridge = 1` reads 1/(1+1) on an
-   orthogonal design. `lasso`'s active-set `h` is not built, so not
-   measured. `min_weight` was kept for every model but `ewridge` rather
-   than aliased away (§8).
-5. **Enum emission from Rust** — answered by building it: new plumbing.
-   A `u32`-key dictionary array carrying polars' own `_PL_ENUM_VALUES2`
-   field metadata (`column::{code_array, enum_metadata}`), which polars
-   reads back as an `Enum` over exactly the three names. `ew_class`'s
-   `class` was no precedent: it is a plain string column.
-6. **`support_coef` warning** — settled 2026-09-21 (§2.2): warn at
-   `< 0.5`, and only on a row whose prediction the gates let through.
-7. **Standardisation.** `support_coef` and `h` live in the space the ridge
-   acts in (standardised under `standardize`); the
-   standardiser's own noisy first rows can make the flag flicker before it
-   settles.
-8. **`n_eff_settled`** — from what settledness is the estimate
-   (`weight_sum / settled_frac`) reported? 0.9?
-9. **CLI** — one closing line counting groups not settled / low support?
-10. **Names** (§9).
+The design left ten questions, numbered §7.1 to §7.10 as the rest of this
+document cites them. Six were answered while it was built. Four are open,
+and all four are part of PLAN task 116.
+
+### Still open, in PLAN task 116
+
+**7.1 Coefficient stability — what theory gives (2026-09-21; proposal,
+not built; PLAN task 116 lists its coefficient standard errors).** All of
+it rides on `M = Σ̂⁻¹ / n_Kish`, the coefficient covariance up to `σ²`
+under the same assumption as `h` (§2.1), for the linear-fit family:
+
+- **Coefficient covariance** `Cov(β̂) = σ²M`, so `se_j = σ√M_jj` and
+  `t_j = β̂_j/se_j`. `h(x) = x'Mx` is this covariance seen through one
+  row. Emit `se` on the `coef` schedule (`k` floats per solve).
+- **σ² unbiased under stable coefficients.** The one-step error
+  `e_t = y_t − x_t'β̂_{t−1}` has variance `σ²(1 + h(x_t))` when β is
+  constant (recursive residuals, Brown–Durbin–Evans 1975), so
+  `w_t = e_t/√(1 + h_t)` has variance exactly `σ²`; its EW mean of
+  squares is the estimator. One scalar of state. The raw residual's EW
+  variance is biased upward during warmup by exactly the `h` factor.
+- **Stability test.** Under constant β (and Gaussian noise for the exact
+  null) the `w_t` are iid: that is the null of the CUSUM /
+  CUSUM-of-squares tests, and rejecting it *is* "coefficients unstable".
+  Today's detector (Page-Hinkley, `drift.rs`) is fed `|e_t|/σ̂_raw`
+  with `σ̂_raw` the slot's EW residual std (`stream.rs` ~3217). That raw
+  scaling already cancels most of the warmup inflation — numerator and
+  denominator both carry `√(1 + h)` — so it does *not* simply fire on
+  warmup; the std merely lags, averaging past, larger `h`. Minimal step:
+  feed it `|w_t|/σ̂` with `σ̂` from `w_t²`, so `drift_delta` means the
+  same thing during warmup as at steady state. Principled step: the BDE
+  CUSUM with its `√t` bound.
+- **"Converged" defined.** Under stationarity β̂ never stops moving; it
+  fluctuates at the floor `σ²M` forever. So "stopped moving" is not a
+  criterion. Converged = the floor is small enough (`se_j`) **and** the
+  coefficients move no more than the floor (the test above). A
+  relative-change-below-ε rule has no null distribution and would be
+  tuned by sweep — ruled out by the standard in §2.1.
+
+Caveats as for `h`: variance only, ridge bias excluded; lasso
+post-selection; nothing for `sgd`/`pa`/`ftrl`. **Open:** whether any of
+this gates (a `min_t` on coefficients is a coefficient-reader's setting,
+not a prediction gate) or only reports.
+
+**7.7 Standardisation (PLAN task 116: the flicker).** `support_coef` and
+`h` live in the space the ridge acts in (standardised under
+`standardize`); the standardiser's own noisy first rows can make the flag
+flicker before it settles.
+
+**7.8 `n_eff_settled` (PLAN task 116)** — from what settledness is the
+estimate (`weight_sum / settled_frac`) reported? 0.9?
+
+**7.9 CLI (PLAN task 116)** — one closing line counting groups not
+settled / low support?
+
+### Answered
+
+**7.2 Default of `min_settled_frac`.** Settled at `0` by §4.1.1 on a
+theory argument (the mean-form fit is unbiased from row one under
+stationarity; the gate guards a representativeness bias only the user
+can size). Reopens only if a statistic for that bias is found.
+
+**7.3 Is `withheld_reason` needed** given `settled_frac` and `weight_sum`
+are emitted? Answered: built, on every model that writes a row (the user
+wanted it "more obvious"); an Enum keeps it cheap.
+
+**7.4 Verifying `h(x)` — identities, not calibration (done, 2026-09-21;
+`crates/online-core/tests/readiness.rs`).** The tests hold the
+implementation to what the theory predicts, and each fails loudly if
+`s₂`, the weights or the ridge are wired wrongly. What they found:
+(i) on a stationary design at `n_Kish/k_eff ≈ 12` the mean per-row `h`
+is 10% above `edf/n_Kish`, and `edf/n_Kish` itself is within 5% of
+`(k+1)/n_Kish` with `n_Kish = (1+λ)/(1−λ)`; (ii) the observed RMS/noise
+at `n_Kish ≈ 2.3 k_eff` is 1.214 against the gate's 1.197 — within 2% —
+while the per-row mean says 1.315: the per-row form is conservative, by
+half there (§2.1 says why); (iii) scaling every weight by a constant
+leaves `h` unchanged to 1e-9, and splitting every row into two halves
+at the same clock halves it exactly; (iv) the §5.7 collinearity-break
+row reads `h` more than 100× the in-sample rows'; (v) a duplicated pair
+reads `support_coef` 0.5 each, a clean design 1, a ridge of 5 below 0.3,
+and the standardized solve with `ridge = 1` reads 1/(1+1) on an
+orthogonal design. `lasso`'s active-set `h` is not built, so not
+measured. `min_weight` was kept for every model but `ewridge` rather
+than aliased away (§8).
+
+**7.5 Enum emission from Rust** — answered by building it: new plumbing.
+A `u32`-key dictionary array carrying polars' own `_PL_ENUM_VALUES2`
+field metadata (`column::{code_array, enum_metadata}`), which polars
+reads back as an `Enum` over exactly the three names. `ew_class`'s
+`class` was no precedent: it is a plain string column.
+
+**7.6 `support_coef` warning** — settled 2026-09-21 (§2.2): warn at
+`< 0.5`, and only on a row whose prediction the gates let through.
+
+**7.10 Names** — answered as shipped, in §9.
 
 ---
 
@@ -689,7 +717,7 @@ reported 0.00 for String and must not be trusted for it.
 - **State:** one new persisted `f64` per stream instance — accumulated
   *capped* decay time (`Σ d_clock` the models actually decayed by, so a
   weekend capped to `gap_cap` counts as `gap_cap` of warming), reset
-  on `reset_state` and on a drift reset. Schema 13, with the clock change.
+  on a restart and on a drift reset. Schema 13, with the clock change.
   No libm in the state: `2^(−T/h)` is computed for the field, never
   persisted. **Convention:** a group's first row decays by nothing
   (`d_clock = 0`), so on a row-count clock the decay time seen before row
@@ -715,8 +743,9 @@ reported 0.00 for String and must not be trusted for it.
 - **Chunk invariance (hard rule 3):** `settled_frac` (accumulated time),
   `error_inflation` (the factor and `s₂` from the last solve) and `withheld_reason`
   (derived) must be
-  identical under any chunking. Only `coef` may follow the chunking (it is
-  emitted on each *group's* last row in each chunk).
+  identical under any chunking. Only `coef`, and `support_coef` beside it,
+  may follow the chunking (both are emitted on each *group's* last row in
+  each chunk, the exception CONTRIBUTING.md and docs/TESTING.md state).
 - **Model applicability:** `support_coef` and `h` exist for `ewridge`
   only; the rest of the Gram-factorising family (`lasso`, `ew_cov`, the
   robust models) is PLAN task 116. `rls`/`kalman` track an inverse (a
@@ -730,8 +759,10 @@ reported 0.00 for String and must not be trusted for it.
   `Σ̂` is the mean-form normalised, ridged Gram, so no extra normalisation
   is needed. Scalar models: `h = 1/n_Kish`. `Σ̂` singular before `k` rows →
   `h = inf` (withheld). Under `window_size` the weights are a hard cutoff, so
-  `s₂` is the same accumulator with the same cutoff — to confirm when
-  built.
+  `s₂` is the same accumulator with the same cutoff. Confirmed since it was
+  built: `the_window_kish_and_spread_are_the_rows_inside_it`
+  (`crates/online-core/src/ewridge/tests.rs`) holds the window's Kish size,
+  `weight_sum² / s₂`, to the rows inside the window.
 - **Predict:** `predict()` on a not-settled or too-noisy bank returns null
   with the reason, consistently with `min_weight` today.
 - **Version:** 0.9.0 (schema bump), with the clock change.

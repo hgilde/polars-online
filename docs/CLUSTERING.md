@@ -5,6 +5,12 @@ shipped — `kmeans` (task 23) and `micro` (task 24), `crates/online-core/src/cl
 `po.spec.kmeans` and `po.spec.micro`, with `docs/PLAN.md` §11h recording what
 the build changed from the prototypes.** The numbers below are the numpy
 prototypes' and are kept as the record of why those two designs were chosen.
+They keep the names of their day too: since task 144 (2026-10-02)
+`halflife` is `half_life` and `min_periods` is `min_weight`, and
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+lists every rename. Where `n_eff` names a field a model writes, as in §8's
+output table, it is `weight_sum` today; the models' accessor keeps the
+name `n_eff` (CLAUDE.md rule 8).
 The question the user asked was to do "all the clustering types
 that may be possible online" — so this document surveys every family the field
 has produced, decides each against this library's contract, prototypes the ones
@@ -1400,15 +1406,16 @@ Effort: `kmeans` alone is about the size of `holt`; the plumbing is a day by the
 ## 11. Reproducing the numbers
 
 ```
-uv run python scripts/clustering_experiments.py all                      # without the sklearn rows
-uv run --with scikit-learn python scripts/clustering_experiments.py all  # with them
+uv run python scripts/clustering_experiments.py all
 ```
 
 Experiments: `guarantees`, `baselines`, `seeding`, `decay`, `outliers`,
 `regime`, `knobs`, `cost`, `hard`. `hard` needs scikit-learn for its batch
-DBSCAN, single-linkage and full-covariance-EM ceilings; without it those rows
-are skipped and the online rows still run. Nothing is added to `pyproject.toml` or the lock file
-— the overlay is ephemeral. The whole suite takes about five minutes in pure
+DBSCAN, single-linkage and full-covariance-EM ceilings, and so do the
+MiniBatchKMeans and GaussianMixture rows. scikit-learn is in the dev
+dependency group (`pyproject.toml`), so `uv sync` installs it; where it
+cannot be imported, those rows are skipped with a note and the online rows
+still run. The whole suite takes about five minutes in pure
 numpy; `decay`, `seeding` and `hard` are the slow ones (they sweep over data
 seeds).
 

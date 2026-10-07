@@ -402,8 +402,9 @@ The proposal also had `load_state` accept a `ModelBank`, copied at build
 time (R3), so that step (4) had an in-process form,
 `lf.online.fit_predict(load_state=bank, save_state=...)`. Decision 3 (§7)
 declined it, and `load_state` takes a path. The vocabulary is then one pair
-of words on every surface: `load_state` / `save_state` on the plan, in
-`po.run` and in the TOML, spelled `--resume` / `--save-state` on the CLI.
+of words on every surface: `load_state` / `save_state` on the plan and in
+the TOML (and in `po.run`, until task 83 removed it), spelled `--resume` /
+`--save-state` on the CLI.
 
 The rules, each checked in §5:
 

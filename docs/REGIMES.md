@@ -99,9 +99,9 @@ different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 and both remedies recover most of it.** A true correlation of 0.8 reads as
 0.095 from one-row returns. Refresh-time sampling recovers 0.54 from 19157
 returns, 16 % of the 119991 at the finest interval. The lag inversion of
-§6, on `ew_cov(lags=...)`, recovers 0.77 while reading every return, and levels
-off there over lags from 192 to 512 rows
-([§6](#6-the-epps-effect-and-the-two-ways-out)).
+§6, on `ew_cov(lags=...)`, recovers 0.77 while reading every return.
+Averaged over five seeds it levels off at 0.775 for lags from 256 to 512
+rows ([§6](#6-the-epps-effect-and-the-two-ways-out)).
 
 **`deco`'s level settles near two-thirds of the true equicorrelation, and
 moves at its half-life.** The row's estimate is biased low, as its paper
@@ -474,7 +474,7 @@ lags is left out; too large, and the sum takes in noise. The mean over five
 seeds levels off at 0.775 from `L` = 256 to 512 and falls after, while its
 spread across seeds grows from 0.001 at 128 to 0.029 at 1024. Seed 7 peaks
 earlier, at 192. Anywhere from 128 to 512 reads within 0.01 of the best,
-and the best is still 0.025 short of the truth.
+0.775, which is still short of the truth of 0.8.
 
 The lag inversion is here because its lagged co-moments are a state a bank
 already keeps, as `ew_cov(lags=...)`. What the lags do to `ew_cov`'s
@@ -609,14 +609,16 @@ design, and on Gaussian pairs beside it:
 | 0.45  | 4.0 | 250 | 0.161       | 0.133 | 0.150    |
 | 0.45  | 4.0 | 500 | 0.128       | 0.134 | 0.131    |
 
-The nominal level is 0.05 in every row. The difference between two rates
-from 1000 draws has a standard error of about 0.011 at 0.07 and 0.016 at
-0.15.
+The nominal level is 0.05 in every row. A rate from 1000 draws has a
+standard error of about 0.008 at 0.07 and 0.011 at 0.15, and the
+difference between two such rates about √2 times that.
 
 **On their design the detector is within two standard errors of their
-table in every cell.** The largest gaps are 0.023 at `boundary_gamma` of 0
-and 0.25 (at `T = 4`, `m = 500`) and 0.030 at 0.45 (at `T = 0.5`, `m =
-500`), in both directions. The critical values differ a little too. The
+table in every cell.** The largest gap at each `boundary_gamma` is at
+`m = 500`: at 0, the cell `T = 1` (0.052 against their 0.069); at 0.25,
+`T = 4` (0.054 against 0.077); and at 0.45, `T = 0.5` (0.155 against
+0.125). The gaps run in both directions. The critical values differ a
+little too. The
 paper simulates them on a grid, which reads the supremum low, and this
 library solves the law behind them
 (`crates/online-core/src/boundary.rs`). So its values are higher in 11 of
@@ -634,7 +636,7 @@ crosses it. That is the price of catching an early change sooner, which
 this design does not tell the two apart.
 
 `tests/test_corrchange.py` holds the Gaussian size at `m = 250`, `T = 1`
-between 0.025 and 0.075, and the critical values to the paper's Table 1.
+between 2.5 % and 7.5 %, and the critical values to the paper's Table 1.
 
 ## 10. Running them
 

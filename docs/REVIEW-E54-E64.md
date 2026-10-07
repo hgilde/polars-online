@@ -5,6 +5,13 @@ Status as of 2026-09-06: **all 29 items resolved in task 57** (commit
 the intro says how to read the ticks; the items are kept as written, as the
 record of what the review found.
 
+*Added 2026-10-06:* this review uses the names of its day, from before task
+144 (2026-10-02) renamed the parameters and fields.
+[PERFORMANCE.md's table of names that changed](PERFORMANCE.md#names-that-changed)
+gives today's for each, such as `half_life` for `halflife`. Where `n_eff`
+names a field a model writes, it is `weight_sum` today; the models'
+accessor keeps the name `n_eff` (CLAUDE.md rule 8).
+
 A code review of the closed-group queue, `deco`, `clear_lags`, `ew_cov`
 lags, `po.prep.refresh_time`, `rcov`, `po.corr`, `po.sim.regimes`, `hmm`,
 `corrchange` and `bocpd`, as merged at `ac007e3` (2026-09-06). Each item
