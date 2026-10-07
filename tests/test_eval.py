@@ -307,3 +307,207 @@ def test_rolling_metrics_refuses_a_window_that_is_not_finite():
     out = _fitted(n_groups=1, n_rows=50)
     with pytest.raises(ValueError, match="^rolling_metrics: window_size must be finite"):
         po.eval.rolling_metrics(out, "m", clock="t", window_size=float("inf"))
+
+
+# --- A relative target (review round 4, YB1) ---------------------------------
+
+HOW = {
+    "difference": pl.col("p") - pl.col("mid"),
+    "ratio": pl.col("p") / pl.col("mid"),
+    "log_ratio": (pl.col("p") / pl.col("mid")).log(),
+}
+
+
+def _relative_frame(n: int = 600, seed: int = 3) -> pl.DataFrame:
+    """A price ``p`` about a drifting ``mid`` (``test_relative_targets.py``'s
+    frame), with what the bank cannot use on either side: a null, a value past
+    its input bound on both sides at once -- two values that must not subtract
+    into a usable zero -- and a ``mid`` that is not positive, which a ratio
+    cannot take. The last row's ``p`` is null: the bank reads its metrics
+    before each row, so the last row's are over every row before it, which
+    are the rows ``po.eval`` scores."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, 2))
+    mid = 100.0 + np.cumsum(0.2 * rng.standard_normal(n))
+    p = mid * np.exp(0.01 * (0.5 * x[:, 0] - 0.3 * x[:, 1]) + 0.002 * rng.standard_normal(n))
+    i = pl.int_range(pl.len())
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "mid": mid, "p": p}).with_columns(
+        p=pl.when((i % 17 == 3) | (i == n - 1))
+        .then(None)
+        .when(i == 50)
+        .then(1e200)
+        .otherwise(pl.col("p")),
+        mid=pl.when(i % 23 == 5)
+        .then(None)
+        .when(i == 50)
+        .then(1e200)
+        .when(i % 29 == 7)
+        .then(-1.0)
+        .otherwise(pl.col("mid")),
+    )
+
+
+def _relative_fit(relative: str, name: str | None = None):
+    target = po.target("p", relative_to="mid", relative=relative, name=name)
+    spec = po.spec.ewridge(
+        "m", targets=[target], features=["x0", "x1"], half_life=float("inf"), emit_metrics=True
+    )
+    return spec, po.ModelBank([spec]).fit_predict(_relative_frame())
+
+
+@pytest.mark.parametrize("name", [None, "ret"], ids=["named after its column", "named"])
+@pytest.mark.parametrize("relative", list(HOW))
+def test_a_relative_target_is_scored_as_the_bank_scores_it(relative, name):
+    """Review round 4 (YB1): ``po.eval`` read a relative target's raw column
+    as ``y`` -- the price, about 100, against a prediction of the price less
+    the mid, about 0 -- and reported ``r2 = -1723`` beside the bank's own
+    ``hit_rate`` of 0.86; a target with a name of its own raised polars'
+    ``ColumnNotFoundError``. With the spec in hand, ``y`` is the bank's: the
+    difference, the ratio or the log ratio, null where the bank cannot use a
+    side, and a ratio's hit test about 1. Held to the bank's own
+    ``emit_metrics`` without decay, which over the same rows are the same
+    three numbers."""
+    spec, out = _relative_fit(relative, name)
+    t = name or "p"
+    bank = out["m"].struct.unnest().tail(1)
+    centre = 1.0 if relative == "ratio" else 0.0
+    pred = out["m"].struct.field(f"pred_{t}")
+    # A prediction exactly on the centre is a hit in the bank and a miss
+    # here (S6, not this test's): none may sit there.
+    assert pred.is_not_null().sum() > 500 and not (pred == centre).any()
+
+    def held(frame: pl.DataFrame) -> None:
+        assert frame["target"].to_list() == [t]
+        for metric in ("r2", "ic", "hit_rate"):
+            want = bank[f"{metric}_{t}"][0]
+            assert frame[metric][0] == pytest.approx(want, rel=1e-9, abs=1e-12), (metric, frame)
+
+    held(po.eval.from_sums(po.eval.sums(out, "m", spec=spec), min_obs=1))
+    got = po.eval.metrics(out, "m", spec=spec, min_obs=1)
+    held(got)
+    assert 0.3 < got["hit_rate"][0] < 0.95, "a rate, not the sign test's 1.0 or 0.0"
+    # And the windowed and stacked forms take the spec the same way.
+    windows = po.eval.rolling_metrics(
+        out.with_row_index("i"), "m", clock="i", window_size=1000, spec=spec, min_obs=1
+    )
+    assert windows["hit_rate"].to_list() == pytest.approx(got["hit_rate"].to_list(), rel=1e-12)
+    stacked = po.eval.compare_specs(out, ["m"], specs=[spec], min_obs=1)
+    assert stacked.drop("spec").equals(got)
+
+
+def test_unpack_takes_a_target_as_its_spec_writes_it():
+    """``y`` is each target's own definition (``po.target``'s table), computed
+    in polars here as ``test_relative_targets.py`` computes it, and
+    ``target`` is the name the output fields carry. A column renamed with
+    ``name=`` is the column."""
+    df = _relative_frame()
+    targets = [
+        po.target("p", relative_to="mid", name="diff"),
+        po.target("p", relative_to="mid", relative="ratio", name="ratio"),
+        po.target("p", relative_to="mid", relative="log_ratio", name="log"),
+        po.target("p", name="price"),
+    ]
+    spec = po.spec.ewridge("m", targets=targets, features=["x0", "x1"], half_life=float("inf"))
+    long = po.eval.unpack(po.ModelBank([spec]).fit_predict(df), "m", spec=spec)
+    usable = (pl.col("p").abs() <= 1e100) & (pl.col("mid").abs() <= 1e100)
+    positive = usable & (pl.col("p") > 0) & (pl.col("mid") > 0)
+    want = {
+        "diff": pl.when(usable).then(HOW["difference"]),
+        "ratio": pl.when(positive).then(HOW["ratio"]),
+        "log": pl.when(positive).then(HOW["log_ratio"]),
+        "price": pl.col("p"),
+    }
+    assert long["target"].unique(maintain_order=True).to_list() == list(want)
+    for name, expr in want.items():
+        got = long.filter(pl.col("target") == name)["y"]
+        assert got.equals(df.select(expr.alias("y"))["y"]), name
+        assert got.is_null().sum() >= 50 or name == "price", name
+
+
+def test_without_the_spec_a_slot_named_after_no_column_says_to_pass_it():
+    """A target with a name of its own writes ``pred_<name>``, which names no
+    column: without the spec there is no way to know what ``y`` is, and the
+    refusal says where it is written down."""
+    _, out = _relative_fit("log_ratio", "ret")
+    with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
+        po.eval.metrics(out, "m", min_obs=1)
+    with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
+        po.eval.unpack(out, "m")
+
+
+def test_a_formula_target_the_frame_has_no_column_for_is_refused_by_name():
+    """A formula target's value is resolved inside the bank and not written
+    out; with the spec, a frame without the column is the documented
+    ``ValueError``, not polars' ``ColumnNotFoundError``."""
+    df = pl.DataFrame(
+        {"t": np.arange(60, dtype=float), "x": np.sin(np.arange(60.0)), "mid": np.arange(60.0)}
+    )
+    fwd = (po.rewm_mean("mid", half_life=5.0, window_size=5.0) - pl.col("mid")).alias("fwd")
+    spec = po.spec.ewridge(
+        "m",
+        targets=[fwd],
+        features=["x"],
+        clock="t",
+        gap_cap=100.0,
+        half_life=50.0,
+        embargo=5.0,
+        min_weight=3.0,
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*'fwd'"):
+        po.eval.unpack(out, "m", spec=spec)
+    # With the column there, as `with_windows` writes it, it is read.
+    with_column = out.with_columns(fwd=pl.lit(0.5))
+    assert po.eval.unpack(with_column, "m", spec=spec)["y"].unique().to_list() == [0.5]
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Int32, pl.UInt32])
+def test_rolling_metrics_keeps_an_integer_clocks_dtype(dtype):
+    """Review round 4 (YB14): on an ``Int64`` clock ``window_start`` came back
+    ``Float64`` (``[0.0, 500.0, ...]``), where a temporal clock keeps its own
+    dtype. A window of a whole number of the clock's units keeps it too, and
+    one that is not whole is refused, as ``embargo`` refuses a delay the
+    clock cannot hold: its bucket edges are not values of the column."""
+    out = _fitted(n_groups=1, n_rows=600)
+    ints = out.with_columns(pl.col("t").round().cast(dtype))
+    floats = ints.with_columns(pl.col("t").cast(pl.Float64))
+    want = po.eval.rolling_metrics(
+        floats, "m", clock="t", window_size=800.0, targets=["y0"], min_obs=5
+    )
+    assert want.height > 1
+    for window in (800, 800.0):
+        got = po.eval.rolling_metrics(
+            ints, "m", clock="t", window_size=window, targets=["y0"], min_obs=5
+        )
+        assert got["window_start"].dtype == dtype, window
+        assert got.with_columns(pl.col("window_start").cast(pl.Float64)).equals(want), window
+    with pytest.raises(ValueError, match="^rolling_metrics: window_size 2.5 is not a whole number"):
+        po.eval.rolling_metrics(ints, "m", clock="t", window_size=2.5)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, float("nan"), float("inf"), -1.0, 1e101],
+    ids=["null", "nan", "inf", "-1", "bound"],
+)
+def test_sums_drops_a_row_whose_weight_the_bank_would_not_learn_from(bad):
+    """Review round 4 (YB21): a null weight counted in ``n`` but not in ``w``
+    or the means, and a NaN, infinite, negative or out-of-bound weight went
+    into the sums as it was. The bank skips a row whose weight is not a
+    number it can use and refuses a negative one; here each is dropped, as a
+    missing prediction or target is. A zero weight is legal and stays: in
+    ``n``, and not in ``w``."""
+    out = _fitted(n_groups=1, n_rows=200)
+    marked = pl.int_range(pl.len())
+    out = out.with_columns(
+        pl.when(marked == 99).then(0.0).otherwise(1.0 + 0.01 * marked).alias("w")
+    )
+    rows = [30, 31, 120]
+    bad_rows = out.with_columns(
+        pl.when(marked.is_in(rows)).then(pl.lit(bad, dtype=pl.Float64)).otherwise("w").alias("w")
+    )
+    got = po.eval.sums(bad_rows, "m", weight="w")
+    want = po.eval.sums(out.filter(~marked.is_in(rows)), "m", weight="w")
+    assert got.equals(want), (got, want)
+    scored = out["m"].struct.field("pred_y0").is_not_null().sum()
+    assert po.eval.sums(out, "m", weight="w")["n"][0] == scored, "the zero-weight row is in n"

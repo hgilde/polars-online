@@ -57,9 +57,7 @@ class TestTheMatrixIsTheOneTheModelSolves:
         beta = np.linalg.solve(raw, g["cross_moments"][0])
 
         model_coef = np.array(out["m"].struct.field("coef").to_list()[-1])
-        # `coef` is read before the final row is folded in (out-of-sample), so
-        # the accumulators are one row ahead of it.
-        assert beta == pytest.approx(model_coef, rel=2e-3)
+        assert beta == pytest.approx(model_coef, rel=1e-10)
         assert k == len(model_coef)
 
     def test_moments_match_a_from_scratch_computation(self):

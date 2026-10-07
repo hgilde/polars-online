@@ -72,13 +72,15 @@ def test_nearest_reproduces_highams_three_by_three():
 def test_nearest_reproduces_highams_four_by_four_and_its_iteration_count():
     """§4's tridiagonal example: the matrix, distance 2.13, rank 3 -- and the
     iteration count, which pins the algorithm rather than just its fixed
-    point. The paper reports 19 at `tol = 1e-8`; this counts the iteration
-    in which the test passed, so the same run is 20 here."""
+    point. The paper reports 19 at `tol = 1e-8`, under its test (4.1) in the
+    infinity norm, the largest row sum. The largest entry instead, which the
+    test once used, stops a step later, and this pinned 20 with a wrong
+    explanation (review round 4, YB7)."""
     x, dist, iters = corr.nearest(HIGHAM_4, tol=1e-8)
     assert np.allclose(x, HIGHAM_4_NEAREST, atol=1e-4)
     assert dist == pytest.approx(2.13, abs=1e-2)
     assert np.linalg.matrix_rank(x, tol=1e-7) == 3
-    assert iters == 20
+    assert iters == 19
 
 
 def test_nearest_obeys_highams_bounds():
@@ -129,15 +131,17 @@ def test_the_weights_change_which_entries_move():
 # --- shrink --------------------------------------------------------------
 
 
-def lw_alpha(x, rbar_from):
-    """Ledoit and Wolf's intensity, their Appendices A-B written out."""
+def lw_alpha(x):
+    """Ledoit and Wolf's intensity for the constant-correlation target, their
+    Appendices A-B written out. The identity target's is scikit-learn's
+    ``ledoit_wolf``, in ``tests/test_second_opinion.py``."""
     t, k = x.shape
     d = x - x.mean(axis=0)
     s = d.T @ d / t
     sd = np.sqrt(np.diag(s))
     r = s / np.outer(sd, sd)
     off = ~np.eye(k, dtype=bool)
-    rbar = r[off].mean() if rbar_from else 0.0
+    rbar = r[off].mean()
     f = rbar * np.outer(sd, sd)
     np.fill_diagonal(f, np.diag(s))
     prod = d[:, :, None] * d[:, None, :]
@@ -198,7 +202,7 @@ def test_shrink_is_ledoit_and_wolfs_intensity():
     x = two_factor(120, 2)
     d = x - x.mean(axis=0)
     s = d.T @ d / len(x)
-    want_alpha, want_f, _ = lw_alpha(x, rbar_from=True)
+    want_alpha, want_f, _ = lw_alpha(x)
     got, alpha = corr.shrink(s, x=x)
     assert alpha == pytest.approx(want_alpha, rel=1e-12)
     assert np.allclose(got, (1 - alpha) * s + alpha * want_f)
@@ -430,6 +434,18 @@ def test_z_mse_is_the_scaled_fisher_error():
         corr.loss(a, b, "z_mse")
     with pytest.raises(ValueError, match="unknown kind"):
         corr.loss(a, b, "nope")
+
+
+@pytest.mark.parametrize("kind", ["qlike", "minvar"])
+def test_a_singular_forecast_has_no_loss(kind):
+    """Review round 4 (YB13): a forecast with no inverse raised numpy's
+    ``LinAlgError`` where the docstring promises ``nan`` for a loss that is
+    undefined. ``nearest`` returns exactly singular matrices on Higham's own
+    examples, so a repaired forecast reaches this."""
+    assert np.isnan(corr.loss(np.ones((2, 2)), np.eye(2), kind))
+    # Higham's repair of his 3x3 is singular to the tolerance: a number or
+    # nan, never an exception.
+    assert isinstance(corr.loss(corr.nearest(HIGHAM_3)[0], np.eye(3), kind), float)
 
 
 # --- the Epps inversion ---------------------------------------------------

@@ -361,13 +361,17 @@ impl Node {
                                 })?;
                         }
                         "min_samples" => {
+                            // The ceiling is named: a count past a `u32` was
+                            // refused as one below 1 (review round 4, PD4).
                             op.min_samples = v
                                 .as_u64()
                                 .and_then(|n| u32::try_from(n).ok())
                                 .filter(|&n| n >= 1)
                                 .ok_or_else(|| {
                                     format!(
-                                        "{name}: min_samples must be a count of at least 1, got {}",
+                                        "{name}: min_samples must be a count of at least 1 and \
+                                         at most {}, got {}",
+                                        u32::MAX,
                                         short(v)
                                     )
                                 })?;
@@ -912,6 +916,13 @@ mod tests {
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":0}]"#,
                 "min_samples must be a count of at least 1",
+            ),
+            // Review round 4, PD4: past a `u32` the refusal names the
+            // ceiling, where it said "at least 1" of a count far above it.
+            (
+                r#"["ewm_sum",["col","a"],{"half_life":1,"min_samples":4294967296}]"#,
+                "min_samples must be a count of at least 1 and at most 4294967295, got \
+                 4294967296",
             ),
             (
                 r#"["ewm_sum",["col","a"],{"half_life":1,"partial":"maybe"}]"#,

@@ -293,7 +293,10 @@ class ConsumedSourceWarning(UserWarning):
     rows -- an empty query is not a mistake. It is raised only for a plan
     whose source is a Python scan *and* which yielded nothing, which is the
     shape a consumed stream has; an in-memory frame's ``.lazy()`` and a
-    ``scan_parquet`` cannot trip it, and both are safely reusable.
+    ``scan_parquet`` cannot trip it, and both are safely reusable. The one
+    exception is :func:`polars_online.stream.embargo`, a plan of Polars' own
+    that reads its input twice and runs after it returns: it warns as it
+    builds the plan, whenever its input's source is a Python scan.
 
     The fix is to rebuild the plan per run -- ``pl.scan_arrow_c_stream(con.sql(q))``
     inside the loop rather than outside it -- since the producer will make a

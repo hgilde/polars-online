@@ -10,6 +10,12 @@ a stream too long to hold, and :func:`sums`, :func:`merge_sums` and
 :func:`from_sums` reduce each chunk to ten numbers per key and add them up
 exactly.
 
+A target that is not a plain column -- one taken against another column of
+its row (:func:`polars_online.target` with ``relative_to``), or one with a
+name of its own -- is read through the spec that wrote the output: pass it as
+``spec``, and ``y`` is the target the bank learned, on its scale (see
+:func:`unpack`).
+
 What each function raises is what :func:`unpack` raises, since each starts
 there: ``KeyError`` for a ``spec_name`` the frame has not got, ``TypeError``
 for a column that is not a model's prediction struct, ``ValueError`` for a
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 import polars as pl
 
@@ -94,15 +101,32 @@ def unpack(
     ``slot``
         The struct field name (``pred_y__r0.5@h500``).
     ``target``
-        The target column it predicts.
+        The target it predicts: the name its output fields carry, which for a
+        plain target is its column.
     ``pred``, ``y``
         The prediction and the target's value.
 
     Input columns named like these four (:data:`RESERVED`) are dropped rather than
     duplicated: a target column called ``y`` would otherwise collide with the
-    ``y`` output. Pass ``spec`` to resolve each slot's target exactly (through
-    :func:`polars_online.spec.output_index`); without it a name-based rule is
-    used, which can misattribute a target whose name embeds another's.
+    ``y`` output.
+
+    Pass ``spec`` to read each slot's target as the spec writes it, through
+    :func:`polars_online.spec.output_index` and the spec's ``targets``. A
+    plain target is its column, and so is a column renamed with ``name=``. A
+    target taken against another column (:func:`polars_online.target` with
+    ``relative_to``) is the value the bank learned: the difference, the ratio
+    or the log ratio, null where the bank could not use a side (null, NaN,
+    infinite or past its input bound of 1e100, or for a ratio not positive).
+    A formula target is read from a column of its own name, which
+    :func:`polars_online.stream.with_windows` makes; the bank resolves it
+    inside its stream and does not write it out.
+
+    Without ``spec`` a name-based rule is used: a slot is read against the
+    column named after it. That can misattribute a target whose name embeds
+    another's, and a target taken against another column under that column's
+    own name (``po.target("p", relative_to="mid")`` writes ``pred_p``) is read
+    as the column ``p``, not as ``p - mid``: the frame does not record which
+    targets are relative, so only ``spec`` can say.
 
     .. code-block:: python
 
@@ -117,38 +141,104 @@ def unpack(
       ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro`` or ``ew_class``
       output);
     - ``ValueError`` when a slot's target column cannot be found (the frame
-      has not got it, or ``targets`` does not name it) and, with ``spec``,
-      whatever :func:`polars_online.spec.output_index` raises for it.
+      has not got it, or ``targets`` does not name it, or without ``spec`` no
+      column is named after the slot) and, with ``spec``, whatever
+      :func:`polars_online.spec.output_index` raises for it.
     """
+    return _unpack(df, spec_name, spec, targets)[0]
+
+
+def _unpack(
+    df: pl.DataFrame, spec_name: str, spec: dict | None, targets: Sequence[str] | None
+) -> tuple[pl.DataFrame, dict[str, float]]:
+    """:func:`unpack`, and the centre each slot's hit test is taken about:
+    1 for a ratio target, which is positive by construction, as the bank's
+    ``emit_metrics`` takes it (review 2026-09-26, D3), and 0 for every other
+    (review round 4, YB1)."""
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
     # With the spec in hand, the slot -> target mapping comes from
-    # `output_index` -- the same Rust code that named the fields -- instead of
-    # the heuristic name-parsing below, which exists only for callers who have
-    # a frame but no spec.
-    exact: dict[str, str] = {}
-    if spec is not None:
-        from polars_online import spec as _spec_mod
-
-        idx = _spec_mod.output_index(spec)
-        exact = {
-            r["field"]: r["target"]
-            for r in idx.filter(pl.col("kind") == "pred").iter_rows(named=True)
-            if r["target"] is not None
-        }
+    # `output_index` -- the same Rust code that named the fields -- and each
+    # target's value from the spec's own table of it, instead of the
+    # heuristic name-parsing below, which exists only for callers who have a
+    # frame but no spec.
+    exact = {} if spec is None else _spec_targets(spec, df)
     frames = []
+    centres: dict[str, float] = {}
     for slot in fields:
-        target = exact.get(slot) or _target_of(slot, df, targets)
+        if slot in exact:
+            target, y, centres[slot] = exact[slot]
+        else:
+            target = _target_of(slot, df, targets)
+            y, centres[slot] = pl.col(target), 0.0
         frames.append(
             df.select(
                 *keep,
                 pl.lit(slot).alias("slot"),
                 pl.lit(target).alias("target"),
                 df[spec_name].struct.field(slot).alias("pred"),
-                pl.col(target).alias("y"),
+                y.alias("y"),
             )
         )
-    return pl.concat(frames)
+    return pl.concat(frames), centres
+
+
+def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr, float]]:
+    """Each ``pred`` field of ``spec`` -> its target's name, the expression
+    of the target's value on the frame, and its hit-test centre."""
+    from polars_online import spec as _spec_mod
+    from polars_online._spec import target_name
+
+    tables = {target_name(t): t for t in spec.get("targets") or []}
+    idx = _spec_mod.output_index(spec).filter(pl.col("kind") == "pred")
+    return {
+        r["field"]: (
+            r["target"],
+            *_target_value(r["field"], tables.get(r["target"]), r["target"], df),
+        )
+        for r in idx.iter_rows(named=True)
+        if r["target"] is not None
+    }
+
+
+def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> tuple[pl.Expr, float]:
+    """A target's value on the frame as the bank reads it, and its hit-test
+    centre (``crates/online-polars/src/targets.rs``: a side the stream
+    cannot use makes the target null before the arithmetic, so two values
+    past the input bound do not subtract into a usable 0, and a ratio's
+    side must be positive; a result past the bound is null too, which
+    :func:`_scored` drops)."""
+
+    def column(c: str) -> pl.Expr:
+        if c not in df.columns:
+            msg = (
+                f"cannot find column {c!r}, which slot {slot!r} reads for target {name!r}; the "
+                f"frame has {df.columns}"
+            )
+            raise ValueError(msg)
+        return pl.col(c)
+
+    if table is None or isinstance(table, str):
+        return column(name if table is None else table), 0.0
+    if "formula" in table:
+        if name not in df.columns:
+            msg = (
+                f"slot {slot!r}: target {name!r} is a formula of the row's future, which the bank "
+                f"resolves inside its stream and does not write out, and the frame has no column "
+                f"{name!r} to score it against; add one with po.stream.with_windows"
+            )
+            raise ValueError(msg)
+        return pl.col(name), 0.0
+    value = column(table["column"])
+    if "relative_to" not in table:
+        return value, 0.0  # a column renamed
+    y, r = value.cast(pl.Float64), column(table["relative_to"]).cast(pl.Float64)
+    usable = _usable(y) & _usable(r)
+    how = table.get("relative", "difference")
+    if how == "difference":
+        return pl.when(usable).then(y - r), 0.0
+    ratio = pl.when(usable & (y > 0.0) & (r > 0.0)).then(y / r)
+    return (ratio, 1.0) if how == "ratio" else (ratio.log(), 0.0)
 
 
 def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> str:
@@ -160,9 +250,20 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
         t for t in candidates if body == t or body.startswith(t + "__") or body.startswith(t + "@")
     ]
     if not matches:
-        msg = f"cannot infer the target column for slot {slot!r}"
+        msg = (
+            f"cannot infer the target column for slot {slot!r}: no column of the frame is named "
+            "after it. A target with a name of its own, or one taken against another column "
+            "(po.target with name= or relative_to=), is read through the spec that wrote it: "
+            "pass spec="
+        )
         raise ValueError(msg)
     return max(matches, key=len)
+
+
+def _usable(value: pl.Expr) -> pl.Expr:
+    """Whether a float is one the bank learns from: finite, and within its
+    input bound (docs/PLAN.md section 3); null where ``value`` is."""
+    return value.is_finite() & (value.abs() <= _INPUT_BOUND)
 
 
 def _scored(long: pl.DataFrame) -> pl.DataFrame:
@@ -172,15 +273,29 @@ def _scored(long: pl.DataFrame) -> pl.DataFrame:
     target as missing and still predicts its row, so dropping nulls alone kept
     the row, and ``r2``, ``ic`` and ``mse`` came out NaN while ``hit_rate``
     was quietly lowered (review 2026-10-05, YB4)."""
-
-    def usable(column: str) -> pl.Expr:
-        value = pl.col(column).cast(pl.Float64)
-        return value.is_finite() & (value.abs() <= _INPUT_BOUND)
-
-    return long.filter(usable("pred") & usable("y"))
+    return long.filter(
+        _usable(pl.col("pred").cast(pl.Float64)) & _usable(pl.col("y").cast(pl.Float64))
+    )
 
 
-def _metric_exprs(min_obs: int, *, binary: bool = False) -> list[pl.Expr]:
+def _centred(long: pl.DataFrame, centres: dict[str, float]) -> tuple[pl.DataFrame, str | None]:
+    """``long`` with each row's hit-test centre in a column of its own, and
+    that column's name; ``long`` as it is, and ``None``, where every slot's
+    centre is 0, the sign test about zero."""
+    ones = [slot for slot, centre in centres.items() if centre == 1.0]
+    if not ones:
+        return long, None
+    name = "__po_centre"
+    while name in long.columns:
+        name = "_" + name
+    return long.with_columns(
+        pl.when(pl.col("slot").is_in(ones)).then(1.0).otherwise(0.0).alias(name)
+    ), name
+
+
+def _metric_exprs(
+    min_obs: int, *, binary: bool = False, centre: str | None = None
+) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     # The centred sums, as :func:`sums` keeps them: a metric is null where
     # one it divides by is 0, as :func:`from_sums` gives it, where this gave
@@ -222,9 +337,13 @@ def _metric_exprs(min_obs: int, *, binary: bool = False) -> list[pl.Expr]:
     else:
         # Fraction of rows where the sign of pred matches the sign of y
         # (rows with y == 0 excluded: neither up nor down, not a class), and
-        # null where no row has a sign.
-        signed = (pl.col("y") != 0).sum()
-        hits = ((pl.col("pred").sign() == pl.col("y").sign()) & (pl.col("y") != 0)).sum()
+        # null where no row has a sign. A ratio target's signs are taken
+        # about its centre, 1, as the bank's `emit_metrics` takes them.
+        y, pred = pl.col("y"), pl.col("pred")
+        if centre is not None:
+            y, pred = y - pl.col(centre), pred - pl.col(centre)
+        signed = (y != 0).sum()
+        hits = ((pred.sign() == y.sign()) & (y != 0)).sum()
         exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
     exprs.append(resid.pow(2).mean().alias("mse"))
     exprs.append(pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough"))
@@ -237,6 +356,7 @@ def metrics(
     *,
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
+    spec: dict | None = None,
     min_obs: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
@@ -247,7 +367,8 @@ def metrics(
     missing: null, NaN, infinite, or past its input bound of 1e100 in
     magnitude, a target the bank still predicts the row of. A group with fewer
     than ``min_obs`` rows left is dropped from the result rather than reported
-    on too little. The columns:
+    on too little. ``spec`` and ``targets`` are :func:`unpack`'s: pass the spec
+    for a target that is not a plain column. The columns:
 
     ``slot``, ``target``, and the ``by`` columns
         The key.
@@ -261,7 +382,9 @@ def metrics(
         varied.
     ``hit_rate``
         The share of rows whose sign the prediction got right, rows with ``y ==
-        0`` excluded; null where every row is excluded.
+        0`` excluded; null where every row is excluded. A ratio target read
+        through ``spec`` is positive by construction, so its signs are taken
+        about 1 instead, as the bank's ``emit_metrics`` takes them.
     ``mse``
         The mean squared residual.
 
@@ -286,9 +409,10 @@ def metrics(
     Raises as :func:`unpack` does; a ``by`` column the frame has not got is
     polars' ``ColumnNotFoundError``.
     """
-    long = _scored(unpack(df, spec_name, targets=targets))
+    long, centres = _unpack(df, spec_name, spec, targets)
+    long, centre = _centred(_scored(long), centres)
     keys = ["slot", "target", *by]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
+    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary, centre=centre)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
@@ -300,6 +424,7 @@ def rolling_metrics(
     window_size: float | Duration,
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
+    spec: dict | None = None,
     min_obs: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
@@ -307,10 +432,12 @@ def rolling_metrics(
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the
     left edge of each bucket (``floor(clock / window_size) * window_size``).
-    ``binary`` is :func:`metrics`'s. ``window_size`` is measured the way a
-    spec's clock parameters are: a number for a numeric clock, and a duration
-    for a ``Datetime``, ``Date`` or ``Duration`` one, when ``window_start`` is
-    of the clock's own dtype.
+    ``binary``, ``spec`` and ``targets`` are :func:`metrics`'s.
+    ``window_size`` is measured the way a spec's clock parameters are: a
+    number for a numeric clock, and a duration for a ``Datetime``, ``Date``
+    or ``Duration`` one. ``window_start`` is of the clock's own dtype, an
+    integer clock's included, whose ``window_size`` must then be a whole
+    number of its units: a bucket's edges are values of the column.
 
     .. code-block:: python
 
@@ -322,7 +449,8 @@ def rolling_metrics(
     Raises as :func:`unpack` does, and:
 
     - ``ValueError`` for a ``window_size`` that is not finite and above 0,
-      or of the wrong kind for the clock;
+      of the wrong kind for the clock, or not a whole number on an integer
+      clock;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
       temporal;
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the
@@ -346,7 +474,21 @@ def rolling_metrics(
     if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
         msg = f"clock column {clock!r} must be numeric or temporal, got {dtype}"
         raise TypeError(msg)
-    if ns is None:
+    if ns is None and dtype.is_integer():
+        # The bucket's left edge in the clock's own dtype, as a temporal
+        # clock's is, in integers, so no edge is rounded through a float; a
+        # window that is not whole would put edges between the column's
+        # values (review round 4, YB14).
+        if not float(window_size).is_integer():  # type: ignore[arg-type]
+            msg = (
+                f"rolling_metrics: window_size {window_size!r} is not a whole number, and clock "
+                f"column {clock!r} is {dtype}, which holds whole numbers; give a whole "
+                "window_size, or cast the clock to a float"
+            )
+            raise ValueError(msg)
+        whole = int(window_size)  # type: ignore[arg-type]
+        start = (pl.col(clock) // whole * whole).cast(dtype)
+    elif ns is None:
         start = (pl.col(clock) / window_size).floor() * window_size
     elif isinstance(dtype, pl.Duration):
         start = (
@@ -354,10 +496,10 @@ def rolling_metrics(
         )
     else:
         start = pl.col(clock).dt.truncate(format_duration(ns))
-    long = _scored(unpack(df, spec_name, targets=targets))
-    long = long.with_columns(start.alias("window_start"))
+    long, centres = _unpack(df, spec_name, spec, targets)
+    long, centre = _centred(_scored(long).with_columns(start.alias("window_start")), centres)
     keys = ["slot", "target", *by, "window_start"]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
+    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary, centre=centre)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
@@ -367,13 +509,17 @@ def compare_specs(
     *,
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
+    specs: Sequence[dict] | None = None,
     min_obs: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
     """:func:`metrics` for several specs in one table, with a ``spec`` column first.
 
     ``binary`` is :func:`metrics`'s, applied to every spec alike: compare specs
-    that share a loss, not a logistic fit against a regression one.
+    that share a loss, not a logistic fit against a regression one. ``specs``
+    are the specs that wrote the columns, each read as :func:`metrics` reads
+    its ``spec`` for the column of its name; a name without one is read by
+    the name-based rule.
 
     .. code-block:: python
 
@@ -386,10 +532,17 @@ def compare_specs(
 
     Raises as :func:`metrics` does for each; no specs give an empty frame.
     """
+    written = {s.get("name"): s for s in specs or ()}
     frames = [
-        metrics(df, name, by=by, targets=targets, min_obs=min_obs, binary=binary).with_columns(
-            pl.lit(name).alias("spec")
-        )
+        metrics(
+            df,
+            name,
+            by=by,
+            targets=targets,
+            spec=written.get(name),
+            min_obs=min_obs,
+            binary=binary,
+        ).with_columns(pl.lit(name).alias("spec"))
         for name in spec_names
     ]
     cols = ["spec", *frames[0].columns[:-1]] if frames else []
@@ -597,9 +750,10 @@ def sums(
         The residual sum of squares.
     ``hits``, ``signed``
         For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
-        with ``y != 0``. Under ``binary=True`` (:func:`metrics`'s reading),
-        ``hits`` counts agreement at a 0.5 threshold and ``signed`` every row,
-        since every row scores.
+        with ``y != 0`` (about 1 for a ratio target read through ``spec``, as
+        :func:`metrics` takes them). Under ``binary=True`` (:func:`metrics`'s
+        reading), ``hits`` counts agreement at a 0.5 threshold and ``signed``
+        every row, since every row scores.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
@@ -612,9 +766,11 @@ def sums(
 
     Rows where the prediction or the target is missing are dropped, as
     :func:`metrics` drops them: null, NaN, infinite or past the bank's input
-    bound. ``weight`` names a column to weight rows by;
-    without it every row counts 1 and ``w`` equals ``n``. ``spec``, ``targets``
-    and the errors are :func:`unpack`'s.
+    bound. ``weight`` names a column to weight rows by; a row whose weight
+    the bank would not learn from -- null, NaN, infinite, past the input
+    bound, or negative -- is dropped too, and a zero weight is kept, counted
+    in ``n`` and not in ``w``. Without ``weight`` every row counts 1 and ``w``
+    equals ``n``. ``spec``, ``targets`` and the errors are :func:`unpack`'s.
 
     .. code-block:: python
 
@@ -626,16 +782,25 @@ def sums(
         scores = po.eval.from_sums(running, min_obs=10)                # r2, ic, hit_rate, mse, rmse
 
     """
-    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
-    wexpr = pl.col(weight).cast(pl.Float64) if weight is not None else pl.lit(1.0)
-    long = long.with_columns(wexpr.alias("__w"))
+    long, centres = _unpack(df, spec_name, spec, targets)
+    long = _scored(long)
+    if weight is not None:
+        # What the bank does with the same weight: it skips a row whose
+        # weight it cannot use and refuses a negative one (review round 4,
+        # YB21: a null weight counted in `n` and not in `w`).
+        wexpr = pl.col(weight).cast(pl.Float64)
+        long = long.filter(_usable(wexpr) & (wexpr >= 0.0))
+    else:
+        wexpr = pl.lit(1.0)
+    long, centre = _centred(long.with_columns(wexpr.alias("__w")), centres)
     w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
     tw = w.sum()
     my, mp = (w * y).sum() / tw, (w * p).sum() / tw
     if binary:
         hits, signed = w * ((p > 0.5) == (y > 0.5)), w
     else:
-        hits, signed = w * ((y.sign() == p.sign()) & (y != 0)), w * (y != 0)
+        dy, dp = (y, p) if centre is None else (y - pl.col(centre), p - pl.col(centre))
+        hits, signed = w * ((dy.sign() == dp.sign()) & (dy != 0)), w * (dy != 0)
     keys = ["slot", "target", *by]
     return (
         long.group_by(keys)

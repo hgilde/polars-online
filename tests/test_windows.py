@@ -1998,3 +1998,178 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant() -> None:
         out = run(df)
         assert out.select("b", "f").equals(want.select("b", "f")), tz
         assert out.select(df.columns).equals(df), tz
+
+
+# --------------------------------------------------------------------------
+# Review round 4 (PD3-PD10)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        '@po:["ewm_mean"]',
+        '@po:["increment"]',
+        "@po:5",
+        '@po:{"a":1}',
+        '@po:["nope",["col","x"],{}]',
+        '@po:["col","x"]',
+        '@po:["ewm_mean",["col","x"],{"half_life":1},4]',
+    ],
+)
+def test_a_hand_built_operator_column_that_is_no_operator_is_refused_as_reserved(
+    name: str,
+) -> None:
+    """Review round 4 (PD3): a column under the operators' prefix whose JSON
+    was a short list raised a bare ``IndexError`` from the tree's walk, and
+    one that was no list at all was refused as "holds no operator". Only a
+    list headed by an operator, with its input and its parameters, is an
+    operator's column; anything else under the prefix is the reserved-name
+    refusal."""
+    df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
+    with pytest.raises(FormulaError, match="reserved for the operators' own columns"):
+        po.stream.with_windows(df, y=pl.col(name), **CLOCK)
+    # The operators' own form, written by hand, is the operator.
+    hand = pl.col('@po:["ewm_mean",["col","x"],{"half_life":1}]')
+    out = po.stream.with_windows(df, y=hand, **CLOCK)
+    assert (
+        out["y"].to_list()
+        == po.stream.with_windows(df, y=po.ewm_mean("x", half_life=1.0), **CLOCK)["y"].to_list()
+    )
+
+
+def test_min_samples_takes_an_integer_of_any_kind_up_to_its_ceiling() -> None:
+    """Review round 4 (PD4): ``min_samples=2**40`` passed here and was refused
+    later with the message for a count below 1, and a numpy integer, which
+    Polars' ``rolling_*_by`` takes, was refused. Any integer from 1 to the
+    ceiling, 4294967295, is taken; past it the refusal names the ceiling, on
+    both sides."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, None, 2.0, 3.0]})
+    for n in (2, np.int64(2), np.int32(2), np.uint8(2)):
+        e = po.ewm_sum("x", half_life=math.inf, window_size=3.0, min_samples=n)
+        assert po.stream.with_windows(df, s=e, **CLOCK)["s"].to_list() == [None, None, 3.0, 5.0]
+    po.ewm_sum("x", half_life=2.0, min_samples=4294967295)
+    for bad in (2**32, 2**40, np.int64(2**40)):
+        with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be .*4294967295"):
+            po.ewm_sum("x", half_life=2.0, min_samples=bad)
+    for bad in (0, -1, True, 2.0, "2"):
+        with pytest.raises(ValueError, match=r"^po\.ewm_sum: min_samples must be an integer"):
+            po.ewm_sum("x", half_life=2.0, min_samples=bad)  # type: ignore[arg-type]
+    # A tree written elsewhere -- by hand, in TOML, in a state file -- meets
+    # the Rust side's check, which names the ceiling too.
+    tree = '@po:["ewm_sum",["col","x"],{"half_life":2.0,"min_samples":1099511627776}]'
+    with pytest.raises(ValueError, match="min_samples must be .* at most 4294967295"):
+        po.stream.with_windows(df, s=pl.col(tree), **CLOCK)
+
+
+def test_an_increment_of_a_time_of_day_is_seconds_and_negative_across_midnight() -> None:
+    """Review round 4 (PD5): ``increment`` of a ``Time`` column was refused
+    with "a time column cannot be read as a clock", where the docstring
+    promises seconds on a temporal column and the column was the increment's
+    input, not the clock. A time of day steps by its seconds since midnight,
+    and a step across midnight is negative, as Polars' ``diff`` on a ``Time``
+    gives a negative ``Duration``. A ``Time`` clock is still refused, as a
+    clock, since it starts again each midnight."""
+    tod = [time(9, 0), time(10, 30), None, time(23, 0), time(1, 0, 0, 500)]
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0], "tod": tod})
+    got = po.stream.with_windows(df, d=po.increment("tod"), **CLOCK)["d"].to_list()
+    # The null is skipped: 23:00 steps from 10:30, the last time with a value.
+    assert got == [None, 5400.0, None, 45000.0, -79199.9995]
+    diff = df.select(pl.col("tod").diff().dt.total_nanoseconds() / 1e9)["tod"].to_list()
+    assert got[1] == pytest.approx(diff[1], rel=1e-15), diff
+    assert got[4] == pytest.approx(diff[4], rel=1e-15), diff
+    with pytest.raises(_REFUSAL, match="time column cannot be read as a clock"):
+        po.stream.with_windows(df, d=po.increment("t"), clock="tod", gap_cap="1h")
+
+
+@pytest.mark.parametrize(
+    ("kw", "says"),
+    [
+        ({"half_life": "nan"}, "half_life must not be NaN"),
+        ({"half_life": "NaN"}, "half_life must not be NaN"),
+        ({"half_life": "-inf"}, "half_life must be finite and above 0, got -inf"),
+        ({"half_life": "-Infinity"}, "half_life must be finite and above 0, got -Infinity"),
+        ({"half_life": "reset"}, "half_life must be a number or a duration, got 'reset'"),
+        ({"half_life": 2.0, "window_size": "inf"}, "window_size must be finite and above 0"),
+        ({"half_life": 2.0, "window_size": "+Infinity"}, "window_size must be finite and above"),
+        ({"half_life": 2.0, "window_size": "nan"}, "window_size must not be NaN"),
+        ({"half_life": timedelta(seconds=-5)}, "half_life must be above 0, got -5s"),
+        ({"half_life": timedelta(0)}, "half_life must be above 0, got 0s"),
+        ({"half_life": pl.duration(seconds=-5)}, "half_life must be above 0, got -5s"),
+        ({"half_life": "-5s"}, "half_life must be above 0, got -5s"),
+        ({"half_life": "1s", "window_size": "0s"}, "window_size must be above 0, got 0s"),
+        ({"half_life": "1s", "window_size": timedelta(minutes=-1)}, "window_size must be above 0"),
+    ],
+)
+def test_a_word_or_a_duration_not_above_zero_is_refused_where_it_is_written(
+    kw: dict[str, Any], says: str
+) -> None:
+    """Review round 4 (PD9): ``"nan"``, ``"-inf"`` and ``"reset"``, an
+    infinite ``window_size`` written as a word, and a duration at or below 0
+    passed ``po.<op>`` and were refused only when the plan was built, under a
+    serde path ("invalid windows: formulas[0].tree: ..."), where the same
+    value as a number is refused at once. Each is refused in ``po.<op>``'s
+    voice now, as the number is."""
+    with pytest.raises(ValueError, match=rf"^po\.ewm_sum: {says}"):
+        po.ewm_sum("x", **kw)
+
+
+def test_the_infinity_words_are_still_an_unbounded_half_life() -> None:
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
+    want = po.stream.with_windows(df, s=po.ewm_sum("x", half_life=math.inf), **CLOCK)["s"]
+    for word in ("inf", "+inf", "Infinity", "+infinity", " INF "):
+        got = po.stream.with_windows(df, s=po.ewm_sum("x", half_life=word), **CLOCK)["s"]
+        assert got.to_list() == want.to_list() == [1.0, 3.0, 6.0, 10.0], word
+
+
+def test_the_docs_say_what_a_null_row_and_a_streams_start_give() -> None:
+    """Review round 4 (PD6, PD7): at a row whose value is missing the
+    operator gives the window as it stands, where Polars' ``ewm_mean_by``
+    gives null -- stated in a test and in ``increment``'s docstring, and not
+    where the operators are defined; and a backward window reaching before
+    its stretch's first row is partial, the stream's own start included, so
+    ``partial`` governs every stream's first ``window_size`` too."""
+    doc = " ".join((po.ops.__doc__ or "").split())
+    assert "where Polars' ``ewm_mean_by`` gives null" in doc
+    assert "the stream's own start included" in doc
+    dn = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, None, 3.0, None]})
+    held = po.stream.with_windows(dn, m=po.ewm_mean("x", half_life=1.0), **CLOCK)
+    assert held["m"].to_list() == [1.0, 1.0, 2.5, 2.5]
+    df = pl.DataFrame({"t": [float(i) for i in range(7)], "x": [1.0] * 7})
+    polars = df.select(pl.col("x").rolling_sum_by(pl.col("t").cast(pl.Int64), "3i"))["x"]
+    for partial, want in (
+        ("keep", polars.to_list()),
+        ("null", [None, None, None, 3.0, 3.0, 3.0, 3.0]),
+        ("drop", [3.0, 3.0, 3.0, 3.0]),
+    ):
+        e = po.ewm_sum("x", half_life=math.inf, window_size=3.0, partial=partial)
+        assert po.stream.with_windows(df, s=e, **CLOCK)["s"].to_list() == want, partial
+
+
+@pytest.mark.parametrize("min_samples", [1, 3])
+@pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
+def test_which_rows_a_window_holds_is_polars_rolling_on_a_long_random_stream(
+    closed: str, min_samples: int
+) -> None:
+    """Review round 4 (PD10): "a window holds the rows Polars' ``rolling_*_by``
+    would give it" was held on nine hand rows without nulls or
+    ``min_samples``, and the brute force shares the membership rule by
+    construction. Three seeds of 1,500 random rows, with nulls (12%), bursts
+    of repeated stamps and gaps, on a ``Datetime`` clock, against
+    ``rolling_sum_by``: every value and every null the same."""
+    valued = 0
+    for seed in (3, 11, 21):
+        df = ticks(1500, seed).with_columns(
+            ts=pl.from_epoch((pl.col("t") * 1e9).round().cast(pl.Int64), time_unit="ns")
+        )
+        e = po.ewm_sum(
+            "x", half_life=math.inf, window_size="4s", closed=closed, min_samples=min_samples
+        )
+        out = po.stream.with_windows(df, s=e, clock="ts", gap_cap="1000s")["s"].to_list()
+        ref = df.select(
+            pl.col("x").rolling_sum_by(
+                "ts", window_size="4s", closed=closed, min_samples=min_samples
+            )
+        )["x"].to_list()
+        assert_close(out, ref, f"seed {seed}")
+        valued += sum(v is not None for v in out)
+    assert valued > 1000, valued

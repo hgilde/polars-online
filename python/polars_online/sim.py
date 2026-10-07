@@ -9,7 +9,9 @@ with the regime, a periodic pattern, and an activity clock. :func:`regimes`
 produces all of it from one seed, and hands back the truth beside the data.
 
 Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
-two calls with the same seed give byte-identical frames. numpy only; no scipy.
+two calls with the same seed give byte-identical frames under one numpy
+version: numpy's ``Generator`` makes no promise across versions. numpy only;
+no scipy.
 """
 
 from __future__ import annotations
@@ -186,7 +188,8 @@ def regimes(
         same scale multiplier; ``clock`` is then the cumulative activity, and the
         row index otherwise.
     ``seed``
-        Two calls with the same seed give byte-identical frames.
+        Two calls with the same seed give byte-identical frames under one numpy
+        version; numpy's ``Generator`` makes no promise across versions.
 
     Returns ``{"rows", "truth_rows", "truth_blocks"}``:
 
@@ -340,7 +343,11 @@ def regimes(
             "clock": clock,
             "session": (np.arange(n) // cycle_len).astype(np.int64),
             **{f"x_{i + 1}": pl.Series(observed[:, i]).fill_nan(None) for i in range(m)},
-            "activity": activity_col if activity_col is not None else [None] * n,
+            # A float column whether or not `activity` was asked for, so the
+            # schema does not depend on the call (review round 4, YB14).
+            "activity": pl.Series(
+                activity_col if activity_col is not None else [None] * n, dtype=pl.Float64
+            ),
         }
     )
     truth_rows = pl.DataFrame(

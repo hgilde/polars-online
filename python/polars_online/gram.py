@@ -19,9 +19,12 @@ and :func:`from_row` return one of the same shape, so a closed group's row
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
 reproduces that spec's coefficients and :func:`lasso_path` reproduces the
 ``lasso`` model's path. It is not the same arithmetic to the last bit: the
-models factorize with ``faer``'s Cholesky and numpy with LAPACK's LU, which
-round differently in the last place or two, and the tests hold the two to a
-relative tolerance, not to equality.
+models factorize with ``faer``'s Cholesky, and here numpy runs LAPACK's
+symmetric eigendecomposition (``numpy.linalg.eigh``) in :func:`solve`, an
+inverse (``numpy.linalg.inv``) in :func:`coef_stats` and a pseudo-inverse
+(``numpy.linalg.pinv``) in :func:`vif`, which round differently in the last
+place or two. The tests hold the two to a relative tolerance, not to
+equality.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -30,6 +33,7 @@ Nothing here needs scipy or scikit-learn.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -480,11 +484,15 @@ def _add_opt(a: Any, b: Any) -> Any:
 
 
 def _q_of(g: dict[str, Any]) -> float | None:
-    """`sum(w**2)` behind the feature moments, back out of `n_kish`."""
+    """`sum(w**2)` behind the feature moments, back out of `n_kish`: 0 for a
+    part that learned nothing, whose `n_kish` is None for want of a weight
+    to divide by, not for want of the sums (review round 4, YB6)."""
+    w = float(g["weight_sum"])
+    if w == 0.0:
+        return 0.0
     nk = g.get("n_kish")
     if nk is None or not nk > 0.0:
         return None
-    w = float(g["weight_sum"])
     return w * w / float(nk)
 
 
@@ -620,12 +628,18 @@ def solve(
         grid = po.gram.solve(g, target="y", ridge=[1e-6, 0.01, 0.1, 1.0])  # one row per ridge
 
     ``KeyError`` / ``IndexError`` for a target or column the Gram has not got;
-    ``ValueError`` for the intercept among ``features``.
+    ``ValueError`` for the intercept among ``features``, and for a ``ridge``
+    that is not finite and at least 0, as a spec's ``ridge`` must be.
     """
     np = _np()
+    ridges = np.atleast_1d(np.asarray(ridge, dtype=float))
+    if not np.all(np.isfinite(ridges) & (ridges >= 0.0)):
+        # A negative ridge solved a different, possibly indefinite, system
+        # and returned it as the fit (review round 4, YB12).
+        msg = f"solve: ridge must be finite and >= 0, got {ridge!r}"
+        raise ValueError(msg)
     t = _target_index(g, target)
     slots, icept = _feature_slots(g, features)
-    ridges = np.atleast_1d(np.asarray(ridge, dtype=float))
     scalar = np.ndim(ridge) == 0
     k = len(_columns(g))
 
@@ -720,10 +734,32 @@ def lasso_path(
         g = bank.gram("ridge")[0]
         path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per lambda
 
-    ``ValueError`` for ``penalty_weights`` of the wrong length; ``KeyError`` /
-    ``IndexError`` as for :func:`solve`.
+    ``ValueError`` for ``penalty_weights`` of the wrong length, and for a
+    number outside its range, by the rule a spec applies to the same
+    parameter: a penalty or a weight that is not finite and at least 0,
+    ``l1_ratio`` outside ``[0, 1]``, ``max_iter`` below 1, ``tol`` not finite
+    and above 0. ``KeyError`` / ``IndexError`` as for :func:`solve`.
     """
     np = _np()
+    # Each was taken as given: `max_iter=0` returned the intercept with every
+    # slope 0, a fully penalised fit to look at, and `tol=nan` never stopped
+    # early (review round 4, YB12).
+    lams = np.asarray(lambdas, dtype=float).reshape(-1)
+    if not np.all(np.isfinite(lams) & (lams >= 0.0)):
+        msg = f"lasso_path: lambdas must be finite and >= 0, got {list(lambdas)!r}"
+        raise ValueError(msg)
+    if not 0.0 <= l1_ratio <= 1.0:
+        msg = f"lasso_path: l1_ratio must be in [0, 1], got {l1_ratio!r}"
+        raise ValueError(msg)
+    if max_iter < 1:
+        msg = (
+            f"lasso_path: max_iter must be >= 1, got {max_iter!r}: it is the coordinate "
+            "descent's sweeps, and with none every slope stays at 0"
+        )
+        raise ValueError(msg)
+    if not (math.isfinite(tol) and tol > 0.0):
+        msg = f"lasso_path: tol must be finite and > 0, got {tol!r}"
+        raise ValueError(msg)
     t = _target_index(g, target)
     slots, icept = _feature_slots(g, features)
     k = len(_columns(g))
@@ -760,6 +796,9 @@ def lasso_path(
     )
     if pw.shape != (len(slots),):
         msg = f"penalty_weights must have one entry per feature ({len(slots)}), got {pw.shape}"
+        raise ValueError(msg)
+    if not np.all(np.isfinite(pw) & (pw >= 0.0)):
+        msg = f"lasso_path: penalty_weights must be finite and >= 0, got {pw.tolist()!r}"
         raise ValueError(msg)
 
     out = np.zeros((len(lambdas), k))

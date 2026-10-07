@@ -482,7 +482,11 @@ impl RefreshTime {
             _ => self.grouped = Some(grouped),
         }
         let (numbers, nanos) = if time_dtype.is_temporal() {
-            let ns = crate::arrow::nanos_array(time_col.as_materialized_series(), base)?;
+            let ns = crate::arrow::nanos_array(
+                time_col.as_materialized_series(),
+                base,
+                crate::arrow::NanosRole::Clock,
+            )?;
             (None, Some(ns))
         } else {
             (Some(time_col.cast(&DataType::Float64)?), None)

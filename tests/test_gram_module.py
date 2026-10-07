@@ -573,6 +573,74 @@ class TestMerge:
         merged = pg.merge([fit(df).gram("m")[0], fit(df.head(0)).gram("m")[0]])
         assert merged["means"] == pytest.approx(whole["means"], rel=1e-12)
 
+    def test_a_part_that_learned_nothing_keeps_the_sample_size(self):
+        """Review round 4 (YB6): a part with no rows reports ``n_kish`` None,
+        and merging it made the pooled ``n_kish`` None too -- which the
+        docstring reserves for a state saved by 0.2.0 or earlier -- while the
+        target side (``target_n_kish``) came through. A part that learned
+        nothing adds nothing to the sum of squared weights, so the pool's
+        sample size is the other parts', in either order."""
+        df, _ = stream(n=600, k=2)
+        whole = fit(df).gram("m")[0]
+        empty = fit(df.head(0)).gram("m")[0]
+        assert empty["weight_sum"] == 0.0 and empty["n_kish"] is None
+        for parts in ([whole, empty], [empty, whole], [empty, whole, empty]):
+            merged = pg.merge(parts)
+            assert merged["n_kish"] == pytest.approx(whole["n_kish"], rel=1e-12)
+            assert merged["target_n_kish"] == pytest.approx(whole["target_n_kish"], rel=1e-12)
+        # Nothing at all pooled is still no sample size, as one empty part is.
+        assert pg.merge([empty, empty])["n_kish"] is None
+
+
+@pytest.fixture(scope="module")
+def g() -> dict:
+    """A three-feature Gram for the solvers' parameter checks."""
+    df, _ = stream(n=600)
+    return fit(df).gram("m")[0]
+
+
+class TestTheSolversCheckTheirNumbers:
+    """Review round 4 (YB12): the solvers took any number. ``max_iter=0``
+    returned the intercept with every slope 0, which reads as a fully
+    penalised fit; ``tol=nan`` never stopped early; ``ridge=-1`` returned
+    coefficients nowhere near the fit. Each is refused by name, by the rule
+    the spec builders apply to the same parameter."""
+
+    @pytest.mark.parametrize("ridge", [-1.0, float("nan"), float("inf"), [0.1, -1e-9]], ids=str)
+    def test_solve_refuses_a_ridge_that_is_not_a_penalty(self, g, ridge):
+        with pytest.raises(ValueError, match="^solve: ridge must be finite and >= 0"):
+            pg.solve(g, ridge=ridge)
+
+    @pytest.mark.parametrize(
+        "kw, says",
+        [
+            ({"lambdas": [0.1, -0.1]}, "lambdas must be finite and >= 0"),
+            ({"lambdas": [float("nan")]}, "lambdas must be finite and >= 0"),
+            ({"lambdas": [float("inf")]}, "lambdas must be finite and >= 0"),
+            ({"max_iter": 0}, "max_iter must be >= 1"),
+            ({"max_iter": -3}, "max_iter must be >= 1"),
+            ({"tol": float("nan")}, "tol must be finite and > 0"),
+            ({"tol": 0.0}, "tol must be finite and > 0"),
+            ({"tol": float("inf")}, "tol must be finite and > 0"),
+            ({"l1_ratio": 1.5}, r"l1_ratio must be in \[0, 1\]"),
+            ({"l1_ratio": -0.1}, r"l1_ratio must be in \[0, 1\]"),
+            ({"l1_ratio": float("nan")}, r"l1_ratio must be in \[0, 1\]"),
+            ({"penalty_weights": [1.0, -1.0, 1.0]}, "penalty_weights must be finite and >= 0"),
+            ({"penalty_weights": [1.0, float("nan"), 1.0]}, "penalty_weights must be finite"),
+        ],
+    )
+    def test_lasso_path_refuses_what_is_not_its_number(self, g, kw, says):
+        args = {"lambdas": [0.1], **kw}
+        lambdas = args.pop("lambdas")
+        with pytest.raises(ValueError, match=f"^lasso_path: {says}"):
+            pg.lasso_path(g, lambdas, **args)
+
+    def test_the_edges_of_each_range_are_taken(self, g):
+        assert np.isfinite(pg.solve(g, ridge=0.0)).all()
+        path = pg.lasso_path(g, [0.0], l1_ratio=0.0, max_iter=1, penalty_weights=[0.0] * 3)
+        assert np.isfinite(path).all()
+        assert np.isfinite(pg.lasso_path(g, [0.1], l1_ratio=1.0, tol=1e-300)).all()
+
 
 class TestReadingTheMatrix:
     def test_correlation_matches_numpy(self):
@@ -806,3 +874,12 @@ class TestItWorksOnEveryGramItIsGiven:
         assert sorted(pg.__all__) == pg.__all__
         for name in pg.__all__:
             assert getattr(pg, name).__doc__, name
+
+    def test_the_module_names_the_factorizations_it_uses(self):
+        """Review round 4 (YB18): the module said numpy solves "with LAPACK's
+        LU"; ``solve`` runs a symmetric eigendecomposition, ``coef_stats`` an
+        inverse and ``vif`` a pseudo-inverse."""
+        doc = " ".join((pg.__doc__ or "").split())
+        assert "LAPACK's LU" not in doc
+        for call in ("numpy.linalg.eigh", "numpy.linalg.inv", "numpy.linalg.pinv"):
+            assert call in doc, call

@@ -131,9 +131,20 @@ def embargo(
 
     A ``role`` column says which is which (``"predict"`` / ``"learn"``), so the
     output is filtered back down with ``out.filter(pl.col(role) == "predict")``.
-    ``weight`` names an existing weight column. Without it the function adds
-    one, named ``role + "_weight"``, that is 1 on learn rows and 0 on predict
-    rows; pass that name to the spec's ``weight=``.
+    ``weight`` names an existing weight column, of any numeric dtype, which
+    comes back as ``Float64``, the number the bank reads it as. Without it the
+    function adds one, named ``role + "_weight"``, that is 1 on learn rows and
+    0 on predict rows; pass that name to the spec's ``weight=``.
+
+    It reads its input twice, once for each copy, merging the two as they
+    stream. A source that can be read once only -- what
+    ``pl.scan_arrow_c_stream`` builds over a DuckDB relation or a pyarrow
+    reader -- gives the second read nothing, and half the stream would go
+    missing with no error. Whether a source is spent cannot be seen until
+    the plan runs, so an input whose source is a Python scan, which such a
+    stream is, is warned about with :class:`~polars_online.ConsumedSourceWarning`
+    as the plan is built: write it to a file and scan that, or collect it
+    first.
 
     .. code-block:: python
 
@@ -179,12 +190,20 @@ def embargo(
     - a ``clock`` or ``weight`` column the frame has not got;
     - a frame that already has a column named ``role``, or, without
       ``weight``, one named ``role + "_weight"``.
+
+    ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
+    as :func:`polars_online.eval.rolling_metrics` refuses it.
     """
     lazy = lf.lazy()
     schema = lazy.collect_schema()
     if clock not in schema:
         msg = f"embargo: no clock column {clock!r} in the frame; it has {schema.names()}"
         raise ValueError(msg)
+    if not (schema[clock].is_numeric() or schema[clock].is_temporal()):
+        # Named before the plan is built; a String clock failed inside polars'
+        # arithmetic when the plan ran (review round 4, YB15).
+        msg = f"embargo: clock column {clock!r} must be numeric or temporal, got {schema[clock]}"
+        raise TypeError(msg)
     ns = clock_nanoseconds(delay, schema[clock], "embargo", "delay", clock)
     if ns is None:
         if not (delay > 0.0) or delay == float("inf"):  # type: ignore[operator]
@@ -223,17 +242,34 @@ def embargo(
             "adds; pass another `role=`, or name that column as the `weight=` to zero"
         )
         raise ValueError(msg)
+    if _is_python_scan(lazy):
+        # The two copies are two reads of the input (review round 4, YB3).
+        warnings.warn(
+            ConsumedSourceWarning(
+                "embargo: the input's source is a Python scan, and embargo reads its input "
+                "twice, once for each copy. A source that can be read once only -- what "
+                "`pl.scan_arrow_c_stream` builds over a DuckDB relation, a pyarrow reader, or "
+                "anything exposing `__arrow_c_stream__` -- gives the second read nothing, and "
+                "half the doubled stream goes missing with no error. Write the input to a file "
+                "and scan that, or collect it first. If the source can be read twice, silence "
+                'this with warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+            ),
+            stacklevel=_user_stacklevel(),
+        )
     # `merge_sorted` needs both halves sorted on the key it merges by. Each
     # half is the input in its own order, so a single key sorts both: the
-    # clock, with the learn copy first at a tie.
+    # clock, with the learn copy first at a tie. The weight is a float in
+    # both, so the two schemas agree whatever the column's dtype; `w * 0.0`
+    # beside an integer `w` died in the merge (review round 4, YB2).
+    weight_value = pl.col(weight).cast(pl.Float64) if weight is not None else None
     predict = lazy.with_columns(
         pl.lit("predict").alias(role),
-        (pl.col(weight) * 0.0 if weight is not None else pl.lit(0.0)).alias(wcol),
+        (weight_value * 0.0 if weight_value is not None else pl.lit(0.0)).alias(wcol),
         pl.lit(1, pl.UInt8).alias("__embargo_order"),
     )
     learn = lazy.with_columns(
         pl.lit("learn").alias(role),
-        (pl.col(weight) if weight is not None else pl.lit(1.0)).alias(wcol),
+        (weight_value if weight_value is not None else pl.lit(1.0)).alias(wcol),
         later.alias(clock),
         pl.lit(0, pl.UInt8).alias("__embargo_order"),
     )

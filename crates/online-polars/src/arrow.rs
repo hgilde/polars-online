@@ -728,7 +728,7 @@ pub fn chunk_from_frame_at(
                 .iter()
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
-            let col = ArrowCol::Nanos(nanos_array(s, row_base)?);
+            let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock)?);
             clock_dtypes.push((name.clone(), s.dtype().clone()));
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
@@ -947,8 +947,33 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
     Ok(())
 }
 
-/// Nanoseconds in one unit of a temporal column: a `Date` counts days.
-fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
+/// What a temporal column is read in nanoseconds for, which decides the
+/// dtypes it may have and what a refusal names (review round 4, PD5: one
+/// message about a clock served every caller, an increment's input
+/// included).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NanosRole {
+    /// A clock, whose differences are time elapsed: an instant or a span.
+    Clock,
+    /// A window formula's `increment` input, whose differences are steps: a
+    /// time of day as well.
+    Increment,
+}
+
+impl NanosRole {
+    fn what(self) -> &'static str {
+        match self {
+            NanosRole::Clock => "a clock",
+            NanosRole::Increment => "an increment's input",
+        }
+    }
+}
+
+/// Nanoseconds in one unit of a temporal column: a `Date` counts days, and a
+/// `Time`, read as an increment's input only, nanoseconds since midnight, so
+/// a step across midnight is negative, as Polars' `diff` on a `Time` gives
+/// it. A `Time` clock is refused: it starts again every midnight.
+fn nanos_per_unit(dtype: &DataType, role: NanosRole) -> PolarsResult<i64> {
     Ok(match dtype {
         DataType::Datetime(TimeUnit::Milliseconds, _)
         | DataType::Duration(TimeUnit::Milliseconds) => 1_000_000,
@@ -957,7 +982,8 @@ fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
         DataType::Datetime(TimeUnit::Nanoseconds, _)
         | DataType::Duration(TimeUnit::Nanoseconds) => 1,
         DataType::Date => 86_400 * 1_000_000_000,
-        dt => polars_bail!(ComputeError: "a {} column cannot be read as a clock", dt),
+        DataType::Time if role == NanosRole::Increment => 1,
+        dt => polars_bail!(ComputeError: "a {} column cannot be read as {}", dt, role.what()),
     })
 }
 
@@ -968,9 +994,14 @@ fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
 /// UTC, so a change of clocks for summer time neither stretches nor folds
 /// the clock. A `Date` or a coarse `Datetime` can reach past what
 /// nanoseconds in an `i64` hold, and such a value is refused by row. A
-/// nanosecond column is taken as it is, without a pass over it.
-pub(crate) fn nanos_array(s: &Series, row_base: usize) -> PolarsResult<Int64Array> {
-    let per = nanos_per_unit(s.dtype())?;
+/// nanosecond column is taken as it is, without a pass over it. `role` is
+/// what the column is read for ([`NanosRole`]).
+pub(crate) fn nanos_array(
+    s: &Series,
+    row_base: usize,
+    role: NanosRole,
+) -> PolarsResult<Int64Array> {
+    let per = nanos_per_unit(s.dtype(), role)?;
     let phys = s.to_physical_repr();
     let too_far = |i: usize| {
         polars_err!(ComputeError:
@@ -1100,6 +1131,44 @@ mod tests {
                 "{tz}: still unformattable"
             );
             assert!(key_text(&zoned).unwrap().equals(&want), "{tz}");
+        }
+    }
+
+    /// Review round 4, PD5: a time of day is read as an increment's input,
+    /// in nanoseconds since midnight, and never as a clock; and a refusal
+    /// names the role the column was read for, where one message about a
+    /// clock served every caller.
+    #[test]
+    fn a_time_of_day_is_an_increments_input_and_never_a_clock() {
+        let since_midnight = [Some(32_400_000_000_000i64), None, Some(3_600_000_000_500)];
+        let tod = Int64Chunked::new("tod".into(), since_midnight)
+            .into_time()
+            .into_series();
+        let ns = nanos_array(&tod, 0, NanosRole::Increment).unwrap();
+        let read: Vec<Option<i64>> = (0..ns.len()).map(|i| ns.get(i)).collect();
+        assert_eq!(read, since_midnight);
+        let err = nanos_array(&tod, 0, NanosRole::Clock).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("a time column cannot be read as a clock"),
+            "{err}"
+        );
+        let text = Series::new("s".into(), ["a"]);
+        let err = nanos_array(&text, 0, NanosRole::Increment).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("a str column cannot be read as an increment's input"),
+            "{err}"
+        );
+        // The other temporal dtypes read alike in both roles.
+        let date = Int32Chunked::new("d".into(), [1i32])
+            .into_date()
+            .into_series();
+        for role in [NanosRole::Clock, NanosRole::Increment] {
+            assert_eq!(
+                nanos_array(&date, 0, role).unwrap().value(0),
+                86_400_000_000_000
+            );
         }
     }
 

@@ -876,3 +876,73 @@ class TestEmbargoItself:
         # Task 105, rule 1: a LazyFrame stays lazy, a DataFrame is collected.
         assert isinstance(stream.embargo(df.lazy(), clock="t", delay=1.0), pl.LazyFrame)
         assert isinstance(stream.embargo(df, clock="t", delay=1.0), pl.DataFrame)
+
+    @pytest.mark.parametrize("dtype", [pl.Int64, pl.UInt8, pl.Float32, pl.Boolean])
+    def test_a_weight_column_of_any_numeric_dtype_is_zeroed(self, dtype):
+        """Review round 4 (YB2): the predict copy's weight was ``w * 0.0``, a
+        float, and the learn copy's ``w`` as it was, so an integer weight
+        column died in the merge of the two (``SchemaError``: ``('w': f64) !=
+        ('w': i64)``), where the bank takes the same column. Both copies
+        carry it as ``Float64``, the number the bank reads it as."""
+        df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0], "w": [1, 2, 0]})
+        df = df.with_columns(pl.col("w").cast(dtype))
+        out = stream.embargo(df, clock="t", delay=1.0, weight="w")
+        assert out.schema["w"] == pl.Float64
+        assert out[stream.ROLE].to_list() == [
+            "predict",
+            "learn",
+            "predict",
+            "learn",
+            "predict",
+            "learn",
+        ]
+        want = [float(v) for v in df["w"].cast(pl.Float64)]
+        assert out["w"].to_list() == [0.0, want[0], 0.0, want[1], 0.0, want[2]]
+        s = spec(weight="w", gap_cap=5.0)
+        assert po.ModelBank([s]).fit_predict(out.with_columns(y=pl.col("x"))).height == 6
+
+    def test_a_clock_that_is_neither_a_number_nor_a_time_is_refused_by_name(self):
+        """Review round 4 (YB15): a String clock failed inside polars
+        (``InvalidOperationError: arithmetic on dtypes str and dyn float``)
+        while ``po.eval.rolling_metrics`` refuses the same clock by name, as
+        this now does, before any plan is built."""
+        df = pl.DataFrame({"t": ["a", "b"], "x": [1.0, 2.0], "b": [True, False]})
+        for clock, delay in (("t", 1.0), ("t", "1s"), ("b", 1.0)):
+            with pytest.raises(
+                TypeError, match=f"^embargo: clock column '{clock}' must be numeric"
+            ):
+                stream.embargo(df.lazy(), clock=clock, delay=delay)
+
+    def test_a_single_use_source_is_warned_about(self):
+        """Review round 4 (YB3): the predict and the learn copies are two
+        reads of the input, so over a source spent after one read -- what
+        ``pl.scan_arrow_c_stream`` builds -- the second read gave nothing and
+        half the stream was missing, with no warning, where the bank over the
+        same spent scan warns ``ConsumedSourceWarning``. Whether the source
+        is spent cannot be seen until the plan runs, so ``embargo`` warns as
+        it builds the plan, whenever its input's source is a Python scan, and
+        its docstring says the input is read twice."""
+        from polars.io.plugins import register_io_source
+
+        spent: list[bool] = []
+        rows = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
+
+        def source(with_columns, predicate, n_rows, batch_size):  # noqa: ANN001, ANN202
+            if spent:
+                return
+            spent.append(True)
+            yield rows
+
+        lf = register_io_source(io_source=source, schema=rows.schema)
+        with pytest.warns(po.ConsumedSourceWarning, match="^embargo: .*read twice"):
+            plan = stream.embargo(lf, clock="t", delay=1.0)
+        # What the warning is about: half the doubled stream is missing.
+        assert plan.collect().height == 3
+        # An input that is not a Python scan is read twice safely, and quietly.
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ConsumedSourceWarning)
+            assert stream.embargo(rows.lazy(), clock="t", delay=1.0).collect().height == 6
+        doc = " ".join((stream.embargo.__doc__ or "").split())
+        assert "reads its input twice" in doc

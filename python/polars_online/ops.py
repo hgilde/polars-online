@@ -80,7 +80,9 @@ exact in nanoseconds on a temporal clock, as Polars decides it, at any age
 of the stream. ``min_samples`` (Polars' name) nulls a window holding fewer
 rows with a value. A value that is NaN, infinite or beyond 1e100 in
 magnitude is read as missing, as a null is (the library's input bound,
-docs/PLAN.md §3). A row is in a window by its stamp, but a mean weighs it
+docs/PLAN.md §3). At a row whose value is missing the operator gives the
+window as it stands, where Polars' ``ewm_mean_by`` gives null. A row is in
+a window by its stamp, but a mean weighs it
 by its held interval inside the window. So a row exactly one window old
 under ``"left"`` or ``"both"`` counts for ``min_samples`` and weighs
 nothing, since its interval ends at its row, and a mean with no other value
@@ -108,7 +110,10 @@ inside both sums. There is no ``weight=``:
 ``restart_after_step_back``, ``session``, ``session_gap``, ``group`` -- are
 the call's, shared by every operator in it, in a spec's own words
 (:mod:`polars_online.spec`). A gap past ``gap_cap`` or a session change ends
-every window open across it, and ``partial`` says what such a window gives:
+every window open across it, and ``partial`` says what such a window gives.
+A backward window whose span reaches before its stretch's first row is
+partial too, the stream's own start included, so ``partial`` also says what
+every stream's first ``window_size`` gives:
 
 .. list-table::
    :header-rows: 1
@@ -310,7 +315,9 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     last valued row (``[1, null, 3]`` gives ``[null, null, 2]``, where
     ``diff()`` gives three nulls). Null on a session's first row, and after a
     step back ``restart_after_step_back`` reads as a new start, in the row's
-    group or on the stream across groups. Seconds on a temporal column. The
+    group or on the stream across groups. Seconds on a temporal column; on a
+    time of day, the step in its seconds since midnight, so a step across
+    midnight is negative, as Polars' ``diff`` on a ``Time`` gives. The
     input of a sum or a rate over a running total, so a day's notional of
     1e10 is read as its trades (docs/PLAN.md task 143, *Numerics*)."""
     return operator("increment", input)

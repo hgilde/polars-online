@@ -619,8 +619,9 @@ def target(
     A ratio is positive by construction, so its ``hit_rate`` (``emit_metrics``)
     is agreement about 1 -- did it go up or down -- where about zero two positive
     numbers always agree; a difference and a log ratio are about zero, as a
-    plain target is. ``polars_online.eval.metrics`` tests signs about zero, so
-    hand it a ratio less 1.
+    plain target is. ``polars_online.eval`` scores a relative target the same
+    way, the ratio's centre included, when it is handed the spec
+    (``spec=``); without it, it reads the target's column as it is.
     ``"log_ratio"`` goes through ``ln``, whose last bit can differ between
     platforms, as any logarithm's does.
 

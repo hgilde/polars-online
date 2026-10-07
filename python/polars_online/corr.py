@@ -18,7 +18,10 @@ three.
 The arithmetic is the papers', named in each docstring, and every function is
 held against a longhand check in ``tests/test_corr.py``: Higham's own
 published examples for :func:`nearest`, Ledoit and Wolf's formulae for
-:func:`shrink`, the closed forms for the rest.
+:func:`shrink`, the closed forms for the rest. Where a library computes the
+same thing, ``tests/test_second_opinion.py`` holds it to that too:
+statsmodels' ``corr_nearest`` for :func:`nearest`, scikit-learn's
+``ledoit_wolf`` for :func:`shrink` towards the identity.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -135,7 +138,8 @@ def nearest(
     with ``P_U`` setting the diagonal to 1 and, for a diagonal weight ``w``,
     ``P_S(A) = W^-1/2 (W^1/2 A W^1/2)_+ W^-1/2`` where ``(.)_+`` clips the
     eigenvalues at zero. It stops on his test (4.1): the largest of the relative
-    infinity-norm changes in ``X``, in ``Y``, and between them, below ``tol``.
+    changes in ``X``, in ``Y``, and between them, below ``tol``, each in the
+    infinity norm, the largest absolute row sum.
 
     Returns ``(X, dist, iters)``: the matrix, the weighted Frobenius distance
     ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. Convergence is linear
@@ -192,9 +196,15 @@ def nearest(
         np.fill_diagonal(out, 1.0)
         return out
 
+    def norm(m: Any) -> float:
+        # The infinity norm, the largest absolute row sum, as Higham's (4.1)
+        # has it; the largest entry stopped his 4x4 a step after his 19
+        # (review round 4, YB7).
+        return float(np.abs(m).sum(axis=1).max())
+
     def rel(p: Any, q: Any) -> float:
-        d = np.abs(q).max()
-        return float(np.abs(p - q).max() / d) if d > 0.0 else 0.0
+        d = norm(q)
+        return norm(p - q) / d if d > 0.0 else 0.0
 
     ds = np.zeros((k, k))
     y = x.copy()
@@ -227,23 +237,41 @@ def shrink(
     """``(1 - a) R + a F``: Ledoit and Wolf (2004) shrinkage towards a structured
     target.
 
-    ``target = "constant"`` (the default) is their constant-correlation target:
-    ``f_ii = s_ii`` and ``f_ij = rbar * sqrt(s_ii s_jj)`` with ``rbar`` the mean
-    off-diagonal correlation, which on a correlation matrix is the equicorrelation
-    matrix at ``rbar``. ``target = "identity"`` is the identity.
+    ``target = "constant"`` (the default) is their constant-correlation target
+    ("Honey, I shrunk the sample covariance matrix"): ``f_ii = s_ii`` and
+    ``f_ij = rbar * sqrt(s_ii s_jj)`` with ``rbar`` the mean off-diagonal
+    correlation, which on a correlation matrix is the equicorrelation matrix at
+    ``rbar``. ``target = "identity"`` is their scaled identity ("A
+    well-conditioned estimator for large-dimensional covariance matrices"):
+    ``f = mu I`` with ``mu`` the mean of the diagonal, which on a correlation
+    matrix is the identity.
 
     ``alpha`` fixes the intensity. Left out, it is their optimal ``delta = max(0,
     min(kappa / T, 1))`` with ``kappa = (pi - rho) / gamma``, which needs the
-    rows:
+    rows. For both targets:
 
     .. code-block:: text
 
         pi_ij    = (1/T) sum_t ((y_it - ybar_i)(y_jt - ybar_j) - s_ij)**2
+        pi       = sum_ij pi_ij
+        gamma    = sum_ij (f_ij - s_ij)**2
+
+    and ``rho``, the target's own term, for the constant correlation:
+
+    .. code-block:: text
+
         theta_ii,ij = (1/T) sum_t ((y_it - ybar_i)**2 - s_ii)
                               * ((y_it - ybar_i)(y_jt - ybar_j) - s_ij)
         rho      = sum_i pi_ii + sum_{i!=j} (rbar/2)
                      * (sqrt(s_jj/s_ii) theta_ii,ij + sqrt(s_ii/s_jj) theta_jj,ij)
-        gamma    = sum_ij (f_ij - s_ij)**2
+
+    and for the identity, whose diagonal is ``mu`` rather than ``s_ii``:
+
+    .. code-block:: text
+
+        rho      = 0
+
+    which is ``sklearn.covariance.ledoit_wolf``'s intensity.
 
     ``pi`` and ``theta`` are fourth-moment sums, so they cannot be recovered from
     ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came from (the
@@ -306,14 +334,21 @@ def shrink(
         prod = d[:, :, None] * d[:, None, :]  # (T, k, k)
         pi_ij = ((prod - sam) ** 2).mean(axis=0)
         pi = float(pi_ij.sum())
-        var = np.diagonal(prod, axis1=1, axis2=2)  # (T, k)
-        # theta[i, j] = theta_ii,ij
-        theta = ((var[:, :, None] - np.diag(sam)[None, :, None]) * (prod - sam)).mean(axis=0)
-        sd_s = np.sqrt(np.clip(np.diag(sam), 0.0, None))
-        with np.errstate(invalid="ignore", divide="ignore"):
-            ratio = np.outer(1.0 / sd_s, sd_s)  # ratio[i, j] = sqrt(s_jj / s_ii)
-        cross = (rbar / 2.0) * (ratio * theta + ratio.T * theta.T)
-        rho = float(np.diag(pi_ij).sum() + np.nan_to_num(cross)[off].sum())
+        if target == "identity":
+            # Ledoit and Wolf (2004, JMVA): the target's diagonal is `mu`, so
+            # it shares no estimation error with the sample's, and there is
+            # no `rho`. The constant-correlation target's `sum_i pi_ii` was
+            # kept here, 16-36% below scikit-learn (review round 4, YB4).
+            rho = 0.0
+        else:
+            var = np.diagonal(prod, axis1=1, axis2=2)  # (T, k)
+            # theta[i, j] = theta_ii,ij
+            theta = ((var[:, :, None] - np.diag(sam)[None, :, None]) * (prod - sam)).mean(axis=0)
+            sd_s = np.sqrt(np.clip(np.diag(sam), 0.0, None))
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ratio = np.outer(1.0 / sd_s, sd_s)  # ratio[i, j] = sqrt(s_jj / s_ii)
+            cross = (rbar / 2.0) * (ratio * theta + ratio.T * theta.T)
+            rho = float(np.diag(pi_ij).sum() + np.nan_to_num(cross)[off].sum())
         gamma = float(((f - sam) ** 2).sum())
         alpha = 0.0 if gamma <= 0.0 else max(0.0, min((pi - rho) / gamma / t, 1.0))
     if not 0.0 <= alpha <= 1.0:
@@ -607,9 +642,10 @@ def loss(
     F^-1 mu / (mu' F^-1 mu)``, the realised variance of the portfolio the forecast
     would have held; ``mu`` defaults to ones. It is minimised over ``F`` at ``F =
     R``, which is what makes it a proper scoring rule for a covariance forecast.
-    ``nan`` where the loss is undefined (a non-positive determinant, a zero
-    denominator); ``ValueError`` for a kind that is none of the three, for
-    matrices of different shapes, and for ``"z_mse"`` without ``n``.
+    ``nan`` where the loss is undefined (a forecast with no inverse, a
+    non-positive determinant, a zero denominator); ``ValueError`` for a kind
+    that is none of the three, for matrices of different shapes, and for
+    ``"z_mse"`` without ``n``.
     """
     np = _np()
     f = matrix(fcst)
@@ -619,7 +655,13 @@ def loss(
         raise ValueError(msg)
     k = f.shape[0]
     if kind == "qlike":
-        m = np.linalg.solve(f, r)
+        try:
+            m = np.linalg.solve(f, r)
+        except np.linalg.LinAlgError:
+            # A forecast with no inverse, such as `nearest` returns on
+            # Higham's own examples: undefined, as the docstring says, where
+            # numpy's error came through (review round 4, YB13).
+            return float("nan")
         sign, logdet = np.linalg.slogdet(m)
         if sign <= 0.0:
             return float("nan")
@@ -633,7 +675,10 @@ def loss(
         return float((d * d).sum() * (n - 3))
     if kind == "minvar":
         m = np.ones(k) if mu is None else np.asarray(mu, dtype=float).reshape(-1)
-        w = np.linalg.solve(f, m)
+        try:
+            w = np.linalg.solve(f, m)
+        except np.linalg.LinAlgError:
+            return float("nan")
         denom = float(m @ w)
         if denom == 0.0:
             return float("nan")

@@ -314,3 +314,27 @@ def test_a_row_that_only_just_sums_to_one_still_draws():
 def test_fewer_than_two_series_is_refused():
     with pytest.raises(ValueError, match="at least two series"):
         sim.regimes(1, states=[0.5], transition=[[1.0]], n_blocks=1, rows_per_block=10)
+
+
+def test_the_rows_schema_does_not_depend_on_activity():
+    """Review round 4 (YB14): without ``activity=`` the ``activity`` column
+    was dtype ``Null``, and ``Float64`` with it, so a schema check or a
+    ``concat`` across the two broke. Without it the column is a float
+    column of nulls."""
+    kw = dict(states=[0.3], transition=[[1.0]], n_blocks=1, rows_per_block=5)
+    plain = sim.regimes(2, **kw)["rows"]
+    active = sim.regimes(2, activity=(1.0, 1.0), **kw)["rows"]
+    assert plain.schema == active.schema
+    assert plain["activity"].dtype == pl.Float64
+    assert plain["activity"].null_count() == plain.height
+    assert pl.concat([plain, active]).height == 10
+
+
+def test_the_byte_identity_promise_names_its_numpy_version():
+    """Review round 4 (YB17): numpy's ``Generator`` makes no promise across
+    versions ("No Compatibility Guarantee", its docstring), so the same seed
+    gives the same frames under one numpy version, and both places that
+    promise it say so."""
+    for doc in (sim.__doc__, sim.regimes.__doc__):
+        text = " ".join((doc or "").split())
+        assert "byte-identical frames under one numpy version" in text, text[:400]

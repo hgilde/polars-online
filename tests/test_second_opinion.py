@@ -3133,3 +3133,164 @@ class TestFtrlIsVowpalWabbits:
         pred, _ = self.ours(frame, "squared", True, True, "defaults")
         slip, _ = self.vws(frame, "y0", "squared", True, True, "defaults", half=False)
         assert np.abs(pred[:, 0] - slip).max() > 0.2
+
+
+class TestPoEvalIsSklearnsMetrics:
+    """Review round 4 (YB19): ``po.eval``'s metrics were held to numpy
+    formulas re-typed beside them, and ``ic`` and ``mse`` to nothing but
+    ``from_sums`` agreeing with ``metrics``. scikit-learn and scipy compute
+    every one: ``r2_score``, ``mean_squared_error``, ``scipy.stats.pearsonr``
+    for ``ic``, ``accuracy_score`` for both readings of ``hit_rate`` (the sign
+    of ``y`` and of ``pred``, rows with ``y == 0`` left out; or a 0.5
+    threshold) and ``log_loss``. The weighted sums are the same calls with
+    ``sample_weight``, and numpy's weighted covariance for ``ic``."""
+
+    @staticmethod
+    def regression() -> tuple[pl.DataFrame, pl.DataFrame]:
+        rng = np.random.default_rng(21)
+        n = 1500
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 0.8 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 1.0, n)
+        y[::37] = 0.0  # signless rows, which the sign test leaves out
+        df = pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": y,
+                "g": np.where(np.arange(n) % 3 == 0, "a", "b"),
+                "w": rng.uniform(0.2, 3.0, n),
+            }
+        )
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=200.0)
+        out = po.ModelBank([spec]).fit_predict(df)
+        scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
+        return out, scored
+
+    def test_the_regression_metrics(self):
+        from scipy.stats import pearsonr
+        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
+
+        out, scored = self.regression()
+        got = po.eval.metrics(out, "m", by=["g"], min_obs=1)
+        assert got["g"].to_list() == ["a", "b"]
+        for row in got.iter_rows(named=True):
+            part = scored.filter(pl.col("g") == row["g"])
+            y, pred = part["y"].to_numpy(), part["pred"].to_numpy()
+            signed = y != 0.0
+            assert row["n"] == len(y) and (~signed).sum() > 5
+            assert row["r2"] == pytest.approx(r2_score(y, pred), rel=1e-12)
+            assert row["mse"] == pytest.approx(mean_squared_error(y, pred), rel=1e-12)
+            assert row["ic"] == pytest.approx(pearsonr(pred, y).statistic, rel=1e-12)
+            want = accuracy_score(np.sign(y[signed]), np.sign(pred[signed]))
+            assert row["hit_rate"] == pytest.approx(want, rel=1e-12)
+
+    def test_the_weighted_sums(self):
+        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
+
+        out, scored = self.regression()
+        got = po.eval.from_sums(po.eval.sums(out, "m", weight="w"), min_obs=1).row(0, named=True)
+        y, pred, w = (scored[c].to_numpy() for c in ("y", "pred", "w"))
+        signed = y != 0.0
+        assert got["r2"] == pytest.approx(r2_score(y, pred, sample_weight=w), rel=1e-12)
+        assert got["mse"] == pytest.approx(mean_squared_error(y, pred, sample_weight=w), rel=1e-12)
+        c = np.cov(pred, y, aweights=w)
+        assert got["ic"] == pytest.approx(c[0, 1] / np.sqrt(c[0, 0] * c[1, 1]), rel=1e-12)
+        want = accuracy_score(np.sign(y[signed]), np.sign(pred[signed]), sample_weight=w[signed])
+        assert got["hit_rate"] == pytest.approx(want, rel=1e-12)
+
+    def test_the_binary_reading(self):
+        from scipy.stats import pearsonr
+        from sklearn.metrics import accuracy_score, log_loss, r2_score
+
+        rng = np.random.default_rng(22)
+        n = 6000
+        x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+        label = (rng.random(n) < 1.0 / (1.0 + np.exp(-(1.2 * x0 - 0.8 * x1)))).astype(float)
+        df = pl.DataFrame({"x0": x0, "x1": x1, "y": label})
+        spec = po.spec.sgd(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            loss="logistic",
+            learning_rate=0.05,
+            half_life=float("inf"),
+            min_weight=50.0,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        got = po.eval.metrics(out, "m", binary=True, min_obs=1).row(0, named=True)
+        scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
+        y, p = scored["y"].to_numpy(), scored["pred"].to_numpy()
+        assert p.min() > 1e-15 and p.max() < 1.0 - 1e-15, "the clip is not in play"
+        assert got["hit_rate"] == pytest.approx(accuracy_score(y, p > 0.5), rel=1e-12)
+        assert got["log_loss"] == pytest.approx(log_loss(y, p), rel=1e-12)
+        assert got["r2"] == pytest.approx(r2_score(y, p), rel=1e-12), "the Brier skill score"
+        assert got["ic"] == pytest.approx(pearsonr(p, y).statistic, rel=1e-12)
+        assert 0.6 < got["hit_rate"] < 0.95
+
+
+class TestShrinkToTheIdentityIsSklearnsLedoitWolf:
+    """Review round 4 (YB4): ``shrink(target="identity")`` kept a term of the
+    constant-correlation target's optimal intensity, ``sum_i pi_ii``, which
+    belongs to that target's diagonal ``f_ii = s_ii``. The identity target's
+    diagonal is the mean variance, and Ledoit and Wolf (2004, JMVA) take
+    ``rho = 0`` for it: ``alpha = pi / (T gamma)``, clipped to ``[0, 1]``.
+    ``sklearn.covariance.ledoit_wolf`` computes exactly that, and the
+    intensities were 16-36% below it on the four samples here."""
+
+    def test_the_intensity_and_the_shrunk_matrix_are_sklearns(self):
+        from sklearn.covariance import ledoit_wolf
+
+        rng = np.random.default_rng(2)
+        alphas = []
+        for n, k in ((120, 6), (60, 5), (30, 10), (500, 4), (8, 12)):
+            f = rng.standard_normal((n, 2))
+            e = rng.standard_normal((n, k))
+            x = np.column_stack(
+                [0.9 * f[:, 0] + 0.436 * e[:, i] for i in range(k // 2)]
+                + [0.3 * f[:, 1] + 0.954 * e[:, i] for i in range(k // 2, k)]
+            )
+            d = x - x.mean(axis=0)
+            got, alpha = po.corr.shrink(d.T @ d / n, target="identity", x=x)
+            want, want_alpha = ledoit_wolf(x)
+            assert alpha == pytest.approx(want_alpha, rel=1e-12), (n, k)
+            np.testing.assert_allclose(got, want, rtol=0.0, atol=1e-13)
+            alphas.append(alpha)
+        assert min(alphas) > 0.0 and max(alphas) <= 1.0
+        assert sum(0.0 < a < 1.0 for a in alphas) >= 4, f"strictly inside, mostly: {alphas}"
+
+
+class TestNearestIsStatsmodelsCorrNearest:
+    """Review round 4 (YB7, YB19): ``statsmodels.stats.correlation_tools.
+    corr_nearest`` runs Higham's alternating projections with Dykstra's
+    correction too, and stops on another rule: no eigenvalue clipped. An
+    iterate converging to the boundary of the cone keeps a tiny negative
+    eigenvalue, so it runs its iteration limit (``n_fact`` times ``k``
+    sweeps), far past convergence at a factor of about 3 a sweep; its
+    ``IterationLimitWarning`` says so and is silenced here. It takes the
+    input's diagonal as already 1 -- given an input that is PSD it returns
+    it unchanged, as Higham's 4x4, whose diagonal is 2, is -- so the inputs
+    here are almost-correlation matrices, the case both exist for."""
+
+    def test_highams_three_by_three_and_random_unit_diagonals(self):
+        import warnings
+
+        from statsmodels.stats.correlation_tools import corr_nearest
+        from statsmodels.tools.sm_exceptions import IterationLimitWarning
+
+        rng = np.random.default_rng(1)
+        inputs = [np.array([[1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]])]
+        for _ in range(12):
+            k = int(rng.integers(2, 8))
+            m = rng.standard_normal((k, k))
+            m = (m + m.T) / 2
+            np.fill_diagonal(m, 1.0)
+            inputs.append(m)
+        repaired = 0
+        for a in inputs:
+            ours, _, iters = po.corr.nearest(a, tol=1e-12, max_iter=10_000)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", IterationLimitWarning)
+                theirs = corr_nearest(a, n_fact=300)
+            np.testing.assert_allclose(ours, theirs, rtol=0.0, atol=1e-10)
+            repaired += iters > 1
+        assert repaired >= 8, "most inputs were not correlation matrices to begin with"

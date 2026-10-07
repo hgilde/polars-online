@@ -20,7 +20,7 @@ use online_core::{ClockCfg, ClockValue};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{key_text, nanos_array};
+use crate::arrow::{NanosRole, key_text, nanos_array};
 use crate::formula::{Formula, Node, OpNode};
 use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
@@ -1257,8 +1257,10 @@ impl WindowsRun {
         let temporal: Vec<Option<Vec<Option<i64>>>> = (0..self.increments.len())
             .map(|i| {
                 if self.increments[i].2 {
+                    // A time of day is read too, in nanoseconds since
+                    // midnight (review round 4, PD5).
                     let c = inputs.column(input_column(i).as_str())?;
-                    let ns = nanos_array(c.as_materialized_series(), 0)?;
+                    let ns = nanos_array(c.as_materialized_series(), 0, NanosRole::Increment)?;
                     Ok(Some((0..ns.len()).map(|r| ns.get(r)).collect()))
                 } else {
                     Ok(None)
@@ -1380,7 +1382,11 @@ impl WindowsRun {
                 "{WHO}: row {} has a null or non-finite clock {c:?}", base + i as u64)
         };
         let values: Vec<ClockValue> = if col.dtype().is_temporal() {
-            let ns = nanos_array(col.as_materialized_series(), base as usize)?;
+            let ns = nanos_array(
+                col.as_materialized_series(),
+                base as usize,
+                NanosRole::Clock,
+            )?;
             (0..ns.len())
                 .map(|i| ns.get(i).map(ClockValue::Ns).ok_or_else(|| bad(i)))
                 .collect::<PolarsResult<_>>()?

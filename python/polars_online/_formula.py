@@ -34,7 +34,8 @@ from typing import Any
 
 import polars as pl
 
-from polars_online._duration import duration_text
+from polars_online._duration import _INFINITY, duration_text
+from polars_online._polars_online import parse_duration
 
 #: The prefix of the column an operator stands in as.
 PREFIX = "@po:"
@@ -135,13 +136,22 @@ def _walk(node: Any) -> Any:
     ((kind, body),) = node.items()
     if kind == "Column":
         if isinstance(body, str) and body.startswith(PREFIX):
+            reserved = _refuse(
+                f"the column {body!r}: names starting with {PREFIX!r} are reserved for "
+                "the operators' own columns"
+            )
             try:
-                return json.loads(body[len(PREFIX) :])
+                op = json.loads(body[len(PREFIX) :])
             except json.JSONDecodeError:
-                raise _refuse(
-                    f"the column {body!r}: names starting with {PREFIX!r} are reserved for "
-                    "the operators' own columns"
-                ) from None
+                raise reserved from None
+            # Only an operator's own node is one: a list headed by an
+            # operator, with its input and, but for `increment`, its
+            # parameters. A short list raised a bare IndexError where the tree
+            # is walked, and a number was refused as holding no operator
+            # (review round 4, PD3).
+            if not (isinstance(op, list) and len(op) in (2, 3) and op[0] in OPERATORS):
+                raise reserved
+            return op
         return ["col", body]
     if kind == "Literal":
         value, typed = _literal(body)
@@ -372,18 +382,43 @@ def _input_tree(who: str, value: Any) -> list[Any]:
 def _span(who: str, key: str, value: Any, *, inf_ok: bool) -> float | str:
     if isinstance(value, bool) or not isinstance(value, (numbers.Real, str, timedelta, pl.Expr)):
         raise TypeError(f"{who}: {key} must be a number or a duration, got {type(value).__name__}")
+    # A word is checked as the number it names, and a duration as its length,
+    # here, as a number is: "nan", "-inf", "reset", an infinite window and a
+    # duration at or below 0 passed, and were refused only when the plan was
+    # built, under a serde path (review round 4, PD9).
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word == "reset":
+            # `session_gap`'s word, which the clock parameters' words admit.
+            raise ValueError(f"{who}: {key} must be a number or a duration, got {value!r}")
+        if word == "nan" or word in _INFINITY:
+            _number(who, key, math.nan if word == "nan" else _INFINITY[word], value, inf_ok=inf_ok)
+            return value.strip()
     if isinstance(value, numbers.Real):
-        x = float(value)
-        if math.isnan(x):
-            raise ValueError(f"{who}: {key} must not be NaN")
-        if math.isinf(x):
-            if not inf_ok or x < 0:
-                raise ValueError(f"{who}: {key} must be finite and above 0, got {value}")
-            return "inf"
-        if x <= 0:
-            raise ValueError(f"{who}: {key} must be above 0, got {value}")
-        return x
-    return duration_text(value, who, key)
+        return _number(who, key, float(value), value, inf_ok=inf_ok)
+    text = duration_text(value, who, key)
+    if parse_duration(text) <= 0:
+        raise ValueError(f"{who}: {key} must be above 0, got {text}")
+    return text
+
+
+def _number(who: str, key: str, x: float, shown: Any, *, inf_ok: bool) -> float | str:
+    """A clock parameter given as the number ``x`` (``shown`` as written):
+    above 0, and finite unless ``inf_ok``; an infinity is ``"inf"``."""
+    if math.isnan(x):
+        raise ValueError(f"{who}: {key} must not be NaN")
+    if math.isinf(x):
+        if not inf_ok or x < 0:
+            raise ValueError(f"{who}: {key} must be finite and above 0, got {shown}")
+        return "inf"
+    if x <= 0:
+        raise ValueError(f"{who}: {key} must be above 0, got {shown}")
+    return x
+
+
+#: The most rows ``min_samples`` can ask for: the windows core counts them
+#: in a ``u32``.
+MAX_MIN_SAMPLES = 2**32 - 1
 
 
 def operator(
@@ -414,9 +449,19 @@ def operator(
     if closed not in ("right", "left", "both", "none"):
         raise ValueError(f'{who}: closed must be "right", "left", "both" or "none", got {closed!r}')
     params["closed"] = closed
-    if isinstance(min_samples, bool) or not isinstance(min_samples, int) or min_samples < 1:
-        raise ValueError(f"{who}: min_samples must be an int of at least 1, got {min_samples!r}")
-    params["min_samples"] = min_samples
+    # Any integer Polars' `rolling_*_by` takes, a numpy one included, up to
+    # the core's ceiling, named; past it the refusal came later and said "at
+    # least 1" (review round 4, PD4).
+    if (
+        isinstance(min_samples, bool)
+        or not isinstance(min_samples, numbers.Integral)
+        or not 1 <= min_samples <= MAX_MIN_SAMPLES
+    ):
+        raise ValueError(
+            f"{who}: min_samples must be an integer of at least 1 and at most "
+            f"{MAX_MIN_SAMPLES}, got {min_samples!r}"
+        )
+    params["min_samples"] = int(min_samples)
     if partial is not None:
         if partial not in ("keep", "null", "drop"):
             raise ValueError(f'{who}: partial must be "keep", "null" or "drop", got {partial!r}')
