@@ -72,12 +72,13 @@
 //! Every output is read *before* the row is learned, so `cluster` is an
 //! out-of-sample assignment (CLAUDE.md rule 2), and `n_eff` is the EW weight
 //! before the row and before its own decay (rule 8). Seeding waits for
-//! `max(warm_rows, k)` learned rows, held whole in a buffer of that many
-//! rows, so the warm-up holds `O(warm_rows·p)` and the stream after it
-//! `O(k·p)`; until then every output is null. Under `first`, which waits
-//! for `k` distinct rows, the buffer goes on growing until it has them or
-//! holds `max(warm_rows, k, BUF_CAP)` rows ([`KMeans::BUF_CAP`]), where
-//! duplicates are taken. Standardization scales the metric, never the
+//! `warm_rows` learned rows, at least `k`, held whole in a buffer of that
+//! many rows, so the warm-up holds `O(warm_rows·p)` -- at most
+//! [`KMeans::WARM_BUDGET_MIB`] -- and the stream after it `O(k·p)`; until
+//! then every output is null. Under `first`, which waits for `k` distinct
+//! rows, the buffer goes on growing until it has them or holds
+//! `max(warm_rows, BUF_CAP)` rows ([`KMeans::BUF_CAP`]), where duplicates
+//! are taken. Standardization scales the metric, never the
 //! coordinates (docs/CLUSTERING.md §10), so the centres stay in the features'
 //! own units and `coef` reads as `k` rows of `p` feature values.
 
@@ -112,12 +113,13 @@ pub enum SeedRule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KMeansCfg {
     pub n_features: usize,
-    /// Number of clusters, `>= 1`.
+    /// Number of clusters, `1 ..= MAX_K`.
     pub k: usize,
     pub decay: Decay,
     /// Outputs are null while `n_eff < min_weight`.
     pub min_weight: f64,
-    /// Learned rows buffered before seeding (at least `k` are used).
+    /// Learned rows buffered before seeding, at least `k`; the buffer of
+    /// that many rows is held to [`KMeans::WARM_BUDGET_MIB`].
     pub warm_rows: usize,
     pub seed_rule: SeedRule,
     /// Seed of the generator behind `kmeanspp` / `lloyd`.
@@ -133,7 +135,9 @@ pub struct KMeansCfg {
     /// and re-placed on the far rows; `0` disables the rule. A centre
     /// whose blob vanished gets there `log2(1/dead_frac)` half-lives later
     /// (4.3 at 0.05, 2 at 0.25); a blob lighter than `dead_frac / k` of
-    /// the stream loses its centre whenever any row is far.
+    /// the stream loses its centre whenever any row is far. The rule runs
+    /// at a split–merge check, so above 0 it is refused beside
+    /// `split_merge = 0`, which runs none.
     pub dead_frac: f64,
     /// Measure distances in units of each feature's EW standard deviation.
     pub standardize: bool,
@@ -158,6 +162,37 @@ impl KMeansCfg {
         if self.k == 0 {
             return Err("kmeans: k must be >= 1".into());
         }
+        // A count the spec sizes the centres and the seeding by before the
+        // stream says anything (review 2026-10-06, CF2).
+        if self.k > KMeans::MAX_K {
+            return Err(format!(
+                "kmeans: k must be at most {} (2^16), got {}: every row is scored against every \
+                 centre, and seeding is O(k²) over the warm-up buffer",
+                KMeans::MAX_K,
+                self.k
+            ));
+        }
+        // The buffer seeds `k` centres from `warm_rows` rows; fewer rows
+        // were floored to `k` in silence, where `hmm` refuses them (review
+        // 2026-10-06, PC8).
+        if self.warm_rows < self.k {
+            return Err(format!(
+                "kmeans: warm_rows must be at least k ({}) to seed that many centres, got {}",
+                self.k, self.warm_rows
+            ));
+        }
+        let mib = KMeans::warm_mib(self.warm_rows, self.n_features);
+        if mib > KMeans::WARM_BUDGET_MIB {
+            return Err(format!(
+                "kmeans: the warm-up buffer would hold {} MiB (warm_rows {} rows of {} features), \
+                 over the {} MiB it is held to; lower warm_rows (at least k), or narrow the \
+                 features",
+                crate::budget::mib_over(mib, KMeans::WARM_BUDGET_MIB),
+                self.warm_rows,
+                self.n_features,
+                KMeans::WARM_BUDGET_MIB
+            ));
+        }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
             return Err("kmeans: min_weight must be >= 0".into());
         }
@@ -172,6 +207,16 @@ impl KMeansCfg {
         }
         if !self.dead_frac.is_finite() || self.dead_frac < 0.0 {
             return Err("kmeans: dead_frac must be finite and >= 0".into());
+        }
+        // The dead rule runs inside the split–merge check (review
+        // 2026-10-06, CF6).
+        if self.split_merge == 0.0 && self.dead_frac > 0.0 {
+            return Err(format!(
+                "kmeans: dead_frac re-places a centre at a split-merge check, and split_merge = 0 \
+                 runs none, so dead_frac = {} would do nothing; give split_merge > 0, or \
+                 dead_frac = 0",
+                self.dead_frac
+            ));
         }
         if !self.scale_floor.is_finite() || self.scale_floor < 0.0 {
             return Err("kmeans: scale_floor must be finite and >= 0".into());
@@ -241,9 +286,29 @@ pub struct KMeans {
 impl KMeans {
     /// Where the `first` seeding rule, which waits for `k` distinct rows,
     /// gives up on distinctness and seeds with what it has: once the buffer
-    /// holds `max(warm_rows, k, BUF_CAP)` rows. Not a cap on the buffer,
-    /// which holds `max(warm_rows, k)` rows whatever this is.
+    /// holds `max(warm_rows, BUF_CAP)` rows. Not a cap on the buffer, which
+    /// holds `warm_rows` rows whatever this is.
     pub const BUF_CAP: usize = 1000;
+
+    /// The most centres a model takes. Each row is scored against every
+    /// centre, and seeding is `O(k²)` over a buffer of at least `k` rows
+    /// (k-means++ and the Lloyd restarts), so a `k` past this is a spec's
+    /// mistake rather than a workload: `k = 10^9` was accepted and held that
+    /// many rows before seeding (review 2026-10-06, CF2).
+    pub const MAX_K: usize = 1 << 16;
+
+    /// The most MiB the warm-up buffer may hold ([`Self::warm_mib`]), as a
+    /// marginal's bins, a window's snapshots and a held Gram block are held
+    /// to 256 MiB: `warm_rows = 10^9` was accepted (review 2026-10-06, CF2).
+    pub const WARM_BUDGET_MIB: f64 = 256.0;
+
+    /// The MiB a warm-up buffer of `rows` rows of `p` features takes: each
+    /// row's vector, its `p` values and its weight. A double, so no count
+    /// overflows.
+    pub fn warm_mib(rows: usize, p: usize) -> f64 {
+        let row = std::mem::size_of::<Vec<f64>>() as f64 + (p as f64 + 1.0) * 8.0;
+        rows as f64 * row / f64::from(1 << 20)
+    }
 
     pub fn new(cfg: KMeansCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -1472,7 +1537,7 @@ mod tests {
     #[test]
     fn first_seeding_waits_for_k_distinct_rows_until_the_cap() {
         let mut m = KMeans::new(KMeansCfg {
-            warm_rows: 2,
+            warm_rows: 3,
             ..cfg(3)
         })
         .unwrap();
@@ -1492,7 +1557,7 @@ mod tests {
 
         // At the cap the rule gives up on distinctness.
         let mut m = KMeans::new(KMeansCfg {
-            warm_rows: 2,
+            warm_rows: 3,
             ..cfg(3)
         })
         .unwrap();
@@ -1624,11 +1689,13 @@ mod tests {
         // check merges them and re-places the freed centre in the new blob.
         // Without split–merge the third blob stays glued to a stale centre.
         let run = |split_merge: f64| {
+            // The dead rule runs at a split-merge check, so without one it
+            // is 0: above it the pair is refused (review 2026-10-06, CF6).
             let c = KMeansCfg {
                 warm_rows: 20,
                 split_merge,
                 split_merge_every: 20,
-                dead_frac: 0.05,
+                dead_frac: if split_merge > 0.0 { 0.05 } else { 0.0 },
                 ..cfg(3)
             };
             let mut m = KMeans::new(c).unwrap();
@@ -1764,11 +1831,13 @@ mod tests {
 
     #[test]
     fn split_merge_disabled_never_touches_the_centres() {
+        // `dead_frac` 0: above it the pair is refused, the rule running only
+        // at a split-merge check (review 2026-10-06, CF6).
         let c = KMeansCfg {
             warm_rows: 3,
             split_merge: 0.0,
             split_merge_every: 1,
-            dead_frac: 1.0,
+            dead_frac: 0.0,
             ..cfg(3)
         };
         let mut m = KMeans::new(c).unwrap();
@@ -2049,14 +2118,119 @@ mod tests {
         for c in bad {
             assert!(KMeans::new(c.clone()).is_err(), "{c:?}");
         }
+        // `max(warm_rows, k)` rows were buffered, so 0 meant `k` without a
+        // word; refused, as `hmm` refuses it (review 2026-10-06, PC8).
         assert!(
             KMeans::new(KMeansCfg {
                 warm_rows: 0,
                 ..cfg(1)
             })
-            .is_ok(),
-            "warm_rows 0 means k"
+            .is_err(),
+            "warm_rows 0 is below k"
         );
+    }
+
+    /// The warm-up buffers `warm_rows` rows and seeds `k` centres from them,
+    /// so fewer rows than centres is refused by name, as `hmm` refuses it;
+    /// it was floored to `k` in silence (review 2026-10-06, PC8).
+    #[test]
+    fn warm_rows_below_k_is_refused_by_name() {
+        let Err(e) = KMeans::new(KMeansCfg {
+            warm_rows: 2,
+            ..cfg(3)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("kmeans: warm_rows must be at least k (3)") && e.contains("got 2"),
+            "{e}"
+        );
+        assert!(
+            KMeans::new(KMeansCfg {
+                warm_rows: 3,
+                ..cfg(3)
+            })
+            .is_ok()
+        );
+    }
+
+    /// The dead rule runs at a split-merge check, and `split_merge = 0` runs
+    /// none, so a `dead_frac` above 0 beside it did nothing: refused by
+    /// name, as a parameter its mode does not read is elsewhere (review
+    /// 2026-10-06, CF6).
+    #[test]
+    fn dead_frac_without_split_merge_is_refused_by_name() {
+        let Err(e) = KMeans::new(KMeansCfg {
+            split_merge: 0.0,
+            dead_frac: 0.5,
+            ..cfg(3)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("kmeans: dead_frac") && e.contains("split_merge = 0") && e.contains("0.5"),
+            "{e}"
+        );
+        for (split_merge, dead_frac) in [(0.0, 0.0), (0.5, 0.5), (0.5, 0.0)] {
+            assert!(
+                KMeans::new(KMeansCfg {
+                    split_merge,
+                    dead_frac,
+                    ..cfg(3)
+                })
+                .is_ok()
+            );
+        }
+    }
+
+    /// `k` and the warm-up buffer are sized by the spec before the stream
+    /// can say anything: `k` has a ceiling, 2^16, and the buffer of
+    /// `warm_rows` rows of `n_features` doubles a budget, 256 MiB, each
+    /// refused by name with the value. `k = 10^9` and `warm_rows = 10^9`
+    /// were accepted, and held that many rows before seeding (review
+    /// 2026-10-06, CF2).
+    #[test]
+    fn k_and_the_warm_up_buffer_have_ceilings() {
+        let k = (1usize << 16) + 1;
+        let Err(e) = KMeans::new(KMeansCfg {
+            k,
+            warm_rows: k,
+            ..cfg(3)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("kmeans: k must be at most 65536") && e.contains(&format!("got {k}")),
+            "{e}"
+        );
+        // A buffered row of two features is its vector (24 bytes), its two
+        // values and its weight: 48 bytes, so 5,592,405 rows fit 256 MiB and
+        // one more is 32 bytes past it.
+        let Err(e) = KMeans::new(KMeansCfg {
+            warm_rows: 5_592_406,
+            ..cfg(3)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("kmeans: the warm-up buffer would hold 256.00003 MiB")
+                && e.contains("warm_rows 5592406 rows of 2 features")
+                && e.contains("over the 256 MiB"),
+            "{e}"
+        );
+        for c in [
+            KMeansCfg {
+                warm_rows: 5_592_405,
+                ..cfg(3)
+            },
+            KMeansCfg {
+                k: 1 << 16,
+                warm_rows: 1 << 16,
+                ..cfg(3)
+            },
+        ] {
+            assert!(KMeans::new(c.clone()).is_ok(), "{c:?}");
+        }
     }
 
     /// A model seeded by `first` at `centres` (in raw units, no decay, no

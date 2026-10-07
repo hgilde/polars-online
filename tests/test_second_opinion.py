@@ -707,7 +707,6 @@ class TestNoInterceptIsNotCentred:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            coef_half_life=50.0,
             q=[0.0, 0.0],
             p0=1e6,
             obs_var=0.01,

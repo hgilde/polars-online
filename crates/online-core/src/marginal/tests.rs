@@ -752,6 +752,30 @@ fn a_bad_cross_lags_is_refused_by_name() {
     }
 }
 
+/// The lag ring holds `max(lags)` learned rows of `p` features and is sized
+/// before the first row, so a lag has a ceiling, 2^20, refused by name with
+/// the value: `lags = [2^62]` panicked "capacity overflow" inside
+/// `po.spec.marginal` and `[10^11]` reserved 2.4 TB (review 2026-10-06,
+/// CD10). At the ceiling it builds.
+#[test]
+fn a_lag_past_the_ceiling_is_refused_by_name() {
+    for lag in [(1usize << 20) + 1, 100_000_000_000, 1 << 62] {
+        let mut c = cfg(1, 1);
+        c.lags = vec![1, lag];
+        let Err(err) = Marginal::new(c) else {
+            panic!("accepted")
+        };
+        assert!(
+            err.contains("marginal: lags must be at most 1048576")
+                && err.contains(&format!("got {lag}")),
+            "{err}"
+        );
+    }
+    let mut c = cfg(1, 1);
+    c.lags = vec![1, 1 << 20];
+    assert!(Marginal::new(c).is_ok());
+}
+
 /// A state written before E70 has no `cross_lags`, in the config or in
 /// the lag moments. It loads as cross terms at every lag, which is what
 /// it holds, and learns on exactly as the state that wrote it.

@@ -343,6 +343,35 @@ type = "ew_ridge"
     );
 }
 
+/// A value of the wrong type inside a model is named by its spec and key:
+/// serde reads the model into a buffer first, and TOML's error pointed at the
+/// `[specs.model]` table alone (review 2026-10-06, PC11).
+#[test]
+fn a_model_value_of_the_wrong_type_is_named_by_its_key() {
+    let dir = fresh_dir("pc11-toml");
+    let cfg = dir.join("bank.toml");
+    std::fs::write(
+        &cfg,
+        "input = \"x.parquet\"\noutput = \"y.parquet\"\n\n[[specs]]\nname = \"m\"\n\
+         features = [\"x0\"]\nhalf_life = 10.0\n\n[specs.model]\ntype = \"micro\"\n\
+         beta_mu = 3.0\neps = \"inf\"\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_online"))
+        .arg("--config")
+        .arg(&cfg)
+        .arg("--dry-run")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(
+        err.contains("invalid type: string \"inf\", expected f64")
+            && err.contains("at spec \"m\": model.eps"),
+        "{err}"
+    );
+}
+
 #[test]
 fn resume_rejects_mismatched_specs() {
     let input = tmp("mismatch-in.parquet");

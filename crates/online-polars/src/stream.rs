@@ -60,6 +60,18 @@ impl ClockRefusal {
     }
 }
 
+/// A refused clock step on a number clock: two values whose difference is
+/// past the largest double, for the bank to turn into the error naming it
+/// (review 2026-10-06, PB7).
+#[derive(Debug, Clone, Copy)]
+pub struct StepRefusal {
+    /// The absolute row it happened at, in the chunk.
+    pub row: usize,
+    /// The clock value of the row before it in the stream, and its own.
+    pub prev: f64,
+    pub now: f64,
+}
+
 /// Enum dispatch over the models the bank can run (serde-friendly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnyModel {
@@ -411,13 +423,17 @@ const DEFAULT_BINS: usize = 16;
 /// not move much -- and hold 8 KB per feature while they wait.
 const DEFAULT_BIN_WARM_ROWS: usize = 1_000;
 
-/// Build the model instances for a spec: one per half-life grid entry.
+/// Build the model instances for a spec: one per half-life grid entry. A
+/// model's own refusal names the spec, as `Spec::validate` names it for
+/// `bocpd`'s and the other cfg builders': in a bank of several specs
+/// `sgd: clip_gradient must be > 0` did not say which (review 2026-10-06,
+/// YA4). `decays` names it already.
 pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
     let decays = spec.decays()?;
     decays
         .into_iter()
         .map(|(suffix, decay)| {
-            let m = build_one(spec, decay)?;
+            let m = build_one(spec, decay).map_err(|e| format!("spec {:?}: {e}", spec.name))?;
             Ok((suffix, m))
         })
         .collect()
@@ -620,7 +636,11 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_targets: spec.m(),
                 fit_intercept: spec.fit_intercept,
                 decay,
-                half_life: coef_half_life.to_vec(),
+                // None beside a `q`, which the model reads instead (review
+                // 2026-10-06, PC6).
+                half_life: coef_half_life
+                    .as_ref()
+                    .map_or_else(Vec::new, SpanList::to_vec),
                 q: q.as_ref().map(|v| v.iter().map(|n| n.0).collect()),
                 obs_var: *obs_var,
                 p0: p0.unwrap_or(1.0),
@@ -912,13 +932,18 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // One `min_weight` for the whole model: the spec's first
                 // (and only) entry, defaulting like the regressions do.
                 min_weight: spec.min_periods_per_target()[0],
-                warm_rows: warm_rows.unwrap_or(500),
+                // At least `k`: a smaller one given is refused, and left out
+                // it is the buffer `max(warm_rows, k)` always was (review
+                // 2026-10-06, PC8).
+                warm_rows: warm_rows.unwrap_or_else(|| (*k).max(500)),
                 seed_rule,
                 seed: seed.unwrap_or(0),
                 update_every: update_every.unwrap_or(1),
                 split_merge: split_merge.unwrap_or(0.5),
                 split_merge_every: split_merge_every.unwrap_or(100),
-                dead_frac: dead_frac.unwrap_or(0.05),
+                // The dead rule runs at a split-merge check, so with none it
+                // is 0, where a value above 0 is refused (CF6).
+                dead_frac: dead_frac.unwrap_or(if *split_merge == Some(0.0) { 0.0 } else { 0.05 }),
                 standardize: standardize.unwrap_or(true),
                 scale_floor: scale_floor.unwrap_or(0.1),
             };
@@ -970,7 +995,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 min_weight: spec.min_periods_per_target()[0],
                 covariance: match covariance {
-                    Some(c) => Covariance::parse(c)?,
+                    Some(c) => Covariance::parse("ew_class", c)?,
                     None => Covariance::Full,
                 },
                 precision_prior: *precision_prior,
@@ -1310,12 +1335,39 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         }
         (None, None) => None,
     };
+    // A parameter its mode does not read is refused, not ignored (review
+    // 2026-10-06, CE4): under `tvtp_coef` no transition count is learned,
+    // and with the states given nothing is seeded. A value given is told
+    // from the default here, where both are `None` until filled.
+    for (param, given) in [
+        ("transition", transition.is_some()),
+        ("transition_prior", transition_prior.is_some()),
+    ] {
+        if given && tvtp.is_some() {
+            return Err(format!(
+                "hmm: {param} does not apply with tvtp_coef: the matrix is softmax(A + B·z) and \
+                 no transition count is learned, so there is no prior to spread"
+            ));
+        }
+    }
+    for (param, given) in [
+        ("warm_rows", warm_rows.is_some()),
+        ("seed_rule", seed_rule.is_some()),
+        ("seed", seed.is_some()),
+    ] {
+        if given && means.is_some() && covs.is_some() {
+            return Err(format!(
+                "hmm: {param} does not apply with means and covs given: the states are not \
+                 seeded from the rows, so there is no warm-up"
+            ));
+        }
+    }
     Ok(HmmCfg {
         n_features: spec.k(),
         k: *k,
         decay: online_core::Decay::Lam(1.0),
         covariance: match covariance {
-            Some(c) => Covariance::parse(c)?,
+            Some(c) => Covariance::parse("hmm", c)?,
             None => Covariance::Full,
         },
         precision_prior: *precision_prior,
@@ -1371,6 +1423,23 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
             ));
         }
     };
+    // A parameter its kind does not read is refused, not ignored, as
+    // `bandwidth` and `preavg_rows` are (review 2026-10-06, CE4): the jitter
+    // and the ring are the kernel's, `theta` sets the pre-averaging window.
+    // The builders leave both `None` unless given.
+    for (param, given, owner) in [
+        ("jitter", jitter.is_some(), RcovKind::Kernel),
+        ("max_bandwidth", max_bandwidth.is_some(), RcovKind::Kernel),
+        ("theta", theta.is_some(), RcovKind::Preavg),
+    ] {
+        if given && kind != owner {
+            return Err(format!(
+                "rcov: {param} applies to kind = {:?}, not {:?}",
+                owner.as_str(),
+                kind.as_str()
+            ));
+        }
+    }
     Ok(RcovCfg {
         n_features: spec.k(),
         kind,
@@ -3005,6 +3074,40 @@ impl Stream {
             None => None,
         };
         Ok(stream)
+    }
+
+    /// The first row of the chunk whose step from the row before it in this
+    /// stream -- the stream's last row, for the first -- is not a finite
+    /// number of clock units: two values of a number clock whose difference
+    /// is past the largest double, `1e308 − (−1e308)`. Such a step left the
+    /// decayed clock's removed time infinite for good, and every later stamp
+    /// compared equal to any span (review 2026-10-06, PB7). A temporal
+    /// clock's steps are integer nanoseconds and always finite. The bank runs
+    /// it beside [`Self::check_clock`], before any stream is touched, so the
+    /// refusal is the chunk's, as a clock value that is not a number is.
+    pub fn check_steps(
+        &self,
+        clock: Option<&ClockCol>,
+        rows: &[usize],
+        base: usize,
+    ) -> Result<(), StepRefusal> {
+        let Some(ClockCol::F64(values)) = clock else {
+            return Ok(());
+        };
+        let mut prev = match self.clock.last_clock() {
+            Some(ClockValue::F64(p)) => Some(p),
+            _ => None,
+        };
+        for (ri, &row) in rows.iter().enumerate() {
+            let now = values[base + ri];
+            if let Some(p) = prev
+                && !(now - p).is_finite()
+            {
+                return Err(StepRefusal { row, prev: p, now });
+            }
+            prev = Some(now);
+        }
+        Ok(())
     }
 
     /// The first row of the chunk at which this stream's clock would step back

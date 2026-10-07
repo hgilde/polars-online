@@ -532,7 +532,7 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
         out.append({"name": name, "tree": tree})
     for name, e in named.items():
         if name in _RENAMED:
-            raise TypeError(f"{who}: {name} was renamed {_RENAMED[name]} (docs/PLAN.md task 144)")
+            raise TypeError(f"{who}: {name} was renamed {_RENAMED[name]}")
         if not isinstance(e, pl.Expr):
             raise TypeError(
                 f"{who}: {name} is a pl.Expr over the operators, got {type(e).__name__} {e!r}"
@@ -783,8 +783,7 @@ def with_windows(
         # read as not setting it (review R1, F1): refused naming the new one.
         if old := [k for k in like if k in _RENAMED]:
             raise TypeError(
-                f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed "
-                f"{_RENAMED[old[0]]} (docs/PLAN.md task 144)"
+                f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed {_RENAMED[old[0]]}"
             )
         policy = {k: like.get(k) for k in _CLOCK_KEYS}
         weight = like.get("weight")

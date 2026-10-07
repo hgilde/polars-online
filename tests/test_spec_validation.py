@@ -117,11 +117,28 @@ REJECTED = [
         "tol must be finite and > 0",
     ),
     (po.spec.kalman, dict(half_life=10.0, coef_half_life=NAN), "coef_half_life must not be NaN"),
+    # `q` alone: beside `coef_half_life` the pair is refused (review
+    # 2026-10-06, PC6), below.
     (
         po.spec.kalman,
-        dict(half_life=10.0, coef_half_life=10.0, q=[-1.0, 1.0]),
+        dict(half_life=10.0, q=[-1.0, 1.0]),
         "q values must be finite and >= 0",
     ),
+    (
+        po.spec.kalman,
+        dict(half_life=10.0, coef_half_life=10.0, q=[0.0, 1.0]),
+        "kalman takes coef_half_life or q, not both",
+    ),
+    (po.spec.kalman, dict(half_life=10.0), "kalman needs coef_half_life"),
+    # The empties a raw dict is refused for, refused from the builder too
+    # (review 2026-10-06, YA5): `{}` read as `None`, "no sets", in silence.
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, feature_sets={}),
+        "feature_sets names no set; leave it out to fit every feature",
+    ),
+    # `-0.0` is `0.0`: two instances under two field names (PC10).
+    (po.spec.ewridge, dict(half_life=10.0, ridge=[0.0, -0.0]), "ridge lists 0 more than once"),
     (
         po.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, obs_var=-1.0),
@@ -231,7 +248,8 @@ ACCEPTED = [
     (po.spec.ewridge, dict(half_life=[10.0, 20.0])),
     (po.spec.huber, dict(half_life=10.0, ridge=0.0)),
     (po.spec.lasso, dict(half_life=10.0, lasso_path=[0.1, 0.0])),
-    (po.spec.kalman, dict(half_life=10.0, coef_half_life=INF, q=[0.0, 0.0])),
+    (po.spec.kalman, dict(half_life=10.0, coef_half_life=INF)),
+    (po.spec.kalman, dict(half_life=10.0, q=[0.0, 0.0])),
     (po.spec.ewridge, dict(half_life=10.0, feature_sets={"a": ["x0"]})),
     (po.spec.ewridge, dict(half_life=10.0, emit_drift=True, drift_action="reset")),
     (po.spec.ewridge, dict(half_life=10.0, ridge=[1e-6, 1.0], emit_averaged=True, average_eta=2.0)),
@@ -398,3 +416,100 @@ def test_every_door_fills_validates_and_builds_a_spec_alike():
     for door in doors:
         with pytest.raises(ValueError, match="ridge_scale"):
             door([refused] if door is po.ModelBank else refused)
+
+
+_TWO = dict(features=["x0", "y"])
+_HMM = dict(**_TWO, k=2, precision_prior=0.1, half_life=10.0)
+_TVTP = dict(exog_tvtp="s2", tvtp_coef=[[0.0] * 4, [0.0] * 4])
+_GIVEN = dict(means=[-1.0, -1.0, 1.0, 1.0], covs=[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
+_RCOV = dict(**_TWO, group="g", group_close="monotone", block_rows=100)
+_KMEANS = dict(**_TWO, half_life=10.0)
+
+#: A parameter its mode does not read, taken and ignored, now refused by
+#: name (review 2026-10-06, CE4, CF6); and `warm_rows` below `k`, floored to
+#: `k` in silence where `hmm` refuses it (PC8).
+IGNORED = [
+    (po.spec.hmm, dict(**_HMM, **_TVTP, transition=[0.9, 0.1, 0.2, 0.8]), "hmm: transition"),
+    (po.spec.hmm, dict(**_HMM, **_TVTP, transition_prior=2.0), "hmm: transition_prior"),
+    (po.spec.hmm, dict(**_HMM, **_GIVEN, warm_rows=20), "hmm: warm_rows does not apply"),
+    (po.spec.hmm, dict(**_HMM, **_GIVEN, seed_rule="first"), "hmm: seed_rule does not apply"),
+    (po.spec.hmm, dict(**_HMM, **_GIVEN, seed=3), "hmm: seed does not apply"),
+    (po.spec.rcov, dict(**_RCOV, kind="plain", jitter=3), 'jitter applies to kind = "kernel"'),
+    (po.spec.rcov, dict(**_RCOV, kind="plain", theta=2.0), 'theta applies to kind = "preavg"'),
+    (
+        po.spec.rcov,
+        dict(**_RCOV, kind="plain", max_bandwidth=5),
+        'max_bandwidth applies to kind = "kernel"',
+    ),
+    (po.spec.rcov, dict(**_RCOV, theta=2.0), 'theta applies to kind = "preavg", not "kernel"'),
+    (po.spec.rcov, dict(**_RCOV, kind="preavg", jitter=3), 'jitter applies to kind = "kernel"'),
+    (
+        po.spec.rcov,
+        dict(**_RCOV, kind="preavg", max_bandwidth=5),
+        'max_bandwidth applies to kind = "kernel"',
+    ),
+    (
+        po.spec.kmeans,
+        dict(**_KMEANS, k=3, split_merge=0.0, dead_frac=0.5),
+        "kmeans: dead_frac re-places a centre at a split-merge check",
+    ),
+    (
+        po.spec.kmeans,
+        dict(**_KMEANS, k=3, warm_rows=1),
+        "kmeans: warm_rows must be at least k (3) to seed that many centres, got 1",
+    ),
+    (
+        po.spec.deco,
+        dict(**_TWO, half_life=10.0, blocks={}),
+        "deco blocks is empty",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(**_TWO, half_life=10.0, stats=["mahal"], precision_prior=1.0, mahal_quantiles=[]),
+        "ew_cov mahal_quantiles must be non-empty",
+    ),
+]
+
+#: Their legal neighbours, which build.
+IGNORED_NOT = [
+    (po.spec.hmm, dict(**_HMM, **_TVTP)),
+    (po.spec.hmm, dict(**_HMM, **_GIVEN)),
+    (po.spec.rcov, dict(**_RCOV, jitter=3, max_bandwidth=5)),
+    (po.spec.rcov, dict(**_RCOV, kind="preavg", theta=2.0)),
+    (po.spec.rcov, dict(**_RCOV, kind="plain")),
+    (po.spec.kmeans, dict(**_KMEANS, k=3, split_merge=0.0)),
+    (po.spec.kmeans, dict(**_KMEANS, k=3, warm_rows=3)),
+    (po.spec.kmeans, dict(**_KMEANS, k=600)),
+]
+
+
+@pytest.mark.parametrize("builder,kw,msg", IGNORED, ids=[_label(c) for c in IGNORED])
+def test_a_parameter_its_mode_does_not_read_is_refused(builder, kw, msg):
+    with pytest.raises(ValueError) as exc:
+        builder("m", **kw)
+    text = str(exc.value)
+    assert msg in text, text
+    assert text.startswith('spec "m": '), text
+
+
+@pytest.mark.parametrize("builder,kw", IGNORED_NOT, ids=[_label(c) for c in IGNORED_NOT])
+def test_the_modes_own_parameters_still_build(builder, kw):
+    po.ModelBank([builder("m", **kw)])
+
+
+def test_an_empty_target_name_is_refused():
+    """``targets=[""]`` wrote fields called ``pred_`` and ``resid_``, where
+    ``po.target("")`` is refused (review 2026-10-06, YA5)."""
+    with pytest.raises(ValueError, match='spec "m": targets must not contain an empty name'):
+        po.spec.ewridge("m", targets=[""], features=["x0"], half_life=10.0)
+
+
+def test_a_tuple_comes_back_from_the_bank_as_it_went_in():
+    """``features=("x0",)`` type-checks, but the dict kept the tuple while the
+    bank reports a list, so ``ModelBank([s]).specs[0] != s`` (review
+    2026-10-06, YA5). Every tuple a builder takes is a list in its dict."""
+    s = po.spec.ewridge("m", targets=("y",), features=("x0",), ridge=(1e-6, 0.1), half_life=10.0)
+    assert s["features"] == ["x0"] and s["model"]["ridge"] == [1e-6, 0.1]
+    assert po.ModelBank([s]).specs[0] == s
+    m = po.spec.marginal("p", targets=["y"], features=("x0",), lags=(1, 2), half_life=10.0)
+    assert po.ModelBank([m]).specs[0] == m

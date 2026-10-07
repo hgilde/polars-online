@@ -177,15 +177,19 @@ impl KalmanCfg {
             // `s_inn` NaN on every row, the update's guard never met, and
             // the filter predicting its prior for the life of the stream
             // with no error and no counted failure (review 2026-09-18, B4).
-            if q.iter().any(|&v| v.is_nan() || v < 0.0) {
-                return Err("kalman: q values must be >= 0".into());
+            // Finite too, as the spec layer has it: an infinite `q` puts
+            // `inf` on `P`'s diagonal (review 2026-10-06, CC7).
+            if let Some(v) = q.iter().find(|v| !(v.is_finite() && **v >= 0.0)) {
+                return Err(format!("kalman: q values must be finite and >= 0, got {v}"));
             }
         } else {
             if self.half_life.len() != 1 && self.half_life.len() != k {
                 return Err(format!("kalman: half_life must have length 1 or {k}"));
             }
-            if self.half_life.iter().any(|&h| h.is_nan() || h <= 0.0) {
-                return Err("kalman: half_life values must be > 0 (inf pins)".into());
+            if let Some(h) = self.half_life.iter().find(|h| h.is_nan() || **h <= 0.0) {
+                return Err(format!(
+                    "kalman: half_life values must be > 0 (inf pins), got {h}"
+                ));
             }
         }
         if self.revert_half_life.len() != 1 && self.revert_half_life.len() != k {
@@ -193,18 +197,33 @@ impl KalmanCfg {
                 "kalman: revert_half_life must have length 1 or {k}"
             ));
         }
-        if self
+        if let Some(h) = self
             .revert_half_life
             .iter()
-            .any(|&h| h.is_nan() || h <= 0.0)
+            .find(|h| h.is_nan() || **h <= 0.0)
         {
-            return Err("kalman: revert_half_life values must be > 0 (inf = random walk)".into());
+            return Err(format!(
+                "kalman: revert_half_life values must be > 0 (inf = random walk), got {h}"
+            ));
         }
-        if self.p0.is_nan() || self.p0 <= 0.0 {
-            return Err("kalman: p0 must be > 0".into());
+        // Finite, as the spec layer has them: at `p0 = inf` `P` is never
+        // sized and the gain is 0 for good, and at `obs_var = inf` every
+        // update is skipped; either predicts 0 for the life of the stream
+        // (review 2026-10-06, CC7).
+        if !(self.p0.is_finite() && self.p0 > 0.0) {
+            return Err(format!(
+                "kalman: p0 must be finite and > 0, got {}",
+                self.p0
+            ));
         }
-        if self.obs_var.is_some_and(|v| v.is_nan() || v <= 0.0) {
-            return Err("kalman: obs_var must be > 0".into());
+        if let Some(v) = self.obs_var.filter(|v| !(v.is_finite() && *v > 0.0)) {
+            return Err(format!("kalman: obs_var must be finite and > 0, got {v}"));
+        }
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "kalman: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
         }
         Ok(())
     }
@@ -995,7 +1014,10 @@ mod tests {
         // `q` is the process noise per slot: one entry per coefficient,
         // including the intercept, and zero means "pinned".
         bad(&|c| c.q = Some(vec![0.0; 2]), "length 3");
-        bad(&|c| c.q = Some(vec![0.0, 0.0, -1e-9]), "must be >= 0");
+        bad(
+            &|c| c.q = Some(vec![0.0, 0.0, -1e-9]),
+            "q values must be finite and >= 0",
+        );
         good(&|c| c.q = Some(vec![0.0; 3]));
 
         // Without `q`, the half-lives are broadcast: one value, or one per slot.
@@ -1007,20 +1029,29 @@ mod tests {
 
         // p0 is the prior variance and obs_var the measurement noise; both
         // divide, so neither may be zero. obs_var may be absent (inferred).
-        bad(&|c| c.p0 = 0.0, "p0 must be > 0");
-        bad(&|c| c.p0 = -1.0, "p0 must be > 0");
-        bad(&|c| c.obs_var = Some(0.0), "obs_var must be > 0");
-        bad(&|c| c.obs_var = Some(-1.0), "obs_var must be > 0");
+        bad(&|c| c.p0 = 0.0, "p0 must be finite and > 0");
+        bad(&|c| c.p0 = -1.0, "p0 must be finite and > 0");
+        bad(&|c| c.obs_var = Some(0.0), "obs_var must be finite and > 0");
+        bad(
+            &|c| c.obs_var = Some(-1.0),
+            "obs_var must be finite and > 0",
+        );
         good(&|c| c.obs_var = None);
         good(&|c| c.obs_var = Some(1e-9));
         // NaN passed every `<= 0.0` / `< 0.0` test here. A NaN `obs_var` was
         // the silent one: `s_inn` is NaN on every row, the update's guard is
         // never met, and the filter predicts its prior for the life of the
         // stream with no error and no counted failure (review 2026-09-18, B4).
-        bad(&|c| c.obs_var = Some(f64::NAN), "obs_var must be > 0");
-        bad(&|c| c.p0 = f64::NAN, "p0 must be > 0");
+        bad(
+            &|c| c.obs_var = Some(f64::NAN),
+            "obs_var must be finite and > 0",
+        );
+        bad(&|c| c.p0 = f64::NAN, "p0 must be finite and > 0");
         bad(&|c| c.half_life = vec![f64::NAN], "must be > 0");
-        bad(&|c| c.q = Some(vec![0.0, f64::NAN, 0.0]), "must be >= 0");
+        bad(
+            &|c| c.q = Some(vec![0.0, f64::NAN, 0.0]),
+            "q values must be finite and >= 0",
+        );
 
         cfg(2, 1, vec![100.0]).validate().unwrap();
     }

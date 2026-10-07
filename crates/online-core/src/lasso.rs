@@ -151,14 +151,41 @@ impl LassoCfg {
         if self.lasso_path.is_empty() {
             return Err("lasso_path must have at least one value".into());
         }
-        if self.lasso_path.iter().any(|&l| l < 0.0) {
-            return Err("lasso_path values must be >= 0".into());
+        // What the spec layer refuses, refused here too, so the Rust API and
+        // a state file are held to it (review 2026-10-06, CA6): a path point
+        // that is not a number passed `l < 0` (and a one-point path the
+        // order check), a `tol` of NaN or 0 never converges or stops at the
+        // first sweep, and a `select_half_life` of 0 makes the selection
+        // weight `2^(-0/0)`, NaN for good.
+        if let Some(l) = self
+            .lasso_path
+            .iter()
+            .find(|l| !(l.is_finite() && **l >= 0.0))
+        {
+            return Err(format!(
+                "lasso: lasso_path values must be finite and >= 0, got {l}"
+            ));
         }
         if !self.lasso_path.windows(2).all(|w| w[0] >= w[1]) {
             return Err("lasso_path must be decreasing".into());
         }
         if !(0.0..=1.0).contains(&self.l1_ratio) {
-            return Err("l1_ratio must be in [0, 1]".into());
+            return Err(format!("l1_ratio must be in [0, 1], got {}", self.l1_ratio));
+        }
+        if !(self.tol.is_finite() && self.tol > 0.0) {
+            return Err(format!(
+                "lasso: tol must be finite and > 0, got {}",
+                self.tol
+            ));
+        }
+        if let Some(h) = self.select_half_life.filter(|h| h.is_nan() || *h <= 0.0) {
+            return Err(format!("lasso: select_half_life must be > 0, got {h}"));
+        }
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "lasso: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
         }
         // No sweep is no descent: every solve a failure, and the output the
         // start of one -- the intercept at the mean, every slope 0 -- that

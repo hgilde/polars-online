@@ -399,8 +399,8 @@ The diagnostics add, per slot:
    * - ``emit_autocorr``
      - ``autocorr_<slot>``
      - The EW correlation of each residual with the one
-       ``resid_autocorr_lag`` scored residuals back (default 1), within a
-       run of adjacent rows. A gap capped by ``gap_cap`` or a session
+       ``resid_autocorr_lag`` scored residuals back (default 1, at most
+       2^20), within a run of adjacent rows. A gap capped by ``gap_cap`` or a session
        change starts a new run, as it clears the models' lags; the weights
        decay on every row's clock. A residual stream should look like
        noise; a value away from zero says the model is missing something.
@@ -429,10 +429,16 @@ takes::
 
     spec "m": max_rows_between_coefs must be an int, got float 1.5
 
-It raises ``ValueError``, naming the spec and the parameter, for a value the
-model refuses:
+It raises ``ValueError``, naming the spec, the parameter and the value, for a
+value the model refuses:
 
-- a count below 0, or ``NaN`` anywhere;
+- a count below 0, or past what the Rust side holds it in (``2^32 - 1`` for
+  the ``max_rows_between_*`` caps, ``max_iter``, ``update_every`` and
+  ``split_merge_every``; ``2^64 - 1`` for the other counts), or ``NaN``
+  anywhere;
+- a count that sizes memory before the first row past its ceiling: a lag
+  or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer
+  past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does --
   ``half_life``, ``min_weight``, ``average_eta`` and the model parameters
   that say so);
@@ -457,12 +463,20 @@ A parameter whose switch is off is refused rather than ignored:
 - ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
   not use it, and its ``power`` beside a schedule other than
   ``"inv_scaling"``;
+- ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``;
+- ``hmm``'s ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
+  its ``warm_rows``, ``seed_rule`` or ``seed`` beside given ``means`` and
+  ``covs``;
+- ``rcov``'s ``jitter`` or ``max_bandwidth`` under a kind other than
+  ``"kernel"``, and its ``theta`` under one other than ``"preavg"``;
+- ``kalman``'s ``coef_half_life`` beside ``q``, which it would derive;
 - and ``coef_every`` or ``max_rows_between_coefs`` on a model that reports
   no coefficients.
 
 Names are checked too: a feature set named twice, a column twice in one set,
-an empty set, and a spec named ``""``, ``"spec"`` or ``"group"``, which the
-bank's tables use for their own columns.
+an empty set, an empty ``feature_sets`` or ``blocks``, an empty target name,
+an empty ``mahal_quantiles``, and a spec named ``""``, ``"spec"`` or
+``"group"``, which the bank's tables use for their own columns.
 
 A spec that came back from a builder is valid. One edited afterwards is
 checked again wherever it is used, and a key no spec has is refused there

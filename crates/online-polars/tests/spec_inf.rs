@@ -97,11 +97,9 @@ const MEANS_NOTHING: [(&str, &str, &str); 15] = [
     ("", "type = \"ftrl\"\nl2 = inf", "l2"),
     ("", "type = \"sgd\"\nlearning_rate = inf", "learning_rate"),
     ("", "type = \"ew_ridge\"\nridge = inf", "ridge"),
-    (
-        "",
-        "type = \"kalman\"\ncoef_half_life = 10.0\nq = [inf, 0.5]",
-        "q",
-    ),
+    // `q` alone: beside `coef_half_life` the pair is refused first (review
+    // 2026-10-06, PC6).
+    ("", "type = \"kalman\"\nq = [inf, 0.5]", "q"),
 ];
 
 #[test]
@@ -153,11 +151,7 @@ const NAN_IS_NO_SETTING: [(&str, &str, &str); 9] = [
         "type = \"kalman\"\ncoef_half_life = 10.0\np0 = nan",
         "p0",
     ),
-    (
-        "",
-        "type = \"kalman\"\ncoef_half_life = 10.0\nq = [nan, 0.5]",
-        "q",
-    ),
+    ("", "type = \"kalman\"\nq = [nan, 0.5]", "q"),
     (
         "",
         "type = \"kalman\"\ncoef_half_life = 10.0\nobs_var = nan",

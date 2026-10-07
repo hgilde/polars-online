@@ -61,7 +61,10 @@
 //! times [`LINK_FACTOR`], and never below [`LINK_FLOOR`] — DenStream's own
 //! rule that two summaries within `2 eps` of each other overlap. A value
 //! given is an override in the same units; `0` links nothing, so each
-//! potential summary is its own cluster.
+//! potential summary is its own cluster. The step takes each pair's distance
+//! when it needs it: `O(m²)` time and `O(m)` memory over `m` potential
+//! summaries, where an `m × m` matrix of them was `max_clusters²` doubles at
+//! every checkpoint (review 2026-10-06, CF2).
 //!
 //! Three rules make a variable-count output honest (§6.5): ids are
 //! monotone and never reused — an evicted or pruned id never comes back;
@@ -583,29 +586,32 @@ impl Micro {
 
     /// Single linkage over the potential summaries; labels = the smallest
     /// id in each component.
+    ///
+    /// In `O(m)` memory for `m` potential summaries: each pair's squared
+    /// distance is taken when it is wanted, once for the nearest-neighbour
+    /// spacing and once for the links, where an `m × m` matrix of them was
+    /// `max_clusters²` doubles at every checkpoint -- 8 TB at a cap of 10^6
+    /// (review 2026-10-06, CF2). The distances are the same numbers, taken
+    /// with the same arguments in the same order, so the threshold, the
+    /// links and the labels are the matrix's to the bit; the minimum over a
+    /// summary's neighbours does not depend on their order.
     fn link_potential(&mut self) {
         let idx: Vec<usize> = (0..self.mc.len())
             .filter(|&j| self.mc[j].potential)
             .collect();
         let m = idx.len();
-        // Pairwise squared distances, upper triangle by (a, b), a < b.
-        let mut d2 = vec![0.0; m * m];
-        for a in 0..m {
-            for b in (a + 1)..m {
-                let d = dist2(&self.mc[idx[a]].s.c, &self.mc[idx[b]].s.c, &self.mw);
-                d2[a * m + b] = d;
-                d2[b * m + a] = d;
-            }
-        }
+        let (mc, mw) = (&self.mc, &self.mw);
+        // The squared distance of the pair `(a, b)`, `a < b`.
+        let d2 = |a: usize, b: usize| dist2(&mc[idx[a]].s.c, &mc[idx[b]].s.c, mw);
         if self.cfg.macro_link.is_none() && m >= 2 {
-            let mut nn: Vec<f64> = (0..m)
-                .map(|a| {
-                    (0..m)
-                        .filter(|&b| b != a)
-                        .map(|b| d2[a * m + b])
-                        .fold(f64::INFINITY, f64::min)
-                })
-                .collect();
+            let mut nn = vec![f64::INFINITY; m];
+            for a in 0..m {
+                for b in (a + 1)..m {
+                    let d = d2(a, b);
+                    nn[a] = nn[a].min(d);
+                    nn[b] = nn[b].min(d);
+                }
+            }
             nn.sort_by(f64::total_cmp);
             let rank = ((LINK_QUANTILE * m as f64).ceil() as usize).clamp(1, m) - 1;
             let p90 = nn[rank].sqrt();
@@ -624,7 +630,7 @@ impl Micro {
         if self.link2 > 0.0 {
             for a in 0..m {
                 for b in (a + 1)..m {
-                    if d2[a * m + b] <= self.link2 {
+                    if d2(a, b) <= self.link2 {
                         let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
                         if ra != rb {
                             // Ids ascend with the index, so the smaller
@@ -2030,6 +2036,116 @@ mod tests {
         feed(&mut m, [0.0, 0.0], 1);
         assert_eq!(m.micro_clusters().len(), 1, "{:?}", m.micro_clusters());
         assert_eq!(m.events().1, 0);
+    }
+
+    /// The linkage is single linkage over the potential summaries, written
+    /// here from its definition with a flood fill: two potential summaries
+    /// are linked when their squared distance is within the threshold, a
+    /// cluster is a chain of links, and its label is the smallest id in it;
+    /// the derived threshold is `LINK_FACTOR` times the 90th percentile
+    /// (nearest rank) of the nearest-neighbour distances, floored at
+    /// `LINK_FLOOR · eps √p`. Outlier summaries keep their labels. Held over
+    /// random placements, each threshold rule, so that a rewrite of the step
+    /// -- its memory taken from `m²` to `m` (review 2026-10-06, CF2) -- gives
+    /// the same labels, counts and threshold.
+    #[test]
+    fn the_linkage_is_single_linkage_over_the_potential_summaries() {
+        let mut s = 20261006u64;
+        for trial in 0..60 {
+            let n = 1 + trial % 37;
+            let macro_link = match trial % 3 {
+                0 => None,
+                1 => Some(1.5 + lcg(&mut s) * 4.0),
+                _ => Some(0.0),
+            };
+            let mut m = Micro::new(MicroCfg {
+                macro_link,
+                ..still()
+            })
+            .unwrap();
+            let spread = 2.0 + 10.0 * lcg(&mut s);
+            m.mc = (0..n)
+                .map(|i| {
+                    let c = vec![spread * lcg(&mut s), spread * lcg(&mut s)];
+                    placed(i as u64 * 3 + 7, c, lcg(&mut s) < 0.7)
+                })
+                .collect();
+            m.next_id = n as u64 * 3 + 7;
+            let before: Vec<u64> = m.mc.iter().map(|c| c.label).collect();
+            m.link_potential();
+
+            // The definition, longhand.
+            let pot: Vec<usize> = (0..n).filter(|&j| m.mc[j].potential).collect();
+            let d2 = |a: usize, b: usize| {
+                let (ca, cb) = (&m.mc[pot[a]].s.c, &m.mc[pot[b]].s.c);
+                let (dx, dy) = (cb[0] - ca[0], cb[1] - ca[1]);
+                dx * dx + dy * dy
+            };
+            let link2 = match macro_link {
+                // `l` in units of `eps √p`, squared.
+                Some(l) => l * l * m.eps2,
+                None if pot.len() >= 2 => {
+                    let mut nn: Vec<f64> = (0..pot.len())
+                        .map(|a| {
+                            (0..pot.len())
+                                .filter(|&b| b != a)
+                                .map(|b| if a < b { d2(a, b) } else { d2(b, a) })
+                                .fold(f64::INFINITY, f64::min)
+                        })
+                        .collect();
+                    nn.sort_by(f64::total_cmp);
+                    let rank = (9 * pot.len()).div_ceil(10);
+                    let l = (LINK_FACTOR * nn[rank - 1].sqrt()).max(LINK_FLOOR * m.eps2.sqrt());
+                    l * l
+                }
+                // Fewer than two: the threshold the model started with.
+                None => m.link2,
+            };
+            assert_eq!(
+                m.link2.to_bits(),
+                link2.to_bits(),
+                "trial {trial}: threshold"
+            );
+            let mut component = vec![usize::MAX; pot.len()];
+            let mut count = 0;
+            for start in 0..pot.len() {
+                if component[start] != usize::MAX {
+                    continue;
+                }
+                component[start] = count;
+                let mut stack = vec![start];
+                while let Some(a) = stack.pop() {
+                    let near: Vec<usize> = (0..pot.len())
+                        .filter(|&b| {
+                            b != a
+                                && link2 > 0.0
+                                && (if a < b { d2(a, b) } else { d2(b, a) }) <= link2
+                        })
+                        .collect();
+                    for b in near {
+                        if component[b] == usize::MAX {
+                            component[b] = count;
+                            stack.push(b);
+                        }
+                    }
+                }
+                count += 1;
+            }
+            assert_eq!(m.n_clusters, count, "trial {trial}: clusters");
+            for (a, &j) in pot.iter().enumerate() {
+                let smallest = pot
+                    .iter()
+                    .enumerate()
+                    .filter(|&(b, _)| component[b] == component[a])
+                    .map(|(_, &k)| m.mc[k].id)
+                    .min()
+                    .unwrap();
+                assert_eq!(m.mc[j].label, smallest, "trial {trial}: summary {j}");
+            }
+            for j in (0..n).filter(|&j| !m.mc[j].potential) {
+                assert_eq!(m.mc[j].label, before[j], "trial {trial}: outlier {j}");
+            }
+        }
     }
 
     /// The derived threshold: `LINK_FACTOR` times the 90th percentile

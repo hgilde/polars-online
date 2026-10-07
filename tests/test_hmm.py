@@ -28,9 +28,11 @@ def spec(**kw):
         "k": 2,
         "precision_prior": 1e-2,
         "half_life": 1e9,
-        "warm_rows": 100,
-        "seed_rule": "lloyd",
     }
+    # The warm-up's parameters where a warm-up runs: with the states given
+    # nothing is seeded, and they are refused (review 2026-10-06, CE4).
+    if "means" not in kw and "covs" not in kw:
+        d |= {"warm_rows": 100, "seed_rule": "lloyd"}
     d.update(kw)
     return po.spec.hmm("h", **d)
 

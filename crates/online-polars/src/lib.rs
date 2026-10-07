@@ -51,6 +51,7 @@ mod rows;
 mod runner;
 mod span;
 mod spec;
+mod spec_diff;
 mod stream;
 mod summary;
 mod targets;

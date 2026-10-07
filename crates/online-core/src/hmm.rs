@@ -78,7 +78,8 @@ pub struct HmmCfg {
     pub transition_prior: f64,
     /// A `K*K` row-stochastic matrix `Π₀`, the Dirichlet prior's mean: each
     /// cell's pseudo-count is `τ·K·Π₀[r][c]` in place of `τ`, and the learned
-    /// counts start at zero (see `prior`); `None` is uniform.
+    /// counts start at zero (see `prior`); `None` is uniform. Refused beside
+    /// `tvtp`, which learns no count.
     pub transition: Option<Vec<f64>>,
     /// State means, `K*d` row-major: given, there is no warm-up. The pair
     /// enters the accumulators at **weight 1** -- one row's worth -- so the
@@ -194,6 +195,16 @@ impl HmmCfg {
             && (a.len() != k * k || b.len() != k * k)
         {
             return Err(format!("hmm: tvtp_coef A and B must each be {k}x{k}"));
+        }
+        // Under `tvtp` the counts are not learned, so the prior they would
+        // be spread over is read by nothing (review 2026-10-06, CE4).
+        if self.tvtp.is_some() && self.transition.is_some() {
+            return Err(
+                "hmm: transition is the prior of the learned transition counts, and under \
+                 tvtp_coef the matrix is softmax(A + B·z) and no count is learned; give one or \
+                 the other"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -1331,6 +1342,26 @@ mod tests {
         );
     }
 
+    /// Under `tvtp` the matrix is `softmax(A + B·z)` and the counts are not
+    /// learned, so a `transition` prior beside it is read by nothing: refused
+    /// by name, where it was taken and ignored (review 2026-10-06, CE4).
+    #[test]
+    fn a_transition_beside_tvtp_is_refused_by_name() {
+        let tvtp = Some((vec![0.0; 4], vec![0.0; 4]));
+        let Err(e) = Hmm::new(HmmCfg {
+            transition: Some(vec![0.9, 0.1, 0.2, 0.8]),
+            tvtp: tvtp.clone(),
+            ..cfg(2, 2)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("hmm: transition") && e.contains("tvtp_coef"),
+            "{e}"
+        );
+        assert!(Hmm::new(HmmCfg { tvtp, ..cfg(2, 2) }).is_ok());
+    }
+
     /// An `hmm` has no window, so its states' accumulators keep no runs, as
     /// every other owner without a window keeps none (docs/PLAN.md task 128;
     /// review 2026-09-26, C3).
@@ -1397,15 +1428,25 @@ mod tests {
             },
             "tvtp_coef A and B must each be 2x2",
         );
-        // Three states in two columns, every shape right, a cell of zero.
+        // Three states in two columns, every shape right, a cell of zero;
+        // and the same states under `tvtp`, which takes no `transition`
+        // (review 2026-10-06, CE4).
         let eye = [1.0, 0.0, 0.0, 1.0];
-        let m = Hmm::new(HmmCfg {
+        let given = HmmCfg {
             learn: false,
-            transition: Some(vec![1.0, 0.0, 0.0, 0.2, 0.5, 0.3, 0.0, 0.5, 0.5]),
             means: Some(vec![-3.0, 0.0, 0.0, 0.0, 3.0, 0.0]),
             covs: Some(eye.repeat(3)),
-            tvtp: Some((vec![0.1; 9], vec![0.2; 9])),
             ..cfg(2, 3)
+        };
+        let m = Hmm::new(HmmCfg {
+            transition: Some(vec![1.0, 0.0, 0.0, 0.2, 0.5, 0.3, 0.0, 0.5, 0.5]),
+            ..given.clone()
+        })
+        .unwrap();
+        assert_eq!(m.transition().len(), 9);
+        let m = Hmm::new(HmmCfg {
+            tvtp: Some((vec![0.1; 9], vec![0.2; 9])),
+            ..given
         })
         .unwrap();
         assert_eq!(m.transition().len(), 9);

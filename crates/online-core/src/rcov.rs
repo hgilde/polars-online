@@ -363,8 +363,10 @@ pub struct RcovCfg {
     /// The block's expected length, which sizes the ring: `"auto"` and
     /// pre-averaging both need a window fixed before the first row.
     pub block_rows: Option<usize>,
-    /// Ring depth; defaults to `⌈c*·block_rows^{3/5}⌉` under `"auto"`. At
-    /// most `block_rows`, where it is given, and `2^20`.
+    /// Ring depth, `"kernel"` only; defaults to `⌈c*·block_rows^{3/5}⌉`
+    /// under `"auto"`. At most `block_rows`, where it is given, and `2^20`;
+    /// and whatever sets it, the ring's lagged products, `(ring + 1)·k²`
+    /// doubles, at most 256 MiB.
     pub max_bandwidth: Option<usize>,
     /// A fixed `kₙ`, instead of the one `theta` gives: at least 2 under
     /// `psd` and 3 without it, where a window of 2 is the zero matrix, and
@@ -387,6 +389,13 @@ pub struct RcovCfg {
 /// 8.7e17 bytes (review 2026-10-05, CE4). BNHLS's automatic bandwidth
 /// reaches it at a block of over a billion returns.
 const MAX_RING: usize = 1 << 20;
+
+/// The most MiB the lagged products `Γ̂_h` may take, `(ring + 1)·k²`
+/// doubles allocated before the first row: the count ceiling let a ring of
+/// 2^20 over 100 features ask for 84 GB (review 2026-10-06, CE9). The
+/// library's 256 MiB, as a marginal's bins, a window's snapshots and a held
+/// Gram block are held to.
+const GAMMA_BUDGET_MIB: f64 = 256.0;
 
 /// `value`, a size in returns that `Rcov::new` allocates from, at most
 /// `block_rows` where that is given and at most [`MAX_RING`] in any case.
@@ -500,6 +509,15 @@ impl RcovCfg {
                 self.kind.as_str()
             ));
         }
+        // The ring depth is the kernel's: the other two read no ring, and a
+        // depth given to them sized memory before the first row and changed
+        // nothing else (review 2026-10-06, CE4).
+        if self.max_bandwidth.is_some() && self.kind != RcovKind::Kernel {
+            return Err(format!(
+                "rcov: max_bandwidth applies to kind = \"kernel\", not {:?}",
+                self.kind.as_str()
+            ));
+        }
         if self.kind == RcovKind::Kernel && self.bandwidth.is_none() && self.block_rows.is_none() {
             return Err(
                 "rcov: an automatic bandwidth needs `block_rows` (the block's expected length): the \
@@ -585,6 +603,22 @@ impl RcovCfg {
                      than block_rows = {b} (or {MAX_RING}, the most this model sizes a window for): \
                      a window past the block never forms a term; lower theta, or give preavg_rows",
                     self.theta
+                ));
+            }
+        }
+        // The lagged products, `(ring + 1)·k²` doubles, in bytes: the ring
+        // is at most `MAX_RING` here, so the count is a double read exactly
+        // enough to compare (review 2026-10-06, CE9).
+        if let Some(ring) = self.ring_for() {
+            let k = self.n_features as f64;
+            let mib = (ring as f64 + 1.0) * k * k * 8.0 / f64::from(1 << 20);
+            if mib > GAMMA_BUDGET_MIB {
+                return Err(format!(
+                    "rcov: the lagged products would take {} MiB ((ring + 1)·k² = ({ring} + 1)·{}² \
+                     doubles), over the {GAMMA_BUDGET_MIB} MiB this model sizes before the first \
+                     row; give a smaller bandwidth or max_bandwidth, or fewer features",
+                    crate::budget::mib_over(mib, GAMMA_BUDGET_MIB),
+                    self.n_features
                 ));
             }
         }
@@ -1919,6 +1953,76 @@ mod tests {
         }
         let e = m.estimate();
         assert!(e.rcov.is_none() && e.n == 0, "{e:?}");
+    }
+
+    /// The lagged products `Γ̂_h` are `(ring + 1)·k²` doubles, allocated
+    /// before the first row, so they have a byte ceiling, 256 MiB, refused
+    /// by name with the arithmetic: a ring of 2^20 over 100 features asked
+    /// for 84 GB, which the count ceiling let through (review 2026-10-06,
+    /// CE9). The automatic ring is held to it too, and a ring under it
+    /// builds.
+    #[test]
+    fn the_lagged_products_have_a_byte_ceiling() {
+        // (2^20 + 1)·10² doubles: 800 MiB.
+        let Err(e) = Rcov::new(RcovCfg {
+            bandwidth: Some(1 << 20),
+            block_rows: None,
+            ..cfg(10, RcovKind::Kernel)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(
+            e.contains("rcov: the lagged products would take 800 MiB")
+                && e.contains("(1048576 + 1)·10²")
+                && e.contains("over the 256 MiB"),
+            "{e}"
+        );
+        // 100 features: the automatic ring of a 10^6-return block,
+        // ⌈c*·n^(3/5)⌉, about 14,000 lags, is about 1.1 GB of products.
+        let Err(e) = Rcov::new(RcovCfg {
+            bandwidth: None,
+            block_rows: Some(1_000_000),
+            ..cfg(100, RcovKind::Kernel)
+        }) else {
+            panic!("accepted")
+        };
+        assert!(e.contains("rcov: the lagged products would take"), "{e}");
+        // (2^20 + 1)·2² doubles: 32 MiB.
+        assert!(
+            Rcov::new(RcovCfg {
+                bandwidth: Some(1 << 20),
+                block_rows: None,
+                ..cfg(2, RcovKind::Kernel)
+            })
+            .is_ok()
+        );
+    }
+
+    /// `max_bandwidth` is the kernel's ring depth: the plain and the
+    /// pre-averaged estimators read no ring, and a depth given to them
+    /// changed nothing but the memory sized before the first row. Refused by
+    /// name there, as `bandwidth` is (review 2026-10-06, CE4).
+    #[test]
+    fn max_bandwidth_applies_to_the_kernel_alone() {
+        for kind in [RcovKind::Plain, RcovKind::Preavg] {
+            let Err(e) = Rcov::new(RcovCfg {
+                max_bandwidth: Some(5),
+                ..cfg(2, kind)
+            }) else {
+                panic!("accepted")
+            };
+            assert!(
+                e.contains("rcov: max_bandwidth applies to kind = \"kernel\", not"),
+                "{e}"
+            );
+        }
+        assert!(
+            Rcov::new(RcovCfg {
+                max_bandwidth: Some(5),
+                ..cfg(2, RcovKind::Kernel)
+            })
+            .is_ok()
+        );
     }
 
     #[test]

@@ -27,7 +27,9 @@ use crate::resolvers::{
 };
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
-use crate::stream::{AnyModel, ChunkOut, ClockRefusal, Stream, StreamState, combo_labels, usable};
+use crate::stream::{
+    AnyModel, ChunkOut, ClockRefusal, StepRefusal, Stream, StreamState, combo_labels, usable,
+};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -1173,6 +1175,23 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
                 .map_or_else(|| clock_amount(spec, min_backwards_jump), ToString::to_string)
         ),
     }
+}
+
+/// The error for a clock step that is not a number of clock units: two
+/// values of a number clock whose difference is past the largest double
+/// (review 2026-10-06, PB7). Names the spec, the column, the two values and
+/// the row; the bank was not updated.
+fn non_finite_step(spec: &Spec, refusal: StepRefusal, row_base: usize) -> PolarsError {
+    polars_err!(ComputeError:
+        "spec {:?}: clock column {:?} steps from {} to {} at row {}, a difference past the \
+         largest double, which is no number of clock units; the bank was not updated. Shift or \
+         rescale the clock column so that the step between two of its values is finite.",
+        spec.name,
+        spec.clock.as_deref().unwrap_or("<row count>"),
+        crate::spec::num_label(refusal.prev),
+        crate::spec::num_label(refusal.now),
+        row_base + refusal.row
+    )
 }
 
 /// A clock amount as the spec measures it: on a temporal clock a duration
@@ -3341,6 +3360,11 @@ impl Bank {
         // clock, or `"reset_state"` with a minimum of 0.
         let checked = work.par_iter().try_for_each(|(si, _, idx, base, stream)| {
             let sc = &cols[*si];
+            // A step that is not a number of clock units, refused by row as
+            // a clock value that is not a number is (review 2026-10-06, PB7).
+            stream
+                .check_steps(sc.clock.as_ref(), idx, *base)
+                .map_err(|refusal| non_finite_step(&specs[*si], refusal, chunk.row_base()))?;
             stream
                 .check_clock(
                     &cfgs[*si],
@@ -4008,7 +4032,13 @@ impl Bank {
             let exp_filled: Vec<Spec> = exp.iter().map(fill).map(unsharded).collect();
             let saved: Vec<Spec> = file.specs.iter().map(fill).map(unsharded).collect();
             if exp_filled != saved {
-                return Err("saved specs do not match the bank's specs; refusing to load".into());
+                // Which spec, and in what (review 2026-10-06, PA6): a resuming
+                // job of ten specs was told only that they differ.
+                let canon = |s: Spec| unsharded(fill(&s));
+                return Err(format!(
+                    "saved specs do not match the bank's specs: {}; refusing to load",
+                    crate::spec_diff::spec_difference(&saved, &exp_filled, canon)
+                ));
             }
         }
         // The caller's specs where given, the file's otherwise: the same

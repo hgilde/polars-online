@@ -41,7 +41,9 @@ def _spec(name="m", **kw):
     defaults = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        coef_half_life=100.0,
+        # `q` in place of the half-life, never beside it (review 2026-10-06,
+        # PC6).
+        **({} if "q" in kw else {"coef_half_life": 100.0}),
         half_life=500.0,
         min_weight=20.0,
     )
@@ -98,7 +100,7 @@ class TestOracle:
             gap_cap=MAXD,
             weight="w",
             half_life=kw.get("half_life", 500.0),
-            coef_half_life=kw.get("coef_half_life", 100.0),
+            coef_half_life=None if "q" in kw else kw.get("coef_half_life", 100.0),
             q=kw.get("q"),
             obs_var=kw.get("obs_var"),
             p0=kw.get("p0"),
@@ -226,7 +228,6 @@ class TestLargeData:
         common = dict(
             targets=["y0"],
             features=["x0", "x1"],
-            coef_half_life=INF,
             q=q,
             obs_var=noise * noise,
             half_life=2000.0,
@@ -281,7 +282,6 @@ class TestLargeData:
         common = dict(
             targets=["y0"],
             features=["x0"],
-            coef_half_life=INF,
             q=[0.0, 1e-4],
             obs_var=1.0,
             half_life=2000.0,
@@ -318,7 +318,6 @@ class TestLargeData:
             targets=["y0"],
             features=["x0", "x1"],
             fit_intercept=False,
-            coef_half_life=INF,
             q=[q, q],
             obs_var=r_obs,
             half_life=INF,

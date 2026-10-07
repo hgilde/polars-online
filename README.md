@@ -2759,7 +2759,7 @@ This code uses `df` from [Example data](#example-data):
 revert = po.spec.kalman(
     "k", targets=["y"], features=["signal_a", "signal_b"], clock="t", gap_cap=10.0,
     half_life=200.0,                   # how fast the noise estimate and the standardization forget
-    coef_half_life=100.0,              # required: how fast a coefficient may drift
+    coef_half_life=100.0,              # how fast a coefficient may drift; or q, never both
     revert_half_life=[float("inf"), 50.0, 50.0],   # inf leaves the intercept alone; the slopes revert at 50
     standardize=True,                  # the default
     p0=1.0,                            # the default: the prior variance is p0 times the first noise estimate

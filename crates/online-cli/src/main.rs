@@ -95,6 +95,36 @@ struct Cli {
     quiet: bool,
 }
 
+/// The spec and the key of its model a TOML type error is about. serde
+/// reads a model, an internally tagged enum, into a buffer before the
+/// variant, so the error points at the `[specs.model]` table and names no
+/// key (review 2026-10-06, PC11). Each model's keys are read again alone
+/// beside its `type`, and the first that gives the same message is the one.
+fn model_key(text: &str, msg: &str) -> Option<String> {
+    let doc: toml::Table = toml::from_str(text).ok()?;
+    for spec in doc.get("specs")?.as_array()? {
+        let Some(model) = spec.get("model").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        let Some(tag) = model.get("type") else {
+            continue;
+        };
+        for (key, value) in model.iter().filter(|(k, _)| k.as_str() != "type") {
+            let mut alone = toml::Table::new();
+            alone.insert("type".into(), tag.clone());
+            alone.insert(key.clone(), value.clone());
+            let refused = toml::Value::Table(alone)
+                .try_into::<online_polars::ModelKind>()
+                .is_err_and(|e| e.message() == msg);
+            if refused {
+                let name = spec.get("name").and_then(toml::Value::as_str).unwrap_or("");
+                return Some(format!("spec {name:?}: model.{key}"));
+            }
+        }
+    }
+    None
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -122,8 +152,9 @@ fn run() -> Result<(), String> {
         } else {
             ""
         };
+        let key = model_key(&text, e.message()).map_or(String::new(), |at| format!("\nat {at}"));
         format!(
-            "parsing {}: {}{backslash_hint}",
+            "parsing {}: {}{key}{backslash_hint}",
             cli.config.display(),
             online_polars::name_renamed(&e.to_string())
         )

@@ -249,20 +249,37 @@ impl RobustCfg {
         match self.loss {
             RobustLoss::Huber { delta } => {
                 if delta <= 0.0 || delta.is_nan() {
-                    return Err("huber_delta must be > 0".into());
+                    return Err(format!("robust: huber_delta must be > 0, got {delta}"));
                 }
             }
             RobustLoss::Quantile { tau } => {
                 if !(0.0..=1.0).contains(&tau) || tau == 0.0 || tau == 1.0 {
-                    return Err("quantile must be in (0, 1)".into());
+                    return Err(format!("robust: quantile must be in (0, 1), got {tau}"));
                 }
             }
         }
-        if self.ridge < 0.0 {
-            return Err("ridge must be >= 0".into());
+        // What the spec layer refuses, refused here too, so the Rust API and
+        // a state file are held to it (review 2026-10-06, CC7): a NaN ridge
+        // passed `< 0` and failed every solve; a NaN `quantile_eps` passed
+        // `<= 0` and read as the band's floor alone, and at `inf` every row
+        // was a band row aimed at `y + inf·(tau − 1/2)`.
+        if !(self.ridge.is_finite() && self.ridge >= 0.0) {
+            return Err(format!(
+                "robust: ridge must be finite and >= 0, got {}",
+                self.ridge
+            ));
         }
-        if self.quantile_eps <= 0.0 {
-            return Err("quantile_eps must be > 0".into());
+        if !(self.quantile_eps.is_finite() && self.quantile_eps > 0.0) {
+            return Err(format!(
+                "robust: quantile_eps must be finite and > 0, got {}",
+                self.quantile_eps
+            ));
+        }
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "robust: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
         }
         Ok(())
     }
@@ -1343,16 +1360,25 @@ mod tests {
                 .unwrap();
         }
 
-        // ridge may be zero; quantile_eps may not (it divides).
-        bad(huber, &|c| c.ridge = -1e-9, "ridge must be >= 0");
+        // ridge may be zero; quantile_eps may not (it divides). Each named
+        // with its value (review 2026-10-06, CC7).
+        bad(
+            huber,
+            &|c| c.ridge = -1e-9,
+            "ridge must be finite and >= 0, got -0.000000001",
+        );
         let mut ok = cfg(2, 1, huber);
         ok.ridge = 0.0;
         ok.validate().unwrap();
-        bad(huber, &|c| c.quantile_eps = 0.0, "quantile_eps must be > 0");
+        bad(
+            huber,
+            &|c| c.quantile_eps = 0.0,
+            "quantile_eps must be finite and > 0, got 0",
+        );
         bad(
             huber,
             &|c| c.quantile_eps = -1.0,
-            "quantile_eps must be > 0",
+            "quantile_eps must be finite and > 0, got -1",
         );
     }
 

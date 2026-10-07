@@ -43,14 +43,15 @@ pub(crate) fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T,
 fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, String> {
     let mut de = serde_json::Deserializer::from_str(json);
     serde_path_to_error::deserialize(&mut de).map_err(|e| {
-        let path = e.path().to_string();
+        let mut path = e.path().to_string();
         // serde_json appends " at line L column C" to every message; the
         // path replaces it.
+        let model = model_key(json, e.path(), &message_of(&e.inner().to_string()));
         let inner = e.into_inner().to_string();
-        let msg = inner
-            .rsplit_once(" at line ")
-            .map_or(inner.as_str(), |(m, _)| m)
-            .to_string();
+        let msg = message_of(&inner);
+        if let Some(key) = model {
+            path = format!("{path}.{key}");
+        }
         let at = if path == "." {
             String::new()
         } else {
@@ -58,6 +59,50 @@ fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<
         };
         format!("invalid {what}: {at}{}", online_polars::name_renamed(&msg))
     })
+}
+
+/// A serde_json message without the " at line L column C" it ends with.
+fn message_of(inner: &str) -> String {
+    inner
+        .rsplit_once(" at line ")
+        .map_or(inner, |(m, _)| m)
+        .to_string()
+}
+
+/// The key of a spec's model an error is about, where the path stops at
+/// `model`: serde reads an internally tagged enum into a buffer before it
+/// reads the variant, so a type error inside it named no key -- `[0].model:
+/// invalid type: string "inf", expected f64` for `micro`'s `eps` (review
+/// 2026-10-06, PC11). Each key is read again alone beside the tag, and the
+/// one that gives the same message is the one; `None` where none does.
+fn model_key(json: &str, path: &serde_path_to_error::Path, msg: &str) -> Option<String> {
+    use serde_path_to_error::Segment;
+    let segments: Vec<&Segment> = path.iter().collect();
+    if !matches!(segments.last(), Some(Segment::Map { key }) if key == "model") {
+        return None;
+    }
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut node = &root;
+    for s in &segments {
+        node = match s {
+            Segment::Seq { index } => node.get(*index)?,
+            Segment::Map { key } => node.get(key.as_str())?,
+            Segment::Enum { .. } | Segment::Unknown => return None,
+        };
+    }
+    let model = node.as_object()?;
+    let tag = model.get("type")?;
+    model
+        .iter()
+        .filter(|(k, _)| k.as_str() != "type")
+        .find(|(k, v)| {
+            let mut alone = serde_json::Map::new();
+            alone.insert("type".into(), tag.clone());
+            alone.insert((*k).clone(), (*v).clone());
+            serde_json::from_value::<online_polars::ModelKind>(serde_json::Value::Object(alone))
+                .is_err_and(|e| e.to_string() == msg)
+        })
+        .map(|(k, _)| k.clone())
 }
 
 fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {

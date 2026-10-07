@@ -152,7 +152,9 @@ class TestOracle:
             update_every=update_every,
             split_merge=split_merge,
             split_merge_every=50,
-            dead_frac=0.1,
+            # The dead rule runs at a split-merge check: without one it is
+            # 0, and above it refused (review 2026-10-06, CF6).
+            dead_frac=0.1 if split_merge > 0.0 else 0.0,
             seed=3,
         )
         out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
@@ -804,10 +806,20 @@ class TestEdgeCases:
         assert out["dist"].null_count() == 5
         assert set(out["cluster"].drop_nulls().to_list()) == {0}
 
-    def test_k_larger_than_warm_rows_waits_for_k_rows(self):
+    def test_warm_rows_below_k_is_refused_and_k_rows_seed_k_centres(self):
+        """``max(warm_rows, k)`` rows were buffered, so ``warm_rows=1`` beside
+        ``k=10`` meant 10 without a word; it is refused by name, as ``hmm``
+        refuses it (review 2026-10-06, PC8). At ``warm_rows = k`` the model
+        seeds on the k-th row, as the floor did."""
+        with pytest.raises(
+            ValueError,
+            match=r'spec "m": kmeans: warm_rows must be at least k \(10\) to seed that many '
+            r"centres, got 1",
+        ):
+            spec(k=10, warm_rows=1, min_weight=1.0)
         X, _ = blobs(n=100, k=3, seed=22)
         out = unnested(
-            po.ModelBank([spec(k=10, warm_rows=1, min_weight=1.0)]).fit_predict(frame(X))
+            po.ModelBank([spec(k=10, warm_rows=10, min_weight=1.0)]).fit_predict(frame(X))
         )
         assert out["cluster"].is_not_null().arg_max() == 10
         assert out["coef"][-1] is not None and len(out["coef"][-1]) == 20

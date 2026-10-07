@@ -34,6 +34,13 @@ from polars_online._polars_online import (
 )
 
 
+def _who(name: Any) -> str:
+    """How a refusal names a spec: ``spec "<name>"``, or, for a hand-built
+    dict with no name, ``a spec with no name`` -- which read ``spec null``
+    (review 2026-10-06, YA6)."""
+    return "a spec with no name" if name is None else f"spec {json.dumps(name)}"
+
+
 def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
     """JSON has no infinity literal, but ``half_life=inf`` is meaningful (it pins
     a coefficient), so infinities are encoded as strings the Rust side
@@ -56,7 +63,7 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
         if isinstance(v, numbers.Real):
             v = float(v)
             if math.isnan(v):
-                raise ValueError(f"spec {json.dumps(who)}: {key} must not be NaN")
+                raise ValueError(f"{_who(who)}: {key} must not be NaN")
             if math.isinf(v):
                 return "inf" if v > 0 else "-inf"
             return v
@@ -67,12 +74,12 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
         if isinstance(v, pl.Expr) and key == "targets":
             # A window expression in `targets`, as the builders take one
             # (review R2, P5: every surface that writes a spec dict).
-            return enc(formula_target(f"spec {json.dumps(who)}", v), key, who)
+            return enc(formula_target(_who(who), v), key, who)
         if isinstance(v, (pl.Expr, timedelta)):
             if key in _CLOCK_KEYS:
-                return duration_text(v, f"spec {json.dumps(who)}", key)
+                return duration_text(v, _who(who), key)
             raise TypeError(
-                f"spec {json.dumps(who)}: {key} takes no {type(v).__name__}; a duration is "
+                f"{_who(who)}: {key} takes no {type(v).__name__}; a duration is "
                 "a clock parameter's, and a window expression is a target's"
             )
         return v
@@ -312,6 +319,49 @@ _AT_LEAST_ONE = frozenset(
 )
 
 
+#: The int parameters that are a ``u32`` on the Rust side; every other count
+#: is a ``u64`` (``usize`` on the 64-bit platforms the package ships for).
+#: A count past the width was named by serde as ``model`` (review
+#: 2026-10-06, YA4); ``test_an_int_past_the_rust_width_is_refused_by_name``
+#: holds this table to the Rust side.
+_U32 = frozenset(
+    {
+        "max_rows_between_coefs",
+        "max_rows_between_solves",
+        "max_rows_between_snapshots",
+        "max_rows_between_pca",
+        "max_rows_between_prunes",
+        "max_iter",
+        "update_every",
+        "split_merge_every",
+    }
+)
+
+#: The counts whose ceiling is tighter than their width: each sizes an
+#: allocation before the first row -- a ring of that many rows, or the
+#: permutation draws held for a quantile -- and Rust refuses past it too
+#: (``online_core::MAX_LAG``, ``MAX_PERM``; review 2026-10-06, CD10). For a
+#: list of counts, each entry's ceiling.
+_CEILING = {"lags": 2**20, "resid_autocorr_lag": 2**20, "n_perm": 2**20}
+
+
+def _int_ceiling(key: str) -> int:
+    """The most an int parameter may be: its own ceiling, else its width."""
+    return _CEILING.get(key, 2**32 - 1 if key in _U32 else 2**64 - 1)
+
+
+def _lists(value: Any) -> Any:
+    """``value`` with every tuple a list, at any depth: the dict a builder
+    returns is the one the bank reports back, and ``features=("x0",)`` kept
+    its tuple, so ``ModelBank([s]).specs[0] != s`` (review 2026-10-06,
+    YA5)."""
+    if isinstance(value, (list, tuple)):
+        return [_lists(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _lists(v) for k, v in value.items()}
+    return value
+
+
 #: The parameters task 144 renamed (docs/PLAN.md): an old name is refused
 #: naming the new one, with no alias.
 _RENAMED = {
@@ -378,6 +428,11 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 floor = 1 if key in _AT_LEAST_ONE else 0
                 if value < floor:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
+                # And at most its width, or the tighter ceiling of a count
+                # that sizes an allocation (review 2026-10-06, YA4 and CD10).
+                ceiling = _int_ceiling(key)
+                if int(value) > ceiling:
+                    raise ValueError(f"{who}: {key} must be <= {ceiling}, got {value}")
             # And each entry of a list of counts (review 2026-09-26, F7: a
             # negative lag was named by serde as `model`).
             if (
@@ -389,13 +444,19 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 floor = 1 if key in _AT_LEAST_ONE else 0
                 if min(value) < floor:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {_got(value)}")
+                ceiling = _int_ceiling(key)
+                if max(value) > ceiling:
+                    raise ValueError(f"{who}: {key} must be <= {ceiling}, got {_got(value)}")
             if key not in inf_ok and key not in _INF_REFUSED_BY_RUST and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
         # A clock parameter's duration, however it was written, is kept as
         # the text a TOML config writes and a state file stores (task 88),
-        # and an infinity word as the number it names (YA7).
+        # and an infinity word as the number it names (YA7). Every tuple is a
+        # list, as the bank reports the dict back (YA5).
         written = {
-            key: infinity_as_number(duration_text(value, who, key)) if key in clock else value
+            key: infinity_as_number(duration_text(_lists(value), who, key))
+            if key in clock
+            else _lists(value)
             for key, value in kwargs.items()
         }
         return typing.cast(Callable[..., R], fn)(*args, **written)
@@ -1029,7 +1090,12 @@ def ewridge(
     model: dict[str, Any] = {
         "type": "ew_ridge",
         "ridge": ridge,
-        "feature_sets": [[k, list(v)] for k, v in feature_sets.items()] if feature_sets else None,
+        # `{}` is written as `[]`, which the Rust side refuses by name, as it
+        # refuses a dict spec's `[]`: read as `None` it was no sets, in
+        # silence (review 2026-10-06, YA5).
+        "feature_sets": (
+            [[k, list(v)] for k, v in feature_sets.items()] if feature_sets is not None else None
+        ),
         "standardize": standardize,
         "ridge_scale": ridge_scale,
         "coef_prior": coef_prior,
@@ -1552,7 +1618,7 @@ def kalman(
     *,
     targets: TargetList,
     features: list[str],
-    coef_half_life: float | Duration | list[float | Duration],
+    coef_half_life: float | Duration | list[float | Duration] | None = None,
     q: list[float] | None = None,
     obs_var: float | None = None,
     p0: float | None = None,
@@ -1609,11 +1675,14 @@ def kalman(
         steady-state gain at that spacing: the same half-life whether rows come
         every unit or every hundredth (docs/PLAN.md task 150). A scalar, or one
         value per slot with the intercept first; ``inf`` pins that coefficient.
-        Required. Not the spec's ``half_life``, which drives the standardization
-        and the residual variance.
+        Required unless ``q`` is given, and refused beside it. Not the spec's
+        ``half_life``, which drives the standardization and the residual
+        variance.
     ``q``
-        The process noise given outright, ``q_i`` per slot, which skips the
+        The process noise given outright, ``q_i`` per slot, in place of the
         derivation from ``coef_half_life``; added as ``q_i * d ** 2`` per row.
+        Exactly one of the two is given: the half-life was required, and
+        ignored beside ``q``.
     ``obs_var``
         A fixed observation noise, in place of the EW residual variance.
     ``p0``
@@ -1691,8 +1760,8 @@ def kalman(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`); ``coef_half_life`` is
-    required.
+    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for
+    neither or both of ``coef_half_life`` and ``q``.
     """
     model: dict[str, Any] = {
         "type": "kalman",
@@ -2223,7 +2292,8 @@ def ew_cov(
         recursion, both legs centred at the mean before each row, not as a
         batch EW lagged covariance about the final mean, which a frame in
         memory would compute. Lags are counted in learned rows within the
-        group, not clock units, and must be strictly increasing and ``>= 1``;
+        group, not clock units, and must be strictly increasing, ``>= 1`` and
+        at most 2^20 (1,048,576), the ring being sized before the first row;
         the list order is the output order. The ring of past rows is emptied
         on a session change and on a clock gap beyond ``gap_cap``, one row's
         or a run of skipped rows' whose total the ceiling cut. Those are the
@@ -2871,10 +2941,13 @@ def kmeans(
     .. rubric:: Parameters
 
     ``k``
-        The number of centres; required.
+        The number of centres; required, and at most 65,536 (2^16): every row
+        is scored against every centre, and seeding is ``O(k^2)``.
     ``warm_rows``, ``seed_rule``, ``seed``
-        Seeding. The first ``max(warm_rows, k)`` learned rows (default 500)
-        are buffered, then the centres are placed by ``seed_rule``:
+        Seeding. The first ``warm_rows`` learned rows are buffered: at least
+        ``k``, and a smaller value is refused; default 500, or ``k`` where
+        that is more. The buffer is held to 256 MiB, each row its values and
+        its weight. Then the centres are placed by ``seed_rule``:
 
         .. list-table::
            :header-rows: 1
@@ -2918,7 +2991,9 @@ def kmeans(
         (default 0.05; ``0`` disables). A centre whose cluster vanished is
         re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the
         default, 2 at 0.25). A cluster lighter than ``dead_frac / k`` of the
-        stream loses its centre whenever any row is far.
+        stream loses its centre whenever any row is far. The rule runs at a
+        split-merge check, so beside ``split_merge = 0``, which runs none,
+        the default is 0 and a value above 0 is refused.
     ``standardize``
         Measure distances in units of each feature's EW standard deviation,
         tracked alongside the centres; the coordinates themselves are never
@@ -2985,7 +3060,9 @@ def kmeans(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, which this model has not got.
+    ``targets``, which this model has not got; ``ValueError`` for ``k`` past
+    2^16, ``warm_rows`` below ``k`` or a warm-up buffer past 256 MiB, and
+    ``dead_frac`` above 0 beside ``split_merge = 0``.
     """
     model: dict[str, Any] = {
         "type": "kmeans",
@@ -3573,9 +3650,10 @@ def marginal(
     .. rubric:: Parameters
 
     ``lags``, ``cross_lags``, ``serial_rule``
-        The pair's moments at those lags too. A lag counts learned rows within
-        the group, not rows where that target was present, since the ring is
-        shared. For a sparsely present target the lag is a row distance, not
+        The pair's moments at those lags too, each at most 2^20 (1,048,576),
+        the ring being sized before the first row. A lag counts learned rows
+        within the group, not rows where that target was present, since the
+        ring is shared. For a sparsely present target the lag is a row distance, not
         an observation distance. They add four list columns per pair to the
         table. ``lagcorr_xx`` and ``lagcorr_yy`` are the two series' own
         autocorrelations. ``lagcorr_xy`` is the feature now against the target
@@ -3833,30 +3911,32 @@ def marginal(
     - ``shards`` below 1, or a string other than ``"auto"``.
     """
     edges: list[list[float]] | None
+    # `spec "m":` as every other refusal, where these read `marginal 'm':`
+    # (review 2026-10-06, YA6).
+    who = _who(name)
     if isinstance(bin_edges, dict):
         missing = [f for f in features if f not in bin_edges]
         if missing:
             raise ValueError(
-                f"marginal {name!r}: bin_edges is missing {missing}; give a list of "
+                f"{who}: bin_edges is missing {missing}; give a list of "
                 "edges for every feature, or pass a list of lists in features order"
             )
         extra = [f for f in bin_edges if f not in features]
         if extra:
-            raise ValueError(f"marginal {name!r}: bin_edges has {extra}, which are not features")
+            raise ValueError(f"{who}: bin_edges has {extra}, which are not features")
         edges = [list(bin_edges[f]) for f in features]
     elif bin_edges is not None:
         edges = [list(e) for e in bin_edges]
         if len(edges) != len(features):
             raise ValueError(
-                f"marginal {name!r}: bin_edges has {len(edges)} lists for "
+                f"{who}: bin_edges has {len(edges)} lists for "
                 f"{len(features)} features; one list per feature, in features order"
             )
     else:
         edges = None
     if isinstance(shards, str) and shards != "auto":
         raise ValueError(
-            f"marginal {name!r}: shards must be a number of shards of at least 1 or "
-            f'"auto", got {shards!r}'
+            f'{who}: shards must be a number of shards of at least 1 or "auto", got {shards!r}'
         )
     model: dict[str, Any] = {
         "type": "marginal",
@@ -4037,7 +4117,8 @@ def deco(
         "dynamics": dynamics,
         "alpha": alpha,
         "beta": beta,
-        "blocks": [[k, list(v)] for k, v in blocks.items()] if blocks else None,
+        # `{}` as `[]`, refused by name as `feature_sets={}` is (YA5).
+        "blocks": [[k, list(v)] for k, v in blocks.items()] if blocks is not None else None,
     }
     targets = _mirror_target(name, "deco", features, common, "its equicorrelation is over")
     return _common(name, model, targets=targets, features=features, **common)
@@ -4515,8 +4596,8 @@ def corrchange(
         ``"window"``: a fixed threshold, in place of the permutation
         quantile. ``"sequential"``: replaces Wied & Galeano's critical value.
     ``n_perm``, ``permute_every``, ``perm_block``, ``seed``
-        ``"window"``'s permutation quantile: ``n_perm`` (default 200) draws,
-        redrawn every ``permute_every`` rows (default 50), in blocks of
+        ``"window"``'s permutation quantile: ``n_perm`` (default 200, at most
+        2^20) draws, redrawn every ``permute_every`` rows (default 50), in blocks of
         ``perm_block`` rows (default 1). ``seed`` (default 0) seeds the
         draws, so two runs with the same seed report the same critical
         values.
@@ -4715,7 +4796,8 @@ def hmm(
         The Dirichlet pseudo-count per cell (default 1), and a matrix to
         spread that mass over instead of flat, so the given matrix is the
         prior mean. A row with no counts is that mean, the given matrix or
-        uniform, ``transition_prior = 0`` included.
+        uniform, ``transition_prior = 0`` included. Both are refused beside
+        ``tvtp_coef``, which learns no count.
     ``means``, ``covs``
         The states given outright (``K x d`` and ``K`` matrices of ``d x d``,
         both flattened row-major), and then there is no warm-up. Each
@@ -4732,7 +4814,8 @@ def hmm(
         until then. The buffered rows age as ``weight_sum`` does, so the
         states start at the weight ``weight_sum`` says, not at the rows' raw
         weights. The buffer should span more than one regime, or the seeds
-        are two halves of one.
+        are two halves of one. With ``means`` and ``covs`` given nothing is
+        seeded, and the three are refused.
     ``exog_tvtp``, ``tvtp_coef``
         A column (declared like ``weight``, not a feature) whose value drives
         the matrix instead: ``Pi_kl(t) = softmax_l(A_kl + B_kl z_t)`` from
@@ -4795,7 +4878,9 @@ def hmm(
     - ``learn = False`` without states;
     - ``means`` or ``covs`` of the wrong shape, or a ``covs`` block that is
       not positive definite;
-    - ``transition`` that is not ``k x k``.
+    - ``transition`` that is not ``k x k``;
+    - ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
+      ``warm_rows``, ``seed_rule`` or ``seed`` beside given states.
     """
     model: dict[str, Any] = {
         "type": "hmm",
@@ -4826,8 +4911,8 @@ def rcov(
     kind: str = "kernel",
     kernel: str = "parzen",
     bandwidth: int | None = None,
-    jitter: int = 2,
-    theta: float = 1.0,
+    jitter: int | None = None,
+    theta: float | None = None,
     psd: bool = True,
     block_rows: int | None = None,
     max_bandwidth: int | None = None,
@@ -4903,12 +4988,17 @@ def rcov(
         clipped, and reports ``bandwidth_used``. ``max_bandwidth`` fixes the ring
         depth itself (default ``ceil(c* block_rows^(3/5))`` under the automatic
         bandwidth, the depth at which the noise equals the block's integrated
-        variance); it must not cap the ring below a fixed ``bandwidth``.
+        variance); it must not cap the ring below a fixed ``bandwidth``. The
+        ring's lagged products, ``(ring + 1) * k^2`` doubles for ``k``
+        features, are held to 256 MiB before the first row. All three are
+        ``"kernel"``'s, and refused under the other kinds.
     ``jitter``
         Observations averaged at each end. Default 2; ``1`` is no jitter, and the
-        paper's own ``m = 1..4`` move the estimate by under 0.5%.
+        paper's own ``m = 1..4`` move the estimate by under 0.5%. ``"kernel"``
+        only: the other kinds read no ends, and refuse it.
     ``theta``, ``psd``, ``preavg_rows``
-        ``"preavg"``'s window scale (default 1.0), form and override. ``psd =
+        ``"preavg"``'s window scale (default 1.0; refused under the other
+        kinds, which read no window), form and override. ``psd =
         False`` is the balanced, bias-corrected form (optimal rate, not guaranteed
         PSD); ``psd = True`` (the default) is the longer window ``k_n =
         ceil(theta * block_rows^0.6)`` without the bias term, and clips any
@@ -4999,9 +5089,10 @@ def rcov(
     a ``max_bandwidth`` below a fixed ``bandwidth``, for a ``preavg_rows``
     below 2, or below 3 under ``psd = False``, for a ``bandwidth``,
     ``max_bandwidth`` or ``preavg_rows`` above ``block_rows``, for a ``theta``
-    whose window is longer than ``block_rows``, and for a ring, window,
+    whose window is longer than ``block_rows``, for a ring, window,
     ``jitter`` or stride above 2^20 (1,048,576), the most this model sizes a
-    ring.
+    ring, for lagged products past 256 MiB, and for ``jitter``,
+    ``max_bandwidth`` or ``theta`` under a kind that does not read it.
     """
     model: dict[str, Any] = {
         "type": "rcov",

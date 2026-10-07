@@ -211,11 +211,12 @@ pub struct PairMix<'a> {
 }
 
 /// The rules `lags` and `cross_lags` keep: non-empty, from 1, strictly
-/// increasing, and each cross lag one of the lags. What
-/// [`MarginalLags::new`] needs, checked by `MarginalCfg::validate` too, so
-/// a restored state's configuration is held to them as a fresh model's is:
-/// `lags = [0]` in a state passed its shape check and indexed an empty ring
-/// (review 2026-10-06, CD14).
+/// increasing, none past [`crate::MAX_LAG`] (the rings are sized from the
+/// deepest before the first row; review 2026-10-06, CD10), and each cross
+/// lag one of the lags. What [`MarginalLags::new`] needs, checked by
+/// `MarginalCfg::validate` too, so a restored state's configuration is held
+/// to them as a fresh model's is: `lags = [0]` in a state passed its shape
+/// check and indexed an empty ring (review 2026-10-06, CD14).
 pub(crate) fn check_lags(lags: &[usize], cross_lags: Option<&[usize]>) -> Result<(), String> {
     if lags.is_empty() {
         return Err("marginal: lags must not be empty".into());
@@ -226,6 +227,7 @@ pub(crate) fn check_lags(lags: &[usize], cross_lags: Option<&[usize]>) -> Result
     if lags.windows(2).any(|w| w[1] <= w[0]) {
         return Err("marginal: lags must be strictly increasing".into());
     }
+    crate::ewlagcov::check_lag_ceiling("marginal: lags", lags[lags.len() - 1])?;
     if let Some(c) = cross_lags {
         if c.windows(2).any(|w| w[1] <= w[0]) {
             return Err("marginal: cross_lags must be strictly increasing".into());

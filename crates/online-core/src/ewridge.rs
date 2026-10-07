@@ -233,6 +233,19 @@ impl EwRidgeCfg {
         if self.ridge.is_empty() {
             return Err("ridge grid must have at least one value".into());
         }
+        // What the spec layer refuses, refused here too, so the Rust API and
+        // a state file are held to it (review 2026-10-06, CA6): a negative
+        // ridge makes the system indefinite, and NaN or inf poisons every
+        // solve; a NaN `min_weight` is never reached.
+        if let Some(r) = self.ridge.iter().find(|r| !(r.is_finite() && **r >= 0.0)) {
+            return Err(format!("ewridge: ridge must be finite and >= 0, got {r}"));
+        }
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "ewridge: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
+        }
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
                 return Err(format!(
@@ -311,7 +324,7 @@ impl EwRidgeCfg {
         }
         match (self.session_shrink, self.long_half_life) {
             (Some(f), _) if !(0.0..=1.0).contains(&f) => {
-                return Err("session_shrink must be in [0, 1]".into());
+                return Err(format!("session_shrink must be in [0, 1], got {f}"));
             }
             (Some(_), None) => {
                 return Err("session_shrink needs long_half_life (the slow twin's decay)".into());
@@ -320,7 +333,7 @@ impl EwRidgeCfg {
                 return Err("long_half_life has no effect without session_shrink".into());
             }
             (Some(_), Some(h)) if h <= 0.0 || h.is_nan() => {
-                return Err("long_half_life must be > 0".into());
+                return Err(format!("long_half_life must be > 0, got {h}"));
             }
             _ => {}
         }

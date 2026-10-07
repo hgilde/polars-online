@@ -735,13 +735,15 @@ const MEMORY_BUDGET: usize = 256 << 20;
 
 fn budget_check(what: &str, bytes: usize, budget_mib: f64, detail: &str) -> Result<(), String> {
     // In MiB, as the budget is given: a budget of `inf` holds every size.
+    // Said in MiB too, with the digits to read above the budget: in GiB to
+    // two decimals a small one read "0.00 GiB" (review 2026-10-06, CD16).
     let mib = bytes as f64 / (1u64 << 20) as f64;
     if mib > budget_mib {
         return Err(format!(
-            "marginal: {what} would need {:.2} GiB ({detail}), over the {budget_mib} MiB each \
+            "marginal: {what} would need {} MiB ({detail}), over the {budget_mib} MiB each \
              group's model is held to; raise bin_budget, or ask for fewer bins, targets or \
              features",
-            mib / 1024.0,
+            crate::budget::mib_over(mib, budget_mib),
         ));
     }
     Ok(())
@@ -1362,6 +1364,31 @@ mod tests {
         };
         let err = given.validate(10, 1).unwrap_err();
         assert!(err.contains("the bin histogram"), "{err}");
+    }
+
+    /// The size is given in the budget's unit, MiB, with the digits to read
+    /// above it: a small budget read "would need 0.00 GiB (...), over the
+    /// 0.000001 MiB" (review 2026-10-06, CD16).
+    #[test]
+    fn a_refusal_names_the_size_in_the_budgets_unit() {
+        let cfg = BinCfg {
+            n_bins: 4,
+            edges: None,
+            rule: BinRule::Quantile,
+            warm_rows: 8,
+            budget_mib: Some(1e-6),
+        };
+        let err = cfg.validate(1, 1).unwrap_err();
+        assert!(!err.contains("GiB"), "{err}");
+        let shown: f64 = err
+            .split("would need ")
+            .nth(1)
+            .and_then(|s| s.split(" MiB (").next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("no size in MiB: {err}"));
+        let mib = hold_bytes(8, 1, 1) as f64 / f64::from(1 << 20);
+        assert!(shown > 1e-6 && (shown - mib).abs() <= 0.005 * mib, "{err}");
+        assert!(err.contains("over the 0.000001 MiB"), "{err}");
     }
 
     /// The budget applies to explicit edges as it does to learned ones, and

@@ -59,7 +59,8 @@ class TestKalmanOracle:
             gap_cap=MAXD,
             weight="w",
             half_life=kw.get("half_life", 500.0),
-            coef_half_life=kw.get("coef_half_life", 100.0),
+            # One or the other (review 2026-10-06, PC6).
+            coef_half_life=None if "q" in kw else kw.get("coef_half_life", 100.0),
             q=kw.get("q"),
             obs_var=kw.get("obs_var"),
             p0=kw.get("p0"),

@@ -1278,6 +1278,274 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
     assert_eq!(seen.len(), models, "{seen:?}");
 }
 
+/// Each core `validate` refuses what the spec layer refuses (`spec.rs`),
+/// naming the model, the parameter and the value, so the Rust API and a
+/// state file are held to the rule a spec is. Each of these built a model
+/// that learned nothing, predicted 0 or poisoned its state with a NaN that
+/// never washes out, with no error: a NaN or negative `ridge`, a `tol` that
+/// is not a positive number, a `select_half_life` of 0 (the selection
+/// weight `2^(-0/0)`), a path point that is not a number, an infinite `rls`
+/// ridge, a NaN `min_weight`, a `quantile_eps` of NaN or infinity, an
+/// infinite `p0`, `obs_var` or `q` (review 2026-10-06, CA6 and CC7). The
+/// legal neighbours -- `inf` where it means something -- still build.
+#[test]
+fn every_core_validate_refuses_what_the_spec_refuses() {
+    let (nan, inf) = (f64::NAN, f64::INFINITY);
+    let ewridge = |c: EwRidgeCfg| EwRidge::new(c).map(drop);
+    let lasso = |c: LassoCfg| Lasso::new(c).map(drop);
+    let rls = |c: RlsCfg| Rls::new(c).map(drop);
+    let robust = |c: RobustCfg| Robust::new(c).map(drop);
+    let kalman = |c: KalmanCfg| Kalman::new(c).map(drop);
+    let huber = || robust_cfg(ROBUST_LOSSES[0]);
+    let quantile = || robust_cfg(ROBUST_LOSSES[1]);
+    let refused: Vec<(Result<(), String>, &str)> = vec![
+        (
+            ewridge(EwRidgeCfg {
+                ridge: vec![1e-6, nan],
+                ..ew_ridge_cfg()
+            }),
+            "ewridge: ridge must be finite and >= 0, got NaN",
+        ),
+        (
+            ewridge(EwRidgeCfg {
+                ridge: vec![-1.0],
+                ..ew_ridge_cfg()
+            }),
+            "ewridge: ridge must be finite and >= 0, got -1",
+        ),
+        (
+            ewridge(EwRidgeCfg {
+                ridge: vec![inf],
+                ..ew_ridge_cfg()
+            }),
+            "ewridge: ridge must be finite and >= 0, got inf",
+        ),
+        (
+            ewridge(EwRidgeCfg {
+                min_weight: nan,
+                ..ew_ridge_cfg()
+            }),
+            "ewridge: min_weight must be >= 0, got NaN",
+        ),
+        (
+            lasso(LassoCfg {
+                tol: nan,
+                ..lasso_cfg()
+            }),
+            "lasso: tol must be finite and > 0, got NaN",
+        ),
+        (
+            lasso(LassoCfg {
+                tol: 0.0,
+                ..lasso_cfg()
+            }),
+            "lasso: tol must be finite and > 0, got 0",
+        ),
+        (
+            lasso(LassoCfg {
+                tol: inf,
+                ..lasso_cfg()
+            }),
+            "lasso: tol must be finite and > 0, got inf",
+        ),
+        (
+            lasso(LassoCfg {
+                select_half_life: Some(0.0),
+                ..lasso_cfg()
+            }),
+            "lasso: select_half_life must be > 0, got 0",
+        ),
+        (
+            lasso(LassoCfg {
+                select_half_life: Some(nan),
+                ..lasso_cfg()
+            }),
+            "lasso: select_half_life must be > 0, got NaN",
+        ),
+        (
+            lasso(LassoCfg {
+                lasso_path: vec![nan],
+                ..lasso_cfg()
+            }),
+            "lasso: lasso_path values must be finite and >= 0, got NaN",
+        ),
+        (
+            lasso(LassoCfg {
+                lasso_path: vec![inf, 0.1],
+                ..lasso_cfg()
+            }),
+            "lasso: lasso_path values must be finite and >= 0, got inf",
+        ),
+        (
+            lasso(LassoCfg {
+                min_weight: nan,
+                ..lasso_cfg()
+            }),
+            "lasso: min_weight must be >= 0, got NaN",
+        ),
+        (
+            rls(RlsCfg {
+                ridge: inf,
+                ..rls_cfg()
+            }),
+            "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got inf",
+        ),
+        (
+            rls(RlsCfg {
+                ridge: nan,
+                ..rls_cfg()
+            }),
+            "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got NaN",
+        ),
+        (
+            rls(RlsCfg {
+                min_weight: nan,
+                ..rls_cfg()
+            }),
+            "rls: min_weight must be >= 0, got NaN",
+        ),
+        (
+            robust(RobustCfg {
+                ridge: nan,
+                ..huber()
+            }),
+            "robust: ridge must be finite and >= 0, got NaN",
+        ),
+        (
+            robust(RobustCfg {
+                ridge: inf,
+                ..quantile()
+            }),
+            "robust: ridge must be finite and >= 0, got inf",
+        ),
+        (
+            robust(RobustCfg {
+                quantile_eps: nan,
+                ..quantile()
+            }),
+            "robust: quantile_eps must be finite and > 0, got NaN",
+        ),
+        (
+            robust(RobustCfg {
+                quantile_eps: inf,
+                ..quantile()
+            }),
+            "robust: quantile_eps must be finite and > 0, got inf",
+        ),
+        (
+            robust(RobustCfg {
+                min_weight: nan,
+                ..huber()
+            }),
+            "robust: min_weight must be >= 0, got NaN",
+        ),
+        (
+            robust(RobustCfg {
+                loss: RobustLoss::Huber { delta: nan },
+                ..huber()
+            }),
+            "robust: huber_delta must be > 0, got NaN",
+        ),
+        (
+            robust(RobustCfg {
+                loss: RobustLoss::Quantile { tau: 1.5 },
+                ..quantile()
+            }),
+            "robust: quantile must be in (0, 1), got 1.5",
+        ),
+        (
+            kalman(KalmanCfg {
+                p0: inf,
+                ..kalman_cfg()
+            }),
+            "kalman: p0 must be finite and > 0, got inf",
+        ),
+        (
+            kalman(KalmanCfg {
+                obs_var: Some(inf),
+                ..kalman_cfg()
+            }),
+            "kalman: obs_var must be finite and > 0, got inf",
+        ),
+        (
+            kalman(KalmanCfg {
+                q: Some(vec![0.0, inf, 0.0]),
+                ..kalman_cfg()
+            }),
+            "kalman: q values must be finite and >= 0, got inf",
+        ),
+        (
+            kalman(KalmanCfg {
+                min_weight: nan,
+                ..kalman_cfg()
+            }),
+            "kalman: min_weight must be >= 0, got NaN",
+        ),
+        (
+            kalman(KalmanCfg {
+                half_life: vec![nan],
+                ..kalman_cfg()
+            }),
+            "kalman: half_life values must be > 0 (inf pins), got NaN",
+        ),
+        (
+            kalman(KalmanCfg {
+                revert_half_life: vec![0.0],
+                ..kalman_cfg()
+            }),
+            "kalman: revert_half_life values must be > 0 (inf = random walk), got 0",
+        ),
+    ];
+    let wrong: Vec<String> = refused
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (got, msg))| match got {
+            Ok(()) => Some(format!("case {i} accepted, wanted: {msg}")),
+            Err(e) if !e.contains(msg) => Some(format!("case {i} refused as: {e}")),
+            Err(_) => None,
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let accepted: Vec<Result<(), String>> = vec![
+        ewridge(EwRidgeCfg {
+            ridge: vec![0.0],
+            min_weight: inf,
+            ..ew_ridge_cfg()
+        }),
+        lasso(LassoCfg {
+            select_half_life: Some(inf),
+            lasso_path: vec![0.0],
+            min_weight: inf,
+            ..lasso_cfg()
+        }),
+        rls(RlsCfg {
+            ridge: 1e300,
+            min_weight: inf,
+            ..rls_cfg()
+        }),
+        robust(RobustCfg {
+            ridge: 0.0,
+            loss: RobustLoss::Huber { delta: inf },
+            min_weight: inf,
+            ..huber()
+        }),
+        robust(RobustCfg {
+            quantile_eps: 1e-9,
+            ..quantile()
+        }),
+        kalman(KalmanCfg {
+            q: Some(vec![0.0; 3]),
+            obs_var: Some(1e300),
+            half_life: vec![inf],
+            min_weight: inf,
+            ..kalman_cfg()
+        }),
+    ];
+    for (i, got) in accepted.into_iter().enumerate() {
+        got.unwrap_or_else(|e| panic!("legal neighbour {i}: {e}"));
+    }
+}
+
 /// Exactly the models that solve on a schedule report a solve share --
 /// `ewridge`, `lasso`, and `robust` under both losses -- each the share it
 /// is given; every other model keeps the trait's `None` whatever it is set

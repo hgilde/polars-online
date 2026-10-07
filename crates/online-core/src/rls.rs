@@ -73,8 +73,19 @@ impl RlsCfg {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
-        if self.ridge <= 0.0 || self.ridge.is_nan() {
-            return Err("rls: ridge must be > 0 (it sets P0 = I / ridge)".into());
+        // Finite too, as the spec layer has it: at `inf` every rotation is
+        // skipped and every coefficient is 0 (review 2026-10-06, CA6).
+        if !(self.ridge.is_finite() && self.ridge > 0.0) {
+            return Err(format!(
+                "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got {}",
+                self.ridge
+            ));
+        }
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "rls: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
         }
         if let Some(c) = &self.coef_prior {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
@@ -465,9 +476,9 @@ mod tests {
         bad(&|c| c.n_features = 0, "must be >= 1");
         bad(&|c| c.n_targets = 0, "must be >= 1");
         // ridge sets P0 = I/ridge, so zero would be an infinite prior variance.
-        bad(&|c| c.ridge = 0.0, "ridge must be > 0");
-        bad(&|c| c.ridge = -1.0, "ridge must be > 0");
-        bad(&|c| c.ridge = f64::NAN, "ridge must be > 0");
+        bad(&|c| c.ridge = 0.0, "ridge must be finite and > 0");
+        bad(&|c| c.ridge = -1.0, "ridge must be finite and > 0");
+        bad(&|c| c.ridge = f64::NAN, "ridge must be finite and > 0");
         // coef_prior is one vector per target, each of length k_total (2 + intercept).
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),

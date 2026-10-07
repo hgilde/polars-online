@@ -329,7 +329,6 @@ class TestEachMixtureIsRefused:
                 clock="t",
                 half_life="10m",
                 gap_cap="30m",
-                coef_half_life="1h",
                 q=[0.0, 0.1],
             )
         # And on a temporal clock without any duration, lam is the number refused.

@@ -51,6 +51,27 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+/// The deepest lag a model keeps a ring for: the ring holds that many
+/// learned rows and is sized before the first row, so a lag past it is
+/// refused by name. `2^62` panicked "capacity overflow" and `10^11` reserved
+/// 2.4 TB (review 2026-10-06, CD10); the ceiling `rcov`'s rings have had
+/// since the review of 2026-10-05 (CE4). `ew_cov`'s and `marginal`'s `lags`
+/// and the residual autocorrelation's lag are held to it.
+pub const MAX_LAG: usize = 1 << 20;
+
+/// `lag`, the deepest of a list, held to [`MAX_LAG`]: the words every lag
+/// refusal says, after the owner's prefix (`what`), at each layer that
+/// checks one.
+pub fn check_lag_ceiling(what: &str, lag: usize) -> Result<(), String> {
+    if lag > MAX_LAG {
+        return Err(format!(
+            "{what} must be at most {MAX_LAG} (2^20), got {lag}: a ring of that many rows is \
+             sized before the first row"
+        ));
+    }
+    Ok(())
+}
+
 /// EW lagged cross-moments for a list of lags; see the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwLagCov {
@@ -66,9 +87,9 @@ pub struct EwLagCov {
 }
 
 impl EwLagCov {
-    /// `Err` naming the problem: an empty list, a zero lag, or a list that
-    /// is not strictly increasing (the order is the output order, so it is
-    /// not sorted in silence).
+    /// `Err` naming the problem: an empty list, a zero lag, a list that is
+    /// not strictly increasing (the order is the output order, so it is not
+    /// sorted in silence), or a lag past [`MAX_LAG`].
     pub fn new(k: usize, lags: Vec<usize>) -> Result<Self, String> {
         Self::check_lags(&lags)?;
         let l = lags.len();
@@ -82,10 +103,11 @@ impl EwLagCov {
     }
 
     /// The rules a list of lags keeps, which [`Self::new`] refuses a list
-    /// by: non-empty, none 0, strictly increasing. Checked without building
-    /// the accumulator, whose ring reserves `max(lags)` rows: `EwCovCfg`'s
-    /// check runs it, and a `restore` runs that, so a damaged lag reaches no
-    /// allocation there (review 2026-10-06, CF4).
+    /// by: non-empty, none 0, strictly increasing, none past [`MAX_LAG`].
+    /// Checked without building the accumulator, whose ring reserves
+    /// `max(lags)` rows: `EwCovCfg`'s check runs it, and a `restore` runs
+    /// that, so a damaged lag reaches no allocation there (review
+    /// 2026-10-06, CF4).
     pub fn check_lags(lags: &[usize]) -> Result<(), String> {
         if lags.is_empty() {
             return Err("lags must be non-empty".into());
@@ -103,7 +125,8 @@ impl EwLagCov {
                  order, so it is not sorted for you"
             ));
         }
-        Ok(())
+        let max = *lags.iter().max().expect("non-empty");
+        check_lag_ceiling("lags", max)
     }
 
     pub fn k(&self) -> usize {
@@ -497,6 +520,24 @@ mod tests {
             let e = EwLagCov::new(2, lags).unwrap_err();
             assert!(e.contains(msg), "{e}");
         }
+    }
+
+    /// The ring holds `max(lags)` learned rows and is sized before the
+    /// first row, so a lag has a ceiling, 2^20, refused by name with the
+    /// value: `2^62` panicked "capacity overflow" and `10^11` reserved 2.4
+    /// TB (review 2026-10-06, CD10). At the ceiling it builds.
+    #[test]
+    fn a_lag_past_the_ceiling_is_refused_by_name() {
+        for lag in [(1usize << 20) + 1, 1 << 40, 1 << 62] {
+            let Err(e) = EwLagCov::new(2, vec![1, lag]) else {
+                panic!("accepted")
+            };
+            assert!(
+                e.contains("lags must be at most 1048576") && e.contains(&format!("got {lag}")),
+                "{e}"
+            );
+        }
+        assert!(EwLagCov::new(2, vec![1, 1 << 20]).is_ok());
     }
 
     /// The shape a restored state must hold (review 2026-09-18, B3), one

@@ -165,7 +165,9 @@ ROUNDTRIP_SPECS = [
         session_gap=1e9,
     ),
     po.spec.ewridge("reset", clock="t", gap_cap=5.0, session="g", session_gap="reset", **BASE),
-    po.spec.kalman("k", coef_half_life=[INF, 10.0], q=[0.0, 1.0], **BASE),
+    # One or the other since review 2026-10-06 (PC6): each round-trips.
+    po.spec.kalman("k", coef_half_life=[INF, 10.0], **BASE),
+    po.spec.kalman("kq", q=[0.0, 1.0], **BASE),
     po.spec.holt("h", targets=["y"], half_life=10.0, trend_half_life=INF),
     po.spec.sgd("s", clip_gradient=INF, **BASE),
     po.spec.lasso("l", lasso_path=[0.1, 0.01], **BASE),

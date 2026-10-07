@@ -358,6 +358,9 @@ impl EwAutoCorr {
         if lag == 0 {
             return Err("EwAutoCorr: lag must be >= 1".into());
         }
+        // The buffer holds `lag + 1` values and is sized here, so the lag
+        // has the models' lag ceiling (review 2026-10-06, CD10).
+        crate::ewlagcov::check_lag_ceiling("EwAutoCorr: lag", lag)?;
         Ok(Self {
             lag,
             buf: Vec::with_capacity(lag + 1),
@@ -830,6 +833,25 @@ mod tests {
     #[test]
     fn autocorr_rejects_lag_zero() {
         assert!(EwAutoCorr::new(0).is_err());
+    }
+
+    /// The tracker's buffer holds `lag + 1` residuals and is sized when it
+    /// is built, so the lag has the ceiling the models' lag rings have,
+    /// 2^20, refused by name with the value: `2^62` asked for a buffer past
+    /// any capacity, and `usize::MAX` overflowed `lag + 1` (review
+    /// 2026-10-06, CD10).
+    #[test]
+    fn autocorr_refuses_a_lag_past_the_ceiling() {
+        for lag in [(1usize << 20) + 1, 1 << 62, usize::MAX] {
+            let Err(e) = EwAutoCorr::new(lag) else {
+                panic!("accepted")
+            };
+            assert!(
+                e.contains("lag must be at most 1048576") && e.contains(&format!("got {lag}")),
+                "{e}"
+            );
+        }
+        assert!(EwAutoCorr::new(1 << 20).is_ok());
     }
 
     #[test]

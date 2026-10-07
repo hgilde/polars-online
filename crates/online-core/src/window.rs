@@ -507,7 +507,9 @@ impl<S> Snapshots<S> {
     /// gives every row as a cap of one.
     pub fn with_cadence(window: f64, cadence: Cadence) -> Result<Self, String> {
         if !window.is_finite() || window <= 0.0 {
-            return Err(format!("window_size must be > 0 (got {window})"));
+            // "Finite" said: "> 0 (got inf)" is untrue of infinity (review
+            // 2026-10-06, YA4).
+            return Err(format!("window_size must be finite and > 0 (got {window})"));
         }
         if cadence.rows == 0 {
             return Err("the rows between a window's snapshots must be >= 1".into());
@@ -2109,6 +2111,18 @@ mod tests {
             rows: 0,
         };
         assert!(Snapshots::<usize>::with_cadence(5.0, none).is_err());
+    }
+
+    /// A window is a finite, positive number of clock units, and the
+    /// refusal says so with the value: it said "must be > 0 (got inf)",
+    /// untrue of infinity, for `lasso` and `marginal` (review 2026-10-06,
+    /// YA4).
+    #[test]
+    fn a_window_that_is_not_a_finite_positive_number_is_refused_as_such() {
+        for w in [f64::INFINITY, f64::NAN, 0.0, -1.0] {
+            let e = Snapshots::<usize>::new(w, 1).unwrap_err();
+            assert_eq!(e, format!("window_size must be finite and > 0 (got {w})"));
+        }
     }
 
     /// What a `Moments` snapshot counts toward a budget: eight bytes for

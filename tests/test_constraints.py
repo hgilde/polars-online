@@ -991,14 +991,19 @@ class TestRefusals:
             po.spec.ewridge("m", coef_min=0.0, **_base())
 
     def test_a_hand_built_spec_is_parsed_by_path(self):
+        # The path names the model's key, where it stopped at `model`
+        # (review 2026-10-06, PC11).
         spec = po.spec.sgd("m", **_base())
         spec["model"]["coef_min"] = "0"
         with pytest.raises(
             ValueError,
-            match=r'model: invalid value: string "0", expected a number or a list of numbers',
+            match=r'model\.coef_min: invalid value: string "0", expected a number or a list of '
+            r"numbers",
         ):
             po.ModelBank([spec])
         spec["model"]["coef_min"] = "-inf"
         spec["model"]["coef_sum"] = "inf"
-        with pytest.raises(ValueError, match='model: invalid type: string "inf", expected f64'):
+        with pytest.raises(
+            ValueError, match=r'model\.coef_sum: invalid type: string "inf", expected f64'
+        ):
             po.ModelBank([spec])

@@ -236,6 +236,8 @@ mod num_label_tests {
         assert_eq!(num_label(250.5), "250.5");
         assert_eq!(num_label(3200.0), "3200");
         assert_eq!(num_label(0.0), "0");
+        // One number, one name (review 2026-10-06, PC10).
+        assert_eq!(num_label(-0.0), "0");
     }
 
     #[test]
@@ -260,8 +262,13 @@ mod num_label_tests {
 }
 
 pub fn num_label(v: f64) -> String {
+    // `-0.0` is `0.0` (`==`), so one name: a ridge grid of the two was two
+    // instances under `__r0` and `__r-0` (review 2026-10-06, PC10).
+    if v == 0.0 {
+        return "0".into();
+    }
     let a = v.abs();
-    if v != 0.0 && v.is_finite() && !(1e-6..1e7).contains(&a) {
+    if v.is_finite() && !(1e-6..1e7).contains(&a) {
         // `{:e}` gives `1e-300` / `2.5e8`; normalize the `e0` exponent Rust
         // emits for values that just crossed the threshold.
         let s = format!("{v:e}");
@@ -286,19 +293,23 @@ fn non_negative(v: f64) -> bool {
 }
 
 /// The first value that appears twice in a grid, if any. Grid entries become
-/// field-name suffixes, so a repeated value is always a mistake.
+/// field-name suffixes, so a repeated value is always a mistake. Compared
+/// as numbers, so `-0.0` repeats `0.0`: bit by bit the two were two
+/// instances of one model (review 2026-10-06, PC10).
 fn first_duplicate(vals: &[f64]) -> Option<f64> {
     vals.iter()
         .enumerate()
-        .find(|(i, v)| vals[..*i].iter().any(|u| u.to_bits() == v.to_bits()))
+        .find(|(i, v)| vals[..*i].iter().any(|u| u == *v))
         .map(|(_, v)| *v)
 }
 
 /// `ridge` for the IRLS models: finite and non-negative (zero is plain least
 /// squares).
 fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
-    if ridge.is_some_and(|r| !non_negative(r) || !r.is_finite()) {
-        return Err(format!("spec {name:?}: ridge must be finite and >= 0"));
+    if let Some(r) = ridge.filter(|r| !non_negative(*r) || !r.is_finite()) {
+        return Err(format!(
+            "spec {name:?}: ridge must be finite and >= 0, got {r}"
+        ));
     }
     Ok(())
 }
@@ -306,9 +317,9 @@ fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
 /// `solve_every`: clock units between solves; zero solves every row. A
 /// negative value silently meant "every row" too, NaN meant "never".
 fn check_solve_every(name: &str, v: Option<&Span>) -> Result<(), String> {
-    if v.is_some_and(|v| !non_negative(v.value()) || !v.value().is_finite()) {
+    if let Some(v) = v.filter(|v| !non_negative(v.value()) || !v.value().is_finite()) {
         return Err(format!(
-            "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row)"
+            "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row), got {v}"
         ));
     }
     Ok(())
@@ -693,13 +704,15 @@ pub enum ModelKind {
         /// Per-factor coefficient half-life (scalar or one per slot, intercept
         /// first). `inf` pins a coefficient. Note this is the COEFFICIENT
         /// half-life; the spec-level `half_life` drives the standardization and
-        /// residual-variance statistics. Beside a `q` it is unused: the
-        /// process noise is `q`, and the derivation from this is skipped.
-        coef_half_life: SpanList,
+        /// residual-variance statistics. Exactly one of it and `q` is given:
+        /// it was required, and ignored beside a `q` (review 2026-10-06,
+        /// PC6). Optional, so a state written when it was required reads.
+        #[serde(default)]
+        coef_half_life: Option<SpanList>,
         /// The process noise per slot, given outright rather than derived from
-        /// `coef_half_life`, which it then overrides -- as `_spec.py`'s
-        /// `kalman` docstring says, and `Kalman::q_into` does (review
-        /// 2026-09-12, S22 and V16).
+        /// `coef_half_life`, which is then refused -- as `_spec.py`'s
+        /// `kalman` docstring says (review 2026-09-12, S22 and V16; review
+        /// 2026-10-06, PC6).
         #[serde(default)]
         q: Option<Vec<Num>>,
         #[serde(default)]
@@ -721,8 +734,9 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.5
-        /// ([`Spec::validate`]); `"inf"` cuts nothing, which is least squares.
+        /// Cut point in units of the EW residual std. Default 1.5, filled
+        /// where the model is built ([`crate::build_models`]); `"inf"` cuts
+        /// nothing, which is least squares.
         #[serde(default)]
         huber_delta: Option<Num>,
         #[serde(default)]
@@ -809,8 +823,9 @@ pub enum ModelKind {
         #[serde(default)]
         max_rows_between_pca: Option<u32>,
         /// Lags to accumulate cross-moments at, in output order
-        /// (docs/ENHANCEMENTS.md E56): strictly increasing and `>= 1`,
-        /// counted in *learned rows within the group*. Read from `gram()`
+        /// (docs/ENHANCEMENTS.md E56): strictly increasing, `>= 1` and at
+        /// most 2^20 (`online_core::MAX_LAG`, the ring being sized before the
+        /// first row), counted in *learned rows within the group*. Read from `gram()`
         /// as `lags`/`lag_comoments`, or emitted as `lagcorr_<a>_<b>_l<l>`
         /// by adding `"lagcorr"` to `stats`.
         #[serde(default)]
@@ -943,9 +958,13 @@ pub enum ModelKind {
     /// before the row is learned.
     #[serde(rename = "kmeans")]
     KMeans {
-        /// Number of clusters, `>= 1`.
+        /// Number of clusters, `1 ..= 2^16` (`online_core::KMeans::MAX_K`).
         k: usize,
-        /// Learned rows buffered before seeding. Default 500; at least `k`.
+        /// Learned rows buffered before seeding, at least `k`: fewer is
+        /// refused by name, as `hmm` refuses it, where it was floored to `k`
+        /// in silence (review 2026-10-06, PC8). Default 500, or `k` where
+        /// that is more. The buffer is held to 256 MiB
+        /// (`online_core::KMeans::WARM_BUDGET_MIB`).
         #[serde(default)]
         warm_rows: Option<usize>,
         /// "lloyd" (default), "kmeanspp", "farthest" or "first".
@@ -966,7 +985,9 @@ pub enum ModelKind {
         #[serde(default)]
         split_merge_every: Option<u32>,
         /// A cluster lighter than `dead_frac · n_eff / k` at a check is
-        /// re-placed. Default 0.05; `0` disables the dead rule.
+        /// re-placed. Default 0.05; `0` disables the dead rule. The rule runs
+        /// at a split–merge check, so under `split_merge = 0` the default is
+        /// 0 and a value above it is refused (review 2026-10-06, CF6).
         #[serde(default)]
         dead_frac: Option<f64>,
         /// Measure distances in units of each feature's EW standard
@@ -1115,7 +1136,8 @@ pub enum ModelKind {
     #[serde(rename = "marginal")]
     Marginal {
         /// Lags to accumulate pair moments at (docs/ENHANCEMENTS.md E66):
-        /// strictly increasing, `>= 1`, counted in **learned rows within the
+        /// strictly increasing, `>= 1` and at most 2^20
+        /// (`online_core::MAX_LAG`), counted in **learned rows within the
         /// group**. Gives the two autocorrelations and both
         /// cross-correlations per pair, and the serial-dependence-corrected
         /// `n_serial` when `serial_rule` asks for it.
@@ -1264,10 +1286,13 @@ pub enum ModelKind {
         #[serde(default)]
         bandwidth: Option<usize>,
         /// Observations averaged at each end; default 2, `1` is none.
+        /// `"kernel"` only: the other kinds read none, and a value given to
+        /// them is refused (review 2026-10-06, CE4).
         #[serde(default)]
         jitter: Option<usize>,
         /// Pre-averaging window scale, `kₙ = ⌈θ·block_rows^0.6⌉` under `psd`
         /// (the default) and `⌊θ√block_rows⌋` without it; default 1.
+        /// `"preavg"` only, refused under the other kinds (CE4).
         #[serde(default)]
         theta: Option<f64>,
         /// Clip negative eigenvalues at close; default true.
@@ -1277,7 +1302,9 @@ pub enum ModelKind {
         /// first row.
         #[serde(default)]
         block_rows: Option<usize>,
-        /// Ring depth, if not the default from `block_rows`.
+        /// Ring depth, if not the default from `block_rows`. `"kernel"`
+        /// only, refused under the other kinds (CE4); the ring's lagged
+        /// products, `(ring + 1)·k²` doubles, are held to 256 MiB (CE9).
         #[serde(default)]
         max_bandwidth: Option<usize>,
         /// A fixed pre-averaging length, in rows, instead of `⌊θ√block_rows⌋`.
@@ -1309,10 +1336,12 @@ pub enum ModelKind {
         learn: Option<bool>,
         /// Dirichlet pseudo-count per cell of the transition matrix
         /// (default 1). With `transition` it is spread over that matrix, so
-        /// the given one is the prior mean.
+        /// the given one is the prior mean. Refused beside `tvtp_coef`,
+        /// which learns no count (review 2026-10-06, CE4).
         #[serde(default)]
         transition_prior: Option<f64>,
-        /// A `K x K` row-stochastic matrix, flattened row-major.
+        /// A `K x K` row-stochastic matrix, flattened row-major. Refused
+        /// beside `tvtp_coef`, as `transition_prior` is.
         #[serde(default)]
         transition: Option<Vec<f64>>,
         /// State means, `K x d` row-major; with `covs`, there is no warm-up.
@@ -1322,6 +1351,8 @@ pub enum ModelKind {
         #[serde(default)]
         covs: Option<Vec<f64>>,
         /// Learned rows buffered before the states are seeded (default 50).
+        /// With `means` and `covs` given nothing is seeded, and it, like
+        /// `seed_rule` and `seed`, is refused (review 2026-10-06, CE4).
         #[serde(default)]
         warm_rows: Option<usize>,
         /// `"first"`, `"farthest"`, `"kmeanspp"` or `"lloyd"` (default), as
@@ -1376,6 +1407,8 @@ pub enum ModelKind {
         /// one. `"sequential"`: replaces Wied & Galeano's.
         #[serde(default)]
         crit: Option<f64>,
+        /// `"window"`: permutation draws per critical value; default 200, at
+        /// least 20 and at most 2^20 (`online_core::MAX_PERM`).
         #[serde(default)]
         n_perm: Option<usize>,
         #[serde(default)]
@@ -2020,7 +2053,7 @@ impl Spec {
                 revert_half_life,
                 ..
             } => {
-                put_list(&mut out, "coef_half_life", Some(coef_half_life));
+                put_list(&mut out, "coef_half_life", coef_half_life.as_ref());
                 put_list(&mut out, "revert_half_life", revert_half_life.as_ref());
             }
             ModelKind::Huber { solve_every, .. } | ModelKind::Quantile { solve_every, .. } => {
@@ -2165,9 +2198,11 @@ pub const RENAMED: &[(&str, &str)] = &[
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name.
 pub fn name_renamed(msg: &str) -> String {
+    // No citation: a wheel's user has no docs/PLAN.md (review 2026-10-06,
+    // PC11).
     for (old, new) in RENAMED {
         if msg.contains(&format!("unknown field `{old}`")) {
-            return format!("{msg}; {old} was renamed {new} (docs/PLAN.md task 144)");
+            return format!("{msg}; {old} was renamed {new}");
         }
     }
     msg.to_string()
@@ -2568,7 +2603,10 @@ impl Spec {
                     ..
                 } => {
                     if !positive(h.value()) {
-                        return Err(format!("spec {:?}: level_half_life must be > 0", self.name));
+                        return Err(format!(
+                            "spec {:?}: level_half_life must be > 0, got {h}",
+                            self.name
+                        ));
                     }
                     Ok(vec![(String::new(), Decay::Halflife(h.value()))])
                 }
@@ -2579,7 +2617,10 @@ impl Spec {
             },
             (None, Some(l)) => {
                 if !(0.0 < l && l <= 1.0) {
-                    return Err(format!("spec {:?}: lam must be in (0, 1]", self.name));
+                    return Err(format!(
+                        "spec {:?}: lam must be in (0, 1], got {l}",
+                        self.name
+                    ));
                 }
                 Ok(vec![(String::new(), Decay::Lam(l))])
             }
@@ -2595,9 +2636,9 @@ impl Spec {
                 }
                 // `!(h > 0)` rather than `h <= 0` so NaN is refused too: it
                 // decays every accumulator to NaN and nothing washes it out.
-                if hs.iter().any(|&h| !positive(h)) {
+                if let Some(bad) = h.spans().iter().find(|s| !positive(s.value())) {
                     return Err(format!(
-                        "spec {:?}: half_life must be > 0 (\"inf\" for no decay)",
+                        "spec {:?}: half_life must be > 0 (\"inf\" for no decay), got {bad}",
                         self.name
                     ));
                 }
@@ -2828,6 +2869,16 @@ impl Spec {
             } else {
                 format!("spec {:?}: targets must be non-empty", self.name)
             });
+        }
+        // An empty name names no column and writes fields called `pred_` and
+        // `resid_`; `po.target("")` and an empty table name were refused, a
+        // plain `""` was not (review 2026-10-06, YA5).
+        if self.targets.defs().iter().any(|t| t.name.is_empty()) {
+            return Err(format!(
+                "spec {:?}: targets must not contain an empty name; its fields would be called \
+                 pred_ and resid_",
+                self.name
+            ));
         }
         if let Some(gc) = &self.group_close {
             if !["monotone", "session"].contains(&gc.as_str()) {
@@ -3112,8 +3163,11 @@ impl Spec {
                 self.m()
             ));
         }
-        if mp.iter().any(|v| *v < 0.0 || v.is_nan()) {
-            return Err(format!("spec {:?}: min_weight must be >= 0", self.name));
+        if let Some(v) = mp.iter().find(|v| **v < 0.0 || v.is_nan()) {
+            return Err(format!(
+                "spec {:?}: min_weight must be >= 0, got {v}",
+                self.name
+            ));
         }
         if let Some(Num(f)) = self.min_settled_frac {
             if !(0.0..1.0).contains(&f) {
@@ -3164,25 +3218,25 @@ impl Spec {
             && !["flag", "reset"].contains(&a.as_str())
         {
             return Err(format!(
-                "spec {:?}: drift_action must be \"flag\" or \"reset\"",
+                "spec {:?}: drift_action must be \"flag\" or \"reset\", got {a:?}",
                 self.name
             ));
         }
         // A tolerance or a threshold of `inf` is a detector that never
         // fires: no setting (review 2026-09-12, S27).
-        if self.drift_delta.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+        if let Some(v) = self.drift_delta.filter(|v| *v < 0.0 || !v.is_finite()) {
             return Err(format!(
-                "spec {:?}: drift_delta must be finite and >= 0",
+                "spec {:?}: drift_delta must be finite and >= 0, got {v}",
                 self.name
             ));
         }
-        if self
+        if let Some(v) = self
             .drift_threshold
             .as_ref()
-            .is_some_and(|v| v.value() <= 0.0 || !v.value().is_finite())
+            .filter(|v| v.value() <= 0.0 || !v.value().is_finite())
         {
             return Err(format!(
-                "spec {:?}: drift_threshold must be finite and > 0",
+                "spec {:?}: drift_threshold must be finite and > 0, got {v}",
                 self.name
             ));
         }
@@ -3193,28 +3247,25 @@ impl Spec {
                     self.name
                 ));
             }
-            if qs
+            if let Some(q) = qs
                 .iter()
-                .any(|q| !(0.0..=1.0).contains(q) || *q == 0.0 || *q == 1.0)
+                .find(|q| !(0.0..=1.0).contains(*q) || **q == 0.0 || **q == 1.0)
             {
                 return Err(format!(
-                    "spec {:?}: resid_quantiles must be strictly between 0 and 1",
+                    "spec {:?}: resid_quantiles must be strictly between 0 and 1, got {q}",
                     self.name
                 ));
             }
         }
-        if self.conformal.is_some_and(|c| !(c > 0.0 && c < 1.0)) {
+        if let Some(c) = self.conformal.filter(|c| !(*c > 0.0 && *c < 1.0)) {
             return Err(format!(
-                "spec {:?}: conformal must be a coverage level strictly between 0 and 1",
+                "spec {:?}: conformal must be a coverage level strictly between 0 and 1, got {c}",
                 self.name
             ));
         }
-        if self
-            .conformal_rate
-            .is_some_and(|r| !(r > 0.0 && r.is_finite()))
-        {
+        if let Some(r) = self.conformal_rate.filter(|r| !(*r > 0.0 && r.is_finite())) {
             return Err(format!(
-                "spec {:?}: conformal_rate must be finite and > 0",
+                "spec {:?}: conformal_rate must be finite and > 0, got {r}",
                 self.name
             ));
         }
@@ -3226,14 +3277,20 @@ impl Spec {
         }
         if self.resid_autocorr_lag.is_some_and(|l| l == 0) {
             return Err(format!(
-                "spec {:?}: resid_autocorr_lag must be >= 1",
+                "spec {:?}: resid_autocorr_lag must be >= 1, got 0",
                 self.name
             ));
         }
-        if self.average_eta.is_some_and(|v| v.0 <= 0.0 || v.0.is_nan()) {
+        // The tracker's buffer is sized from the lag before the first row,
+        // as the models' lag rings are (review 2026-10-06, CD10).
+        if let Some(l) = self.resid_autocorr_lag {
+            online_core::check_lag_ceiling("resid_autocorr_lag", l)
+                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+        }
+        if let Some(v) = self.average_eta.filter(|v| v.0 <= 0.0 || v.0.is_nan()) {
             return Err(format!(
-                "spec {:?}: average_eta must be > 0 (\"inf\" is emit_selected's argmin)",
-                self.name
+                "spec {:?}: average_eta must be > 0 (\"inf\" is emit_selected's argmin), got {}",
+                self.name, v.0
             ));
         }
         // A knob whose switch is off does nothing: refused rather than
@@ -3304,10 +3361,10 @@ impl Spec {
                     return Err(format!("spec {:?}: {key} needs `window_size`", self.name));
                 }
             }
-            if every.is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite()) {
+            if let Some(e) = every.filter(|e| !non_negative(e.value()) || !e.value().is_finite()) {
                 return Err(format!(
                     "spec {:?}: window_every must be finite and >= 0 clock units (0 snapshots \
-                     every row)",
+                     every row), got {e}",
                     self.name
                 ));
             }
@@ -3348,14 +3405,14 @@ impl Spec {
                 ));
             }
         }
-        if self
+        if let Some(e) = self
             .coef_every
             .as_ref()
-            .is_some_and(|e| !(e.value().is_finite() && non_negative(e.value())))
+            .filter(|e| !(e.value().is_finite() && non_negative(e.value())))
         {
             return Err(format!(
                 "spec {:?}: coef_every must be finite and >= 0 clock units (0 writes `coef` on \
-                 every row)",
+                 every row), got {e}",
                 self.name
             ));
         }
@@ -3363,7 +3420,7 @@ impl Spec {
         if self.max_rows_between_coefs == Some(0) {
             return Err(format!(
                 "spec {:?}: max_rows_between_coefs must be >= 1 (coef_every = 0 writes `coef` \
-                 on every row)",
+                 on every row), got 0",
                 self.name
             ));
         }
@@ -3424,18 +3481,21 @@ impl Spec {
                         self.name
                     ));
                 }
-                if level_half_life
+                if let Some(h) = level_half_life
                     .as_ref()
-                    .is_some_and(|h| h.value() <= 0.0 || h.value().is_nan())
-                {
-                    return Err(format!("spec {:?}: level_half_life must be > 0", self.name));
-                }
-                if trend_half_life
-                    .as_ref()
-                    .is_some_and(|h| h.value() <= 0.0 || h.value().is_nan())
+                    .filter(|h| h.value() <= 0.0 || h.value().is_nan())
                 {
                     return Err(format!(
-                        "spec {:?}: trend_half_life must be > 0 (\"inf\" forgets no slope)",
+                        "spec {:?}: level_half_life must be > 0, got {h}",
+                        self.name
+                    ));
+                }
+                if let Some(h) = trend_half_life
+                    .as_ref()
+                    .filter(|h| h.value() <= 0.0 || h.value().is_nan())
+                {
+                    return Err(format!(
+                        "spec {:?}: trend_half_life must be > 0 (\"inf\" forgets no slope), got {h}",
                         self.name
                     ));
                 }
@@ -3449,17 +3509,17 @@ impl Spec {
                         self.name
                     ));
                 }
-                if c.is_some_and(|v| v.0 <= 0.0 || v.0.is_nan()) {
+                if let Some(v) = c.filter(|v| v.0 <= 0.0 || v.0.is_nan()) {
                     return Err(format!(
-                        "spec {:?}: pa c must be > 0 (\"inf\" caps nothing: mode \"pa\")",
-                        self.name
+                        "spec {:?}: pa c must be > 0 (\"inf\" caps nothing: mode \"pa\"), got {}",
+                        self.name, v.0
                     ));
                 }
                 // A tube of `inf` holds every row: a model that never learns
                 // (review 2026-09-12, S27).
-                if eps.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = eps.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: pa eps must be finite and >= 0",
+                        "spec {:?}: pa eps must be finite and >= 0, got {v}",
                         self.name
                     ));
                 }
@@ -3506,18 +3566,18 @@ impl Spec {
                         self.name
                     ));
                 }
-                if learning_rate.is_some_and(|v| v <= 0.0 || !v.is_finite()) {
+                if let Some(v) = learning_rate.filter(|v| *v <= 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: learning_rate must be finite and > 0",
+                        "spec {:?}: learning_rate must be finite and > 0, got {v}",
                         self.name
                     ));
                 }
                 // Unchecked, a NaN reached the core's `f64::clamp`, which
                 // panics on a NaN bound.
-                if huber_delta.is_some_and(|d| !positive(d.0)) {
+                if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
                     return Err(format!(
-                        "spec {:?}: huber_delta must be > 0 (\"inf\" is the squared loss)",
-                        self.name
+                        "spec {:?}: huber_delta must be > 0 (\"inf\" is the squared loss), got {}",
+                        self.name, d.0
                     ));
                 }
                 // A parameter of a loss or a schedule the spec does not use
@@ -3612,9 +3672,9 @@ impl Spec {
                         ));
                     }
                 }
-                if precision_prior.is_some_and(|p| p <= 0.0 || !p.is_finite()) {
+                if let Some(p) = precision_prior.filter(|p| *p <= 0.0 || !p.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: precision_prior must be finite and > 0",
+                        "spec {:?}: precision_prior must be finite and > 0, got {p}",
                         self.name
                     ));
                 }
@@ -3635,10 +3695,20 @@ impl Spec {
                         .map_err(|e| format!("spec {:?}: ew_cov {e}", self.name))?;
                 }
                 if let Some(levels) = mahal_quantiles {
+                    // An empty list asked for nothing and was taken without a
+                    // word, where `resid_quantiles = []` is refused (review
+                    // 2026-10-06, YA5).
+                    if levels.is_empty() {
+                        return Err(format!(
+                            "spec {:?}: ew_cov mahal_quantiles must be non-empty; leave it out \
+                             for none",
+                            self.name
+                        ));
+                    }
                     let has_mahal = stats
                         .as_ref()
                         .is_some_and(|st| st.iter().any(|s| s == "mahal"));
-                    if !levels.is_empty() && !has_mahal {
+                    if !has_mahal {
                         return Err(format!(
                             "spec {:?}: ew_cov mahal_quantiles needs \"mahal\" in `stats`",
                             self.name
@@ -3662,13 +3732,13 @@ impl Spec {
                         self.k()
                     ));
                 }
-                if pca_every
+                if let Some(e) = pca_every
                     .as_ref()
-                    .is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite())
+                    .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
                 {
                     return Err(format!(
                         "spec {:?}: ew_cov pca_every must be finite and >= 0 clock units (0 \
-                         refreshes on every row)",
+                         refreshes on every row), got {e}",
                         self.name
                     ));
                 }
@@ -3695,7 +3765,10 @@ impl Spec {
                 ..
             } => {
                 if *k == 0 {
-                    return Err(format!("spec {:?}: kmeans k must be >= 1", self.name));
+                    return Err(format!(
+                        "spec {:?}: kmeans k must be >= 1, got 0",
+                        self.name
+                    ));
                 }
                 if let Some(rule) = seed_rule {
                     const OK: [&str; 4] = ["first", "farthest", "kmeanspp", "lloyd"];
@@ -3708,29 +3781,33 @@ impl Spec {
                     }
                 }
                 if update_every.is_some_and(|v| v == 0) {
-                    return Err(format!("spec {:?}: update_every must be >= 1", self.name));
+                    return Err(format!(
+                        "spec {:?}: update_every must be >= 1, got 0",
+                        self.name
+                    ));
                 }
                 if split_merge_every.is_some_and(|v| v == 0) {
                     return Err(format!(
-                        "spec {:?}: split_merge_every must be >= 1",
+                        "spec {:?}: split_merge_every must be >= 1, got 0",
                         self.name
                     ));
                 }
-                if split_merge.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = split_merge.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: split_merge must be finite and >= 0 (0 disables it)",
+                        "spec {:?}: split_merge must be finite and >= 0 (0 disables it), got {v}",
                         self.name
                     ));
                 }
-                if dead_frac.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = dead_frac.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: dead_frac must be finite and >= 0 (0 disables it)",
+                        "spec {:?}: dead_frac must be finite and >= 0 (0 disables it), got {v}",
                         self.name
                     ));
                 }
-                if scale_floor.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance alone)",
+                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance \
+                         alone), got {v}",
                         self.name
                     ));
                 }
@@ -3746,38 +3823,42 @@ impl Spec {
             } => {
                 if !(eps.is_finite() && *eps > 0.0) {
                     return Err(format!(
-                        "spec {:?}: micro eps must be finite and > 0",
+                        "spec {:?}: micro eps must be finite and > 0, got {eps}",
                         self.name
                     ));
                 }
-                if beta_mu.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
+                if let Some(v) = beta_mu.filter(|v| !(v.is_finite() && *v > 0.0)) {
                     return Err(format!(
-                        "spec {:?}: beta_mu must be finite and > 0",
+                        "spec {:?}: beta_mu must be finite and > 0, got {v}",
                         self.name
                     ));
                 }
                 if max_clusters.is_some_and(|v| v == 0) {
-                    return Err(format!("spec {:?}: max_clusters must be >= 1", self.name));
+                    return Err(format!(
+                        "spec {:?}: max_clusters must be >= 1, got 0",
+                        self.name
+                    ));
                 }
-                if prune_every
+                if let Some(e) = prune_every
                     .as_ref()
-                    .is_some_and(|e| !non_negative(e.value()) || !e.value().is_finite())
+                    .filter(|e| !non_negative(e.value()) || !e.value().is_finite())
                 {
                     return Err(format!(
                         "spec {:?}: micro prune_every must be finite and >= 0 clock units (0 \
-                         checkpoints on every row)",
+                         checkpoints on every row), got {e}",
                         self.name
                     ));
                 }
-                if macro_link.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = macro_link.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: macro_link must be finite and >= 0 (0 links nothing)",
+                        "spec {:?}: macro_link must be finite and >= 0 (0 links nothing), got {v}",
                         self.name
                     ));
                 }
-                if scale_floor.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                if let Some(v) = scale_floor.filter(|v| *v < 0.0 || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance alone)",
+                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance \
+                         alone), got {v}",
                         self.name
                     ));
                 }
@@ -3828,12 +3909,13 @@ impl Spec {
                     ));
                 }
                 if let Some(c) = covariance {
-                    online_core::Covariance::parse(c)
+                    online_core::Covariance::parse("ew_class", c)
                         .map_err(|e| format!("spec {:?}: {e}", self.name))?;
                 }
                 if !(precision_prior.is_finite() && *precision_prior > 0.0) {
                     return Err(format!(
-                        "spec {:?}: ew_class precision_prior must be finite and > 0",
+                        "spec {:?}: ew_class precision_prior must be finite and > 0, got \
+                         {precision_prior}",
                         self.name
                     ));
                 }
@@ -3932,6 +4014,12 @@ impl Spec {
                         self.name
                     ));
                 }
+                // The lag ring is sized before the first row: `[2^62]`
+                // panicked inside the builder (review 2026-10-06, CD10).
+                if let Some(&l) = lags.as_ref().and_then(|l| l.iter().max()) {
+                    online_core::check_lag_ceiling("marginal: lags", l)
+                        .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+                }
             }
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI and the bank get the same messages; only
@@ -3988,7 +4076,10 @@ impl Spec {
                         self.name
                     ));
                 }
+                // The model's own checks too, `n_perm`'s ceiling among them,
+                // so a spec meets them here (review 2026-10-06, CD10).
                 crate::stream::corrchange_cfg(self)
+                    .and_then(|c| c.validate())
                     .map_err(|e| format!("spec {:?}: {e}", self.name))?;
             }
             ModelKind::Hmm { exog_tvtp, .. } => {
@@ -4050,16 +4141,16 @@ impl Spec {
                 // At `inf` each is no setting: `alpha` leaves `-z/l2`, and
                 // `beta`, `l1` or `l2` zeroes every coordinate for ever
                 // (review 2026-09-12, S27).
-                if alpha.is_some_and(|a| a <= 0.0 || !a.is_finite()) {
+                if let Some(a) = alpha.filter(|a| *a <= 0.0 || !a.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: ftrl alpha must be finite and > 0",
+                        "spec {:?}: ftrl alpha must be finite and > 0, got {a}",
                         self.name
                     ));
                 }
                 for (name, v) in [("beta", beta), ("l1", l1), ("l2", l2)] {
-                    if v.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    if let Some(v) = v.filter(|v| *v < 0.0 || !v.is_finite()) {
                         return Err(format!(
-                            "spec {:?}: ftrl {name} must be finite and >= 0",
+                            "spec {:?}: ftrl {name} must be finite and >= 0, got {v}",
                             self.name
                         ));
                     }
@@ -4071,10 +4162,10 @@ impl Spec {
                 solve_every,
                 ..
             } => {
-                if huber_delta.is_some_and(|d| !positive(d.0)) {
+                if let Some(d) = huber_delta.filter(|d| !positive(d.0)) {
                     return Err(format!(
-                        "spec {:?}: huber_delta must be > 0 (\"inf\" is least squares)",
-                        self.name
+                        "spec {:?}: huber_delta must be > 0 (\"inf\" is least squares), got {}",
+                        self.name, d.0
                     ));
                 }
                 check_ridge(&self.name, *ridge)?;
@@ -4088,13 +4179,16 @@ impl Spec {
                 ..
             } => {
                 if !(0.0 < *quantile && *quantile < 1.0) {
-                    return Err(format!("spec {:?}: quantile must be in (0, 1)", self.name));
+                    return Err(format!(
+                        "spec {:?}: quantile must be in (0, 1), got {quantile}",
+                        self.name
+                    ));
                 }
                 // A floor of `inf` weighs every row 0: a model that never
                 // learns (review 2026-09-12, S27).
-                if quantile_eps.is_some_and(|e| !positive(e) || !e.is_finite()) {
+                if let Some(e) = quantile_eps.filter(|e| !positive(*e) || !e.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: quantile_eps must be finite and > 0",
+                        "spec {:?}: quantile_eps must be finite and > 0, got {e}",
                         self.name
                     ));
                 }
@@ -4110,56 +4204,90 @@ impl Spec {
                 ..
             } => {
                 let k_total = self.k() + usize::from(self.fit_intercept);
-                let hs = coef_half_life.to_vec();
-                if hs.len() != 1 && hs.len() != k_total {
-                    return Err(format!(
-                        "spec {:?}: coef_half_life must be scalar or length {k_total}",
-                        self.name
-                    ));
+                // One way of giving the process noise: `coef_half_life` was
+                // required, and ignored beside `q` (review 2026-10-06, PC6).
+                match (coef_half_life, q) {
+                    (Some(_), Some(_)) => {
+                        return Err(format!(
+                            "spec {:?}: kalman takes coef_half_life or q, not both: q is the \
+                             process noise given outright, which coef_half_life derives, and the \
+                             half-life was ignored beside it",
+                            self.name
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(format!(
+                            "spec {:?}: kalman needs coef_half_life (how fast a coefficient may \
+                             drift) or q (the process noise given outright)",
+                            self.name
+                        ));
+                    }
+                    _ => {}
                 }
-                if hs.iter().any(|&h| !positive(h)) {
-                    return Err(format!(
-                        "spec {:?}: coef_half_life must be > 0 (\"inf\" pins a coefficient)",
-                        self.name
-                    ));
+                if let Some(hl) = coef_half_life {
+                    let hs = hl.to_vec();
+                    if hs.len() != 1 && hs.len() != k_total {
+                        return Err(format!(
+                            "spec {:?}: coef_half_life must be scalar or length {k_total}, got {} \
+                             values",
+                            self.name,
+                            hs.len()
+                        ));
+                    }
+                    if let Some(h) = hs.iter().find(|&&h| !positive(h)) {
+                        return Err(format!(
+                            "spec {:?}: coef_half_life must be > 0 (\"inf\" pins a coefficient), \
+                             got {h}",
+                            self.name
+                        ));
+                    }
                 }
                 if let Some(rs) = revert_half_life {
                     let rs = rs.to_vec();
                     if rs.len() != 1 && rs.len() != k_total {
                         return Err(format!(
-                            "spec {:?}: revert_half_life must be scalar or length {k_total}",
-                            self.name
+                            "spec {:?}: revert_half_life must be scalar or length {k_total}, got \
+                             {} values",
+                            self.name,
+                            rs.len()
                         ));
                     }
-                    if rs.iter().any(|&r| !positive(r)) {
+                    if let Some(r) = rs.iter().find(|&&r| !positive(r)) {
                         return Err(format!(
-                            "spec {:?}: revert_half_life must be > 0 (\"inf\" is the random walk)",
+                            "spec {:?}: revert_half_life must be > 0 (\"inf\" is the random \
+                             walk), got {r}",
                             self.name
                         ));
                     }
                 }
-                if q.as_ref().is_some_and(|q| q.len() != k_total) {
+                if let Some(q) = q.as_ref().filter(|q| q.len() != k_total) {
                     return Err(format!(
-                        "spec {:?}: q must have length {k_total}",
-                        self.name
+                        "spec {:?}: q must have length {k_total}, got {}",
+                        self.name,
+                        q.len()
                     ));
                 }
-                if q.as_ref()
-                    .is_some_and(|q| q.iter().any(|v| !non_negative(v.0) || !v.0.is_finite()))
+                if let Some(v) = q
+                    .as_ref()
+                    .and_then(|q| q.iter().find(|v| !non_negative(v.0) || !v.0.is_finite()))
                 {
                     return Err(format!(
-                        "spec {:?}: q values must be finite and >= 0 (0 pins a coefficient)",
-                        self.name
+                        "spec {:?}: q values must be finite and >= 0 (0 pins a coefficient), got \
+                         {}",
+                        self.name, v.0
                     ));
                 }
-                if obs_var.is_some_and(|v| !positive(v) || !v.is_finite()) {
+                if let Some(v) = obs_var.filter(|v| !positive(*v) || !v.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: obs_var must be finite and > 0",
+                        "spec {:?}: obs_var must be finite and > 0, got {v}",
                         self.name
                     ));
                 }
-                if p0.is_some_and(|v| !positive(v) || !v.is_finite()) {
-                    return Err(format!("spec {:?}: p0 must be finite and > 0", self.name));
+                if let Some(v) = p0.filter(|v| !positive(*v) || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: p0 must be finite and > 0, got {v}",
+                        self.name
+                    ));
                 }
             }
             ModelKind::Lasso {
@@ -4176,44 +4304,47 @@ impl Spec {
                         self.name
                     ));
                 }
-                if lasso_path
+                if let Some(l) = lasso_path
                     .iter()
-                    .any(|l| !non_negative(*l) || !l.is_finite())
+                    .find(|l| !non_negative(**l) || !l.is_finite())
                 {
                     return Err(format!(
-                        "spec {:?}: lasso_path values must be finite and >= 0",
+                        "spec {:?}: lasso_path values must be finite and >= 0, got {l}",
                         self.name
                     ));
                 }
                 // Strictly: a repeated penalty is two identical slots with the
                 // same field name.
-                if !lasso_path.windows(2).all(|w| w[0] > w[1]) {
+                if let Some(w) = lasso_path.windows(2).find(|w| w[0] <= w[1]) {
                     return Err(format!(
-                        "spec {:?}: lasso_path must be strictly decreasing",
+                        "spec {:?}: lasso_path must be strictly decreasing, got {} then {}",
+                        self.name, w[0], w[1]
+                    ));
+                }
+                if let Some(r) = l1_ratio.filter(|r| !(0.0..=1.0).contains(r)) {
+                    return Err(format!(
+                        "spec {:?}: l1_ratio must be in [0, 1], got {r}",
                         self.name
                     ));
                 }
-                if l1_ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
-                    return Err(format!("spec {:?}: l1_ratio must be in [0, 1]", self.name));
-                }
-                if select_half_life
-                    .as_ref()
-                    .is_some_and(|h| !positive(h.value()))
-                {
+                if let Some(h) = select_half_life.as_ref().filter(|h| !positive(h.value())) {
                     return Err(format!(
-                        "spec {:?}: select_half_life must be > 0",
+                        "spec {:?}: select_half_life must be > 0, got {h}",
                         self.name
                     ));
                 }
                 check_solve_every(&self.name, solve_every.as_ref())?;
-                if tol.is_some_and(|t| !positive(t) || !t.is_finite()) {
-                    return Err(format!("spec {:?}: tol must be finite and > 0", self.name));
+                if let Some(t) = tol.filter(|t| !positive(*t) || !t.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: tol must be finite and > 0, got {t}",
+                        self.name
+                    ));
                 }
             }
             ModelKind::Rls { ridge, coef_prior } => {
-                if ridge.is_some_and(|r| !positive(r) || !r.is_finite()) {
+                if let Some(r) = ridge.filter(|r| !positive(*r) || !r.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: rls ridge must be finite and > 0",
+                        "spec {:?}: rls ridge must be finite and > 0, got {r}",
                         self.name
                     ));
                 }
@@ -4242,9 +4373,9 @@ impl Spec {
                     // coefficients garbage; NaN/inf make them zero. Zero is
                     // legal: plain least squares, rescued by the jitter
                     // fallback when singular.
-                    if rs.iter().any(|r| !non_negative(*r) || !r.is_finite()) {
+                    if let Some(r) = rs.iter().find(|r| !non_negative(**r) || !r.is_finite()) {
                         return Err(format!(
-                            "spec {:?}: ridge must be finite and >= 0",
+                            "spec {:?}: ridge must be finite and >= 0, got {r}",
                             self.name
                         ));
                     }
@@ -4258,15 +4389,15 @@ impl Spec {
                     }
                 }
                 check_solve_every(&self.name, solve_every.as_ref())?;
-                if long_half_life
-                    .as_ref()
-                    .is_some_and(|h| !positive(h.value()))
-                {
-                    return Err(format!("spec {:?}: long_half_life must be > 0", self.name));
-                }
-                if session_shrink.is_some_and(|f| !(0.0..=1.0).contains(&f)) {
+                if let Some(h) = long_half_life.as_ref().filter(|h| !positive(h.value())) {
                     return Err(format!(
-                        "spec {:?}: session_shrink must be in [0, 1]",
+                        "spec {:?}: long_half_life must be > 0, got {h}",
+                        self.name
+                    ));
+                }
+                if let Some(f) = session_shrink.filter(|f| !(0.0..=1.0).contains(f)) {
+                    return Err(format!(
+                        "spec {:?}: session_shrink must be in [0, 1], got {f}",
                         self.name
                     ));
                 }

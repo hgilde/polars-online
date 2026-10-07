@@ -183,15 +183,102 @@ fn save_load_mid_stream_is_identical() {
     assert!(d1.equals_missing(&d2));
 }
 
+/// A file of other specs is refused, naming the first spec that differs
+/// and the first key in which it does, with both values: "saved specs do
+/// not match" alone left a resuming job of ten specs to diff them by hand
+/// (review 2026-10-06, PA6).
 #[test]
 fn load_rejects_mismatched_specs() {
     let mut b1 = Bank::new(vec![spec_json("m", true)]).unwrap();
     b1.fit_predict(&make_df(50)).unwrap();
     let bytes = b1.save_bytes().unwrap();
     let other = vec![spec_json("different", true)];
-    assert!(Bank::load_bytes(&bytes, Some(&other)).is_err());
+    let e = Bank::load_bytes(&bytes, Some(&other))
+        .err()
+        .expect("refused");
+    assert_eq!(
+        e,
+        "saved specs do not match the bank's specs: spec 1 of 1 is named \"m\" in the file and \
+         \"different\" in the bank; refusing to load"
+    );
+    // The second of three, by a value inside its model.
+    let three = |ridge: &str| -> Vec<Spec> {
+        ["a", "b", "c"]
+            .iter()
+            .map(|n| {
+                let r = if *n == "b" { ridge } else { "1e-6" };
+                serde_json::from_str(&format!(
+                    r#"{{"name": "{n}", "model": {{"type": "ew_ridge", "ridge": {r}}},
+                        "targets": ["y"], "features": ["x0", "x1"], "half_life": 60.0}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    };
+    let mut b3 = Bank::new(three("0.5")).unwrap();
+    b3.fit_predict(&make_df(50)).unwrap();
+    let bytes3 = b3.save_bytes().unwrap();
+    let e = Bank::load_bytes(&bytes3, Some(&three("0.25")))
+        .err()
+        .expect("refused");
+    assert_eq!(
+        e,
+        "saved specs do not match the bank's specs: spec \"b\" (2 of 3) differs at model.ridge: \
+         0.5 in the file, 0.25 in the bank; refusing to load"
+    );
+    // A spec more or fewer.
+    let e = Bank::load_bytes(&bytes3, Some(&three("0.5")[..2]))
+        .err()
+        .expect("refused");
+    assert!(e.contains("the file holds 3 specs and the bank 2"), "{e}");
     // and without expectations it loads fine
     assert!(Bank::load_bytes(&bytes, None).is_ok());
+}
+
+/// A step on a number clock whose difference is past the largest double
+/// (`1e308 − (−1e308)`) is refused by row, as a clock value that is not a
+/// number is, and the bank is left as it was: it left the decayed clock's
+/// removed time at infinity for good, every later stamp comparing equal to
+/// any span, so `coef_every` fired on every row (review 2026-10-06, PB7).
+/// Across chunks too, and in either direction.
+#[test]
+fn a_clock_step_past_the_largest_double_is_refused_by_row() {
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            "features": ["x0"], "clock": "t", "half_life": 10.0, "gap_cap": 10.0,
+            "coef_every": 100.0}"#,
+    )
+    .unwrap();
+    let frame = |t: &[f64]| {
+        let n = t.len();
+        df!(
+            "t" => t,
+            "x0" => (0..n).map(|i| i as f64).collect::<Vec<_>>(),
+            "y" => (0..n).map(|i| 2.0 * i as f64).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    let e = bank
+        .fit_predict(&frame(&[-1e308, 1e308, 1e308]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("spec \"m\": clock column \"t\" steps from -1e308 to 1e308 at row 1")
+            && e.contains("the bank was not updated"),
+        "{e}"
+    );
+    assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
+    // The step from the last chunk's row, named by its row in the frame
+    // passed, as a step back is.
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    bank.fit_predict(&frame(&[1e308])).unwrap();
+    let e = bank.fit_predict(&frame(&[-1e308])).unwrap_err().to_string();
+    assert!(e.contains("steps from 1e308 to -1e308 at row 0"), "{e}");
+    assert_eq!(bank.rows_seen(), 1);
+    // A finite step of the same values' size is a step like any other.
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    bank.fit_predict(&frame(&[-1e307, 1e307, 1e307])).unwrap();
 }
 
 #[test]

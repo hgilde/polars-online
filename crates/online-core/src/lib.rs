@@ -61,6 +61,7 @@
 
 mod bocpd;
 mod boundary;
+mod budget;
 mod clock;
 mod cluster;
 mod comp;
@@ -113,7 +114,8 @@ pub use cluster::{
 pub use conformal::{Conformal, norm_ppf};
 pub use constraint::Constraint;
 pub use corrchange::{
-    ChangeNorm, CorrChange, CorrChangeCfg, CorrChangeKind, kolmogorov_cdf, kolmogorov_quantile,
+    ChangeNorm, CorrChange, CorrChangeCfg, CorrChangeKind, MAX_PERM, kolmogorov_cdf,
+    kolmogorov_quantile,
 };
 pub use deco::{Deco, DecoCfg, DecoDynamics};
 pub use drift::PageHinkley;
@@ -122,7 +124,7 @@ pub use ewcov::{
     EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, TargetMoments, partial_corr, variance_is_usable,
 };
 pub use ewdiag::{EwDiag, Including};
-pub use ewlagcov::EwLagCov;
+pub use ewlagcov::{EwLagCov, MAX_LAG, check_lag_ceiling};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use gaps::{GramPart, TargetGaps};

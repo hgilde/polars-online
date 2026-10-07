@@ -12,7 +12,9 @@ def _spec(**kw):
     defaults = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        coef_half_life=100.0,
+        # `q` in place of the half-life, never beside it (review 2026-10-06,
+        # PC6).
+        **({} if "q" in kw else {"coef_half_life": 100.0}),
         half_life=500.0,
         min_weight=20.0,
     )

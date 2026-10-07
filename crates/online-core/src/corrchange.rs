@@ -180,6 +180,12 @@ pub struct CorrChangeCfg {
 /// (review 2026-10-05, CD1).
 const MAX_BOUNDARY_GAMMA: f64 = 0.49;
 
+/// The most permutation draws `"window"` takes: the draws are held to take
+/// their quantile, and each is a pass over both blocks. `2^62` panicked
+/// "capacity overflow" at the first full window and `10^11` never returned
+/// (review 2026-10-06, CD10); the ceiling of the lags (`MAX_LAG`).
+pub const MAX_PERM: usize = 1 << 20;
+
 impl CorrChangeCfg {
     pub fn validate(&self) -> Result<(), String> {
         // The decay first: every model checks it in its own `new`, where only
@@ -295,6 +301,13 @@ impl CorrChangeCfg {
                     return Err(
                         "corrchange: a permutation critical value needs n_perm >= 20 draws".into(),
                     );
+                }
+                if self.n_perm > MAX_PERM {
+                    return Err(format!(
+                        "corrchange: n_perm must be at most {MAX_PERM} (2^20), got {}: the draws \
+                         are held to take their quantile, and each is a pass over both blocks",
+                        self.n_perm
+                    ));
                 }
                 if self.perm_block == 0 || self.perm_block > self.span_rows {
                     return Err(format!(
@@ -2196,6 +2209,34 @@ mod tests {
                 got.pred
             );
         }
+    }
+
+    /// The permutation draws are held to take the quantile, and each is a
+    /// pass over both blocks, so `n_perm` has a ceiling, 2^20, refused by
+    /// name with the value: `2^62` panicked "capacity overflow" at the first
+    /// full window and `10^11` never returned (review 2026-10-06, CD10).
+    #[test]
+    fn n_perm_past_the_ceiling_is_refused_by_name() {
+        for n in [(1usize << 20) + 1, 100_000_000_000, 1 << 62] {
+            let Err(e) = CorrChange::new(CorrChangeCfg {
+                n_perm: n,
+                ..cfg(2, CorrChangeKind::Window)
+            }) else {
+                panic!("accepted")
+            };
+            assert!(
+                e.contains("corrchange: n_perm must be at most 1048576")
+                    && e.contains(&format!("got {n}")),
+                "{e}"
+            );
+        }
+        assert!(
+            CorrChange::new(CorrChangeCfg {
+                n_perm: 1 << 20,
+                ..cfg(2, CorrChangeKind::Window)
+            })
+            .is_ok()
+        );
     }
 
     #[test]
