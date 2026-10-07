@@ -13,7 +13,7 @@ numbers.
 
 | section | what it covers |
 |---|---|
-| [Running it](#running-it) | [a first run](#a-first-run) · [saving, resuming and scoring](#saving-resuming-and-scoring) · [a run whose product is its state](#a-run-whose-product-is-its-state) · [closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) |
+| [Running it](#running-it) | [a first run](#a-first-run) · [saving, resuming and scoring](#saving-resuming-and-scoring) · [a run whose product is its state](#a-run-whose-product-is-its-state) · [closed groups to a sidecar file](#closed-groups-to-a-sidecar-file) · [exit status](#exit-status) |
 | [The configuration file](#the-configuration-file) | [flags and the TOML keys they override](#flags-and-the-toml-keys-they-override) · [input and output files](#input-and-output-files) · [specs in TOML](#specs-in-toml) · [clocks that are times](#clocks-that-are-times) |
 | [Memory, threads and chunk size](#memory-threads-and-chunk-size) | [memory](#memory) · [the pipeline and its threads](#the-pipeline-and-its-threads) · [chunk size](#chunk-size) |
 | [From Rust, and the Polars it needs](#from-rust-and-the-polars-it-needs) | [the same pipeline from Rust](#the-same-pipeline-from-rust) · [versioning](#versioning) |
@@ -134,6 +134,25 @@ does not lose rows silently. The sidecar is published by a run that
 drained any row into it, even one that then failed, since a drained row
 has left the bank. The output is published only by a run that finishes.
 
+### Exit status
+
+A script can tell how a run ended from its exit status:
+
+| status | the run |
+|---|---|
+| 0 | finished, and wrote what it was asked for; or `--dry-run`, `--help` or `--version` printed its answer |
+| 1 | was refused or failed: a configuration, a state file or a value the bank refuses, or a file it cannot read or write. Standard error carries the message, led by `online:` |
+| 2 | could not parse its command line, such as a flag it does not know or a flag with its value missing. Standard error says what is wrong |
+
+**The summary goes to standard output, and everything else to standard
+error.** The summary is the lines a run prints when it ends, such as `wrote
+400 rows (1 chunks) to fitted.parquet` and `saved state to run.state`.
+Standard error carries the progress, which `--quiet` turns off, the timings
+`ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
+carries the notices about a model's warm-up, led by `online:` as an error
+is. So read a failure from the exit status: a line on standard error does
+not mean the run failed.
+
 ## The configuration file
 
 The TOML file names the input, the output, the run's settings and the
@@ -170,6 +189,14 @@ extension does not say needs one:
 online --config bank.toml --input today.csv --output scored.ndjson
 online --config bank.toml --input feed.dat --input-format ipc --output out.parquet
 ```
+
+**A glob or a directory is read file by file, in the order of the paths as
+text.** `input = "parts/*.parquet"` reads every file the pattern matches,
+and a directory reads every file in it, given `input_format`, since a
+directory has no extension to name its format. As text, `part-10` comes
+before `part-2`, so pad the numbers in the names (`part-02`). With a clock
+column, a file out of order is refused as a step back; without one, its
+rows are learned out of order, and nothing says so.
 
 The command line reads with Polars' own Rust readers, built without the
 faster CSV parser py-polars' wheels carry, so a large CSV reads faster
@@ -275,8 +302,7 @@ NDJSON on the writer's own thread.
 The bank's own work runs on the bank's one thread pool, sized by
 `POLARS_ONLINE_MAX_THREADS`. The README's
 [Parallelism](../README.md#parallelism) has the full account, including
-Polars' own pool and how the two interact. Notices about a model's warm-up
-go to standard error.
+Polars' own pool and how the two interact.
 
 ### Chunk size
 
@@ -284,9 +310,11 @@ go to standard error.
 `chunk_rows` in the TOML). It has the same meaning and the same default,
 100,000, as on `lf.online.fit_predict` and `ModelBank.fit_predict_batches`.
 It never changes the numbers: one chunk or a thousand gives the same
-output, and it only trades memory for overhead. The one thing that moves
-is where `coef` lands, since each stream reports its coefficients on its
-last row of every chunk.
+output, and it only trades memory for overhead. Only which rows carry
+`coef`, and `support_coef` beside it, can differ, and only by default. The
+bank then writes them on each group's last row in every chunk, so smaller
+chunks report them more often. Under `coef_every` or
+`max_rows_between_coefs` they do not move.
 
 ## From Rust, and the Polars it needs
 

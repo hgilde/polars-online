@@ -36,7 +36,7 @@ out-of-date one, its row here says what became of it.
 | document | what it records |
 |---|---|
 | **The plan** | |
-| [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, §13 `window_size`, an EW accumulator with a hard cutoff, and §14 the nine review rounds of the window operators on 2026-10-03, each finding with the test that pins it |
+| [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, §13 `window_size`, an EW accumulator with a hard cutoff, and §14 the nine review rounds of the window operators on 2026-10-03, each finding with the test that pins it. From §15 on, each section records one later review or decision, dated in its heading. The first three are the review of the 53 commits after v0.13.0 (§15), the whole-project review of 2026-10-05 (§16), and the parameters counted in rows where a clock would fit (§17) |
 | [ENHANCEMENTS.md](ENHANCEMENTS.md) | every model and feature after the first seven (E1–E75): what was proposed, what was measured, what was built and what was declined |
 | **Designs, as built** | |
 | [ANSWERS-E54-E64.md](ANSWERS-E54-E64.md) | the formulae and constants for the correlation and regime models, read from the papers before they were built |

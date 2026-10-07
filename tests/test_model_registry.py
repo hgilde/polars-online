@@ -441,7 +441,10 @@ def test_every_builders_output_rubric_names_the_fields_its_plainest_spec_writes(
 def test_the_field_grammar_names_every_field_a_grid_writes():
     """Review 2026-10-05 (YA10): the grammar block of
     :mod:`polars_online.spec` left out the per-instance ``settled_frac``,
-    ``withheld_reason`` and ``support_coef`` a half-life grid writes."""
+    ``withheld_reason`` and ``support_coef`` a half-life grid writes. And
+    review 2026-10-06 (YA7): it left out what a lasso path and a selection
+    write, ``penalty_selected_<t>`` and ``selected_<t>``, so the grid below
+    holds a lasso path with both switches on, beside the ridge grid."""
     from polars_online import spec as spec_module
 
     block = re.search(
@@ -465,6 +468,16 @@ def test_the_field_grammar_names_every_field_a_grid_writes():
         half_life=[10.0, 100.0],
         emit_sigma=True,
     )
-    fields = po.spec.output_fields(grid)
+    path = po.spec.lasso(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        lasso_path=[0.1, 0.0],
+        half_life=[10.0, 100.0],
+        emit_selected=True,
+        emit_averaged=True,
+    )
+    fields = po.spec.output_fields(grid) + po.spec.output_fields(path)
+    assert "penalty_selected_y@h10" in fields and "selected_y" in fields, fields
     missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
     assert not missing, (missing, names)

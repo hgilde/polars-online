@@ -1047,9 +1047,11 @@ class LazyFrameOnlineNamespace:
         not. ``ValueError`` for a ``load_state`` that is not a bank this build loads
         or whose specs are not ``specs`` (:meth:`ModelBank.load`). What only the
         values decide (a null clock, a negative weight, a clock running backwards) is
-        reported when the plan runs, as polars' ``ComputeError`` carrying the bank's
-        message. So is a ``save_state`` that cannot be written when the run ends,
-        carrying the ``OSError``'s message and the path.
+        reported when the plan runs: as polars' ``ComputeError`` carrying the bank's
+        message under py-polars 1.x, and as the bank's ``ValueError`` itself under
+        2.0, since how a plan wraps an error is Polars' to change. A ``save_state``
+        that cannot be written when the run ends is reported the same way, as the
+        ``OSError`` with the path, wrapped under 1.x.
         """
         return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows, closed_groups)
 
@@ -1080,8 +1082,10 @@ class LazyFrameOnlineNamespace:
           missing target is fine).
 
         A value the bank refuses (a null clock, a negative weight) is
-        reported when the plan runs, as polars' ``ComputeError`` carrying
-        :meth:`ModelBank.predict`'s message.
+        reported when the plan runs: as polars' ``ComputeError`` carrying
+        :meth:`ModelBank.predict`'s message under py-polars 1.x, and as its
+        ``ValueError`` itself under 2.0, the wrapping being Polars' to
+        change.
         """
         return _predict_lazy(self._lf, bank, chunk_rows)
 

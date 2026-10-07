@@ -95,17 +95,23 @@ def test_it_names_every_field_whose_schedule_follows_the_chunking():
     """Review 2026-10-05 (CI6): the chunk-invariance rule named ``coef`` as
     the one exception, and ``support_coef`` sits on ``coef``'s rows, so it
     follows the chunking too. The bug report template and the Pathway
-    example say the same, and each names both."""
+    example say the same, and each names both. Review 2026-10-06 (SF4, DA9):
+    so does the command line's guide, whose *Chunk size* named ``coef``
+    alone, and it says that under a cadence nothing moves."""
     rule = re.search(r"\*\*Chunk invariance is a guarantee\.\*\*(.*?)\n- \*\*", TEXT, re.S)
     assert rule, "llms.txt no longer states the chunk-invariance rule"
+    runner = (ROOT / "docs" / "RUNNER.md").read_text(encoding="utf-8")
+    chunk_size = runner.split("\n### Chunk size\n", 1)[1].split("\n## ", 1)[0]
     for text in (
         rule.group(1),
         (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8"),
         (ROOT / "examples" / "pathway_integration.py").read_text(encoding="utf-8"),
         # And every sentence of the README's that says which rows carry them.
         *re.findall(r"[^.]*which rows carry[^.]*\.", README),
+        chunk_size,
     ):
         assert "`coef`" in text and "`support_coef`" in text, text[:300]
+    assert "`coef_every`" in chunk_size and "`max_rows_between_coefs`" in chunk_size
 
 
 def test_it_says_a_clock_needs_a_gap_cap():

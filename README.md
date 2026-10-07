@@ -246,6 +246,10 @@ These hold for every spec, however a bank is run:
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
 | **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients, `coef` and `support_coef`, can change ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any thread count** | the thread count, set with `POLARS_ONLINE_MAX_THREADS`, changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
+| **unusable values** | NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
+| **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
+| **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
+| **a clock policy** | a spec with a clock caps each step at `gap_cap`, and applies `session_gap` at a session boundary. A step back the model would learn from is refused, naming the row, unless `restart_after_step_back` makes it a restart ([Sessions, gaps and steps back](#sessions-gaps-and-steps-back)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
 | **tested** | 1,215 Rust tests and 3,840 Python cases (counted on 2026-10-03), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
@@ -618,7 +622,8 @@ spaces a regression's solves.** It takes a number of clock units, or a
 duration such as `"1m"` on a temporal clock. `max_rows_between_snapshots`
 caps the rows between them, and whichever comes first takes a snapshot.
 Under `window_every` the effective window is in
-`[window_size − window_every, window_size]`, whatever the row rate.
+`[window_size − window_every, window_size]`, whatever the row rate, with
+`window_every` the spacing in force: a thinning `window_budget` doubles it.
 
 ```python
 cut = po.spec.ew_cov(
@@ -1070,10 +1075,10 @@ again for every row ([Window operators](#window-operators)):
 
 | operator | the window of row *t* | what it computes |
 |---|---|---|
-| `po.ewm_mean(x, half_life=, window_size=)` | the rows at or before *t*, less than `window_size` older; with no `window_size`, every row since the last break | the time-weighted mean, as Polars' `ewm_mean_by` computes it: each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period. A row whose `x` is null is skipped, as `ewm_mean_by` skips a null; so is one whose `x` is NaN, infinite or beyond 1e100 |
+| `po.ewm_mean(x, half_life=, window_size=)` | the rows at or before *t*, less than `window_size` older; with no `window_size`, every row since the last break | the time-weighted mean, as Polars' `ewm_mean_by` computes it: each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period. A row whose `x` is null is skipped, as `ewm_mean_by` skips a null; so is one whose `x` is NaN, infinite or beyond 1e100. Such a row gets the window's value as it stands, where `ewm_mean_by` gives it null |
 | `po.rewm_mean(x, half_life=, window_size=)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
-| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing |
-| `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing |
+| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
+| `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
 Every operator except `po.increment` takes these keywords, `half_life` and
@@ -1145,9 +1150,13 @@ reads them from its spec. With `group`, each group keeps its own sessions.
 
 **A gap longer than `gap_cap`, or a session change, ends every window open
 across it, and the operator's `partial` sets what the cut window gives.**
-A restart (a step back larger than `restart_after_step_back`, or a session
-change under `session_gap="reset"`) discards the open windows instead, so
-their rows come out null, never dropped:
+A window that looks back is cut short in the same way where it reaches back
+past the stream's first row, or past the first row after a break or a
+restart. So under `partial="null"` the rows less than `window_size` after
+the stream's first row give null, and under `"drop"` they leave the
+output. A restart (a step back larger than `restart_after_step_back`, or a
+session change under `session_gap="reset"`) discards the open windows
+instead, so their rows come out null, never dropped:
 
 | `partial` | a cut window gives | for a window target, the row is | the default for |
 |---|---|---|---|
@@ -1516,8 +1525,9 @@ This code uses `lf` from [Example data](#example-data):
 it is called, so a missing or non-numeric column raises `ValueError` before
 any row is read.** The bank refuses what only the values reveal, such as a
 null clock or a step back, while the query runs. The error arrives as
-`polars.exceptions.ComputeError`, its message naming the row and the way
-out.
+`polars.exceptions.ComputeError` under py-polars 1.x, and as the bank's own
+`ValueError` under 2.0, since how a query wraps an error is Polars' to
+change. Either way its message names the row and the way out.
 
 **With a type checker, call `po.fit_predict`,
 [`po.predict`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.predict)
@@ -1727,7 +1737,7 @@ file:**
 | is not a bank, or holds different specs from the `specs=` given | `ValueError` | check the path, and pass the specs the state was saved with |
 | holds a state that contradicts its own spec | `ValueError` | refit the bank from its input |
 | was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
-| was written under a state schema below 27, as by 0.13.0 and every release before it | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
+| was saved by 0.13.0 or an earlier release | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
 
 ### Serving without learning
 
@@ -2251,6 +2261,13 @@ band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
 autocorrelation and the metrics are read before the row updates them.**
 `resid`, `zscore` and `drift` measure the row against them.
 
+**How often `drift` flags a stream that does not change depends on the
+residuals' tails.** At `drift_delta=0.5` and `drift_threshold=20` on a row
+clock, Gaussian residuals flagged no row in 600,000. Residuals drawn from
+Student's t with three degrees of freedom flagged 3 to 10 in every 200,000.
+So on heavy-tailed data, increase `drift_threshold` until a stretch you know
+to be stable stays unflagged.
+
 **`hit_rate`, in `emit_metrics` and in `po.eval.metrics`, asks whether
 prediction and outcome fall on the same side of zero.** So on a target
 that is always positive, such as a plain ratio, every row counts as a hit.
@@ -2545,7 +2562,7 @@ about 1.4 %, or every `half_life/50` of clock in steady state. To solve on
 the clock instead, give `solve_every` in clock units. `half_life=inf` and
 `lam=` solve on every row, so when the fit need not be current at every
 row, give them a `solve_every`. On 6M rows × 20 features from a parquet stream,
-`solve_every=1000` takes 1.5 s instead of 13 s, with the coefficients at
+`solve_every=1000` takes 1.4 s instead of 10.7 s, with the coefficients at
 most 1000 rows out of date.
 
 **`ewridge` solves by Cholesky factorization, and retries a near-singular
@@ -3136,6 +3153,11 @@ m' = m + b·δ     C'ᵢⱼ = a·Cᵢⱼ + a·b·δᵢδⱼ
 varᵢ = Cᵢᵢ       covᵢⱼ = Cᵢⱼ      corrᵢⱼ = Cᵢⱼ / √(CᵢᵢCⱼⱼ)
 ```
 
+**To compare a variance or a covariance with Polars', give Polars `ddof=0`
+or `bias=True`.** The model's are the population form, `C` itself, with no
+`ddof` correction, where Polars' `var` and `ewm_var` default to the
+unbiased form.
+
 Give `stats` the statistics each row writes, `["mean", "std", "corr"]` when
 left out:
 
@@ -3144,7 +3166,7 @@ left out:
 | `mean`, `var`, `std`, `cov`, `corr` | the moments, per column or per pair | |
 | `partial_corr` | the correlation of two columns with all the others held fixed, read off `(C + s·prior·I)⁻¹` in O(k³) time, spent only when asked | `precision_prior` |
 | `mahal` | the Mahalanobis distance | `precision_prior` |
-| `lagcorr` | the correlation of one column with another `ℓ` rows back | `lags=` |
+| `lagcorr` | the correlation of one column with another `ℓ` learned rows back | `lags=` |
 
 For a wide set of columns, give `stats=[]`, so that each row writes no
 statistics, and read the moments from the state after the run with
@@ -3764,9 +3786,10 @@ and real rows 0.3%. A cluster born mid-stream had a label 31 rows in.
 Reach for `ew_class` to classify rows by a label column: name the column in
 `label` and list its values in `classes`. It keeps one `ew_cov` state per
 class, a weight `n_c`, a mean `μ_c` and a centred covariance `C_c`, and
-scores a row by Bayes' rule over Gaussian classes. On three Gaussian classes
-with their own covariances, its accuracy is within 0.001 of the Bayes rate,
-and its probabilities are calibrated to about 0.01.
+scores a row by Bayes' rule over Gaussian classes. `C_c` is in the
+population form, with no `ddof` correction, as `ew_cov`'s is. On three
+Gaussian classes with their own covariances, its accuracy is within 0.001
+of the Bayes rate, and its probabilities are calibrated to about 0.01.
 
 `π_c` is a class's share of the weight, and `r_c` the ridge `precision_prior`,
 which makes a class scoreable from its first row and fades as `ew_cov`'s does:
@@ -4848,8 +4871,11 @@ no 0.14.** Without that pin, an upgrade can bring a new minor version.
 While this package is pre-1.0, the **minor** version carries breaking
 changes and any change to the numbers a model returns. It follows semantic
 versioning ([CHANGELOG.md](CHANGELOG.md)), and output field names are part
-of its API ([Output field names](#output-field-names)). A change to the
-Polars range is released as:
+of its API ([Output field names](#output-field-names)). The Rust crates it
+is built from (`online-core`, `online-polars`, `online-cli` and
+`online-py`) are not published to crates.io, and are not part of its API
+([R3](docs/RELEASE-READINESS.md#r3--rust-crates-not-published)). A change
+to the Polars range is released as:
 
 | a change to the Polars range | release |
 |---|---|
@@ -4889,7 +4915,7 @@ each run with its date and what differed.
 the last Polars that passed, so that no resolver hands anyone the broken
 pair.** A fix then widens the range again. Two checks look for such a
 break, in Polars and in NumPy, the one optional dependency
-(`polars-online[numpy]`, `numpy>=1.24`): a weekly canary, and the legs
+(`polars-online[numpy]`, `numpy>=1.26`): a weekly canary, and the legs
 every release runs before it publishes.
 
 **Every Monday the canary
@@ -5022,7 +5048,7 @@ vectorized paths on another CPU would show.
 | every python block in this README, and every example in the API reference | each one runs |
 | some docstring text | pinned where a test reads it |
 | everything under `examples/` | runs unmodified: the TOML through the real command line, the Pathway example's operator over plain batches, and the cursor examples against real DuckDB and SQLite databases |
-| the state files 0.10.0 and 0.11.1 wrote | read and refused by their schema, as the CHANGELOG says they are |
+| the state files every release from 0.10.0 on wrote | read and refused by their schema, as the CHANGELOG says they are |
 | `docs/VALIDATION.md`, where the defaults were chosen | regenerated and compared, so the numbers behind them cannot silently stop being true |
 | no data files in the repository | tests generate or download their own data, and a data file, a large file or generated output that gets tracked fails a test |
 

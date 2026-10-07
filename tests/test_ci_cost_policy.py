@@ -264,6 +264,33 @@ class TestPythonVersions:
         floor, _ = self._declared()
         assert f"matrix.python == '{floor}'" in step["if"] and "runner.os == 'Linux'" in step["if"]
 
+    def test_coverage_rides_on_one_legs_own_run(self):
+        """`coverage (python)` ran the whole suite a second time on every OS,
+        `continue-on-error`, for a report nobody read (review 2026-10-06,
+        CI17). The figure now comes from one leg's own pytest run, Linux at
+        the floor Python, so it costs that run's instrumentation and no
+        second run, and that run gates as every leg's does."""
+        floor, _ = self._declared()
+        steps = CI["jobs"]["test"]["steps"]
+        suites = [s for s in steps if str(s.get("run", "")).startswith("uv run pytest")]
+        assert len(suites) == 1, [s.get("name") for s in suites]
+        (suite,) = suites
+        assert "continue-on-error" not in suite and "if" not in suite
+        run = " ".join(suite["run"].split())
+        assert "--cov=polars_online" in run, run
+        assert "runner.os == 'Linux'" in run and f"matrix.python == '{floor}'" in run, run
+
+    def test_the_canary_varies_polars_alone(self):
+        """The canary holds that only one thing may vary in it, yet its Python
+        followed the runner image, as `uv sync` takes whatever interpreter it
+        finds (review 2026-10-06, CI19). It runs the floor Python, as
+        leakcheck.yml pins one."""
+        floor, _ = self._declared()
+        canary = ALL["polars-canary.yml"]
+        for job, spec in canary["jobs"].items():
+            python = spec.get("env", {}).get("UV_PYTHON", canary.get("env", {}).get("UV_PYTHON"))
+            assert python == floor, (job, python)
+
     def test_the_reference_is_built_and_published_once(self):
         """The Pages artifact can be uploaded only once a run; one Linux leg
         builds it, the one at the floor."""

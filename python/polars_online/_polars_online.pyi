@@ -85,7 +85,7 @@ class ModelBank:
                 str | None,  # group
                 str,  # instance
                 int,  # k
-                float,  # n_eff
+                float,  # weight_sum
                 float | None,  # n_kish
                 list[float],  # means
                 list[float],  # comoments, k*k row-major

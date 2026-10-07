@@ -12,7 +12,11 @@ that runs before anything is built -- to its rules.
 from __future__ import annotations
 
 import importlib.util
+import re
+import shlex
 import shutil
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -111,7 +115,7 @@ def test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing():
 
 
 def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
-    """NumPy is the one optional dependency, `numpy>=1.24` with no ceiling,
+    """NumPy is the one optional dependency, `numpy>=1.26` with no ceiling,
     and every other job runs on the locked NumPy (the user, 2026-09-30:
     "test on the next release candidate of that too as we do with polars").
     Its newest stable is inside what the extra promises, so that leg holds
@@ -132,6 +136,59 @@ def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
     canary_runs = [str(s.get("run", "")) for s in canary["steps"]]
     assert "uv sync --prerelease=allow --upgrade-package numpy" in canary_runs
     assert any("pytest" in r for r in canary_runs)
+
+
+#: The first NumPy with wheels for each Python, from PyPI's file lists:
+#: 1.24.4 has none past cp311, 1.25.2 none past cp311, 1.26.0 has cp312.
+FIRST_NUMPY_WHEEL = {"3.12": (1, 26)}
+
+
+def test_the_numpy_floor_installs_on_the_oldest_python():
+    """The extra's floor was NumPy 1.24, which no Python this package
+    supports could install: NumPy's first wheels for 3.12 are 1.26.0 (review
+    2026-10-06, CI10). The floor is held to the oldest Python's first wheel,
+    and every place that names it to ``pyproject.toml``."""
+    meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    python = meta["requires-python"].removeprefix(">=")
+    (numpy,) = meta["optional-dependencies"]["numpy"]
+    m = re.fullmatch(r"numpy>=(\d+)\.(\d+)", numpy)
+    assert m, numpy
+    floor = (int(m.group(1)), int(m.group(2)))
+    assert floor >= FIRST_NUMPY_WHEEL[python], (numpy, python)
+    named = {
+        str(path.relative_to(REPO)): set(re.findall(r"numpy>=[\d.]+", path.read_text("utf-8")))
+        for path in [
+            REPO / "README.md",
+            REPO / "docs" / "RELEASE-READINESS.md",
+            *sorted(WORKFLOWS.glob("*.yml")),
+            Path(__file__),
+        ]
+    }
+    stale = {where: found - {numpy} for where, found in named.items() if found - {numpy}}
+    assert not stale, stale
+
+
+def test_every_build_uses_the_lock_as_committed():
+    """Without ``--locked`` cargo re-resolves a ``Cargo.lock`` that no longer
+    matches the manifests, silently, and the build ships crates nobody
+    committed; only the Linux CLI build passed it (review 2026-10-06, CI12).
+    The wheel, every CLI build and CI's own cargo steps pass it now."""
+    steps = JOBS["build"]["steps"]
+    wheel = next(s for s in steps if s.get("name") == "build the wheel")
+    assert "--locked" in wheel["with"]["args"].split()
+    builds = [s for s in steps if "cargo build" in str(s.get("run", ""))]
+    assert len(builds) == 2, [s.get("name") for s in builds]
+    for step in builds:
+        assert "--locked" in step["run"].split(), step.get("name")
+    cargo = [
+        (job, step)
+        for job in ("lint", "test")
+        for step in CI["jobs"][job]["steps"]
+        if re.search(r"\bcargo (build|test|clippy)\b", str(step.get("run", "")))
+    ]
+    assert len(cargo) == 2, cargo
+    for job, step in cargo:
+        assert "--locked" in step["run"].split(), (job, step.get("name"))
 
 
 def test_every_wheel_is_installed_and_run_where_it_belongs():
@@ -192,14 +249,77 @@ def test_the_wheel_smoke_refuses_a_package_imported_from_the_checkout():
         assert smoke.check(po.__version__).endswith(": ok")
 
 
+def test_the_sdist_is_installed_and_run():
+    """The sdist is what a platform with no wheel builds from, and it was
+    built and uploaded without ever being installed (review 2026-10-06,
+    CI5). The job installs it into a fresh environment, which compiles the
+    Rust on the runner as such a user's machine would, and runs
+    ``scripts/wheel_smoke.py`` on it with the version being released, after
+    the upload, as each wheel's leg does."""
+    steps = JOBS["sdist"]["steps"]
+    smoke = [s for s in steps if "scripts/wheel_smoke.py" in str(s.get("run", ""))]
+    assert len(smoke) == 1, smoke
+    (step,) = smoke
+    assert "uv venv" in step["run"]
+    assert "uv pip install --python smoke dist/*.tar.gz" in step["run"]
+    assert step["env"]["VERSION"] == "${{ needs.version.outputs.version }}"
+    assert '--version "$VERSION"' in step["run"]
+    assert steps.index(step) > max(
+        i for i, s in enumerate(steps) if "upload-artifact" in str(s.get("uses", ""))
+    )
+    # The compile needs a toolchain the workspace's `rust-version` admits,
+    # so the job installs the one every other job builds with.
+    assert any("rust-toolchain" in str(s.get("uses", "")) for s in steps[: steps.index(step)])
+
+
 def test_the_tag_is_on_the_tested_sha():
     run = next(s["run"] for s in JOBS["tag"]["steps"] if "create and push" in s.get("name", ""))
-    assert 'git tag -a "$TAG" -F notes.md "$GITHUB_SHA"' in run
+    assert 'git tag -a --cleanup=verbatim "$TAG" -F notes.md "$GITHUB_SHA"' in run
     assert JOBS["tag"]["permissions"] == {"contents": "write"}
     gh_release = next(
         s for s in JOBS["release"]["steps"] if "action-gh-release" in s.get("uses", "")
     )
     assert gh_release["with"]["tag_name"] == "${{ needs.version.outputs.tag }}"
+
+
+def test_the_tags_annotation_keeps_the_changelogs_headings(tmp_path):
+    """``git tag -F`` strips every line that starts with ``#`` by default, as
+    commentary, so ``v0.13.0``'s annotation lost the CHANGELOG's ``###``
+    headings (review 2026-10-06, CI7). The workflow's own ``git tag`` line
+    runs here on a section with a heading, in a repository of its own, and
+    the annotation must keep the heading."""
+    run = next(s["run"] for s in JOBS["tag"]["steps"] if "create and push" in s.get("name", ""))
+    (line,) = [x.strip() for x in run.splitlines() if x.strip().startswith("git tag")]
+    git = [
+        "git",
+        "-c",
+        "user.name=release-test",
+        "-c",
+        "user.email=release-test@example.com",
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "tag.gpgSign=false",
+        "-c",
+        "tag.forceSignAnnotated=false",
+    ]
+
+    def call(*args: str) -> str:
+        return subprocess.run(
+            [*git, *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout
+
+    call("init", "-q")
+    call("commit", "-q", "--allow-empty", "-m", "a release")
+    sha = call("rev-parse", "HEAD").strip()
+    notes = "polars-online 9.9.9\n\n### Added\n\n- **a thing.** text\n"
+    (tmp_path / "notes.md").write_text(notes, encoding="utf-8")
+    words = {"$TAG": "v9.9.9", "$GITHUB_SHA": sha}
+    command = [words.get(w, w) for w in shlex.split(line)]
+    assert command[:2] == ["git", "tag"], command
+    call(*command[1:])
+    annotation = call("tag", "-l", "--format=%(contents)", "v9.9.9")
+    assert "### Added" in annotation, annotation
 
 
 def _build_steps() -> list[dict]:
@@ -302,6 +422,7 @@ PLACES = [
     "python/polars_online/__init__.py",
     "docs/VALIDATION.md",
     "CHANGELOG.md",
+    "README.md",
 ]
 
 
@@ -311,6 +432,20 @@ def copy(tmp_path):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / rel, tmp_path / rel)
     return tmp_path
+
+
+def _promoted(root: Path) -> None:
+    """The copy's CHANGELOG as release day leaves it: `[Unreleased]` empty,
+    its entries moved to the version's section."""
+    log = root / "CHANGELOG.md"
+    text = re.sub(
+        r"^## \[Unreleased\]\n.*?(?=^## \[)",
+        "## [Unreleased]\n\n",
+        log.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.M | re.S,
+    )
+    log.write_text(text, encoding="utf-8")
 
 
 def test_the_repository_agrees_with_itself():
@@ -337,6 +472,7 @@ def test_a_version_without_a_changelog_section_is_refused(copy):
 
 
 def test_publishing_a_version_whose_tag_exists_is_refused(copy):
+    _promoted(copy)
     v = release_version.versions(copy)["pyproject.toml"]
     asked = []
 
@@ -350,3 +486,43 @@ def test_publishing_a_version_whose_tag_exists_is_refused(copy):
     assert release_version.problems(copy, publish=True, tag_exists=lambda t: False) == []
     # Rehearsing never asks.
     assert release_version.problems(copy, tag_exists=exists) == []
+
+
+def test_the_readmes_pin_names_the_current_minor(copy):
+    """Step 6 of a release moves the README's example pin to the new minor,
+    and nothing checked it (review 2026-10-06, CI13): a pin left on the old
+    minor tells a reader to stay on it. The check runs on every dispatch,
+    rehearsal included."""
+    readme = copy / "README.md"
+    v = release_version.versions(copy)["pyproject.toml"]
+    major, minor, _ = v.split(".", 2)
+    pin = f"polars-online~={major}.{minor}.0"
+    text = readme.read_text(encoding="utf-8")
+    assert pin in text
+    readme.write_text(text.replace(pin, "polars-online~=0.1.0"), encoding="utf-8")
+    (bad,) = release_version.problems(copy)
+    assert "README.md" in bad and "~=0.1.0" in bad and f"~={major}.{minor}.0" in bad, bad
+    readme.write_text(text.replace(pin, "polars-online"), encoding="utf-8")
+    (bad,) = release_version.problems(copy)
+    assert "README.md" in bad and f"~={major}.{minor}.0" in bad, bad
+
+
+def test_publishing_with_entries_left_under_unreleased_is_refused(copy):
+    """Step 5 promotes `[Unreleased]` to the version's section, and the tag's
+    notes are that section, so an entry left behind would ship with notes
+    that miss it (review 2026-10-06, CI13). Publishing refuses it; a
+    rehearsal does not ask, since between releases the section fills."""
+    log = copy / "CHANGELOG.md"
+    v = release_version.versions(copy)["pyproject.toml"]
+    head = "# Changelog\n\nPreamble.\n\n"
+    released = f"## [{v}] — 2026-01-01\n\n### Added\n\n- **the release.** text\n"
+    log.write_text(
+        f"{head}## [Unreleased]\n\n### Fixed\n\n- **left behind.**\n\n{released}",
+        encoding="utf-8",
+    )
+    (bad,) = release_version.problems(copy, publish=True, tag_exists=lambda t: False)
+    assert "[Unreleased]" in bad, bad
+    assert release_version.problems(copy, tag_exists=lambda t: False) == []
+    for promoted in (f"{head}## [Unreleased]\n\n{released}", f"{head}{released}"):
+        log.write_text(promoted, encoding="utf-8")
+        assert release_version.problems(copy, publish=True, tag_exists=lambda t: False) == []

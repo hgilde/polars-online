@@ -987,7 +987,9 @@ def ewridge(
         window. Under a clock spacing, every row at most
         ``window_size - window_every`` old is kept and none older than
         ``window_size``. So the effective window is in
-        ``[window_size - window_every, window_size]`` in clock units, exactly.
+        ``[window_size - window_every, window_size]`` in clock units, exactly,
+        with ``window_every`` the spacing in force: a thinning
+        ``window_budget`` doubles it.
         A burst of rows inside one spacing takes no snapshot of its own.
 
         ``window_budget`` bounds each ring in MiB, and says what happens when
@@ -1187,7 +1189,12 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``target``
         The target the field is about, or null.
     ``half_life``, ``lam``
-        The decay instance it belongs to, or null for a single one.
+        The decay of the instance the field belongs to, filled for a single
+        instance as for a grid. ``half_life`` is the instance's half-life in
+        clock units, in seconds under a duration (``300.0`` for ``"5m"``),
+        and null under ``lam`` or for an infinite half-life, since the table
+        travels as JSON, which has no infinity. ``lam`` is the spec's
+        ``lam``, and null under a half-life.
     ``ridge``, ``feature_set``, ``penalty``
         The grid combination: the ridge value, the feature set's name, the lasso
         path point; null where the spec has no such grid.
@@ -2330,8 +2337,8 @@ def ew_cov(
         stood at ``u``, so subtracting that leaves precisely the rest. What
         the model keeps is a ring of snapshots, one per row by default: the
         one place in this library where memory grows with a window rather
-        than with the state. A snapshot is ``k² + k + 2`` doubles, so a
-        1,000-row window over 20 columns is about 3 MB per group.
+        than with the state. A snapshot is ``k² + k + 3`` eight-byte numbers,
+        so a 1,000-row window over 20 columns is about 3 MB per group.
         ``window_every`` spaces the snapshots on the clock (``"1m"``, or a
         number of the clock's units) and ``max_rows_between_snapshots`` caps
         the rows between them, whichever comes first, as for :func:`ewridge`.
@@ -2354,7 +2361,9 @@ def ew_cov(
                excludes; under a coarser cadence the effective window is
                shorter than asked by at most one snapshot's spacing, never
                longer: in ``[window_size - window_every, window_size]`` in
-               clock units, exactly, under a clock spacing
+               clock units, exactly, under a clock spacing, with
+               ``window_every`` the spacing in force (a thinning budget
+               doubles it)
            * - the clock is the decayed one
              - ``window_size`` is measured on the clock the decay uses, after
                ``gap_cap`` caps a gap and after a ``session_gap`` is applied

@@ -31,6 +31,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   CARGO_INCREMENTAL: 0
+  # The floor Python, so the interpreter is not a second thing that varies:
+  # unpinned, `uv sync` took whatever the runner image carried, and the
+  # image's Python moves with the image (review 2026-10-06, CI19).
+  # leakcheck.yml pins its Python the same way.
+  UV_PYTHON: "3.12"
 
 jobs:
   latest-polars:
@@ -111,7 +116,7 @@ jobs:
     permissions:
       contents: read
     # NumPy is the one optional dependency (`polars-online[numpy]`,
-    # `numpy>=1.24`, no ceiling to drop), and every other job runs on the
+    # `numpy>=1.26`, no ceiling to drop), and every other job runs on the
     # locked NumPy. Its release candidates allowed and nothing else moved, a
     # red run means NumPy broke this library, a release before it ships (the
     # user, 2026-09-30). The Rust side does not link NumPy, so no cargo tests.

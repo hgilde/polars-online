@@ -12,8 +12,9 @@ beside a bank of its own that fitted both halves: 0.11.1's files (schema 17)
 went on bit for bit, 0.10.0's (schema 14) within 2.2e-13. Task 120 then
 removed the ``on_clock_reset`` every one of those files names (``"max"``,
 the old default, written whether or not a spec had a clock), and the user
-said "Do not worry about old specs". The bank's minimum schema is now 25,
-above every release's: 0.10.0 wrote 14, 0.11.1 17, 0.12.0 19 and 0.13.0 20.
+said "Do not worry about old specs". The bank's minimum schema
+(``MIN_BANK_SCHEMA_VERSION``, crates/online-polars/src/bank.rs) is above
+every release's: 0.10.0 wrote 14, 0.11.1 17, 0.12.0 19 and 0.13.0 20.
 So every release's file is refused by its version, naming the way out, and
 this test holds each release's files to that. Downloading needs the
 network, so offline the test is skipped (hard rule 1).

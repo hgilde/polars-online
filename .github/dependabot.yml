@@ -14,9 +14,16 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Rust and Python dependencies are deliberately *not* automated. The Rust
-  # `polars` is pinned exactly and must move together with pyo3-polars,
-  # polars-arrow, polars-parquet and polars-utils (see the README's
-  # "Versioning and the Polars pin"); a bot bumping one of them in isolation
-  # would produce a build that cannot work. The Python side is a range whose
-  # ceiling `polars-canary.yml` watches weekly instead.
+  # Rust and Python dependencies get no *version* updates from this file.
+  # The Rust `polars` is pinned exactly and must move together with
+  # pyo3-polars, polars-arrow, polars-parquet and polars-utils (see the
+  # README's "Versioning and the Polars pin"); a bot bumping one of them in
+  # isolation would produce a build that cannot work. The Python side is a
+  # range whose ceiling `polars-canary.yml` watches weekly instead.
+  #
+  # Dependabot *security* updates are on, in the repository's settings
+  # rather than here, for `Cargo.lock` and `uv.lock` alike: #4 (urllib3,
+  # uv.lock) and #5 (rustls, Cargo.lock) were merged on 2026-10-06. A
+  # security bump of a polars-family crate moves one of the crates above
+  # alone, so CI is meant to fail on it: the fix is to move the whole family
+  # by hand.

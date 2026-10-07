@@ -36,9 +36,10 @@ env:
 
 jobs:
   # The version this run would publish, checked before anything is built:
-  # agreed in all six places, a CHANGELOG section for it, and -- publishing --
-  # a tag that does not exist yet, since release tags are immutable, and
-  # only from `main` (scripts/release_version.py).
+  # agreed in all six places, a CHANGELOG section for it, and the README's
+  # example pin on its minor; and -- publishing -- nothing left under the
+  # CHANGELOG's `[Unreleased]`, a tag that does not exist yet, since release
+  # tags are immutable, and only from `main` (scripts/release_version.py).
   version:
     name: the version
     runs-on: ubuntu-latest
@@ -82,16 +83,22 @@ jobs:
 
   # A source distribution, so a platform with no wheel above can still build
   # from source (it needs a Rust toolchain, which is exactly why the wheel
-  # matrix is wide).
+  # matrix is wide). The job then builds it as such a user would, from the
+  # file, so it compiles the whole workspace cold: 60 minutes, where the
+  # sdist alone took seconds.
   sdist:
     name: build the sdist
     needs: version
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The install below compiles the Rust, so it needs a toolchain the
+      # workspace's `rust-version` admits: the one every other job uses,
+      # not whichever the image carries.
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       # PyPI shows README.md as the project page, where a relative link to
       # another file resolves against pypi.org and is a 404. Rewritten to the
@@ -109,6 +116,21 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
+
+      # The sdist, installed into a fresh environment with its dependencies
+      # from PyPI, which builds the extension from the file as a platform
+      # with no wheel does, and run as each wheel is (scripts/wheel_smoke.py).
+      # It was built and uploaded without ever being installed (review
+      # 2026-10-06, CI5). Last, so a failed run leaves the artifact to look
+      # at; `publish` needs this job either way.
+      - name: install the sdist and run it
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          uv venv --python 3.12 smoke
+          uv pip install --python smoke dist/*.tar.gz
+          uv run --no-project --python smoke python scripts/wheel_smoke.py --version "$VERSION"
 
   # Wheels + the CLI binary (docs/PLAN.md §10).
   #
@@ -195,13 +217,16 @@ jobs:
 
       # maturin-action supplies the manylinux/musllinux container and the
       # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
-      # over the same `maturin build`.
+      # over the same `maturin build`. `--locked`, here and on every cargo
+      # build below: a `Cargo.lock` that no longer matches the manifests is
+      # refused, not re-resolved into crates nobody committed (review
+      # 2026-10-06, CI12).
       - name: build the wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --out dist -m crates/online-py/Cargo.toml
+          args: --release --locked --out dist -m crates/online-py/Cargo.toml
           sccache: "true"
 
       # Only on targets the runner builds natively. The musl wheel is
@@ -264,7 +289,7 @@ jobs:
         if: matrix.cli && runner.os != 'Linux'
         env:
           RUSTC_WRAPPER: ""
-        run: cargo build --release -p online-cli
+        run: cargo build --release --locked -p online-cli
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -461,7 +486,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Blocking. The optional extra declares `numpy>=1.24` with no
+          # Blocking. The optional extra declares `numpy>=1.26` with no
           # ceiling, so the newest stable NumPy is inside the promise.
           - leg: the newest NumPy
             prerelease: ""
@@ -532,7 +557,10 @@ jobs:
           packages-dir: dist
 
   # The tag, once what it names is on PyPI: on the sha every job above
-  # tested, never a moving `HEAD`. Annotated, with the CHANGELOG's section.
+  # tested, never a moving `HEAD`. Annotated, with the CHANGELOG's section,
+  # kept verbatim: `git tag -F` strips every line that starts with `#` by
+  # default, and `v0.13.0`'s annotation lost the section's `###` headings
+  # that way (review 2026-10-06, CI7).
   tag:
     name: tag the release
     needs: [version, publish]
@@ -562,7 +590,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -F notes.md "$GITHUB_SHA"
+          git tag -a --cleanup=verbatim "$TAG" -F notes.md "$GITHUB_SHA"
           git push origin "refs/tags/$TAG"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

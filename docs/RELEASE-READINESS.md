@@ -48,8 +48,8 @@ In order:
 | 2. benchmark | `uv run python scripts/benchmark.py` under the last release's wheel from PyPI and under this build, in turn, with the machine's load logged. A slowdown past the runs' scatter is fixed, or declared in the CHANGELOG. `docs/PERFORMANCE.md` §26 found two slowdowns 0.11.0 had shipped, and §31 ran this step before 0.13.0 |
 | 3. released states | every release that added a schema is in `RELEASES` in `tests/test_released_state.py` ([A released build's state files](#a-released-builds-state-files)) |
 | 4. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
-| 5. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section |
-| 6. README | for a minor release, the example pin under the README's *This package's own versioning* names the new minor, as `~=0.13.0` names the 0.13 series |
+| 5. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section. `release_version.py --publish` refuses to publish while anything is left under `[Unreleased]` |
+| 6. README | for a minor release, the example pin under the README's *This package's own versioning* names the new minor, as `~=0.13.0` names the 0.13 series. `release_version.py` refuses a pin on another minor, rehearsing too |
 | 7. local gate | `bash scripts/gate.sh`, unpiped, until its last line says `gate: PASS` |
 | 8. commit and push | on `main` itself, not on a branch; then wait for CI on the pushed sha |
 | 9. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)) |
@@ -85,7 +85,7 @@ moved (`pyproject.toml`).
 | `build` | all six wheels, and the command-line binaries on the five targets that build one, all but musl. The Linux binary is built in the wheels' manylinux2014 image, and refused above glibc 2.17 | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
 | `next-polars` | the Python suite, less its `soak` and `pins` tests, in two legs: on the newest Polars the declared range admits, and on the next major | the first leg, the blocking one; the second is advisory |
-| `next-numpy` | the same suite in two legs, with only NumPy upgraded: on the newest NumPy, which the optional extra's `numpy>=1.24` admits, and on NumPy's next release candidate | the first leg only; the second is advisory |
+| `next-numpy` | the same suite in two legs, with only NumPy upgraded: on the newest NumPy, which the optional extra's `numpy>=1.26` admits, and on NumPy's next release candidate | the first leg only; the second is advisory |
 | `publish to PyPI` | the upload | it is the gate |
 | `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels, the sdist and the command-line binaries | no: they run after the upload |
 
@@ -164,10 +164,11 @@ fail.
 #### A released build's state files
 
 **A state file written by any release so far is refused, with a message
-naming the way out: refit from the input.** This build's bank reads schema
-25 and newer (`MIN_BANK_SCHEMA_VERSION`, `crates/online-polars/src/bank.rs`).
-The releases wrote schema 14 (0.10.0), 17 (0.11.1), 19 (0.12.0) and 20
-(0.13.0).
+naming the way out: refit from the input.** This build's bank reads the
+schemas from `MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`)
+to its own, `SCHEMA_VERSION` (`crates/online-core/src/lib.rs`), which
+`po.schema_version()` gives. The releases wrote older ones: schema 14
+(0.10.0), 17 (0.11.1), 19 (0.12.0) and 20 (0.13.0).
 
 `tests/test_released_state.py` holds each release it lists to that. It
 installs the release into the comparison's cache, and runs
@@ -303,7 +304,7 @@ this section:
 | what Polars itself promises | nothing for `ModelBank`, the IO plugin or the serialized form of an expression; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
 | the Rust `polars` | 0.55.2, pinned by `Cargo.toml` and linked into the wheel, so it never meets the user's | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
 | the `online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
-| NumPy, the optional extra | `numpy>=1.24`: the newest NumPy blocks a release | [NumPy, the one optional dependency](#numpy-the-one-optional-dependency) |
+| NumPy, the optional extra | `numpy>=1.26`: the newest NumPy blocks a release | [NumPy, the one optional dependency](#numpy-the-one-optional-dependency) |
 
 ### The floor and the ceiling
 
@@ -418,14 +419,17 @@ upgraded, in two legs:
 
 | leg | resolves to | blocks the publish |
 |---|---|---|
-| the newest NumPy | the newest stable that `numpy>=1.24` admits; the extra has no ceiling | yes |
+| the newest NumPy | the newest stable that `numpy>=1.26` admits; the extra has no ceiling | yes |
 | NumPy's next release candidate | a release candidate while one is out, and the newest stable again otherwise | no |
 
 The canary's second job, `next-numpy`, runs the advisory leg every week.
 Only NumPy moves in these runs, so a red one names it.
 
-**The floor, `numpy>=1.24`, is declared but not measured**: no run on NumPy
-1.24 is recorded. With no ceiling, a NumPy that breaks this library blocks
+**The floor, `numpy>=1.26`, follows the oldest Python this package
+supports: NumPy's first wheels for Python 3.12 are 1.26.0.**
+`tests/test_release_workflow.py` holds the floor to that first wheel. No
+run on NumPy 1.26 is recorded.
+With no ceiling, a NumPy that breaks this library blocks
 every release until it is fixed or capped. The Polars range makes the same
 trade (`docs/PLAN.md` task 142).
 
@@ -868,8 +872,9 @@ output has.
 **2. Twenty-one spec constructors and ~200 named keyword parameters, plus
 the helper modules**, as counted on 2026-09-06. All are keyword-only, so
 positional order is not API, but every *name* is. On that date 29 of the
-parameters were the `CommonKwargs` every spec shares; today it holds 33
-(`python/polars_online/_kwargs.py`), and the constructors are still
+parameters were the `CommonKwargs` every spec shares. Today
+`python/polars_online/_kwargs.py` declares them, and the snapshot's
+`[common parameters]` lists them once. The constructors are still
 twenty-one. The four helper modules named then were `po.corr`, `po.sim`,
 `po.gram` and `po.prep` (`po.stream` since task 105), whose functions are
 read the same way. `tests/api_surface.txt` pins the constructors and their
@@ -908,18 +913,21 @@ under `loss = "huber"`. Pinned by:
 `test_validation_doc.py` pins that they are still the measured optimum.
 
 **4. State files and the TOML config.** A state file is versioned msgpack,
-with `SCHEMA_VERSION` plus a bank `format_version`. `SCHEMA_VERSION` is 25,
-and the bank's `format_version` is 2, or 3 when a spec carries a clock
-parameter as a duration. A bank file older than schema 25 is refused by its
-version (`MIN_BANK_SCHEMA_VERSION`, `crates/online-polars/src/bank.rs`),
-and that is every file a release has written so far. The models' own
-layout still loads from 14 (`MIN_SCHEMA_VERSION`,
-`crates/online-core/src/lib.rs`). A window run's state, from `with_windows`,
-has its own version, 5. A change to it moves the bank's schema too, and a
-test pairs the two numbers (`windows_frame.rs`). The state of
-`po.stream.refresh_time` has its own version, 1. The exception to hard
-rule 5, and the reason for each raise of a minimum, are recorded beside
-`MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION`.
+with `SCHEMA_VERSION` plus a bank `format_version`. `SCHEMA_VERSION`
+(`crates/online-core/src/lib.rs`, and `po.schema_version()` from Python)
+moves with every layout change. The bank's `format_version` is 2, or 3 when
+a spec carries a clock parameter as a duration. A bank file older than
+`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) is refused
+by its version, and that is every file a release has written so far. The
+models' own states name a floor of their own, `MIN_SCHEMA_VERSION`
+(`crates/online-core/src/lib.rs`). A window run's state, from
+`with_windows`, has its own version, `WINDOWS_VERSION`
+(`crates/online-polars/src/windows_frame.rs`). A change to it moves the
+bank's schema too, and a test pairs the two numbers (`windows_frame.rs`).
+The state of `po.stream.refresh_time` has its own version,
+`REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`). The exception to
+hard rule 5, and the reason for each raise of a minimum, are recorded
+beside `MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION`.
 
 **The proposal held this surface up as the model the rest should follow.**
 It had a frozen fixture per schema (`state_v1.rs`, `state_schema2.rs`,
@@ -934,7 +942,7 @@ writer moved, which is exactly what happened to schema 3 at task 40.
 went in the naming pass of 2026-09-07 (`6124d0b`), after which no older
 state could be read. On 2026-09-25 `SCHEMA_VERSION` was 16 and
 `MIN_SCHEMA_VERSION` 14, so 14 and 15 loaded through the named encoding's
-defaults; the numbers above are today's.
+defaults. The constants named above hold today's numbers.
 
 ### S — The mechanism: one API snapshot test — **done**
 
@@ -977,7 +985,7 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 | the CLI's flags | | | `[cli flags]`: the usage line and every flag, with the value it takes (task 190) |
 | the environment variables | | | `[env vars]`: every read in `crates/*/src` and the package (task 190) |
 | versions | `SCHEMA_VERSION` and the bank `format_version` | `schema_version` | |
-| length of `tests/api_surface.txt` | | 416 lines | 1,148 lines; 904 on 2026-09-24 |
+| length of `tests/api_surface.txt` | | 416 lines | as `wc -l` counts it; 904 lines on 2026-09-24, 1,156 on 2026-10-06 |
 
 **Building it found two things, and fixed both:**
 
@@ -1011,6 +1019,16 @@ was done:
 | spec dicts | spec objects | they are JSON-ready and printable, and validation already happens at construction |
 | wide struct output | a native long format | `eval.unpack` already provides long form on demand |
 
+**A new optional output is switched on in one of the three shapes already
+in use, never a fourth** (review 2026-10-06, AP14). Each shape says what
+the setting is:
+
+| the switch | when | as in |
+|---|---|---|
+| a boolean `emit_*` keyword | the output is on or off, and nothing else | `emit_sigma=True` |
+| a list | the list is also the setting: which of several outputs, or at which values | `ew_cov(stats=["mean", "corr"])`, `resid_quantiles=[0.5, 0.9]` |
+| a level | the number is also the setting | `conformal=0.9`, the coverage asked for |
+
 ### The 2026-09 batch: what it added to the surface (tasks 45–56)
 
 The batch added five models (`deco`, `rcov`, `hmm`, `corrchange`, `bocpd`),
@@ -1021,7 +1039,7 @@ co-moments on `ew_cov`. In API terms:
 
 | what the batch added | how the API held it |
 |---|---|
-| **`SCHEMA_VERSION` 5** | `state_schema5.rs` froze it: a bank with an undrained closed row, an `ew_cov` with a partly filled lag ring, and one of each new model mid-stream. `state_schema4.rs` still loaded, continued to the bit and re-saved as 5, which was hard rule 5 discharged. Both fixtures have since gone, and the schema is 25 ([What the API actually is](#what-the-api-actually-is)) |
+| **`SCHEMA_VERSION` 5** | `state_schema5.rs` froze it: a bank with an undrained closed row, an `ew_cov` with a partly filled lag ring, and one of each new model mid-stream. `state_schema4.rs` still loaded, continued to the bit and re-saved as 5, which was hard rule 5 discharged. Both fixtures have since gone, and the schema has moved on many times since: `po.schema_version()` gives today's ([What the API actually is](#what-the-api-actually-is)) |
 | **every new output field name** | pinned by `tests/api_surface.txt`, which then gained a `[helper modules]` section, and by `tests/test_golden_pipeline.py`, which fixes the numbers of a twenty-five-spec bank at three rows |
 | **three new defaults, measured rather than chosen** | `bocpd`'s `robust_beta = 0.1` (above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. The measurements are in `docs/PLAN.md` task 55 and `docs/ENHANCEMENTS.md` E61 for `bocpd`, and in E57 for `rcov`. Changing one of them is a breaking change, by [the policy](#the-policy) |
 | **no new Polars interface** | two of the three streaming paths of the time still carried no guarantee (CLAUDE.md rule 13): `ModelBank` and the IO plugin. The batch added no polars API dependency beyond `LazyFrame.collect_batches`, which is already the floor |
@@ -1501,9 +1519,10 @@ and when:
 | branch protection on `main` | 2026-08-31 (R4): require CI to pass, no force-push. 2026-09-02: did not come back with the recreation. 2026-09-03: a ruleset, so `main` cannot be force-pushed or deleted |
 | `v*` tags | 2026-09-03: a ruleset, so `v*` tags cannot be moved or deleted once they exist, with no bypass list; the owner is bound too, and disabling the ruleset is the only way round it. 2026-09-06: [the release gate](#the-release-gate) records the `release tags are immutable` ruleset over `refs/tags/v*`, with `deletion` and `update` rules and an empty bypass list |
 | description, homepage and topics | 2026-08-31 (R4): description and topics. 2026-09-02: did not come back. 2026-09-03: the description, the homepage (the Pages site) and the topics set |
-| Dependabot alerts and security updates | 2026-08-31: remaining, under Settings → Code security. 2026-09-02: did not come back. 2026-09-03: re-enabled |
-| secret scanning and push protection | 2026-08-31: remaining, under Settings → Code security |
-| private vulnerability reporting | 2026-08-31 (R4 and the sweep): enable it; it is the enforcement channel `SECURITY.md` and `CODE_OF_CONDUCT.md` both point at. 2026-09-02: did not come back. 2026-09-03: left to the owner |
+| Dependabot alerts and security updates | 2026-08-31: remaining, under Settings → Code security. 2026-09-02: did not come back. 2026-09-03: re-enabled. 2026-10-06: security updates on; they opened #4 (urllib3, `uv.lock`) and #5 (rustls, `Cargo.lock`), both merged that day |
+| secret scanning and push protection | 2026-08-31: remaining, under Settings → Code security. 2026-10-06: both on, as `security_and_analysis` in `gh api repos/hgilde/polars-online` reports |
+| private vulnerability reporting | 2026-08-31 (R4 and the sweep): enable it; it is the enforcement channel `SECURITY.md` and `CODE_OF_CONDUCT.md` both point at. 2026-09-02: did not come back. 2026-09-03: left to the owner. 2026-10-06: on (`gh api repos/hgilde/polars-online/private-vulnerability-reporting`) |
+| CodeQL code scanning | 2026-10-06: GitHub's default setup, not a workflow in `.github/workflows/`: actions, Python and Rust, weekly, configured on 2026-09-07 (`gh api repos/hgilde/polars-online/code-scanning/default-setup`) |
 | the `pypi` environment | 2026-09-02: must exist again before any tag is pushed. 2026-09-03: left to the owner, with the owner as required reviewer and a `v*` tag rule. 2026-09-06: the `Pypi` environment, with the owner as a required reviewer and self-review allowed |
 | the PyPI pending publisher | 2026-09-03: left to the owner, as `polars-online` / `hgilde` / `polars-online` / `release.yml` / `pypi` |
 | README badges (CI, license) | 2026-08-31: they only render once public, so add them then |

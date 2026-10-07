@@ -720,12 +720,12 @@ def with_windows(
     expression passed as ``session=...`` is refused; name it with
     ``.alias()``.
 
-    **A formula is element-wise.** Columns, literals, arithmetic,
+    **A formula is element-wise.** Columns, literals, arithmetic, negation,
     comparisons, ``log``, ``exp``, ``abs``, ``sqrt``, ``pow``, ``clip``,
-    ``fill_null``, ``is_null``, ``when/then/otherwise``, ``cast`` and
-    ``alias`` over the operators. A ``shift``, a cumulative or rolling
-    function, ``over`` or an aggregation would depend on the chunking, and
-    is refused by name while the plan is built. An operator's input is the
+    ``fill_null``, ``is_null``, ``is_not_null``, ``when/then/otherwise``,
+    ``cast`` and ``alias`` over the operators. A ``shift``, a cumulative or
+    rolling function, ``over`` or an aggregation would depend on the
+    chunking, and is refused by name while the plan is built. An operator's input is the
     same kind of formula, ``increment`` included, not another operator. The
     formula is kept as a compact tree of its own, in the plan and in a saved
     state (docs/PLAN.md task 143).

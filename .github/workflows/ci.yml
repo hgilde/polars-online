@@ -109,8 +109,11 @@ jobs:
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
+      # `--locked` here and in `test`: a `Cargo.lock` that no longer matches
+      # the manifests fails the step rather than being re-resolved silently
+      # (review 2026-10-06, CI12).
       - name: cargo clippy
-        run: uv run cargo clippy --workspace --all-targets -- -D warnings
+        run: uv run cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           UV_NO_SYNC: "1"
       - name: ruff format
@@ -226,7 +229,7 @@ jobs:
       # on the 0.11.0 tag a unit test that failed on Linux and Windows hid
       # every integration test after it, and Windows never reached pytest.
       - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py --no-fail-fast
+        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'
@@ -235,8 +238,12 @@ jobs:
       - name: build the extension
         run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
+      # Coverage is measured on one leg's own run, Linux at the floor Python,
+      # and reported, never gating (docs/TESTING.md T-D4): a step of its own
+      # ran the whole suite a second time on every OS, `continue-on-error`
+      # (review 2026-10-06, CI17). The run itself gates as on every leg.
       - name: pytest
-        run: uv run pytest
+        run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
 
       # The API reference (docs/reference): Sphinx over the docstrings, -W so
       # a docstring that is not valid reStructuredText fails the job. It
@@ -259,12 +266,6 @@ jobs:
         if: runner.os == 'Linux' && matrix.python == '3.12'
         continue-on-error: true
         run: uv run python scripts/compare_release.py --report
-
-      # Reported, never gating (docs/TESTING.md T-D4); once per OS.
-      - name: coverage (python)
-        if: matrix.python == '3.12'
-        run: uv run pytest --cov=polars_online --cov-report=term -q
-        continue-on-error: true
 
   # Publishes the reference the test job built to GitHub Pages, on every
   # push to main that passed, at https://hgilde.github.io/polars-online/.

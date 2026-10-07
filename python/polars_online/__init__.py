@@ -28,9 +28,11 @@ path in the message. A value that is refused (a spec parameter, a config key,
 what a column holds) is ``ValueError`` naming the spec and the parameter or
 column. A wrong type is ``TypeError``; a spec name or position a bank has not
 got is ``KeyError`` or ``IndexError``; a bank fed from two threads at once is
-``RuntimeError``. Inside a polars plan the same messages arrive as polars'
-``ComputeError``. A refused chunk never changes a bank, and a failed run never
-replaces an output or a state file.
+``RuntimeError``. Inside a running polars plan the same exception arrives
+wrapped in polars' ``ComputeError`` under py-polars 1.x, carrying its
+message, and as itself under 2.0: how a plan wraps an error is Polars' to
+change. A refused chunk never changes a bank, and a failed run never replaces
+an output or a state file.
 """
 
 from polars_online import (

@@ -99,7 +99,50 @@ sees a stream* is the guide to them. This is the reference.
     other models check the shared ``weight_sum``. The ``weight_sum``
     field is the shared weight in every model. So a target that is often null
     is gated on its own rows, and its first prediction comes later than the
-    others'. Units: ``weight_sum`` units, not rows.
+    others'. Units: ``weight_sum`` units, not rows. The default depends on
+    the model:
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 45 55
+
+       * - the default
+         - models
+       * - one per unknown: the features, and the intercept when there is
+           one
+         - ``lasso``, ``kalman``, ``huber``, ``quantile``, ``rls``, ``sgd``,
+           ``pa``, ``ftrl``
+       * - the feature count plus one (1 for ``holt``)
+         - ``ew_cov``, ``ew_class``, ``kmeans``, ``micro``, ``holt``
+       * - 3
+         - ``marginal``, ``deco``
+       * - 1
+         - ``bocpd``
+       * - 0, each having a gate of its own
+         - ``ewridge``, ``seqtest``, ``rcov``, ``hmm``, ``corrchange``
+``min_settled_frac``
+    Why: a history shorter than the half-life may not represent the process,
+    such as regimes or seasons the half-life was chosen to average across.
+    What: predictions are withheld while ``settled_frac``, how far the decay
+    window has filled toward its steady state (``1 - 2 ** (-T /
+    half_life)``, ``T`` the decay time seen), is below it. A fraction in
+    ``[0, 1)``: ``0.5`` waits one half-life, ``0.75`` two. Default ``0``,
+    off, since a fit kept as weighted means is unbiased from its first row
+    when the process is stationary. Needs a decay: a finite ``half_life``, or
+    ``lam`` below 1.
+``max_error_inflation``
+    ``ewridge`` only. Why: a fit from too little data adds its estimation
+    error to every prediction's. What: predictions are withheld while
+    ``sqrt(1 + edf / n_kish)`` is at or above it. That is the factor by
+    which estimation error is expected to inflate the prediction error over
+    the noise floor, with ``edf`` the effective degrees of freedom the last
+    solve used and ``n_kish`` Kish's effective sample size. A ratio above 1,
+    default ``sqrt(2)``; ``inf`` switches it off. It reads Kish's count, so
+    uneven weights withhold for longer, and adding a feature moves the gate
+    with the model.
+``emit_error_inflation``
+    ``ewridge`` only: write ``error_inflation_<slot>``, the same factor for
+    the row's own features (*What a spec writes*, below). Default ``False``.
 ``coef_every``, ``max_rows_between_coefs``
     How often the ``coef`` field is filled, as ``solve_every`` and
     ``max_rows_between_solves`` schedule a solve. ``coef_every`` writes a
@@ -148,11 +191,15 @@ sees a stream* is the guide to them. This is the reference.
 the diagnostics
     ``emit_sigma``, ``emit_zscore``, ``emit_selected``, ``emit_averaged``
     with ``average_eta``, ``emit_metrics``, ``conformal`` with
-    ``conformal_rate``, ``resid_quantiles``, ``emit_autocorr`` with
-    ``resid_autocorr_lag``, and ``emit_drift`` with ``drift_delta``,
+    ``conformal_rate`` (default 0.05), ``resid_quantiles``, ``emit_autocorr``
+    with ``resid_autocorr_lag``, and ``emit_drift`` with ``drift_delta``,
     ``drift_threshold`` and ``drift_action``, and ``emit_clocks``. Each adds
     fields to the output, listed below. A model with no residual refuses
     them by name.
+
+``standardize``, which seven models take, defaults to ``False`` in
+``ewridge``, ``huber``, ``quantile`` and ``sgd``, and to ``True`` in
+``kalman``, ``kmeans`` and ``micro``. Each builder says what it scales.
 
 .. rubric:: Clock units
 
@@ -197,7 +244,8 @@ below, and in the models ``window_size``,
 ``revert_half_life``, ``level_half_life`` and ``trend_half_life``.
 
 One parameter takes either form, with a meaning for each: ``bocpd``'s
-``hazard``. A number is the expected rows between changepoints, on any clock.
+``hazard``. A number, finite and above 1, is the expected rows between
+changepoints, on any clock.
 It binds to no clock unit, so it stands beside durations on a temporal clock.
 A duration is the expected time between changepoints. It is a clock
 parameter like the rest, so it needs a temporal clock and refuses a plain
@@ -234,8 +282,10 @@ A bank adds one struct column per spec, named after the spec. Every field but
 ``coef`` and ``support_coef`` is computed from the state *before* the row
 updates it, so a prediction is out-of-sample and a diagnostic never sees the
 row it describes. ``coef`` and ``support_coef`` report the fit *after* the
-row: ``coef`` on row *t* is the fit row *t + 1* is predicted with. A
-regression writes, with ``<t>`` a target:
+row: ``coef`` on row *t* is the fit row *t + 1* is predicted with. Under an
+``embargo`` the row's own update waits for the delay, so ``coef`` on row *t*
+is the fit after the rows *t* released, and row *t + 1* is predicted with it
+only when *t + 1* releases none. A regression writes, with ``<t>`` a target:
 
 ``pred_<t>``
     The prediction. Null until ``min_weight`` is reached, and on a row the
@@ -251,10 +301,11 @@ regression writes, with ``<t>`` a target:
     settles near 8,657, and Kish's ``n_kish`` is the sample size.
 ``coef``
     The coefficients of the fit after the row's update, the ones the next
-    row is predicted with, as one flat list: per (target, grid combination)
-    slot in the order the ``pred`` fields declare them, the intercept and
-    then one entry per feature. Null on rows where it is not filled
-    (``coef_every``). :func:`coef_index` maps each position to its term.
+    row is predicted with (under an ``embargo``, as above), as one flat
+    list: per (target, grid combination) slot in the order the ``pred``
+    fields declare them, the intercept and then one entry per feature. Null
+    on rows where it is not filled (``coef_every``). :func:`coef_index` maps
+    each position to its term.
     :func:`coef_fields` names the column each becomes when the struct is
     unnested.
 ``settled_frac``
@@ -286,7 +337,10 @@ describes. Per model, the fields of the plainest spec are listed in
 :func:`output_fields` lists them for the exact spec you built.
 
 A grid writes one set of fields per instance, suffixed. A grid is a list of
-half-lives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``:
+half-lives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``.
+``lasso`` also writes the path point it has selected, once per instance.
+``emit_selected`` and ``emit_averaged`` choose across every slot of a
+target, so their fields take no suffix:
 
 .. code-block:: text
 
@@ -294,10 +348,14 @@ half-lives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``:
     resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
     weight_sum{instance}                        | __{set}_r{ridge}
-    settled_frac{instance}
-    withheld_reason{instance}          instance = ""             single half-life
-    coef{instance}                              | @h{half-life}    half-life grid (@h600, @h10m)
-    support_coef{instance}
+    settled_frac{instance}                      | __l{lambda}     lasso_path point
+    withheld_reason{instance}
+    coef{instance}                     instance = ""             single half-life
+    support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
+    penalty_selected_{target}{instance}         lasso: the path point in force
+    selected_{target}                           emit_selected: the chosen slot
+    pred_{target}__selected                     emit_selected: its prediction
+    pred_{target}__averaged                     emit_averaged
 
 ``<slot>`` below is a target with its suffix. :func:`output_index` gives every
 field with the values its name encodes, so a field is reached without building
@@ -416,9 +474,13 @@ The diagnostics add, per slot:
        temporal clock (``"20m"`` is one ``sigma`` of excess held for twenty
        minutes). It is required with a clock column, as ``gap_cap`` is;
        without one a row is one unit, and the default 20 is the classic
-       test. The detector counts the same burst the same whatever the rows'
-       density. Each residual is scored against the ``sigma`` before its
-       row, which trails a moving scale further where rows are sparser.
+       test. How often it flags a stationary stream depends on the
+       residuals' tails: at the defaults on a row clock, Gaussian residuals
+       flagged no row in 600,000, and Student's t residuals with three
+       degrees of freedom flagged 3 to 10 in every 200,000. The detector
+       counts the same burst the same whatever the rows' density. Each
+       residual is scored against the ``sigma`` before its row, which
+       trails a moving scale further where rows are sparser.
        ``drift_action = "reset"`` also starts the model over there.
 
 .. rubric:: Errors

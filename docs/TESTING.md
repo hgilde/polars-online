@@ -1111,10 +1111,9 @@ distinct from a group named `"<null>"`. `TestGroupKeys` covers it, including
 save/load and integer group columns. Bank files gained a `format_version`, 2
 then. It is still 2 for most files, and since task 88 a bank whose specs
 carry a duration writes 3. Version 1 files loaded then, because the key
-serializes transparently as its inner `Option`. Since review R6 (2026-10-03)
-a bank file below schema 25 is refused by its schema version
-(`MIN_BANK_SCHEMA_VERSION` in `crates/online-polars/src/bank.rs`), and every
-version 1 file is older than that.
+serializes transparently as its inner `Option`. Today a bank file below
+`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) is refused by
+its schema version, and every version 1 file is older than that.
 
 **T-E3.** `TestNonFinite` pins ±inf/NaN in features, targets, weights and the
 clock. A non-finite feature or weight skips the row, and the clock still
