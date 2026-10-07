@@ -5452,7 +5452,7 @@ fn assemble(
         // equal-weight mean for a return and the argmin for a price (review
         // 2026-09-12, S23). `sigma` is that error's square root, already
         // tracked for E12, so this costs one pass.
-        let eta = spec.average_eta.map_or(1.0, |n| n.0);
+        let eta = spec.average_eta_or_default();
         for ch in chunks {
             let nr = ch.rows.len();
             for (ri, &i) in ch.rows.iter().enumerate() {

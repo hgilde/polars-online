@@ -750,8 +750,15 @@ fn budget_check(what: &str, bytes: usize, budget_mib: f64, detail: &str) -> Resu
 }
 
 impl BinCfg {
+    /// The budget in force: `budget_mib`, or [`DEFAULT_BUDGET_MIB`] where
+    /// the spec names none. The one place the default is read, so the API
+    /// snapshot's `[resolved defaults]` reads what the check holds a model to.
+    pub fn budget_mib_or_default(&self) -> f64 {
+        self.budget_mib.unwrap_or(DEFAULT_BUDGET_MIB)
+    }
+
     pub fn validate(&self, p: usize, n_targets: usize) -> Result<(), String> {
-        let budget = self.budget_mib.unwrap_or(DEFAULT_BUDGET_MIB);
+        let budget = self.budget_mib_or_default();
         // NaN compares false both ways, so it is named here rather than
         // read as no bound.
         if budget.is_nan() || budget <= 0.0 {

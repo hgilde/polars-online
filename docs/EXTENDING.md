@@ -464,6 +464,14 @@ constructor signature.
 `test_model_registry::test_the_api_snapshot_pins_every_models_output_fields`
 fails until the minimal case is there.
 
+**The model's defaults and words come in by two lists in the same file.**
+`[resolved defaults]` renders the new kind from its `MINIMAL` spec without
+being asked. A parameter whose default only an option reads, such as
+`sgd`'s `huber_delta` under `loss = "huber"`, needs a row in
+`RESOLVED_VARIANTS`. A keyword that takes one word of a fixed set needs a
+row in `ENUM_PROBES`, or `test_every_word_valued_parameter_is_probed` fails.
+A keyword that names a column of the caller's goes in `FREE_TEXT` instead.
+
 ## Tests — `tests/`
 
 ### Step 11 — `tests/test_<model>.py`

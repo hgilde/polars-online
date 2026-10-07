@@ -2776,6 +2776,39 @@ impl Spec {
         self.max_error_inflation.map_or(2f64.sqrt(), |v| v.0)
     }
 
+    // The diagnostics' defaults, each read here and nowhere else, so the
+    // stream that builds a diagnostic and `crate::defaults`, which the API
+    // snapshot pins them through, read one value (review 2026-10-06, AP1,
+    // DB4).
+
+    /// The drift detector's tolerance, `0.5` of the slot's residual std
+    /// unless set.
+    pub fn drift_delta_or_default(&self) -> f64 {
+        self.drift_delta.unwrap_or(0.5)
+    }
+
+    /// The drift detector's threshold in `sigma` times clock units: `20`
+    /// unless set, which only a spec without a clock column can leave it
+    /// (task 168).
+    pub fn drift_threshold_or_default(&self) -> f64 {
+        self.drift_threshold.as_ref().map_or(20.0, Span::value)
+    }
+
+    /// The conformal radius' step per unit of `sigma`, `0.05` unless set.
+    pub fn conformal_rate_or_default(&self) -> f64 {
+        self.conformal_rate.unwrap_or(0.05)
+    }
+
+    /// The lag of `emit_autocorr`, `1` unless set.
+    pub fn resid_autocorr_lag_or_default(&self) -> usize {
+        self.resid_autocorr_lag.unwrap_or(1)
+    }
+
+    /// The sharpness of `emit_averaged`'s weights, `1` unless set.
+    pub fn average_eta_or_default(&self) -> f64 {
+        self.average_eta.map_or(1.0, |n| n.0)
+    }
+
     /// Whether any of this spec's model instances forgets: a finite
     /// half-life, or a `lam` below 1. What `settled_frac` needs to be a
     /// fraction of.

@@ -158,6 +158,10 @@ impl Rls {
         })
     }
 
+    pub fn cfg(&self) -> &RlsCfg {
+        &self.cfg
+    }
+
     pub fn coefficients(&self) -> &[Vec<f64>] {
         &self.beta
     }

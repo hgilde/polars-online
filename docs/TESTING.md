@@ -408,7 +408,8 @@ The files the repository promises are held the same way:
 
 | contract | held by | what it holds |
 |---|---|---|
-| the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff |
+| the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff; since task 190 also the defaults that resolve in Rust, the frames' columns and dtypes, the TOML keys, the CLI's flags, the environment variables, and the words each string-valued parameter takes |
+| the README's warm-up defaults | `tests/test_spec_defaults.py` | the `min_weight` table's rule for every model, at two feature counts and with and without an intercept, and the readiness gates' defaults, against what the bank resolves |
 | the names of task 144 | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
 | a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI, are refused by their schema version; offline, the test skips |
 | a released output | `scripts/compare_release.py` | every output against the newest release's, bit for bit: a report in CI, and a step of each release |

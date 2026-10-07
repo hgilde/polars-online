@@ -798,9 +798,30 @@ none of it.
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `__all__`, the `spec.*` constructors and their keyword names, the helper modules' functions, the `.online` namespace, output field names, the column names of the closed-groups frame, and the TOML config keys |
+| **stable** | everything in `__all__`, the `spec.*` constructors, their keyword names and their defaults (those that resolve in Rust included), the helper modules' functions, the `.online` namespace, output field names, the column names and dtypes of the frames the bank returns, the column names of the closed-groups frame, the words each string-valued parameter takes, the TOML config keys, the CLI's flags and its exit status, and the environment variables the shipped code reads |
 | **stable within a schema** | the state file format: versioned msgpack, which loads on every OS. Pre-1.0, a change of layout raises the minimum schema rather than adding a loader, so an older file is refused by its version (the user's waiver of hard rule 5, 2026-09-14 and 2026-09-28) |
 | **not stable** | anything underscore-prefixed; the Rust crates, which the going-public item [R3](#r3--rust-crates-not-published) decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
+
+**Each stable part is pinned by a section of `tests/api_surface.txt`,
+except the exit status, which a test holds.** A change to one is a diff in
+that section ([the mechanism](#s--the-mechanism-one-api-snapshot-test--done)):
+
+| stable part | pinned by |
+|---|---|
+| `__all__`, each function with its signature | `[package]` |
+| the constructors' keyword names and the defaults they set in Python | `[common parameters]`, `[spec constructors]` |
+| the defaults that resolve in Rust, `min_weight`'s per-kind rule included | `[resolved defaults]`, read off the bank's own build of each kind (`_polars_online.resolved_defaults`); `tests/test_spec_defaults.py` holds the README's warm-up tables to it |
+| `ModelBank`'s methods, `__init__` included | `[ModelBank]` |
+| the `.online` namespace | `[frame namespaces]` |
+| the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
+| the closed-groups frame's column names | `[closed_groups columns]`, in order |
+| the helper modules' functions, each with its signature | `[helper modules]` |
+| output field names | `[output field grammar]` |
+| the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
+| the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
+| the CLI's flags, and whether each takes a value | `[cli flags]`, from `online --help` |
+| the CLI's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | `docs/RUNNER.md`'s *Exit status* and a CLI test (tasks 191 and 187), not the snapshot |
+| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `ONLINE_TIMING` | `[env vars]`, from every read in `crates/*/src` and the package |
 
 **Changing a default is a breaking change, because it changes results
 silently.** It needs a minor bump pre-1.0, a major bump after, and a
@@ -854,22 +875,34 @@ twenty-one. The four helper modules named then were `po.corr`, `po.sim`,
 read the same way. `tests/api_surface.txt` pins the constructors and their
 keyword names. It pins every helper module the package has, read from the
 package's directory: today `corr`, `eval`, `gram`, `ops`, `sim` and
-`stream` (`tests/test_api_surface.py`, since task 109).
+`stream` (`tests/test_api_surface.py`, since task 109). Since task 190 it
+pins each of their functions with its signature, keyword names and defaults
+included, as it does every function in `__all__` and `ModelBank.__init__`;
+before, it pinned their names alone.
 
 **3. Defaults, which are API in the worst way.** Changing one does not
 raise: it silently changes users' numbers, which is worse than breaking
 them. Every default a builder sets in Python is in the snapshot, which
-renders keyword names with their defaults. Some resolve in Rust from
-`None`, so the snapshot shows `None`, and each of those is pinned
-elsewhere, or not at all:
+renders keyword names with their defaults. Many resolve in Rust from
+`None`, so a constructor's signature shows `None` for them. Until task 190
+nothing pinned most of them. Now the snapshot's `[resolved defaults]` reads
+each off the bank's own build of every kind's least spec: `Spec::check`,
+then the constructor of every group's stream, through
+`_polars_online.resolved_defaults`. It renders one line per kind and field:
+the model's configuration, what the model derives from a field left unset
+(`bocpd`'s priors, `rcov`'s ring and window, `marginal`'s bin budget), the
+stream's gates and diagnostics' settings, and the clock policy. Variants
+add the defaults that only an option reads, such as `sgd`'s `huber_delta`
+under `loss = "huber"`. Pinned by:
 
 | default | set in | pinned by |
 |---|---|---|
-| the solve cadence of `ewridge`, `lasso`, `huber` and `quantile`: by weight since 0.13.0, `half_life/50` of clock in steady state | Rust | `tests/test_solve_cadence.py` |
-| the clock settings, the readiness gates, and `min_weight`'s count floor | Rust | `crates/online-polars/tests/spec_defaults.rs` |
+| every default a builder leaves to Rust, `min_weight`'s per-kind rule included | Rust | the snapshot's `[resolved defaults]`; `tests/test_spec_defaults.py` holds the README's warm-up tables to it |
+| the solve cadence of `ewridge`, `lasso`, `huber` and `quantile`: by weight since 0.13.0, `half_life/50` of clock in steady state | Rust | `[resolved defaults]` (`solve_every`, `solve_share`); `tests/test_solve_cadence.py` measures it |
+| the clock settings, the readiness gates, and `min_weight`'s count floor | Rust | `[resolved defaults]`; `crates/online-polars/tests/spec_defaults.rs` |
 | `standardize`: true for `kalman`, false for `ewridge`, `huber`, `quantile` and `sgd`; `lasso` has no such keyword | Python | the snapshot |
-| `average_eta = 1.0` | Rust | nothing pins the value |
-| `clip_gradient = 1e3`, for `sgd` | Rust | nothing pins the value; `tests/test_sgd.py` checks that the default clip keeps a Poisson fit stable |
+| `average_eta = 1.0` | Rust | `[resolved defaults]`; `spec_defaults.rs` |
+| `clip_gradient = 1e3`, for `sgd` | Rust | `[resolved defaults]`; `spec_defaults.rs`; `tests/test_sgd.py` checks that the default clip keeps a Poisson fit stable |
 
 `docs/VALIDATION.md` justifies the defaults it measures, and
 `test_validation_doc.py` pins that they are still the measured optimum.
@@ -930,13 +963,19 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 
 | what it renders | the proposal | built, 2026-08-31 | today |
 |---|---|---|---|
-| public symbols | every public symbol in `polars_online` and `polars_online.spec` | every public symbol | |
+| public symbols | every public symbol in `polars_online` and `polars_online.spec` | every public symbol | each function with its signature (task 190) |
 | constructors | every spec constructor's **full signature including default values** | every constructor signature *including defaults*, the shared `**common` parameters listed once, explicitly | |
 | the namespace | the expression-namespace method list | the expression namespace | the `lf.online` and `df.online` namespaces; the expression namespace went with task 85 |
-| `ModelBank` | | | its name and signature |
-| helper modules | | | every one: `corr`, `eval`, `gram`, `ops`, `sim` and `stream` (`prep` until task 105) |
+| `ModelBank` | | | its name and signature, `__init__`'s since task 190 |
+| helper modules | | | every one: `corr`, `eval`, `gram`, `ops`, `sim` and `stream` (`prep` until task 105), each function with its signature since task 190 |
 | output fields | `output_fields()` for a canonical matrix of ~12 spec shapes: each model, plus grids, feature sets, multi-target, and every `emit_*` combination | `output_fields()` across a 14-case matrix covering every model, the full grid/emit combinations, and the float-rendering extremes | 28 cases |
 | the closed-groups columns | | | each kind's columns, in order (since 2026-09-24) |
+| the defaults that resolve in Rust | | | `[resolved defaults]`: every kind's configuration as the bank builds it from its least spec, and the defaults only an option reads (task 190) |
+| the frames' columns | | | `[frame columns]`: each frame's columns and dtypes, in order (task 190) |
+| the words a string parameter takes | | | `[enum values]`: every string-valued parameter, and `withheld_reason` (task 190) |
+| the TOML config keys | | | `[toml keys]`: the run config's, a spec's, and each model type's (task 190) |
+| the CLI's flags | | | `[cli flags]`: the usage line and every flag, with the value it takes (task 190) |
+| the environment variables | | | `[env vars]`: every read in `crates/*/src` and the package (task 190) |
 | versions | `SCHEMA_VERSION` and the bank `format_version` | `schema_version` | |
 | length of `tests/api_surface.txt` | | 416 lines | 1,148 lines; 904 on 2026-09-24 |
 

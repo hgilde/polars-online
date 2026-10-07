@@ -380,6 +380,14 @@ impl AnyModel {
         dispatch!(self, m => m.state())
     }
 
+    /// The model's configuration as built, as JSON: what
+    /// [`crate::resolved_defaults`] reads every model default from. Refused
+    /// where the JSON would not read back as the configuration, so an
+    /// infinity written as `null` cannot be pinned as one (`faithful_json`).
+    pub fn cfg_json(&self) -> Result<serde_json::Value, String> {
+        dispatch!(self, m => crate::defaults::faithful_json(m.cfg()))
+    }
+
     pub fn restore(s: &State) -> Result<Self, StateError> {
         match &s.model {
             ModelState::EwRidge(_) => Ok(AnyModel::EwRidge(Box::new(EwRidge::restore(s)?))),
@@ -2322,6 +2330,12 @@ impl Stream {
         self.models.len()
     }
 
+    /// The warm-up threshold per target this stream gates its outputs on
+    /// (ENHANCEMENTS E7): the spec's `min_weight`, or its kind's default.
+    pub fn min_weight(&self) -> &[f64] {
+        &self.min_weight
+    }
+
     /// Output slots per instance. Instances of one spec differ only in decay,
     /// so they all report the same count; the max is that count.
     pub fn n_slots(&self) -> usize {
@@ -2751,8 +2765,8 @@ impl Stream {
             // 20 only without a clock, where a row is one unit: the spec
             // requires a threshold with a clock (task 168).
             let d = PageHinkley::new(
-                spec.drift_delta.unwrap_or(0.5),
-                spec.drift_threshold.as_ref().map_or(20.0, Span::value),
+                spec.drift_delta_or_default(),
+                spec.drift_threshold_or_default(),
             );
             slots.iter().map(|&n| vec![d.clone(); n]).collect()
         } else {
@@ -2776,7 +2790,7 @@ impl Stream {
                 None => Vec::new(),
             },
             autocorr: if spec.emit_autocorr {
-                let proto = EwAutoCorr::new(spec.resid_autocorr_lag.unwrap_or(1))?;
+                let proto = EwAutoCorr::new(spec.resid_autocorr_lag_or_default())?;
                 slots.iter().map(|&n| vec![proto.clone(); n]).collect()
             } else {
                 Vec::new()
@@ -2788,7 +2802,7 @@ impl Stream {
             },
             conformal: match spec.conformal {
                 Some(level) => {
-                    let proto = Conformal::new(level, spec.conformal_rate.unwrap_or(0.05))?;
+                    let proto = Conformal::new(level, spec.conformal_rate_or_default())?;
                     slots.iter().map(|&n| vec![proto.clone(); n]).collect()
                 }
                 None => Vec::new(),
@@ -4407,7 +4421,7 @@ impl Instance<'_> {
             q.iter_mut().for_each(EwQuantile::reset);
         }
         if let Some(a) = self.autocorr.as_deref_mut() {
-            let lag = spec.resid_autocorr_lag.unwrap_or(1);
+            let lag = spec.resid_autocorr_lag_or_default();
             a.iter_mut()
                 .for_each(|e| *e = EwAutoCorr::new(lag).expect("validated"));
         }
@@ -4415,7 +4429,7 @@ impl Instance<'_> {
             m.iter_mut().for_each(|s| *s = SlotMetrics::new());
         }
         if let (Some(c), Some(level)) = (self.conformal.as_deref_mut(), spec.conformal) {
-            let rate = spec.conformal_rate.unwrap_or(0.05);
+            let rate = spec.conformal_rate_or_default();
             c.iter_mut()
                 .for_each(|e| *e = Conformal::new(level, rate).expect("validated"));
         }

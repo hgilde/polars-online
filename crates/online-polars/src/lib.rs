@@ -42,6 +42,7 @@ pub mod arrow;
 mod atomic;
 mod bank;
 mod column;
+mod defaults;
 mod formula;
 mod pool;
 mod refresh;
@@ -77,6 +78,7 @@ pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
     output_index,
 };
+pub use defaults::resolved_defaults;
 pub use formula::{Formula, Literal, Node, OpNode};
 pub use online_core;
 pub use pool::{THREADS_VAR, pool, thread_pool_size};

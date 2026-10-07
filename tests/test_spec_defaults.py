@@ -1,0 +1,107 @@
+"""The README's warm-up defaults, held to the ones the bank resolves.
+
+The README's *Warm-up* section states each readiness gate's default, and in
+a table the default `min_weight` of every model as a rule. The bank chooses
+them in Rust (`Spec::default_min_periods`, the `*_or_default` methods), and
+every builder passes `None` for them, so until `_polars_online.resolved_defaults`
+no Python surface showed them and a change to any row would have shipped
+silently (review 2026-10-06, TB1). This reads both tables from the README
+and checks them against what the bank resolves, for every kind, so the
+README cannot drift from the code. `tests/api_surface.txt` pins the
+resolved values themselves (`[resolved defaults]`).
+"""
+
+import json
+import re
+from pathlib import Path
+
+import polars_online as po
+from polars_online import _polars_online as native
+from polars_online import _spec
+from test_model_registry import MINIMAL
+
+README = Path(__file__).resolve().parent.parent / "README.md"
+
+#: Each row of the README's `min_weight` table, by its first cell, as the
+#: rule it states: the threshold for `k` features, with or without an
+#: intercept. A row reworded in the README fails below until it is here.
+RULES = {
+    "one per unknown: the features, and the intercept when there is one": (
+        lambda k, intercept: k + intercept
+    ),
+    "the feature count plus one (1 for `holt`)": lambda k, intercept: k + 1,
+    "3": lambda k, intercept: 3,
+    "1": lambda k, intercept: 1,
+    "0, each having a gate of its own": lambda k, intercept: 0,
+}
+
+
+def table_after(marker: str) -> list[list[str]]:
+    """The cells of the first Markdown table after `marker`, header and rule
+    rows dropped."""
+    text = README.read_text(encoding="utf-8")
+    at = text.index(marker)
+    rows: list[list[str]] = []
+    for line in text[at:].splitlines()[1:]:
+        if not line.startswith("|"):
+            if rows:
+                break
+            continue
+        rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows[2:]
+
+
+def resolved(spec: dict) -> dict:
+    return json.loads(native.resolved_defaults(_spec._json(spec)))
+
+
+def build(name: str, k: int, intercept: bool) -> dict:
+    """`name`'s minimal spec (test_model_registry) with `k` features, for a
+    model that takes features, and the intercept on or off."""
+    kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
+    kw.update(MINIMAL[name])
+    if kw.get("features") is not None:
+        kw["features"] = [f"x{i}" for i in range(k)]
+    if not intercept:
+        kw["fit_intercept"] = False
+    return getattr(po.spec, name)("m", **{key: v for key, v in kw.items() if v is not None})
+
+
+def test_the_readme_min_weight_table_is_what_the_bank_resolves():
+    rows = table_after("The default depends on the model:")
+    assert [row[0] for row in rows] == list(RULES), "the README's table changed its rows"
+    rule_of = {model: RULES[row[0]] for row in rows for model in re.findall(r"`([a-z_]+)`", row[1])}
+    named = [model for row in rows for model in re.findall(r"`([a-z_]+)`", row[1])]
+    assert sorted(named) == sorted(MINIMAL), "the table names every model exactly once"
+    checked = 0
+    for name in sorted(MINIMAL):
+        takes_features = MINIMAL[name].get("features", ["x0"]) is not None
+        # The intercept moves the first rule alone; the others are checked
+        # with it on, as a spec is written.
+        counts = (2, 3) if takes_features else (0,)
+        intercepts = (True, False) if rule_of[name] is RULES[rows[0][0]] else (True,)
+        for k in counts:
+            for intercept in intercepts:
+                spec = build(name, k, intercept)
+                want = float(rule_of[name](k, intercept))
+                got = resolved(spec)["stream"]["min_weight"]
+                assert got == [want] * len(got) and got, (name, k, intercept, got, want)
+                checked += 1
+    # 8 models by the first rule at 2 counts x 2 intercepts, 11 others at
+    # 2 counts, and `holt` and `seqtest`, which take no features, at one.
+    assert checked == 8 * 4 + 11 * 2 + 2
+
+
+def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
+    """The two readiness gates, in the README's table above `min_weight`'s:
+    `min_settled_frac` off, `max_error_inflation` sqrt(2)."""
+    defaults = {row[0]: row[1] for row in table_after("### Warm-up")}
+    assert defaults == {
+        "`min_weight`": "by model, below",
+        "`min_settled_frac`": "`0`, off",
+        "`max_error_inflation`, `ewridge` only": "`sqrt(2)`",
+    }
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
+    stream = resolved(spec)["stream"]
+    assert stream["min_settled_frac"] == 0.0
+    assert stream["max_error_inflation"] == 2**0.5

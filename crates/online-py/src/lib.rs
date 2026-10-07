@@ -954,6 +954,18 @@ fn spec_output_fields(spec_json: &str) -> PyResult<Vec<String>> {
     Ok(online_polars::output_fields(&spec))
 }
 
+/// What a spec resolves to where it leaves a parameter out, as JSON: the
+/// model's configuration as the bank builds it, the values the model derives
+/// from it, the stream's settings and the clock policy
+/// (`online_polars::resolved_defaults`). The API snapshot renders it for
+/// every kind, so a moved default is a diff there.
+#[pyfunction]
+fn resolved_defaults(spec_json: &str) -> PyResult<String> {
+    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    let resolved = online_polars::resolved_defaults(&spec).map_err(PyValueError::new_err)?;
+    serde_json::to_string(&resolved).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Version of the compiled extension, checked against the Python package version.
 #[pyfunction]
 fn native_version() -> &'static str {
@@ -1044,5 +1056,6 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;
     m.add_function(wrap_pyfunction!(spec_coef_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(resolved_defaults, m)?)?;
     Ok(())
 }
