@@ -74,9 +74,8 @@ def test_the_model_table_links_every_builder_to_its_page():
     assert {name for name, _ in linked} == {target for _, target in linked}, (
         "a table link points at another model"
     )
-    # `ew_ridge` is the spec `type`; the builder a caller writes is `ewridge`.
-    builders = {"ewridge" if n == "ew_ridge" else n for n in _native.model_kinds()}
-    assert {name for name, _ in linked} == builders
+    # Every builder is its spec `type` (docs/PLAN.md task 196, N1).
+    assert {name for name, _ in linked} == set(_native.model_kinds())
 
 
 def test_every_model_section_links_its_builder_and_its_source():

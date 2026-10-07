@@ -331,8 +331,8 @@ VALUES = [
     ),
     (
         po.spec.holt,
-        dict(features=None, half_life=None, level_half_life=-1.0),
-        "level_half_life must be > 0, got -1",
+        dict(features=None, half_life=-1.0),
+        "half_life must be > 0",
     ),
     (
         po.spec.holt,
@@ -668,7 +668,7 @@ INF_MEANS_SOMETHING = [
     (po.spec.sgd, "huber_delta", dict(loss="huber")),  # least squares
     (po.spec.ewridge, "long_half_life", dict(session="s", session_gap=1.0, session_shrink=0.5)),
     (po.spec.lasso, "select_half_life", {}),  # selection over the whole history
-    (po.spec.holt, "level_half_life", dict(half_life=None)),  # the cumulative fit (S30)
+    (po.spec.holt, "trend_half_life", {}),  # the whole history's drift (S30)
     (po.spec.pa, "c", dict(mode="pa1")),  # mode "pa": the step is not capped
     (po.spec.ewridge, "average_eta", dict(ridge=[1e-6, 1.0], emit_averaged=True)),  # the argmin
 ]
@@ -736,7 +736,7 @@ def test_inf_is_refused_where_it_means_nothing(builder, key, extra, value):
 
 
 def test_a_hand_built_dict_is_checked_by_path():
-    base = dict(name="m", model={"type": "ew_ridge"}, targets=["y"], features=["x0"])
+    base = dict(name="m", model={"type": "ewridge"}, targets=["y"], features=["x0"])
     for bad, msg in [
         (dict(targets="y"), '[0].targets: invalid type: string "y", expected a sequence'),
         (dict(half_life="10"), '[0].half_life: "10" is not a duration: 10 has no unit'),
@@ -1152,7 +1152,7 @@ def test_gap_cap_without_a_clock_is_refused_by_name():
     """Task 160, PB2: ``gap_cap`` caps the clock's step, and without a clock
     each row is one step. It was taken and capped the row count: 0.5 halved
     every decay step, marked every row capped and cleared every lag, so an
-    AR(0.9) input read ``lagcorr`` 0.0. Refused as ``restart_after_step_back``
+    AR(0.9) input read ``lag_corr`` 0.0. Refused as ``restart_after_step_back``
     is, in a spec and in ``with_windows``."""
     with pytest.raises(ValueError, match='spec "m": gap_cap needs clock'):
         po.spec.ewridge("m", **BASE, gap_cap=0.5)
@@ -1412,7 +1412,7 @@ def test_a_type_error_inside_the_model_names_the_key():
 def test_a_renamed_key_cites_nothing_a_wheel_lacks():
     """The rename refusal cited "docs/PLAN.md task 144", a file a wheel's user
     does not have (review 2026-10-06, PC11)."""
-    spec = {"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x0"]}
+    spec = {"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
     with pytest.raises(ValueError) as exc:
         po.ModelBank([{**spec, "halflife": 10.0}])
     assert str(exc.value).endswith("; halflife was renamed half_life"), str(exc.value)
@@ -1427,7 +1427,7 @@ def test_a_marginal_and_a_nameless_refusal_name_the_spec_as_every_other():
         po.spec.marginal("m", bin_edges={"zz": [0.0]}, **BASE)
     with pytest.raises(ValueError, match=r'^spec "m": shards must be a number of shards'):
         po.spec.marginal("m", shards="many", **BASE)
-    nameless = {"model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x0"]}
+    nameless = {"model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
     with pytest.raises(ValueError, match="^a spec with no name: half_life must not be NaN$"):
         po.ModelBank([{**nameless, "half_life": math.nan}])
 

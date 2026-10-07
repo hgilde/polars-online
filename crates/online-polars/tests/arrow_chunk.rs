@@ -17,7 +17,7 @@ fn spec() -> Spec {
     serde_json::from_str(
         r#"{
             "name": "m",
-            "model": {"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1},
+            "model": {"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1},
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",

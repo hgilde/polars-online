@@ -9,7 +9,7 @@
 //! // No `clock` column means a row-count clock, so `half_life` is in rows.
 //! let spec: Spec = serde_json::from_str(r#"{
 //!     "name": "ridge",
-//!     "model": {"type": "ew_ridge", "ridge": 1e-6},
+//!     "model": {"type": "ewridge", "ridge": 1e-6},
 //!     "targets": ["y"],
 //!     "features": ["x"],
 //!     "half_life": 20.0,
@@ -75,8 +75,8 @@ pub use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_f
 pub use polars::prelude::PlSmallStr;
 
 pub use bank::{
-    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
-    output_index,
+    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, Learned, PAR_MIN_ROWS, coef_fields,
+    output_fields, output_index,
 };
 pub use defaults::resolved_defaults;
 pub use formula::{Formula, Literal, Node, OpNode};
@@ -85,13 +85,14 @@ pub use pool::{THREADS_VAR, pool, thread_pool_size};
 pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::FeatureRows;
 pub use runner::{
-    DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
-    run_config_on,
+    DEFAULT_CHUNK_SIZE, Format, Input, Output, RENAMED_RUN_KEYS, RunConfig, RunOptions, RunStats,
+    name_renamed_run_key, run, run_config, run_config_on,
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
     CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DURATION_OR_UNIT_FREE_FIELDS, FloatOrList,
-    ModelKind, Num, RENAMED, RidgeScale, SessionGapSpec, ShardSpec, Spec, name_renamed,
+    ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec, Spec,
+    name_renamed,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

@@ -38,9 +38,9 @@ bank.save("bank.state")
 
 **Rules that are easy to get wrong.**
 
-- **One name differs between the two spellings**: the Python builder is
-  `po.spec.ewridge(...)`, and the same model in a spec dict or a TOML file is
-  `type = "ew_ridge"`. Every other model is spelled identically in both places.
+- **A model is spelled the same way in both places**: the Python builder
+  `po.spec.ewridge(...)` is `type = "ewridge"` in a spec dict or a TOML file, and so
+  for every model. The old spelling, `ew_ridge`, is refused, naming `ewridge`.
 - **Predictions are out-of-sample by construction.** A row's `pred` is computed from the
   state as it stands *before* the update that uses that row's target. Never fit a row
   and then score it: the `pred` the library returns is already out-of-sample.
@@ -87,7 +87,7 @@ not stream. The three surfaces, and how each loads and saves a state:
 |---|---|---|---|
 | `ModelBank`, fed chunks or handed a `LazyFrame` | `bank.fit_predict(chunk)` | `po.ModelBank.load(path)` | `bank.save(path)` |
 | a query | `lf.online.fit_predict(...)` | `load_state=` | `save_state=` |
-| the `online` command line | `online --config bank.toml` | `--resume`, or `load_state` in the TOML | `--save-state`, or `save_state` in the TOML |
+| the `online` command line | `online --config bank.toml` | `--load-state`, or `load_state` in the TOML | `--save-state`, or `save_state` in the TOML |
 
 A state file is versioned msgpack, written atomically, and loads on macOS, Linux and
 Windows alike.

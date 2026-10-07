@@ -21,7 +21,8 @@
 //! promise.
 
 use online_core::{
-    Cadence, Decay, Footprint, Snapshots, Stamp, WindowBudget, WindowShadow, truncated_scalar,
+    Cadence, Decay, Footprint, Snapshots, Stamp, WindowBudget, WindowClosed, WindowShadow,
+    truncated_scalar,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,15 +49,17 @@ pub struct ResidWindow {
 }
 
 impl ResidWindow {
-    /// The model's `window` and snapshot `cadence`
-    /// ([`crate::spec::ModelKind::window_and_cadence`]), so the spread's
-    /// boundary is the fit's.
+    /// The model's `window`, snapshot `cadence` and edge `closed`
+    /// ([`crate::spec::ModelKind::window_and_cadence`],
+    /// [`crate::spec::ModelKind::window_edge`]), so the spread's boundary is
+    /// the fit's.
     pub fn new(
         window: f64,
         cadence: Cadence,
+        closed: WindowClosed,
         budget: Option<WindowBudget>,
     ) -> Result<Self, String> {
-        let mut snaps = Snapshots::with_cadence(window, cadence)?;
+        let mut snaps = Snapshots::with_cadence(window, cadence)?.closed(closed);
         snaps.set_budget(budget);
         Ok(Self { clock: 0.0, snaps })
     }
@@ -136,19 +139,31 @@ mod tests {
     }
 
     /// The ring's reading is the spread of the residuals inside the window,
-    /// summed directly: the rows whose age at the last learned row is at
-    /// most the window, each at `0.5^(age/h)`, across an irregular clock
-    /// and a burst the window drops.
+    /// summed directly: the rows whose age at the last learned row is less
+    /// than the window (at most it, under `closed = "both"`), each at
+    /// `0.5^(age/h)`, across an irregular clock -- whose steps of 1 and 2
+    /// put rows exactly one window back -- and a burst the window drops.
     #[test]
     fn the_spread_inside_is_the_direct_sum_over_the_window() {
+        for closed in [WindowClosed::Right, WindowClosed::Both] {
+            spread_inside_is_the_direct_sum(closed);
+        }
+    }
+
+    fn spread_inside_is_the_direct_sum(closed: WindowClosed) {
         let (h, window) = (7.0, 10.0);
         let decay = Decay::Halflife(h);
-        let mut ring = ResidWindow::new(window, Cadence::EVERY_ROW, None).unwrap();
+        let inside = |age: f64| match closed {
+            WindowClosed::Right => age < window,
+            WindowClosed::Both => age <= window,
+        };
+        let mut on_the_edge = 0;
+        let mut ring = ResidWindow::new(window, Cadence::EVERY_ROW, closed, None).unwrap();
         let (mut w, mut var) = (vec![0.0], vec![0.0]);
         let mut rows: Vec<(f64, f64)> = Vec::new();
         let mut clock = 0.0;
         for i in 0..60u32 {
-            let d = if i % 7 == 3 { 2.5 } else { 1.0 };
+            let d = if i % 4 == 3 { 2.0 } else { 1.0 };
             let r = if (20..25).contains(&i) {
                 30.0
             } else {
@@ -156,7 +171,8 @@ mod tests {
             };
             if let Some(&(last, _)) = rows.last() {
                 let (mut num, mut den) = (0.0, 0.0);
-                for &(t, r) in rows.iter().filter(|(t, _)| last - t <= window) {
+                on_the_edge += rows.iter().filter(|(t, _)| last - t == window).count();
+                for &(t, r) in rows.iter().filter(|(t, _)| inside(last - t)) {
                     let a = decay.factor(last - t);
                     num += a * r * r;
                     den += a;
@@ -165,7 +181,7 @@ mod tests {
                 let want = num / den;
                 assert!(
                     (got - want).abs() <= 1e-10 * want,
-                    "row {i}: {got} vs {want}"
+                    "{closed:?}, row {i}: {got} vs {want}"
                 );
             }
             let lam = decay.factor(d);
@@ -176,5 +192,9 @@ mod tests {
             w[0] = w_new;
             rows.push((clock, r));
         }
+        assert!(
+            on_the_edge > 5,
+            "rows must sit exactly one window back for the edge to be tested"
+        );
     }
 }

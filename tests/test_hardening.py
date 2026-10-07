@@ -456,7 +456,7 @@ class TestRunnerErrorPaths:
             [spec],
             input=src,
             output=tmp_path / "out.parquet",
-            chunk_rows=500,
+            chunk_size=500,
             check=False,
         )
         assert res.returncode != 0
@@ -471,7 +471,7 @@ class TestRunnerErrorPaths:
         good = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
         src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
         good.write_parquet(src)
-        run_online(online_cli, tmp_path, [self._spec()], input=src, output=out, chunk_rows=500)
+        run_online(online_cli, tmp_path, [self._spec()], input=src, output=out, chunk_size=500)
         before = out.read_bytes()
 
         w = np.ones(n)
@@ -482,7 +482,7 @@ class TestRunnerErrorPaths:
             "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
         res = run_online(
-            online_cli, tmp_path, [spec], input=src, output=out, chunk_rows=500, check=False
+            online_cli, tmp_path, [spec], input=src, output=out, chunk_size=500, check=False
         )
         assert res.returncode != 0
         assert "negative" in res.stderr, res.stderr

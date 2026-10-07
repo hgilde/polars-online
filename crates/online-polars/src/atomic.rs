@@ -2,7 +2,7 @@
 //!
 //! `fs::write` truncates the destination and then writes into it, so an
 //! interrupted write -- a kill, a full disk, a quota -- leaves a truncated
-//! file *and* destroys what was there. For a state file in a `--resume` loop
+//! file *and* destroys what was there. For a state file in a `--load-state` loop
 //! that is the difference between "this save failed, keep going" and "start
 //! the stream over": measured, with the write cut a third of the way through,
 //! the file is unloadable ("failed to fill whole buffer") and the previous

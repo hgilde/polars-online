@@ -284,7 +284,7 @@ class TestPlumbing:
                     f'input = "{src.as_posix()}"',
                     f'output = "{cli_dst.as_posix()}"',
                     f'save_state = "{cli_state.as_posix()}"',
-                    "chunk_rows = 100",
+                    "chunk_size = 100",
                     "[[specs]]",
                     'name = "m"',
                     'targets = ["y0", "y1"]',
@@ -424,7 +424,7 @@ class TestPlumbing:
             spec(stats=["corr"])  # ew_cov's keyword, not this model's
         ridge = po.spec.ewridge("r", targets=["y0"], features=["x0"], half_life=10.0)
         bank = po.ModelBank([ridge, spec()])
-        with pytest.raises(ValueError, match=r'spec "r" has model type "ew_ridge", not "marginal"'):
+        with pytest.raises(ValueError, match=r'spec "r" has model type "ewridge", not "marginal"'):
             bank.marginal("r")
         with pytest.raises(KeyError):
             bank.marginal("nope")

@@ -73,15 +73,20 @@ def test_lam_one_is_an_infinite_halflife():
     assert by_lam.equals(by_inf, null_equal=True)
 
 
-def test_an_infinite_level_halflife_is_an_infinite_halflife():
-    """``level_half_life`` and ``half_life`` are one knob for holt, and ``inf``
-    is no forgetting under either name: the builder took it under one and
-    refused it under the other (review 2026-09-12, S27)."""
-    df = _trending(n=200)
+def test_the_level_halflife_has_one_name():
+    """``half_life`` is holt's level half-life, ``inf`` included, under one
+    name: ``level_half_life``, a second name for the same knob that built a
+    second dict shape (review 2026-10-06, TA6), is refused naming it
+    (docs/PLAN.md task 196, N16). Under two names, the builder had taken
+    ``inf`` under one and refused it under the other (review 2026-09-12,
+    S27)."""
     kw = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0)
-    by_level = po.ModelBank([po.spec.holt("m", level_half_life=float("inf"), **kw)]).fit_predict(df)
-    by_inf = po.ModelBank([po.spec.holt("m", half_life=float("inf"), **kw)]).fit_predict(df)
-    assert by_level.equals(by_inf, null_equal=True)
+    with pytest.raises(TypeError, match="level_half_life was renamed half_life"):
+        po.spec.holt("m", level_half_life=float("inf"), **kw)
+    spec = po.spec.holt("m", half_life=float("inf"), **kw)
+    assert "level_half_life" not in spec["model"]
+    out = po.ModelBank([spec]).fit_predict(_trending(n=200))
+    assert out["m"].struct.field("weight_sum")[-1] == 199.0, "no forgetting"
 
 
 def test_irregular_clock_extrapolates_the_right_distance():
@@ -155,27 +160,25 @@ def test_chunk_invariance_and_save_load(tmp_path):
     assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
 
-def test_level_halflife_alone_is_enough(tmp_path):
-    """`half-life` and `level_half_life` are one knob under two names -- the
-    level defaults to the spec's half-life -- so giving either satisfies the
-    "one of half-life/lam is required" rule. The README's own Holt example
-    gives only `level_half_life`, and used to be refused (IMPROVEMENTS U6)."""
+def test_the_spec_halflife_alone_is_enough(tmp_path):
+    """The level's half-life is the spec's ``half_life``, which satisfies the
+    "one of half-life/lam is required" rule alone. The README's Holt
+    example gave a second name for it, and used to be refused (IMPROVEMENTS
+    U6); the second name is gone (docs/PLAN.md task 196)."""
     df = _trending(n=200)
     d = dict(targets=["y0"], clock="t", gap_cap=100.0, min_weight=3.0, trend_half_life=80.0)
-    by_level = po.spec.holt("m", level_half_life=20.0, **d)
     by_halflife = po.spec.holt("m", half_life=20.0, **d)
-    a = po.ModelBank([by_level]).fit_predict(df)
-    b = po.ModelBank([by_halflife]).fit_predict(df)
-    assert a.equals(b, null_equal=True)
+    a = po.ModelBank([by_halflife]).fit_predict(df)
+    assert a["m"].struct.field("pred_y0").drop_nulls().len() > 150
     # And the field names stay ungridded -- no `@h` suffix from a phantom grid.
-    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(by_level)
+    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(by_halflife)
 
 
 def test_a_holt_spec_still_needs_one_of_them():
     with pytest.raises(ValueError, match="one of half_life/lam is required"):
         po.spec.holt("m", targets=["y0"], trend_half_life=100.0)
-    with pytest.raises(ValueError, match="level_half_life must be > 0"):
-        po.spec.holt("m", targets=["y0"], level_half_life=-1.0)
+    with pytest.raises(ValueError, match="half_life must be > 0"):
+        po.spec.holt("m", targets=["y0"], half_life=-1.0)
 
 
 def test_other_models_do_not_get_the_exemption():
@@ -184,8 +187,8 @@ def test_other_models_do_not_get_the_exemption():
 
 
 def test_bad_config_rejected():
-    with pytest.raises(ValueError, match="level_half_life"):
-        _spec(level_half_life=0.0)
+    with pytest.raises(ValueError, match="half_life"):
+        _spec(half_life=0.0)
     with pytest.raises(ValueError, match="trend_half_life"):
         _spec(trend_half_life=0.0)
 

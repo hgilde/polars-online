@@ -189,8 +189,8 @@ pub struct EwRidgeCfg {
     pub window_every: Option<f64>,
     /// At most this many rows between the window's snapshots, as
     /// `max_rows_between_solves` is between solves, counted on every row the
-    /// model is stepped with, rows of weight zero included; `0` or `1` is
-    /// every row (docs/PLAN.md task 162).
+    /// model is stepped with, rows of weight zero included; `1` is every
+    /// row, and `0` is refused (docs/PLAN.md tasks 162 and 196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rows_between_snapshots: Option<usize>,
 }
@@ -1763,6 +1763,12 @@ impl OnlineModel for EwRidge {
         }
     }
 
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
+        }
+    }
+
     fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
@@ -2008,7 +2014,7 @@ impl OnlineModel for EwRidge {
         match &s.model {
             ModelState::EwRidge(m) => {
                 let mut m = (**m).clone();
-                crate::model::check_cfg("ew_ridge", m.cfg.validate())?;
+                crate::model::check_cfg("ewridge", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // A state written before schema 17 kept each target's own
                 // mean as an offset (`crate::gaps::Cross`).
@@ -2042,7 +2048,7 @@ impl OnlineModel for EwRidge {
                     || m.win.is_some() != m.cfg.window.is_some()
                 {
                     return Err(StateError::Invalid(
-                        "ew_ridge: the accumulators have the wrong shape".into(),
+                        "ewridge: the accumulators have the wrong shape".into(),
                     ));
                 }
                 // Every snapshot of the window too: `view()` reads the
@@ -2052,7 +2058,7 @@ impl OnlineModel for EwRidge {
                     && !win.snaps.iter().all(|s| s.has_shape(n, k))
                 {
                     return Err(StateError::Invalid(
-                        "ew_ridge: the window's snapshots have the wrong shape".into(),
+                        "ewridge: the window's snapshots have the wrong shape".into(),
                     ));
                 }
                 if let Err(e) =
@@ -2071,7 +2077,7 @@ impl OnlineModel for EwRidge {
                     }
                     Some(_) if !m.acc.keeps_runs() => {
                         return Err(StateError::Invalid(
-                            "ew_ridge: a windowed state whose runs are off".into(),
+                            "ewridge: a windowed state whose runs are off".into(),
                         ));
                     }
                     Some(_) => {}
@@ -2081,7 +2087,7 @@ impl OnlineModel for EwRidge {
                 Ok(m)
             }
             other => Err(StateError::WrongModel {
-                expected: "ew_ridge",
+                expected: "ewridge",
                 found: other.kind(),
             }),
         }

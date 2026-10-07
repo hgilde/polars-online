@@ -138,6 +138,14 @@ the new one. A record that uses an old name points to this table:
 | `po.run`, the Python runner | removed: the `online` command line, or `ModelBank.fit(lf)` | task 83 |
 | the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | task 85 |
 | `po.window.ewm` and `po.window.lookahead_rewm` (`lookahead_rewm` in §32), with `split=` | removed: the operators of §33, such as `po.ewm_mean` and `po.rewm_sum`, run by `with_windows` or as a spec's target | task 143 |
+| a spec's `type = "ew_ridge"` | `type = "ewridge"`, the builder's spelling | task 196 |
+| `chunk_rows`, and the command line's `--chunk-rows` | `chunk_size` and `--chunk-size`, Polars' name | task 196 |
+| the command line's `--resume` | `--load-state`, beside the TOML key `load_state` | task 196 |
+| `kmeans`' field `dist2` | `dist_second` | task 196 |
+| `ew_cov`'s statistic `lagcorr` and its fields `lagcorr_<a>_<b>_l<ℓ>`; `marginal`'s `lagcorr_xx`, `lagcorr_yy`, `lagcorr_xy` and `lagcorr_yx`, and their `pair_` columns | `lag_corr`, `lag_corr_<a>_<b>_l<ℓ>`, `lag_corr_xx` and the rest | task 196 |
+| `kmeans`' `update_every` and `split_merge_every`; `corrchange`'s `permute_every` | `update_every_rows`, `split_merge_every_rows`; `permute_every_rows` | task 196 |
+| `holt`'s `level_half_life` | the spec's `half_life` | task 196 |
+| a model window that keeps a row exactly `window_size` old | `closed="both"`; the default, `closed="right"`, drops it | task 196 |
 
 ### How the numbers are made
 

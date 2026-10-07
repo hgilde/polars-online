@@ -116,7 +116,7 @@ def run_online(exe, tmp_path, specs, *, args=(), check=True, **top):
     """Run the `online` binary over `specs`, from a TOML config written here.
 
     `top` are the config's top-level keys (`input`, `output`, `save_state`,
-    `load_state`, `closed_groups`, `chunk_rows`, `predict`); paths are taken
+    `load_state`, `closed_groups`, `chunk_size`, `predict`); paths are taken
     as they come and written POSIX-style, which is what TOML wants on every
     platform. `args` are extra command-line flags. Returns the
     `CompletedProcess`, so a caller can assert on `returncode` and `stderr`;

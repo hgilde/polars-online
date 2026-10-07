@@ -241,7 +241,7 @@ fn decay() -> Decay {
     Decay::Halflife(HALFLIFE)
 }
 
-fn ew_ridge_cfg() -> EwRidgeCfg {
+fn ewridge_cfg() -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: K,
         n_targets: 2,
@@ -267,10 +267,10 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
 }
 
 #[test]
-fn ew_ridge() {
-    let cfg = ew_ridge_cfg();
+fn ewridge() {
+    let cfg = ewridge_cfg();
     let r = probe_with(EwRidge::new(cfg).unwrap(), 2, Some(&EwRidge::n_eff));
-    check(&r, "ew_ridge", 2, 2);
+    check(&r, "ewridge", 2, 2);
 }
 
 fn rls_cfg() -> RlsCfg {
@@ -550,9 +550,9 @@ fn kmeans_cfg() -> KMeansCfg {
         warm_rows: 10,
         seed_rule: SeedRule::Lloyd,
         seed: 0,
-        update_every: 1,
+        update_every_rows: 1,
         split_merge: 0.5,
-        split_merge_every: 50,
+        split_merge_every_rows: 50,
         dead_frac: 0.05,
         standardize: true,
         scale_floor: 0.1,
@@ -566,7 +566,7 @@ fn kmeans() {
     let m = KMeans::new(cfg).unwrap();
     assert_eq!(m.n_targets(), 0, "kmeans has no targets");
     assert_eq!(m.n_features(), K);
-    assert_eq!(m.n_outputs(), 3, "cluster, dist, dist2");
+    assert_eq!(m.n_outputs(), 3, "cluster, dist, dist_second");
     let r = probe_with(m, 0, Some(&KMeans::n_eff));
     assert_eq!(r.kind, "kmeans");
     assert_eq!(r.pred_len, r.n_outputs);
@@ -623,7 +623,7 @@ fn every_state_kind_is_distinct_and_named() {
     // `ModelState::kind` names the model in every state error; a mutation that
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
-        "ew_ridge",
+        "ewridge",
         "rls",
         "lasso",
         "kalman",
@@ -654,7 +654,7 @@ fn every_state_kind_is_distinct_and_named() {
     // 2026-09-18, T2; docs/PLAN.md task 112). `robust` covers both of its
     // losses, and the two `kalman` configurations are one kind.
     let states = [
-        EwRidge::new(ew_ridge_cfg()).unwrap().state(),
+        EwRidge::new(ewridge_cfg()).unwrap().state(),
         Rls::new(rls_cfg()).unwrap().state(),
         Lasso::new(lasso_cfg()).unwrap().state(),
         Kalman::new(kalman_cfg()).unwrap().state(),
@@ -930,7 +930,7 @@ fn corrchange_cfg() -> CorrChangeCfg {
         decay: decay(),
         crit: None,
         n_perm: 20,
-        permute_every: 10,
+        permute_every_rows: 10,
         perm_block: 1,
         norm: ChangeNorm::L1,
         seed: 5,
@@ -1033,7 +1033,7 @@ fn every_model_refuses_a_decay_it_cannot_run_on() {
         ("ewridge", &|decay| {
             EwRidge::new(EwRidgeCfg {
                 decay,
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             })
             .map(drop)
         }),
@@ -1054,14 +1054,14 @@ fn every_model_refuses_a_decay_it_cannot_run_on() {
             })
             .map(drop)
         }),
-        ("robust", &|decay| {
+        ("huber", &|decay| {
             Robust::new(RobustCfg {
                 decay,
                 ..robust_cfg(ROBUST_LOSSES[0])
             })
             .map(drop)
         }),
-        ("robust", &|decay| {
+        ("quantile", &|decay| {
             Robust::new(RobustCfg {
                 decay,
                 ..robust_cfg(ROBUST_LOSSES[1])
@@ -1200,8 +1200,13 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
         let damaged = edit_state(&state, |v| set_cfg(v, key, value));
         match M::restore(&damaged) {
             Err(StateError::Invalid(e)) => {
-                let head = format!("{kind}: the state's configuration is refused");
-                assert!(e.starts_with(&head) && e.contains(says), "{kind}: {e}");
+                // `robust`'s messages name the spec's model, `huber` or
+                // `quantile` by its loss (docs/PLAN.md task 196, N1).
+                let named =
+                    |k: &str| e.starts_with(&format!("{k}: the state's configuration is refused"));
+                let head =
+                    named(kind) || (kind == "robust" && (named("huber") || named("quantile")));
+                assert!(head && e.contains(says), "{kind}: {e}");
             }
             Err(e) => panic!("{kind}: {e}"),
             Ok(_) => panic!("{kind}: a {key} its `new` refuses was restored"),
@@ -1212,7 +1217,7 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
     let zero = || rmpv::Value::Map(vec![("Halflife".into(), 0.0.into())]);
     let h = "half_life must be > 0";
     let kinds = [
-        refused(EwRidge::new(ew_ridge_cfg()).unwrap(), "decay", zero(), h),
+        refused(EwRidge::new(ewridge_cfg()).unwrap(), "decay", zero(), h),
         refused(Rls::new(rls_cfg()).unwrap(), "decay", zero(), h),
         refused(Lasso::new(lasso_cfg()).unwrap(), "decay", zero(), h),
         refused(Kalman::new(kalman_cfg()).unwrap(), "decay", zero(), h),
@@ -1305,28 +1310,28 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
         (
             ewridge(EwRidgeCfg {
                 ridge: vec![1e-6, nan],
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             }),
             "ewridge: ridge must be finite and >= 0, got NaN",
         ),
         (
             ewridge(EwRidgeCfg {
                 ridge: vec![-1.0],
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             }),
             "ewridge: ridge must be finite and >= 0, got -1",
         ),
         (
             ewridge(EwRidgeCfg {
                 ridge: vec![inf],
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             }),
             "ewridge: ridge must be finite and >= 0, got inf",
         ),
         (
             ewridge(EwRidgeCfg {
                 min_weight: nan,
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             }),
             "ewridge: min_weight must be >= 0, got NaN",
         ),
@@ -1412,49 +1417,49 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 ridge: nan,
                 ..huber()
             }),
-            "robust: ridge must be finite and >= 0, got NaN",
+            "huber: ridge must be finite and >= 0, got NaN",
         ),
         (
             robust(RobustCfg {
                 ridge: inf,
                 ..quantile()
             }),
-            "robust: ridge must be finite and >= 0, got inf",
+            "quantile: ridge must be finite and >= 0, got inf",
         ),
         (
             robust(RobustCfg {
                 quantile_eps: nan,
                 ..quantile()
             }),
-            "robust: quantile_eps must be finite and > 0, got NaN",
+            "quantile: quantile_eps must be finite and > 0, got NaN",
         ),
         (
             robust(RobustCfg {
                 quantile_eps: inf,
                 ..quantile()
             }),
-            "robust: quantile_eps must be finite and > 0, got inf",
+            "quantile: quantile_eps must be finite and > 0, got inf",
         ),
         (
             robust(RobustCfg {
                 min_weight: nan,
                 ..huber()
             }),
-            "robust: min_weight must be >= 0, got NaN",
+            "huber: min_weight must be >= 0, got NaN",
         ),
         (
             robust(RobustCfg {
                 loss: RobustLoss::Huber { delta: nan },
                 ..huber()
             }),
-            "robust: huber_delta must be > 0, got NaN",
+            "huber: huber_delta must be > 0, got NaN",
         ),
         (
             robust(RobustCfg {
                 loss: RobustLoss::Quantile { tau: 1.5 },
                 ..quantile()
             }),
-            "robust: quantile must be in (0, 1), got 1.5",
+            "quantile: quantile must be in (0, 1), got 1.5",
         ),
         (
             kalman(KalmanCfg {
@@ -1513,7 +1518,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
         ewridge(EwRidgeCfg {
             ridge: vec![0.0],
             min_weight: inf,
-            ..ew_ridge_cfg()
+            ..ewridge_cfg()
         }),
         lasso(LassoCfg {
             select_half_life: Some(inf),
@@ -1562,7 +1567,7 @@ fn exactly_the_scheduled_solvers_report_a_solve_share() {
         m.solve_share()
     }
     let shares = [
-        ("ewridge", share(EwRidge::new(ew_ridge_cfg()).unwrap())),
+        ("ewridge", share(EwRidge::new(ewridge_cfg()).unwrap())),
         ("rls", share(Rls::new(rls_cfg()).unwrap())),
         ("lasso", share(Lasso::new(lasso_cfg()).unwrap())),
         ("kalman", share(Kalman::new(kalman_cfg()).unwrap())),
@@ -1618,7 +1623,7 @@ fn exactly_the_scheduled_solvers_report_a_solve_share() {
 /// every model's, off a real state and holds each pair here to it.
 const PROBED: &[(&str, &str)] = &[
     ("EwCov", "ew_cov_accumulator"),
-    ("EwRidge", "ew_ridge"),
+    ("EwRidge", "ewridge"),
     ("Rls", "rls"),
     ("Lasso", "lasso"),
     ("Kalman", "kalman"),
@@ -1777,7 +1782,7 @@ fn bounded_script(targets: usize) -> Vec<Row> {
     });
     // 1500 half-lives. A row at the bound with weight at the bound leaves a
     // moment of 1e300 on the sum scale, which needs 1000 half-lives to fall
-    // below 1e-6; the rest is margin (measured: ew_ridge agrees with its twin
+    // below 1e-6; the rest is margin (measured: ewridge agrees with its twin
     // to 3e-5 after 1000 half-lives and to rounding after 1100).
     for _ in 0..30_000 {
         rows.push(nice(&mut s, targets, 1.0));
@@ -1912,13 +1917,13 @@ fn recovers_over<M: OnlineModel>(rows: &[Row], build: impl Fn() -> M, how: Recov
 }
 
 #[test]
-fn ew_ridge_recovers_from_bounded_extremes() {
+fn ewridge_recovers_from_bounded_extremes() {
     recovers_from_bounded_extremes(
-        || EwRidge::new(ew_ridge_cfg()).unwrap(),
+        || EwRidge::new(ewridge_cfg()).unwrap(),
         2,
         Recovery::Twin(1e-9),
     );
-    let mut cfg = ew_ridge_cfg();
+    let mut cfg = ewridge_cfg();
     cfg.standardize = true;
     recovers_from_bounded_extremes(
         move || EwRidge::new(cfg.clone()).unwrap(),
@@ -2703,15 +2708,15 @@ fn unusable_values_are_refused<M: OnlineModel + Clone>(
 }
 
 #[test]
-fn ew_ridge_predict_is_the_step() {
-    predict_is_the_step_without_the_step(|| EwRidge::new(ew_ridge_cfg()).unwrap(), 2, false);
-    let mut cfg = ew_ridge_cfg();
+fn ewridge_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| EwRidge::new(ewridge_cfg()).unwrap(), 2, false);
+    let mut cfg = ewridge_cfg();
     cfg.standardize = true;
     cfg.session_shrink = Some(0.5);
     cfg.long_half_life = Some(4.0 * HALFLIFE);
     predict_is_the_step_without_the_step(move || EwRidge::new(cfg.clone()).unwrap(), 2, false);
     // A lazily refreshed solve: both read the cached coefficients.
-    let mut cfg = ew_ridge_cfg();
+    let mut cfg = ewridge_cfg();
     cfg.solve_every = 5.0;
     cfg.max_rows_between_solves = 10_000;
     predict_is_the_step_without_the_step(move || EwRidge::new(cfg.clone()).unwrap(), 2, false);
@@ -2810,7 +2815,7 @@ fn seqtest_predict_is_the_step() {
 fn kmeans_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| KMeans::new(kmeans_cfg()).unwrap(), 0, false);
     let cfg = KMeansCfg {
-        update_every: 7,
+        update_every_rows: 7,
         seed_rule: SeedRule::Farthest,
         standardize: false,
         ..kmeans_cfg()
@@ -3230,8 +3235,8 @@ fn every_model_resumes_from_a_state_without_the_low_parts() {
     let none = leveled(0, false);
     let results: Vec<(&str, (usize, f64))> = vec![
         (
-            "ew_ridge",
-            resumes_without_low_parts(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &two),
+            "ewridge",
+            resumes_without_low_parts(|| EwRidge::new(ewridge_cfg()).unwrap(), &two),
         ),
         (
             "rls",
@@ -3331,7 +3336,7 @@ fn every_model_resumes_from_a_state_without_the_low_parts() {
     // Each model that keeps a mean had parts to drop, so its load was a real
     // one: a model that lost its means, or a renamed field, shows here.
     let keeps_means = [
-        "ew_ridge",
+        "ewridge",
         "lasso",
         "kalman",
         "kalman_revert",
@@ -3354,7 +3359,7 @@ fn every_model_resumes_from_a_state_without_the_low_parts() {
     }
 }
 
-/// A windowed `ew_ridge` or `lasso` saved at schema 16, when each target's
+/// A windowed `ewridge` or `lasso` saved at schema 16, when each target's
 /// own feature mean was kept as its offset `d` from the all-row mean,
 /// loads at 17 with the offsets made means once, in the live accumulator
 /// and in every window snapshot, and goes on as the model restored whole
@@ -3437,13 +3442,13 @@ fn a_schema_16_state_of_offsets_loads_as_own_means() {
     let rows = leveled(2, false);
     for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
         let ridge = || {
-            let mut c = ew_ridge_cfg();
+            let mut c = ewridge_cfg();
             c.window = Some(30.0);
             c.max_rows_between_snapshots = Some(4);
             c.target_gaps = gaps;
             EwRidge::new(c).unwrap()
         };
-        check(&format!("ew_ridge {gaps:?}"), ridge, &rows);
+        check(&format!("ewridge {gaps:?}"), ridge, &rows);
     }
     let one = leveled(1, false);
     let lasso = || {
@@ -3617,7 +3622,7 @@ mod generated {
     /// The stream the windowed `lasso` failed the contract on once the
     /// values reached the bound (review 2026-09-26, G3): a target absent on
     /// a row whose feature stood at `-2.6e99`, then rows at `1e100`, and the
-    /// prediction read `-inf` -- windowed or not, and through `ew_ridge`,
+    /// prediction read `-inf` -- windowed or not, and through `ewridge`,
     /// which shares the cross accumulator (`gaps.rs` has the mechanism).
     #[test]
     fn a_target_absent_on_a_row_at_the_bound_through_the_bound() {
@@ -3658,13 +3663,13 @@ mod generated {
                 ..r.clone()
             })
             .collect();
-        contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &two, 0).unwrap();
+        contract(|| EwRidge::new(ewridge_cfg()).unwrap(), &two, 0).unwrap();
     }
 
     /// The stream the windowed `lasso` failed the contract on (review
     /// 2026-09-27, G5): rows at `1e100` before the window, one of weight
     /// `1e100` inside it, and the prediction at `x1 = 1e100` read `-inf`
-    /// (`crate::truncated` has the mechanism). Through `ew_ridge` too.
+    /// (`crate::truncated` has the mechanism). Through `ewridge` too.
     #[test]
     fn a_window_the_live_state_cannot_resolve_through_the_bound() {
         let row = |x: [f64; 2], y0: Option<f64>, d: f64, w: f64| GenRow {
@@ -3710,7 +3715,7 @@ mod generated {
             .collect();
         contract(
             || {
-                let mut c = ew_ridge_cfg();
+                let mut c = ewridge_cfg();
                 c.window = Some(7.0);
                 EwRidge::new(c).unwrap()
             },
@@ -3757,17 +3762,17 @@ mod generated {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
         #[test]
-        fn ew_ridge(rows in stream(2, false), split in 0usize..60) {
-            contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &rows, split)?;
+        fn ewridge(rows in stream(2, false), split in 0usize..60) {
+            contract(|| EwRidge::new(ewridge_cfg()).unwrap(), &rows, split)?;
         }
 
         /// The window's ring, its snapshots and their serde, under both
         /// cadences; and the blocked Gram with pairwise gaps, whose held
         /// rows the state carries (review 2026-09-26, C8).
         #[test]
-        fn ew_ridge_windowed(rows in stream(2, false), split in 0usize..60, every in 0usize..2) {
+        fn ewridge_windowed(rows in stream(2, false), split in 0usize..60, every in 0usize..2) {
             contract(|| {
-                let mut c = ew_ridge_cfg();
+                let mut c = ewridge_cfg();
                 c.window = Some(7.0);
                 c.max_rows_between_snapshots = [None, Some(3)][every];
                 EwRidge::new(c).unwrap()
@@ -3775,9 +3780,9 @@ mod generated {
         }
 
         #[test]
-        fn ew_ridge_blocked_pairwise(rows in stream(2, false), split in 0usize..60) {
+        fn ewridge_blocked_pairwise(rows in stream(2, false), split in 0usize..60) {
             contract(|| {
-                let mut c = ew_ridge_cfg();
+                let mut c = ewridge_cfg();
                 // A block needs a solve cadence, or it never holds a second row.
                 c.gram_block_rows = 4;
                 c.solve_every = 3.0;

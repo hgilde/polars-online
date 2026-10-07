@@ -68,7 +68,7 @@ def quiet(fn):
 def test_a_join_without_maintain_order_is_flagged():
     lf = left().join(right(), on="k")
     with pytest.warns(po.OrderNotGuaranteedWarning, match="row order is not guaranteed") as rec:
-        po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
+        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
     text = str(rec[0].message)
     assert "join" in text
     assert 'maintain_order="left"' in text
@@ -76,7 +76,7 @@ def test_a_join_without_maintain_order_is_flagged():
 
 def test_a_join_that_keeps_the_left_order_is_not():
     lf = left().join(right(), on="k", maintain_order="left")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_rows=4))
+    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_group_by_without_maintain_order_is_flagged():
@@ -110,14 +110,14 @@ def test_a_sort_above_the_node_settles_the_order():
     """A sort defines the order of everything beneath it, so a join under a
     sort is not a hazard."""
     lf = left().join(right(), on="k").sort("t")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_rows=4))
+    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_sort_below_the_node_does_not():
     """... but a join above a sort reorders what the sort arranged."""
     lf = left().sort("t").join(right(), on="k")
     with pytest.warns(po.OrderNotGuaranteedWarning):
-        po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
+        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
 
 
 def test_a_plan_with_no_reordering_node_is_quiet():
@@ -131,9 +131,9 @@ def test_a_plan_with_no_reordering_node_is_quiet():
 def test_every_plan_entry_point_warns():
     lf = left().join(right(), on="k")
     with pytest.warns(po.OrderNotGuaranteedWarning, match="fit_predict_batches"):
-        list(po.ModelBank([SPEC]).fit_predict_batches(lf, chunk_rows=4))
+        list(po.ModelBank([SPEC]).fit_predict_batches(lf, chunk_size=4))
     with pytest.warns(po.OrderNotGuaranteedWarning, match="fit"):
-        po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
+        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
     # The plan form warns when the plan is built, before anything runs.
     with pytest.warns(po.OrderNotGuaranteedWarning, match="online.fit_predict"):
         lf.online.fit_predict([SPEC])
@@ -160,7 +160,7 @@ def test_polars_deprecation_of_json_serialize_is_not_leaked():
     lf = left().join(right(), on="k")
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
+        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
     leaked = [w for w in rec if "serialization format" in str(w.message)]
     assert not leaked, [str(w.message) for w in leaked]
     assert any(isinstance(w.message, po.OrderNotGuaranteedWarning) for w in rec)
@@ -175,7 +175,7 @@ def test_it_falls_silent_rather_than_raise_when_the_plan_cannot_be_read(monkeypa
 
     monkeypatch.setattr(pl.LazyFrame, "serialize", unreadable)
     lf = left().join(right(), on="k")
-    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_rows=4))
+    quiet(lambda: po.ModelBank([SPEC]).fit(lf, chunk_size=4))
 
 
 def test_a_plan_already_holding_a_bank_still_runs_under_another():
@@ -254,7 +254,7 @@ def test_a_sort_by_several_keys_without_maintain_order_is_warned_about():
     the order a stream learns them in. By one key polars sorted stably here;
     that is pinned below rather than promised."""
     with pytest.warns(po.OrderNotGuaranteedWarning, match="maintain_order=True"):
-        po.ModelBank([SPEC]).fit(left().sort(["k", "t"]), chunk_rows=4)
+        po.ModelBank([SPEC]).fit(left().sort(["k", "t"]), chunk_size=4)
     quiet(lambda: po.ModelBank([SPEC]).fit(left().sort(["k", "t"], maintain_order=True)))
     quiet(lambda: po.ModelBank([SPEC]).fit(left().sort("t")))
 
@@ -379,7 +379,7 @@ def test_the_warning_is_a_user_warning_shown_by_default():
 def test_the_warning_points_at_the_caller_not_the_library():
     lf = left().join(right(), on="k")
     with pytest.warns(po.OrderNotGuaranteedWarning) as rec:
-        po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
+        po.ModelBank([SPEC]).fit(lf, chunk_size=4)
     assert rec[0].filename == __file__, rec[0].filename
 
 

@@ -839,10 +839,10 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     (tmp_path / "bank.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
-        'half_life = 500.0\nmin_weight = 5.0\n[specs.model]\ntype = "ew_ridge"\n',
+        'half_life = 500.0\nmin_weight = 5.0\n[specs.model]\ntype = "ewridge"\n',
         encoding="utf-8",
     )
-    # The guide's `--resume` examples need a state *its own config's* spec
+    # The guide's `--load-state` examples need a state *its own config's* spec
     # saved: a state refuses to load under specs it was not saved from, which
     # is the point of that check. `bank.state` belongs to the README, which
     # writes and reads it throughout, so the CLI's gets a name of its own.

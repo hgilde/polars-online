@@ -40,7 +40,7 @@ fn kalman() -> Kalman {
     .unwrap()
 }
 
-fn ew_ridge() -> EwRidge {
+fn ewridge() -> EwRidge {
     EwRidge::new(EwRidgeCfg {
         n_features: 1,
         n_targets: 1,
@@ -102,7 +102,7 @@ fn a_slope_step_is_learned_in_the_same_clock_time_at_any_spacing() {
         .collect();
     let r: Vec<f64> = spacings
         .iter()
-        .map(|&d| adaptation(d, &mut ew_ridge()))
+        .map(|&d| adaptation(d, &mut ewridge()))
         .collect();
     eprintln!("adaptation in clock units, kalman {k:?} ewridge {r:?}");
     let spread = |v: &[f64]| {

@@ -669,7 +669,7 @@ class TestTheSurfaces:
         df.write_parquet(src)
         s = spec(embargo=6.0)
         out = tmp_path / "out.parquet"
-        run_online(online_cli, tmp_path, [s], input=src, output=out, chunk_rows=64)
+        run_online(online_cli, tmp_path, [s], input=src, output=out, chunk_size=64)
 
         # `coef` rides the chunk cadence, as everywhere; every value is
         # compared.
@@ -685,7 +685,7 @@ class TestTheSurfaces:
             f"""
 input = "{src.as_posix()}"
 output = "{cli_out.as_posix()}"
-chunk_rows = 100
+chunk_size = 100
 
 [[specs]]
 name = "m"
@@ -697,7 +697,7 @@ gap_cap = 1e9
 min_weight = 3.0
 embargo = 6.0
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 standardize = false
 max_rows_between_solves = 1
 """

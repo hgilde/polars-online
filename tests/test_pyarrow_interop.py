@@ -150,7 +150,7 @@ def test_a_pyarrow_reader_streams_into_a_bank() -> None:
         lazy = pl.scan_arrow_c_stream(reader()).online.fit_predict([SPEC]).collect()
         result["lf.online.fit_predict"] = same(lazy["m"].struct.unnest(), cadence_too=False)
         chunks = po.ModelBank([SPEC]).fit_predict_batches(
-            pl.scan_arrow_c_stream(reader()), chunk_rows=23
+            pl.scan_arrow_c_stream(reader()), chunk_size=23
         )
         batched = pl.concat(list(chunks))
         result["fit_predict_batches"] = same(batched["m"].struct.unnest(), cadence_too=False)

@@ -14,7 +14,7 @@ fn spec(json: &str) -> Spec {
 
 fn ridge() -> Spec {
     spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "half_life": 10.0}"#,
     )
 }
@@ -32,7 +32,7 @@ fn frame() -> DataFrame {
 /// still waiting in the queue.
 fn closing() -> (Spec, Vec<u8>) {
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "half_life": 10.0,
             "group_close": "monotone"}"#,
     );
@@ -84,7 +84,7 @@ fn a_file_whose_states_do_not_match_its_specs_is_refused() {
 #[test]
 fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "half_life": 10.0, "embargo": 2}"#,
     );
     let mut bank = Bank::new(vec![s]).unwrap();
@@ -110,7 +110,7 @@ fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
 fn a_held_row_whose_values_the_bank_never_sends_is_refused() {
     use crate::stream::PendingRow;
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "clock": "t", "gap_cap": 10.0,
             "half_life": 5.0, "embargo": 2.0}"#,
     );
@@ -162,7 +162,7 @@ fn a_held_row_whose_values_the_bank_never_sends_is_refused() {
 #[test]
 fn a_residual_sketch_of_the_wrong_shape_is_refused() {
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "half_life": 10.0,
             "resid_quantiles": [0.5, 0.9]}"#,
     );
@@ -282,7 +282,7 @@ fn a_closed_row_that_does_not_fit_its_spec_is_refused() {
     let mut good = Bank::load_bytes(&bytes, Some(std::slice::from_ref(&s))).unwrap();
     assert_eq!(good.closed_groups(None, false).unwrap().height(), 1);
     fn gram(f: &mut BankFile) -> &mut super::Gram {
-        f.closed[0].gram.as_mut().expect("ew_ridge keeps a Gram")
+        f.closed[0].gram.as_mut().expect("ewridge keeps a Gram")
     }
     type Edit = fn(&mut BankFile);
     let cases: Vec<(&str, Edit)> = vec![

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 fn cfg(top: &str) -> Result<online_core::ClockCfg, String> {
     let text = format!(
-        "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n{top}\n[model]\ntype = \"ew_ridge\"\n"
+        "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n{top}\n[model]\ntype = \"ewridge\"\n"
     );
     let spec: Spec = toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"));
     spec.clock_cfg()
@@ -68,7 +68,7 @@ fn session_gap_is_finite_or_reset() {
 
 /// The two readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), resolved:
 /// `min_settled_frac` is off, `max_error_inflation` is `sqrt(2)` -- the
-/// estimation variance equal to the noise -- and `ew_ridge`, which that gate
+/// estimation variance equal to the noise -- and `ewridge`, which that gate
 /// serves, no longer takes the `k + 1` floor `min_weight` gave it, where
 /// every model without a noise statistic keeps its own default.
 fn parsed(top: &str, model: &str) -> Spec {
@@ -80,21 +80,21 @@ fn parsed(top: &str, model: &str) -> Spec {
 
 #[test]
 fn the_settled_gate_is_off_and_the_noise_gate_is_root_two() {
-    let spec = parsed("", "type = \"ew_ridge\"");
+    let spec = parsed("", "type = \"ewridge\"");
     assert_eq!(spec.min_settled_frac_or_default(), 0.0);
     assert_eq!(spec.max_error_inflation_or_default(), 2f64.sqrt());
     let spec = parsed(
         "min_settled_frac = 0.5\nmax_error_inflation = 1.1",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
     );
     assert_eq!(spec.min_settled_frac_or_default(), 0.5);
     assert_eq!(spec.max_error_inflation_or_default(), 1.1);
 }
 
 #[test]
-fn ew_ridge_drops_the_count_floor_and_the_others_keep_theirs() {
+fn ewridge_drops_the_count_floor_and_the_others_keep_theirs() {
     assert_eq!(
-        parsed("", "type = \"ew_ridge\"").min_periods_per_target(),
+        parsed("", "type = \"ewridge\"").min_periods_per_target(),
         vec![0.0]
     );
     assert_eq!(
@@ -106,7 +106,7 @@ fn ew_ridge_drops_the_count_floor_and_the_others_keep_theirs() {
         vec![3.0]
     );
     assert_eq!(
-        parsed("min_weight = 7.0", "type = \"ew_ridge\"").min_periods_per_target(),
+        parsed("min_weight = 7.0", "type = \"ewridge\"").min_periods_per_target(),
         vec![7.0]
     );
 }
@@ -149,7 +149,7 @@ fn average_eta_is_one_and_the_sgd_clip_a_thousand() {
 /// gates as the README's *Warm-up* table does, and each given value taken.
 #[test]
 fn the_stream_settings_resolve_as_documented() {
-    let r = resolved_with("", "type = \"ew_ridge\"");
+    let r = resolved_with("", "type = \"ewridge\"");
     let s = &r["stream"];
     assert_eq!(s["drift_action"], "flag");
     assert_eq!(s["drift_delta"], 0.5);
@@ -166,7 +166,7 @@ fn the_stream_settings_resolve_as_documented() {
          drift_threshold = 5.0\nconformal = 0.9\nconformal_rate = 0.1\nemit_autocorr = true\n\
          resid_autocorr_lag = 3\nemit_averaged = true\naverage_eta = 2.0\n\
          min_settled_frac = 0.5\nmax_error_inflation = \"inf\"",
-        "type = \"ew_ridge\"\nridge = [0.1, 1.0]",
+        "type = \"ewridge\"\nridge = [0.1, 1.0]",
     );
     let s = &r["stream"];
     assert_eq!(s["drift_action"], "reset");
@@ -179,13 +179,13 @@ fn the_stream_settings_resolve_as_documented() {
     assert_eq!(s["max_error_inflation"], "inf");
 }
 
-/// `ew_ridge`'s gate is its noise statistic, so its `min_weight` resolves
+/// `ewridge`'s gate is its noise statistic, so its `min_weight` resolves
 /// to 0 (the README's last row), while the model keeps a row per unknown as
 /// the floor of its first solve (`build_bare`'s comment); every other
 /// regression gates on that count itself.
 #[test]
 fn the_ridge_keeps_its_count_floor_in_the_model_and_gates_at_zero() {
-    let r = resolved_with("", "type = \"ew_ridge\"");
+    let r = resolved_with("", "type = \"ewridge\"");
     assert_eq!(r["stream"]["min_weight"], json!([0.0]));
     assert_eq!(r["model"]["min_weight"], 3.0);
     let r = resolved_with("", "type = \"rls\"");
@@ -198,7 +198,7 @@ fn the_ridge_keeps_its_count_floor_in_the_model_and_gates_at_zero() {
 /// what the spec says.
 #[test]
 fn the_clock_policy_resolves_as_task_120_decided() {
-    let r = resolved_with("", "type = \"ew_ridge\"");
+    let r = resolved_with("", "type = \"ewridge\"");
     assert_eq!(
         r["clock"],
         json!({"gap_cap": "inf", "min_backwards_jump": 0.0, "on_clock_reset": "error",
@@ -207,7 +207,7 @@ fn the_clock_policy_resolves_as_task_120_decided() {
     let clocked = "clock = \"t\"\ngap_cap = 5.0\nrestart_after_step_back = 2.0\nsession = \"s\"";
     let r = resolved_with(
         &format!("{clocked}\nsession_gap = 3.0"),
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
     );
     assert_eq!(
         r["clock"],
@@ -216,7 +216,7 @@ fn the_clock_policy_resolves_as_task_120_decided() {
     );
     let r = resolved_with(
         &format!("{clocked}\nsession_gap = \"reset\""),
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
     );
     assert_eq!(r["clock"]["session_gap"], "reset");
 }
@@ -225,11 +225,11 @@ fn the_clock_policy_resolves_as_task_120_decided() {
 /// (`ModelKind::window_budget`), and runs under the one it names.
 #[test]
 fn a_window_runs_under_a_256_mib_refusing_budget_unless_told() {
-    let r = resolved_with("", "type = \"ew_ridge\"\nwindow_size = 100.0");
+    let r = resolved_with("", "type = \"ewridge\"\nwindow_size = 100.0");
     assert_eq!(r["stream"]["window_budget"], json!({"refuse": 256.0}));
     let r = resolved_with(
         "",
-        "type = \"ew_ridge\"\nwindow_size = 100.0\nwindow_budget = { thin = \"inf\" }",
+        "type = \"ewridge\"\nwindow_size = 100.0\nwindow_budget = { thin = \"inf\" }",
     );
     assert_eq!(r["stream"]["window_budget"], json!({"thin": "inf"}));
 }
@@ -286,7 +286,7 @@ fn the_models_derive_what_their_spec_leaves_unset() {
             .is_none()
     );
     assert!(
-        resolved_with("", "type = \"ew_ridge\"")
+        resolved_with("", "type = \"ewridge\"")
             .get("derived")
             .is_none()
     );
@@ -296,7 +296,7 @@ fn the_models_derive_what_their_spec_leaves_unset() {
 #[test]
 fn a_spec_the_bank_refuses_resolves_to_its_refusal() {
     let spec: Spec = toml::from_str(
-        "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n[model]\ntype = \"ew_ridge\"\n",
+        "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\n[model]\ntype = \"ewridge\"\n",
     )
     .unwrap();
     let err = online_polars::resolved_defaults(&spec).unwrap_err();

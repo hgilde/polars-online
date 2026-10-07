@@ -324,8 +324,8 @@ class TestHolt:
     @pytest.mark.parametrize(
         ("kw", "dup"),
         [
-            ({"level_half_life": 20.0, "min_weight": 2.0}, False),
-            ({"level_half_life": 20.0, "trend_half_life": 60.0, "min_weight": 12.0}, True),
+            ({"half_life": 20.0, "min_weight": 2.0}, False),
+            ({"half_life": 20.0, "trend_half_life": 60.0, "min_weight": 12.0}, True),
         ],
         ids=["default-trend-half_life", "zero-steps-and-the-gate"],
     )

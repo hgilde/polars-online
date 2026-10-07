@@ -11,7 +11,7 @@ same rules (docs/PLAN.md task 105):
   on a spec, and a clock parameter takes a duration on a temporal clock. With
   no ``clock``, one unit is one row.
 - **A stateful transform resumes** with ``load_state`` and ``save_state``, and
-  takes ``chunk_rows`` as everywhere. :func:`embargo` is a pure Polars plan with
+  takes ``chunk_size`` as everywhere. :func:`embargo` is a pure Polars plan with
   nothing to save, and takes neither.
 
 :func:`embargo` turns a frame into the doubled stream a forward-looking target
@@ -64,7 +64,7 @@ from polars_online._frame import (
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
-from polars_online._spec import _RENAMED
+from polars_online._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
 
 __all__ = ["embargo", "refresh_time", "with_windows"]
 
@@ -302,7 +302,7 @@ def refresh_time(
     group: str | None = None,
     pairs: bool = False,
     keep: Sequence[str] = (),
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
 ) -> pl.LazyFrame: ...
@@ -319,12 +319,13 @@ def refresh_time(
     group: str | None = None,
     pairs: bool = False,
     keep: Sequence[str] = (),
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
 ) -> pl.DataFrame: ...
 
 
+@_renamed_keywords
 def refresh_time(
     lf: pl.LazyFrame | pl.DataFrame,
     *,
@@ -335,7 +336,7 @@ def refresh_time(
     group: str | None = None,
     pairs: bool = False,
     keep: Sequence[str] = (),
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
@@ -447,7 +448,7 @@ def refresh_time(
     - a column the frame has not got;
     - a ``value`` column that is not numeric (a boolean and a column of nulls
       are);
-    - ``chunk_rows`` below 1;
+    - ``chunk_size`` below 1;
     - a ``load_state`` that is not such a state, or was saved with other
       ``names`` or ``pairs``.
 
@@ -478,9 +479,9 @@ def refresh_time(
             f"(cast it, e.g. pl.col({value!r}).cast(pl.Float64))"
         )
         raise ValueError(msg)
-    rows = chunk_rows if chunk_rows is not None else _native.default_chunk_rows()
+    rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
-        msg = f"chunk_rows must be at least 1, got {rows}"
+        msg = f"chunk_size must be at least 1, got {rows}"
         raise ValueError(msg)
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
@@ -582,6 +583,8 @@ def _formulas(who: str, exprs: tuple[Any, ...], named: dict[str, Any]) -> list[d
     for name, e in named.items():
         if name in _RENAMED:
             raise TypeError(f"{who}: {name} was renamed {_RENAMED[name]}")
+        if name in _RENAMED_KEYWORDS:
+            raise TypeError(f"{who}: {name} was renamed {_RENAMED_KEYWORDS[name]}")
         if not isinstance(e, pl.Expr):
             raise TypeError(
                 f"{who}: {name} is a pl.Expr over the operators, got {type(e).__name__} {e!r}"
@@ -607,7 +610,7 @@ def with_windows(
     session_gap: float | Duration | None = None,
     group: str | None = None,
     like: dict[str, Any] | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
     **named: pl.Expr,
@@ -625,7 +628,7 @@ def with_windows(
     session_gap: float | Duration | None = None,
     group: str | None = None,
     like: dict[str, Any] | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
     **named: pl.Expr,
@@ -642,7 +645,7 @@ def with_windows(
     session_gap: float | Duration | None = None,
     group: str | None = None,
     like: dict[str, Any] | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
     load_state: State | None = None,
     save_state: State | None = None,
     **named: pl.Expr,
@@ -852,9 +855,9 @@ def with_windows(
 
     lazy = lf.lazy()
     in_schema = lazy.collect_schema()
-    rows = chunk_rows if chunk_rows is not None else _native.default_chunk_rows()
+    rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
-        msg = f"chunk_rows must be at least 1, got {rows}"
+        msg = f"chunk_size must be at least 1, got {rows}"
         raise ValueError(msg)
     # The two plan checks a bank makes of its input, made here of this one's:
     # a bank after this sees only this source, and not the plan beneath it.

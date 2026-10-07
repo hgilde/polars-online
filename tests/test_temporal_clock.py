@@ -514,7 +514,6 @@ class TestEveryClockParameterTakesADuration:
         "select_half_life": ("1h", {}),
         "coef_half_life": ("2m", {}),
         "revert_half_life": ("1h", {}),
-        "level_half_life": ("5m", {"half_life": None}),
         "trend_half_life": ("20m", {}),
         "pca_every": ("10m", {"pca": 1}),
         "prune_every": ("10m", {}),
@@ -541,7 +540,6 @@ class TestEveryClockParameterTakesADuration:
     UNIT_FREE = {
         "half_life": float("inf"),
         "coef_half_life": float("inf"),
-        "level_half_life": float("inf"),
         "trend_half_life": float("inf"),
         "long_half_life": float("inf"),
         "select_half_life": float("inf"),

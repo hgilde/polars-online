@@ -30,7 +30,7 @@ fn spec_on(clock: &str, name: &str, group: Option<&str>, half_life: &str, extra:
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",
-            "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+            "model": {{"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "{clock}",

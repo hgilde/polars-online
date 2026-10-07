@@ -12,7 +12,14 @@ import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
-from polars_online._spec import _coef_index_schema, _from_json, _json, coef_index, target_name
+from polars_online._spec import (
+    _coef_index_schema,
+    _from_json,
+    _json,
+    _renamed_keywords,
+    coef_index,
+    target_name,
+)
 
 #: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -488,20 +495,21 @@ class ModelBank:
             msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
         raise TypeError(msg)
 
+    @_renamed_keywords
     def fit_predict_batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         closed_groups: str | Path | None = None,
-        chunk_rows: int | None = None,
+        chunk_size: int | None = None,
     ) -> Iterable[pl.DataFrame]:
         """:meth:`fit_predict` over a plan or an iterator of chunks, lazily.
 
         Give it a ``LazyFrame`` and it does the chunking: the plan is read
-        ``chunk_rows`` rows at a time (100,000 by default) and each chunk is fed as
+        ``chunk_size`` rows at a time (100,000 by default) and each chunk is fed as
         the generator reaches it, so memory is the state plus a chunk however long
-        the plan's input. A ``DataFrame`` is one chunk, or ``chunk_rows`` slices of
+        the plan's input. A ``DataFrame`` is one chunk, or ``chunk_size`` slices of
         it when that is given. An iterator of frames is fed as it comes, and
-        ``chunk_rows`` does not re-chunk it. Whatever
+        ``chunk_size`` does not re-chunk it. Whatever
         ``fit_predict`` raises for a chunk, this raises there; the chunks before it
         have been learned from.
 
@@ -518,7 +526,7 @@ class ModelBank:
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
-            for out in bank.fit_predict_batches(lf, chunk_rows=100):
+            for out in bank.fit_predict_batches(lf, chunk_size=100):
                 pass    # each `out` is a chunk plus the struct columns
 
         ``closed_groups``, a path, drains the bank's closed groups after every chunk,
@@ -531,13 +539,13 @@ class ModelBank:
         left the bank, and the file is then the only place it is. The file and the
         bank's queue together always hold every group that closed.
         """
-        return self._batches(batches, closed_groups, chunk_rows, "fit_predict_batches")
+        return self._batches(batches, closed_groups, chunk_size, "fit_predict_batches")
 
     def _batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         closed_groups: str | Path | None,
-        chunk_rows: int | None,
+        chunk_size: int | None,
         what: str,
     ) -> Iterable[pl.DataFrame]:
         """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
@@ -550,8 +558,8 @@ class ModelBank:
             _warn_if_order_unspecified,
         )
 
-        if chunk_rows is not None and chunk_rows < 1:
-            msg = f"chunk_rows must be at least 1, got {chunk_rows}"
+        if chunk_size is not None and chunk_size < 1:
+            msg = f"chunk_size must be at least 1, got {chunk_size}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
         # Bound as a narrowed local rather than an `is_plan` flag: a bool does
@@ -588,7 +596,7 @@ class ModelBank:
         # as in the sources (review 2026-10-05, YB6).
         started = _source_runs()
         return self._feed(
-            self._chunks(batches, chunk_rows), path, guard, what == "fit", started, what
+            self._chunks(batches, chunk_size), path, guard, what == "fit", started, what
         )
 
     def _feed(
@@ -651,27 +659,28 @@ class ModelBank:
     @staticmethod
     def _chunks(
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        chunk_rows: int | None,
+        chunk_size: int | None,
     ) -> Iterable[pl.DataFrame]:
         """The frames to feed, from a plan, a frame, or an iterator of frames.
 
         The plan's order is inspected by :meth:`_batches`, which can see the
         specs; whether the warning applies depends on them, and this cannot."""
         if isinstance(batches, pl.LazyFrame):
-            rows = _native.default_chunk_rows() if chunk_rows is None else chunk_rows
+            rows = _native.default_chunk_size() if chunk_size is None else chunk_size
             return batches.collect_batches(chunk_size=rows, maintain_order=True)
         if isinstance(batches, pl.DataFrame):
-            if chunk_rows is None:
+            if chunk_size is None:
                 return [batches]
             # `iter_slices` is zero-copy: views of the one frame, in order.
-            return batches.iter_slices(n_rows=chunk_rows)
+            return batches.iter_slices(n_rows=chunk_size)
         return batches
 
+    @_renamed_keywords
     def fit(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         closed_groups: str | Path | None = None,
-        chunk_rows: int | None = None,
+        chunk_size: int | None = None,
     ) -> None:
         """Learn from every row and keep nothing: the run whose product is the state.
 
@@ -708,7 +717,7 @@ class ModelBank:
 
             spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
             bank = po.ModelBank([spec])
-            bank.fit(lf, chunk_rows=100)
+            bank.fit(lf, chunk_size=100)
             bank.save("bank.state")
 
         The state this leaves is the state :meth:`fit_predict_batches` leaves
@@ -722,7 +731,7 @@ class ModelBank:
         # closes (docs/PLAN.md task 104). `fit_predict` refuses that spec.
         # Said per call (review R2, P1): a flag on the bank could be left
         # set when a `predict` on another thread held the bank.
-        for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
+        for _ in self._batches(batches, closed_groups, chunk_size, "fit"):
             pass
 
     def coef(
@@ -1244,18 +1253,18 @@ class ModelBank:
 
         With ``lags``, four more list columns and four numbers:
 
-        ``lagcorr_xx``, ``lagcorr_yy``
+        ``lag_corr_xx``, ``lag_corr_yy``
             Each series' own autocorrelation at the configured lags.
-        ``lagcorr_xy``, ``lagcorr_yx``
+        ``lag_corr_xy``, ``lag_corr_yx``
             The feature now against the target ``l`` rows back, and the target now
             against the feature ``l`` rows back, at each of ``cross_lags`` (every lag
             by default). For two series that describe the same moment, a feature
-            whose ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target, and one
-            whose ``lagcorr_xy[0]`` does follows it. That reading does not hold
+            whose ``lag_corr_yx[0]`` exceeds its ``corr`` leads the target, and one
+            whose ``lag_corr_xy[0]`` does follows it. That reading does not hold
             against a forward-looking target, one built from the rows after its own.
             There the target ``l`` rows back is built partly from the feature's
             newest ``l`` rows, so a feature built from the same news shows
-            ``lagcorr_xy`` above ``corr`` however it is sampled. Absent under
+            ``lag_corr_xy`` above ``corr`` however it is sampled. Absent under
             ``cross_lags=[]``.
         ``n_serial``, ``t_serial``
             ``n_kish`` divided by Bartlett's serial-dependence factor, and the
@@ -1379,7 +1388,7 @@ class ModelBank:
                per pair in the same order
 
         A ``marginal`` column that is a list per pair there (the
-        ``lagcorr_*`` family with ``lags``; ``bin_edges``, ``bin_n``,
+        ``lag_corr_*`` family with ``lags``; ``bin_edges``, ``bin_n``,
         ``bin_mean_y`` and ``bin_var_y`` with ``bins``) is a list of lists
         here, present when any closing ``marginal`` asked for it. A nested
         list has no CSV form, so a closed frame with them is for parquet or

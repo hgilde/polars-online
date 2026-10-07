@@ -311,7 +311,7 @@ class TestTheRule:
             g=pl.when(pl.int_range(pl.len()) % 3 == 0).then(pl.lit("a")).otherwise(pl.lit("b"))
         )
         spec = temporal(group="g")
-        parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_rows=50))
+        parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=50))
         got = observed(parts.unnest("m"))
         fitted = set(observed(run({**spec, "coef_every": 0}, df)))
         acc = accepted_rows(df, spec)
@@ -462,7 +462,7 @@ class TestChunkingAndResume:
         whole = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef")
         assert whole.null_count() < df.height
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_rows=rows))
+            parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=rows))
             assert parts["m"].struct.field("coef").to_list() == whole.to_list(), rows
 
     @pytest.mark.parametrize("name", KINDS)

@@ -742,7 +742,7 @@ class TestEdgeCases:
         df = frame(n=2000, m=2, seed=36, null_every=5, groups=["p", "q"])
         s = spec(targets=["d0", "d1"], group="g", min_weight=2.0)
         bank = po.ModelBank([s]).fit_predict(df)
-        lazy = df.lazy().online.fit_predict([s], chunk_rows=128).collect()
+        lazy = df.lazy().online.fit_predict([s], chunk_size=128).collect()
         assert bank.equals(lazy, null_equal=True)
         assert df.online.fit_predict([s]).equals(bank, null_equal=True)
 
@@ -828,7 +828,7 @@ class TestEdgeCases:
                 [
                     f'input = "{src.as_posix()}"',
                     f'output = "{dst.as_posix()}"',
-                    "chunk_rows = 300",
+                    "chunk_size = 300",
                     "[[specs]]",
                     'name = "fast"',
                     'targets = ["y"]',
@@ -838,7 +838,7 @@ class TestEdgeCases:
                     "coef_every = 1",
                     'group = "g"',
                     "[specs.model]",
-                    'type = "ew_ridge"',
+                    'type = "ewridge"',
                     "[[specs]]",
                     'name = "slow"',
                     'targets = ["y"]',
@@ -848,7 +848,7 @@ class TestEdgeCases:
                     "coef_every = 1",
                     'group = "g"',
                     "[specs.model]",
-                    'type = "ew_ridge"',
+                    'type = "ewridge"',
                     "[[specs]]",
                     'name = "c"',
                     'targets = ["y"]',
@@ -892,7 +892,7 @@ class TestEdgeCases:
                     'features = ["x0"]',
                     "half_life = 20.0",
                     "[specs.model]",
-                    'type = "ew_ridge"',
+                    'type = "ewridge"',
                     "ridge = [1e-6, 0.1]",
                     "[[specs]]",
                     'name = "c"',

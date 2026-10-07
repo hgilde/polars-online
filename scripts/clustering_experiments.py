@@ -237,7 +237,7 @@ def zoo(k: int, p: int, sigma: float, half_life: float = 3000.0, warm: int = 500
                 seed_rule="lloyd",
                 reseed=True,
                 split_merge=0.5,
-                split_merge_every=100,
+                split_merge_every_rows=100,
             ),
             p,
         ),
@@ -315,7 +315,12 @@ def exp_guarantees() -> None:
     models["odac"] = ODAC(ODACCfg(half_life=800.0, n_min=100), P)
     models["kmeans batch 50"] = EWKMeans(
         KMeansCfg(
-            k=K, half_life=800.0, warm_rows=200, seed_rule="lloyd", update_every=50, reseed=True
+            k=K,
+            half_life=800.0,
+            warm_rows=200,
+            seed_rule="lloyd",
+            update_every_rows=50,
+            reseed=True,
         ),
         P,
     )
@@ -522,7 +527,7 @@ def exp_decay() -> None:
                 seed_rule="lloyd",
                 reseed=True,
                 split_merge=0.5,
-                split_merge_every=100,
+                split_merge_every_rows=100,
             )
             gm = GMMCfg(k=K, half_life=hl, warm_rows=500, seed_rule="lloyd", cov="diag")
             cells = []
@@ -618,7 +623,7 @@ def exp_knobs() -> None:
                         seed_rule="lloyd",
                         reseed=True,
                         split_merge=sm,
-                        split_merge_every=sme,
+                        split_merge_every_rows=sme,
                     ),
                     P,
                 )
@@ -632,8 +637,8 @@ def exp_knobs() -> None:
                 f"{lbl:>9s} {sme:>8d}   {np.mean(aris):.3f} {np.mean(trks):6.2f}"
                 f" {miss:4d} {np.mean(moves):7.1f}"
             )
-    print("--- update_every (data-parallel form): kmeans lloyd 500 + reseed, ARI per segment")
-    table_header("update_every", N)
+    print("--- update_every_rows (data-parallel form): kmeans lloyd 500 + reseed, ARI per segment")
+    table_header("update_every_rows", N)
     for ue in (1, 10, 100, 1000):
         m = EWKMeans(
             KMeansCfg(
@@ -642,12 +647,12 @@ def exp_knobs() -> None:
                 warm_rows=500,
                 seed_rule="lloyd",
                 reseed=True,
-                update_every=ue,
+                update_every_rows=ue,
             ),
             P,
         )
         out = run(m, data)
-        report(f"update_every {ue}", out["cluster"], data, m)
+        report(f"update_every_rows {ue}", out["cluster"], data, m)
     print("--- DP-means radius (in sigma): clusters found (true k = 5), ARI last quarter")
     for r in (1.5, 2.0, 3.0, 4.0, 6.0):
         m = DPMeans(DPCfg(radius=r * SIGMA, max_clusters=50, half_life=3000.0, prune_weight=2.0), P)
@@ -856,7 +861,7 @@ def hard_models(k: int, p: int) -> dict:
                 standardize=True,
                 reseed=True,
                 split_merge=0.5,
-                split_merge_every=100,
+                split_merge_every_rows=100,
             ),
             p,
         ),

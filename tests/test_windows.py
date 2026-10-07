@@ -750,9 +750,9 @@ def mixed() -> dict[str, pl.Expr]:
 def test_chunking_changes_nothing(rows: int) -> None:
     df = ticks(800, 17, groups=3)
     one = po.stream.with_windows(
-        df, **mixed(), clock="t", gap_cap=20.0, group="g", chunk_rows=10_000
+        df, **mixed(), clock="t", gap_cap=20.0, group="g", chunk_size=10_000
     )
-    out = po.stream.with_windows(df, **mixed(), clock="t", gap_cap=20.0, group="g", chunk_rows=rows)
+    out = po.stream.with_windows(df, **mixed(), clock="t", gap_cap=20.0, group="g", chunk_size=rows)
     assert out.equals(one)
 
 
@@ -857,7 +857,7 @@ def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
         / po.ewm_sum(po.increment("cum_q"), half_life="10s"),
         clock="ts",
         gap_cap="5m",
-        chunk_rows=50_000,
+        chunk_size=50_000,
     )
     assert out.height == df.height
     assert out["fwd_vwap"].drop_nulls().len() > 150_000
@@ -875,7 +875,7 @@ def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
 def test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size(tmp_path: Any) -> None:
     """R1-B1: the increments' state advanced over the whole chunk where a
     slice stopped the core short, so a state saved under ``head`` depended on
-    ``chunk_rows``."""
+    ``chunk_size``."""
     df = pl.DataFrame(
         {"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": [10.0, 11.0, 13.0, 16.0, 20.0, 25.0]}
     )
@@ -883,7 +883,7 @@ def test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size(tmp_path: A
     for rows in (1, 10):
         state = tmp_path / f"s{rows}.state"
         df.lazy().online.with_windows(
-            dc=po.increment("c"), clock="t", gap_cap=100.0, chunk_rows=rows, save_state=state
+            dc=po.increment("c"), clock="t", gap_cap=100.0, chunk_size=rows, save_state=state
         ).head(2).collect()
         rest = (
             df.slice(2)
@@ -1251,11 +1251,11 @@ def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any, ro
     (consumed, never returned) and rows held from an earlier run (returned,
     not this input's) included, whatever the chunk size (R5-C1: a loaded
     skip not yet applied when a resumed run satisfied its slice from held
-    rows was left out of the count, so the chain broke at ``chunk_rows=1``)."""
+    rows was left out of the count, so the chain broke at ``chunk_size=1``)."""
     df = ticks(60, 19, groups=2)
     dropping = {"e": po.rewm_mean("x", half_life=2.0, window_size=4.0, partial="drop")}
     for exprs, cap in [(mixed(), 20.0), (mixed() | dropping, 4.0)]:
-        kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g", "chunk_rows": rows}
+        kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g", "chunk_size": rows}
         one = po.stream.with_windows(df, **exprs, **kw)
         assert one.height > 20, "the dropping leg keeps enough rows to slice"
         for at in (1, 2, 17):

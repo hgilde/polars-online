@@ -386,9 +386,9 @@ class KMeansRef:
     warm_rows: int = 500
     seed_rule: str = "lloyd"
     seed: int = 0
-    update_every: int = 1
+    update_every_rows: int = 1
     split_merge: float = 0.5
-    split_merge_every: int = 100
+    split_merge_every_rows: int = 100
     dead_frac: float = 0.05
     standardize: bool = True
     scale_floor: float = 0.1
@@ -463,7 +463,7 @@ class KMeansRef:
         self.absorb(j, x, w, d2, far)
         self.since += 1
         self.since_sm += 1
-        if self.since >= self.update_every:
+        if self.since >= self.update_every_rows:
             self.checkpoint()
 
     def absorb(self, j: int, x: list[float], w: float, d2: float, far: bool) -> None:
@@ -483,7 +483,7 @@ class KMeansRef:
         self.since = 0
         if self.split_merge > 0.0:
             self.refresh_far_cut()
-            if self.since_sm >= self.split_merge_every:
+            if self.since_sm >= self.split_merge_every_rows:
                 self.since_sm = 0
                 self.winsorize_radii()
                 self.refresh_far_cut()
@@ -685,7 +685,7 @@ def kmeans_ref(
     **params: object,
 ) -> dict[str, list]:
     """The bank's `kmeans` output over `rows` (one list per row), as lists
-    with ``None`` for null: ``cluster`` (ints), ``dist``, ``dist2``, ``weight_sum``
+    with ``None`` for null: ``cluster`` (ints), ``dist``, ``dist_second``, ``weight_sum``
     and ``coef`` (the flat centres after the last accepted row, as
     ``coef_every=0`` reports on the final row -- ``None`` before seeding).
 
@@ -696,7 +696,7 @@ def kmeans_ref(
     """
     p = len(rows[0])
     model = KMeansRef(p=p, k=k, **params)  # type: ignore[arg-type]
-    out: dict[str, list] = {"cluster": [], "dist": [], "dist2": [], "weight_sum": []}
+    out: dict[str, list] = {"cluster": [], "dist": [], "dist_second": [], "weight_sum": []}
     pending = 0.0
     for i, row in enumerate(rows):
         w = 1.0 if weight is None else weight[i]
@@ -716,7 +716,7 @@ def kmeans_ref(
         pending = 0.0
         out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
         out["dist"].append(None if math.isnan(pred[1]) else pred[1])
-        out["dist2"].append(None if math.isnan(pred[2]) else pred[2])
+        out["dist_second"].append(None if math.isnan(pred[2]) else pred[2])
         out["weight_sum"].append(weight_sum)
     coef = model.coefficients()
     out["coef"] = [None if coef is None else [v for c in coef for v in c]]

@@ -11,7 +11,7 @@
 //! - [`FtrlLoss::Squared`] for continuous targets: `p = z·b` and the same
 //!   `g = (p − y)·z`. This is the sparse linear regression river gets from
 //!   `optim.FTRLProximal` with a squared loss — cheap (no solves) and L1-capable
-//!   where `ew_ridge` is not.
+//!   where `ewridge` is not.
 //!
 //! Per row (`z` includes the intercept when configured, `p` the predicted
 //! probability, `g_i = (p - y) * z_i * w` the gradient):

@@ -156,8 +156,8 @@ pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
 pub use window::{
-    At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated,
-    truncated_mean, truncated_scalar,
+    At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowClosed, WindowShadow,
+    truncated, truncated_mean, truncated_scalar,
 };
 
 /// Version of the serialized model-state layout.
@@ -211,7 +211,7 @@ pub use window::{
 ///   that has it ignores the record and folds the replay's prediction,
 ///   which is what it always did.
 /// - 7: three models moved to centred or clock-aware state (the code review
-///   of 2026-09-12). `ew_ridge` keeps each target's cross-moments centred --
+///   of 2026-09-12). `ewridge` keeps each target's cross-moments centred --
 ///   the target's mean, `E[(z − m_z)(y − ȳ)]` and the offset of `z`'s mean
 ///   over the target's rows from its mean over all of them -- where it kept
 ///   `E[z·y]` raw: in the live accumulators, the `session_shrink` twin and a
@@ -222,11 +222,11 @@ pub use window::{
 ///   `RunWire`), which kept the numbers the file carried and not the bits,
 ///   and `holt`'s clock started at zero, the one thing a schema-6 file could
 ///   not say -- until 8 raised the minimum and the conversions went.
-/// - 8: `ew_ridge` and `lasso` gained `target_gaps` (docs/PLAN.md task 81).
+/// - 8: `ewridge` and `lasso` gained `target_gaps` (docs/PLAN.md task 81).
 ///   Their accumulators hold one Gram per set of targets present on the
 ///   same rows and the Gram each target reads, the weight over every row
 ///   moved into the cross-moments, and `lasso` keeps its cross-moments
-///   centred, as `ew_ridge` does since 7 (the review's N2). A closed row's
+///   centred, as `ewridge` does since 7 (the review's N2). A closed row's
 ///   Gram names its targets and carries their column means. No loader for
 ///   7: see [`MIN_SCHEMA_VERSION`].
 /// - 9: `holt` keeps the weight its level and its trend have gathered per
@@ -249,7 +249,7 @@ pub use window::{
 /// - 11: `robust` keeps each target's cross-moments centred, `c_j = E[(z −
 ///   m_j)(y − ȳ_j)]` beside `ȳ_j`, where it kept them raw, `E[z·y]`, and
 ///   solved the raw normal equations or centred them by subtraction -- the
-///   `level²·ε` loss `ew_ridge` and `lasso` were cured of in 7 and 8, left
+///   `level²·ε` loss `ewridge` and `lasso` were cured of in 7 and 8, left
 ///   behind here (the review of 2026-09-18, S2). No loader for 10: see
 ///   [`MIN_SCHEMA_VERSION`].
 /// - 12: the clock state drops the three fields the two 0.8.x disorder rules
@@ -258,7 +258,7 @@ pub use window::{
 ///   `gap_cap`, needs no state (2026-09-20). A field removed from a
 ///   positional layout is a layout change; no loader for 11.
 /// - 13: the readiness statistics (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21).
-///   `ew_ridge` keeps what its last solve left for them -- the effective
+///   `ewridge` keeps what its last solve left for them -- the effective
 ///   degrees of freedom and each coefficient's data share per slot, and,
 ///   when the per-row leverage is asked for, the systems it is read
 ///   against -- and whether it keeps them, ahead of its window; the stream
@@ -296,7 +296,7 @@ pub use window::{
 ///   zero, the runs start at the next learned row, a mean starts as the
 ///   double it was saved as, the references start at the next five rows,
 ///   and `scale_floor` is 0, the metric the state had.
-/// - 17: the cross accumulator behind `ew_ridge` and `lasso` keeps each
+/// - 17: the cross accumulator behind `ewridge` and `lasso` keeps each
 ///   target's own feature mean as a pair of its own, where it kept the
 ///   offset from the all-row mean and reconstructed the mean from two
 ///   level-sized numbers (review 2026-09-26, G3: a target absent on a row
@@ -467,7 +467,7 @@ pub use window::{
 ///   five from before 37 does not decode, compactly or named; the bank
 ///   refuses a file older than 37 by number, and pre-1.0 no loader is
 ///   written. Every other model's state loads as it did at 36.
-/// - 38 (2026-10-06, task 186): a system `ew_ridge` keeps for its readiness
+/// - 38 (2026-10-06, task 186): a system `ewridge` keeps for its readiness
 ///   statistics carries no Gram index, a field written at every solve and
 ///   read nowhere (review round 4, CA11), so a 37 state holding one, kept
 ///   under `emit_error_inflation`, is another shape. A closed `rcov` row a
@@ -490,14 +490,26 @@ pub use window::{
 ///   residual variance, the scale their `huber_delta` and `eps` are in
 ///   (U1); `pa` keeps `sgd`'s scaler under `standardize` (U2); `bocpd`
 ///   keeps the rows its warm-up holds and the prior they set (U4);
-///   `ew_ridge` and `robust` keep each target's own `min_weight` for its own
+///   `ewridge` and `robust` keep each target's own `min_weight` for its own
 ///   first solve (S9b); `rls`'s cfg names its prior strength `delta` (N11);
 ///   and `sgd`'s cfg carries `strict_binary` (S4). A state of those models
 ///   from before 40 does not decode, and its `huber_delta` and `eps` meant
 ///   other numbers; the bank refuses a file older than 40 by number, and
 ///   pre-1.0 no loader is written. Every other model's state loads as it
 ///   did at 38.
-pub const SCHEMA_VERSION: u32 = 40;
+/// - 41 (2026-10-07, task 196): a window's ring keeps its edge, Polars'
+///   `closed` (`"right"`, the default, drops a row exactly one window old,
+///   where every ring before kept it), so a windowed `ewridge`, `lasso`,
+///   `ew_cov`, `ew_class` or `marginal` state from before 41 does not
+///   decode. `kmeans` keeps `update_every_rows` and `split_merge_every_rows`
+///   and `corrchange` `permute_every_rows` under those names, and
+///   `corrchange` counts the reports since its permutation draw from one,
+///   so the value is redrawn every `permute_every_rows` reports, not one
+///   more. The bank refuses a file older than 41 by number -- its specs say
+///   `type = "ewridge"`, carry `closed`, and no longer `holt`'s
+///   `level_half_life` -- and pre-1.0 no loader is written. Every other
+///   model's state loads as it did at 40.
+pub const SCHEMA_VERSION: u32 = 41;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -522,11 +534,14 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///   (`robust`) had moved some of them before;
 /// - a windowed `ew_class` or `marginal` from before 32, compactly or
 ///   named: a window's ring keys its snapshots by stamp since 32, and
-///   spaces them on the clock since 30.
+///   spaces them on the clock since 30;
+/// - a windowed `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`, a
+///   `kmeans` and a `corrchange` from before 41: a ring keeps its edge
+///   since 41, and the two others name their row counts `_rows`.
 ///
 /// Every other model's state from 14 on decodes and loads. A bank file is
 /// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 40). How the number came
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 41). How the number came
 /// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
@@ -534,7 +549,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///
 /// **13 since 2026-09-21** (task 87): a schema-12 state holds none of the
 /// readiness statistics -- the decay time each instance has seen, and what
-/// `ew_ridge`'s last solve left for them -- and pre-1.0 no loader is written
+/// `ewridge`'s last solve left for them -- and pre-1.0 no loader is written
 /// for one.
 ///
 /// **12 since 2026-09-20**, on the same rule as the entries below: a
@@ -554,7 +569,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// (docs/PLAN.md task 81): "Do not worry about state saved before the next
 /// version release, we are pre 1.0 and we can change things now". A
 /// schema-6 or 7 file is refused by its version with the message
-/// [`check_schema`] gives; the conversions 7 made for 6 -- `ew_ridge`'s raw
+/// [`check_schema`] gives; the conversions 7 made for 6 -- `ewridge`'s raw
 /// cross-moments, `bocpd`'s run sums -- went with their frozen fixtures
 /// (`state_schema6.rs`, `state_schema6_ridge.rs`). The same exception to hard
 /// rule 5 as the one below, for the same reason: pre-1.0, the layout is

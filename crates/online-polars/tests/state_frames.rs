@@ -18,7 +18,7 @@ fn spec(json: &str) -> Spec {
 /// `"key": value` pairs.
 fn keyed_spec(extra: &str) -> Spec {
     spec(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge", "max_rows_between_solves": 1}},
+        r#"{{"name": "m", "model": {{"type": "ewridge", "max_rows_between_solves": 1}},
             "targets": ["y"], "features": ["x"], "half_life": 10.0, "min_weight": 1.0,
             "group": "g"{extra}}}"#
     ))
@@ -111,7 +111,7 @@ fn an_arrow_chunk_keeps_the_form_its_key_array_has() {
 #[test]
 fn a_session_column_of_another_form_is_refused_by_name() {
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"],
             "half_life": 10.0, "session": "g", "session_gap": "reset"}"#,
     );
     let mut bank = Bank::new(vec![s]).unwrap();
@@ -151,7 +151,7 @@ fn wide(n: usize) -> DataFrame {
 
 fn ridge() -> Spec {
     spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1},
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1},
             "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
             "min_weight": 5.0}"#,
     )
@@ -217,7 +217,7 @@ fn the_clock_range_is_the_clock_columns_own_to_the_nanosecond() {
     .hstack(&[clock.into()])
     .unwrap();
     let s = spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"],
             "group": "g", "group_close": "monotone", "clock": "t", "half_life": "1d",
             "gap_cap": "10d"}"#,
     );

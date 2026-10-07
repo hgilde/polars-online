@@ -73,11 +73,11 @@ def stream(
     return df
 
 
-def native(df: pl.DataFrame, s: dict[str, Any], chunk_rows: int | None = None) -> pl.DataFrame:
+def native(df: pl.DataFrame, s: dict[str, Any], chunk_size: int | None = None) -> pl.DataFrame:
     bank = po.ModelBank([s])
-    if chunk_rows is None:
+    if chunk_size is None:
         return bank.fit_predict(df)
-    return pl.concat(bank.fit_predict_batches(df, chunk_rows=chunk_rows))
+    return pl.concat(bank.fit_predict_batches(df, chunk_size=chunk_size))
 
 
 def column_form(df: pl.DataFrame, s: dict[str, Any], expr: pl.Expr) -> pl.DataFrame:
@@ -102,10 +102,10 @@ def test_a_formula_target_is_the_column_form_fed_back() -> None:
     df = stream(600, 1, gap_at=300)
     want = column_form(df, spec(fwd()), fwd())
     assert sum(p is not None for p in field(want, "pred_fwd")) > 300
-    for chunk_rows in [None, 1, 97]:
-        got = native(df, spec(fwd()), chunk_rows)
-        assert field(got, "pred_fwd") == field(want, "pred_fwd"), chunk_rows
-        assert field(got, "learned_clock") == field(want, "learned_clock"), chunk_rows
+    for chunk_size in [None, 1, 97]:
+        got = native(df, spec(fwd()), chunk_size)
+        assert field(got, "pred_fwd") == field(want, "pred_fwd"), chunk_size
+        assert field(got, "learned_clock") == field(want, "learned_clock"), chunk_size
         assert all(r is None for r in field(got, "resid_fwd")), "not known at the row"
         assert field(got, "weight_sum") == field(want, "weight_sum")
 
@@ -146,7 +146,7 @@ def test_three_vwaps_on_interleaved_trades_and_quotes() -> None:
     plain = dict(s)
     plain["targets"] = ["all", "buy", "sell"]
     want = po.ModelBank([plain]).fit_predict(with_cols)
-    got = native(df, s, chunk_rows=50)
+    got = native(df, s, chunk_size=50)
     for name in ["all", "buy", "sell"]:
         assert field(got, f"pred_{name}") == field(want, f"pred_{name}"), name
         assert sum(p is not None for p in field(got, f"pred_{name}")) > 400
@@ -228,10 +228,10 @@ def test_parity_through_every_clock_event(event: str, partial: str | None) -> No
     want = column_form(df, s, expr)
     # One row a chunk is the leg that caught resolutions made at skipped
     # rows being lost (the plan's task 104, *Built*).
-    for chunk_rows in [None, 7, 1]:
-        got = native(df, s, chunk_rows)
-        assert field(got, "pred_fwd") == field(want, "pred_fwd"), (event, chunk_rows)
-        assert field(got, "learned_clock") == field(want, "learned_clock"), (event, chunk_rows)
+    for chunk_size in [None, 7, 1]:
+        got = native(df, s, chunk_size)
+        assert field(got, "pred_fwd") == field(want, "pred_fwd"), (event, chunk_size)
+        assert field(got, "learned_clock") == field(want, "learned_clock"), (event, chunk_size)
     learned = [c for c in field(want, "learned_clock") if c is not None]
     assert learned, event
     # The end of the input is inside a window: its rows are never learned.
@@ -311,15 +311,15 @@ def test_fit_predict_refuses_an_embargo_below_the_window_and_fit_takes_it() -> N
         with pytest.raises(ValueError, match="fit_predict needs an embargo of at least 10"):
             bank.fit_predict(df)
         with pytest.raises(ValueError, match="takes any embargo"):
-            list(bank.fit_predict_batches(df, chunk_rows=10))
+            list(bank.fit_predict_batches(df, chunk_size=10))
         assert bank.rows_fed() == 0
     later = df.slice(250, 50)
     covered = po.ModelBank([spec(fwd(), embargo=W)])
-    covered.fit(df.slice(0, 250), chunk_rows=40)
+    covered.fit(df.slice(0, 250), chunk_size=40)
     want = covered.predict(later)
     for short in [None, 4.0]:
         bank = po.ModelBank([spec(fwd(), embargo=short)])
-        bank.fit(df.slice(0, 250), chunk_rows=40)
+        bank.fit(df.slice(0, 250), chunk_size=40)
         got = bank.predict(later)
         assert field(got, "pred_fwd") == field(want, "pred_fwd"), short
         # The flag is the run's: fit_predict refuses the same bank after.
@@ -343,9 +343,9 @@ def test_groups_keep_their_own_clocks_and_cores() -> None:
         own[i] = clocks[g]
     df = df.with_columns(t=pl.Series(own))
     s = spec(fwd(), group="g")
-    got = native(df, s, chunk_rows=50)
+    got = native(df, s, chunk_size=50)
     for g in ["g0", "g1"]:
-        alone = native(df.filter(pl.col("g") == g), s, chunk_rows=30)
+        alone = native(df.filter(pl.col("g") == g), s, chunk_size=30)
         picked = got.filter(pl.col("g") == g)
         assert field(picked, "pred_fwd") == field(alone, "pred_fwd"), g
         assert sum(p is not None for p in field(alone, "pred_fwd")) > 100
@@ -436,10 +436,10 @@ def test_a_reset_keeps_a_target_window_whose_far_edge_is_the_last_row_before_it_
     # The rows whose windows reach past t = 30 are discarded.
     assert col[21:31].is_null().all()
     want = column_form(df, s, fwd())
-    for chunk_rows in [None, 7, 1]:
-        got = native(df, s, chunk_rows)
-        assert field(got, "pred_fwd") == field(want, "pred_fwd"), chunk_rows
-        assert field(got, "learned_clock") == field(want, "learned_clock"), chunk_rows
+    for chunk_size in [None, 7, 1]:
+        got = native(df, s, chunk_size)
+        assert field(got, "pred_fwd") == field(want, "pred_fwd"), chunk_size
+        assert field(got, "learned_clock") == field(want, "learned_clock"), chunk_size
     learned = [c for c in field(want, "learned_clock") if c is not None]
     assert 20.0 not in learned, "dropped at the reset with every row still waiting"
     assert max(c for c in learned if c == int(c)) < 18.0
@@ -560,7 +560,7 @@ def test_the_plan_keeps_the_formulas_columns() -> None:
     target; the bank's output is the same."""
     df = stream(300, 13)
     want = native(df, spec(fwd()))
-    got = df.lazy().online.fit_predict([spec(fwd())], chunk_rows=50).select("t", "m").collect()
+    got = df.lazy().online.fit_predict([spec(fwd())], chunk_size=50).select("t", "m").collect()
     assert field(got, "pred_fwd") == field(want, "pred_fwd")
     assert got.columns == ["t", "m"]
 
@@ -632,7 +632,7 @@ def test_a_formula_target_beside_a_plain_one() -> None:
         embargo=W + 2.5,
         emit_clocks=True,
     )
-    got = native(df, s, chunk_rows=37)
+    got = native(df, s, chunk_size=37)
     plain = dict(s)
     plain["targets"] = ["y", "fwd"]
     want = po.ModelBank([plain]).fit_predict(po.stream.with_windows(df, fwd(), like=s))
@@ -683,12 +683,12 @@ def test_rows_learned_counts_a_formula_row_once_its_target_resolved() -> None:
     df = stream(240, 33, gap_at=120)
     s = spec(fwd(partial="null"))
     counts = []
-    for chunk_rows in (None, 7):
+    for chunk_size in (None, 7):
         bank = po.ModelBank([s])
-        if chunk_rows is None:
+        if chunk_size is None:
             bank.fit_predict(df)
         else:
-            list(bank.fit_predict_batches(df, chunk_rows=chunk_rows))
+            list(bank.fit_predict_batches(df, chunk_size=chunk_size))
         counts.append(bank.summary()["rows_learned"][0])
     assert counts[0] == counts[1]
     # The column form says which rows had a target: those the spec accepts
@@ -934,21 +934,22 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     clock, 36 since task 179, for ``bocpd``'s hazard on the clock (35 still
     loaded), 37 since task 180, for the solve, component and checkpoint
     cadences on the exact clock (36 refused), 38 since task 186, for
-    ``ew_ridge``'s kept systems and ``rcov``'s ``psd_repaired`` (37
+    ``ewridge``'s kept systems and ``rcov``'s ``psd_repaired`` (37
     refused), 39 since task 194, for the stream's and the bank's state
-    (38 refused), and 40 since task 195, for the residual scales, ``pa``'s
+    (38 refused), 40 since task 195, for the residual scales, ``pa``'s
     scaler, ``bocpd``'s warm-up, the per-target thresholds and ``rls``'s
-    ``delta`` (39 refused), the windows state unchanged each time."""
+    ``delta`` (39 refused), and 41 since task 196, for the models' window
+    edge and its names (40 refused), the windows state unchanged each time."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 40, state[i]
-    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39):
+    assert state[i] == 41, state[i]
+    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 40"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 41"
         ):
             po.ModelBank.load_bytes(old)
 

@@ -31,7 +31,7 @@ pub struct FieldMeta {
     pub penalty: Option<f64>,
     /// Quantile level (`abs_resid_q*` fields).
     pub quantile: Option<f64>,
-    /// Lag, in learned rows, of an `ew_cov` `lagcorr_*` field
+    /// Lag, in learned rows, of an `ew_cov` `lag_corr_*` field
     /// (docs/ENHANCEMENTS.md E56); `None` for every other field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lag: Option<usize>,
@@ -508,7 +508,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 "cov" => online_core::EwCovStat::Cov,
                 "partial_corr" => online_core::EwCovStat::PartialCorr,
                 "mahal" => online_core::EwCovStat::Mahal,
-                "lagcorr" => online_core::EwCovStat::LagCorr,
+                "lag_corr" => online_core::EwCovStat::LagCorr,
                 _ => online_core::EwCovStat::Corr,
             })
             .collect();
@@ -620,7 +620,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Stat(mi * n_slots + 1)),
             ));
             fields.push(over(
-                FieldMeta::new(format!("dist2{suffix}"), "dist2")
+                FieldMeta::new(format!("dist_second{suffix}"), "dist_second")
                     .decay(d)
                     .src(Source::Stat(mi * n_slots + 2)),
             ));

@@ -1567,6 +1567,9 @@ mod tests {
                     max_rows_between_snapshots: None,
                 })
                 .unwrap();
+                // The inclusive edge, which `inside` below is gathered by:
+                // what this tests is the guard, on either edge.
+                m.set_window_closed(crate::WindowClosed::Both);
                 let n = 300 + held;
                 let mut s = 2u64;
                 let lam = crate::Decay::Halflife(h).factor(1.0);

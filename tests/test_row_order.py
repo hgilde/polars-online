@@ -68,7 +68,7 @@ def test_no_decay_is_least_squares_in_any_row_order(decay):
             np.testing.assert_allclose(got, expected[g], atol=1e-10, err_msg=f"{order}, group {g}")
         # The plan, chunked, is the same bank.
         streamed = (
-            frame.lazy().online.fit_predict([spec], chunk_rows=97).online.unnest([spec]).collect()
+            frame.lazy().online.fit_predict([spec], chunk_size=97).online.unnest([spec]).collect()
         )
         last = streamed.filter(pl.col("g") == 0).tail(1)
         np.testing.assert_allclose(

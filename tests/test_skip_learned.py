@@ -176,9 +176,11 @@ def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
 
 
 def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
-    """The command line has no `skip_learned`, so the refusal names what it
-    can do instead: filter its input to the rows after the state. The
-    message named the Python method alone until task 154."""
+    """The refusal names each surface's way out: `ModelBank.skip_learned` in
+    Python and `--skip-learned` on the command line (docs/PLAN.md task 196,
+    N26), where it said to filter the input by hand, the command line having
+    none. The message named the Python method alone until task 154. And the
+    flag keeps what the method keeps: the same rows, the same numbers."""
     from conftest import run_online
 
     df = frame()
@@ -200,9 +202,25 @@ def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
         specs,
         input=tmp_path / "rerun.parquet",
         output=tmp_path / "rerun-out.parquet",
-        args=["--resume", str(state)],
+        args=["--load-state", str(state)],
         check=False,
     )
     assert res.returncode != 0 and "goes backwards" in res.stderr, res.stderr
     assert "skip_learned" in res.stderr
-    assert "filtering the command line's input" in res.stderr, res.stderr
+    assert "--skip-learned on the command line" in res.stderr, res.stderr
+    run_online(
+        online_cli,
+        tmp_path,
+        specs,
+        input=tmp_path / "rerun.parquet",
+        output=tmp_path / "skipped-out.parquet",
+        args=["--load-state", str(state), "--skip-learned"],
+    )
+    got = pl.read_parquet(tmp_path / "skipped-out.parquet")
+    bank = po.ModelBank.load(state)
+    rerun = pl.read_parquet(tmp_path / "rerun.parquet")
+    want = bank.fit_predict(bank.skip_learned(rerun))
+    assert got.height == want.height == 150
+    name = specs[0]["name"]
+    for f in ("pred_y", "weight_sum"):
+        assert got[name].struct.field(f).equals(want[name].struct.field(f)), f

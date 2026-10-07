@@ -214,7 +214,7 @@ def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
         assert np.allclose(wls(tt + 1, tt), out["coef"][tt].to_list(), atol=1e-9)
     assert np.allclose(wls(n, n - 1), bank.coef("ols")["coef"].to_list(), atol=1e-9)
     # The plan streams the same numbers in bounded memory.
-    plan = df.lazy().online.fit_predict([spec], chunk_rows=32).collect()["ols"].struct.unnest()
+    plan = df.lazy().online.fit_predict([spec], chunk_size=32).collect()["ols"].struct.unnest()
     assert plan["pred_y"].equals(out["pred_y"])
 
 

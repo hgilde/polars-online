@@ -241,7 +241,7 @@ below, and in the models ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
-``revert_half_life``, ``level_half_life`` and ``trend_half_life``.
+``revert_half_life`` and ``trend_half_life``.
 
 One parameter takes either form, with a meaning for each: ``bocpd``'s
 ``hazard``. A number, finite and above 1, is the expected rows between
@@ -499,8 +499,8 @@ It raises ``ValueError``, naming the spec, the parameter and the value, for a
 value the model refuses:
 
 - a count below 0, or past what the Rust side holds it in (``2^32 - 1`` for
-  the ``max_rows_between_*`` caps, ``max_iter``, ``update_every`` and
-  ``split_merge_every``; ``2^64 - 1`` for the other counts), or ``NaN``
+  the ``max_rows_between_*`` caps, ``max_iter``, ``update_every_rows`` and
+  ``split_merge_every_rows``; ``2^64 - 1`` for the other counts), or ``NaN``
   anywhere;
 - a count that sizes memory before the first row past its ceiling: a lag
   or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer

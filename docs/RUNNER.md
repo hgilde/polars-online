@@ -43,13 +43,13 @@ features = ["x0"]
 half_life = 500.0            # in rows, since the spec names no clock column
 min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 ```
 
 A dry run checks the configuration and prints the output schema without
 feeding the bank a row. It reads the input's schema as the run's scan
 would, from a parquet footer or a CSV's first rows. It opens the bank as
-the run would, loading `--resume`'s state, and runs it on no rows of that
+the run would, loading `--load-state`'s state, and runs it on no rows of that
 schema. So it refuses what the run would refuse at its first step: a state
 that is not there or was saved from other specs, a column a spec reads that
 the input or `keep_columns` lacks, and a window target's embargo short of
@@ -64,12 +64,12 @@ online --config bank.toml
 
 ### Saving, resuming and scoring
 
-**`--save-state` saves the bank when the run ends, and `--resume` starts a
+**`--save-state` saves the bank when the run ends, and `--load-state` starts a
 run from a saved one.** One file can serve as both, so a run resumes from
 the state a previous run left and saves over it:
 
 ```sh
-online --config bank.toml --resume run.state --save-state run.state
+online --config bank.toml --load-state run.state --save-state run.state
 ```
 
 The state is saved last, after the output is committed, so a run that
@@ -79,16 +79,23 @@ file is the one a query's `load_state` and `save_state` read and write on
 the same whichever wrote them
 ([Saving, loading and serving](../README.md#saving-loading-and-serving)).
 
-**Input that overlaps the state is refused, with a clock column.** A
-rerun steps every group's clock back, and the run stops at the first row
-it would learn twice. The command line has no `skip_learned`, so filter
-its input to the rows after the state before `--resume`. With no clock
-column there is nothing to compare, and an overlap is learned twice.
+**Input that overlaps the state is refused, with a clock column, unless
+`--skip-learned` drops the overlap.** A rerun steps every group's clock
+back, and the run stops at the first row it would learn twice.
+`--skip-learned` (the TOML key `skip_learned`) keeps, in every spec that
+reads a clock, a row whose clock is after its group's last learned one, a
+row of a group the state has not seen, and a row with a null clock, as
+Python's `ModelBank.skip_learned` does. A row at its group's last clock
+counts as learned. It needs `--load-state`, and a spec that reads a clock:
+the configuration above names none, so it refuses `--skip-learned`, since
+with no clock there is nothing to compare and an overlap is learned twice.
+With a clock, `--load-state run.state --skip-learned --save-state
+run.state` reruns a day that overlaps the state and learns each row once.
 
 **`--predict` scores against the resumed state and learns nothing:**
 
 ```sh
-online --config bank.toml --resume run.state --predict --input today.parquet
+online --config bank.toml --load-state run.state --predict --input today.parquet
 ```
 
 It drops the configuration's `save_state` and `closed_groups`, so one TOML
@@ -169,11 +176,12 @@ overrides it, though `--predict` can only switch scoring on.
 | `--no-output` | `output` left out | write no per-row output |
 | `--input-format` | `input_format` | how to read the input: `parquet`, `ipc`, `csv` or `ndjson`. The extension decides when it is not given |
 | `--output-format` | `output_format` | how to write the output, from the same four |
-| `--chunk-rows` | `chunk_rows` | rows per chunk; 100,000 by default |
-| `--resume` | `load_state` | start from a saved state |
+| `--chunk-size` | `chunk_size` | rows per chunk; 100,000 by default |
+| `--load-state` | `load_state` | start from a saved state |
+| `--skip-learned` | `skip_learned` | drop the input's rows the loaded state has learned; needs `--load-state` or `load_state`, and a spec that reads a clock |
 | `--save-state` | `save_state` | save the state when the run ends, after the output is committed |
 | `--closed-groups` | `closed_groups` | write the groups that closed to a sidecar file; needs a spec with `group_close` |
-| `--predict` | `predict` | score against the resumed state and learn nothing; needs `--resume` or `load_state`, drops the TOML's `save_state`, and refuses `--save-state` |
+| `--predict` | `predict` | score against the resumed state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state`, and refuses `--save-state` |
 | `--dry-run` | | check the configuration, the input's schema and the bank as the run would, and print the output schema, feeding the bank no row |
 | `-q`, `--quiet` | | suppress the per-chunk progress |
 | | `keep_columns` | the input columns to keep; all of them when it is empty |
@@ -236,7 +244,7 @@ gap_cap = 300.0
 half_life = 600.0
 embargo = 60.0           # at least the target's window_size, for a run that writes output
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 ```
 
 The formula is Polars' expression written as a tree: an operator, its
@@ -259,7 +267,7 @@ half_life = "10m"      # a row's weight halves every ten minutes
 gap_cap = "5m"
 embargo = "30s"
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 ```
 
 TOML has no duration type, so the text is the whole spelling. It is the
@@ -306,8 +314,8 @@ Polars' own pool and how the two interact.
 
 ### Chunk size
 
-`chunk_rows` is a keyword on the command line (`--chunk-rows`, or
-`chunk_rows` in the TOML). It has the same meaning and the same default,
+`chunk_size` is a keyword on the command line (`--chunk-size`, or
+`chunk_size` in the TOML). It has the same meaning and the same default,
 100,000, as on `lf.online.fit_predict` and `ModelBank.fit_predict_batches`.
 It never changes the numbers: one chunk or a thousand gives the same
 output, and it only trades memory for overhead. Only which rows carry

@@ -106,7 +106,7 @@ pub struct LassoCfg {
     pub window_every: Option<f64>,
     /// At most this many rows between the window's snapshots, counted on
     /// every row the model is stepped with, rows of weight zero included;
-    /// `0` or `1` is every row.
+    /// `1` is every row, and `0` is refused (docs/PLAN.md task 196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rows_between_snapshots: Option<usize>,
 }
@@ -787,6 +787,12 @@ impl OnlineModel for Lasso {
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
+        }
+    }
+
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
         }
     }
 
@@ -1635,6 +1641,19 @@ mod tests {
     /// aged by the model's half-life where `select_half_life` differs.
     #[test]
     fn penalty_selected_under_a_window_is_the_argmin_inside_it() {
+        for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+            penalty_selected_under_a_window_is_the_argmin_inside(closed);
+        }
+    }
+
+    /// The test above under one edge (docs/PLAN.md task 196, N17): a row
+    /// less than `window` old is inside under `Right`, and one exactly that
+    /// old too under `Both`. The clocks are sums of quarters, exact.
+    fn penalty_selected_under_a_window_is_the_argmin_inside(closed: crate::WindowClosed) {
+        let inside = |age: f64, window: f64| match closed {
+            crate::WindowClosed::Right => age < window,
+            crate::WindowClosed::Both => age <= window,
+        };
         let path = vec![0.4, 0.1, 0.02, 0.0];
         let np = path.len();
         for (select, window) in [(Some(6.0), 12.0), (None, 12.0), (Some(40.0), 7.5)] {
@@ -1648,6 +1667,7 @@ mod tests {
             c.min_weight = 2.0;
             let sel_h = select.unwrap_or(20.0);
             let mut m = Lasso::new(c).unwrap();
+            m.set_window_closed(closed);
             let mut s = 11u64;
             let (mut t, mut t_prev) = (0.0, 0.0);
             // Per target, (clock, weight, squared error per path point) of
@@ -1683,7 +1703,7 @@ mod tests {
                     let mut sums = vec![0.0; np];
                     let mut any = false;
                     for (tj, wj, e2) in rows {
-                        if *tj >= t_prev - window {
+                        if inside(t_prev - tj, window) {
                             let om = wj * (-((t_prev - tj) / sel_h)).exp2();
                             for (acc, e) in sums.iter_mut().zip(e2) {
                                 *acc += om * e;
@@ -1699,7 +1719,7 @@ mod tests {
                 }
                 let own = on.iter().map(|rows| {
                     rows.iter()
-                        .filter(|(tr, _)| *tr >= t_prev - window)
+                        .filter(|(tr, _)| inside(t_prev - tr, window))
                         .map(|(tr, wr)| wr * (-((t_prev - tr) / 20.0)).exp2())
                         .sum::<f64>()
                 });
@@ -1712,7 +1732,7 @@ mod tests {
                     if let Some(lam) = want[j] {
                         assert_eq!(
                             lam_selected[j], lam,
-                            "select {select:?}, window {window}: row {i}, target {j}"
+                            "{closed:?}, select {select:?}, window {window}: row {i}, target {j}"
                         );
                         held[j] += 1;
                     }

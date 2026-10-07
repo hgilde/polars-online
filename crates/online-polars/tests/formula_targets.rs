@@ -48,7 +48,7 @@ fn spec(targets: &str, embargo: Option<f64>, extra: &str) -> Spec {
     serde_json::from_str(&format!(
         r#"{{
             "name": "m",
-            "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+            "model": {{"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": {targets},
             "features": ["x"],
             "clock": "t", "gap_cap": 100.0, "half_life": 50.0, "group": "g",
@@ -207,8 +207,9 @@ fn validate_refuses_a_short_embargo_where_the_run_would() {
         output: output.into(),
         input_format: None,
         output_format: None,
-        chunk_rows: 64,
+        chunk_size: 64,
         load_state: None,
+        skip_learned: false,
         save_state: Some("bank.state".into()),
         keep_columns: vec![],
         predict: false,
@@ -326,7 +327,7 @@ fn groups_are_independent_on_their_own_clocks() {
 fn what_a_formula_target_may_not_be() {
     let back = r#"[{"name": "f", "formula": ["ewm_mean", ["col", "mid"], {"half_life": 5.0}]}]"#;
     let err = serde_json::from_str::<Spec>(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "targets": {back}, "features": ["x"]}}"#
+        r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": {back}, "features": ["x"]}}"#
     ))
     .unwrap_err()
     .to_string();
@@ -389,7 +390,7 @@ fn a_boolean_group_column_a_formula_target_also_reads() {
     let formula = |name: &str, group: Option<&str>| -> Spec {
         let group = group.map_or(String::new(), |g| format!(r#""group": "{g}","#));
         serde_json::from_str(&format!(
-            r#"{{"name": "{name}", "model": {{"type": "ew_ridge", "ridge": 1e-6}},
+            r#"{{"name": "{name}", "model": {{"type": "ewridge", "ridge": 1e-6}},
                  "targets": [{{"name": "fwd", "formula": {tree}}}], "features": ["x"],
                  "clock": "t", "gap_cap": 100.0, "half_life": 50.0, "embargo": 12.5,
                  {group} "min_weight": 2.0}}"#
@@ -398,7 +399,7 @@ fn a_boolean_group_column_a_formula_target_also_reads() {
     };
     let grouped = |group: &str| -> Spec {
         serde_json::from_str(&format!(
-            r#"{{"name": "k", "model": {{"type": "ew_ridge", "ridge": 1e-6}},
+            r#"{{"name": "k", "model": {{"type": "ewridge", "ridge": 1e-6}},
                  "targets": ["mid"], "features": ["x"], "group": "{group}",
                  "half_life": 50.0, "min_weight": 2.0}}"#
         ))

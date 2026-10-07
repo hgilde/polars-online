@@ -7,6 +7,7 @@ builds.
 from __future__ import annotations
 
 import math
+import re
 
 import polars as pl
 import pytest
@@ -229,7 +230,30 @@ REJECTED = [
     (
         po.spec.ewridge,
         dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=-1),
-        "max_rows_between_snapshots must be >= 0, got -1",
+        "max_rows_between_snapshots must be >= 1, got -1",
+    ),
+    # A row cap of no rows is no schedule, in every `max_rows_between_*`, as
+    # `max_rows_between_coefs` is since task 178; the clock form's `0` is
+    # every row (docs/PLAN.md task 196, U7).
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=0),
+        "max_rows_between_snapshots must be >= 1, got 0",
+    ),
+    (
+        po.spec.ewridge,
+        dict(half_life=10.0, max_rows_between_solves=0),
+        "max_rows_between_solves must be >= 1, got 0",
+    ),
+    (
+        po.spec.lasso,
+        dict(half_life=10.0, lasso_path=[0.1], max_rows_between_solves=0),
+        "max_rows_between_solves must be >= 1, got 0",
+    ),
+    (
+        po.spec.huber,
+        dict(half_life=10.0, max_rows_between_solves=0),
+        "max_rows_between_solves must be >= 1, got 0",
     ),
 ]
 
@@ -241,9 +265,11 @@ ACCEPTED = [
         dict(half_life=10.0, clock="t", gap_cap=10.0, session="s", session_gap=0.0),
     ),
     (po.spec.ewridge, dict(half_life=10.0, solve_every=0.0)),
-    # Every row, as `solve_every = 0` solves on every row (task 162).
+    # Every row, as `solve_every = 0` solves on every row (task 162), and a
+    # cap of one row (task 196, U7).
     (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, window_every=0)),
-    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=0)),
+    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=1)),
+    (po.spec.ewridge, dict(half_life=10.0, max_rows_between_solves=1)),
     (po.spec.ewridge, dict(half_life=INF)),
     (po.spec.ewridge, dict(half_life=[10.0, 20.0])),
     (po.spec.huber, dict(half_life=10.0, ridge=0.0)),
@@ -325,13 +351,69 @@ def test_a_spec_name_the_bank_cannot_carry_is_refused(name):
 
 
 def test_holt_takes_its_level_halflife_once():
-    """``half_life`` and ``level_half_life`` are one knob under two names.
-    Given both, the level and ``weight_sum`` followed one and ``sigma`` the other
-    (S22)."""
-    with pytest.raises(ValueError, match="half_life and level_half_life"):
-        po.spec.holt("m", targets=["y"], half_life=10.0, level_half_life=20.0)
+    """``half_life`` is the level's half-life, one knob under one name
+    (docs/PLAN.md task 196, N16). Under two names, given both, the level and
+    ``weight_sum`` followed one and ``sigma`` the other (S22), and the two
+    spellings built two different spec dicts (review TA6)."""
+    with pytest.raises(TypeError, match="level_half_life was renamed half_life"):
+        po.spec.holt("m", targets=["y"], level_half_life=20.0)
     po.spec.holt("m", targets=["y"], half_life=20.0)
-    po.spec.holt("m", targets=["y"], level_half_life=20.0)
+
+
+ROW_CAPS_AT_ZERO = [
+    (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_solves"),
+    (
+        po.spec.lasso,
+        dict(targets=["y"], features=["x0"], lasso_path=[0.1]),
+        "max_rows_between_solves",
+    ),
+    (
+        po.spec.quantile,
+        dict(targets=["y"], features=["x0"], quantile=0.5),
+        "max_rows_between_solves",
+    ),
+    (
+        po.spec.ewridge,
+        dict(targets=["y"], features=["x0"], window_size=5.0),
+        "max_rows_between_snapshots",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], window_size=5.0, stats=["mean"]),
+        "max_rows_between_snapshots",
+    ),
+    (po.spec.ew_cov, dict(features=["x0", "y"], pca=1), "max_rows_between_pca"),
+    (po.spec.micro, dict(features=["x0", "y"], eps=1.0), "max_rows_between_prunes"),
+    (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_coefs"),
+]
+
+
+@pytest.mark.parametrize(
+    "builder,kw,key", ROW_CAPS_AT_ZERO, ids=[f"{b.__name__}:{k}" for b, _, k in ROW_CAPS_AT_ZERO]
+)
+def test_a_row_cap_of_zero_is_refused_by_both_doors(builder, kw, key):
+    """U7 (docs/PLAN.md task 196): `0` of a row cap read three ways -- every
+    row, refused, or a second spelling of 1. It is refused everywhere, as
+    `max_rows_between_coefs`'s was since task 178; the clock form's `0` is
+    every row. From the builder, and from a dict, which the TOML shares."""
+    with pytest.raises(ValueError, match=f"{key} must be >= 1, got 0"):
+        builder("m", half_life=10.0, **kw, **{key: 0})
+    spec = builder("m", half_life=10.0, **kw, **{key: 1})
+    where = spec if key == "max_rows_between_coefs" else spec["model"]
+    where[key] = 0
+    with pytest.raises(ValueError, match=f"{key} must be >= 1"):
+        po.ModelBank([spec])
+
+
+def test_ew_cov_refuses_pca_0_by_both_doors():
+    """U7: `pca = 0` was a second spelling of absent. (`stats = []` is not:
+    it is the accumulate-only use, docs/ENHANCEMENTS.md E43, and stays.)"""
+    msg = "pca = 0 asks for no component; leave it out"
+    with pytest.raises(ValueError, match=re.escape(msg)):
+        po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"], pca=0)
+    spec = po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, stats=["mean"])
+    with pytest.raises(ValueError, match=re.escape(msg)):
+        po.ModelBank([{**spec, "model": {**spec["model"], "pca": 0}}])
 
 
 def test_holt_takes_a_trend_halflife_only_with_a_trend():
@@ -407,7 +489,7 @@ def test_every_door_fills_validates_and_builds_a_spec_alike():
     assert po.spec.coef_fields(e53).height == 0
     refused = {
         "name": "r",
-        "model": {"type": "ew_ridge", "window_size": 10.0, "ridge_scale": "sum"},
+        "model": {"type": "ewridge", "window_size": 10.0, "ridge_scale": "sum"},
         "targets": ["y"],
         "features": ["x0"],
         "half_life": 10.0,

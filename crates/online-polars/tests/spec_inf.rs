@@ -26,22 +26,22 @@ fn spec(top: &str, model: &str) -> Spec {
 /// forgetting, the argmin.
 const MEANS_SOMETHING: [(&str, &str); 9] = [
     // The noise gate at `inf` is off: no ratio is ever above it.
-    ("max_error_inflation = inf", "type = \"ew_ridge\""),
+    ("max_error_inflation = inf", "type = \"ewridge\""),
     ("", "type = \"huber\"\nhuber_delta = inf"),
     ("", "type = \"sgd\"\nloss = \"huber\"\nhuber_delta = inf"),
     (
         "session = \"s\"\nsession_gap = 1.0",
-        "type = \"ew_ridge\"\nsession_shrink = 0.5\nlong_half_life = inf",
+        "type = \"ewridge\"\nsession_shrink = 0.5\nlong_half_life = inf",
     ),
     (
         "",
         "type = \"lasso\"\nlasso_path = [0.1]\nselect_half_life = inf",
     ),
-    ("features = []", "type = \"holt\"\nlevel_half_life = inf"),
+    ("features = []\nhalf_life = inf", "type = \"holt\""),
     ("", "type = \"pa\"\nc = inf"),
     (
         "emit_averaged = true\naverage_eta = inf",
-        "type = \"ew_ridge\"\nridge = [1e-6, 1.0]",
+        "type = \"ewridge\"\nridge = [1e-6, 1.0]",
     ),
     // No bound on the bins' memory (docs/PLAN.md task 131).
     ("", "type = \"marginal\"\nbins = 4\nbin_budget = inf"),
@@ -52,37 +52,37 @@ const MEANS_NOTHING: [(&str, &str, &str); 15] = [
     // A fraction of steady state has no infinite value; `>= 1` is refused.
     (
         "min_settled_frac = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "min_settled_frac",
     ),
     // A late row's size: `inf` would refuse every step back, which leaving
     // `restart_after_step_back` unset says directly.
     (
         "clock = \"t\"\ngap_cap = 10.0\nrestart_after_step_back = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "restart_after_step_back",
     ),
     // The cap is what a gap is a break against, and an infinite one handed a
     // model an infinite step (task 120, decided 2026-09-28).
     (
         "clock = \"t\"\ngap_cap = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "gap_cap",
     ),
     // An infinite session gap is a reset, which `"reset"` says.
     (
         "clock = \"t\"\ngap_cap = 10.0\nsession = \"s\"\nsession_gap = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "session_gap",
     ),
     (
         "emit_drift = true\ndrift_delta = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "drift_delta",
     ),
     (
         "emit_drift = true\ndrift_threshold = inf",
-        "type = \"ew_ridge\"",
+        "type = \"ewridge\"",
         "drift_threshold",
     ),
     (
@@ -96,7 +96,7 @@ const MEANS_NOTHING: [(&str, &str, &str); 15] = [
     ("", "type = \"ftrl\"\nl1 = inf", "l1"),
     ("", "type = \"ftrl\"\nl2 = inf", "l2"),
     ("", "type = \"sgd\"\nlearning_rate = inf", "learning_rate"),
-    ("", "type = \"ew_ridge\"\nridge = inf", "ridge"),
+    ("", "type = \"ewridge\"\nridge = inf", "ridge"),
     // `q` alone: beside `coef_half_life` the pair is refused first (review
     // 2026-10-06, PC6).
     ("", "type = \"kalman\"\nq = [inf, 0.5]", "q"),

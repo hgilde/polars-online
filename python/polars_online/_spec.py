@@ -246,7 +246,7 @@ _INF_OK: dict[str, frozenset[str]] = {
     "huber": frozenset({"huber_delta"}),
     "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
     "pa": frozenset({"c", "coef_min", "coef_max"}),
-    "holt": frozenset({"level_half_life", "trend_half_life"}),
+    "holt": frozenset({"trend_half_life"}),
     # No bound on the bins' memory (docs/PLAN.md task 131).
     "marginal": frozenset({"bin_budget"}),
 }
@@ -304,8 +304,8 @@ _AT_LEAST_ONE = frozenset(
         "lags",
         "cross_lags",
         "shards",
-        "update_every",
-        "split_merge_every",
+        "update_every_rows",
+        "split_merge_every_rows",
         "max_clusters",
         "resid_autocorr_lag",
         "k",
@@ -313,8 +313,13 @@ _AT_LEAST_ONE = frozenset(
         # the coefficients read like a fit (review 2026-10-05, PB7).
         "max_iter",
         # A cap of no rows is no schedule: every row is `coef_every = 0`
-        # (docs/PLAN.md task 178).
+        # (docs/PLAN.md task 178), and in every row cap the clock form's `0`
+        # is every row (task 196, U7).
         "max_rows_between_coefs",
+        "max_rows_between_solves",
+        "max_rows_between_snapshots",
+        "max_rows_between_pca",
+        "max_rows_between_prunes",
     }
 )
 
@@ -332,8 +337,8 @@ _U32 = frozenset(
         "max_rows_between_pca",
         "max_rows_between_prunes",
         "max_iter",
-        "update_every",
-        "split_merge_every",
+        "update_every_rows",
+        "split_merge_every_rows",
     }
 )
 
@@ -380,7 +385,7 @@ _RENAMED = {
     "coef_halflife": "coef_half_life",
     "revert_halflife": "revert_half_life",
     "select_halflife": "select_half_life",
-    "level_halflife": "level_half_life",
+    "level_halflife": "half_life",
     "trend_halflife": "trend_half_life",
     "label_delay": "embargo",
     "max_dclock": "gap_cap",
@@ -395,12 +400,38 @@ _RENAMED = {
     "max_cd_iters": "max_iter",
     "cd_tol": "tol",
     "reset": "reset_on_flag",
+    # Task 196 (docs/PLAN.md §18, N14 and N16): a count of rows says so, and
+    # holt's level takes the spec's `half_life`, one knob under one name.
+    "update_every": "update_every_rows",
+    "split_merge_every": "split_merge_every_rows",
+    "permute_every": "permute_every_rows",
+    "level_half_life": "half_life",
 }
 
 #: The parameters renamed in one builder whose old name another keeps
 #: (docs/PLAN.md task 195, N11): ``rls``'s ``ridge`` is ``delta``, and
 #: ``ridge`` is still :func:`ewridge`'s, :func:`huber`'s and :func:`quantile`'s.
 _RENAMED_IN = {"rls": {"ridge": "delta"}}
+
+#: The keywords of the functions that run a stream that task 196 renamed
+#: (docs/PLAN.md §18, N2): ``chunk_size`` is Polars' name on the call it
+#: feeds, ``collect_batches(chunk_size=)``. :func:`_renamed_keywords`
+#: refuses the old one naming the new.
+_RENAMED_KEYWORDS = {"chunk_rows": "chunk_size"}
+
+
+def _renamed_keywords[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    """``fn``, refusing a keyword :data:`_RENAMED_KEYWORDS` names by the new
+    name, where Python would say only that it is unexpected."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        for old, new in _RENAMED_KEYWORDS.items():
+            if old in kwargs:
+                raise TypeError(f"{fn.__qualname__}(): {old} was renamed {new}")
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
@@ -810,6 +841,7 @@ def ewridge(
     gram_block_rows: int | None = None,
     target_gaps: str = "own_rows",
     window_size: float | Duration | None = None,
+    closed: str = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -979,18 +1011,27 @@ def ewridge(
 
         ``weight_sum`` counts every row either way, and a null target is
         still predicted.
-    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the fit is solved from, in clock units:
-        a row older than ``window_size`` is not in the sums at all, where the
-        exponential weight alone would leave ``0.5 ** (age / half_life)`` of
-        it. Inside the window the weights are still exponential, so this is a
-        windowed exponentially weighted regression, not a rolling least
+        a row ``window_size`` old or older is not in the sums at all, where
+        the exponential weight alone would leave ``0.5 ** (age / half_life)``
+        of it. Inside the window the weights are still exponential, so this
+        is a windowed exponentially weighted regression, not a rolling least
         squares. It is exact. The sums are sums of per-row contributions, so
         everything at or before a time ``u`` is ``lam ** (t - u)`` times the
         sums as they stood then, and subtracting that leaves the window. The
         model keeps a ring of snapshots to do it, which is the one place here
         where memory grows with a window rather than with the state. A
         half-life grid is one instance per entry, each with its own ring.
+
+        ``closed`` is which edge holds the row exactly ``window_size`` old,
+        in Polars' words (``rolling_sum_by(closed=)``). ``"right"``, the
+        default, keeps the rows less than ``window_size`` old, so that row
+        has left, as it has in the window operators (:func:`polars_online.ewm_mean`)
+        and in ``rolling_sum_by``. ``"both"`` keeps it too. ``"left"`` and
+        ``"none"`` would leave out the row the window ends at, which a model
+        cannot do, since it reads its fit after it has learned that row: both
+        are refused, as ``"both"`` is without ``window_size``.
 
         The ring takes a snapshot on every row unless told otherwise.
         ``window_every`` spaces them on the clock, as ``solve_every`` spaces
@@ -1108,7 +1149,7 @@ def ewridge(
     ``session_shrink`` without ``long_half_life``.
     """
     model: dict[str, Any] = {
-        "type": "ew_ridge",
+        "type": "ewridge",
         "ridge": ridge,
         # `{}` is written as `[]`, which the Rust side refuses by name, as it
         # refuses a dict spec's `[]`: read as `None` it was no sets, in
@@ -1126,6 +1167,7 @@ def ewridge(
         "gram_block_rows": gram_block_rows,
         "target_gaps": target_gaps,
         "window_size": window_size,
+        "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
@@ -1509,6 +1551,7 @@ def lasso(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     window_size: float | Duration | None = None,
+    closed: str = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -1580,9 +1623,11 @@ def lasso(
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
         :func:`ewridge`. The cross-correlations are centred at the target's own
         means either way.
-    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the path is fitted from, in clock units, as
-        for :func:`ewridge`. A row older than ``window_size`` is not in the sums.
+        for :func:`ewridge`. A row ``window_size`` old or older is not in the
+        sums, and ``closed="both"`` keeps the one exactly that old, as for
+        :func:`ewridge`.
         ``window_every`` spaces the snapshots on the clock and
         ``max_rows_between_snapshots`` caps the rows between them, whichever
         comes first, as for :func:`ewridge`; ``window_budget`` bounds each ring
@@ -1647,6 +1692,7 @@ def lasso(
         "tol": tol,
         "target_gaps": target_gaps,
         "window_size": window_size,
+        "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
@@ -2251,6 +2297,7 @@ def ew_cov(
     max_rows_between_pca: int | None = None,
     lags: list[int] | None = None,
     window_size: float | Duration | None = None,
+    closed: str = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -2287,7 +2334,7 @@ def ew_cov(
 
     ``stats``
         Which statistics to write, from ``mean``, ``var``, ``std``, ``cov``,
-        ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr``. Default
+        ``corr``, ``partial_corr``, ``mahal`` and ``lag_corr``. Default
         ``["mean", "std", "corr"]``. ``[]`` writes no statistic, only
         ``weight_sum``, ``settled_frac`` and ``withheld_reason``, and
         accumulates all the same. The spec's value is then its state,
@@ -2360,14 +2407,15 @@ def ew_cov(
         or a run of skipped rows' whose total the ceiling cut. Those are the
         events after which "the row ``l`` back" is not a row ``l`` ago. A
         zero-weight row ages the matrices and does not enter the ring. Add
-        ``"lagcorr"`` to ``stats`` to write ``lagcorr_<a>_<b>_l<l>`` =
+        ``"lag_corr"`` to ``stats`` to write ``lag_corr_<a>_<b>_l<l>`` =
         ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
         auto terms included. That is ``k²`` slots a lag, since a lagged
         matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
-    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
-        A hard cutoff on the history, in clock units: a row older than
-        ``window_size`` contributes nothing at all, where the exponential
+    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+        A hard cutoff on the history, in clock units: a row ``window_size``
+        old or older contributes nothing at all (``closed="both"`` keeps the
+        one exactly that old, as for :func:`ewridge`), where the exponential
         weight alone would still leave ``0.5 ** (age / half_life)`` of it --
         12.5% at three half-lives. Inside the window the weights are still
         exponential, so this is not a rolling flat mean: the newest row
@@ -2438,7 +2486,7 @@ def ew_cov(
     asks for: ``mean_<column>``, ``var_<column>`` and ``std_<column>`` per
     column; ``cov_<column>_<column>``, ``corr_<column>_<column>`` and
     ``partial_corr_<column>_<column>`` per pair, unordered, ``i < j``
-    (``mean_x0``, ``corr_x0_x1``); ``lagcorr_<a>_<b>_l<l>`` per lag and
+    (``mean_x0``, ``corr_x0_x1``); ``lag_corr_<a>_<b>_l<l>`` per lag and
     ordered pair; ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields,
     ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as
     everywhere. The statistics are
@@ -2487,6 +2535,7 @@ def ew_cov(
         "max_rows_between_pca": max_rows_between_pca,
         "lags": lags,
         "window_size": window_size,
+        "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
@@ -2899,7 +2948,6 @@ def holt(
     name: str,
     *,
     targets: TargetList,
-    level_half_life: float | Duration | None = None,
     trend_half_life: float | Duration | None = None,
     trend: bool = True,
     features: list[str] | None = None,
@@ -2921,8 +2969,8 @@ def holt(
     observed: this row's delta included, so ``s`` is the row's own delta on
     a stream with no gaps. ``w`` is the row's weight, and ``W``, ``V`` the
     weight the level and the trend have gathered, each decayed on its own
-    half-life (``lam_l = 0.5 ** (s / level_half_life)``, ``lam_b``
-    likewise):
+    half-life (``lam_l = 0.5 ** (s / half_life)``, the spec's own, and
+    ``lam_b`` likewise at ``trend_half_life``):
 
     .. code-block:: text
 
@@ -2945,18 +2993,20 @@ def holt(
 
     .. rubric:: Parameters
 
-    ``level_half_life``
-        How fast the level forgets, in clock units. Defaults to the spec's
-        ``half_life`` -- one knob under two names, ``inf`` included.
+    The level forgets at the spec's ``half_life`` (or ``lam``), in clock
+    units, ``inf`` included: one knob under one name, as for every model.
+    ``level_half_life``, the second name it once had, is refused naming
+    it.
+
     ``trend_half_life``
         How fast the trend forgets, in clock units. Default four times the
-        level half-life; ``inf`` is the whole history's drift, not a trend
+        level's half-life; ``inf`` is the whole history's drift, not a trend
         pinned at zero.
     ``trend``
         ``False`` fits the level alone: the trend is held at zero and the
         forecast is flat, which is simple exponential smoothing. The level is
         then the weighted mean of the observations, each at its weight times
-        ``0.5 ** (age / level_half_life)``, which is pandas'
+        ``0.5 ** (age / half_life)``, which is pandas'
         ``ewm(adjust=True)`` for unit weights. ``trend_half_life`` is refused
         beside it. Default ``True``.
 
@@ -2996,19 +3046,17 @@ def holt(
 
         baseline = po.spec.holt(
             "baseline", targets=["y"], clock="t", gap_cap=600.0,
-            level_half_life=200.0,     # how fast the level forgets
+            half_life=200.0,          # how fast the level forgets
             trend_half_life=2000.0,   # how fast the trend forgets; inf is the whole history's drift
         )
         out = po.ModelBank([baseline]).fit_predict(df)
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`); ``half_life`` and
-    ``level_half_life`` together are refused, being one knob.
+    As every builder does (:mod:`polars_online.spec`).
     """
     model: dict[str, Any] = {
         "type": "holt",
-        "level_half_life": level_half_life,
         "trend_half_life": trend_half_life,
     }
     if not trend:
@@ -3027,9 +3075,9 @@ def kmeans(
     warm_rows: int | None = None,
     seed_rule: str | None = None,
     seed: int | None = None,
-    update_every: int | None = None,
+    update_every_rows: int | None = None,
     split_merge: float | None = None,
-    split_merge_every: int | None = None,
+    split_merge_every_rows: int | None = None,
     dead_frac: float | None = None,
     standardize: bool | None = None,
     scale_floor: float | None = None,
@@ -3054,7 +3102,7 @@ def kmeans(
     Alongside each centre the EW squared radius ``r2_j``, the mean of ``|x -
     c_j|^2`` over the rows assigned there, which the split-merge rule reads.
     Rows are folded into per-centre batches and applied every
-    ``update_every`` learned rows, so ``update_every = 1`` is plain
+    ``update_every_rows`` learned rows, so ``update_every_rows = 1`` is plain
     sequential k-means and a larger value a mini-batch one.
 
     .. rubric:: Parameters
@@ -3087,15 +3135,15 @@ def kmeans(
         the same centres. The buffer is replayed into the centres and freed,
         so the model is O(state) again from that row on. Outputs are null
         until seeding and until ``weight_sum`` reaches ``min_weight``.
-    ``update_every``
+    ``update_every_rows``
         Learned rows between applications of the per-centre batches. Default
         1.
-    ``split_merge``, ``split_merge_every``
+    ``split_merge``, ``split_merge_every_rows``
         A row farther from its centre than a blob of the typical radius
         produces (about four standard deviations of ``|x - c|^2`` above it)
         is far. It is scored, but summarised instead of learned, so it
         neither drags the centre nor widens the radius. Every
-        ``split_merge_every`` learned rows (default 100) the two closest
+        ``split_merge_every_rows`` learned rows (default 100) the two closest
         centres are compared. If their distance is under ``split_merge``
         (default 0.5; ``0`` disables) times the sum of their radii, and
         enough far rows have gathered somewhere (at least three, and five per
@@ -3146,9 +3194,9 @@ def kmeans(
     ``cluster``
         The nearest centre's index (``i32``), before the row is learned from;
         null until seeding.
-    ``dist``, ``dist2``
-        The distance to that centre, and to the runner-up (null when ``k ==
-        1``), so ``dist2 - dist`` is the margin.
+    ``dist``, ``dist_second``
+        The distance to that centre, and to the runner-up, the second-nearest
+        (null when ``k == 1``), so ``dist_second - dist`` is the margin.
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
@@ -3189,9 +3237,9 @@ def kmeans(
         "warm_rows": warm_rows,
         "seed_rule": seed_rule,
         "seed": seed,
-        "update_every": update_every,
+        "update_every_rows": update_every_rows,
         "split_merge": split_merge,
-        "split_merge_every": split_merge_every,
+        "split_merge_every_rows": split_merge_every_rows,
         "dead_frac": dead_frac,
         "standardize": standardize,
         "scale_floor": scale_floor,
@@ -3415,6 +3463,7 @@ def ew_class(
     covariance: str | None = None,
     precision_prior: float,
     window_size: float | Duration | None = None,
+    closed: str = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -3500,10 +3549,11 @@ def ew_class(
         ``lam * n_c / (lam * n_c + w)`` on every row the class learns. So the
         ridge washes out as the class fills in, exactly as :func:`ew_cov`'s
         ``precision_prior`` does.
-    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history each class's moments are computed from,
-        in clock units, as for :func:`ewridge`: a row older than
-        ``window_size`` contributes to no class. That is what lets a
+        in clock units, as for :func:`ewridge`: a row ``window_size`` old or
+        older contributes to no class (``closed="both"`` keeps the one
+        exactly that old, as for :func:`ewridge`). That is what lets a
         classifier follow class means that move; over a long history two
         regimes average together and the labels go to chance.
         ``window_every`` spaces the snapshots on the clock and
@@ -3570,6 +3620,7 @@ def ew_class(
         "covariance": covariance,
         "precision_prior": precision_prior,
         "window_size": window_size,
+        "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
@@ -3729,6 +3780,7 @@ def marginal(
     bin_budget: float | None = None,
     shards: int | str | None = None,
     window_size: float | Duration | None = None,
+    closed: str = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -3774,22 +3826,22 @@ def marginal(
         within the group, not rows where that target was present, since the
         ring is shared. For a sparsely present target the lag is a row distance, not
         an observation distance. They add four list columns per pair to the
-        table. ``lagcorr_xx`` and ``lagcorr_yy`` are the two series' own
-        autocorrelations. ``lagcorr_xy`` is the feature now against the target
-        ``l`` rows back, and ``lagcorr_yx`` the target now against the feature
+        table. ``lag_corr_xx`` and ``lag_corr_yy`` are the two series' own
+        autocorrelations. ``lag_corr_xy`` is the feature now against the target
+        ``l`` rows back, and ``lag_corr_yx`` the target now against the feature
         ``l`` rows back. For two series that describe the same moment, a
-        feature whose ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target,
-        and one whose ``lagcorr_xy[0]`` does follows it. That reading does not
+        feature whose ``lag_corr_yx[0]`` exceeds its ``corr`` leads the target,
+        and one whose ``lag_corr_xy[0]`` does follows it. That reading does not
         hold against a forward-looking target, one built from the rows after
         its own. There the target ``l`` rows back is built partly from the
         feature's newest ``l`` rows, so a feature built from the same news
-        shows ``lagcorr_xy`` above ``corr`` however it is sampled. The pair is
+        shows ``lag_corr_xy`` above ``corr`` however it is sampled. The pair is
         the same statistic ``ew_cov(lags=)`` computes, to the bit.
 
         ``cross_lags`` keeps the two cross-correlations at fewer lags:
         strictly increasing, each one of ``lags``, and ``[]`` for none, which
-        leaves the ``lagcorr_xy`` and ``lagcorr_yx`` columns out. By default
-        they are kept at every lag. ``lagcorr_xy`` and ``lagcorr_yx`` are then
+        leaves the ``lag_corr_xy`` and ``lag_corr_yx`` columns out. By default
+        they are kept at every lag. ``lag_corr_xy`` and ``lag_corr_yx`` are then
         lists over ``cross_lags``, in its order. The autocorrelations, and
         ``n_serial`` built from them, are kept at every lag whatever it says,
         and are the same to the bit. A lead or lag of a row or two is the
@@ -3918,10 +3970,11 @@ def marginal(
         threads, ``"auto"`` ran 1.2 times as fast at one target and 4.9 times
         with nine targets, lags and bins; the bank's own work on each row
         does not split (``docs/PERFORMANCE.md`` §25).
-    ``window_size``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the pairs are computed from, in
-        clock units, as for :func:`ewridge`: a row older than ``window_size``
-        contributes nothing, and inside the window the weights are still
+        clock units, as for :func:`ewridge`: a row ``window_size`` old or
+        older contributes nothing (``closed="both"`` keeps the one exactly
+        that old, as for :func:`ewridge`), and inside the window the weights are still
         exponential. Every moment a pair is built from is truncated (the
         weight, both means and the three centred second moments), so
         ``corr``, ``beta`` and ``t`` describe the window and nothing else.
@@ -4069,6 +4122,7 @@ def marginal(
         "bin_budget": bin_budget,
         "shards": shards,
         "window_size": window_size,
+        "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
@@ -4565,7 +4619,7 @@ def corrchange(
     scalar: bool = False,
     crit: float | None = None,
     n_perm: int | None = None,
-    permute_every: int | None = None,
+    permute_every_rows: int | None = None,
     perm_block: int | None = None,
     norm: str = "l1",
     seed: int | None = None,
@@ -4688,7 +4742,7 @@ def corrchange(
     ``span_rows`` rows -- how big the change is, rather than whether the span
     was constant. ``crit`` is a fixed threshold. Without one the critical
     value is a permutation quantile: ``n_perm`` draws of the pooled rows
-    shuffled between the two windows, redrawn every ``permute_every`` rows.
+    shuffled between the two windows, redrawn every ``permute_every_rows`` rows.
     The draws are in blocks of ``perm_block``, so that serial dependence does
     not make the null too liberal. It is not a sign-flip null, which a first
     reading of the literature suggests. Negating a whole row leaves every ``x
@@ -4741,9 +4795,9 @@ def corrchange(
     ``crit``
         ``"window"``: a fixed threshold, in place of the permutation
         quantile. ``"sequential"``: replaces Wied & Galeano's critical value.
-    ``n_perm``, ``permute_every``, ``perm_block``, ``seed``
+    ``n_perm``, ``permute_every_rows``, ``perm_block``, ``seed``
         ``"window"``'s permutation quantile: ``n_perm`` (default 200, at most
-        2^20) draws, redrawn every ``permute_every`` rows (default 50), in blocks of
+        2^20) draws, redrawn every ``permute_every_rows`` rows (default 50), in blocks of
         ``perm_block`` rows (default 1). ``seed`` (default 0) seeds the
         draws, so two runs with the same seed report the same critical
         values.
@@ -4833,7 +4887,7 @@ def corrchange(
         "scalar": scalar,
         "crit": crit,
         "n_perm": n_perm,
-        "permute_every": permute_every,
+        "permute_every_rows": permute_every_rows,
         "perm_block": perm_block,
         "norm": norm,
         "seed": seed,

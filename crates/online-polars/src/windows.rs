@@ -69,11 +69,14 @@ pub enum Direction {
     Forward,
 }
 
-/// Which ends of a window are in it, as Polars' `closed` says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which ends of a window are in it, as Polars' `closed` says it. The
+/// windowed models take it too, `Right` or `Both` (`crate::spec`,
+/// docs/PLAN.md task 196).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Closed {
     /// `(T - w, T]` back, `(t, t + w]` ahead: Polars' default.
+    #[default]
     Right,
     /// `[T - w, T)` back, `[t, t + w)` ahead.
     Left,

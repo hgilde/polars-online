@@ -26,7 +26,7 @@
 //! `[x_j, y_t]` fed the same rows give the same correlation to the bit
 //! (`tests/test_marginal.py` holds them to it). A missing `y_t` ages the
 //! target's accumulators (`W_t·lam`, `Q_t·lam²`) and moves nothing else, as
-//! a missing target does in `ew_ridge`. The feature moments are kept per
+//! a missing target does in `ewridge`. The feature moments are kept per
 //! *pair*, not per feature: they are over the rows where the target was
 //! present, so both sides of a correlation are over the same rows whatever
 //! the target's missingness.
@@ -114,7 +114,7 @@ pub struct MarginalCfg {
     /// but **not** skipped, for the reason `Marginal::lag` gives.
     #[serde(default)]
     pub bins: Option<Box<crate::BinCfg>>,
-    /// The lags to keep the cross moments at, `lagcorr_xy` and `lagcorr_yx`
+    /// The lags to keep the cross moments at, `lag_corr_xy` and `lag_corr_yx`
     /// (E70, docs/PLAN.md task 123): strictly increasing, each one of
     /// `lags`. `None` keeps them at every lag, as before the option existed;
     /// empty keeps none. `n_serial` reads the autocorrelations alone, which
@@ -145,7 +145,7 @@ pub struct MarginalCfg {
     pub window_every: Option<f64>,
     /// At most this many rows between the window's snapshots, counted on
     /// every row the model is stepped with, rows of weight zero included;
-    /// `0` or `1` is every row.
+    /// `1` is every row, and `0` is refused (docs/PLAN.md task 196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rows_between_snapshots: Option<usize>,
 }
@@ -324,19 +324,19 @@ pub struct Pair {
     pub cov: f64,
     /// Per configured lag: `rho_x(l)`, the feature's own autocorrelation,
     /// and `rho_y(l)`, the target's. Per cross lag -- every lag unless
-    /// `cross_lags` names fewer -- the two cross-correlations: `lagcorr_xy`
-    /// is the feature *now* against the target `l` rows ago, `lagcorr_yx`
+    /// `cross_lags` names fewer -- the two cross-correlations: `lag_corr_xy`
+    /// is the feature *now* against the target `l` rows ago, `lag_corr_yx`
     /// the target now against the feature `l` rows ago. Empty without
     /// `lags`, and the cross pair empty under `cross_lags = []`.
     ///
     /// Each is the lagged covariance over the two contemporaneous standard
-    /// deviations, as `ew_cov`'s `lagcorr` is, and like it **not clamped**:
+    /// deviations, as `ew_cov`'s `lag_corr` is, and like it **not clamped**:
     /// a lagged correlation is not bounded by one in finite samples, and
     /// clamping would hide that. The serial correction guards itself.
-    pub lagcorr_xx: Vec<f64>,
-    pub lagcorr_yy: Vec<f64>,
-    pub lagcorr_xy: Vec<f64>,
-    pub lagcorr_yx: Vec<f64>,
+    pub lag_corr_xx: Vec<f64>,
+    pub lag_corr_yy: Vec<f64>,
+    pub lag_corr_xy: Vec<f64>,
+    pub lag_corr_yx: Vec<f64>,
     /// `n_kish` divided by Bartlett's serial-dependence factor
     /// `1 + 2·Σ_l rho_x(l)·rho_y(l)`, per `serial_rule`; NaN without one.
     pub n_serial: f64,
@@ -1019,8 +1019,8 @@ impl Marginal {
         // The lag statistics, when the spec asked for lags. Correlations
         // rather than covariances, because the correction is a product of
         // two autocorrelations and the caller reads them as such.
-        let (mut lagcorr_xx, mut lagcorr_yy) = (Vec::new(), Vec::new());
-        let (mut lagcorr_xy, mut lagcorr_yx) = (Vec::new(), Vec::new());
+        let (mut lag_corr_xx, mut lag_corr_yy) = (Vec::new(), Vec::new());
+        let (mut lag_corr_xy, mut lag_corr_yx) = (Vec::new(), Vec::new());
         let (mut n_serial, mut t_serial) = (f64::NAN, f64::NAN);
         let (mut phi_x, mut phi_y) = (f64::NAN, f64::NAN);
         if let Some(lag) = self.lag.as_ref() {
@@ -1054,19 +1054,19 @@ impl Marginal {
             for li in 0..lag.lags().len() {
                 let cxx = at(lag.cxx(li, t, j), &|m| m.cxx(li, t, j));
                 let cyy = at(lag.cyy(li, t), &|m| m.cyy(li, t));
-                lagcorr_xx.push(norm(cxx, sd_x * sd_x));
-                lagcorr_yy.push(norm(cyy, sd_y * sd_y));
+                lag_corr_xx.push(norm(cxx, sd_x * sd_x));
+                lag_corr_yy.push(norm(cyy, sd_y * sd_y));
             }
             // Over the cross lags, which are every lag unless `cross_lags`
             // names fewer (E70).
             for ci in 0..lag.cross_lags().len() {
                 let cxy = at(lag.cxy(ci, t, j), &|m| m.cxy(ci, t, j));
                 let cyx = at(lag.cyx(ci, t, j), &|m| m.cyx(ci, t, j));
-                lagcorr_xy.push(norm(cxy, sd_x * sd_y));
-                lagcorr_yx.push(norm(cyx, sd_x * sd_y));
+                lag_corr_xy.push(norm(cxy, sd_x * sd_y));
+                lag_corr_yx.push(norm(cyx, sd_x * sd_y));
             }
             if let Some(rule) = self.cfg.serial_rule {
-                let (factor, px, py) = serial_factor(rule, lag.lags(), &lagcorr_xx, &lagcorr_yy);
+                let (factor, px, py) = serial_factor(rule, lag.lags(), &lag_corr_xx, &lag_corr_yy);
                 phi_x = px;
                 phi_y = py;
                 if factor.is_finite() && factor > 0.0 {
@@ -1118,10 +1118,10 @@ impl Marginal {
             split_gain,
             split_at,
             split_gain_t,
-            lagcorr_xx,
-            lagcorr_yy,
-            lagcorr_xy,
-            lagcorr_yx,
+            lag_corr_xx,
+            lag_corr_yy,
+            lag_corr_xy,
+            lag_corr_yx,
             n_serial,
             t_serial,
             phi_x,
@@ -1635,7 +1635,7 @@ impl Marginal {
     fn advance_target(&mut self, t: usize, yt: Option<f64>, lam: f64, w: f64) -> Option<TargetMix> {
         let Some(yt) = yt else {
             // Time passes for a target that is not there: its weight ages,
-            // its moments hold, as `ew_ridge` treats a missing target.
+            // its moments hold, as `ewridge` treats a missing target.
             self.wt[t] *= lam;
             self.qt[t] *= lam * lam;
             return None;
@@ -2223,6 +2223,12 @@ impl OnlineModel for Marginal {
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
+        }
+    }
+
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
         }
     }
 

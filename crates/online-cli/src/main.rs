@@ -5,15 +5,15 @@
 //!
 //! ```sh
 //! online --config examples/bank.toml
-//! online --config examples/bank.toml --input other.parquet --resume state.msgpack
-//! online --config examples/bank.toml --input today.parquet --resume state.msgpack --predict
+//! online --config examples/bank.toml --input other.parquet --load-state state.msgpack
+//! online --config examples/bank.toml --input today.parquet --load-state state.msgpack --predict
 //! online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use online_polars::{Format, RunConfig, run_config};
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
@@ -60,13 +60,31 @@ struct Cli {
     #[arg(long, value_parser = parse_format)]
     output_format: Option<Format>,
 
-    /// Override the config's `chunk_rows`.
+    /// Rows per chunk: Polars' `chunk_size`. Overrides the config's
+    /// `chunk_size`.
     #[arg(long)]
-    chunk_rows: Option<usize>,
+    chunk_size: Option<usize>,
 
-    /// Resume from this state file (overrides the config's `load_state`).
+    /// The old name of `--chunk-size`, refused naming it (docs/PLAN.md task
+    /// 196, N2).
+    #[arg(long = "chunk-rows", hide = true, value_name = "N")]
+    chunk_rows: Option<String>,
+
+    /// Start from this state file (overrides the config's `load_state`).
     #[arg(long)]
-    resume: Option<PathBuf>,
+    load_state: Option<PathBuf>,
+
+    /// The old name of `--load-state`, refused naming it (docs/PLAN.md task
+    /// 196, N15).
+    #[arg(long, hide = true, value_name = "PATH")]
+    resume: Option<String>,
+
+    /// Drop the input's rows the loaded state has learned, so a resume on
+    /// input that overlaps it learns each row once, as Python's
+    /// `ModelBank.skip_learned` does (sets the config's `skip_learned`).
+    /// Needs `--load-state` or `load_state`, and a spec that reads a clock.
+    #[arg(long)]
+    skip_learned: bool,
 
     /// Save the final state here (overrides the config's `save_state`).
     #[arg(long)]
@@ -81,7 +99,7 @@ struct Cli {
 
     /// Score instead of learn: every row gets the loaded bank's prediction
     /// as it stands and the bank is not updated (sets the config's
-    /// `predict`). Needs `--resume` or `load_state`.
+    /// `predict`). Needs `--load-state` or `load_state`.
     #[arg(long)]
     predict: bool,
 
@@ -136,8 +154,28 @@ fn main() -> ExitCode {
     }
 }
 
+/// A flag task 196 renamed, refused as clap refuses any command line it
+/// cannot use (exit status 2), naming the new one: the old name is hidden,
+/// and read only to say so.
+fn refuse_renamed_flags(cli: &Cli) {
+    for (given, old, new) in [
+        (cli.chunk_rows.is_some(), "--chunk-rows", "--chunk-size"),
+        (cli.resume.is_some(), "--resume", "--load-state"),
+    ] {
+        if given {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::UnknownArgument,
+                    format!("{old} was renamed {new}"),
+                )
+                .exit();
+        }
+    }
+}
+
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
+    refuse_renamed_flags(&cli);
     let text = std::fs::read_to_string(&cli.config)
         .map_err(|e| format!("reading {}: {e}", cli.config.display()))?;
     let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
@@ -157,7 +195,7 @@ fn run() -> Result<(), String> {
         format!(
             "parsing {}: {}{key}{backslash_hint}",
             cli.config.display(),
-            online_polars::name_renamed(&e.to_string())
+            online_polars::name_renamed_run_key(&online_polars::name_renamed(&e.to_string()))
         )
     })?;
 
@@ -176,11 +214,14 @@ fn run() -> Result<(), String> {
     if let Some(f) = cli.output_format {
         cfg.output_format = Some(f);
     }
-    if let Some(n) = cli.chunk_rows {
-        cfg.chunk_rows = n;
+    if let Some(n) = cli.chunk_size {
+        cfg.chunk_size = n;
     }
-    if let Some(p) = cli.resume {
+    if let Some(p) = cli.load_state {
         cfg.load_state = Some(p);
+    }
+    if cli.skip_learned {
+        cfg.skip_learned = true;
     }
     if cli.predict {
         cfg.predict = true;
@@ -215,7 +256,7 @@ fn run() -> Result<(), String> {
         // (the dry run said "config OK" for an input that is not there, task
         // 160, YB12), the bank as the run opens it, and that bank run on a
         // frame of no rows of the schema -- it said "config OK" for a
-        // `--resume` state that is not there or holds other specs, and for
+        // `--load-state` state that is not there or holds other specs, and for
         // an input without a column a spec reads (review round 4, SF2).
         cfg.dry_run().map_err(|e| e.to_string())?;
         println!("config OK: {} spec(s)", cfg.specs.len());
@@ -252,7 +293,7 @@ fn run() -> Result<(), String> {
         if let Some((p, f)) = cfg.closed_groups_target()? {
             println!("closed groups: {} ({})", p.display(), f.name());
         }
-        println!("chunk_rows: {}", cfg.chunk_rows);
+        println!("chunk_size: {}", cfg.chunk_size);
         if cfg.predict {
             println!("mode: predict (score against the loaded state, learn nothing)");
         }

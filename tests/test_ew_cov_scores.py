@@ -694,15 +694,19 @@ class TestValidation:
             spec(2, pca_every=3)
         with pytest.raises(ValueError, match="max_rows_between_pca needs `pca`"):
             spec(2, max_rows_between_pca=3)
-        with pytest.raises(ValueError, match="pca_every needs `pca`"):
+        with pytest.raises(ValueError, match="pca = 0 asks for no component"):
             spec(2, pca=0, pca_every=3)
         with pytest.raises(ValueError, match="pca must be >= 0"):
             spec(2, pca=-1)
         with pytest.raises(TypeError, match="pca must be"):
             spec(2, pca=1.5)
 
-    def test_pca_zero_is_off(self):
-        s = spec(2, stats=["mean"], precision_prior=None, pca=0)
+    def test_pca_zero_is_refused_and_absent_is_off(self):
+        """``pca = 0`` was a second spelling of absent (docs/PLAN.md task 196,
+        U7): it is refused, and leaving ``pca`` out tracks no component."""
+        with pytest.raises(ValueError, match="pca = 0 asks for no component; leave it out"):
+            spec(2, stats=["mean"], precision_prior=None, pca=0)
+        s = spec(2, stats=["mean"], precision_prior=None)
         assert po.spec.output_fields(s) == [
             "mean_x0",
             "mean_x1",

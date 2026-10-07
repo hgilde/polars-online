@@ -157,7 +157,7 @@ pub struct CorrChangeCfg {
     /// `window`: a fixed critical value, or `None` for the permutation one.
     pub crit: Option<f64>,
     pub n_perm: usize,
-    pub permute_every: usize,
+    pub permute_every_rows: usize,
     pub perm_block: usize,
     pub norm: ChangeNorm,
     pub seed: u64,
@@ -320,8 +320,8 @@ impl CorrChangeCfg {
                         self.span_rows
                     ));
                 }
-                if self.permute_every == 0 {
-                    return Err("corrchange: permute_every must be >= 1".into());
+                if self.permute_every_rows == 0 {
+                    return Err("corrchange: permute_every_rows must be >= 1".into());
                 }
                 if self.scalar {
                     return Err(
@@ -1129,12 +1129,15 @@ impl crate::OnlineModel for CorrChange {
                 } else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {
                     // The critical value is refreshed **after** the row is
                     // reported, so `predict` and `step` see the one in
-                    // force and cannot disagree.
-                    if self.perm_crit.is_none() || self.since_perm >= self.cfg.permute_every {
+                    // force and cannot disagree. Counted before it is
+                    // compared, so a value is in force for exactly
+                    // `permute_every_rows` reports: compared first, it stood
+                    // for one more, and `1` redrew every other row (review
+                    // 2026-10-06, CD11; docs/PLAN.md task 196, S1).
+                    self.since_perm = self.since_perm.saturating_add(1);
+                    if self.perm_crit.is_none() || self.since_perm >= self.cfg.permute_every_rows {
                         self.perm_crit = self.permutation_crit();
                         self.since_perm = 0;
-                    } else {
-                        self.since_perm += 1;
                     }
                 }
             }
@@ -1294,7 +1297,7 @@ mod tests {
             decay: Decay::Halflife(f64::INFINITY),
             crit: None,
             n_perm: 50,
-            permute_every: 25,
+            permute_every_rows: 25,
             perm_block: 1,
             norm: ChangeNorm::L1,
             seed: 3,
@@ -2050,7 +2053,7 @@ mod tests {
                 span_rows: w,
                 crit: None,
                 n_perm: 100,
-                permute_every: 1000,
+                permute_every_rows: 1000,
                 ..cfg(2, CorrChangeKind::Window)
             })
             .unwrap()
@@ -2341,10 +2344,10 @@ mod tests {
         bad(
             CorrChangeCfg {
                 kind: CorrChangeKind::Window,
-                permute_every: 0,
+                permute_every_rows: 0,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "permute_every must be >= 1",
+            "permute_every_rows must be >= 1",
         );
         bad(
             CorrChangeCfg {
@@ -2906,29 +2909,40 @@ mod tests {
     }
 
     /// The permutation critical value is redrawn on its cadence: drawn after
-    /// the first row that fills both windows reports, then kept for
-    /// `permute_every` rows and redrawn after the next, so each value is in
-    /// force for `permute_every + 1` reports.
+    /// the first row that fills both windows reports, then redrawn after
+    /// every `permute_every_rows`-th report, so each value is in force for
+    /// `permute_every_rows` reports, as the builder's docstring says. It was
+    /// in force for one more, so `1` redrew every other row (review
+    /// 2026-10-06, CD11; docs/PLAN.md task 196, S1).
     #[test]
     fn the_permutation_critical_value_is_redrawn_on_its_cadence() {
-        let (w, every) = (10usize, 4usize);
-        let mut m = CorrChange::new(CorrChangeCfg {
-            span_rows: w,
-            crit: None,
-            permute_every: every,
-            ..cfg(2, CorrChangeKind::Window)
-        })
-        .unwrap();
-        let mut n = Normals::new(8);
-        let crits: Vec<f64> = (0..2 * w + 5 * (every + 1))
-            .map(|_| m.step(&n.pair(0.3), &[], 1.0, 1.0).pred[1])
-            .collect();
-        assert!(crits[..2 * w].iter().all(|c| c.is_nan()), "{crits:?}");
-        let blocks: Vec<&[f64]> = crits[2 * w..].chunks(every + 1).collect();
-        for (b, block) in blocks.iter().enumerate() {
-            assert!(block.iter().all(|c| *c == block[0]), "block {b}: {block:?}");
-            if b > 0 {
-                assert_ne!(block[0], blocks[b - 1][0], "block {b} was not redrawn");
+        for (w, every) in [(10usize, 4usize), (10, 1), (6, 2)] {
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: None,
+                permute_every_rows: every,
+                ..cfg(2, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let mut n = Normals::new(8);
+            let crits: Vec<f64> = (0..2 * w + 5 * every)
+                .map(|_| m.step(&n.pair(0.3), &[], 1.0, 1.0).pred[1])
+                .collect();
+            assert!(crits[..2 * w].iter().all(|c| c.is_nan()), "{crits:?}");
+            let blocks: Vec<&[f64]> = crits[2 * w..].chunks(every).collect();
+            assert_eq!(blocks.len(), 5);
+            for (b, block) in blocks.iter().enumerate() {
+                assert!(
+                    block.iter().all(|c| *c == block[0]),
+                    "{every}: block {b}: {block:?}"
+                );
+                if b > 0 {
+                    assert_ne!(
+                        block[0],
+                        blocks[b - 1][0],
+                        "{every}: block {b} was not redrawn"
+                    );
+                }
             }
         }
     }

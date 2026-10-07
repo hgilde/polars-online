@@ -242,7 +242,7 @@ def describe_api(cli: Path | None = None) -> str:
             "ew_cov with lags",
             dict(
                 features=["x0", "x1"],
-                stats=["corr", "lagcorr"],
+                stats=["corr", "lag_corr"],
                 lags=[1, 5],
                 half_life=100.0,
             ),
@@ -412,7 +412,7 @@ def resolved_defaults_section() -> list[str]:
     out = [
         "[resolved defaults]  # what a spec left out resolves to, read off the bank's own build"
         " of the spec shown (_polars_online.resolved_defaults): a moved default is a diff here",
-        f"  chunk_rows = {native.default_chunk_rows()}",
+        f"  chunk_size = {native.default_chunk_size()}",
     ]
     minimal: dict[str, tuple[dict[str, object], dict[str, str]]] = {}
     for name in sorted(MINIMAL):
@@ -531,6 +531,13 @@ ENUM_PROBES: list[tuple[str, str, dict[str, object], str, str]] = [
     ("corrchange.kind", "corrchange", {}, "model.kind", "word"),
     ("corrchange.norm", "corrchange", {"kind": "window"}, "model.norm", "word"),
     ("deco.dynamics", "deco", {}, "model.dynamics", "word"),
+    # A windowed model's `closed` (docs/PLAN.md task 196): Polars' four words,
+    # `"left"` and `"none"` refused by name with their reason.
+    ("ew_class.closed", "ew_class", {"window_size": 100.0}, "model.closed", "word"),
+    ("ew_cov.closed", "ew_cov", {"window_size": 100.0}, "model.closed", "word"),
+    ("ewridge.closed", "ewridge", {"window_size": 100.0}, "model.closed", "word"),
+    ("lasso.closed", "lasso", {"window_size": 100.0}, "model.closed", "word"),
+    ("marginal.closed", "marginal", {"window_size": 100.0}, "model.closed", "word"),
     ("ew_class.covariance", "ew_class", {}, "model.covariance", "word"),
     ("ew_class.window_budget", "ew_class", {"window_size": 100.0}, "model.window_budget", "key"),
     ("ew_cov.stats", "ew_cov", {}, "model.stats", "list"),

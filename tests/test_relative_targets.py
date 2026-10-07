@@ -476,7 +476,7 @@ def test_the_cli_reads_the_toml_table_form(tmp_path, online_cli):
                 "gap_cap = 5.0",
                 "half_life = 80.0",
                 "[specs.model]",
-                'type = "ew_ridge"',
+                'type = "ewridge"',
             ]
         )
     )

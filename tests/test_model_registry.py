@@ -319,7 +319,7 @@ def test_the_core_golden_file_pins_every_model():
 def test_the_cross_os_hand_off_holds_every_kind():
     """`crates/online-polars/tests/state_portability.rs` writes the state
     `release.yml` hands from macOS to Windows and Linux, and hard rule 5
-    promises every kind's state loads on both. Its bank held one `ew_ridge`
+    promises every kind's state loads on both. Its bank held one `ewridge`
     spec (review 2026-10-06, TA2); it holds each builder's kind by name
     now, each spec named after its builder, and this keeps it so."""
     text = (ROOT / "crates" / "online-polars" / "tests" / "state_portability.rs").read_text(

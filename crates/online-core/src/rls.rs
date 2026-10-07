@@ -98,7 +98,7 @@ impl RlsCfg {
                 return Err("rls: coef_prior must be n_targets x k_total".into());
             }
             // The prior enters `u_0 = sqrt(delta) * prior`, and a non-finite
-            // entry there never leaves the QR state; `ew_ridge` refused it,
+            // entry there never leaves the QR state; `ewridge` refused it,
             // this did not (review 2026-09-18, B4).
             if c.iter().flatten().any(|v| !v.is_finite()) {
                 return Err("rls: coef_prior must be finite".into());
@@ -499,7 +499,7 @@ mod tests {
             "n_targets x k_total",
         );
         // A non-finite entry enters `u_0 = sqrt(delta) * prior` and the QR
-        // state never recovers; `ew_ridge` refuses it, this did not (review
+        // state never recovers; `ewridge` refuses it, this did not (review
         // 2026-09-18, B4).
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0, f64::NAN, 0.0]]),

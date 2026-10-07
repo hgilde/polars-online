@@ -9,10 +9,11 @@ raw rows** at the moment each statistic is needed, where
 at its weight ``w * 0.5 ** (age / half_life)``, the age read on the capped
 clock the decay uses. That makes them independent of the mean-form
 recursion as well as of the solver, and it is what lets a ``window`` be
-written from its definition -- the rows whose age is at most ``window``,
-nothing else -- instead of from the snapshot subtraction the core uses to get
-there. The models that keep no sums -- :func:`pa_ref`, :func:`sgd_ref`,
-:func:`holt_ref` -- are their builders' update equations, written out.
+written from its definition -- the rows whose age is less than ``window``
+(at most it under ``closed="both"``), nothing else -- instead of from the
+snapshot subtraction the core uses to get there. The models that keep no
+sums -- :func:`pa_ref`, :func:`sgd_ref`, :func:`holt_ref` -- are their
+builders' update equations, written out.
 
 Conventions shared with the core (docs/PLAN.md sections 3 and 13, CLAUDE.md
 hard rules 2, 8 and 9):
@@ -31,6 +32,15 @@ from __future__ import annotations
 import numpy as np
 
 from reference import _enet_descent
+
+
+def _within(horizon: float, closed: str):
+    """The rows a window of ``horizon`` holds, by their ages: less than it
+    under ``closed=\"right\"``, the default, at most it under ``\"both\"``
+    (docs/PLAN.md task 196)."""
+    if closed == "right":
+        return lambda ages: ages < horizon
+    return lambda ages: ages <= horizon
 
 
 def _weighted_mean(v: np.ndarray, om: np.ndarray) -> np.ndarray:
@@ -64,6 +74,7 @@ def lasso_paths_ref(
     max_rows_between_solves: int | None = None,
     gap_cap: float = np.inf,
     window_size: float | None = None,
+    closed: str = "right",
     fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     tol: float = 1e-14,
@@ -87,7 +98,8 @@ def lasso_paths_ref(
       target's rows, centred at the target's own means (pandas'
       pairwise-complete covariance). The intercept reads the target's own
       means either way;
-    - ``window_size``: of those, only the rows whose age is at most ``window_size``.
+    - ``window_size``: of those, only the rows whose age is less than
+      ``window_size``, or at most it under ``closed="both"``.
 
     With an intercept, ``C`` is the correlation matrix of the centred
     features, ``c_i = cov(x_i, y) / s_i``, ``coef_i = b_i / s_i`` and the
@@ -160,6 +172,7 @@ def lasso_paths_ref(
         select_half_life = half_life
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
     horizon = np.inf if window_size is None else window_size
+    within = _within(horizon, closed)
     single = m == 1 and np.ndim(min_weight) == 0
 
     pred = np.full((n, m, npath), np.nan)
@@ -215,7 +228,7 @@ def lasso_paths_ref(
     def solve(t_now: float) -> np.ndarray:
         ta, wa, xa, ya = (np.asarray(v) for v in (T, Wr, Xr, Yr))
         ages = t_now - ta
-        inside = ages <= horizon
+        inside = within(ages)
         om = wa * decay(ages, half_life)
         fit = np.full((m, npath, kt), np.nan)
         for j in range(m):
@@ -246,7 +259,7 @@ def lasso_paths_ref(
         # ---- before the row: every weight is seen from the last accepted row ----
         if T:
             ages = t_last - np.asarray(T)
-            inside = ages <= horizon
+            inside = within(ages)
             om = np.where(inside, np.asarray(Wr) * decay(ages, half_life), 0.0)
             present = ~np.isnan(np.asarray(Yr))
             weight_sum[i] = om.sum()
@@ -269,7 +282,7 @@ def lasso_paths_ref(
             if errs[j]:
                 te, we, ee = (np.asarray(v) for v in zip(*errs[j], strict=True))
                 ages_e = t_last - te
-                wt = np.where(ages_e <= horizon, we * decay(ages_e, select_half_life), 0.0)
+                wt = np.where(within(ages_e), we * decay(ages_e, select_half_life), 0.0)
                 if wt.sum() > 0.0:
                     score = wt @ (ee**2)
                     lo, second = np.sort(score)[:2]
@@ -293,14 +306,14 @@ def lasso_paths_ref(
         since_w += max(float(w[i]), 0.0)
         if share is not None:
             ages = t_now - np.asarray(T)
-            held = (np.asarray(Wr) * decay(ages, half_life))[ages <= horizon].sum()
+            held = (np.asarray(Wr) * decay(ages, half_life))[within(ages)].sum()
             by_cadence = since_w >= share * held
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
         cadence = by_cadence or since_rows >= max_rows
         if not cadence and fit is None:
             ages = t_now - np.asarray(T)
-            weight = (np.asarray(Wr) * decay(ages, half_life))[ages <= horizon].sum()
+            weight = (np.asarray(Wr) * decay(ages, half_life))[within(ages)].sum()
             if weight >= float(np.min(mp)):
                 if not single:
                     raise ValueError(
@@ -404,6 +417,7 @@ def ewridge_paths_ref(
     fit_intercept: bool = True,
     target_gaps: str = "own_rows",
     window_size: float | None = None,
+    closed: str = "right",
     min_weight: float | list[float] | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
@@ -480,6 +494,7 @@ def ewridge_paths_ref(
     since_w = 0.0
     max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
     horizon = np.inf if window_size is None else window_size
+    within = _within(horizon, closed)
     blend = session_shrink is not None
     if blend and long_half_life is None:
         raise ValueError("session_shrink needs long_half_life")
@@ -496,7 +511,7 @@ def ewridge_paths_ref(
     def solve() -> np.ndarray:
         wa, xa, ya, ta = np.asarray(fast), np.asarray(Xr), np.asarray(Yr), np.asarray(T)
         wt = np.asarray(fast_t)
-        inside = (t_last - ta) <= horizon
+        inside = within(t_last - ta)
         fit = np.full((m, len(combos), kt), np.nan)
         for j in range(m):
             own = inside & ~np.isnan(ya[:, j])
@@ -563,7 +578,7 @@ def ewridge_paths_ref(
 
         # ---- before the row, seen from the last accepted row ----
         if fast:
-            inside = (t_last - np.asarray(T)) <= horizon
+            inside = within(t_last - np.asarray(T))
             om = np.where(inside, np.asarray(fast), 0.0)
             weight_sum[i] = om.sum()
             wt = np.where(inside[:, None], np.asarray(fast_t), 0.0)
@@ -593,7 +608,7 @@ def ewridge_paths_ref(
         since_clock += d
         since_rows += 1
         since_w += max(float(w[i]), 0.0)
-        inside = (t_last - np.asarray(T)) <= horizon
+        inside = within(t_last - np.asarray(T))
         if share is not None:
             by_cadence = since_w >= share * float(np.asarray(fast)[inside].sum())
         else:
@@ -904,7 +919,7 @@ def holt_ref(
     t: np.ndarray,
     w: np.ndarray,
     *,
-    level_half_life: float,
+    half_life: float,
     trend_half_life: float | None = None,
     min_weight: float = 0.0,
     gap_cap: float = np.inf,
@@ -917,7 +932,7 @@ def holt_ref(
         l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)      W' = lam_l * W + w
         b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)      V' = lam_b * V + w
 
-    ``lam_l = 0.5 ** (s / level_half_life)`` and ``lam_b`` likewise at
+    ``lam_l = 0.5 ** (s / half_life)`` and ``lam_b`` likewise at
     ``trend_half_life``, default four times the level's. The first
     observation sets the level; the second, at gain 1, the trend. A row at
     the last observation's clock (``s = 0``) is a second observation the
@@ -931,7 +946,7 @@ def holt_ref(
     Returns ``pred``, ``weight_sum`` and ``coef`` (``[level, trend]`` after the
     row, NaN until the first observation)."""
     n, m = Y.shape
-    th = 4.0 * level_half_life if trend_half_life is None else trend_half_life
+    th = 4.0 * half_life if trend_half_life is None else trend_half_life
 
     def lam(s: float, h: float) -> float:
         return 1.0 if np.isinf(h) else 0.5 ** (s / h)
@@ -960,7 +975,7 @@ def holt_ref(
                 level[j], W[j] = Y[i, j], w[i]
             else:
                 p = level[j] + trend[j] * s
-                ll = lam(s, level_half_life)
+                ll = lam(s, half_life)
                 new = (ll * W[j] * p + w[i] * Y[i, j]) / (ll * W[j] + w[i])
                 W[j] = ll * W[j] + w[i]
                 if s > 0.0:
@@ -972,7 +987,7 @@ def holt_ref(
                 level[j] = new
             seen[j] += 1
             since[j] = 0.0
-        step = lam(d, level_half_life)
+        step = lam(d, half_life)
         w_sum = step * w_sum + w[i]
         w_own = step * w_own + w[i] * ~np.isnan(Y[i])
         for j in range(m):

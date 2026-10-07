@@ -13,18 +13,35 @@
 //! Every oracle here is the definition, computed in the test from the raw
 //! integer nanoseconds or the raw numbers, never from `ClockState`: at each
 //! row the window holds the learned rows whose decayed age at the last
-//! learned row is at most `window_size`. A row's age adds up each step after
-//! `gap_cap` and `session_gap` (README, *A hard window*).
+//! learned row is less than `window_size` under `closed = "right"`, the
+//! default, or at most it under `"both"` (docs/PLAN.md task 196, N17). A
+//! row's age adds up each step after `gap_cap` and `session_gap` (README, *A
+//! hard window*). Every test runs both edges.
 
 use online_polars::{Bank, Spec};
 use polars::prelude::*;
+
+/// The two edges a model window takes, as a spec writes them.
+const EDGES: [&str; 2] = ["right", "both"];
+
+/// Whether a row `age` old is inside a window `w` under `closed`: an age
+/// less than `w` under `"right"`, at most `w` under `"both"`.
+fn inside_by<T: PartialOrd>(closed: &str, age: T, w: T) -> bool {
+    if closed == "right" { age < w } else { age <= w }
+}
+
+/// Whether the newest snapshot, `age` old, has left a window `w` under
+/// `closed`: the complement of [`inside_by`].
+fn left_by<T: PartialOrd>(closed: &str, age: T, w: T) -> bool {
+    !inside_by(closed, age, w)
+}
 
 /// The five windowed models, each over the one feature `x`: the model's
 /// JSON with `{window}` where its window settings go, and its targets.
 const MODELS: [(&str, &str, &str); 5] = [
     (
-        "ew_ridge",
-        r#"{"type": "ew_ridge", "ridge": 1e-6, {window}}"#,
+        "ewridge",
+        r#"{"type": "ewridge", "ridge": 1e-6, {window}}"#,
         r#""targets": ["y"],"#,
     ),
     (
@@ -206,46 +223,84 @@ fn millisecond_rows(n: usize, unit: TimeUnit) -> (Series, Vec<i64>) {
 }
 
 /// The reviewer's case (`$S2/core-b/edge_accumulated_clock.py`), for every
-/// windowed model and every `Datetime` unit: rows 1 ms apart and a window
-/// of `"1s"`, with no decay, so `weight_sum` counts the rows inside. Each
-/// row's window holds exactly the rows whose age at the last learned row is
-/// at most a second, a row exactly a second old included: 1001 rows from
-/// row 1001 on. The summed clock dropped that row on rows 1001 to 1007.
+/// windowed model, every `Datetime` unit and both edges: rows 1 ms apart and
+/// a window of `"1s"`, with no decay, so `weight_sum` counts the rows
+/// inside. Under `closed = "both"` each row's window holds exactly the rows
+/// whose age at the last learned row is at most a second, a row exactly a
+/// second old included: 1001 rows from row 1001 on. Under `"right"`, the
+/// default, that row has left: 1000, as Polars' `rolling_sum_by("1s")`
+/// counts them. The summed clock dropped that row on rows 1001 to 1007.
 #[test]
-fn a_row_exactly_one_window_old_is_inside_for_every_model_and_unit() {
+fn a_row_exactly_one_window_old_is_decided_by_the_edge_for_every_model_and_unit() {
     let n = 1_400;
     let mut failures = Vec::new();
-    for unit in [
-        TimeUnit::Milliseconds,
-        TimeUnit::Microseconds,
-        TimeUnit::Nanoseconds,
-    ] {
+    for (closed, unit) in EDGES.into_iter().flat_map(|c| {
+        [
+            TimeUnit::Milliseconds,
+            TimeUnit::Microseconds,
+            TimeUnit::Nanoseconds,
+        ]
+        .map(|u| (c, u))
+    }) {
         let (t, ns) = millisecond_rows(n, unit);
         let df = frame(t, &vec![false; n], &vec!["s"; n], 7);
         let decayed: Vec<Option<i64>> = ns.iter().map(|&v| Some(v - ns[0])).collect();
         let want = counts_inside(&decayed, &vec![false; n], |last, j| {
-            last - j <= 1_000_000_000
+            inside_by(closed, last - j, 1_000_000_000)
         });
-        assert_eq!(want[1_001], Some(1_001), "the oracle's own edge");
+        let edge = if closed == "right" { 1_000 } else { 1_001 };
+        assert_eq!(want[1_001], Some(edge), "the oracle's own edge");
         for (kind, _, _) in MODELS {
             let s = spec(
                 kind,
-                r#""window_size": "1s""#,
+                &format!(r#""window_size": "1s", "closed": "{closed}""#),
                 r#""gap_cap": "1d", "half_life": "inf""#,
             );
             let got = field(&run(&s, &df, 0), "weight_sum");
-            check(&mut failures, &format!("{kind} on {unit:?}"), &got, &want);
+            check(
+                &mut failures,
+                &format!("{kind} on {unit:?}, {closed}"),
+                &got,
+                &want,
+            );
         }
     }
     assert_no_failures(&failures);
 }
 
+/// The default edge is `"right"`: a spec that names none counts as
+/// `closed = "right"` does, row for row.
+#[test]
+fn the_default_edge_is_right() {
+    let n = 1_100;
+    let (t, _) = millisecond_rows(n, TimeUnit::Nanoseconds);
+    let df = frame(t, &vec![false; n], &vec!["s"; n], 7);
+    let rest = r#""gap_cap": "1d", "half_life": "inf""#;
+    for (kind, _, _) in MODELS {
+        let plain = run(&spec(kind, r#""window_size": "1s""#, rest), &df, 0);
+        let right = run(
+            &spec(kind, r#""window_size": "1s", "closed": "right""#, rest),
+            &df,
+            0,
+        );
+        assert_same_floats(&plain, &right, kind);
+        assert_eq!(field(&plain, "weight_sum")[1_001], Some(1_000.0), "{kind}");
+    }
+}
+
 /// The reviewer's script itself, with decay: an `ew_cov`'s windowed mean
 /// and `weight_sum` at a half-life of an hour, against the weighted mean of
-/// the rows at most a second old, each weighted `0.5^(age / 1h)` with its
-/// age taken from the integer nanoseconds, to 1e-9.
+/// the rows inside -- less than a second old, or at most a second under
+/// `closed = "both"` -- each weighted `0.5^(age / 1h)` with its age taken
+/// from the integer nanoseconds, to 1e-9.
 #[test]
 fn a_decayed_windowed_mean_is_the_mean_of_the_rows_inside() {
+    for closed in EDGES {
+        decayed_windowed_mean_is_the_mean_of_the_rows_inside(closed);
+    }
+}
+
+fn decayed_windowed_mean_is_the_mean_of_the_rows_inside(closed: &str) {
     let n = 2_600;
     let (t, ns) = millisecond_rows(n, TimeUnit::Nanoseconds);
     let df = frame(t, &vec![false; n], &vec!["s"; n], 0);
@@ -258,7 +313,7 @@ fn a_decayed_windowed_mean_is_the_mean_of_the_rows_inside() {
         .collect();
     let s = spec(
         "ew_cov",
-        r#""window_size": "1s""#,
+        &format!(r#""window_size": "1s", "closed": "{closed}""#),
         r#""gap_cap": "1d", "half_life": "1h""#,
     );
     let out = run(&s, &df, 0);
@@ -267,7 +322,7 @@ fn a_decayed_windowed_mean_is_the_mean_of_the_rows_inside() {
     for i in 1..n {
         let now = ns[i - 1];
         let (mut sw, mut swx) = (0.0, 0.0);
-        for j in (0..i).filter(|&j| now - ns[j] <= 1_000_000_000) {
+        for j in (0..i).filter(|&j| inside_by(closed, now - ns[j], 1_000_000_000)) {
             let age = (now - ns[j]) as f64 / 1e9;
             let w = 0.5f64.powf(age / 3600.0);
             sw += w;
@@ -284,7 +339,7 @@ fn a_decayed_windowed_mean_is_the_mean_of_the_rows_inside() {
     }
     assert!(
         bad.is_empty(),
-        "{} rows differ from the rows inside, first {:?}",
+        "{closed}: {} rows differ from the rows inside, first {:?}",
         bad.len(),
         &bad[..bad.len().min(4)]
     );
@@ -297,11 +352,11 @@ fn tenths(n: usize) -> Vec<f64> {
 }
 
 /// A number clock whose steps do not add exactly, a tenth apart under a
-/// window of `0.3`: a row's window holds the rows whose raw value is at most
-/// `0.3` below the last learned row's by one subtraction, as the window
-/// operators decide, and as Polars' `rolling_*_by` does. The summed clock
-/// kept the row at `0.5` in the window of the row at `0.8`, on 186 of 400
-/// rows.
+/// window of `0.3`: a row's window holds the rows whose raw value is less
+/// than `0.3` below the last learned row's (at most `0.3` under `closed =
+/// "both"`) by one subtraction, as the window operators decide, and as
+/// Polars' `rolling_*_by` does. The summed clock kept the row at `0.5` in
+/// the window of the row at `0.8`, on 186 of 400 rows.
 #[test]
 fn a_number_clocks_edge_is_one_subtraction_of_the_raw_values() {
     let n = 400;
@@ -313,17 +368,21 @@ fn a_number_clocks_edge_is_one_subtraction_of_the_raw_values() {
         3,
     );
     let decayed: Vec<Option<f64>> = t.iter().map(|&v| Some(v)).collect();
-    let want = counts_inside(&decayed, &vec![false; n], |last, j| last - j <= 0.3);
-    assert_eq!(want[9], Some(3), "0.8 − 0.5 is outside");
     let mut failures = Vec::new();
-    for (kind, _, _) in MODELS {
-        let s = spec(
-            kind,
-            r#""window_size": 0.3"#,
-            r#""gap_cap": 1.0, "half_life": "inf""#,
-        );
-        let got = field(&run(&s, &df, 0), "weight_sum");
-        check(&mut failures, kind, &got, &want);
+    for closed in EDGES {
+        let want = counts_inside(&decayed, &vec![false; n], |last, j| {
+            inside_by(closed, last - j, 0.3)
+        });
+        assert_eq!(want[9], Some(3), "0.8 − 0.5 is outside");
+        for (kind, _, _) in MODELS {
+            let s = spec(
+                kind,
+                &format!(r#""window_size": 0.3, "closed": "{closed}""#),
+                r#""gap_cap": 1.0, "half_life": "inf""#,
+            );
+            let got = field(&run(&s, &df, 0), "weight_sum");
+            check(&mut failures, &format!("{kind}, {closed}"), &got, &want);
+        }
     }
     assert_no_failures(&failures);
 }
@@ -445,9 +504,15 @@ const EVENT_CLOCK: &str = r#""gap_cap": "10s", "half_life": "inf", "session": "s
 /// since it.
 #[test]
 fn across_every_clock_event_the_window_holds_what_the_decayed_clock_says() {
+    for closed in EDGES {
+        across_every_clock_event(closed);
+    }
+}
+
+fn across_every_clock_event(closed: &str) {
     let e = events();
     let want = counts_inside(&e.decayed, &e.restarts, |last, j| {
-        last - j <= 30_000_000_000
+        inside_by(closed, last - j, 30_000_000_000)
     });
     // The oracle has edges to decide: rows exactly 30 s old, a stretch
     // straddling the capped gap, and the restart.
@@ -471,10 +536,11 @@ fn across_every_clock_event_the_window_holds_what_the_decayed_clock_says() {
     assert_eq!(e.restarts.iter().filter(|&&r| r).count(), 1);
     assert!(e.decayed.iter().any(Option::is_none), "skipped rows");
     let mut failures = Vec::new();
+    let window = format!(r#""window_size": "30s", "closed": "{closed}""#);
     for (kind, _, _) in MODELS {
-        let s = spec(kind, r#""window_size": "30s""#, EVENT_CLOCK);
+        let s = spec(kind, &window, EVENT_CLOCK);
         let got = field(&run(&s, &e.df, 0), "weight_sum");
-        check(&mut failures, kind, &got, &want);
+        check(&mut failures, &format!("{kind}, {closed}"), &got, &want);
     }
     assert_no_failures(&failures);
 }
@@ -506,17 +572,21 @@ fn assert_same_floats(a: &DataFrame, b: &DataFrame, what: &str) {
 #[test]
 fn chunking_moves_no_edge_across_every_clock_event() {
     let e = events();
-    let want = counts_inside(&e.decayed, &e.restarts, |last, j| {
-        last - j <= 30_000_000_000
-    });
     let mut failures = Vec::new();
-    for kind in ["ew_ridge", "ew_cov", "marginal"] {
-        let s = spec(kind, r#""window_size": "30s""#, EVENT_CLOCK);
-        let whole = run(&s, &e.df, 0);
-        check(&mut failures, kind, &field(&whole, "weight_sum"), &want);
-        for size in [1, 7, 37] {
-            let chunked = run(&s, &e.df, size);
-            assert_same_floats(&whole, &chunked, &format!("{kind} in chunks of {size}"));
+    for closed in EDGES {
+        let want = counts_inside(&e.decayed, &e.restarts, |last, j| {
+            inside_by(closed, last - j, 30_000_000_000)
+        });
+        let window = format!(r#""window_size": "30s", "closed": "{closed}""#);
+        for kind in ["ewridge", "ew_cov", "marginal"] {
+            let s = spec(kind, &window, EVENT_CLOCK);
+            let whole = run(&s, &e.df, 0);
+            let what = format!("{kind}, {closed}");
+            check(&mut failures, &what, &field(&whole, "weight_sum"), &want);
+            for size in [1, 7, 37] {
+                let chunked = run(&s, &e.df, size);
+                assert_same_floats(&whole, &chunked, &format!("{what} in chunks of {size}"));
+            }
         }
     }
     assert_no_failures(&failures);
@@ -573,30 +643,46 @@ type SpacingCase = (&'static str, DataFrame, Vec<Option<usize>>, Vec<usize>);
 /// on as the one that never stopped.
 #[test]
 fn window_every_spaces_the_snapshots_exactly_and_a_save_between_them_resumes() {
+    for closed in EDGES {
+        window_every_spaces_the_snapshots_exactly(closed);
+    }
+}
+
+fn window_every_spaces_the_snapshots_exactly(closed: &str) {
     let n = 300;
     let num = tenths(n);
     let ns: Vec<i64> = (0..n as i64).map(|i| T0_NS + i * 100_000_000).collect();
     let cases: Vec<SpacingCase> = vec![
         {
-            let snaps = snapshot_rows(&num, |c, last| c - last >= 0.3 || c - last > 1.0);
+            let snaps = snapshot_rows(&num, |c, last| {
+                c - last >= 0.3 || left_by(closed, c - last, 1.0)
+            });
             (
-                r#""window_size": 1.0, "window_every": 0.3"#,
+                if closed == "right" {
+                    r#""window_size": 1.0, "window_every": 0.3, "closed": "right""#
+                } else {
+                    r#""window_size": 1.0, "window_every": 0.3, "closed": "both""#
+                },
                 frame(
                     Series::new("t".into(), num.clone()),
                     &vec![false; n],
                     &vec!["s"; n],
                     5,
                 ),
-                counts_from_boundary(&num, &snaps, |last, j| last - j <= 1.0),
+                counts_from_boundary(&num, &snaps, |last, j| inside_by(closed, last - j, 1.0)),
                 snaps,
             )
         },
         {
             let snaps = snapshot_rows(&ns, |c, last| {
-                c - last >= 300_000_000 || c - last > 1_000_000_000
+                c - last >= 300_000_000 || left_by(closed, c - last, 1_000_000_000)
             });
             (
-                r#""window_size": "1s", "window_every": "300ms""#,
+                if closed == "right" {
+                    r#""window_size": "1s", "window_every": "300ms", "closed": "right""#
+                } else {
+                    r#""window_size": "1s", "window_every": "300ms", "closed": "both""#
+                },
                 frame(
                     Series::new("t".into(), ns.clone())
                         .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
@@ -605,7 +691,9 @@ fn window_every_spaces_the_snapshots_exactly_and_a_save_between_them_resumes() {
                     &vec!["s"; n],
                     5,
                 ),
-                counts_from_boundary(&ns, &snaps, |last, j| last - j <= 1_000_000_000),
+                counts_from_boundary(&ns, &snaps, |last, j| {
+                    inside_by(closed, last - j, 1_000_000_000)
+                }),
                 snaps,
             )
         },
@@ -646,17 +734,24 @@ fn window_every_spaces_the_snapshots_exactly_and_a_save_between_them_resumes() {
 
 /// The residual window's boundary is the model's (review 2026-09-12, S1):
 /// an `ewridge`'s `sigma`, with no decay, is the root mean square of the
-/// residuals of the rows inside the model's window -- the rows at most a
-/// second old on a 1 ms clock, the row exactly a second old included -- and
-/// `weight_sum` counts the same rows.
+/// residuals of the rows inside the model's window -- on a 1 ms clock the
+/// rows less than a second old, or at most a second under `closed =
+/// "both"`, the row exactly a second old included -- and `weight_sum`
+/// counts the same rows.
 #[test]
 fn the_residual_windows_boundary_is_the_models() {
+    for closed in EDGES {
+        residual_windows_boundary_is_the_models(closed);
+    }
+}
+
+fn residual_windows_boundary_is_the_models(closed: &str) {
     let n = 1_300;
     let (t, ns) = millisecond_rows(n, TimeUnit::Nanoseconds);
     let df = frame(t, &vec![false; n], &vec!["s"; n], 9);
     let s = spec(
-        "ew_ridge",
-        r#""window_size": "1s""#,
+        "ewridge",
+        &format!(r#""window_size": "1s", "closed": "{closed}""#),
         r#""gap_cap": "1d", "half_life": "inf", "emit_sigma": true"#,
     );
     let out = run(&s, &df, 0);
@@ -668,7 +763,9 @@ fn the_residual_windows_boundary_is_the_models() {
     let mut bad = Vec::new();
     for i in 1..n {
         let now = ns[i - 1];
-        let inside: Vec<usize> = (0..i).filter(|&j| now - ns[j] <= 1_000_000_000).collect();
+        let inside: Vec<usize> = (0..i)
+            .filter(|&j| inside_by(closed, now - ns[j], 1_000_000_000))
+            .collect();
         if wsum[i] != Some(inside.len() as f64) {
             bad.push((i, "weight_sum", wsum[i], inside.len() as f64));
         }
@@ -688,7 +785,7 @@ fn the_residual_windows_boundary_is_the_models() {
     }
     assert!(
         bad.is_empty(),
-        "{} rows, first {:?}",
+        "{closed}: {} rows, first {:?}",
         bad.len(),
         &bad[..bad.len().min(6)]
     );
@@ -696,19 +793,23 @@ fn the_residual_windows_boundary_is_the_models() {
 
 /// Under `embargo` each row is learned a delay after it arrives, and its
 /// replay keys the row's snapshot by the stamp it arrived with. The window
-/// at each row holds the learned rows at most a second behind the newest
-/// learned one -- which `learned_clock` names -- the row exactly a second
-/// behind included, for every windowed model.
+/// at each row holds the learned rows less than a second behind the newest
+/// learned one -- which `learned_clock` names -- or at most a second, the
+/// row exactly a second behind included, under `closed = "both"`, for every
+/// windowed model.
 #[test]
 fn an_embargoed_row_is_learned_at_its_own_stamp() {
     let n = 1_300;
     let (t, ns) = millisecond_rows(n, TimeUnit::Nanoseconds);
     let df = frame(t, &vec![false; n], &vec!["s"; n], 13);
     let mut failures = Vec::new();
-    for (kind, _, _) in MODELS {
+    for (closed, (kind, _, _)) in EDGES
+        .into_iter()
+        .flat_map(|c| MODELS.into_iter().map(move |m| (c, m)))
+    {
         let s = spec(
             kind,
-            r#""window_size": "1s""#,
+            &format!(r#""window_size": "1s", "closed": "{closed}""#),
             r#""gap_cap": "1d", "half_life": "inf", "embargo": "5ms", "emit_clocks": true"#,
         );
         let out = run(&s, &df, 0);
@@ -733,16 +834,22 @@ fn an_embargoed_row_is_learned_at_its_own_stamp() {
                 l.map(|l| {
                     let last = ns.binary_search(&l).expect("a row's clock");
                     (0..=last)
-                        .filter(|&j| ns[last] - ns[j] <= 1_000_000_000)
+                        .filter(|&j| inside_by(closed, ns[last] - ns[j], 1_000_000_000))
                         .count()
                 })
             })
             .collect();
+        let edge = if closed == "right" { 1_000 } else { 1_001 };
         assert!(
-            want.iter().filter(|w| **w == Some(1_001)).count() > 200,
-            "{kind}: the window reaches a row exactly a second back"
+            want.iter().filter(|w| **w == Some(edge)).count() > 200,
+            "{kind}, {closed}: the window reaches a row exactly a second back"
         );
-        check(&mut failures, kind, &field(&out, "weight_sum"), &want);
+        check(
+            &mut failures,
+            &format!("{kind}, {closed}"),
+            &field(&out, "weight_sum"),
+            &want,
+        );
     }
     assert_no_failures(&failures);
 }

@@ -11,6 +11,8 @@ permutation null; that one is held to a longhand statistic and to behaving
 on a stationary stream.
 """
 
+import itertools
+
 import numpy as np
 import polars as pl
 import pytest
@@ -209,7 +211,7 @@ def test_the_permutation_critical_value_separates_noise_from_a_break():
         "kind": "window",
         "span_rows": w,
         "n_perm": 100,
-        "permute_every": 10,
+        "permute_every_rows": 10,
         "features": ["x0", "x1"],
     }
     steady = run(pair(400, 0.4, seed=10), **common)
@@ -218,6 +220,29 @@ def test_the_permutation_critical_value_separates_noise_from_a_break():
     loud = broken["flag"].drop_nulls().to_list()
     assert sum(quiet) / len(quiet) < 0.15, sum(quiet) / len(quiet)
     assert sum(loud) / len(loud) > 2 * sum(quiet) / len(quiet)
+
+
+@pytest.mark.parametrize("every", [1, 3, 10])
+def test_the_permutation_critical_value_is_redrawn_every_permute_every_rows_reports(every):
+    """S1 (docs/PLAN.md task 196): ``permute_every_rows = n`` redraws the
+    critical value every ``n`` reports, as the docstring says. It was drawn
+    every ``n + 1``, so ``1`` redrew every other row. Read off the ``crit``
+    field: past the first ``2 * span_rows`` rows, a run of ``n`` reports
+    holds one value, and the next run another."""
+    w = 20
+    out = run(
+        pair(2 * w + 12 * every, 0.3, seed=196),
+        kind="window",
+        span_rows=w,
+        n_perm=50,
+        permute_every_rows=every,
+    )
+    crit = out["crit"].to_list()
+    assert all(c is None for c in crit[: 2 * w]), crit[: 2 * w]
+    drawn = crit[2 * w :]
+    runs = [len(list(g)) for _, g in itertools.groupby(drawn)]
+    assert runs[:-1] == [every] * (len(runs) - 1), runs
+    assert runs[-1] <= every, runs
 
 
 def test_reset_empties_the_windows_at_a_flag():
@@ -330,8 +355,8 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
             "perm_block must be 1..=",
         ),
         (
-            {"kind": "window", "span_rows": 20, "permute_every": 0},
-            "permute_every must be >= 1",
+            {"kind": "window", "span_rows": 20, "permute_every_rows": 0},
+            "permute_every_rows must be >= 1",
         ),
     ],
 )
@@ -349,7 +374,7 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
         ("monitor", {"seed": 3}, '"window"'),
         ("monitor", {"norm": "linf"}, '"window"'),
         ("monitor", {"perm_block": 2}, '"window"'),
-        ("monitor", {"permute_every": 10}, '"window"'),
+        ("monitor", {"permute_every_rows": 10}, '"window"'),
         ("monitor", {"monitor_rows": 50}, '"sequential"'),
         ("monitor", {"boundary_gamma": 0.2}, '"sequential"'),
         ("window", {"bandwidth": 3}, '"monitor" or "sequential"'),

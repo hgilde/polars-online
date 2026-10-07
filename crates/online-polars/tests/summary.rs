@@ -41,14 +41,14 @@ fn spec(json: &str) -> Spec {
 fn specs() -> Vec<Spec> {
     vec![
         spec(
-            r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6},
+            r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "session": "sess", "session_gap": "reset", "weight": "w",
                 "group": "g", "half_life": 10.0, "gap_cap": 30.0,
                 "restart_after_step_back": 0}"#,
         ),
         spec(
-            r#"{"name": "r", "model": {"type": "ew_ridge", "ridge": 1e-6},
+            r#"{"name": "r", "model": {"type": "ewridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "group": "g",
                 "half_life": 10.0, "gap_cap": 30.0,
@@ -68,7 +68,7 @@ fn specs() -> Vec<Spec> {
                 "restart_after_step_back": 0}"#,
         ),
         spec(
-            r#"{"name": "n", "model": {"type": "ew_ridge", "ridge": 1e-6},
+            r#"{"name": "n", "model": {"type": "ewridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x1"], "group": "g",
                 "half_life": 10.0}"#,
         ),
@@ -822,7 +822,7 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
     let df = make_df(60);
     // One small spec so every prefix length can be tried.
     let specs = vec![spec(
-        r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6},
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6},
             "targets": ["y"], "features": ["x0"], "clock": "t", "weight": "w",
             "group": "g", "half_life": 10.0, "gap_cap": 30.0}"#,
     )];
@@ -878,7 +878,7 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
 }
 
 /// The same sweep for every model kind, thinned -- every 7th prefix and a
-/// flip every 5th byte -- where it ran on one `ew_ridge` spec (docs/PLAN.md
+/// flip every 5th byte -- where it ran on one `ewridge` spec (docs/PLAN.md
 /// task 111): each kind's state has its own framing, lengths and nested
 /// accumulators, and a panic in any of them on a corrupt file is the same
 /// defect. Held to `ModelKind::KINDS`, so a new kind cannot be left out.
@@ -888,8 +888,8 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
     // (kind, model, targets, features, half-life): what runs on `make_df`.
     let kinds: &[(&str, &str, &str, &str, bool)] = &[
         (
-            "ew_ridge",
-            r#"{"type": "ew_ridge", "ridge": 1e-6}"#,
+            "ewridge",
+            r#"{"type": "ewridge", "ridge": 1e-6}"#,
             r#"["y"]"#,
             r#"["x0", "x1"]"#,
             true,

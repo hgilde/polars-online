@@ -1,5 +1,5 @@
 //! CLI-level tests: streaming a parquet file through a TOML config, chunk
-//! invariance across chunk_rows, and resume-from-state (docs/PLAN.md task 15).
+//! invariance across chunk_size, and resume-from-state (docs/PLAN.md task 15).
 
 use std::path::{Path, PathBuf};
 
@@ -69,12 +69,12 @@ fn toml_path(p: &Path) -> String {
     p.display().to_string().replace('\\', "\\\\")
 }
 
-fn config(input: &Path, output: &Path, chunk_rows: usize) -> RunConfig {
+fn config(input: &Path, output: &Path, chunk_size: usize) -> RunConfig {
     let toml = format!(
         r#"
 input = "{}"
 output = "{}"
-chunk_rows = {chunk_rows}
+chunk_size = {chunk_size}
 
 [[specs]]
 name = "ridge"
@@ -88,7 +88,7 @@ group = "group"
 min_weight = 5.0
 
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 ridge = 1e-6
 max_rows_between_solves = 1
 "#,
@@ -131,9 +131,9 @@ fn streams_parquet_and_is_chunk_invariant() {
 /// columns' chunks in lockstep and only `debug_assert`s that they line up:
 /// here (a debug build) that assertion fired; in release the mismatch was a
 /// panic inside arrow's record-batch constructor -- on every file whose row
-/// groups were not a multiple of `chunk_rows`.
+/// groups were not a multiple of `chunk_size`.
 #[test]
-fn row_groups_need_not_align_with_chunk_rows() {
+fn row_groups_need_not_align_with_chunk_size() {
     let aligned = tmp("rg-one.parquet");
     let split = tmp("rg-50.parquet");
     write_input(&aligned, 1000).unwrap();
@@ -222,7 +222,7 @@ fn accumulate_only_ew_cov_writes_n_eff_alone() {
 input = "{}"
 output = "{}"
 save_state = "{}"
-chunk_rows = 256
+chunk_size = 256
 
 [[specs]]
 name = "g"
@@ -317,26 +317,26 @@ fn rejects_a_misspelt_key_with_its_line() {
     let good = r#"
 input = "x.parquet"
 output = "y.parquet"
-chunk_rows = 5
+chunk_size = 5
 [[specs]]
 name = "m"
 targets = ["y"]
 features = ["x"]
 half_life = 10
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 "#;
     assert!(toml::from_str::<RunConfig>(good).is_ok());
     let unknown = |text: String| toml::from_str::<RunConfig>(&text).unwrap_err().to_string();
 
-    let err = unknown(good.replace("chunk_rows = 5", "chunk_row = 5"));
+    let err = unknown(good.replace("chunk_size = 5", "chunk_row = 5"));
     assert!(
         err.contains("line 4") && err.contains("unknown field `chunk_row`, expected one of"),
         "{err}"
     );
     let err = unknown(good.replace("half_life = 10", "halflfe = 10"));
     assert!(err.contains("unknown field `halflfe`"), "{err}");
-    let err = unknown(good.replace("type = \"ew_ridge\"", "type = \"ew_ridge\"\nrigde = 0.1"));
+    let err = unknown(good.replace("type = \"ewridge\"", "type = \"ewridge\"\nrigde = 0.1"));
     assert!(
         err.contains("unknown field `rigde`, expected one of `ridge`"),
         "{err}"
@@ -417,7 +417,7 @@ fn online_with(
         r#"
 input = "{}"
 output = "{}"
-chunk_rows = 100
+chunk_size = 100
 {top}
 
 [[specs]]
@@ -430,7 +430,7 @@ gap_cap = 10.0
 group = "group"
 
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 "#,
         toml_path(input),
         toml_path(output)
@@ -525,7 +525,7 @@ fn without_column(path: &Path, drop: &str, to: &Path) {
 }
 
 /// Review round 4, SF2: the dry run said "config OK" for three runs that
-/// fail at their first step -- a `--resume` state that is not there, one
+/// fail at their first step -- a `--load-state` state that is not there, one
 /// saved from other specs, and an input, or a `keep_columns`, without a
 /// column a spec reads. It opens the bank as the run would and runs it on a
 /// frame of no rows of the input's schema, so it refuses each as the run
@@ -544,8 +544,8 @@ fn a_dry_run_refuses_what_the_run_refuses_at_its_first_step() {
     let s = state.to_str().unwrap();
     for args in [
         &["--dry-run"][..],
-        &["--dry-run", "--resume", s],
-        &["--dry-run", "--resume", s, "--predict"],
+        &["--dry-run", "--load-state", s],
+        &["--dry-run", "--load-state", s, "--predict"],
     ] {
         let (code, stdout, err) = online_with(&dir, &input, &output, "", 50.0, args);
         assert_eq!(code, Some(0), "{args:?}: {err}");
@@ -560,13 +560,13 @@ fn a_dry_run_refuses_what_the_run_refuses_at_its_first_step() {
         (
             "a state that is not there",
             "",
-            vec!["--resume", missing.to_str().unwrap()],
+            vec!["--load-state", missing.to_str().unwrap()],
             vec!["loading state", missing_text.as_str()],
         ),
         (
             "a state saved from other specs",
             "",
-            vec!["--resume", other.to_str().unwrap()],
+            vec!["--load-state", other.to_str().unwrap()],
             vec!["do not match"],
         ),
         (
@@ -694,7 +694,7 @@ fn no_output_with_predict_is_refused_naming_predict() {
         let mut args = vec![
             "--no-output",
             "--predict",
-            "--resume",
+            "--load-state",
             state.to_str().unwrap(),
         ];
         args.extend_from_slice(extra);
@@ -706,5 +706,183 @@ fn no_output_with_predict_is_refused_naming_predict() {
         );
         assert!(!err.contains("closed_groups"), "{extra:?}: {err}");
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The first `n` rows of `path`, written to `to`.
+fn head_of(path: &Path, n: usize, to: &Path) {
+    let mut df = ParquetReader::new(std::fs::File::open(path).unwrap())
+        .finish()
+        .unwrap()
+        .slice(0, n);
+    ParquetWriter::new(std::fs::File::create(to).unwrap())
+        .finish(&mut df)
+        .unwrap();
+}
+
+fn read_frame(path: &Path) -> DataFrame {
+    ParquetReader::new(std::fs::File::open(path).unwrap())
+        .finish()
+        .unwrap()
+}
+
+/// Task 196 (N2, N15): the chunk size is Polars' `chunk_size`, on the flag
+/// and the TOML key, and the state to start from is `--load-state`, as the
+/// key `load_state` and `--save-state` are. The old flags are refused as a
+/// usage error naming the new ones, and the old key as the config's own
+/// refusal does, naming the new one.
+#[test]
+fn the_renamed_flags_and_key_are_refused_naming_the_new_ones() {
+    let dir = fresh_dir("t196-names");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 300).unwrap();
+    let state = dir.join("bank.state");
+    let state_arg = state.to_str().unwrap();
+    let (code, stdout, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["--chunk-size", "70", "--save-state", state_arg, "--dry-run"],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(stdout.contains("chunk_size: 70"), "{stdout}");
+    let (code, _, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["-q", "--chunk-size", "70", "--save-state", state_arg],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    let (code, _, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["-q", "--load-state", state_arg, "--predict"],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    let old: [(&[&str], &str); 2] = [
+        (
+            &["--chunk-rows", "70"],
+            "--chunk-rows was renamed --chunk-size",
+        ),
+        (
+            &["--resume", state_arg],
+            "--resume was renamed --load-state",
+        ),
+    ];
+    for (args, msg) in old {
+        let (code, _, err) = online_with(&dir, &input, &output, "", 50.0, args);
+        assert_eq!(code, Some(2), "{args:?}: {err}");
+        assert!(err.contains(msg), "{args:?}: {err}");
+    }
+    // The key: the config written with the old one, the run refused.
+    let toml = std::fs::read_to_string(dir.join("bank.toml"))
+        .unwrap()
+        .replace("chunk_size = ", "chunk_rows = ");
+    let old_key = dir.join("old.toml");
+    std::fs::write(&old_key, toml).unwrap();
+    let (code, _, err) = online_args(
+        &[std::ffi::OsStr::new("--config"), old_key.as_os_str()],
+        &["-q"],
+    );
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("unknown field `chunk_rows`")
+            && err.contains("chunk_rows was renamed chunk_size"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Task 196 (N26, review AP22): `--skip-learned` resumes a saved bank on
+/// input that overlaps it, as `ModelBank.skip_learned` does in Python: the
+/// rows at or before each group's last learned clock are dropped, so each
+/// row is learned once. Without it the overlap steps the clock back and the
+/// run is refused. Two interleaved groups, the state saved after 200 rows,
+/// the whole 300-row file run again: the output is rows 200 to 299, and
+/// their predictions are the unbroken run's, to the bit.
+#[test]
+fn skip_learned_resumes_on_overlapping_input() {
+    let dir = fresh_dir("t196-skip");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 300).unwrap();
+    let head = dir.join("head.parquet");
+    head_of(&input, 200, &head);
+    let state = dir.join("bank.state");
+    let state_arg = state.to_str().unwrap();
+    let full = dir.join("full.parquet");
+    let (code, _, err) = online_with(&dir, &input, &full, "", 50.0, &["-q", "--chunk-size", "64"]);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, _, err) = online_with(
+        &dir,
+        &head,
+        &dir.join("head-out.parquet"),
+        "",
+        50.0,
+        &["-q", "--save-state", state_arg],
+    );
+    assert_eq!(code, Some(0), "{err}");
+
+    // Without it: the overlap is a step back, refused.
+    let (code, _, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["-q", "--load-state", state_arg],
+    );
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("restart_after_step_back"), "{err}");
+
+    for chunk in ["64", "300"] {
+        let (code, _, err) = online_with(
+            &dir,
+            &input,
+            &output,
+            "",
+            50.0,
+            &[
+                "-q",
+                "--load-state",
+                state_arg,
+                "--skip-learned",
+                "--chunk-size",
+                chunk,
+            ],
+        );
+        assert_eq!(code, Some(0), "{chunk}: {err}");
+        // The numbers, not `coef`, which is written on each group's last
+        // row of a chunk, and the chunks differ.
+        let fields = |df: DataFrame| -> DataFrame {
+            let ridge = df.column("ridge").unwrap().struct_().unwrap().clone();
+            let mut cols: Vec<Column> = ["group", "t", "x0", "x1", "y"]
+                .iter()
+                .map(|c| df.column(c).unwrap().clone())
+                .collect();
+            for f in ["pred_y", "resid_y", "weight_sum"] {
+                cols.push(ridge.field_by_name(f).unwrap().into());
+            }
+            DataFrame::new(df.height(), cols).unwrap()
+        };
+        let got = fields(read_frame(&output));
+        let want = fields(read_frame(&full).slice(200, 100));
+        assert_eq!(got.height(), 100, "{chunk}");
+        assert!(got.equals_missing(&want), "{chunk}: {got} vs {want}");
+    }
+
+    // A fresh bank has learned nothing to skip.
+    let (code, _, err) = online_with(&dir, &input, &output, "", 50.0, &["-q", "--skip-learned"]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("skip_learned") && err.contains("load_state"),
+        "{err}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

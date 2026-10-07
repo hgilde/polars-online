@@ -935,10 +935,10 @@ fn format_of_path(path: &str) -> PyResult<&'static str> {
         .map_err(PyValueError::new_err)
 }
 
-/// The bank's `chunk_rows` when a caller does not say.
+/// The bank's `chunk_size` when a caller does not say.
 #[pyfunction]
-fn default_chunk_rows() -> usize {
-    online_polars::DEFAULT_CHUNK_ROWS
+fn default_chunk_size() -> usize {
+    online_polars::DEFAULT_CHUNK_SIZE
 }
 
 /// Fill, validate and build a single spec, as the bank does
@@ -1078,7 +1078,7 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_duration, m)?)?;
     m.add_function(wrap_pyfunction!(spec_clock_fields, m)?)?;
     m.add_function(wrap_pyfunction!(format_of_path, m)?)?;
-    m.add_function(wrap_pyfunction!(default_chunk_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(default_chunk_size, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;
     m.add_function(wrap_pyfunction!(spec_coef_fields, m)?)?;

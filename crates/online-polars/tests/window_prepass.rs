@@ -122,7 +122,7 @@ fn prepass_against_the_ring(spec: &Spec, df: &DataFrame, size: usize) -> Option<
 fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
     let df = frame(600, 80);
     let short = frame(600, 16);
-    let ridge = r#"{"type": "ew_ridge", "window_size": 200.0, "window_every": 1,
+    let ridge = r#"{"type": "ewridge", "window_size": 200.0, "window_every": 1,
                     "window_budget": {"refuse": 0.004}}"#;
     // (label, spec, frame, whether the ring reaches the budget)
     let cases: Vec<(&str, Spec, &DataFrame, bool)> = vec![
@@ -138,7 +138,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 3 clock units",
             spec(
-                r#"{"type": "ew_ridge", "window_size": 600.0, "window_every": 3,
+                r#"{"type": "ewridge", "window_size": 600.0, "window_every": 3,
                     "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -148,7 +148,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 3 rows",
             spec(
-                r#"{"type": "ew_ridge", "window_size": 600.0, "max_rows_between_snapshots": 3,
+                r#"{"type": "ewridge", "window_size": 600.0, "max_rows_between_snapshots": 3,
                     "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -158,7 +158,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 8 clock units or 2 rows",
             spec(
-                r#"{"type": "ew_ridge", "window_size": 600.0, "window_every": 8,
+                r#"{"type": "ewridge", "window_size": 600.0, "window_every": 8,
                     "max_rows_between_snapshots": 2, "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -226,7 +226,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
 fn under_drift_resets_the_ring_still_stops_the_run() {
     let df = frame(400, 80);
     let s = spec(
-        r#"{"type": "ew_ridge", "window_size": 200.0, "window_every": 1,
+        r#"{"type": "ewridge", "window_size": 200.0, "window_every": 1,
             "window_budget": {"refuse": 0.004}}"#,
         r#", "targets": ["y"], "emit_drift": true, "drift_threshold": 20.0,
             "drift_action": "reset""#,
@@ -247,15 +247,30 @@ fn under_drift_resets_the_ring_still_stops_the_run() {
 }
 
 /// The replay decides the window's edge on the rows' stamps, as the ring
-/// does (docs/PLAN.md task 175). Rows 1 ms apart under a window of a
-/// second, a snapshot of 40 bytes every row, and a refusing budget between
-/// 1001 and 1002 snapshots: the ring keeps the snapshot exactly a second
-/// old, holds 1001 from row 1000 on and crosses the budget at row 1001's
-/// snapshot. A replay on the summed clock dropped that snapshot until row
-/// 1007 and would cross only at row 1008, so it let the first piece of 1004
-/// rows through, and the ring refused it half learned.
+/// does (docs/PLAN.md task 175), under either edge (task 196). Rows 1 ms
+/// apart under a window of a second and a snapshot of 40 bytes every row.
+/// Under `closed = "both"`, a refusing budget between 1001 and 1002
+/// snapshots: the ring keeps the snapshot exactly a second old, holds 1001
+/// from row 1000 on and crosses the budget at row 1001's snapshot. A replay
+/// on the summed clock dropped that snapshot until row 1007 and would cross
+/// only at row 1008, so it let the first piece of 1004 rows through, and
+/// the ring refused it half learned. Under `"right"`, the default, that
+/// snapshot has left at row 1000, so the ring holds 1001 only between a
+/// row's snapshot and its trim: a budget between 1000 and 1001 snapshots is
+/// crossed at row 1000's, and the replay refuses the same first piece.
 #[test]
 fn the_prepass_decides_the_windows_edge_on_the_stamps() {
+    // 40,060 bytes, between 1001 snapshots of 40 and 1002; and 40,020,
+    // between 1000 and 1001.
+    for (closed, mib) in [
+        ("both", "0.038204193115234375"),
+        ("right", "0.038166046142578125"),
+    ] {
+        prepass_decides_the_windows_edge_on_the_stamps(closed, mib);
+    }
+}
+
+fn prepass_decides_the_windows_edge_on_the_stamps(closed: &str, mib: &str) {
     let n = 1_100usize;
     let t = Series::new(
         "t".into(),
@@ -267,13 +282,16 @@ fn the_prepass_decides_the_windows_edge_on_the_stamps() {
     .unwrap();
     let x: Vec<f64> = (0..n).map(|i| ((i * 37) % 101) as f64 / 101.0).collect();
     let df = df!("t" => t, "x0" => x.clone(), "x1" => x).unwrap();
-    // 40,060 bytes: between 1001 snapshots of 40 and 1002.
-    let s: Spec = serde_json::from_str(
-        r#"{"name": "m", "model": {"type": "ew_cov", "stats": ["mean"], "window_size": "1s",
-            "window_budget": {"refuse": 0.038204193115234375}},
+    let s: Spec = serde_json::from_str(&format!(
+        r#"{{"name": "m", "model": {{"type": "ew_cov", "stats": ["mean"], "window_size": "1s",
+            "closed": "{closed}", "window_budget": {{"refuse": {mib}}}}},
             "features": ["x0"], "clock": "t", "gap_cap": "1d", "half_life": "1h",
-            "min_weight": 0.0}"#,
-    )
+            "min_weight": 0.0}}"#
+    ))
     .unwrap();
-    assert_eq!(prepass_against_the_ring(&s, &df, 1_004), Some(0));
+    assert_eq!(
+        prepass_against_the_ring(&s, &df, 1_004),
+        Some(0),
+        "{closed}"
+    );
 }

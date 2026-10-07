@@ -6,7 +6,7 @@
 //! pipeline:
 //!
 //! 1. a reader thread hands over frames in stream order: polars' streaming
-//!    engine reading a plan in `chunk_rows` rows (`sink_batches`), or an
+//!    engine reading a plan in `chunk_size` rows (`sink_batches`), or an
 //!    iterator of frames the caller already has ([`Input::Batches`], for a
 //!    Rust caller; the Python runner that fed it was removed in task 83);
 //! 2. this thread feeds each frame to the [`Bank`] and appends the outputs;
@@ -31,7 +31,7 @@ use polars_utils::pl_path::PlRefPath;
 use serde::{Deserialize, Serialize};
 
 use crate::atomic::AtomicFile;
-use crate::bank::Bank;
+use crate::bank::{Bank, Learned};
 use crate::spec::Spec;
 
 /// Writing the output through a temporary is filesystem work, and polars'
@@ -165,14 +165,22 @@ pub struct RunConfig {
     /// How to write `output`; its extension decides when unset.
     #[serde(default)]
     pub output_format: Option<Format>,
-    /// Rows per chunk, [`DEFAULT_CHUNK_ROWS`] when unset. Chunking never
+    /// Rows per chunk, [`DEFAULT_CHUNK_SIZE`] when unset. Chunking never
     /// changes the numbers (docs/PLAN.md §9 class 2); it only trades memory
     /// for overhead.
-    #[serde(default = "default_chunk_rows")]
-    pub chunk_rows: usize,
+    #[serde(default = "default_chunk_size")]
+    pub chunk_size: usize,
     /// Load the bank state from here before running (resume).
     #[serde(default)]
     pub load_state: Option<PathBuf>,
+    /// Drop the rows of the input the loaded state has learned, so a resume
+    /// on input that overlaps it learns each row once: in every spec that
+    /// reads a clock, a row is kept when its clock is after its group's last
+    /// one, its group is new to the bank, or its clock is null
+    /// (`ModelBank.skip_learned` in Python; docs/PLAN.md task 196, N26).
+    /// Requires `load_state` and a spec that reads a clock.
+    #[serde(default)]
+    pub skip_learned: bool,
     /// Save the bank state here after running.
     #[serde(default)]
     pub save_state: Option<PathBuf>,
@@ -201,10 +209,27 @@ pub struct RunConfig {
 
 /// Rows per chunk when a config does not say: enough to amortize the
 /// per-chunk work, small enough to keep three frames of it in memory.
-pub const DEFAULT_CHUNK_ROWS: usize = 100_000;
+pub const DEFAULT_CHUNK_SIZE: usize = 100_000;
 
-fn default_chunk_rows() -> usize {
-    DEFAULT_CHUNK_ROWS
+fn default_chunk_size() -> usize {
+    DEFAULT_CHUNK_SIZE
+}
+
+/// The run keys task 196 renamed (docs/PLAN.md §18, N2): `chunk_size` is
+/// Polars' name on the call it feeds (`collect_batches(chunk_size=)`). A
+/// config naming the old key is refused naming the new one, as a spec's old
+/// key is ([`crate::RENAMED`]).
+pub const RENAMED_RUN_KEYS: &[(&str, &str)] = &[("chunk_rows", "chunk_size")];
+
+/// `msg`, a config's deserialization error, with the rename named when the
+/// key it refuses as unknown is an old run key.
+pub fn name_renamed_run_key(msg: &str) -> String {
+    for (old, new) in RENAMED_RUN_KEYS {
+        if msg.contains(&format!("unknown field `{old}`")) {
+            return format!("{msg}; {old} was renamed {new}");
+        }
+    }
+    msg.to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -230,8 +255,8 @@ impl RunConfig {
         if self.specs.is_empty() {
             return Err("config has no [[specs]] entries".into());
         }
-        if self.chunk_rows == 0 {
-            return Err("chunk_rows must be > 0".into());
+        if self.chunk_size == 0 {
+            return Err("chunk_size must be > 0".into());
         }
         // Named first: a scoring run learns nothing, so it can save no state
         // and close no group, and the refusal below asked for one of the two
@@ -267,6 +292,13 @@ impl RunConfig {
                 );
             }
             Format::from_path(p)?;
+        }
+        if self.skip_learned && self.load_state.is_none() {
+            return Err(
+                "skip_learned = true (--skip-learned) needs load_state (--load-state): a fresh \
+                 bank has learned nothing to skip"
+                    .into(),
+            );
         }
         if self.predict {
             if self.load_state.is_none() {
@@ -378,6 +410,14 @@ impl RunConfig {
             .map_err(|e| e.wrap_msg(|m| format!("input {}: {m}", self.input.display())))?;
         let mut bank = self.open_bank()?;
         let empty = DataFrame::empty_with_schema(&schema);
+        if self.skip_learned {
+            // What the run takes before its first row: a bank with no clock
+            // to resume by is refused here too.
+            let learned = bank
+                .learned()
+                .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+            learned.unlearned(&empty)?;
+        }
         augment(&mut bank, empty, self.predict, self.no_output(), 0).map(|_| ())
     }
 
@@ -403,10 +443,10 @@ impl RunConfig {
 #[allow(clippy::large_enum_variant)]
 pub enum Input<'a> {
     /// A polars plan, read by the streaming engine in chunks of
-    /// `chunk_rows` rows: a scan, a query, an in-memory frame's `lazy()`.
+    /// `chunk_size` rows: a scan, a query, an in-memory frame's `lazy()`.
     Lazy(LazyFrame),
     /// Frames the caller produces, in stream order and in whatever sizes it
-    /// has them (`chunk_rows` does not re-chunk them). `schema` is the frames'
+    /// has them (`chunk_size` does not re-chunk them). `schema` is the frames'
     /// schema, for the output of a stream that turns out to have none. An
     /// error ends the run with that error. The iterator is pulled on the
     /// reader thread, so it must be `Send`; it is dropped there when the run
@@ -436,8 +476,8 @@ pub enum Output<'a> {
 /// The knobs of [`run`] that are not the source or the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunOptions {
-    /// Rows per chunk. See [`RunConfig::chunk_rows`].
-    pub chunk_rows: usize,
+    /// Rows per chunk. See [`RunConfig::chunk_size`].
+    pub chunk_size: usize,
     /// Score instead of learn. See [`RunConfig::predict`].
     pub predict: bool,
     /// The run keeps no prediction (`--no-output`): `ModelBank.fit`'s run,
@@ -448,7 +488,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
-            chunk_rows: default_chunk_rows(),
+            chunk_size: default_chunk_size(),
             predict: false,
             learn_only: false,
         }
@@ -550,8 +590,18 @@ pub fn run_config_on(
         check_parent("writing closed groups", p)?;
     }
     let mut bank = cfg.open_bank()?;
+    // What the loaded state has learned, taken once before the first row,
+    // so every chunk is filtered against the same positions.
+    let learned = if cfg.skip_learned {
+        Some(
+            bank.learned()
+                .map_err(|e| polars_err!(ComputeError: "{}", e))?,
+        )
+    } else {
+        None
+    };
     let opts = RunOptions {
-        chunk_rows: cfg.chunk_rows,
+        chunk_size: cfg.chunk_size,
         predict: cfg.predict,
         learn_only: cfg.no_output(),
     };
@@ -567,7 +617,15 @@ pub fn run_config_on(
     // and published with the output, before the state, so a state file
     // always has the closed rows that go with it. A run in which nothing
     // closed writes an empty frame with the schema, as an empty output does.
-    let stats = run_with(&mut bank, input, out, closed_target, opts, progress)?;
+    let stats = run_with(
+        &mut bank,
+        input,
+        out,
+        closed_target,
+        learned.as_ref(),
+        opts,
+        progress,
+    )?;
     if let Some(p) = &cfg.save_state {
         bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
@@ -618,7 +676,7 @@ pub fn run(
     opts: RunOptions,
     progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
-    run_with(bank, input, output, None, opts, progress)
+    run_with(bank, input, output, None, None, opts, progress)
 }
 
 /// [`run`], with the bank's closed groups (E54) drained after every chunk
@@ -627,16 +685,20 @@ pub fn run(
 /// failed after draining anything (the second review of 2026-09-15, F2). The
 /// bank's queue is one chunk deep, where a drain after the last chunk held
 /// every row that closed for the length of the run (review 2026-09-12, P5).
+/// With `skip`, each chunk keeps only the rows the loaded state has not
+/// learned before the bank sees it (`--skip-learned`, docs/PLAN.md task
+/// 196), and a chunk with none left is not fed.
 fn run_with(
     bank: &mut Bank,
     input: Input<'_>,
     output: Output<'_>,
     closed: Option<(&Path, Format)>,
+    skip: Option<&Learned>,
     opts: RunOptions,
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
-    let chunk_rows = NonZeroUsize::new(opts.chunk_rows)
-        .ok_or_else(|| polars_err!(ComputeError: "chunk_rows must be > 0"))?;
+    let chunk_size = NonZeroUsize::new(opts.chunk_size)
+        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be > 0"))?;
     // The schema of an empty output, when the source turns out to be empty
     // and no frame ever reaches the bank.
     let empty_input = match &input {
@@ -657,7 +719,7 @@ fn run_with(
     std::thread::scope(|scope| {
         let (read_tx, read_rx) = sync_channel::<Read>(1);
         scope.spawn(move || match input {
-            Input::Lazy(lf) => read_plan(lf, chunk_rows, read_tx),
+            Input::Lazy(lf) => read_plan(lf, chunk_size, read_tx),
             Input::Batches { frames, .. } => read_frames(frames, read_tx),
         });
 
@@ -704,6 +766,16 @@ fn run_with(
                     }
                     // The reader thread is gone without a word: a panic.
                     Err(_) => polars_bail!(ComputeError: "the reader stopped"),
+                };
+                let chunk = match skip {
+                    Some(learned) => {
+                        let kept = chunk.filter(&learned.unlearned(&chunk)?)?;
+                        if kept.height() == 0 {
+                            continue;
+                        }
+                        kept
+                    }
+                    None => chunk,
                 };
                 let height = chunk.height();
                 let t = Instant::now();
@@ -856,9 +928,9 @@ enum Empty {
 }
 
 /// Stage 1, for a plan: run `input` on the streaming engine, handing over
-/// every `chunk_rows` rows in order. Blocks while the engine works, so it
+/// every `chunk_size` rows in order. Blocks while the engine works, so it
 /// gets a thread of its own.
-fn read_plan(input: LazyFrame, chunk_rows: NonZeroUsize, tx: SyncSender<Read>) {
+fn read_plan(input: LazyFrame, chunk_size: NonZeroUsize, tx: SyncSender<Read>) {
     let chunks = tx.clone();
     let callback = PlanCallback::new(move |df: DataFrame| {
         // A closed channel is the run giving up; `true` tells the engine to
@@ -866,7 +938,7 @@ fn read_plan(input: LazyFrame, chunk_rows: NonZeroUsize, tx: SyncSender<Read>) {
         Ok(chunks.send(Read::Chunk(df)).is_err())
     });
     let result = input
-        .sink_batches(callback, true, Some(chunk_rows))
+        .sink_batches(callback, true, Some(chunk_size))
         .and_then(|lf| lf.collect_with_engine(Engine::Streaming))
         .map(|_| ());
     let _ = tx.send(Read::End(result));

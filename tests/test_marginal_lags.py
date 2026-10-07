@@ -106,19 +106,19 @@ def test_the_geometric_fit_recovers_the_decays():
 
 def test_the_autocorrelations_decay_like_the_process():
     row = pairs(stream(seed=7, phi_x=0.9, phi_y=0.5))
-    for lag, got in zip(LAGS, row["lagcorr_xx"], strict=True):
+    for lag, got in zip(LAGS, row["lag_corr_xx"], strict=True):
         assert got == pytest.approx(0.9**lag, abs=0.08), f"lag {lag}"
-    for lag, got in zip(LAGS, row["lagcorr_yy"], strict=True):
+    for lag, got in zip(LAGS, row["lag_corr_yy"], strict=True):
         assert got == pytest.approx(0.5**lag, abs=0.08), f"lag {lag}"
 
 
 def test_the_cross_correlations_say_which_series_leads():
-    """`lagcorr_yx` is the target now against the feature ℓ back, so a feature
-    that *leads* shows there; a feature that follows shows in `lagcorr_xy`."""
+    """`lag_corr_yx` is the target now against the feature ℓ back, so a feature
+    that *leads* shows there; a feature that follows shows in `lag_corr_xy`."""
     leads = pairs(stream(seed=11, link="y_follows_x"))
-    assert leads["lagcorr_yx"][0] > leads["corr"], "a leading feature"
+    assert leads["lag_corr_yx"][0] > leads["corr"], "a leading feature"
     follows = pairs(stream(seed=11, link="x_follows_y"))
-    assert follows["lagcorr_xy"][0] > follows["corr"], "a following feature"
+    assert follows["lag_corr_xy"][0] > follows["corr"], "a following feature"
 
 
 def test_one_chunk_and_many_agree():
@@ -129,7 +129,7 @@ def test_one_chunk_and_many_agree():
     )
     for key in ("corr", "n_serial", "t_serial", "phi_x", "phi_y"):
         assert one[key] == many[key], key
-    for key in ("lagcorr_xx", "lagcorr_yy", "lagcorr_xy", "lagcorr_yx"):
+    for key in ("lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"):
         assert one[key] == many[key], key
 
 
@@ -169,14 +169,14 @@ def test_the_lagged_pair_is_ew_cov_lags_to_the_bit():
     # row, so it is compared with `ew_cov`'s last-row value over one row more.
     bank.fit_predict(df.head(-1))
     pair = bank.marginal("m").row(0, named=True)
-    cov = po.spec.ew_cov("c", features=["x", "y"], lags=LAGS, stats=["lagcorr"], **EVENTS)
+    cov = po.spec.ew_cov("c", features=["x", "y"], lags=LAGS, stats=["lag_corr"], **EVENTS)
     last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
     for i, lag in enumerate(LAGS):
-        assert pair["lagcorr_xx"][i] == last[f"lagcorr_x_x_l{lag}"], lag
-        assert pair["lagcorr_yy"][i] == last[f"lagcorr_y_y_l{lag}"], lag
-        assert pair["lagcorr_xy"][i] == last[f"lagcorr_x_y_l{lag}"], lag
-        assert pair["lagcorr_yx"][i] == last[f"lagcorr_y_x_l{lag}"], lag
-    assert 0.5 < pair["lagcorr_xx"][0] < 1.0, "and the numbers are the process's"
+        assert pair["lag_corr_xx"][i] == last[f"lag_corr_x_x_l{lag}"], lag
+        assert pair["lag_corr_yy"][i] == last[f"lag_corr_y_y_l{lag}"], lag
+        assert pair["lag_corr_xy"][i] == last[f"lag_corr_x_y_l{lag}"], lag
+        assert pair["lag_corr_yx"][i] == last[f"lag_corr_y_x_l{lag}"], lag
+    assert 0.5 < pair["lag_corr_xx"][0] < 1.0, "and the numbers are the process's"
 
 
 def test_the_ring_clears_on_a_capped_gap_and_a_session_change():
@@ -188,7 +188,7 @@ def test_the_ring_clears_on_a_capped_gap_and_a_session_change():
 
     def run(df, **kw):
         kw.setdefault("gap_cap", 5.0)
-        return pairs(df, lags=[1], min_weight=0.0, **kw)["lagcorr_xx"]
+        return pairs(df, lags=[1], min_weight=0.0, **kw)["lag_corr_xx"]
 
     plain = run(base)
     at = pl.int_range(pl.len()) >= 40
@@ -215,8 +215,16 @@ def test_lag_moments_hold_across_null_targets():
     kw = dict(half_life=20.0, lags=[1, 2, 3], serial_rule="truncated", min_weight=0.0)
     before = pairs(df[:300], **kw)
     after = pairs(df, **kw)
-    assert before["lagcorr_xx"][0] > 0.5
-    for key in ("lagcorr_xx", "lagcorr_yy", "lagcorr_xy", "lagcorr_yx", "corr", "var_x", "var_y"):
+    assert before["lag_corr_xx"][0] > 0.5
+    for key in (
+        "lag_corr_xx",
+        "lag_corr_yy",
+        "lag_corr_xy",
+        "lag_corr_yx",
+        "corr",
+        "var_x",
+        "var_y",
+    ):
         assert before[key] == after[key], key
     # `n_kish` is `W^2/Q`, aged by `lam` and `lam^2` a hundred times over, so
     # the count that divides it is equal to rounding and not to the bit.
@@ -245,7 +253,7 @@ def test_a_saved_bank_resumes_with_its_ring(tmp_path):
     resumed.fit_predict(df[300:])
     got = resumed.marginal("m").row(0, named=True)
     assert got["corr"] == whole["corr"]
-    assert got["lagcorr_xx"] == whole["lagcorr_xx"], "the ring must survive the round trip"
+    assert got["lag_corr_xx"] == whole["lag_corr_xx"], "the ring must survive the round trip"
 
 
 def test_without_lags_the_frame_is_what_it_was():
@@ -265,7 +273,7 @@ def test_without_lags_the_frame_is_what_it_was():
     )
     bank.fit_predict(df)
     cols = bank.marginal("m").columns
-    assert not any(c.startswith(("lagcorr", "n_serial", "t_serial", "phi_")) for c in cols)
+    assert not any(c.startswith(("lag_corr", "n_serial", "t_serial", "phi_")) for c in cols)
 
 
 # --- cross_lags (E70, docs/PLAN.md task 123) ---------------------------------
@@ -296,12 +304,12 @@ def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
 
     every, some = run(), run(cross_lags=[1, 5])
     at = [LAGS.index(1), LAGS.index(5)]
-    for key in ("lagcorr_xy", "lagcorr_yx"):
+    for key in ("lag_corr_xy", "lag_corr_yx"):
         assert len(every[key]) == len(LAGS), key
         assert some[key] == [every[key][i] for i in at], key
     for key in (
-        "lagcorr_xx",
-        "lagcorr_yy",
+        "lag_corr_xx",
+        "lag_corr_yy",
         "n_serial",
         "t_serial",
         "phi_x",
@@ -316,8 +324,8 @@ def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
 def test_no_cross_lags_leaves_the_cross_columns_out():
     df = stream(n=300, seed=19)
     row = pairs(df, lags=[1, 2], cross_lags=[], serial_rule="truncated")
-    assert "lagcorr_xy" not in row and "lagcorr_yx" not in row
-    assert len(row["lagcorr_xx"]) == 2 and row["n_serial"] is not None
+    assert "lag_corr_xy" not in row and "lag_corr_yx" not in row
+    assert len(row["lag_corr_xx"]) == 2 and row["n_serial"] is not None
 
 
 @pytest.mark.parametrize(
@@ -364,7 +372,7 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
     resumed = po.ModelBank.load(tmp_path / "m.state")
     resumed.fit_predict(df[300:])
     got = resumed.marginal("m").row(0, named=True)
-    assert len(got["lagcorr_xy"]) == 2
+    assert len(got["lag_corr_xy"]) == 2
     assert got == whole
 
 
@@ -395,7 +403,7 @@ def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
     """E75: the lead/follow reading does not carry over to a forward-looking
     target. The feature holds each row's news from that row on and forecasts
     nothing; the target is built from the rows after its own. Nothing is
-    late, ``corr`` is zero, and ``lagcorr_xy`` is the share of the returns
+    late, ``corr`` is zero, and ``lag_corr_xy`` is the share of the returns
     the two hold in common, in closed form: with ``x_t = (1 - a) x_{t-1} +
     a r_t`` and ``y_t = sum_{k=1..L} w_k r_{t+k}``, ``w_k = (1 - lam)
     lam^(k-1)``, the covariance of ``x_t`` with ``y_{t-1}`` is ``a (1 -
@@ -429,8 +437,8 @@ def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
     assert shared == pytest.approx(0.2544, abs=1e-4)
     tol = 4 / math.sqrt(n)
     assert abs(m["corr"]) < tol
-    assert m["lagcorr_xy"][0] == pytest.approx(shared, abs=tol)
+    assert m["lag_corr_xy"][0] == pytest.approx(shared, abs=tol)
     # Two rows back, the target shares the next row's return as well.
-    assert m["lagcorr_xy"][1] == pytest.approx(shared * (1 - a + lam), abs=tol)
+    assert m["lag_corr_xy"][1] == pytest.approx(shared * (1 - a + lam), abs=tol)
     # The feature one or two rows back shares nothing with the target now.
-    assert max(abs(v) for v in m["lagcorr_yx"]) < tol
+    assert max(abs(v) for v in m["lag_corr_yx"]) < tol

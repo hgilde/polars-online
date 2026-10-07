@@ -122,7 +122,7 @@ impl ModelState {
             // the model, and a `WrongModel` must say which it found (review
             // 2026-09-12, S4).
             ModelState::EwCov(_) => "ew_cov_accumulator",
-            ModelState::EwRidge(_) => "ew_ridge",
+            ModelState::EwRidge(_) => "ewridge",
             ModelState::Rls(_) => "rls",
             ModelState::Lasso(_) => "lasso",
             ModelState::Kalman(_) => "kalman",
@@ -604,6 +604,15 @@ pub trait OnlineModel: Sized {
     /// restoring the model, and a model without a window ignores it --
     /// hence the default.
     fn set_window_budget(&mut self, _budget: Option<crate::WindowBudget>) {}
+
+    /// Which edge of this model's window holds a row exactly one window old
+    /// ([`crate::WindowClosed`]; docs/PLAN.md task 196): `Right`, the
+    /// default a window is built with, or `Both`. Configuration that travels
+    /// with the state, since what the ring has trimmed follows it: a caller
+    /// sets it once, after building the model and before its first row, and a
+    /// restored model keeps the one it was saved with. A model without a
+    /// window ignores it -- hence the default.
+    fn set_window_closed(&mut self, _closed: crate::WindowClosed) {}
 
     /// Set the weight-share cadence of a model that solves on a schedule
     /// (`ewridge`, `lasso`, `huber`, `quantile`; docs/PLAN.md task 115 (b)).

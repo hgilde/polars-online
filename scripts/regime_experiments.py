@@ -514,7 +514,7 @@ def delay(seeds: int = 20) -> None:
         kind="window",
         span_rows=100,
         n_perm=100,
-        permute_every=100,
+        permute_every_rows=100,
         alpha=0.05,
         seed=0,
     )

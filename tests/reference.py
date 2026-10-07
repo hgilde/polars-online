@@ -846,7 +846,7 @@ def robust_ref(
 
     Both losses read each row's *prior* residual, so both stay out-of-sample;
     what they do with it is :func:`_row_update`'s. Because the weights are per
-    target, ``S`` is per target here (unlike ew_ridge, which shares one). Four
+    target, ``S`` is per target here (unlike ewridge, which shares one). Four
     details that matter for agreement:
 
     - the robust weight scales the accumulator update, but ``sigma2_j`` is

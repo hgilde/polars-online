@@ -82,7 +82,7 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
         );
         refused(
             &sup(
-                r#"{"type": "ew_ridge"}"#,
+                r#"{"type": "ewridge"}"#,
                 &format!(r#", "emit_autocorr": true, "resid_autocorr_lag": {lag}"#),
             ),
             &[
@@ -302,7 +302,7 @@ fn the_empties_are_refused() {
         &["mahal_quantiles must be non-empty"],
     );
     refused(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": [""], "features": ["x0"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": [""], "features": ["x0"],
             "half_life": 10.0}"#,
         &["targets must not contain an empty name"],
     );
@@ -313,11 +313,11 @@ fn the_empties_are_refused() {
 #[test]
 fn minus_zero_is_zero_in_a_grid_and_a_field_name() {
     refused(
-        &sup(r#"{"type": "ew_ridge", "ridge": [0.0, -0.0]}"#, ""),
+        &sup(r#"{"type": "ewridge", "ridge": [0.0, -0.0]}"#, ""),
         &["ridge lists 0 more than once"],
     );
     let mut s: Spec =
-        serde_json::from_str(&sup(r#"{"type": "ew_ridge", "ridge": [-0.0, 1.0]}"#, "")).unwrap();
+        serde_json::from_str(&sup(r#"{"type": "ewridge", "ridge": [-0.0, 1.0]}"#, "")).unwrap();
     s.check().unwrap();
     let fields = output_fields(&s);
     assert!(
@@ -332,19 +332,19 @@ fn minus_zero_is_zero_in_a_grid_and_a_field_name() {
 fn a_refused_value_is_named() {
     for (json, want) in [
         (
-            sup(r#"{"type": "ew_ridge", "ridge": -1.0}"#, ""),
+            sup(r#"{"type": "ewridge", "ridge": -1.0}"#, ""),
             "ridge must be finite and >= 0, got -1",
         ),
         (
-            sup(r#"{"type": "ew_ridge"}"#, r#", "min_weight": -2.0"#),
+            sup(r#"{"type": "ewridge"}"#, r#", "min_weight": -2.0"#),
             "min_weight must be >= 0, got -2",
         ),
         (
-            sup(r#"{"type": "ew_ridge", "solve_every": -3.0}"#, ""),
+            sup(r#"{"type": "ewridge", "solve_every": -3.0}"#, ""),
             "solve_every must be finite and >= 0 (0 solves every row), got -3",
         ),
         (
-            sup(r#"{"type": "ew_ridge"}"#, r#", "conformal": 1.5"#),
+            sup(r#"{"type": "ewridge"}"#, r#", "conformal": 1.5"#),
             "got 1.5",
         ),
         (
@@ -381,7 +381,7 @@ fn a_refused_value_is_named() {
             "micro eps must be finite and > 0, got -0.5",
         ),
         (
-            r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
                 "features": ["x0"], "half_life": [10.0, -4.0]}"#
                 .to_string(),
             "half_life must be > 0 (\"inf\" for no decay), got -4",

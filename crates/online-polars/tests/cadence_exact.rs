@@ -44,8 +44,8 @@ enum Event {
 /// features, the spec-level settings beyond the clock's, and its event.
 const CASES: [(&str, &str, &str, &str, &str, Event); 6] = [
     (
-        "ew_ridge",
-        r#"{"type": "ew_ridge", "ridge": 1e-6, "solve_every": {every}}"#,
+        "ewridge",
+        r#"{"type": "ewridge", "ridge": 1e-6, "solve_every": {every}}"#,
         r#""targets": ["y"],"#,
         r#"["x"]"#,
         r#""coef_every": 0,"#,

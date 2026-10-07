@@ -1273,7 +1273,7 @@ mod tests {
     fn the_first_reader_is_the_one_the_scans_found() {
         let specs = vec![
             spec(
-                r#"{"name": "a", "model": {"type": "ew_ridge"}, "targets": ["y", "g"],
+                r#"{"name": "a", "model": {"type": "ewridge"}, "targets": ["y", "g"],
                     "features": ["x0", "x1"], "clock": "t", "weight": "w", "group": "g"}"#,
             ),
             spec(
@@ -1282,13 +1282,13 @@ mod tests {
                     "targets": ["lab"], "features": ["x1", "t", "s"], "session": "s"}"#,
             ),
             spec(
-                r#"{"name": "c", "model": {"type": "ew_ridge"}, "targets": ["x0"],
+                r#"{"name": "c", "model": {"type": "ewridge"}, "targets": ["x0"],
                     "features": ["w", "lab"], "group": "k"}"#,
             ),
             // A relative target: its column is a target, its reference a
             // `relative_to`, unless an earlier spec read either first.
             spec(
-                r#"{"name": "d", "model": {"type": "ew_ridge"},
+                r#"{"name": "d", "model": {"type": "ewridge"},
                     "targets": [{"column": "q", "relative_to": "r"},
                                 {"column": "t2", "relative_to": "x1"}],
                     "features": ["w"]}"#,

@@ -148,7 +148,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         "ew_cov_lags",
         "ew_cov",
         dict(
-            features=["x1", "x2"], stats=["corr", "lagcorr"], lags=[1, 3], half_life=25.0, **CLOCK
+            features=["x1", "x2"], stats=["corr", "lag_corr"], lags=[1, 3], half_life=25.0, **CLOCK
         ),
         [],
     ),
@@ -202,7 +202,6 @@ _OLD_NAMES = {
     "coef_half_life": "coef_halflife",
     "revert_half_life": "revert_halflife",
     "select_half_life": "select_halflife",
-    "level_half_life": "level_halflife",
     "trend_half_life": "trend_halflife",
     "embargo": "label_delay",
     "gap_cap": "max_dclock",
@@ -239,6 +238,9 @@ def _speak(builder: str, kw: dict) -> dict:
             out["ridge_decay"] = value == "sum"
         elif key == "standardize" and builder == "sgd":
             out["scale_features"] = value
+        elif key == "stats":
+            # Task 196's `lag_corr`, `lagcorr` before it.
+            out["stats"] = ["lagcorr" if s == "lag_corr" else s for s in value]
         else:
             out[_OLD_NAMES.get(key, key)] = value
     return out

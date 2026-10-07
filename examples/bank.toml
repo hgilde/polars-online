@@ -9,7 +9,7 @@
 # `output_format = "csv"`, or --input-format / --output-format.
 input = "example-input.parquet"
 output = "example-output.parquet"
-chunk_rows = 50_000
+chunk_size = 50_000
 # load_state = "bank.state"     # resume a previous run
 save_state = "bank.state"
 
@@ -30,7 +30,7 @@ min_weight = 20.0
 max_rows_between_coefs = 1000   # coef on each group's every 1000th row; coef_every = 600.0 is every ten minutes of t
 
 [specs.model]
-type = "ew_ridge"
+type = "ewridge"
 ridge = [1e-6, 0.1]
 standardize = true
 

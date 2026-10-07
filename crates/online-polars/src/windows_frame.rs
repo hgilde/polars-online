@@ -2344,13 +2344,14 @@ mod tests {
         // per-target thresholds, the windows' stamps, the quantile fit's
         // band systems, the embargo's elapsed clock, `coef_every` on the
         // clock, `bocpd`'s hazard on the clock, the solve, component and
-        // checkpoint cadences on the exact clock, `ew_ridge`'s kept
+        // checkpoint cadences on the exact clock, `ewridge`'s kept
         // systems, the stream's and the bank's state and task 195's
         // residual scales, scaler, warm-up and per-target thresholds (tasks
         // 161, 163, 162, 174, 175, 170, 176, 178, 179, 180, 186, 194, 195),
-        // the windows state unchanged: a schema may move alone, a windows
+        // and 41 for the models' window edge and task 196's names, the
+        // windows state unchanged: a schema may move alone, a windows
         // version may not.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 40));
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 41));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

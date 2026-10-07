@@ -47,7 +47,7 @@ class TestARunWithNoOutput:
         df.write_parquet(src)
         state = tmp_path / "b.state"
         run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, chunk_rows=100,
+            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, chunk_size=100,
             args=["--no-output"],
         )  # fmt: skip
         # Nothing else was created -- not even the temporary the writer
@@ -61,7 +61,7 @@ class TestARunWithNoOutput:
         df.write_parquet(src)
         quiet, loud = tmp_path / "q.state", tmp_path / "l.state"
         run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, save_state=quiet, chunk_rows=64,
+            online_cli, tmp_path, [cov_spec()], input=src, save_state=quiet, chunk_size=64,
             args=["--no-output"],
         )  # fmt: skip
         run_online(
@@ -71,7 +71,7 @@ class TestARunWithNoOutput:
             input=src,
             output=tmp_path / "out.parquet",
             save_state=loud,
-            chunk_rows=64,
+            chunk_size=64,
         )
         assert quiet.read_bytes() == loud.read_bytes(), "the same run, minus the file"
 
@@ -86,7 +86,7 @@ class TestARunWithNoOutput:
             input=src,
             output=tmp_path / "out.parquet",
             save_state=tmp_path / "b.state",
-            chunk_rows=100,
+            chunk_size=100,
             args=["--no-output"],
         )
         assert not (tmp_path / "out.parquet").exists()
@@ -122,7 +122,7 @@ class TestARunWithNoOutput:
         df.write_parquet(src)
         state = tmp_path / "b.state"
         run_online(
-            online_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_rows=100,
+            online_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_size=100,
             args=["--no-output"],
         )  # fmt: skip
         bank = po.ModelBank.load(state)
@@ -141,7 +141,7 @@ class TestARunWithNoOutput:
 input = "{src.as_posix()}"
 output = "{(tmp_path / "out.parquet").as_posix()}"
 save_state = "{state.as_posix()}"
-chunk_rows = 100
+chunk_size = 100
 
 [[specs]]
 name = "c"
@@ -262,7 +262,7 @@ type = "{model}"
             f"""
 input = "{src.as_posix()}"
 save_state = "{from_toml.as_posix()}"
-chunk_rows = 100
+chunk_size = 100
 
 [[specs]]
 name = "c"
@@ -352,6 +352,6 @@ def test_predict_drops_the_closed_groups_sidecar(online_cli, tmp_path):
         input=tmp_path / "in.parquet",
         output=tmp_path / "scored.parquet",
         closed_groups=tmp_path / "closed.parquet",
-        args=["--predict", "--resume", str(tmp_path / "bank.state")],
+        args=["--predict", "--load-state", str(tmp_path / "bank.state")],
     )
     assert pl.read_parquet(tmp_path / "scored.parquet").height == 60

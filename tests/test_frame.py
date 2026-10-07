@@ -48,10 +48,10 @@ def _spec(**kw):
     return po.spec.ewridge("ridge", **d)
 
 
-def _bank_loop(df: pl.DataFrame, chunk_rows: int, **kw) -> pl.DataFrame:
+def _bank_loop(df: pl.DataFrame, chunk_size: int, **kw) -> pl.DataFrame:
     """The reference: a bank fed the same chunks."""
     bank = po.ModelBank([_spec(**kw)])
-    parts = [bank.fit_predict(df.slice(i, chunk_rows)) for i in range(0, df.height, chunk_rows)]
+    parts = [bank.fit_predict(df.slice(i, chunk_size)) for i in range(0, df.height, chunk_size)]
     return pl.concat(parts)
 
 
@@ -109,7 +109,7 @@ def _no_coef(df: pl.DataFrame) -> pl.DataFrame:
 @pytest.mark.parametrize("engine", ["streaming", "in-memory"])
 def test_the_plan_gives_the_banks_numbers(engine):
     df = _frame()
-    plan = df.lazy().online.fit_predict([_spec()], chunk_rows=1000)
+    plan = df.lazy().online.fit_predict([_spec()], chunk_size=1000)
     assert isinstance(plan, pl.LazyFrame)
     assert plan.collect(engine=engine).equals(_bank_loop(df, 1000))
     # ... and the whole-frame bank's, up to coef's cadence.
@@ -118,14 +118,14 @@ def test_the_plan_gives_the_banks_numbers(engine):
     )
 
 
-def test_chunk_rows_is_only_a_resource_knob():
+def test_chunk_size_is_only_a_resource_knob():
     df = _frame(n=3000)
     want = _no_coef(po.ModelBank([_spec()]).fit_predict(df))
-    for chunk_rows in (37, 1000, 100_000):
-        got = df.lazy().online.fit_predict([_spec()], chunk_rows=chunk_rows).collect()
-        assert _no_coef(got).equals(want), chunk_rows
-    with pytest.raises(ValueError, match="chunk_rows must be at least 1"):
-        df.lazy().online.fit_predict([_spec()], chunk_rows=0)
+    for chunk_size in (37, 1000, 100_000):
+        got = df.lazy().online.fit_predict([_spec()], chunk_size=chunk_size).collect()
+        assert _no_coef(got).equals(want), chunk_size
+    with pytest.raises(ValueError, match="chunk_size must be at least 1"):
+        df.lazy().online.fit_predict([_spec()], chunk_size=0)
 
 
 def test_the_plan_is_pure():
@@ -145,7 +145,7 @@ def test_pushdowns_are_honoured_after_the_model():
     downstream filter never changes what the bank learns from."""
     df = _frame()
     ref = _bank_loop(df, 1000)
-    plan = df.lazy().online.fit_predict([_spec()], chunk_rows=1000)
+    plan = df.lazy().online.fit_predict([_spec()], chunk_size=1000)
     weight_sum = pl.col("ridge").struct.field("weight_sum")
     cases = {
         "filter on the model's output": lambda lf: lf.filter(weight_sum > 30.0),
@@ -171,7 +171,7 @@ def test_pushdowns_are_honoured_after_the_model():
             assert got.equals(want), (name, engine)
     # A filter that means to change what the bank learns from goes before it.
     want = _bank_loop(df.filter(pl.col("g") == "a"), 1000)
-    got = df.lazy().filter(pl.col("g") == "a").online.fit_predict([_spec()], chunk_rows=1000)
+    got = df.lazy().filter(pl.col("g") == "a").online.fit_predict([_spec()], chunk_size=1000)
     assert got.collect().equals(want)
 
 
@@ -185,7 +185,7 @@ def test_the_input_is_read_in_chunks_and_only_as_far_as_needed(engine):
     TA11)."""
     df = _frame(n=50000)
     lf, calls, closed = _counted_source(df, 500)
-    plan = lf.online.fit_predict([_spec()], chunk_rows=500)
+    plan = lf.online.fit_predict([_spec()], chunk_size=500)
     assert plan.collect(engine=engine).equals(_bank_loop(df, 500))
     assert len(calls) == 100 and closed == [100]
     for n in (10, 2500):
@@ -208,7 +208,7 @@ def test_projection_reaches_the_input():
         return v
 
     lf = df.lazy().with_columns(wide=pl.col("x0").map_elements(expensive, return_dtype=pl.Float64))
-    plan = lf.online.fit_predict([_spec()], chunk_rows=1000)
+    plan = lf.online.fit_predict([_spec()], chunk_size=1000)
     got = plan.select("t", "ridge").collect()
     assert got.equals(_bank_loop(df, 1000).select("t", "ridge"))
     assert calls == []
@@ -221,16 +221,16 @@ def test_sink_equals_collect(tmp_path):
     src = tmp_path / "in.parquet"
     df.write_parquet(src)
     ran = tmp_path / "run.parquet"
-    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_rows=3000).collect().write_parquet(ran)
+    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_size=3000).collect().write_parquet(ran)
     sunk = tmp_path / "sink.parquet"
-    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_rows=3000).sink_parquet(
+    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_size=3000).sink_parquet(
         sunk, engine="streaming"
     )
     assert pl.read_parquet(sunk).equals(pl.read_parquet(ran))
     # ... and composes with polars after the bank, in the streaming engine.
     out = (
         pl.scan_parquet(src)
-        .online.fit_predict([_spec()], chunk_rows=3000)
+        .online.fit_predict([_spec()], chunk_size=3000)
         .filter(pl.col("ridge").struct.field("weight_sum") > 30.0)
         .group_by("g")
         .agg(pl.col("ridge").struct.field("resid_y").abs().mean().alias("mae"))
@@ -279,7 +279,7 @@ def test_predict_scores_the_bank_as_it_stands(tmp_path):
         assert today.lazy().online.predict(b).collect(engine="streaming").equals(want), name
         assert today.online.predict(b).equals(want), name
         # `predict` reports coef on each chunk's last row, as fit_predict does.
-        chunked = today.lazy().online.predict(b, chunk_rows=300).collect()
+        chunked = today.lazy().online.predict(b, chunk_size=300).collect()
         assert _no_coef(chunked).equals(_no_coef(want)), name
     assert bank.rows_fed() == 3000  # nothing learned
     # The target is optional when scoring.
@@ -346,7 +346,7 @@ def test_chunks_arrive_in_stream_order():
     plan reaches the bank sorted, and so does a per-group stream."""
     df = _frame(n=3000)
     shuffled = df.sample(fraction=1.0, shuffle=True, seed=1)
-    plan = shuffled.lazy().sort("t").online.fit_predict([_spec()], chunk_rows=400)
+    plan = shuffled.lazy().sort("t").online.fit_predict([_spec()], chunk_size=400)
     assert plan.collect(engine="streaming").equals(_bank_loop(df, 400))
     n = plan.select(pl.col("ridge").struct.field("weight_sum")).collect()["weight_sum"]
     assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("weight_sum").max())
@@ -369,7 +369,7 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=700)
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=700)
     assert not state.exists()
     for engine in ("streaming", "in-memory"):
         assert plan.collect(engine=engine).equals(_bank_loop(df, 700))
@@ -395,7 +395,7 @@ def test_save_state_follows_head(tmp_path):
     the source (after a `sort`) runs the whole stream, and writes its state."""
     df = _frame(n=4000)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=700)
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=700)
     for n in (1, 699, 700, 701, 2345, 4000, 5000):
         got = plan.head(n).collect()
         assert got.height == min(n, 4000)
@@ -413,7 +413,7 @@ def test_a_plan_used_twice_in_one_query_writes_the_same_state_twice(tmp_path):
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
     ref = _bank_loop(df, 500)
     assert pl.concat([plan, plan]).collect().equals(pl.concat([ref, ref]))
     assert state.read_bytes() == want
@@ -439,7 +439,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     df = _frame(n=40000)
     state = tmp_path / "bank.state"
     lf, _, closed = _counted_source(df, 500)
-    plan = lf.online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    plan = lf.online.fit_predict([_spec()], save_state=state, chunk_size=500)
     batches = plan.collect_batches(chunk_size=500)
     assert next(batches).height == 500
     del batches, plan
@@ -448,7 +448,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # of 80: so it was abandoned, not run to the end.
     assert _until_closed(closed) <= 1 + 2 * READ_AHEAD
     assert not state.exists()
-    plan = df.reverse().lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    plan = df.reverse().lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
     with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
     assert not state.exists()
@@ -465,7 +465,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     # version, and the hazard is strictly smaller on 2.0, so this asserts the
     # one the installed polars has rather than pinning either
     # (docs/RELEASE-READINESS.md, "Polars 2.0.0rc1, measured").
-    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_size=500)
     with pytest.raises(pl.exceptions.InvalidOperationError):
         plan.with_columns(pl.col("g").cast(pl.Int64, strict=True)).collect()
     if state.exists():
@@ -485,7 +485,7 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     got = []
     for i, part in enumerate(parts):
         plan = part.lazy().online.fit_predict(
-            [_spec()], load_state=state if i else None, save_state=state, chunk_rows=500
+            [_spec()], load_state=state if i else None, save_state=state, chunk_size=500
         )
         got.append(plan.collect())
     assert _no_coef(pl.concat(got)).equals(_no_coef(_bank_loop(df, 500)))
@@ -494,8 +494,8 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     # file rewritten in between gives the same frame; the same for `predict`.
     # It resumes on the rows after the state's: the ones it has learned
     # would step each group's clock back, which the default refuses.
-    resume = after.lazy().online.fit_predict(load_state=state, chunk_rows=500)
-    score = after.lazy().online.predict(state, chunk_rows=500)
+    resume = after.lazy().online.fit_predict(load_state=state, chunk_size=500)
+    score = after.lazy().online.predict(state, chunk_size=500)
     first, scored = resume.collect(), score.collect()
     parts[0].lazy().online.fit_predict([_spec()], save_state=state).collect()
     assert resume.collect().equals(first)
@@ -506,7 +506,7 @@ def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
     plan = (
         parts[1]
         .lazy()
-        .online.fit_predict([_spec()], load_state=state, save_state=state, chunk_rows=500)
+        .online.fit_predict([_spec()], load_state=state, save_state=state, chunk_size=500)
     )
     pl.concat([plan, plan]).collect()
     assert state.read_bytes() == _bank_after(pl.concat(parts[:2]))

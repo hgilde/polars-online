@@ -21,7 +21,7 @@
 //! libm may differ in a last bit (`tests/test_golden_pipeline.py`). Bytes are
 //! compared where the format promises them: a state re-saved after a load is
 //! the bytes it was loaded from, on any OS, and two runs of one input save
-//! the same bytes. It held one `ew_ridge` spec on a number clock (review
+//! the same bytes. It held one `ewridge` spec on a number clock (review
 //! 2026-10-06, TA2 and PC12).
 //!
 //! Locally, and whenever the variables are absent, every check runs on a
@@ -65,7 +65,7 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "ewridge",
-        r#"{"type": "ew_ridge", "standardize": false, "ridge_scale": "mean", "target_gaps": "own_rows"}"#,
+        r#"{"type": "ewridge", "standardize": false, "ridge_scale": "mean", "target_gaps": "own_rows"}"#,
         r#""targets": ["y"], "features": ["x0"], "half_life": 50.0"#,
     ),
     (
@@ -145,7 +145,7 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "on_a_datetime",
-        r#"{"type": "ew_ridge"}"#,
+        r#"{"type": "ewridge"}"#,
         r#""targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w""#,
     ),
     (
@@ -155,7 +155,7 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "embargoed",
-        r#"{"type": "ew_ridge"}"#,
+        r#"{"type": "ewridge"}"#,
         r#""targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 40.0, "gap_cap": 50.0, "embargo": 3.0"#,
     ),
     (
@@ -165,7 +165,7 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "formula",
-        r#"{"type": "ew_ridge"}"#,
+        r#"{"type": "ewridge"}"#,
         r#""targets": [{"name": "fwd", "formula": ["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}], ["col", "mid"]]}], "features": ["x0"], "clock": "t", "half_life": 40.0, "gap_cap": 50.0, "embargo": 12.0"#,
     ),
 ];

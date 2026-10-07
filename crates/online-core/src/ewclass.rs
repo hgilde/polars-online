@@ -25,7 +25,7 @@
 //! Every output is read *before* the row is learned, so `class` and the
 //! posteriors are out of sample (CLAUDE.md rule 2), and `n_eff` is the EW
 //! weight before the row and before its own decay (rule 8), counting
-//! unlabelled rows as `ew_ridge` counts rows without a target: they advance
+//! unlabelled rows as `ewridge` counts rows without a target: they advance
 //! the clock and the feature history, so `min_weight` means the same number
 //! of rows here as everywhere else. The class weights `n_c` count only the
 //! labelled rows and are what the priors `π_c` are read from; a class no row
@@ -123,7 +123,7 @@ pub struct EwClassCfg {
     pub window_every: Option<f64>,
     /// At most this many rows between the window's snapshots, counted on
     /// every row the model is stepped with, rows of weight zero included;
-    /// `0` or `1` is every row.
+    /// `1` is every row, and `0` is refused (docs/PLAN.md task 196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rows_between_snapshots: Option<usize>,
 }
@@ -600,6 +600,12 @@ impl OnlineModel for EwClass {
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
+        }
+    }
+
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
         }
     }
 

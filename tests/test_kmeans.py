@@ -2,7 +2,7 @@
 docs/PLAN.md 11a, task 23).
 
 Not a regression: no targets, and the outputs (``cluster``, ``dist``,
-``dist2``) are the assignment of each row to the centres *as they stood
+``dist_second``) are the assignment of each row to the centres *as they stood
 before the row*. Four kinds of check:
 
 - **The transcription.** ``tests/reference_cluster.py`` mirrors the Rust
@@ -98,7 +98,7 @@ def ari(a, b) -> float:
 
 
 def _same(bank: pl.DataFrame, oracle: dict[str, list], what: str) -> None:
-    for key in ("cluster", "dist", "dist2", "weight_sum"):
+    for key in ("cluster", "dist", "dist_second", "weight_sum"):
         got = bank[key].to_list()
         want = oracle[key]
         assert len(got) == len(want), what
@@ -133,9 +133,9 @@ class TestOracle:
         _same(out, want, f"{rule}/{standardize}")
         assert out["cluster"].null_count() < df.height
 
-    @pytest.mark.parametrize("update_every", [1, 7, 64])
+    @pytest.mark.parametrize("update_every_rows", [1, 7, 64])
     @pytest.mark.parametrize("split_merge", [0.0, 0.5, 2.5])
-    def test_mini_batches_and_split_merge_bit_for_bit(self, update_every, split_merge):
+    def test_mini_batches_and_split_merge_bit_for_bit(self, update_every_rows, split_merge):
         X, _ = blobs(n=2500, k=4, seed=2)
         # Two clusters appear only after seeding, so split-merge has work.
         X[:600] = (
@@ -149,9 +149,9 @@ class TestOracle:
             half_life=300.0,
             min_weight=3.0,
             warm_rows=100,
-            update_every=update_every,
+            update_every_rows=update_every_rows,
             split_merge=split_merge,
-            split_merge_every=50,
+            split_merge_every_rows=50,
             # The dead rule runs at a split-merge check: without one it is
             # 0, and above it refused (review 2026-10-06, CF6).
             dead_frac=0.1 if split_merge > 0.0 else 0.0,
@@ -159,7 +159,7 @@ class TestOracle:
         )
         out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(X.tolist(), **params)
-        _same(out, want, f"every={update_every}/sm={split_merge}")
+        _same(out, want, f"every={update_every_rows}/sm={split_merge}")
         model = want["model"][0]
         if split_merge > 0.0:
             assert model.n_merges + model.n_dead > 0, "the fixture never triggered a re-placement"
@@ -306,7 +306,12 @@ class TestLargeData:
 
         def run(**kw):
             s = spec(
-                k=4, half_life=half_life, min_weight=1.0, warm_rows=200, split_merge_every=100, **kw
+                k=4,
+                half_life=half_life,
+                min_weight=1.0,
+                warm_rows=200,
+                split_merge_every_rows=100,
+                **kw,
             )
             got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             tail = np.arange(n) >= n - n // 4
@@ -351,7 +356,7 @@ class TestLargeData:
                 min_weight=1.0,
                 warm_rows=500,
                 split_merge=split_merge,
-                split_merge_every=100,
+                split_merge_every_rows=100,
             )
             got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             keep = (lab >= 0) & (got >= 0)
@@ -360,7 +365,7 @@ class TestLargeData:
                 assert ari(lab[m], got[m]) > 0.97, (split_merge, st, ari(lab[m], got[m]))
         # Through the oracle (bit-for-bit with the bank): no move at all.
         m = ref.KMeansRef(
-            p=2, k=k, half_life=2000.0, min_weight=1.0, warm_rows=500, split_merge_every=100
+            p=2, k=k, half_life=2000.0, min_weight=1.0, warm_rows=500, split_merge_every_rows=100
         )
         for x in X[:10_000]:
             m.step(list(x), 1.0, 1.0)
@@ -448,12 +453,12 @@ class TestDefinitions:
         return X, t, w
 
     @staticmethod
-    def by_definition(X, t, w, k, half_life, update_every):
+    def by_definition(X, t, w, k, half_life, update_every_rows):
         """Sequential k-means as docs/CLUSTERING.md §6.2-6.3 define it, with
         the `first` rule and no split-merge. The first `k` learned rows are
         the seeds, and replaying the buffer assigns each to itself. Every
         later row is assigned to the nearest centre as it stood (the first
-        minimum wins), and at every `update_every`-th learned row each centre
+        minimum wins), and at every `update_every_rows`-th learned row each centre
         is recomputed as the weighted mean of every row assigned to it, at
         the weight it has decayed to. Its radius² is the same weighted mean
         of each row's squared distance to the centre it was assigned to
@@ -487,14 +492,14 @@ class TestDefinitions:
             rows[j].append(i)
             d2_at[i] = float(d2[j])
             since += 1
-            if since == update_every:
+            if since == update_every_rows:
                 since = 0
                 checkpoints.append(i)
                 centres = np.array([c for _, c, _ in summarise(i, i)])
         return scored, checkpoints, summarise
 
-    @pytest.mark.parametrize("update_every", [1, 7])
-    def test_each_checkpoint_is_the_decayed_mean_of_its_rows(self, update_every):
+    @pytest.mark.parametrize("update_every_rows", [1, 7])
+    def test_each_checkpoint_is_the_decayed_mean_of_its_rows(self, update_every_rows):
         X, t, w = self.stream()
         k, half_life = 3, 60.0
         s = spec(
@@ -505,21 +510,23 @@ class TestDefinitions:
             seed_rule="first",
             split_merge=0.0,
             standardize=False,
-            update_every=update_every,
+            update_every_rows=update_every_rows,
             clock="t",
             gap_cap=1e9,
             weight="w",
             coef_every=0,
         )
         df = frame(X, t=t, w=w)
-        scored, checkpoints, summarise = self.by_definition(X, t, w, k, half_life, update_every)
+        scored, checkpoints, summarise = self.by_definition(
+            X, t, w, k, half_life, update_every_rows
+        )
         out = unnested(po.ModelBank([s]).fit_predict(df))
         # The assignment, and the distances to the nearest and the runner-up.
         assert out["cluster"][: checkpoints[0] + 1].null_count() == checkpoints[0] + 1
         for i, (j, d1, d2) in scored.items():
             assert out["cluster"][i] == j, i
             assert math.isclose(out["dist"][i], d1, rel_tol=1e-9), i
-            assert math.isclose(out["dist2"][i], d2, rel_tol=1e-9), i
+            assert math.isclose(out["dist_second"][i], d2, rel_tol=1e-9), i
         # The centres after every checkpoint, as `coef` reports them.
         for i in checkpoints:
             want = np.concatenate([c for _, c, _ in summarise(i, i)])
@@ -542,7 +549,7 @@ class TestDefinitions:
                 assert math.isclose(g["r2"], r2, rel_tol=1e-9, abs_tol=1e-12), (last, g, r2)
             compared += 1
         assert compared > 30
-        assert len(checkpoints) > (df.height - 100) // (update_every * 2)
+        assert len(checkpoints) > (df.height - 100) // (update_every_rows * 2)
 
     # The constants `kmeans.rs` names in its module doc.
     FAR_SIGMAS, FAR_SHARE, FAR_ROWS, RADIUS_ROWS = 4.0, 0.05, 3, 10
@@ -594,7 +601,7 @@ class TestDefinitions:
         squared distance to the nearest centre is above the cut, and then
         goes to that centre's far summary and not into the centre; the cut
         is ``f R̃``, ``f = 1 + FAR_SIGMAS sqrt(2/p)``; and at every
-        ``split_merge_every``-th learned row, the radii take the far rows in
+        ``split_merge_every_rows``-th learned row, the radii take the far rows in
         as if at the cut, the closest pair by ``d_ij / (r_i + r_j)`` below
         ``split_merge`` is merged when the heaviest far summary (counting
         ``F_j`` as ``F_i``'s) holds ``FAR_ROWS`` rows and ``FAR_SHARE`` of
@@ -608,7 +615,7 @@ class TestDefinitions:
         f = 1.0 + self.FAR_SIGMAS * math.sqrt(2.0 / p)
         sm, every, dead_frac = (
             params["split_merge"],
-            params["split_merge_every"],
+            params["split_merge_every_rows"],
             params["dead_frac"],
         )
         bank = po.ModelBank([spec(min_weight=1.0, standardize=False, **params)])
@@ -722,7 +729,7 @@ class TestDefinitions:
                 half_life=300.0,
                 warm_rows=100,
                 split_merge=split_merge,
-                split_merge_every=50,
+                split_merge_every_rows=50,
                 dead_frac=0.1,
                 seed=3,
             )
@@ -738,7 +745,7 @@ class TestDefinitions:
             half_life=200.0,
             warm_rows=200,
             split_merge=0.5,
-            split_merge_every=100,
+            split_merge_every_rows=100,
             dead_frac=0.25,
         )
         assert seen["dead"] >= 1 and seen["far"] > 100, seen
@@ -802,7 +809,7 @@ class TestEdgeCases:
     def test_k_equals_one_has_no_runner_up(self):
         X, _ = blobs(n=100, seed=21)
         out = unnested(po.ModelBank([spec(k=1, warm_rows=5, min_weight=1.0)]).fit_predict(frame(X)))
-        assert out["dist2"].null_count() == 100
+        assert out["dist_second"].null_count() == 100
         assert out["dist"].null_count() == 5
         assert set(out["cluster"].drop_nulls().to_list()) == {0}
 
@@ -880,7 +887,7 @@ class TestEdgeCases:
     def test_chunk_invariance_across_seeding_and_checkpoints(self):
         X, _ = blobs(n=700, seed=26)
         df = frame(X)
-        s = spec(warm_rows=100, update_every=13, split_merge_every=40, min_weight=1.0)
+        s = spec(warm_rows=100, update_every_rows=13, split_merge_every_rows=40, min_weight=1.0)
         one = unnested(po.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
             bank = po.ModelBank([s])
@@ -896,7 +903,7 @@ class TestEdgeCases:
     def test_save_load_mid_warmup_and_after(self, tmp_path):
         X, _ = blobs(n=600, seed=27)
         df = frame(X)
-        s = spec(warm_rows=200, update_every=5, split_merge_every=30, min_weight=1.0)
+        s = spec(warm_rows=200, update_every_rows=5, split_merge_every_rows=30, min_weight=1.0)
         for cut in (100, 250, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -920,14 +927,14 @@ class TestEdgeCases:
         assert po.spec.output_fields(s) == [
             "cluster@h50",
             "dist@h50",
-            "dist2@h50",
+            "dist_second@h50",
             "weight_sum@h50",
             "settled_frac@h50",
             "withheld_reason@h50",
             "coef@h50",
             "cluster@h500",
             "dist@h500",
-            "dist2@h500",
+            "dist_second@h500",
             "weight_sum@h500",
             "settled_frac@h500",
             "withheld_reason@h500",
@@ -987,7 +994,7 @@ class TestEdgeCases:
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
         tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
-        assert idx["kind"].to_list() == ["cluster", "dist", "dist2", *tail]
+        assert idx["kind"].to_list() == ["cluster", "dist", "dist_second", *tail]
         assert idx["dtype"].to_list() == ["i32", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
@@ -1012,7 +1019,7 @@ class TestEdgeCases:
             half_life=float("inf"),
             min_weight=1.0,
             warm_rows=50,
-            split_merge_every=100,
+            split_merge_every_rows=100,
             standardize=False,
         )
         plain = unnested(po.ModelBank([s]).fit_predict(frame(X)))
@@ -1032,7 +1039,7 @@ class TestEdgeCases:
             half_life=math.inf,
             min_weight=1.0,
             warm_rows=50,
-            split_merge_every=100,
+            split_merge_every_rows=100,
             standardize=False,
         )
         for x in Y[:330]:
@@ -1069,7 +1076,7 @@ class TestEdgeCases:
             half_life=half_life,
             min_weight=1.0,
             warm_rows=100,
-            split_merge_every=100,
+            split_merge_every_rows=100,
             dead_frac=0.25,
             standardize=False,
         )
@@ -1136,8 +1143,8 @@ class TestRefusals:
         [
             ({"k": 0}, "k must be >= 1"),
             ({"seed_rule": "random"}, "unknown kmeans seed_rule"),
-            ({"update_every": 0}, "update_every must be >= 1"),
-            ({"split_merge_every": 0}, "split_merge_every must be >= 1"),
+            ({"update_every_rows": 0}, "update_every_rows must be >= 1"),
+            ({"split_merge_every_rows": 0}, "split_merge_every_rows must be >= 1"),
             ({"split_merge": -1.0}, "split_merge must be finite and >= 0"),
             ({"dead_frac": -0.1}, "dead_frac must be finite and >= 0"),
             ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),

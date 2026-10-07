@@ -26,7 +26,7 @@ class TestRls:
     """Task 9: RLS (docs/PLAN.md section 4.2) and its agreement with EW-ridge."""
 
     def test_matches_ewridge_solved_every_row(self):
-        # ew_ridge with ridge_scale is algebraically the same estimator as RLS
+        # ewridge with ridge_scale is algebraically the same estimator as RLS
         # with the same prior; solving every row must reproduce it exactly.
         df, _ = synthetic(seed=21, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         common = dict(

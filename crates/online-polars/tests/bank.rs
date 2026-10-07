@@ -20,7 +20,7 @@ fn spec_json(name: &str, group: bool) -> Spec {
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",
-            "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+            "model": {{"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
@@ -44,7 +44,7 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
     let spec: Spec = serde_json::from_str(
         r#"{
             "name": "u",
-            "model": {"type": "ew_ridge", "ridge": 1e-6},
+            "model": {"type": "ewridge", "ridge": 1e-6},
             "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
             "half_life": 60.0, "gap_cap": 30.0, "weight": "w", "min_weight": 5.0
         }"#,
@@ -213,7 +213,7 @@ fn load_rejects_mismatched_specs() {
             .map(|n| {
                 let r = if *n == "b" { ridge } else { "1e-6" };
                 serde_json::from_str(&format!(
-                    r#"{{"name": "{n}", "model": {{"type": "ew_ridge", "ridge": {r}}},
+                    r#"{{"name": "{n}", "model": {{"type": "ewridge", "ridge": {r}}},
                         "targets": ["y"], "features": ["x0", "x1"], "half_life": 60.0}}"#
                 ))
                 .unwrap()
@@ -249,7 +249,7 @@ fn load_rejects_mismatched_specs() {
 #[test]
 fn a_clock_step_past_the_largest_double_is_refused_by_row() {
     let spec: Spec = serde_json::from_str(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x0"], "clock": "t", "half_life": 10.0, "gap_cap": 10.0,
             "coef_every": 100.0}"#,
     )
@@ -595,7 +595,7 @@ fn coef_fields_name_every_slot_of_every_list() {
     let spec: Spec = serde_json::from_str(
         r#"{
             "name": "m",
-            "model": {"type": "ew_ridge", "ridge": [0.0, 0.5],
+            "model": {"type": "ewridge", "ridge": [0.0, 0.5],
                       "feature_sets": [["a", ["x0"]], ["b", ["x0", "x1"]]]},
             "targets": ["y", "z"],
             "features": ["x0", "x1"],
@@ -769,7 +769,7 @@ fn integer_group_keys_match_the_string_cast() {
 #[test]
 fn a_monotone_int128_key_is_ordered_as_a_number() {
     let spec: Spec = serde_json::from_str(
-        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
             "features": ["x"], "group": "g", "half_life": 10.0,
             "group_close": "monotone"}"#,
     )
@@ -815,7 +815,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
     // `ModelKind`; a new kind that lands on the wrong side of this line
     // shows up here rather than as an index out of bounds in `assemble`.
     let kinds = [
-        r#"{"type": "ew_ridge", "ridge": 1e-6}"#,
+        r#"{"type": "ewridge", "ridge": 1e-6}"#,
         r#"{"type": "lasso", "lasso_path": [0.1]}"#,
         r#"{"type": "kalman", "coef_half_life": 100.0}"#,
         r#"{"type": "huber"}"#,
@@ -925,12 +925,12 @@ fn ew_cov_spec(k: usize) -> Spec {
     .unwrap()
 }
 
-/// An ungrouped, unclocked `ew_ridge` on `x0`, `x1` that solves every row,
+/// An ungrouped, unclocked `ewridge` on `x0`, `x1` that solves every row,
 /// with `cadence` the `coef` schedule's `, "key": value` pairs: none
 /// reports the coefficients on the chunk's last row only.
 fn ridge_spec(cadence: &str) -> Spec {
     serde_json::from_str(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+        r#"{{"name": "m", "model": {{"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
             "min_weight": 5.0{cadence}}}"#
     ))
@@ -990,7 +990,7 @@ fn runs_through_a_wide_model_are_invisible() {
 fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // The last row of a *chunk* reports the coefficients, not the last row
     // of every run inside it: `process_chunk`'s `last` flag is what tells the
-    // two apart. A narrow `ew_ridge` gets runs of 65 520 rows (four values
+    // two apart. A narrow `ewridge` gets runs of 65 520 rows (four values
     // a row -- pred, resid, n_eff, settled_frac -- against a 2 MiB budget),
     // so a chunk of twice that plus a hundred is three runs with two
     // boundaries inside it, and exactly one `coef`.
@@ -1086,7 +1086,7 @@ fn blocked_ridge_spec(block: usize) -> Spec {
     serde_json::from_str(&format!(
         r#"{{
             "name": "m",
-            "model": {{"type": "ew_ridge", "ridge": 1e-6, "solve_every": 1e9,
+            "model": {{"type": "ewridge", "ridge": 1e-6, "solve_every": 1e9,
                        "max_rows_between_solves": 30, "gram_block_rows": {block}}},
             "targets": ["y"],
             "features": ["x0", "x1"],
@@ -1380,8 +1380,8 @@ fn the_solve_cadence_is_the_specs_on_restore() {
         ))
         .unwrap()
     };
-    let explicit = spec(r#"{"type": "ew_ridge", "solve_every": 1e9}"#);
-    let default = spec(r#"{"type": "ew_ridge"}"#);
+    let explicit = spec(r#"{"type": "ewridge", "solve_every": 1e9}"#);
+    let default = spec(r#"{"type": "ewridge"}"#);
     let saved = Stream::new(&explicit).unwrap().save();
     assert_eq!(
         Stream::restore(&explicit, &saved).unwrap().models[0]

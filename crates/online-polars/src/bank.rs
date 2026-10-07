@@ -131,7 +131,7 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// `quantile`, `ew_cov` and `micro` keep the stamp of their last event,
 /// where a 36 file's keep a summed clock, so a 36 file holding one would
 /// not decode; it is refit. **38 since task 186** (the same day): the
-/// systems `ew_ridge` keeps for its readiness statistics lost a Gram index
+/// systems `ewridge` keeps for its readiness statistics lost a Gram index
 /// nothing read, and a closed `rcov` row's `psd_repaired` can be null; a 37
 /// file is refit. **39 since task 194** (2026-10-07): a stream's state nests
 /// what it keeps beside its models (S6), a clock range is kept as clock
@@ -139,10 +139,13 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// envelope keeps each key column's form (N22); a 38 file is refit.
 /// **40 since task 195** (2026-10-07): `sgd`'s and `pa`'s
 /// `huber_delta` and `eps` are in units of a residual spread each keeps,
-/// `pa` keeps a scaler, `bocpd` a warm-up, `ew_ridge` and `robust` each
+/// `pa` keeps a scaler, `bocpd` a warm-up, `ewridge` and `robust` each
 /// target's own `min_weight`, and `rls`'s prior strength is `delta`; a file
-/// from before it is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 40;
+/// from before it is refit. **41 since task 196** (2026-10-07): a spec's
+/// model is `type = "ewridge"`, a windowed one carries `closed`, `holt`'s
+/// has no `level_half_life`, and `kmeans`' and `corrchange`'s row counts say
+/// `_rows`; a window's ring keeps its edge. A 40 file is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 41;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -671,10 +674,10 @@ fn close_rows(
                                 corr: p.corr,
                                 beta: p.beta,
                                 t_stat: p.t,
-                                lagcorr_xx: p.lagcorr_xx,
-                                lagcorr_yy: p.lagcorr_yy,
-                                lagcorr_xy: p.lagcorr_xy,
-                                lagcorr_yx: p.lagcorr_yx,
+                                lag_corr_xx: p.lag_corr_xx,
+                                lag_corr_yy: p.lag_corr_yy,
+                                lag_corr_xy: p.lag_corr_xy,
+                                lag_corr_yx: p.lag_corr_yx,
                                 n_serial: p.n_serial,
                                 t_serial: p.t_serial,
                                 phi_x: p.phi_x,
@@ -1172,8 +1175,8 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
              (restart_after_step_back is unset, so every step back is refused); the bank \
              was not updated. Sort each group by the clock; to resume a saved state on \
              input that overlaps it, drop the rows it has learned, with \
-             ModelBank.skip_learned(frame) in Python or by filtering the command line's input \
-             to the rows after them; or, if a step back this large starts the stream over, set \
+             ModelBank.skip_learned(frame) in Python or --skip-learned on the command line; \
+             or, if a step back this large starts the stream over, set \
              restart_after_step_back below it (a step back no larger than the setting is a \
              late row).",
             spec.name, column, step, row
@@ -1564,13 +1567,13 @@ pub struct PairRow {
     /// 4, CD13: `t` read as every example's clock column).
     pub t_stat: f64,
     #[serde(default)]
-    pub lagcorr_xx: Vec<f64>,
+    pub lag_corr_xx: Vec<f64>,
     #[serde(default)]
-    pub lagcorr_yy: Vec<f64>,
+    pub lag_corr_yy: Vec<f64>,
     #[serde(default)]
-    pub lagcorr_xy: Vec<f64>,
+    pub lag_corr_xy: Vec<f64>,
     #[serde(default)]
-    pub lagcorr_yx: Vec<f64>,
+    pub lag_corr_yx: Vec<f64>,
     #[serde(default = "nan")]
     pub n_serial: f64,
     #[serde(default = "nan")]
@@ -2056,10 +2059,10 @@ fn closed_frame(
         if has_lags {
             for (name, f) in [
                 (
-                    "pair_lagcorr_xx",
-                    (|p: &PairRow| p.lagcorr_xx.as_slice()) as fn(&PairRow) -> &[f64],
+                    "pair_lag_corr_xx",
+                    (|p: &PairRow| p.lag_corr_xx.as_slice()) as fn(&PairRow) -> &[f64],
                 ),
-                ("pair_lagcorr_yy", |p| p.lagcorr_yy.as_slice()),
+                ("pair_lag_corr_yy", |p| p.lag_corr_yy.as_slice()),
             ] {
                 cols.push(list_list_f64(name, rows, move |r| {
                     asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
@@ -2071,10 +2074,10 @@ fn closed_frame(
         if has_cross_lags {
             for (name, f) in [
                 (
-                    "pair_lagcorr_xy",
-                    (|p: &PairRow| p.lagcorr_xy.as_slice()) as fn(&PairRow) -> &[f64],
+                    "pair_lag_corr_xy",
+                    (|p: &PairRow| p.lag_corr_xy.as_slice()) as fn(&PairRow) -> &[f64],
                 ),
-                ("pair_lagcorr_yx", |p| p.lagcorr_yx.as_slice()),
+                ("pair_lag_corr_yx", |p| p.lag_corr_yx.as_slice()),
             ] {
                 cols.push(list_list_f64(name, rows, move |r| {
                     asked(r, spec_cross_lags).then(|| r.pairs.iter().map(f).collect())
@@ -2923,12 +2926,12 @@ impl Bank {
         // without `lags`, so a spec that does not ask for them gets the
         // frame it always got.
         if spec_lags(s) {
-            cols.push(lists(|p| &p.lagcorr_xx).with_name("lagcorr_xx".into()));
-            cols.push(lists(|p| &p.lagcorr_yy).with_name("lagcorr_yy".into()));
+            cols.push(lists(|p| &p.lag_corr_xx).with_name("lag_corr_xx".into()));
+            cols.push(lists(|p| &p.lag_corr_yy).with_name("lag_corr_yy".into()));
             // Over `cross_lags`; absent under `cross_lags = []` (E70).
             if spec_cross_lags(s) {
-                cols.push(lists(|p| &p.lagcorr_xy).with_name("lagcorr_xy".into()));
-                cols.push(lists(|p| &p.lagcorr_yx).with_name("lagcorr_yx".into()));
+                cols.push(lists(|p| &p.lag_corr_xy).with_name("lag_corr_xy".into()));
+                cols.push(lists(|p| &p.lag_corr_yx).with_name("lag_corr_yx".into()));
             }
             cols.push(Column::new("n_serial".into(), num(|p| p.n_serial)));
             cols.push(Column::new("t_serial".into(), num(|p| p.t_serial)));
@@ -4382,6 +4385,9 @@ impl Bank {
 mod fields;
 pub use fields::{FieldMeta, coef_fields, duplicate_field, output_fields, output_index};
 use fields::{Source, slot_labels};
+
+mod learned;
+pub use learned::Learned;
 
 /// Scatter one value per processed row of every chunk into a column:
 /// `run(chunk, n_rows)` is the field's `n_rows` values for that chunk in row

@@ -99,8 +99,9 @@ def snapshot_rows(
 ) -> list[int]:
     """The rule, written out: the first row; then a row whose clock is
     ``every`` past the newest snapshot's, or ``cap`` rows past it, whichever
-    comes first, and whatever the cadence a row whose newest snapshot is
-    older than the window. With neither, every row."""
+    comes first, and whatever the cadence a row whose newest snapshot has
+    left the window -- a window or more old, under the default
+    ``closed="right"`` (docs/PLAN.md task 196). With neither, every row."""
     if every is None and cap is None:
         cap = 1
     rows: list[int] = []
@@ -110,7 +111,7 @@ def snapshot_rows(
             due = (
                 (every is not None and c - clock[last] >= every)
                 or (cap is not None and i - last >= cap)
-                or clock[last] < c - window
+                or c - clock[last] >= window
             )
         else:
             due = True
@@ -121,9 +122,10 @@ def snapshot_rows(
 
 def boundary(clock: np.ndarray, snaps: list[int], t: int, window: float = WINDOW) -> int:
     """The row of the snapshot row ``t`` subtracts: the oldest one inside the
-    window of the row before it, which is the ring that row left."""
+    window of the row before it -- less than a window old, under the default
+    ``closed="right"`` -- which is the ring that row left."""
     ref = clock[t - 1]
-    return next(j for j in snaps if j <= t - 1 and clock[j] >= ref - window)
+    return next(j for j in snaps if j <= t - 1 and ref - clock[j] < window)
 
 
 def inside(clock: np.ndarray, w: np.ndarray, t: int, b: int) -> np.ndarray:
@@ -305,12 +307,11 @@ class TestTheCadence:
         "kw",
         [
             {"window_every": 0},
-            {"max_rows_between_snapshots": 0},
             {"max_rows_between_snapshots": 1},
             {"window_every": "1m", "max_rows_between_snapshots": 1},
             {"window_every": 0, "max_rows_between_snapshots": 25},
         ],
-        ids=["every=0", "cap=0", "cap=1", "1m,cap=1", "0,cap=25"],
+        ids=["every=0", "cap=1", "1m,cap=1", "0,cap=25"],
     )
     def test_every_row_is_the_default(self, kw):
         df = frame(stream_steps())
@@ -365,7 +366,7 @@ class TestChunkingAndResume:
         s = make(window_every="1m", max_rows_between_snapshots=25)
         whole = run(s, df)
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_rows=rows))
+            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
             parts = parts.unnest(s["name"])
             for f in floats(whole):
                 a, b = whole[f].to_numpy(), parts[f].to_numpy()
@@ -420,9 +421,12 @@ class TestRefusals:
         with pytest.raises(ValueError, match="window_every must be finite and >= 0 clock units"):
             ew_cov(clock=None, gap_cap=None, half_life=40.0, window_size=120.0, window_every=bad)
 
-    def test_a_negative_row_cap_is_refused(self):
-        with pytest.raises(ValueError, match="max_rows_between_snapshots must be >= 0, got -1"):
-            ew_cov(max_rows_between_snapshots=-1)
+    @pytest.mark.parametrize("bad", [-1, 0])
+    def test_a_row_cap_of_no_rows_is_refused(self, bad):
+        """A cap of no rows is no schedule; `window_every = 0` is every row
+        (docs/PLAN.md task 196, U7)."""
+        with pytest.raises(ValueError, match=f"max_rows_between_snapshots must be >= 1, got {bad}"):
+            ew_cov(max_rows_between_snapshots=bad)
 
     @pytest.mark.parametrize(
         "key,value", [("window_every", "1m"), ("max_rows_between_snapshots", 5)]

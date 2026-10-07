@@ -231,7 +231,7 @@ polars-online uses these words in a sense of its own:
 | **spec** | the description of one model: which model, which columns it reads, and how it treats time. `po.spec.ewridge(...)` builds one |
 | **model bank**, or *the bank* | a set of specs fitted together over the same rows, and the Python object that holds them, [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank). *The bank* always means a model bank |
 | **stream** | the rows in the order the bank reads them |
-| **chunk** | one of the pieces the bank takes the stream in, one at a time: `chunk_rows` rows in a query, 100,000 by default, or each frame passed to `ModelBank.fit_predict` |
+| **chunk** | one of the pieces the bank takes the stream in, one at a time: `chunk_size` rows in a query, 100,000 by default, or each frame passed to `ModelBank.fit_predict` |
 | **state** | everything a bank has learned |
 | **clock**, **decay** | the column, named by `clock=`, that says how far apart two rows are, and the forgetting measured along it: each row's weight halves every `half_life` of the clock ([Time and decay](#time-and-decay)) |
 | **`weight_sum`** | the *weight behind the state* that produced a row's prediction, which `min_weight` reads ([Warm-up](#warm-up)) |
@@ -597,14 +597,23 @@ stays near zero until the stream has run for about 10¹² clock units, so a
 ### A hard window
 
 A half-life never forgets entirely: three half-lives back still carries
-12.5% of the weight. To make every row older than `w` clock units count for
-exactly nothing, give `window_size=w`. Five models take it: `ewridge`,
+12.5% of the weight. To make every row `w` clock units old or older count
+for exactly nothing, give `window_size=w`. Five models take it: `ewridge`,
 `lasso`, `ew_cov`, `ew_class` and `marginal`.
 
 ```
-weight(age) = 0.5 ** (age / half_life)   if age <= window_size
+weight(age) = 0.5 ** (age / half_life)   if age < window_size   (closed="right", the default)
+                                         or age <= window_size  (closed="both")
             = 0                          otherwise
 ```
+
+**`closed` says which edge holds the row exactly `window_size` old, as
+Polars' `rolling_*_by(closed=)` does.** Under `"right"`, the default, that
+row has left, as it has in the [window operators](#windowed-means-looking-back-or-ahead) and in
+`rolling_sum_by`. Under `"both"` it stays. A model's window always holds the
+row it ends at, because the model reads its fit after it has learned that
+row, so `"left"` and `"none"` are refused, and so is `"both"` without a
+`window_size`.
 
 **Inside the window the weights still halve every `half_life`, so the
 newest row counts most.** For a flat rolling fit with equal weights, give
@@ -628,7 +637,7 @@ Under `window_every` the effective window is in
 ```python
 cut = po.spec.ew_cov(
     "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
-    window_size=1500.0,            # a row older than this many clock units contributes exactly nothing
+    window_size=1500.0,            # a row this many clock units old or older contributes exactly nothing
     window_every=10,               # a snapshot every 10 units of t
     window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
 )
@@ -811,9 +820,9 @@ duration.
 spec "m": clock column "t" goes backwards by 30 at row 6 (restart_after_step_back is unset, so
 every step back is refused); the bank was not updated. Sort each group by the clock; to resume a
 saved state on input that overlaps it, drop the rows it has learned, with
-ModelBank.skip_learned(frame) in Python or by filtering the command line's input to the rows after
-them; or, if a step back this large starts the stream over, set restart_after_step_back below it
-(a step back no larger than the setting is a late row).
+ModelBank.skip_learned(frame) in Python or --skip-learned on the command line; or, if a step back
+this large starts the stream over, set restart_after_step_back below it (a step back no larger
+than the setting is a late row).
 ```
 
 ### Groups
@@ -1480,7 +1489,7 @@ object, the output can leave as Arrow, for a consumer that is not Polars:
 adds a model bank to a Polars query, a `LazyFrame`, which runs only when
 you ask for its result. `df.online.fit_predict(specs)` does the same for a
 `DataFrame` in memory. When the query runs, it feeds its rows to a bank
-that starts with nothing learned, `chunk_rows` rows at a time (100,000 by
+that starts with nothing learned, `chunk_size` rows at a time (100,000 by
 default). Run it with `collect()` for one frame, `sink_parquet()` to write
 a file without holding the result in memory, or `collect_batches()` for one
 chunk at a time.
@@ -1496,7 +1505,7 @@ spec = po.spec.ewridge(                                   # a ridge regression o
 files = pl.scan_parquet("ticks/*.parquet")                # a query over the files; nothing is read yet
 (
     files
-    .online.fit_predict([spec], chunk_rows=100_000)       # a bank with nothing learned yet; every run starts from the same place
+    .online.fit_predict([spec], chunk_size=100_000)       # a bank with nothing learned yet; every run starts from the same place
     .filter(pl.col("ridge").struct.field("weight_sum") > 100)  # after the bank: filters what comes out, never what the bank learns from
     .select("ts", "stock_id", "ridge")                     # Polars reads only these columns, and those the specs read, from the files
     .sink_parquet("fitted.parquet")                       # runs the query; memory is state + one chunk, however long the files
@@ -1569,8 +1578,8 @@ for chunk in lf.collect_batches():        # the query, one chunk at a time: the 
 
 bank.save("bank.state")                    # written whole or not at all: a temporary file, then a rename
 
-# Or let the bank chunk: a query or a DataFrame in chunk_rows rows, an iterator of frames as it comes.
-for out in po.ModelBank([spec]).fit_predict_batches(lf, chunk_rows=100_000):
+# Or let the bank chunk: a query or a DataFrame in chunk_size rows, an iterator of frames as it comes.
+for out in po.ModelBank([spec]).fit_predict_batches(lf, chunk_size=100_000):
     ...
 
 # A run whose product is the state: learn from every row, keep no output.
@@ -1621,7 +1630,7 @@ half_life = 600.0
 gap_cap = 300.0
 group = "stock_id"
 [specs.model]                    # the model, and its own keywords
-type = "ew_ridge"
+type = "ewridge"
 ridge = [1e-6, 0.1]
 standardize = true
 ```
@@ -1684,7 +1693,7 @@ the file at its own moment:
 |---|---|---|---|
 | a bank object | `bank.save(path)` | `po.ModelBank.load` | when `bank.save` is called |
 | a query | `save_state=` | `load_state=` | when the run reaches its last row, with the same bytes a `ModelBank` would write |
-| the command line | `--save-state` | `--resume` | only after its output is committed |
+| the command line | `--save-state` | `--load-state` | only after its output is committed |
 
 This code uses `df`, `lf`, `today` and `later` from [Example data](#example-data):
 
@@ -2405,7 +2414,7 @@ ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                         clock="t", gap_cap=300.0, half_life=500.0, group="stock_id")
 
 running = None
-for out in po.ModelBank([ridge]).fit_predict_batches(lf, chunk_rows=100):   # the output, 100 rows at a time
+for out in po.ModelBank([ridge]).fit_predict_batches(lf, chunk_size=100):   # the output, 100 rows at a time
     part = po.eval.sums(out, "ridge", by=["stock_id"])   # weight= names a column to weight the rows by
     running = part if running is None else po.eval.merge_sums(running, part)
 
@@ -2529,7 +2538,7 @@ What `half_life` decays differs by model:
 | `sgd` | `weight_sum`, the running moments `standardize` scales by, and adagrad's sums, but not the coefficients |
 | `pa` | `weight_sum`, each target's own weight and the running moments `standardize` scales by, but not the coefficients |
 | `ftrl` | its per-coordinate sums, and its penalties with them |
-| `holt` | the level, as `level_half_life`; the trend has `trend_half_life` |
+| `holt` | the level; the trend has `trend_half_life` |
 
 #### `ewridge` — EW ridge on sufficient statistics
 
@@ -3117,7 +3126,7 @@ This code uses `df` from [Example data](#example-data):
 with_x = po.spec.ewridge("with_x", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=600.0,
                          half_life=200.0, emit_sigma=True)     # sigma_y is written only when switched on
 naive = po.spec.holt("naive", targets=["y"], clock="t", gap_cap=600.0,
-                     level_half_life=200.0, emit_sigma=True)   # the same target, from its own past alone
+                     half_life=200.0, emit_sigma=True)         # the same target, from its own past alone
 gain = po.spec.seqtest("gain", targets=["y"], a="with_x", b="naive")   # evidence that the features predict closer
 compared = po.ModelBank([with_x, naive, gain]).fit_predict(df)
 ```
@@ -3129,7 +3138,7 @@ included. So a row with a null target or weight 0 leaves the level and
 trend where they were, and its step goes into the next observation's `s`:
 
 ```
-λ_l = 0.5^(s/level_half_life)                  λ_b = 0.5^(s/trend_half_life)
+λ_l = 0.5^(s/half_life)                        λ_b = 0.5^(s/trend_half_life)
 pred = l + b·s
 l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)          W' = λ_l·W + w
 b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
@@ -3138,7 +3147,7 @@ b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
 ```python
 baseline = po.spec.holt(
     "baseline", targets=["y"], clock="t", gap_cap=600.0,
-    level_half_life=200.0,        # how fast the level forgets, in clock units
+    half_life=200.0,              # how fast the level forgets, in clock units
     trend_half_life=2000.0,       # how fast the trend forgets (default four times the level's)
     trend=True,                  # the default
 )                                # coef is [level, trend] per target
@@ -3147,9 +3156,10 @@ baseline = po.spec.holt(
 **`holt` measures the trend per clock unit, and per second on a temporal
 clock,** so on an irregular clock it extrapolates the right distance.
 
-**Give the level's half-life as either `level_half_life` or the spec's
-`half_life`:** they name one setting, and a spec with both is refused. To
-make the trend the whole history's drift, give `trend_half_life=inf`.
+**The level's half-life is the spec's `half_life`, as every model's
+decay is.** `level_half_life`, a second name it once had, is refused and
+the message names `half_life`. To make the trend the whole history's
+drift, give `trend_half_life=inf`.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the
@@ -3163,7 +3173,7 @@ This code uses `lf` from [Example data](#example-data):
 
 ```python
 seasonal = po.spec.holt("seasonal", targets=["y"], clock="ts", gap_cap="1h",
-                        level_half_life="2h", group="hour")   # one level and trend per hour of the day
+                        half_life="2h", group="hour")         # one level and trend per hour of the day
 by_hour = lf.with_columns(hour=pl.col("ts").dt.hour()).online.fit_predict([seasonal]).collect()   # the phase, as a column
 ```
 
@@ -3206,7 +3216,7 @@ left out:
 | `mean`, `var`, `std`, `cov`, `corr` | the moments, per column or per pair | |
 | `partial_corr` | the correlation of two columns with all the others held fixed, read off `(C + s·prior·I)⁻¹` in O(k³) time, spent only when asked | `precision_prior` |
 | `mahal` | the Mahalanobis distance | `precision_prior` |
-| `lagcorr` | the correlation of one column with another `ℓ` learned rows back | `lags=` |
+| `lag_corr` | the correlation of one column with another `ℓ` learned rows back | `lags=` |
 
 For a wide set of columns, give `stats=[]`, so that each row writes no
 statistics, and read the moments from the state after the run with
@@ -3266,7 +3276,7 @@ C_ℓ' = a·C_ℓ + a·b·(x_t − m)(x_{t−ℓ} − m)'      the co-moments' a
 ```
 
 Give `lags` as a strictly increasing list of whole numbers `>= 1`. Add
-`"lagcorr"` to `stats` to write a correlation for each lag and each *ordered*
+`"lag_corr"` to `stats` to write a correlation for each lag and each *ordered*
 pair, since a lagged matrix is not symmetric: a leading b is not b leading a.
 
 **A session change, or a clock gap beyond `gap_cap`, empties the ring of past
@@ -3279,7 +3289,7 @@ This code uses `df` from [Example data](#example-data):
 lagged = po.spec.ew_cov(
     "lagged", features=["x0", "x1"], half_life=500.0,
     lags=[1, 5],                 # in learned rows within the group
-    stats=["corr", "lagcorr"],   # lagcorr_<a>_<b>_l<l> for each lag and ordered pair
+    stats=["corr", "lag_corr"],   # lag_corr_<a>_<b>_l<l> for each lag and ordered pair
 )
 bank = po.ModelBank([lagged])
 lead = bank.fit_predict(df).unnest("lagged")
@@ -3359,7 +3369,7 @@ derives both):
 
 When a group closes, `bank.closed_groups()` carries the two views as
 `pair_*` columns: `pair_split_gain` as a list over the pairs, and
-`pair_lagcorr_xx` and `pair_bin_n` as lists of lists.
+`pair_lag_corr_xx` and `pair_bin_n` as lists of lists.
 
 **To correct the count for rows that resemble their neighbours, give `lags`
 and a `serial_rule`.** Each pair then keeps its moments at each lag, the
@@ -3390,18 +3400,18 @@ bank = po.ModelBank([serial])
 bank.fit_predict(df)
 table = bank.marginal("serial")
 # the columns lags add:
-# lagcorr_xx, lagcorr_yy      each series' own autocorrelation, one entry per lag
-# lagcorr_xy, lagcorr_yx      the feature now against the target l rows back, and the reverse, one entry per cross lag
+# lag_corr_xx, lag_corr_yy      each series' own autocorrelation, one entry per lag
+# lag_corr_xy, lag_corr_yx      the feature now against the target l rows back, and the reverse, one entry per cross lag
 # n_serial                    n_kish over the serial_rule's bracket
 # t_serial                    the same statistic as t, against that count
 # phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"
 ```
 
 **Read lead and lag from the cross terms only when the target is measured at
-the same time as the feature.** Then a feature whose `lagcorr_yx[0]` beats
-its `corr` leads its target, and one whose `lagcorr_xy[0]` does follows it.
+the same time as the feature.** Then a feature whose `lag_corr_yx[0]` beats
+its `corr` leads its target, and one whose `lag_corr_xy[0]` does follows it.
 Against a target that looks ahead, read `corr` alone. There every timely
-feature built from the same news shows `lagcorr_xy` above `corr`, because the
+feature built from the same news shows `lag_corr_xy` above `corr`, because the
 target `l` rows back is built partly from the feature's newest `l` rows.
 
 **Give `bins` to see the relations a correlation cannot.** A feature can be
@@ -3692,14 +3702,14 @@ km = po.spec.kmeans(
     warm_rows=100,               # rows to seed from (default 500)
     seed_rule="lloyd",           # the default: the best of ten k-means++ starts
     split_merge=0.5,             # two centres nearer than this times the sum of their radii are one blob
-    split_merge_every=200,       # rows between split–merge checks
+    split_merge_every_rows=200,       # rows between split–merge checks
     dead_frac=0.05,              # under this share of an equal share, a centre is re-placed
     scale_floor=0.1,             # the metric's variance floor, as a fraction of each feature's long-run variance
-    update_every=1,              # the default, sequential: learned rows between applying each centre's batch; more is mini-batch
+    update_every_rows=1,              # the default, sequential: learned rows between applying each centre's batch; more is mini-batch
 )
 out = po.ModelBank([km]).fit_predict(df).unnest("km")
 # cluster   the nearest centre's label, before the row is learned from
-# dist      the distance to it;  dist2  the distance to the second-nearest
+# dist      the distance to it;  dist_second  the distance to the second-nearest
 # weight_sum, and coef: the centres, k rows of len(features)
 index = po.spec.coef_index(km)   # how coef is labelled: target = "cluster0", "cluster1", ..., term = the feature
 ```
@@ -3716,7 +3726,7 @@ of `dist²` above the typical radius. Far rows wait for the split–merge move,
 so they neither drag a centre nor widen its radius.
 
 **The split–merge move finds a cluster born after seeding.** Every
-`split_merge_every` rows, if the two closest centres are nearer than
+`split_merge_every_rows` rows, if the two closest centres are nearer than
 `split_merge` times the sum of their radii, the model treats them as two
 centres on one blob. Once at least three rows far from every centre carry 5%
 of the weight learned since the last check, the move frees the emptier of
@@ -4081,7 +4091,7 @@ watch = po.spec.corrchange(
 each. `R_pre` and `R_post` are the windows' correlation matrices, and `vech`
 stacks their upper triangles into one list. It compares that with a
 permutation quantile: `n_perm` shuffles of the pooled rows between the
-windows, redrawn every `permute_every` rows. The shuffles move blocks of
+windows, redrawn every `permute_every_rows` rows. The shuffles move blocks of
 `perm_block` rows, so rows that resemble their neighbours do not make the
 null too liberal. To skip the permutations, give `crit=` as a fixed
 threshold. The same `seed` gives the same critical values.
@@ -4096,7 +4106,7 @@ size = po.spec.corrchange(
     "size", features=["x0", "x1"],
     kind="window",               # the size of the change between two adjacent windows
     span_rows=100,
-    n_perm=200, permute_every=500,   # 200 shuffles, redrawn every 500 rows
+    n_perm=200, permute_every_rows=500,   # 200 shuffles, redrawn every 500 rows
     perm_block=10,               # shuffled in blocks of 10 rows
     seed=0,                      # the default
     reset_on_flag=False,         # the default; True empties both windows at a flag
@@ -4321,7 +4331,7 @@ Three settings shape the matrix:
 
 A bank spends most of its time on the models' own arithmetic. Its memory
 holds their state, a few chunks in flight, and what Polars has read ahead
-of the bank. The thread counts and `chunk_rows` change only speed and
+of the bank. The thread counts and `chunk_size` change only speed and
 memory, never the numbers a bank returns. Every figure here was measured on
 one Apple M4 Pro with 14 cores (10 performance, 4 efficiency). The runs
 behind them are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md), with a
@@ -4407,7 +4417,7 @@ The [sequential tests and regimes](#sequential-tests-and-regimes):
 | `hmm` | k=20, K=2 | 325,937 | |
 
 **`corrchange`'s window kind is the slowest model here, because its
-permutation null redraws `n_perm` statistics every `permute_every` rows.**
+permutation null redraws `n_perm` statistics every `permute_every_rows` rows.**
 To skip the redraws, give `crit` a number, which fixes the threshold.
 
 **`bocpd` slows with the number of run lengths it keeps, so a larger
@@ -4498,7 +4508,7 @@ def factor_spec(name, features, standardize):
 specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
 
 (pl.scan_parquet("ticks.parquet")
-   .online.fit_predict(specs, chunk_rows=200_000, save_state="grid.state")
+   .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state")
    .sink_parquet("grid.parquet"))
 
 scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
@@ -4513,7 +4523,7 @@ and one state file, `grid.state`, holds them all.
 
 ### Chunk size
 
-**Set how many rows the bank takes at a time with the keyword `chunk_rows`,
+**Set how many rows the bank takes at a time with the keyword `chunk_size`,
 100,000 by default.** `lf.online.fit_predict`, `lf.online.predict`,
 `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and
 `refresh_time` take it. A frame passed to `ModelBank.fit_predict` is one
@@ -4521,9 +4531,9 @@ chunk, whatever its size.
 This code uses `df` and `lf` from [Example data](#example-data):
 
 ```python
-fitted = lf.online.fit_predict([spec], chunk_rows=50_000).collect()               # a query, read 50,000 rows at a time
+fitted = lf.online.fit_predict([spec], chunk_size=50_000).collect()               # a query, read 50,000 rows at a time
 whole = po.ModelBank([spec]).fit_predict(df)                                       # a frame: one chunk, whatever its size
-parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_rows=100))   # the same frame, 100 rows at a time
+parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=100))   # the same frame, 100 rows at a time
 ```
 
 The chunk size changes only which rows carry `coef` and `support_coef`:
@@ -4564,7 +4574,7 @@ returns freed pages at once, holds 0.75 GB at 12M rows against 0.73 GB at
 | part | grows with | what bounds it |
 |---|---|---|
 | the state | the models and their settings, and the number of groups: a bank's `group=` keeps one set of running sums per group, and grows with the number of groups, not the number of rows | it does not grow with the stream, but a window's snapshots and `marginal`'s bins grow with their settings, and each is capped per group, at 256 MiB by default |
-| the chunks in flight | `chunk_rows` | a few chunks at once, three on the command line ([Chunk size](#chunk-size)) |
+| the chunks in flight | `chunk_size` | a few chunks at once, three on the command line ([Chunk size](#chunk-size)) |
 | the rows a delay or a window holds | the delay or the window, times the rows' rate | never the stream's length |
 | whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) |
 
@@ -4632,7 +4642,7 @@ import polars_online as po
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
 (pl.scan_parquet("ticks.parquet")                     # written in Example data
-   .online.fit_predict([spec], chunk_rows=200_000)
+   .online.fit_predict([spec], chunk_size=200_000)
    .sink_parquet("fit.parquet"))
 ```
 

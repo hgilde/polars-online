@@ -19,7 +19,7 @@ sections after it are the research that decided it.
 
 A state file is the same file, byte for byte, whichever wrote it (§5 C2).
 A query and an eager frame take it as `load_state` and `save_state`, and
-the TOML under the same two keys. The command line spells them `--resume`
+the TOML under the same two keys. The command line spells them `--load-state`
 and `--save-state`, and a `ModelBank` has `load` and `save`.
 
 ### Each step, and what it guarantees
@@ -28,8 +28,8 @@ and `--save-state`, and a `ModelBank` has `load` and `save`.
 |---|---|---|---|---|
 | **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row | R1, R2, R4, R6, R7 |
 | **2. Inspect it** | Loading the file gives the `ModelBank` back: `po.ModelBank.load(path)`, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data | |
-| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --resume p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count | R3, R5 |
-| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --resume p --save-state p` | it resumes at the next row and replaces. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
+| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count | R3, R5 |
+| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
 
 ### Fit, and keep the state
 
@@ -119,8 +119,9 @@ nanoseconds the state keeps, whatever the column's unit or time zone. A row
 at a group's last clock counts as learned, so a stream saved between two
 rows with one clock value loses the second. A row-count clock has no
 position to resume from, and `skip_learned` refuses a bank whose specs all
-count rows. The command line has no counterpart yet: filter its input
-before `--resume`.
+count rows. The command line does the same with `--skip-learned` beside
+`--load-state` (the TOML key `skip_learned`), filtering each chunk it reads
+against the clocks the loaded state held.
 
 ### What a saved bank carries
 
@@ -287,8 +288,8 @@ stays so, as `po.run` was until task 83 removed it.
 |---|---|---|---|
 | (1) fit online, bounded | `bank.fit(lf)` / `fit_predict_batches(lf)`, which chunk the plan; or `fit_predict(chunk)` in a loop of your own | `online --config bank.toml` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
 | (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `coef()`, `last_row()`, `summary()`, `describe()`, `gram()` | `save_state=` / `save_state = "…"` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
-| (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `--resume p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
-| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
+| (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `--load-state p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
+| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `--load-state p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
 
 So the gap was one cell, twice: getting state *out* of a streamed plan. The
 Rust side (`crates/online-polars/src/runner.rs`, the CLI) needs nothing. It
@@ -403,8 +404,8 @@ time (R3), so that step (4) had an in-process form,
 `lf.online.fit_predict(load_state=bank, save_state=...)`. Decision 3 (§7)
 declined it, and `load_state` takes a path. The vocabulary is then one pair
 of words on every surface: `load_state` / `save_state` on the plan and in
-the TOML (and in `po.run`, until task 83 removed it), spelled `--resume` /
-`--save-state` on the CLI.
+the TOML (and in `po.run`, until task 83 removed it), spelled `--load-state` /
+`--save-state` on the CLI (`--resume` until task 196 renamed it).
 
 The rules, each checked in §5:
 

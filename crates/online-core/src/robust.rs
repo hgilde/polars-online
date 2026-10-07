@@ -233,10 +233,21 @@ impl RobustCfg {
         self.n_features + usize::from(self.fit_intercept)
     }
 
+    /// The model a spec names this loss by, which every message leads with:
+    /// `huber` or `quantile`, where it said `robust`, a name no spec has
+    /// (review 2026-10-06, CF5; docs/PLAN.md task 196, N1).
+    pub fn kind(&self) -> &'static str {
+        match self.loss {
+            RobustLoss::Huber { .. } => "huber",
+            RobustLoss::Quantile { .. } => "quantile",
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        let kind = self.kind();
         // The decay first: every model checks it in its own `new`, where only
         // the bank's spec did (review 2026-10-05, CF5).
-        self.decay.check().map_err(|e| format!("robust: {e}"))?;
+        self.decay.check().map_err(|e| format!("{kind}: {e}"))?;
         if self
             .solve_share
             .is_some_and(|f| !(f.is_finite() && f > 0.0))
@@ -249,12 +260,12 @@ impl RobustCfg {
         match self.loss {
             RobustLoss::Huber { delta } => {
                 if delta <= 0.0 || delta.is_nan() {
-                    return Err(format!("robust: huber_delta must be > 0, got {delta}"));
+                    return Err(format!("{kind}: huber_delta must be > 0, got {delta}"));
                 }
             }
             RobustLoss::Quantile { tau } => {
                 if !(0.0..=1.0).contains(&tau) || tau == 0.0 || tau == 1.0 {
-                    return Err(format!("robust: quantile must be in (0, 1), got {tau}"));
+                    return Err(format!("{kind}: quantile must be in (0, 1), got {tau}"));
                 }
             }
         }
@@ -265,19 +276,19 @@ impl RobustCfg {
         // was a band row aimed at `y + inf·(tau − 1/2)`.
         if !(self.ridge.is_finite() && self.ridge >= 0.0) {
             return Err(format!(
-                "robust: ridge must be finite and >= 0, got {}",
+                "{kind}: ridge must be finite and >= 0, got {}",
                 self.ridge
             ));
         }
         if !(self.quantile_eps.is_finite() && self.quantile_eps > 0.0) {
             return Err(format!(
-                "robust: quantile_eps must be finite and > 0, got {}",
+                "{kind}: quantile_eps must be finite and > 0, got {}",
                 self.quantile_eps
             ));
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
             return Err(format!(
-                "robust: min_weight must be >= 0, got {}",
+                "{kind}: min_weight must be >= 0, got {}",
                 self.min_weight
             ));
         }
@@ -312,7 +323,7 @@ pub struct Robust {
     /// (`ybar`). With an intercept slot 0 is exactly 0: `z_0 − m_0 = 0` once
     /// a row has entered. They were kept raw, `E[z·y]`, and the solves read
     /// the raw normal equations or centred them by subtraction, which loses
-    /// `level²·ε` -- the whole fit at `1e8` -- where `ew_ridge` and `lasso`
+    /// `level²·ε` -- the whole fit at `1e8` -- where `ewridge` and `lasso`
     /// were moved to centred moments in the 2026-09-12 round and this model
     /// was not (the review of 2026-09-18, S2). A quantile nudge, a sum's worth
     /// of `2h·psi·z` over `wj`, enters as `ȳ += nudge/wj` and `c += nudge·(z
@@ -1211,7 +1222,8 @@ impl OnlineModel for Robust {
         match &s.model {
             ModelState::Robust(m) => {
                 let mut m = (**m).clone();
-                crate::model::check_cfg("robust", m.cfg.validate())?;
+                let kind = m.cfg.kind();
+                crate::model::check_cfg(kind, m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // One accumulator, one cross-moment row and one of each
                 // scalar per target, all at the cfg's width; a short one
@@ -1232,15 +1244,15 @@ impl OnlineModel for Robust {
                         .as_ref()
                         .is_some_and(|b| b.len() != n || b.iter().any(|v| v.len() != k))
                 {
-                    return Err(StateError::Invalid(
-                        "robust: the accumulators have the wrong shape".into(),
-                    ));
+                    return Err(StateError::Invalid(format!(
+                        "{kind}: the accumulators have the wrong shape"
+                    )));
                 }
                 // The band systems are state (task 170), held as they were
                 // saved and never factorized again, so one that does not fit
                 // its Gram is refused rather than read.
                 if let Err(e) = m.band_systems_fit() {
-                    return Err(StateError::Invalid(format!("robust: {e}")));
+                    return Err(StateError::Invalid(format!("{kind}: {e}")));
                 }
                 if let Err(e) =
                     crate::model::check_target_min_weight("robust", &m.target_min_weight, n)
@@ -1884,7 +1896,7 @@ mod tests {
     }
 
     /// A level costs the fit nothing (the review of 2026-09-18, S2), as
-    /// `ew_ridge`'s test of the same name says of it: Huber at a `delta` that
+    /// `ewridge`'s test of the same name says of it: Huber at a `delta` that
     /// makes it least squares, on the same stream at the origin and shifted
     /// by `1e8` -- features and target alike, a price regressed on prices --
     /// gives the same slopes and predictions that differ by the shift, plain

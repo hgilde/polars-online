@@ -147,7 +147,7 @@ fn main() {
             for j in 0..p {
                 let q = m.pair(k, j);
                 // Every number the pair reports, the shard-written ones
-                // included (review 2026-09-26, E3: `lagcorr_yx` and
+                // included (review 2026-09-26, E3: `lag_corr_yx` and
                 // `bin_var_y` were left out of "every pair's numbers").
                 let scalars = [
                     q.n_eff,
@@ -165,11 +165,11 @@ fn main() {
                     q.split_gain_t,
                 ];
                 let lagged = q
-                    .lagcorr_xx
+                    .lag_corr_xx
                     .iter()
-                    .chain(&q.lagcorr_yy)
-                    .chain(&q.lagcorr_xy)
-                    .chain(&q.lagcorr_yx);
+                    .chain(&q.lag_corr_yy)
+                    .chain(&q.lag_corr_xy)
+                    .chain(&q.lag_corr_yx);
                 let binned = q
                     .bin_edges
                     .iter()

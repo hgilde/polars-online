@@ -29,7 +29,7 @@ def test_output_fields_include_lam_selected():
 
 
 def test_zero_penalty_matches_ewridge():
-    # lambda = 0 lasso == unpenalized least squares == ew_ridge with tiny ridge.
+    # lambda = 0 lasso == unpenalized least squares == ewridge with tiny ridge.
     df, _ = synthetic(seed=31, n_groups=1, n_rows=300, k=3, null_frac=0.0)
     common = dict(
         targets=["y0"],

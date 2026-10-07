@@ -1391,7 +1391,7 @@ function = "EwCovModel::read"
 mutation = "replace * with +"
 line_has = "self.cfg.lags.len() * k * k))"
 why = """both `*`: as above the arm runs only for a cfg without lags, and a cfg \
-with `lagcorr` and no lags is refused by `validate`, so `lagcorr` never \
+with `lag_corr` and no lags is refused by `validate`, so `lag_corr` never \
 reaches the arm (a hand-made state with such a cfg would; `restore` does \
 not re-validate the cfg)"""
 

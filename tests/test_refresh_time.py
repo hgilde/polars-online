@@ -196,7 +196,7 @@ def test_the_same_grid_from_one_chunk_and_from_a_thousand(size):
     df = poisson_obs(n=200)
     want = run(df)
     got = stream.refresh_time(
-        df.lazy(), series="series", names=NAMES, clock="t", value="v", chunk_rows=size
+        df.lazy(), series="series", names=NAMES, clock="t", value="v", chunk_size=size
     ).collect()
     assert want.equals(got)
 
@@ -414,7 +414,7 @@ def test_two_runs_through_a_saved_state_give_the_one_runs_grid(tmp_path, split):
     kw = dict(series="series", names=NAMES, clock="t", value="v", group="g")
     want = stream.refresh_time(df, **kw)
     state = tmp_path / "grid.state"
-    first = stream.refresh_time(df.head(split).lazy(), save_state=state, chunk_rows=7, **kw)
+    first = stream.refresh_time(df.head(split).lazy(), save_state=state, chunk_size=7, **kw)
     assert not state.exists(), "a plan writes nothing until it runs"
     first = first.collect()
     second = stream.refresh_time(df.slice(split), load_state=state, save_state=state, **kw)
@@ -443,7 +443,7 @@ def test_a_slice_saves_the_state_after_the_tick_behind_its_last_point(tmp_path, 
     for size in (1, 7, 100_000):
         path = tmp_path / f"head{size}.state"
         head = (
-            stream.refresh_time(df.lazy(), save_state=path, chunk_rows=size, **kw).head(n).collect()
+            stream.refresh_time(df.lazy(), save_state=path, chunk_size=size, **kw).head(n).collect()
         )
         assert head.equals(whole.head(n)), size
         states.append(path.read_bytes())

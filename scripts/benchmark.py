@@ -84,7 +84,7 @@ def main() -> None:
             gap_cap=100.0,
             min_weight=float(k),
         )
-        results.append((f"ew_ridge k={k}", "1 target, 1 half_life", time_spec(df, spec)))
+        results.append((f"ewridge k={k}", "1 target, 1 half_life", time_spec(df, spec)))
 
     # --- targets sweep at k=20 ---
     for m in (1, 10):
@@ -99,7 +99,7 @@ def main() -> None:
             gap_cap=100.0,
             min_weight=20.0,
         )
-        results.append((f"ew_ridge k=20, {m} target(s)", "1 half_life", time_spec(df, spec)))
+        results.append((f"ewridge k=20, {m} target(s)", "1 half_life", time_spec(df, spec)))
 
     # --- half-life grid at k=20 (one accumulator per half-life) ---
     for n_hl in (1, 5):
@@ -115,7 +115,7 @@ def main() -> None:
             gap_cap=100.0,
             min_weight=20.0,
         )
-        results.append((f"ew_ridge k=20, {n_hl} half_life(s)", "1 target", time_spec(df, spec)))
+        results.append((f"ewridge k=20, {n_hl} half_life(s)", "1 target", time_spec(df, spec)))
 
     # --- model comparison at k=20 ---
     df = make(rows, 20, 1)
@@ -129,7 +129,7 @@ def main() -> None:
         min_weight=20.0,
     )
     models = {
-        "ew_ridge": po.spec.ewridge("m", **common),
+        "ewridge": po.spec.ewridge("m", **common),
         "rls": po.spec.rls("m", delta=1.0, **common),
         "kalman": po.spec.kalman("m", coef_half_life=2000.0, **common),
         "lasso": po.spec.lasso("m", lasso_path=[0.1, 0.01, 0.0], **common),
@@ -157,7 +157,7 @@ def main() -> None:
 
     others = [
         (
-            "ew_ridge + conformal",
+            "ewridge + conformal",
             "k=20, 90% interval",
             po.spec.ewridge("m", conformal=0.9, **common),
         ),
@@ -258,7 +258,7 @@ def main() -> None:
                 kind="window",
                 span_rows=100,
                 n_perm=100,
-                permute_every=500,
+                permute_every_rows=500,
                 seed=0,
                 **no_decay(four),
             ),

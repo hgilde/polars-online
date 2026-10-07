@@ -48,7 +48,7 @@ from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank
-from polars_online._spec import coef_fields, output_index, target_columns
+from polars_online._spec import _renamed_keywords, coef_fields, output_index, target_columns
 
 if TYPE_CHECKING:
     from polars_online._duration import Duration
@@ -527,7 +527,7 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 #: them by out-of-sample error, and on the same rows shuffles moved the
 #: penalty it selects from 0.01 to 0.1 and to 0.001
 #: (``tests/test_order_hazards.py``).
-_ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls"})
+_ORDER_FREE_MODELS = frozenset({"ewridge", "rls"})
 
 #: Spec keys that change the *path* a fit takes, with the only values that
 #: leave it order-free. Measured on the same rows: ``window_size`` 8.3e-03,
@@ -547,6 +547,9 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "lam": (None, 1.0),
     "half_life": (None, float("inf"), "inf"),
     "window_size": (None,),
+    # The window's edge, at its default, which is all a spec with no window
+    # may carry (docs/PLAN.md task 196).
+    "closed": ("right",),
     "window_budget": (None,),
     "window_every": (None,),
     "max_rows_between_snapshots": (None,),
@@ -698,15 +701,15 @@ def _source(
     lf: pl.LazyFrame,
     make_bank: Callable[[], ModelBank],
     step: Literal["fit_predict", "predict"],
-    chunk_rows: int | None,
+    chunk_size: int | None,
     save_state: State | None = None,
     closed_groups: State | None = None,
 ) -> pl.LazyFrame:
     """``lf`` streamed through the bank method ``step`` names, on a bank from
     ``make_bank``, as a plan. Each chunk is fed as rows of the whole input, so an
     error names the input's row."""
-    if chunk_rows is not None and chunk_rows < 1:
-        msg = f"chunk_rows must be at least 1, got {chunk_rows}"
+    if chunk_size is not None and chunk_size < 1:
+        msg = f"chunk_size must be at least 1, got {chunk_size}"
         raise ValueError(msg)
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
@@ -722,7 +725,7 @@ def _source(
     # shape a single-use stream arrives in. Read now because `explain` must
     # see the caller's plan, and acted on below only if the run sees no rows.
     python_scan = _is_python_scan(lf, plan_text)
-    rows = chunk_rows or _native.default_chunk_rows()
+    rows = chunk_size or _native.default_chunk_size()
     save_path = _save_path(save_state)
     in_schema = lf.collect_schema()
     # The output schema, from a bank run on no rows. This is also where a spec
@@ -861,7 +864,7 @@ def _fit_predict_lazy(
     specs: Specs | None,
     load_state: State | None,
     save_state: State | None,
-    chunk_rows: int | None,
+    chunk_size: int | None,
     closed_groups: State | None = None,
 ) -> pl.LazyFrame:
     specs = list(specs) if specs is not None else None
@@ -869,24 +872,24 @@ def _fit_predict_lazy(
         lf,
         _bank(specs, load_state, "fit_predict"),
         "fit_predict",
-        chunk_rows,
+        chunk_size,
         save_state,
         closed_groups,
     )
 
 
 def _predict_lazy(
-    lf: pl.LazyFrame, bank: ModelBank | State, chunk_rows: int | None
+    lf: pl.LazyFrame, bank: ModelBank | State, chunk_size: int | None
 ) -> pl.LazyFrame:
     if not isinstance(bank, ModelBank):
-        return _source(lf, _bank(None, bank, "predict"), "predict", chunk_rows)
+        return _source(lf, _bank(None, bank, "predict"), "predict", chunk_size)
 
     def own() -> ModelBank:
         # `predict` leaves a bank as it was, so the caller's own is safe to
         # share with the plan; it scores as the bank stands when the plan runs.
         return bank
 
-    return _source(lf, own, "predict", chunk_rows)
+    return _source(lf, own, "predict", chunk_size)
 
 
 def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any]]:
@@ -971,6 +974,7 @@ class LazyFrameOnlineNamespace:
     def __init__(self, lf: pl.LazyFrame) -> None:
         self._lf = lf
 
+    @_renamed_keywords
     def fit_predict(
         self,
         specs: Specs | None = None,
@@ -978,14 +982,14 @@ class LazyFrameOnlineNamespace:
         load_state: State | None = None,
         save_state: State | None = None,
         closed_groups: State | None = None,
-        chunk_rows: int | None = None,
+        chunk_size: int | None = None,
     ) -> pl.LazyFrame:
         """The plan's rows plus one struct column per spec, learning as it goes.
 
         Executing the returned plan (``collect()``, ``collect_batches()``,
         ``sink_parquet()`` and the rest) streams this plan's rows through a new
-        :class:`ModelBank` in ``chunk_rows`` chunks, so memory is O(chunk + state)
-        whatever the length of the stream. ``chunk_rows`` defaults to 100,000, and
+        :class:`ModelBank` in ``chunk_size`` chunks, so memory is O(chunk + state)
+        whatever the length of the stream. ``chunk_size`` defaults to 100,000, and
         chunking never changes the numbers, only ``coef``'s reporting cadence. Rows
         must arrive in stream order, as for the bank. The struct columns are what
         :meth:`ModelBank.fit_predict` writes: one per spec, named after it, with the
@@ -1041,7 +1045,7 @@ class LazyFrameOnlineNamespace:
 
         What the schema decides is reported while the plan is built, as polars reports
         its own schema errors. ``ValueError`` for neither ``specs`` nor
-        ``load_state``, for ``chunk_rows`` below 1, for a spec the bank refuses, and
+        ``load_state``, for ``chunk_size`` below 1, for a spec the bank refuses, and
         for a spec whose column the plan has not got, is not numeric, or shares the
         spec's name (the checks of :class:`ModelBank` and
         :meth:`ModelBank.fit_predict`, with the same messages). ``FileNotFoundError``
@@ -1055,9 +1059,10 @@ class LazyFrameOnlineNamespace:
         that cannot be written when the run ends is reported the same way, as the
         ``OSError`` with the path, wrapped under 1.x.
         """
-        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows, closed_groups)
+        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_size, closed_groups)
 
-    def predict(self, bank: ModelBank | State, *, chunk_rows: int | None = None) -> pl.LazyFrame:
+    @_renamed_keywords
+    def predict(self, bank: ModelBank | State, *, chunk_size: int | None = None) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
 
         Each row gets :meth:`ModelBank.predict`'s struct: what the bank would
@@ -1067,7 +1072,7 @@ class LazyFrameOnlineNamespace:
         untouched, so sharing it with a plan is safe. Or it is a path to a
         saved state, read when the plan is built. Build the plan again to
         pick up a newer file. Target columns are optional, as for
-        ``predict``; ``chunk_rows`` is the read chunk.
+        ``predict``; ``chunk_size`` is the read chunk.
 
         .. code-block:: python
 
@@ -1079,7 +1084,7 @@ class LazyFrameOnlineNamespace:
         - ``ValueError`` for a file that is not a bank this build loads
           (:meth:`ModelBank.load`);
         - ``TypeError`` for a ``bank`` that is neither a bank nor a path;
-        - ``ValueError`` for ``chunk_rows`` below 1, and for a column the
+        - ``ValueError`` for ``chunk_size`` below 1, and for a column the
           bank reads that the plan has not got or that is not numeric (a
           missing target is fine).
 
@@ -1089,7 +1094,7 @@ class LazyFrameOnlineNamespace:
         ``ValueError`` itself under 2.0, the wrapping being Polars' to
         change.
         """
-        return _predict_lazy(self._lf, bank, chunk_rows)
+        return _predict_lazy(self._lf, bank, chunk_size)
 
     def unnest(self, specs: Specs | ModelBank | State) -> pl.LazyFrame:
         """The plan with each spec's struct column taken apart into columns.
@@ -1144,7 +1149,7 @@ class LazyFrameOnlineNamespace:
         session_gap: float | Duration | None = None,
         group: str | None = None,
         like: dict[str, Any] | None = None,
-        chunk_rows: int | None = None,
+        chunk_size: int | None = None,
         load_state: State | None = None,
         save_state: State | None = None,
         **named: pl.Expr,
@@ -1179,7 +1184,7 @@ class LazyFrameOnlineNamespace:
             session_gap=session_gap,
             group=group,
             like=like,
-            chunk_rows=chunk_rows,
+            chunk_size=chunk_size,
             load_state=load_state,
             save_state=save_state,
             **named,
@@ -1264,7 +1269,7 @@ class DataFrameOnlineNamespace:
         session_gap: float | Duration | None = None,
         group: str | None = None,
         like: dict[str, Any] | None = None,
-        chunk_rows: int | None = None,
+        chunk_size: int | None = None,
         load_state: State | None = None,
         save_state: State | None = None,
         **named: pl.Expr,
@@ -1285,7 +1290,7 @@ class DataFrameOnlineNamespace:
             session_gap=session_gap,
             group=group,
             like=like,
-            chunk_rows=chunk_rows,
+            chunk_size=chunk_size,
             load_state=load_state,
             save_state=save_state,
             **named,
@@ -1300,7 +1305,7 @@ def fit_predict(
     load_state: State | None = None,
     save_state: State | None = None,
     closed_groups: State | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
 ) -> pl.LazyFrame: ...
 
 
@@ -1312,10 +1317,11 @@ def fit_predict(
     load_state: State | None = None,
     save_state: State | None = None,
     closed_groups: State | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
 ) -> pl.DataFrame: ...
 
 
+@_renamed_keywords
 def fit_predict(
     frame: pl.LazyFrame | pl.DataFrame,
     specs: Specs | None = None,
@@ -1323,7 +1329,7 @@ def fit_predict(
     load_state: State | None = None,
     save_state: State | None = None,
     closed_groups: State | None = None,
-    chunk_rows: int | None = None,
+    chunk_size: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.fit_predict(...)`` as a plain function, so that a type checker
     can see it.
@@ -1332,12 +1338,12 @@ def fit_predict(
     (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives the
     frame with the bank's columns (:meth:`DataFrameOnlineNamespace.fit_predict`).
     ``load_state`` starts the bank from a saved one and ``save_state`` writes
-    where it ends up; ``chunk_rows`` is the plan's read chunk, and a frame already
+    where it ends up; ``chunk_size`` is the plan's read chunk, and a frame already
     in memory is fitted in one call. ``TypeError`` for a ``frame`` that is
     neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows, closed_groups)
+        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_size, closed_groups)
     _check_frame(frame, "fit_predict")
     return DataFrameOnlineNamespace(frame).fit_predict(
         specs, load_state=load_state, save_state=save_state, closed_groups=closed_groups
@@ -1346,18 +1352,19 @@ def fit_predict(
 
 @overload
 def predict(
-    frame: pl.LazyFrame, bank: ModelBank | State, *, chunk_rows: int | None = None
+    frame: pl.LazyFrame, bank: ModelBank | State, *, chunk_size: int | None = None
 ) -> pl.LazyFrame: ...
 
 
 @overload
 def predict(
-    frame: pl.DataFrame, bank: ModelBank | State, *, chunk_rows: int | None = None
+    frame: pl.DataFrame, bank: ModelBank | State, *, chunk_size: int | None = None
 ) -> pl.DataFrame: ...
 
 
+@_renamed_keywords
 def predict(
-    frame: pl.LazyFrame | pl.DataFrame, bank: ModelBank | State, *, chunk_rows: int | None = None
+    frame: pl.LazyFrame | pl.DataFrame, bank: ModelBank | State, *, chunk_size: int | None = None
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.predict(bank)`` as a plain function, so that a type checker can
     see it.
@@ -1368,7 +1375,7 @@ def predict(
     ``frame`` that is neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _predict_lazy(frame, bank, chunk_rows)
+        return _predict_lazy(frame, bank, chunk_size)
     _check_frame(frame, "predict")
     return DataFrameOnlineNamespace(frame).predict(bank)
 

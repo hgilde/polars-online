@@ -444,7 +444,7 @@ def clock_specs(draw, model: str, step: int, cap: int):
     elif model == "kalman":
         kw |= xy | dict(coef_half_life=steps(1, 60)) | maybe("revert_half_life", 1, 600)
     elif model == "holt":
-        kw |= dict(targets=["y"], level_half_life=steps(1, 30), trend_half_life=steps(1, 60))
+        kw |= dict(targets=["y"], half_life=steps(1, 30), trend_half_life=steps(1, 60))
     elif model == "ew_cov":
         kw |= dict(features=["x0", "x1"], half_life=steps(1, 30)) | maybe("window_size", 1, 60)
     elif model == "ew_class":

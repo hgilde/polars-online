@@ -27,7 +27,10 @@
 //! **The boundary is chosen conservatively, and the direction matters.** A
 //! snapshot taken before the row at `t_j` carries everything strictly older
 //! than `t_j`; subtracting it retains rows at `t_j` and after. Honouring
-//! "nothing older than `window`" therefore needs `t_j >= t - window`, so the
+//! "nothing older than `window`" therefore needs `t_j > t - window` under the
+//! default `closed = "right"` -- a row exactly `window` old has left, as in
+//! Polars' `rolling_*_by` -- or `t_j >= t - window` under `"both"`
+//! ([`WindowClosed`]; docs/PLAN.md task 196), so the
 //! boundary is the *oldest snapshot still inside the window* and a coarse
 //! cadence discards slightly more than asked, never less: under a clock
 //! spacing every row at most `window - spacing` old is kept, and none older
@@ -144,11 +147,12 @@ impl Cadence {
     };
 
     /// A windowed model's `window_every` -- clock units, `0` every row --
-    /// and `max_rows_between_snapshots` -- `0` or `1` every row -- as the
-    /// cadence its ring runs by: whichever comes first, and every row with
-    /// neither.
+    /// and `max_rows_between_snapshots` -- `1` every row, `0` refused
+    /// ([`check_cadence`], [`Snapshots::with_cadence`]; docs/PLAN.md task
+    /// 196, U7) -- as the cadence its ring runs by: whichever comes first,
+    /// and every row with neither.
     pub fn of(every: Option<f64>, max_rows: Option<usize>) -> Cadence {
-        if every == Some(0.0) || matches!(max_rows, Some(0 | 1)) {
+        if every == Some(0.0) || max_rows == Some(1) {
             return Cadence::EVERY_ROW;
         }
         match (every, max_rows) {
@@ -199,7 +203,42 @@ pub(crate) fn check_cadence(
              got {e}"
         ));
     }
+    // A cap of no rows is no schedule; the clock form's `0` is every row
+    // (docs/PLAN.md task 196, U7).
+    if max_rows == Some(0) {
+        return Err(format!(
+            "{model}: max_rows_between_snapshots must be >= 1 (window_every = 0 snapshots every \
+             row), got 0"
+        ));
+    }
     Ok(())
+}
+
+/// Which edge of a window holds the row exactly `window` old, in Polars'
+/// words (`rolling_*_by(closed=)`; docs/PLAN.md task 196, N17). The window
+/// always holds the row it ends at -- a model reads its fit after it has
+/// learned that row -- so of Polars' four values only the two that keep it
+/// apply: `Right`, the default, keeps the rows less than `window` old, so a
+/// row exactly `window` old has left, as it has in the window operators and
+/// in `rolling_*_by`; `Both` keeps it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowClosed {
+    #[default]
+    Right,
+    Both,
+}
+
+impl WindowClosed {
+    /// Whether a row at `stamp` has left a `window` at `now`, by the stamps'
+    /// exact difference ([`Stamp::cmp_span`]): older than `window`, or
+    /// exactly that old under `Right`.
+    pub fn has_left(self, now: Stamp, stamp: Stamp, window: f64) -> bool {
+        matches!(
+            (self, now.cmp_span(stamp, window)),
+            (_, Ordering::Greater) | (WindowClosed::Right, Ordering::Equal)
+        )
+    }
 }
 
 /// The heap a snapshot holds, in bytes: what a window's budget counts.
@@ -248,6 +287,7 @@ impl WindowShadow {
                 window: ring.window,
                 every: ring.every,
                 spacing: ring.spacing,
+                closed: ring.closed,
                 since: ring.since,
                 ring: ring
                     .ring
@@ -446,6 +486,10 @@ pub struct Snapshots<S> {
     /// not read back (`crate::humanfloat`; the bank's JSON export checks).
     #[serde(default = "no_spacing", with = "crate::humanfloat::f64_or_tag")]
     spacing: f64,
+    /// Which edge holds a row exactly `window` old ([`WindowClosed`];
+    /// docs/PLAN.md task 196): state, since what the ring has trimmed
+    /// follows it.
+    closed: WindowClosed,
     /// Rows since the last snapshot, so the cadence is counted in the
     /// *stream* and never in the chunk (hard rule 3).
     since: usize,
@@ -524,6 +568,7 @@ impl<S> Snapshots<S> {
             window,
             every: cadence.rows,
             spacing: cadence.spacing,
+            closed: WindowClosed::default(),
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
             limit: Limit::default(),
@@ -533,6 +578,25 @@ impl<S> Snapshots<S> {
 
     pub fn window(&self) -> f64 {
         self.window
+    }
+
+    /// The ring with its edge set ([`WindowClosed`]): for a ring being
+    /// built, before its first row.
+    pub fn closed(mut self, closed: WindowClosed) -> Self {
+        self.closed = closed;
+        self
+    }
+
+    /// Set the edge, as a model's `set_window_closed` does after building
+    /// (docs/PLAN.md task 196). Before the first row: what the ring has
+    /// already trimmed does not come back.
+    pub fn set_closed(&mut self, closed: WindowClosed) {
+        self.closed = closed;
+    }
+
+    /// Which edge holds a row exactly one window old.
+    pub fn edge(&self) -> WindowClosed {
+        self.closed
     }
 
     /// The cadence the ring takes its snapshots on: the one it was given,
@@ -547,13 +611,14 @@ impl<S> Snapshots<S> {
     /// Whether a row at `now`, `since` rows after the newest snapshot, takes
     /// one: its stamp `spacing` past the newest's or the rows at `every`,
     /// whichever comes first, and whatever the cadence when the newest has
-    /// left the window or there is none (the module docs). Both comparisons
-    /// are the stamps' exact difference ([`Stamp::cmp_span`]).
+    /// left the window or there is none (the module docs), by the ring's
+    /// edge ([`WindowClosed`]). Both comparisons are the stamps' exact
+    /// difference ([`Stamp::cmp_span`]).
     fn due(&self, since: usize, now: Stamp) -> bool {
         self.newest().is_none_or(|at| {
             since >= self.every
                 || now.cmp_span(at.stamp, self.spacing) != Ordering::Less
-                || now.cmp_span(at.stamp, self.window) == Ordering::Greater
+                || self.closed.has_left(now, at.stamp, self.window)
         })
     }
 
@@ -610,18 +675,19 @@ impl<S> Snapshots<S> {
 }
 
 impl<S: Footprint> Snapshots<S> {
-    /// Drop what can never be the boundary again: everything strictly older
-    /// than `window` before `now`, by the stamps' exact difference
-    /// ([`Stamp::cmp_span`]), so a snapshot exactly one window old stays.
-    /// What is left at the front is the oldest snapshot inside the window,
+    /// Drop what can never be the boundary again: everything that has left
+    /// the window at `now`, by the stamps' exact difference
+    /// ([`Stamp::cmp_span`]) -- strictly older than `window`, and exactly
+    /// that old under the default `closed = "right"`, where `"both"` keeps a
+    /// snapshot exactly one window old ([`WindowClosed`]; docs/PLAN.md task
+    /// 196). What is left at the front is the oldest snapshot inside the window,
     /// which is the boundary; [`Self::offer`] at `now` has seen to it that
     /// there is one. (A stale front did not "subtract the whole
     /// accumulator", as the comment here said: it subtracts the state before
     /// the row it precedes, which keeps that row -- review 2026-09-12, S6.)
     pub fn trim(&mut self, now: impl Into<Stamp>) {
         let now = now.into();
-        while self.ring.len() > 1 && now.cmp_span(self.ring[0].1, self.window) == Ordering::Greater
-        {
+        while self.ring.len() > 1 && self.closed.has_left(now, self.ring[0].1, self.window) {
             if let Some((_, _, s)) = self.ring.pop_front() {
                 self.limit.held = self.limit.held.saturating_sub(s.footprint());
             }
@@ -1152,7 +1218,11 @@ mod tests {
             (-(1.0 / h)).exp2()
         };
         let mut cov = EwCov::new(3);
-        let mut snaps = Snapshots::new(window, 1).unwrap();
+        // The inclusive edge, which these cases' boundary rows are placed by
+        // (`from = n - 1 - window`): what they test is the run, on either.
+        let mut snaps = Snapshots::new(window, 1)
+            .unwrap()
+            .closed(WindowClosed::Both);
         let c = level + scale * lcg(&mut s);
         let mut inside = Vec::new();
         for i in 0..n {
@@ -1203,7 +1273,9 @@ mod tests {
     ) -> (EwCov, [f64; K]) {
         let lam = (-(1.0 / h)).exp2();
         let mut cov = EwCov::new(K);
-        let mut snaps = Snapshots::new(window, 1).unwrap();
+        let mut snaps = Snapshots::new(window, 1)
+            .unwrap()
+            .closed(WindowClosed::Both);
         for (i, x) in rows.iter().enumerate() {
             let (t, l) = (i as f64, if i == 0 { 1.0 } else { lam });
             snaps.offer(t, || Moments::of(&cov, l));
@@ -1753,19 +1825,58 @@ mod tests {
         assert_eq!(r.boundary().map(|b| b.0), Some(0.0));
     }
 
-    /// A snapshot exactly a window old is inside the window (the module
-    /// docs: `t_j >= t - window`), so it does not force one off the
-    /// cadence; a hair older does.
+    /// Under `closed = "both"` a snapshot exactly a window old is inside
+    /// the window (the module docs: `t_j >= t - window`), so it does not
+    /// force one off the cadence, and a hair older does. Under `"right"`,
+    /// the default, it has left: it forces one, and the trim drops it
+    /// (docs/PLAN.md task 196, N17).
     #[test]
-    fn a_snapshot_at_the_window_edge_is_inside_it() {
-        let mut r: Snapshots<usize> = Snapshots::new(5.0, 10).unwrap();
+    fn a_snapshot_at_the_window_edge_is_inside_it_under_both_and_out_under_right() {
+        let mut r: Snapshots<usize> = Snapshots::new(5.0, 10).unwrap().closed(WindowClosed::Both);
         r.offer(0.0, || 0);
         assert!(!r.takes(5.0), "exactly a window old");
         r.offer(5.0, || 1);
         assert_eq!(r.len(), 1, "and the cadence is not due");
+        r.trim(5.0);
+        assert_eq!(r.len(), 1, "and kept");
         assert!(r.takes(5.5));
         r.offer(5.5, || 2);
         assert_eq!(r.len(), 2);
+
+        let mut r: Snapshots<usize> = Snapshots::new(5.0, 10).unwrap();
+        assert_eq!(r.edge(), WindowClosed::Right, "the default");
+        r.offer(0.0, || 0);
+        assert!(!r.takes(4.999), "a hair younger is inside");
+        assert!(r.takes(5.0), "exactly a window old has left");
+        r.offer(5.0, || 1);
+        assert_eq!(r.len(), 2);
+        r.trim(5.0);
+        assert_eq!(
+            r.iter().copied().collect::<Vec<_>>(),
+            vec![1],
+            "and is trimmed"
+        );
+    }
+
+    /// The edge rule itself, on stamps of both kinds: older than the window
+    /// has left under either edge, exactly the window old under `Right`
+    /// only, and younger under neither.
+    #[test]
+    fn has_left_is_older_or_exactly_the_window_under_right() {
+        let w = 1.0;
+        for (now, then) in [
+            (Stamp::from(3.0), Stamp::from(2.0)),
+            (Stamp::Ns(3_000_000_000), Stamp::Ns(2_000_000_000)),
+        ] {
+            assert!(WindowClosed::Right.has_left(now, then, w));
+            assert!(!WindowClosed::Both.has_left(now, then, w));
+        }
+        for closed in [WindowClosed::Right, WindowClosed::Both] {
+            assert!(closed.has_left(Stamp::from(3.5), Stamp::from(2.0), w));
+            assert!(!closed.has_left(Stamp::from(2.5), Stamp::from(2.0), w));
+            assert!(closed.has_left(Stamp::Ns(3_000_000_001), Stamp::Ns(2_000_000_000), w));
+            assert!(!closed.has_left(Stamp::Ns(2_999_999_999), Stamp::Ns(2_000_000_000), w));
+        }
     }
 
     /// Thinning keeps the newest snapshot and every second one before it,
@@ -1799,14 +1910,29 @@ mod tests {
     /// The cadence rule written out (docs/PLAN.md task 162), over a stream's
     /// clocks: the first row; then a row whose clock is `spacing` past the
     /// newest snapshot's, or `rows` rows past it, whichever comes first; and,
-    /// whatever the cadence, a row whose newest snapshot is older than the
-    /// window (the module docs). The rows it picks, oldest first.
-    fn rule(clocks: &[f64], window: f64, spacing: f64, rows: usize) -> Vec<usize> {
+    /// whatever the cadence, a row whose newest snapshot has left the window
+    /// (the module docs): older than it, or exactly as old under the default
+    /// `closed = "right"`, at most as old under `"both"`. The rows it
+    /// picks, oldest first.
+    fn rule_at(
+        clocks: &[f64],
+        window: f64,
+        spacing: f64,
+        rows: usize,
+        closed: WindowClosed,
+    ) -> Vec<usize> {
         let mut picked: Vec<usize> = Vec::new();
         for (i, &c) in clocks.iter().enumerate() {
             let due = match picked.last() {
                 None => true,
-                Some(&j) => c - clocks[j] >= spacing || i - j >= rows || clocks[j] < c - window,
+                Some(&j) => {
+                    let age = c - clocks[j];
+                    let left = match closed {
+                        WindowClosed::Right => age >= window,
+                        WindowClosed::Both => age > window,
+                    };
+                    age >= spacing || i - j >= rows || left
+                }
             };
             if due {
                 picked.push(i);
@@ -1865,8 +1991,13 @@ mod tests {
     /// snapshot outside the window (docs/PLAN.md task 162).
     #[test]
     fn snapshots_follow_the_clock_the_rows_or_both_whichever_comes_first() {
-        let (window, clocks) = (6.0, irregular_clocks());
+        // And rows exactly one window apart, on integers, so the edge decides.
+        let mut clocks = irregular_clocks();
+        assert!(clocks[clocks.len() - 1] < 1000.0);
+        clocks.extend([1000.0, 1006.0, 1012.0, 1013.0, 1019.0, 1025.0]);
+        let window = 6.0;
         let mut stale = 0;
+        let mut edges_differ = 0;
         for (spacing, rows) in [
             (2.5, usize::MAX),
             (f64::INFINITY, 4),
@@ -1874,17 +2005,34 @@ mod tests {
             (0.7, 3),
             (f64::INFINITY, 1),
             (8.0, usize::MAX),
+            (12.0, usize::MAX),
         ] {
-            let mut ring = Snapshots::with_cadence(window, Cadence { spacing, rows }).unwrap();
-            let got = snapshot_rows(&mut ring, &clocks);
-            let want = rule(&clocks, window, spacing, rows);
-            assert_eq!(got, want, "spacing {spacing}, rows {rows}");
-            // The stale rule is what picked a row the cadence alone would not.
-            let alone = rule(&clocks, f64::INFINITY, spacing, rows);
-            stale += usize::from(alone != want);
-            assert!(want.len() >= 6, "spacing {spacing}, rows {rows}: {want:?}");
+            for closed in [WindowClosed::Right, WindowClosed::Both] {
+                let mut ring = Snapshots::with_cadence(window, Cadence { spacing, rows })
+                    .unwrap()
+                    .closed(closed);
+                let got = snapshot_rows(&mut ring, &clocks);
+                let want = rule_at(&clocks, window, spacing, rows, closed);
+                assert_eq!(got, want, "{closed:?}, spacing {spacing}, rows {rows}");
+                // The stale rule is what picked a row the cadence alone
+                // would not.
+                let alone = rule_at(&clocks, f64::INFINITY, spacing, rows, closed);
+                stale += usize::from(alone != want);
+                assert!(
+                    want.len() >= 6,
+                    "{closed:?}, spacing {spacing}, rows {rows}: {want:?}"
+                );
+            }
+            edges_differ += usize::from(
+                rule_at(&clocks, window, spacing, rows, WindowClosed::Right)
+                    != rule_at(&clocks, window, spacing, rows, WindowClosed::Both),
+            );
         }
-        assert!(stale >= 2, "the stale rule must decide a case");
+        assert!(stale >= 4, "the stale rule must decide a case");
+        assert!(
+            edges_differ >= 1,
+            "a snapshot exactly one window old must decide a case"
+        );
     }
 
     /// A burst of rows inside one spacing takes no snapshot of its own, so
@@ -2072,7 +2220,9 @@ mod tests {
     /// A model configuration's `window_every` and
     /// `max_rows_between_snapshots`, as the cadence a ring runs by: the
     /// clock, the rows, both, and every row -- with neither, at a spacing of
-    /// 0, and at a cap of 0 or 1 -- as a cap of one and no spacing.
+    /// 0, and at a cap of 1 -- as a cap of one and no spacing. A cap of 0 is
+    /// no schedule: it stays a cap of 0, which the ring refuses
+    /// (docs/PLAN.md task 196, U7), as `check_cadence` refuses it by name.
     #[test]
     fn a_cadence_is_the_clock_the_rows_both_or_every_row() {
         let every_row = Cadence {
@@ -2086,7 +2236,7 @@ mod tests {
             (None, None, (f64::INFINITY, 1)),
             (Some(0.0), None, (f64::INFINITY, 1)),
             (Some(0.0), Some(7), (f64::INFINITY, 1)),
-            (None, Some(0), (f64::INFINITY, 1)),
+            (None, Some(0), (f64::INFINITY, 0)),
             (Some(2.5), Some(1), (f64::INFINITY, 1)),
         ] {
             let got = Cadence::of(every, rows);
@@ -2111,6 +2261,13 @@ mod tests {
             rows: 0,
         };
         assert!(Snapshots::<usize>::with_cadence(5.0, none).is_err());
+        assert!(Snapshots::<usize>::with_cadence(5.0, Cadence::of(None, Some(0))).is_err());
+        let refused = check_cadence("m", Some(5.0), None, Some(0)).unwrap_err();
+        assert!(
+            refused.contains("max_rows_between_snapshots must be >= 1"),
+            "{refused}"
+        );
+        assert!(check_cadence("m", Some(5.0), None, Some(1)).is_ok());
     }
 
     /// A window is a finite, positive number of clock units, and the
@@ -2312,36 +2469,42 @@ mod tests {
         assert_eq!(read, ring);
     }
 
-    /// Task 175 (review CB1): a ring keyed by stamps keeps a snapshot
-    /// exactly one window old. Rows 1 ms apart under a window of a second,
-    /// a snapshot every row: from the 1001st row on, the boundary is the
-    /// snapshot before the row exactly a second older than the newest, every
-    /// row, where the same ring keyed by the summed clock dropped it once
-    /// the sum had drifted. Decay still reads the summed clock: a boundary's
-    /// clock is the sum's.
+    /// Task 175 (review CB1): a ring keyed by stamps decides the snapshot
+    /// exactly one window old by its edge, on every row. Rows 1 ms apart
+    /// under a window of a second, a snapshot every row: from the 1001st row
+    /// on, under `closed = "both"` the boundary is the snapshot before the
+    /// row exactly a second older than the newest, every row, where the same
+    /// ring keyed by the summed clock dropped it once the sum had drifted;
+    /// under `"right"`, the default, that one has left, and the boundary is
+    /// the next, every row (task 196, N17). Decay still reads the summed
+    /// clock: a boundary's clock is the sum's.
     #[test]
-    fn a_stamped_ring_keeps_a_snapshot_exactly_one_window_old() {
+    fn a_stamped_ring_decides_a_snapshot_exactly_one_window_old_by_its_edge() {
         let step = crate::seconds_of_ns(1_000_000);
-        let mut stamped: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap();
-        let mut summed: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap();
-        let (mut at_stamped, mut at_summed) = (0.0, 0.0);
-        let mut clocks = Vec::new();
-        let mut dropped = 0;
-        for i in 0..1400usize {
-            let d = if i == 0 { 0.0 } else { step };
-            stamped.stamp_next(Stamp::Ns(i as i128 * 1_000_000));
-            stamped.learn(&mut at_stamped, d, || i);
-            summed.learn(&mut at_summed, d, || i);
-            assert_eq!(at_stamped, at_summed, "row {i}: one summed clock");
-            clocks.push(at_stamped);
-            if i >= 1000 {
-                let (u, &row) = stamped.boundary().unwrap();
-                assert_eq!(row, i - 1000, "row {i}: the snapshot a second old");
-                assert_eq!(u, clocks[row], "row {i}: decayed from the summed clock");
-                dropped += usize::from(*summed.boundary().unwrap().1 != i - 1000);
+        for (closed, back) in [(WindowClosed::Both, 1000), (WindowClosed::Right, 999)] {
+            let mut stamped: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap().closed(closed);
+            let mut summed: Snapshots<usize> = Snapshots::new(1.0, 1).unwrap().closed(closed);
+            let (mut at_stamped, mut at_summed) = (0.0, 0.0);
+            let mut clocks = Vec::new();
+            let mut dropped = 0;
+            for i in 0..1400usize {
+                let d = if i == 0 { 0.0 } else { step };
+                stamped.stamp_next(Stamp::Ns(i as i128 * 1_000_000));
+                stamped.learn(&mut at_stamped, d, || i);
+                summed.learn(&mut at_summed, d, || i);
+                assert_eq!(at_stamped, at_summed, "row {i}: one summed clock");
+                clocks.push(at_stamped);
+                if i >= 1000 {
+                    let (u, &row) = stamped.boundary().unwrap();
+                    assert_eq!(row, i - back, "{closed:?}, row {i}: the boundary");
+                    assert_eq!(u, clocks[row], "row {i}: decayed from the summed clock");
+                    dropped += usize::from(*summed.boundary().unwrap().1 != i - back);
+                }
+            }
+            if closed == WindowClosed::Both {
+                assert!(dropped > 0, "the summed clock never dropped it");
             }
         }
-        assert!(dropped > 0, "the summed clock never dropped it");
     }
 
     /// Thinning keeps the boundary inside the window on the stamps too: rows

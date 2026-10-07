@@ -102,6 +102,9 @@ fn windowed_pairs(
     c.decay = Decay::Halflife(h);
     c.window = Some(window);
     let mut m = Marginal::new(c).unwrap();
+    // The inclusive edge, which these cases' boundary rows are placed by
+    // (`n - 1 - window`): what they test is the run, on either.
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
     let mut s = 11u64;
     for i in 0..n {
         let (a, b) = (lcg(&mut s), lcg(&mut s));
@@ -243,6 +246,8 @@ fn a_window_of_light_rows_reads_their_moments() {
     c.decay = Decay::Halflife(f64::INFINITY);
     c.window = Some(10.0);
     let mut m = Marginal::new(c).unwrap();
+    // Eleven rows inside, the row exactly a window old among them.
+    crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
     let mut s = 5u64;
     let mut rows = Vec::new();
     for i in 0..1012 {
@@ -290,6 +295,8 @@ fn kish_size_inside_a_window_is_the_rows_inside_or_nothing() {
         c.decay = Decay::Halflife(f64::INFINITY);
         c.window = Some(10.0);
         let mut m = Marginal::new(c).unwrap();
+        // Eleven rows inside, the row exactly a window old among them.
+        crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
         let mut s = 5u64;
         for i in 0..1012 {
             let x = lcg(&mut s);
@@ -592,21 +599,21 @@ fn a_lagged_correlation_is_its_covariance_over_the_two_deviations() {
                 assert!(sx > 0.0 && sy > 0.0);
                 for li in 0..4 {
                     assert_eq!(
-                        q.lagcorr_xx[li].to_bits(),
+                        q.lag_corr_xx[li].to_bits(),
                         (lag.cxx(li, t, j) / (sx * sx)).to_bits()
                     );
                     assert_eq!(
-                        q.lagcorr_yy[li].to_bits(),
+                        q.lag_corr_yy[li].to_bits(),
                         (lag.cyy(li, t) / (sy * sy)).to_bits()
                     );
                 }
                 for ci in 0..lag.cross_lags().len() {
                     assert_eq!(
-                        q.lagcorr_xy[ci].to_bits(),
+                        q.lag_corr_xy[ci].to_bits(),
                         (lag.cxy(ci, t, j) / (sx * sy)).to_bits()
                     );
                     assert_eq!(
-                        q.lagcorr_yx[ci].to_bits(),
+                        q.lag_corr_yx[ci].to_bits(),
                         (lag.cyx(ci, t, j) / (sx * sy)).to_bits()
                     );
                 }
@@ -641,8 +648,8 @@ fn a_lagged_correlation_over_no_spread_is_nan() {
     assert_eq!(q.var_x, 0.0, "the feature is constant on the target's rows");
     assert!(q.var_y > 0.0);
     assert!(lag.cyx(0, 0, 0) != 0.0, "the ring saw the rows between");
-    assert!(q.lagcorr_yx[0].is_nan(), "{}", q.lagcorr_yx[0]);
-    assert!(q.lagcorr_xx[0].is_nan() && q.lagcorr_xy[0].is_nan());
+    assert!(q.lag_corr_yx[0].is_nan(), "{}", q.lag_corr_yx[0]);
+    assert!(q.lag_corr_xx[0].is_nan() && q.lag_corr_xy[0].is_nan());
 }
 
 /// E70 (docs/PLAN.md task 123): `cross_lags` chooses which cross terms
@@ -659,13 +666,13 @@ fn cross_lags_leave_the_serial_correction_to_the_bit() {
             for j in 0..3 {
                 let (a, b) = (all.pair(t, j), some.pair(t, j));
                 let why = format!("cross_lags {cross:?}, target {t}, feature {j}");
-                assert_eq!(bits(&a.lagcorr_xx), bits(&b.lagcorr_xx), "{why}");
-                assert_eq!(bits(&a.lagcorr_yy), bits(&b.lagcorr_yy), "{why}");
+                assert_eq!(bits(&a.lag_corr_xx), bits(&b.lag_corr_xx), "{why}");
+                assert_eq!(bits(&a.lag_corr_yy), bits(&b.lag_corr_yy), "{why}");
                 let serial = |q: &Pair| [q.n_serial, q.t_serial, q.phi_x, q.phi_y, q.corr, q.t];
                 assert_eq!(bits(&serial(&a)), bits(&serial(&b)), "{why}");
-                assert_eq!(a.lagcorr_xy.len(), 4, "{why}: every lag by default");
-                assert_eq!(b.lagcorr_xy.len(), cross.len(), "{why}");
-                assert_eq!(b.lagcorr_yx.len(), cross.len(), "{why}");
+                assert_eq!(a.lag_corr_xy.len(), 4, "{why}: every lag by default");
+                assert_eq!(b.lag_corr_xy.len(), cross.len(), "{why}");
+                assert_eq!(b.lag_corr_yx.len(), cross.len(), "{why}");
                 corrected += usize::from(b.n_serial.is_finite());
             }
         }
@@ -703,8 +710,8 @@ fn cross_lags_keep_the_default_cross_terms_at_their_lags() {
                 }
                 let (a, b) = (all.pair(t, j), some.pair(t, j));
                 let pick = |v: &[f64]| at.iter().map(|&li| v[li]).collect::<Vec<_>>();
-                assert_eq!(bits(&b.lagcorr_xy), bits(&pick(&a.lagcorr_xy)));
-                assert_eq!(bits(&b.lagcorr_yx), bits(&pick(&a.lagcorr_yx)));
+                assert_eq!(bits(&b.lag_corr_xy), bits(&pick(&a.lag_corr_xy)));
+                assert_eq!(bits(&b.lag_corr_yx), bits(&pick(&a.lag_corr_yx)));
             }
         }
     }
@@ -807,7 +814,7 @@ fn a_state_without_cross_lags_loads_with_every_lag() {
         OnlineModel::step(&mut back, &x, &y, step_clock(i + 1), 1.0);
     }
     assert_eq!(back, m);
-    assert_eq!(back.pair(2, 1).lagcorr_xy.len(), 4);
+    assert_eq!(back.pair(2, 1).lag_corr_xy.len(), 4);
 }
 
 /// E66 test 1: the lagged moments are `ew_cov(lags=)`'s, to the bit. Both
@@ -877,7 +884,7 @@ fn lagged_pair_moments_are_ew_covs_to_the_bit() {
             "lag {li}: y now against x back"
         );
     }
-    assert_eq!(pair.lagcorr_xx.len(), lags.len());
+    assert_eq!(pair.lag_corr_xx.len(), lags.len());
 }
 
 /// The identity above for every feature of every target: two of each,
@@ -1117,16 +1124,33 @@ fn t_serial_is_standard_where_t_is_over_dispersed() {
     );
 }
 
+/// Whether a row `age` clock units old is inside a `window` with edge
+/// `closed`, by the definition (docs/PLAN.md task 196, N17).
+fn inside(age: f64, window: f64, closed: crate::WindowClosed) -> bool {
+    match closed {
+        crate::WindowClosed::Right => age < window,
+        crate::WindowClosed::Both => age <= window,
+    }
+}
+
 /// PLAN §13.4 for `marginal`: one pair, computed directly over the rows
-/// inside the window and nothing else. The boundary is inclusive, as
-/// `window.rs` states it: a row exactly `window` old is inside.
+/// inside the window and nothing else. A row exactly `window` old is
+/// inside under `closed = "both"` and has left under `"right"`, the
+/// default: both are run.
 #[test]
 fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        windowed_pair_is_the_pair_of_the_rows_inside(closed);
+    }
+}
+
+fn windowed_pair_is_the_pair_of_the_rows_inside(closed: crate::WindowClosed) {
     let (half_life, window) = (25.0, 70.0);
     let mut c = cfg(1, 1);
     c.decay = Decay::Halflife(half_life);
     c.window = Some(window);
     let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, closed);
 
     let mut seed = 99u64;
     let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
@@ -1151,8 +1175,10 @@ fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
 
         if i >= 5 {
             let now = clock;
-            let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] <= window).collect();
-            on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
+            let keep: Vec<usize> = (0..=i)
+                .filter(|&j| inside(now - t[j], window, closed))
+                .collect();
+            on_the_boundary += (0..=i).filter(|&j| now - t[j] == window).count();
             let w: Vec<f64> = keep
                 .iter()
                 .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
@@ -1203,15 +1229,22 @@ fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
 /// Review 2026-09-12, C17: the same pair against a feature and a target
 /// that sit at `1e8`. `cut` used to go back through the raw moment `s +
 /// ma·mb`, which at this level loses the variance and the covariance
-/// entirely; the oracle is two-pass, so it is right at any offset. The
-/// boundary is inclusive, as `window.rs` states it.
+/// entirely; the oracle is two-pass, so it is right at any offset. Under
+/// either edge.
 #[test]
 fn a_windowed_pair_keeps_its_precision_at_a_large_offset() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        windowed_pair_keeps_its_precision_at_a_large_offset(closed);
+    }
+}
+
+fn windowed_pair_keeps_its_precision_at_a_large_offset(closed: crate::WindowClosed) {
     let (half_life, window) = (25.0, 70.0);
     let mut c = cfg(1, 1);
     c.decay = Decay::Halflife(half_life);
     c.window = Some(window);
     let mut m = Marginal::new(c).unwrap();
+    crate::OnlineModel::set_window_closed(&mut m, closed);
 
     let mut seed = 4242u64;
     let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
@@ -1235,8 +1268,10 @@ fn a_windowed_pair_keeps_its_precision_at_a_large_offset() {
 
         if i >= 5 {
             let now = clock;
-            let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] <= window).collect();
-            on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
+            let keep: Vec<usize> = (0..=i)
+                .filter(|&j| inside(now - t[j], window, closed))
+                .collect();
+            on_the_boundary += (0..=i).filter(|&j| now - t[j] == window).count();
             let w: Vec<f64> = keep
                 .iter()
                 .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
@@ -1427,7 +1462,7 @@ fn validation_rejects_each_bad_field() {
 /// (docs/PLAN.md task 137). An unwindowed twin's weight and moments,
 /// after the row before the window's first and after the last, give it
 /// in sum form, `(W·C − f·λ·W_u·C_u) / (W − f·λ·W_u)`, read through
-/// `lagcorr` against the window's own variances. The target is missing
+/// `lag_corr` against the window's own variances. The target is missing
 /// on every fifth row, where its moments hold and its weight ages.
 #[test]
 fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
@@ -1440,6 +1475,8 @@ fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
     let mut live = Marginal::new(c.clone()).unwrap();
     c.window = Some(window);
     let mut win = Marginal::new(c).unwrap();
+    // The inclusive edge, which the boundary row `u` below is placed by.
+    crate::OnlineModel::set_window_closed(&mut win, crate::WindowClosed::Both);
     let mut s = 11u64;
     let mut hist: Vec<(f64, Vec<f64>, Vec<f64>, f64)> = Vec::new();
     for i in 0..n {
@@ -1471,25 +1508,25 @@ fn a_windowed_lag_moment_is_the_increments_inside_the_window() {
         let yy = cut(yy_now[li], yy_then[li]) / pair.var_y;
         let xx = cut(xx_now[li], xx_then[li]) / pair.var_x;
         assert!(
-            close(pair.lagcorr_yy[li], yy),
+            close(pair.lag_corr_yy[li], yy),
             "lag {li}: {} against {yy}",
-            pair.lagcorr_yy[li]
+            pair.lag_corr_yy[li]
         );
         assert!(
-            close(pair.lagcorr_xx[li], xx),
+            close(pair.lag_corr_xx[li], xx),
             "lag {li}: {} against {xx}",
-            pair.lagcorr_xx[li]
+            pair.lag_corr_xx[li]
         );
     }
     let xy = cut(*xy_now, *xy_then) / (pair.var_x.sqrt() * pair.var_y.sqrt());
     assert!(
-        close(pair.lagcorr_xy[0], xy),
+        close(pair.lag_corr_xy[0], xy),
         "{} against {xy}",
-        pair.lagcorr_xy[0]
+        pair.lag_corr_xy[0]
     );
     // The window truncated: the whole history's reads otherwise.
     let whole = live.pair(0, 1);
-    assert!((whole.lagcorr_yy[0] - pair.lagcorr_yy[0]).abs() > 1e-4);
+    assert!((whole.lag_corr_yy[0] - pair.lag_corr_yy[0]).abs() > 1e-4);
 }
 
 /// What the lag moments add to a window's snapshot (docs/PLAN.md task
@@ -2262,7 +2299,7 @@ fn lag_moments_hold_where_the_target_is_missing() {
         OnlineModel::step(&mut m, &[x], &[Some(y)], step_clock(i), 1.0);
     }
     let before = m.pair(0, 0);
-    assert!(before.lagcorr_xx[0] > 0.5, "{:?}", before.lagcorr_xx);
+    assert!(before.lag_corr_xx[0] > 0.5, "{:?}", before.lag_corr_xx);
     for _ in 0..100 {
         x = 0.9 * x + lcg(&mut seed);
         OnlineModel::step(&mut m, &[x], &[None], 1.0, 1.0);
@@ -2271,12 +2308,12 @@ fn lag_moments_hold_where_the_target_is_missing() {
     assert_eq!(before.var_x, after.var_x, "the pair moments hold");
     assert_eq!(before.corr, after.corr);
     assert_eq!(
-        before.lagcorr_xx, after.lagcorr_xx,
+        before.lag_corr_xx, after.lag_corr_xx,
         "so the lag moments hold"
     );
-    assert_eq!(before.lagcorr_yy, after.lagcorr_yy);
-    assert_eq!(before.lagcorr_xy, after.lagcorr_xy);
-    assert_eq!(before.lagcorr_yx, after.lagcorr_yx);
+    assert_eq!(before.lag_corr_yy, after.lag_corr_yy);
+    assert_eq!(before.lag_corr_xy, after.lag_corr_xy);
+    assert_eq!(before.lag_corr_yx, after.lag_corr_yx);
     // `n_kish = W²/Q` is scale-free, so the correction is unchanged too
     // (to rounding: `W` and `Q` aged by `lam` and `lam²` a hundred times).
     assert!(close(before.n_serial, after.n_serial, 1e-12));
@@ -3262,10 +3299,10 @@ fn pair_bits(m: &Marginal, t: usize, j: usize) -> Vec<u64> {
         q.n_serial, q.t_serial, q.phi_x, q.phi_y,
     ]
     .iter()
-    .chain(&q.lagcorr_xx)
-    .chain(&q.lagcorr_yy)
-    .chain(&q.lagcorr_xy)
-    .chain(&q.lagcorr_yx)
+    .chain(&q.lag_corr_xx)
+    .chain(&q.lag_corr_yy)
+    .chain(&q.lag_corr_xy)
+    .chain(&q.lag_corr_yx)
     .map(|v| v.to_bits())
     .collect()
 }
@@ -3373,8 +3410,8 @@ fn shared_lag_moments_are_the_features_over_every_learned_row() {
             let (q, r) = (one.pair(1, j), always.pair(0, j));
             let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(
-                bits(&q.lagcorr_xx),
-                bits(&r.lagcorr_xx),
+                bits(&q.lag_corr_xx),
+                bits(&r.lag_corr_xx),
                 "row {i}, feature {j}"
             );
             assert_eq!(q.var_x.to_bits(), r.var_x.to_bits(), "row {i}, feature {j}");
@@ -3537,11 +3574,18 @@ fn a_shared_state_round_trips_and_a_wrong_width_is_refused() {
 /// inclusive, and rows do age out, which the test counts.
 #[test]
 fn the_models_weights_under_a_window_are_the_rows_inside_it() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        models_weights_under_a_window_are_the_rows_inside(closed);
+    }
+}
+
+fn models_weights_under_a_window_are_the_rows_inside(closed: crate::WindowClosed) {
     let (half_life, window) = (25.0, 70.0);
     let mut c = cfg(1, 2);
     c.decay = Decay::Halflife(half_life);
     c.window = Some(window);
     let mut m = Marginal::new(c).unwrap();
+    OnlineModel::set_window_closed(&mut m, closed);
     let mut seed = 5u64;
     let (mut t, mut ws, mut second, mut clock) = (vec![], vec![], vec![], 0.0);
     let mut aged_out = 0;
@@ -3559,7 +3603,7 @@ fn the_models_weights_under_a_window_are_the_rows_inside_it() {
         t.push(clock);
         ws.push(w);
         second.push(on);
-        let inside = |j: usize| clock - t[j] <= window;
+        let inside = |j: usize| inside(clock - t[j], window, closed);
         let decayed = |j: &usize| ws[*j] * 0.5_f64.powf((clock - t[*j]) / half_life);
         let all: f64 = (0..=i).filter(|&j| inside(j)).map(|j| decayed(&j)).sum();
         let own: f64 = (0..=i)
@@ -3637,9 +3681,9 @@ fn a_windows_statistics_do_not_depend_on_the_weights_scale() {
     let (p, q) = (a.pair(0, 0), b.pair(0, 0));
     assert_eq!(q.n_eff, p.n_eff * scale);
     assert!(
-        p.lagcorr_xx
+        p.lag_corr_xx
             .iter()
-            .chain(&p.lagcorr_xy)
+            .chain(&p.lag_corr_xy)
             .all(|v| v.is_finite())
     );
     let numbers = |v: &Pair| {
@@ -3647,10 +3691,10 @@ fn a_windows_statistics_do_not_depend_on_the_weights_scale() {
             v.n_kish, v.mean_x, v.var_x, v.mean_y, v.var_y, v.cov, v.corr, v.beta, v.t,
         ]
         .into_iter()
-        .chain(v.lagcorr_xx.iter().copied())
-        .chain(v.lagcorr_yy.iter().copied())
-        .chain(v.lagcorr_xy.iter().copied())
-        .chain(v.lagcorr_yx.iter().copied())
+        .chain(v.lag_corr_xx.iter().copied())
+        .chain(v.lag_corr_yy.iter().copied())
+        .chain(v.lag_corr_xy.iter().copied())
+        .chain(v.lag_corr_yx.iter().copied())
         .map(f64::to_bits)
         .collect::<Vec<_>>()
     };
@@ -3880,7 +3924,7 @@ fn t_serial_is_t_at_the_serial_count() {
         OnlineModel::step(&mut m, &[x], &[Some(y)], step_clock(i), 1.0);
     }
     let q = m.pair(0, 0);
-    let products: f64 = (0..3).map(|l| q.lagcorr_xx[l] * q.lagcorr_yy[l]).sum();
+    let products: f64 = (0..3).map(|l| q.lag_corr_xx[l] * q.lag_corr_yy[l]).sum();
     let factor = 1.0 + 2.0 * products;
     assert!(factor > 1.2, "serially dependent: {factor}");
     assert!((q.n_serial - q.n_kish / factor).abs() < 1e-9 * q.n_serial);
@@ -3915,7 +3959,7 @@ fn an_infinite_serial_factor_is_no_correction() {
     v["lag"]["cyy"][0][0] = serde_json::json!(1e300);
     let edited: Marginal = serde_json::from_value(v).unwrap();
     let q = edited.pair(0, 0);
-    assert_eq!(q.lagcorr_xx[0] * q.lagcorr_yy[0], f64::INFINITY);
+    assert_eq!(q.lag_corr_xx[0] * q.lag_corr_yy[0], f64::INFINITY);
     assert!(q.n_serial.is_nan() && q.t_serial.is_nan(), "{}", q.n_serial);
 }
 

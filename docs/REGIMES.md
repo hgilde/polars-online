@@ -91,7 +91,7 @@ to 0.18 against a nominal 0.05, as the paper warns
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
-median of 29 rows and flags 51 rows per 1000 quiet ones. `bocpd` takes 121
+median of 25 rows and flags 54 rows per 1000 quiet ones. `bocpd` takes 121
 rows and raises 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
@@ -391,7 +391,7 @@ number of rows from row 1000 to the first alarm at or after it.
 
 | detector | settings | what counts as its alarm |
 |---|---|---|
-| `corrchange(kind="window")` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
+| `corrchange(kind="window")` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every_rows=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
 | `bocpd` | `emission="gaussian"`, `hazard=500`, `prior_nu=5`, `prior_scale=[0.1]`, `prior_mean` left out (the first 5 rows' mean), `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
 
 **`bocpd` is measured with `emission="gaussian"`, not its default
@@ -401,14 +401,14 @@ section](../README.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
-| corrchange, `kind="window"` | 51.33                          | 20/20           | 29           | 53          |
+| corrchange, `kind="window"` | 53.67                          | 20/20           | 25           | 56          |
 | bocpd              | 0.53                           | 20/20           | 121          | 351         |
 
 **The two detectors answer different questions, which is why both are
 here.** `corrchange(kind="window")` is a test of one thing: whether the
 correlation matrix has moved between two adjacent windows. It is looking
-straight at this break, so it flags it fast, in a median of 29 rows and 53
-at worst. It also flags 51.33 rows per 1000 quiet ones. Two windows that
+straight at this break, so it flags it fast, in a median of 25 rows and 56
+at worst. It also flags 53.67 rows per 1000 quiet ones. Two windows that
 slide by one row are almost the same windows, so its flags come in runs.
 That rate is nearer a fraction of rows above the quantile than a count of
 events.

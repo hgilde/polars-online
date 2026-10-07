@@ -209,7 +209,7 @@ class TestBankToml:
         assert state.exists(), "save_state produced no file"
 
     def test_resuming_from_that_state_continues_the_stream(self, data, first_run):
-        """The README advertises `--resume`; this proves the state the first
+        """The README advertises `--load-state`; this proves the state the first
         run saved is loadable by the same config. It resumes on the rows after
         the state's: the same input again would step every group's clock back,
         which the default refuses (task 120)."""
@@ -221,7 +221,7 @@ class TestBankToml:
             "--config", str(EXAMPLES / "bank.toml"),
             "--input", str(data / "later.parquet"),
             "--output", str(data / "out2.parquet"),
-            "--resume", str(state),
+            "--load-state", str(state),
             # The config's own `save_state` is relative, so without this the
             # run would drop a `bank.state` in the repo root.
             "--save-state", str(data / "bank2.state"),

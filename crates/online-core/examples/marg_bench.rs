@@ -130,10 +130,10 @@ fn main() {
             for v in [q.n_eff, q.mean_x, q.mean_y, q.var_x, q.cov, q.corr] {
                 eat(v);
             }
-            for v in q.lagcorr_xx.iter().chain(&q.lagcorr_yy) {
+            for v in q.lag_corr_xx.iter().chain(&q.lag_corr_yy) {
                 eat(*v);
             }
-            for v in q.lagcorr_xy.iter().chain(&q.lagcorr_yx) {
+            for v in q.lag_corr_xy.iter().chain(&q.lag_corr_yx) {
                 eat(*v);
             }
             for v in q.bin_edges.iter().chain(&q.bin_n).chain(&q.bin_mean_y) {

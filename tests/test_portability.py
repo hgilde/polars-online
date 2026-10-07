@@ -616,7 +616,7 @@ class TestConfigParsing:
             "half_life = 100.0\n"
             "min_weight = 5.0\n"
             "\n[specs.model]\n"
-            'type = "ew_ridge"\n'
+            'type = "ewridge"\n'
             "ridge = 1e-6\n"
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
@@ -656,7 +656,7 @@ class TestConfigParsing:
             "half_life = 100.0\n"
             "min_weight = 1.0\n"
             "\n[specs.model]\n"
-            'type = "ew_ridge"\n'
+            'type = "ewridge"\n'
             "ridge = 1e-6\n"
         )
         res = self._cli(["--config", str(cfg)])
@@ -678,7 +678,7 @@ class TestConfigParsing:
             "half_life = 100.0\n"
             "min_weight = 1.0\n"
             "\n[specs.model]\n"
-            'type = "ew_ridge"\n'
+            'type = "ewridge"\n'
             "ridge = 1e-6\n"
         )
         cfg = tmp_path / "paths.toml"
@@ -699,7 +699,7 @@ class TestConfigParsing:
         assert state.exists()
         # The state reads back through the same spelling.
         resume = ["--config", str(cfg), "--input", spell(src), "--output", spell(again)]
-        res = self._cli([*resume, "--resume", spell(state)])
+        res = self._cli([*resume, "--load-state", spell(state)])
         assert res.returncode == 0, f"{where}, resumed:\n{res.stdout}{res.stderr}"
         assert pl.read_parquet(again).height == 3
 
@@ -740,7 +740,7 @@ class TestConfigParsing:
                 "min_weight = 5.0",
                 "",
                 "[specs.model]",
-                'type = "ew_ridge"',
+                'type = "ewridge"',
                 "ridge = 1e-6",
                 "",
             ]
@@ -768,7 +768,7 @@ class TestConfigParsing:
             'features = ["x0"]\n'
             "half_life = 100.0\n"
             "\n[specs.model]\n"
-            'type = "ew_ridge"\n'
+            'type = "ewridge"\n'
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode != 0, res.stdout
@@ -788,7 +788,7 @@ class TestConfigParsing:
             'features = ["x0"]\n'
             "half_life = 100.0\n"
             "\n[specs.model]\n"
-            'type = "ew_ridge"\n'
+            'type = "ewridge"\n'
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode == 0, res.stderr[-1500:]

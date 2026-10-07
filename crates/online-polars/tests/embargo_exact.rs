@@ -31,7 +31,7 @@ const MS: i64 = 1_000_000;
 /// clock fields, and the spec-level settings `rest`.
 fn spec_with(targets: &str, rest: &str) -> Spec {
     let text = format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6}}, "targets": {targets},
+        r#"{{"name": "m", "model": {{"type": "ewridge", "ridge": 1e-6}}, "targets": {targets},
             "features": ["x"], "clock": "t", "min_weight": 0.0, "half_life": "inf",
             "emit_clocks": true, {rest}}}"#
     );
@@ -330,7 +330,7 @@ fn on_a_row_count_clock_the_embargo_counts_rows_skipped_ones_included() {
         assert_eq!(newest(106 + embargo), Some(106), "embargo {embargo}");
         assert!(newest(105 + embargo) < Some(106), "embargo {embargo}");
         let text = format!(
-            r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6}}, "targets": ["y"],
+            r#"{{"name": "m", "model": {{"type": "ewridge", "ridge": 1e-6}}, "targets": ["y"],
                 "features": ["x"], "min_weight": 0.0, "half_life": "inf",
                 "emit_clocks": true, "embargo": {embargo}}}"#
         );
@@ -724,7 +724,7 @@ fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
         ("[20.0, 40.0]", vec![("@h20", 20.0), ("@h40", 40.0)]),
     ] {
         let spec: Spec = serde_json::from_str(&format!(
-            r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "standardize": false,
+            r#"{{"name": "m", "model": {{"type": "ewridge", "ridge": 1e-6, "standardize": false,
                  "max_rows_between_solves": 1}}, "targets": ["y"], "features": ["x"],
                  "half_life": {half_lives}, "min_weight": 3.0, "embargo": {embargo},
                  "emit_drift": true, "drift_delta": 0.5, "drift_threshold": 5.0,

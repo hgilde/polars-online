@@ -11,7 +11,7 @@
 //!
 //! The constants are not arbitrary. They are the current implementation's
 //! output, and that implementation is independently verified elsewhere: the
-//! numpy references in `tests/reference.py` for `ew_ridge`, `rls`, `kalman`,
+//! numpy references in `tests/reference.py` for `ewridge`, `rls`, `kalman`,
 //! `huber`/`quantile` and `ftrl`; the lasso's KKT conditions in
 //! `tests/test_oracles.py`; and, for `sgd`, `pa`, `holt` and `ew_cov`, the
 //! recursion written out longhand in each module's own unit tests. This file
@@ -139,19 +139,19 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
 }
 
 #[test]
-fn ew_ridge_golden() {
+fn ewridge_golden() {
     let mut m = EwRidge::new(ewridge_cfg(false, 1e-4)).unwrap();
-    check("ew_ridge", &signature(&mut m, 0), GOLDEN_EW_RIDGE);
+    check("ewridge", &signature(&mut m, 0), GOLDEN_EW_RIDGE);
 }
 
 #[test]
-fn ew_ridge_standardized_golden() {
+fn ewridge_standardized_golden() {
     let mut m = EwRidge::new(ewridge_cfg(true, 0.01)).unwrap();
-    check("ew_ridge_std", &signature(&mut m, 0), GOLDEN_EW_RIDGE_STD);
+    check("ewridge_std", &signature(&mut m, 0), GOLDEN_EW_RIDGE_STD);
 }
 
 #[test]
-fn ew_ridge_windowed_golden() {
+fn ewridge_windowed_golden() {
     // A hard window with `window_every = 3`: the fit reads only the rows
     // inside the window, and a snapshot is kept every third row. This pins it
     // so P1's move of the snapshot build into the `offer` closure -- built
@@ -161,26 +161,30 @@ fn ew_ridge_windowed_golden() {
     c.window = Some(30.0);
     c.max_rows_between_snapshots = Some(3);
     let mut m = EwRidge::new(c).unwrap();
+    // Under `closed = "both"`, as `lasso_windowed_golden` says why (this
+    // stream's cadence puts no snapshot exactly one window old, so the two
+    // edges agree here).
+    m.set_window_closed(WindowClosed::Both);
     check(
-        "ew_ridge_windowed",
+        "ewridge_windowed",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_WINDOWED,
     );
 }
 
 /// The through-origin fits move no number above (every signature there has
-/// an intercept), so the branches that only they take -- `ew_ridge`'s
+/// an intercept), so the branches that only they take -- `ewridge`'s
 /// standardized solve through the origin, with the warm prior it dropped
 /// until the review of 2026-09-18 (B2, T1), `robust`'s raw-scaled one, and
 /// `kalman` without the standardizer -- are pinned here.
 #[test]
-fn ew_ridge_origin_standardized_golden() {
+fn ewridge_origin_standardized_golden() {
     let mut c = ewridge_cfg(true, 0.05);
     c.fit_intercept = false;
     c.coef_prior = Some(vec![vec![1.0, -0.5]]);
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_origin_std",
+        "ewridge_origin_std",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_ORIGIN_STD,
     );
@@ -573,7 +577,7 @@ fn corrchange_golden() {
         decay: Decay::Halflife(20.0),
         crit: None,
         n_perm: 20,
-        permute_every: 10,
+        permute_every_rows: 10,
         perm_block: 1,
         norm: ChangeNorm::L1,
         seed: 5,
@@ -772,9 +776,9 @@ fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
         warm_rows: 12,
         seed_rule: rule,
         seed: 0,
-        update_every: 1,
+        update_every_rows: 1,
         split_merge: 0.5,
-        split_merge_every: 10,
+        split_merge_every_rows: 10,
         dead_frac: 0.05,
         standardize: true,
         scale_floor: 0.0,
@@ -796,7 +800,7 @@ fn kmeans_golden() {
     );
     // The `first` rule with a checkpoint every seven rows: the batch path.
     let mut m = KMeans::new(KMeansCfg {
-        update_every: 7,
+        update_every_rows: 7,
         ..kmeans_cfg(SeedRule::First)
     })
     .unwrap();
@@ -1003,22 +1007,22 @@ fn micro_on_the_clock_golden() {
     check("micro_floor", &got, GOLDEN_MICRO_FLOOR);
 }
 
-/// `ew_ridge` over feature sets, under `session_shrink` with a session
+/// `ewridge` over feature sets, under `session_shrink` with a session
 /// boundary at row 30, with pairwise gaps, with the Gram blocked, and on
 /// the solve schedules: the clock, and the default share of the weight.
 #[test]
-fn ew_ridge_paths_golden() {
+fn ewridge_paths_golden() {
     let mut c = ewridge_cfg(false, 1e-4);
     c.feature_sets = vec![("one".into(), vec![0]), ("both".into(), vec![0, 1])];
     let mut m = EwRidge::new(c.clone()).unwrap();
     check(
-        "ew_ridge_set_one",
+        "ewridge_set_one",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_SET_ONE,
     );
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_set_both",
+        "ewridge_set_both",
         &signature(&mut m, 1),
         GOLDEN_EW_RIDGE_SET_BOTH,
     );
@@ -1033,7 +1037,7 @@ fn ew_ridge_paths_golden() {
         }
     });
     check(
-        "ew_ridge_session_shrink",
+        "ewridge_session_shrink",
         &got,
         GOLDEN_EW_RIDGE_SESSION_SHRINK,
     );
@@ -1042,7 +1046,7 @@ fn ew_ridge_paths_golden() {
     c.target_gaps = online_core::TargetGaps::Pairwise;
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_pairwise",
+        "ewridge_pairwise",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_PAIRWISE,
     );
@@ -1053,7 +1057,7 @@ fn ew_ridge_paths_golden() {
     c.max_rows_between_solves = 8;
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_blocked",
+        "ewridge_blocked",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_BLOCKED,
     );
@@ -1063,7 +1067,7 @@ fn ew_ridge_paths_golden() {
     c.max_rows_between_solves = u32::MAX;
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_on_the_clock",
+        "ewridge_on_the_clock",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_ON_THE_CLOCK,
     );
@@ -1075,7 +1079,7 @@ fn ew_ridge_paths_golden() {
     c.solve_share = Some(0.2);
     let mut m = EwRidge::new(c).unwrap();
     check(
-        "ew_ridge_by_weight",
+        "ewridge_by_weight",
         &signature(&mut m, 0),
         GOLDEN_EW_RIDGE_BY_WEIGHT,
     );
@@ -1109,6 +1113,10 @@ fn lasso_windowed_golden() {
         ..cfg()
     })
     .unwrap();
+    // Pinned under `closed = "both"`, the edge every window had before task
+    // 196, so the numbers are the old ones to the bit; `"right"`, the
+    // default, is held to the definition in each model's unit tests.
+    m.set_window_closed(WindowClosed::Both);
     check(
         "lasso_windowed",
         &signature(&mut m, 1),
@@ -1248,7 +1256,7 @@ fn corrchange_sequential_golden() {
         decay: Decay::Halflife(20.0),
         crit: None,
         n_perm: 20,
-        permute_every: 10,
+        permute_every_rows: 10,
         perm_block: 1,
         norm: ChangeNorm::L1,
         seed: 5,
@@ -1321,7 +1329,7 @@ fn ew_cov_paths_golden() {
         window_every: None,
         max_rows_between_snapshots: None,
     };
-    // Slots: corr, then lagcorr per lag and ordered pair; slot 3 is lag 1's
+    // Slots: corr, then lag_corr per lag and ordered pair; slot 3 is lag 1's
     // (x0, x1).
     let mut m = EwCovModel::new(EwCovCfg {
         stats: vec![EwCovStat::Corr, EwCovStat::LagCorr],
@@ -1339,6 +1347,8 @@ fn ew_cov_paths_golden() {
         ..cfg()
     })
     .unwrap();
+    // Under `closed = "both"`, as `lasso_windowed_golden` says why.
+    m.set_window_closed(WindowClosed::Both);
     check(
         "ew_cov_windowed",
         &signature(&mut m, 0),
@@ -1380,7 +1390,7 @@ fn marginal_paths_golden() {
         ..cfg()
     })
     .unwrap();
-    let got = read(&mut m, &|p| [p.n_serial, p.t_serial, p.lagcorr_xy[0]]);
+    let got = read(&mut m, &|p| [p.n_serial, p.t_serial, p.lag_corr_xy[0]]);
     check("marginal_lags", &got, GOLDEN_MARGINAL_LAGS);
     let mut m = Marginal::new(MarginalCfg {
         bins: Some(Box::new(online_core::BinCfg {
@@ -1400,6 +1410,8 @@ fn marginal_paths_golden() {
         ..cfg()
     })
     .unwrap();
+    // Under `closed = "both"`, as `lasso_windowed_golden` says why.
+    m.set_window_closed(WindowClosed::Both);
     let got = read(&mut m, &|p| [p.corr, p.beta, p.n_kish]);
     check("marginal_windowed", &got, GOLDEN_MARGINAL_WINDOWED);
 }
@@ -1413,6 +1425,8 @@ fn ew_class_windowed_golden() {
         ..ew_class_cfg(Covariance::Full)
     })
     .unwrap();
+    // Under `closed = "both"`, as `lasso_windowed_golden` says why.
+    m.set_window_closed(WindowClosed::Both);
     check(
         "ew_class_windowed",
         &labelled_signature(&mut m, 1),
@@ -1466,7 +1480,7 @@ const GOLDEN_DECO: &[f64] = &[
     -0.036211528292942816,
 ];
 const GOLDEN_DECO_LOGLIK: &[f64] = &[-2.2831901919538913, -3.7586606055778677, -1.896095909765855];
-// `ew_ridge`, `ew_ridge_std` and `lasso` re-frozen 2026-09-14 (docs/PLAN.md
+// `ewridge`, `ewridge_std` and `lasso` re-frozen 2026-09-14 (docs/PLAN.md
 // task 81): the target is null on row 31, and under `target_gaps =
 // "own_rows"` its Gram no longer learns that row's features, so rows 45 and
 // 59 moved; row 20, before it, moved in the last bits only (`lasso` keeps
@@ -1480,7 +1494,7 @@ const GOLDEN_EW_RIDGE_STD: &[f64] = &[
     -0.06533729995816817,
 ];
 // The three through-origin signatures, frozen 2026-09-19 (the review's T1)
-// on the build with B2 fixed: `ew_ridge_origin_std` reads the prior.
+// on the build with B2 fixed: `ewridge_origin_std` reads the prior.
 const GOLDEN_EW_RIDGE_ORIGIN_STD: &[f64] = &[
     -0.06496193224777927,
     1.900894045241888,

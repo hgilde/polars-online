@@ -1014,7 +1014,7 @@ class TestTheCheckpointClock:
         s = self.clocked(prune_every="45s", max_rows_between_prunes=40)
         whole = unnested(po.ModelBank([s]).fit_predict(df))
         for rows in (1, 7, 37):
-            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_rows=rows))
+            parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
             assert unnested(parts).select(FIELDS).equals(whole.select(FIELDS)), rows
         for cut in (101, 250, 333):
             first = po.ModelBank([s])

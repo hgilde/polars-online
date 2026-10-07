@@ -132,7 +132,7 @@ def specs() -> list[dict]:
             k=2,
             warm_rows=8,
             split_merge=0.5,
-            split_merge_every=10,
+            split_merge_every_rows=10,
             clock="t",
             gap_cap=6.0,
             half_life=25.0,
@@ -344,7 +344,13 @@ def switched_specs() -> list[dict]:
     fwd = (po.rewm_mean("mid", half_life=5.0, window_size=10.0) - pl.col("mid")).alias("fwd")
     unsupervised = {k: v for k, v in timed.items() if k not in ("targets", "min_weight")}
     return [
-        po.spec.ewridge("window", window_size=20.0, max_rows_between_solves=1, **common),
+        # Under `closed="both"`, the edge every window had before task 196,
+        # so its numbers are the ones pinned; the default `"right"` drops a
+        # row exactly 20 old, moving `pred_y0@60` by 7.3e-5, and is held to
+        # the definition in `test_window.py` and `test_second_opinion.py`.
+        po.spec.ewridge(
+            "window", window_size=20.0, closed="both", max_rows_between_solves=1, **common
+        ),
         po.spec.kalman("embargo", coef_half_life=80.0, embargo=3.0, **common),
         po.spec.ewridge("datetime", max_rows_between_solves=1, **timed),
         po.spec.ewridge(
@@ -702,9 +708,9 @@ GOLDEN: dict[str, float | str | None] = {
     "kmeans.dist@25": 1.0657683037801138,
     "kmeans.dist@60": 2.0686144858219824,
     "kmeans.dist@119": 0.23320451009648485,
-    "kmeans.dist2@25": 2.9549386449346025,
-    "kmeans.dist2@60": 3.1351140254811636,
-    "kmeans.dist2@119": 1.9857367773902603,
+    "kmeans.dist_second@25": 2.9549386449346025,
+    "kmeans.dist_second@60": 3.1351140254811636,
+    "kmeans.dist_second@119": 1.9857367773902603,
     "kmeans.weight_sum@25": 7.999488060097996,
     "kmeans.weight_sum@60": 12.473100285951407,
     "kmeans.weight_sum@119": 15.110060335371337,

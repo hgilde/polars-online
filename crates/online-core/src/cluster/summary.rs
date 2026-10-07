@@ -139,7 +139,7 @@ impl ClusterSummary {
     /// ```
     ///
     /// Guarded as `absorb_plain`. With a one-row batch this *is*
-    /// `absorb_plain`, bit for bit, which is what makes `update_every = 1`
+    /// `absorb_plain`, bit for bit, which is what makes `update_every_rows = 1`
     /// the per-row model without a second code path.
     pub fn merge_plain(&mut self, other: &ClusterSummary) {
         let n_new = self.n + other.n;

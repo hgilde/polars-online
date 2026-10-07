@@ -14,7 +14,7 @@ use polars::prelude::*;
 #[test]
 fn no_solve_holds_its_factor_past_the_end_of_a_run() {
     let spec: Spec = serde_json::from_str(
-        r#"{"name": "m", "model": {"type": "ew_ridge", "max_rows_between_solves": 1},
+        r#"{"name": "m", "model": {"type": "ewridge", "max_rows_between_solves": 1},
                 "targets": ["y"], "features": ["x0", "x1"], "group": "g",
                 "half_life": 20.0, "max_rows_between_coefs": 1000}"#,
     )

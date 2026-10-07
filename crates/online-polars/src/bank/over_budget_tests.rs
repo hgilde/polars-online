@@ -7,7 +7,7 @@ use online_core::Cadence;
 
 fn spec(budget: &str) -> Spec {
     serde_json::from_str(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge", "window_size": 50{budget}}},
+        r#"{{"name": "m", "model": {{"type": "ewridge", "window_size": 50{budget}}},
                 "targets": ["y"], "features": ["x"], "half_life": 20}}"#
     ))
     .unwrap()
@@ -16,7 +16,7 @@ fn spec(budget: &str) -> Spec {
 /// A temporal spec with a clock spacing written `"90s"`.
 fn temporal(every: &str) -> Spec {
     serde_json::from_str(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge", "window_size": "30m"{every}}},
+        r#"{{"name": "m", "model": {{"type": "ewridge", "window_size": "30m"{every}}},
                 "targets": ["y"], "features": ["x"], "half_life": "10m",
                 "clock": "ts", "gap_cap": "10m"}}"#
     ))

@@ -47,14 +47,15 @@ def test_it_says_how_many_models_there_are():
     assert counts == {str(len(KINDS))}, f"llms.txt says {sorted(counts)}, registry has {len(KINDS)}"
 
 
-def test_it_warns_about_the_one_name_spelled_two_ways():
-    """`po.spec.ewridge` builds what a spec dict calls `ew_ridge`. It is the
-    only such pair, and an agent that gets it wrong writes a TOML that is
-    refused."""
+def test_every_builder_is_its_spec_type():
+    """`po.spec.ewridge` builds what a spec dict calls `ewridge`, as every
+    builder builds its own name (docs/PLAN.md task 196, N1): `ew_ridge` was
+    the one pair spelled two ways, and an agent that got it wrong wrote a
+    TOML that was refused. The map says the spellings agree."""
     differ = {b for b in BUILDERS if b not in KINDS}
-    assert differ == {"ewridge"}, f"a second name now differs: {sorted(differ)}"
+    assert differ == set(), f"a name now differs: {sorted(differ)}"
     assert "po.spec.ewridge" in TEXT
-    assert 'type = "ew_ridge"' in TEXT
+    assert 'type = "ewridge"' in TEXT
 
 
 def test_every_repository_link_resolves():

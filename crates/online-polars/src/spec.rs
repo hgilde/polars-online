@@ -8,6 +8,7 @@ use std::fmt;
 
 use crate::span::{Span, SpanList};
 use crate::targets::Targets;
+use crate::windows::Closed;
 
 fn default_true() -> bool {
     true
@@ -84,7 +85,7 @@ mod kinds_tests {
     #[test]
     fn an_unknown_key_is_refused_at_either_level() {
         let spec = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
                 "features": ["x"], "halflfe": 10}"#,
         )
         .unwrap_err()
@@ -93,7 +94,7 @@ mod kinds_tests {
             spec.contains("unknown field `halflfe`") && spec.contains("`half_life`"),
             "{spec}"
         );
-        let model = serde_json::from_str::<ModelKind>(r#"{"type": "ew_ridge", "rigde": 0.1}"#)
+        let model = serde_json::from_str::<ModelKind>(r#"{"type": "ewridge", "rigde": 0.1}"#)
             .unwrap_err()
             .to_string();
         assert!(
@@ -107,7 +108,7 @@ mod kinds_tests {
     #[test]
     fn an_old_name_is_refused_naming_the_new_one() {
         let json = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
                 "features": ["x"], "halflife": 10}"#,
         )
         .unwrap_err()
@@ -116,7 +117,7 @@ mod kinds_tests {
         assert!(json.contains("halflife was renamed half_life"), "{json}");
         let toml = toml::from_str::<super::Spec>(
             "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x\"]\nhalf_life = 10.0\n\
-             [model]\ntype = \"ew_ridge\"\nwindow = 10.0\n",
+             [model]\ntype = \"ewridge\"\nwindow = 10.0\n",
         )
         .unwrap_err()
         .to_string();
@@ -594,6 +595,24 @@ pub enum RidgeScale {
     Sum,
 }
 
+/// A windowed model's `closed` is the window operators' ([`Closed`]),
+/// Polars' name and values (`rolling_*_by(closed=)`; docs/PLAN.md task 196,
+/// N17): which edge of the window holds the row exactly `window_size` old.
+/// `Right`, the default, keeps the rows less than `window_size` old -- a row
+/// exactly that old has left, as it has in the window operators and in
+/// `rolling_*_by` -- and `Both` keeps it too. `Left` and `None` leave out
+/// the row the window ends at, which a model cannot do: it reads its fit
+/// after it has learned that row. They are read, so that the refusal can
+/// say so ([`Spec::validate`]), and never reach a model: this is `None` for
+/// them.
+fn model_edge(closed: Closed) -> Option<online_core::WindowClosed> {
+    match closed {
+        Closed::Right => Some(online_core::WindowClosed::Right),
+        Closed::Both => Some(online_core::WindowClosed::Both),
+        Closed::Left | Closed::Neither => None,
+    }
+}
+
 /// Model choice + model-specific params (docs/PLAN.md §4).
 ///
 /// A key no variant has is an error, not ignored: a spec is typed by hand in
@@ -615,6 +634,10 @@ pub enum RidgeScale {
 /// 2026-09-15 (`MIN_SCHEMA_VERSION` 9, the code review's S29/S30 and C24): a
 /// state saved before `holt`'s weighted means and `ftrl`'s proximal sum.
 pub enum ModelKind {
+    /// `type = "ewridge"`, the builder's, the README's and the core's
+    /// spelling; `"ew_ridge"` is refused naming it ([`RENAMED_VALUES`],
+    /// docs/PLAN.md task 196, N1).
+    #[serde(rename = "ewridge")]
     EwRidge {
         #[serde(default)]
         ridge: Option<FloatOrList>,
@@ -663,6 +686,11 @@ pub enum ModelKind {
         /// half-life grid is one instance per entry, each with its own ring.
         #[serde(default)]
         window_size: Option<Span>,
+        /// Which edge holds a row exactly `window_size` old, Polars'
+        /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
+        /// default, or `"both"`, which needs `window_size`.
+        #[serde(default)]
+        closed: Closed,
         /// Clock units between the snapshots the window is computed from, as
         /// `solve_every` is between solves: a number of the clock column's
         /// units, or a duration on a temporal clock, `0` every row
@@ -671,8 +699,8 @@ pub enum ModelKind {
         #[serde(default)]
         window_every: Option<Span>,
         /// At most this many rows between the window's snapshots, as
-        /// `max_rows_between_solves` is between solves; `0` or `1` is every
-        /// row (task 162).
+        /// `max_rows_between_solves` is between solves; `1` is every row,
+        /// and `0`, no schedule, is refused (tasks 162 and 196).
         #[serde(default)]
         max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
@@ -708,12 +736,17 @@ pub enum ModelKind {
         /// window, so the chosen `lambda` fits the rows the model reports on.
         #[serde(default)]
         window_size: Option<Span>,
+        /// Which edge holds a row exactly `window_size` old, Polars'
+        /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
+        /// default, or `"both"`, which needs `window_size`.
+        #[serde(default)]
+        closed: Closed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
         window_every: Option<Span>,
-        /// At most this many rows between the window's snapshots; `0` or `1`
-        /// is every row (task 162).
+        /// At most this many rows between the window's snapshots; `1` is
+        /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
         max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
@@ -817,7 +850,7 @@ pub enum ModelKind {
     /// `targets` is ignored; every column of interest goes in `features`.
     EwCov {
         /// Any of "mean", "var", "std", "cov", "corr", "partial_corr", "mahal",
-        /// "lagcorr" (the last with `lags`).
+        /// "lag_corr" (the last with `lags`).
         /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
@@ -841,16 +874,16 @@ pub enum ModelKind {
         #[serde(default)]
         pca_every: Option<Span>,
         /// At most this many rows between refreshes, as
-        /// `max_rows_between_solves` is the regressions'; `0` or `1` is every
-        /// row (task 161).
+        /// `max_rows_between_solves` is the regressions'; `1` is every row,
+        /// and `0` is refused (tasks 161 and 196).
         #[serde(default)]
         max_rows_between_pca: Option<u32>,
         /// Lags to accumulate cross-moments at, in output order
         /// (docs/ENHANCEMENTS.md E56): strictly increasing, `>= 1` and at
         /// most 2^20 (`online_core::MAX_LAG`, the ring being sized before the
         /// first row), counted in *learned rows within the group*. Read from `gram()`
-        /// as `lags`/`lag_comoments`, or emitted as `lagcorr_<a>_<b>_l<l>`
-        /// by adding `"lagcorr"` to `stats`.
+        /// as `lags`/`lag_comoments`, or emitted as `lag_corr_<a>_<b>_l<l>`
+        /// by adding `"lag_corr"` to `stats`.
         #[serde(default)]
         lags: Option<Vec<usize>>,
         /// Clock units of history the statistics see, with a **hard** cutoff:
@@ -860,6 +893,11 @@ pub enum ModelKind {
         /// window (docs/PLAN.md §13).
         #[serde(default)]
         window_size: Option<Span>,
+        /// Which edge holds a row exactly `window_size` old, Polars'
+        /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
+        /// default, or `"both"`, which needs `window_size`.
+        #[serde(default)]
+        closed: Closed,
         /// Clock units between the snapshots the window is computed from, as
         /// for `EwRidge`, `0` every row (docs/PLAN.md task 162). Every row,
         /// the default, is the tightest boundary; a coarser cadence divides
@@ -867,8 +905,8 @@ pub enum ModelKind {
         /// spacing -- never lengthens it.
         #[serde(default)]
         window_every: Option<Span>,
-        /// At most this many rows between the window's snapshots; `0` or `1`
-        /// is every row (task 162).
+        /// At most this many rows between the window's snapshots; `1` is
+        /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
         max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
@@ -964,13 +1002,14 @@ pub enum ModelKind {
     },
     /// Holt's linear trend method (ENHANCEMENTS E25): level plus slope, no
     /// features. The baseline a feature-based model should have to beat.
+    /// The level's half-life is the spec's own `half_life` (or `lam`),
+    /// `"inf"` included: no forgetting. It had a second name,
+    /// `level_half_life`, which built a second dict shape and is refused
+    /// naming `half_life` ([`RENAMED`]; review 2026-10-06, TA6; docs/PLAN.md
+    /// task 196, N16).
     Holt {
-        /// Half-life of the level, in clock units. Defaults to the spec's own
-        /// `half_life`, the same knob, `"inf"` included: no forgetting.
-        #[serde(default)]
-        level_half_life: Option<Span>,
         /// Half-life of the trend; `"inf"` forgets no slope, so the trend is
-        /// the whole history's drift. Defaults to four times the level
+        /// the whole history's drift. Defaults to four times the level's
         /// half-life.
         #[serde(default)]
         trend_half_life: Option<Span>,
@@ -1014,7 +1053,7 @@ pub enum ModelKind {
         seed: Option<u64>,
         /// Learned rows between centre updates. Default 1 (every row).
         #[serde(default)]
-        update_every: Option<u32>,
+        update_every_rows: Option<u32>,
         /// Merge the two closest clusters when their centres are closer than
         /// this many summed radii, re-placing the freed centre at the
         /// farthest row seen. Default 0.5; `0` disables split–merge.
@@ -1022,7 +1061,7 @@ pub enum ModelKind {
         split_merge: Option<f64>,
         /// Learned rows between split–merge checks. Default 100.
         #[serde(default)]
-        split_merge_every: Option<u32>,
+        split_merge_every_rows: Option<u32>,
         /// A cluster lighter than `dead_frac · n_eff / k` at a check is
         /// re-placed. Default 0.05; `0` disables the dead rule. The rule runs
         /// at a split–merge check, so under `split_merge = 0` the default is
@@ -1107,12 +1146,17 @@ pub enum ModelKind {
         /// not; the other shapes are unaffected.
         #[serde(default)]
         window_size: Option<Span>,
+        /// Which edge holds a row exactly `window_size` old, Polars'
+        /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
+        /// default, or `"both"`, which needs `window_size`.
+        #[serde(default)]
+        closed: Closed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
         window_every: Option<Span>,
-        /// At most this many rows between the window's snapshots; `0` or `1`
-        /// is every row (task 162).
+        /// At most this many rows between the window's snapshots; `1` is
+        /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
         max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
@@ -1241,12 +1285,17 @@ pub enum ModelKind {
         /// exponential.
         #[serde(default)]
         window_size: Option<Span>,
+        /// Which edge holds a row exactly `window_size` old, Polars'
+        /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
+        /// default, or `"both"`, which needs `window_size`.
+        #[serde(default)]
+        closed: Closed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
         window_every: Option<Span>,
-        /// At most this many rows between the window's snapshots; `0` or `1`
-        /// is every row (task 162).
+        /// At most this many rows between the window's snapshots; `1` is
+        /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
         max_rows_between_snapshots: Option<u32>,
         /// Past this many MiB the window's snapshots thin, or refuse the run
@@ -1451,7 +1500,7 @@ pub enum ModelKind {
         #[serde(default)]
         n_perm: Option<usize>,
         #[serde(default)]
-        permute_every: Option<usize>,
+        permute_every_rows: Option<usize>,
         /// Permute blocks of this many consecutive rows (default 1), so
         /// serial dependence does not make the null too liberal.
         #[serde(default)]
@@ -1552,7 +1601,7 @@ impl ModelKind {
     /// check themselves against (docs/EXTENDING.md); `kinds_tests` holds it
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
-        "ew_ridge",
+        "ewridge",
         "lasso",
         "kalman",
         "huber",
@@ -1577,7 +1626,7 @@ impl ModelKind {
 
     pub fn kind_name(&self) -> &'static str {
         match self {
-            ModelKind::EwRidge { .. } => "ew_ridge",
+            ModelKind::EwRidge { .. } => "ewridge",
             ModelKind::Rls { .. } => "rls",
             ModelKind::Lasso { .. } => "lasso",
             ModelKind::Kalman { .. } => "kalman",
@@ -1709,6 +1758,76 @@ impl ModelKind {
         }
     }
 
+    /// A windowed kind's `closed`, as the spec gives it; `None` for a kind
+    /// with no window (docs/PLAN.md task 196, N17).
+    pub fn window_closed(&self) -> Option<Closed> {
+        match self {
+            ModelKind::EwRidge { closed, .. }
+            | ModelKind::Lasso { closed, .. }
+            | ModelKind::EwCov { closed, .. }
+            | ModelKind::EwClass { closed, .. }
+            | ModelKind::Marginal { closed, .. } => Some(*closed),
+            _ => None,
+        }
+    }
+
+    /// The edge a windowed model's ring keeps ([`online_core::WindowClosed`]):
+    /// the spec's `closed`, `Right` by default and for a kind with no window,
+    /// which ignores it. A `closed` a model refuses never gets here
+    /// ([`Spec::validate`]).
+    pub fn window_edge(&self) -> online_core::WindowClosed {
+        self.window_closed()
+            .and_then(model_edge)
+            .unwrap_or_default()
+    }
+
+    /// Every `max_rows_between_*` the model takes, as given, beside the
+    /// clock parameter it caps: what [`Spec::validate`] holds to `>= 1`
+    /// (docs/PLAN.md task 196, U7). The spec's own `max_rows_between_coefs`
+    /// is checked there.
+    pub fn row_caps(&self) -> Vec<(&'static str, Option<u32>, &'static str)> {
+        let mut caps = Vec::new();
+        match self {
+            ModelKind::EwRidge {
+                max_rows_between_solves,
+                ..
+            }
+            | ModelKind::Lasso {
+                max_rows_between_solves,
+                ..
+            }
+            | ModelKind::Huber {
+                max_rows_between_solves,
+                ..
+            }
+            | ModelKind::Quantile {
+                max_rows_between_solves,
+                ..
+            } => caps.push((
+                "max_rows_between_solves",
+                *max_rows_between_solves,
+                "solve_every",
+            )),
+            ModelKind::EwCov {
+                max_rows_between_pca,
+                ..
+            } => caps.push(("max_rows_between_pca", *max_rows_between_pca, "pca_every")),
+            ModelKind::Micro {
+                max_rows_between_prunes,
+                ..
+            } => caps.push((
+                "max_rows_between_prunes",
+                *max_rows_between_prunes,
+                "prune_every",
+            )),
+            _ => {}
+        }
+        if let Some((_, rows)) = self.window_cadence() {
+            caps.push(("max_rows_between_snapshots", rows, "window_every"));
+        }
+        caps
+    }
+
     /// The cadence a windowed model's ring takes its snapshots on, as the
     /// model maps its configuration ([`online_core::Cadence::of`]): every
     /// row unless given (docs/PLAN.md task 162).
@@ -1822,7 +1941,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "ew_ridge",
+        "ewridge",
         &[
             "long_half_life",
             "solve_every",
@@ -1843,7 +1962,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
     ("huber", &["solve_every"]),
     ("quantile", &["solve_every"]),
     ("ew_cov", &["pca_every", "window_size", "window_every"]),
-    ("holt", &["level_half_life", "trend_half_life"]),
+    ("holt", &["trend_half_life"]),
     ("micro", &["prune_every"]),
     ("ew_class", &["window_size", "window_every"]),
     ("marginal", &["window_size", "window_every"]),
@@ -2131,11 +2250,8 @@ impl Spec {
                 put(&mut out, "window_every", window_every.as_ref());
             }
             ModelKind::Holt {
-                level_half_life,
-                trend_half_life,
-                ..
+                trend_half_life, ..
             } => {
-                put(&mut out, "level_half_life", level_half_life.as_ref());
                 put(&mut out, "trend_half_life", trend_half_life.as_ref());
             }
             ModelKind::Micro { prune_every, .. } => {
@@ -2226,7 +2342,9 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("coef_halflife", "coef_half_life"),
     ("revert_halflife", "revert_half_life"),
     ("select_halflife", "select_half_life"),
-    ("level_halflife", "level_half_life"),
+    // Straight to the spec's `half_life`: `level_half_life` is refused too
+    // (task 196).
+    ("level_halflife", "half_life"),
     ("trend_halflife", "trend_half_life"),
     ("label_delay", "embargo"),
     ("max_dclock", "gap_cap"),
@@ -2241,18 +2359,33 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("max_cd_iters", "max_iter"),
     ("cd_tol", "tol"),
     ("reset", "reset_on_flag"),
+    // Task 196 (docs/PLAN.md §18, N14): a count of rows says so, so that a
+    // clock form can come later under the plain name.
+    ("update_every", "update_every_rows"),
+    ("split_merge_every", "split_merge_every_rows"),
+    ("permute_every", "permute_every_rows"),
+    // N16: holt's level takes the spec's `half_life`, one knob under one
+    // name.
+    ("level_half_life", "half_life"),
 ];
 
 /// The parameters renamed in one model whose old name another model keeps:
 /// `rls`'s `ridge` is `delta` (docs/PLAN.md task 195, N11), and `ridge` is
-/// still `ew_ridge`'s, `huber`'s and `quantile`'s. Named only where the
+/// still `ewridge`'s, `huber`'s and `quantile`'s. Named only where the
 /// refused field's model takes the new name -- where serde's list of the
 /// fields it expected holds it -- so a model with neither is told nothing
 /// about another's rename.
 pub const RENAMED_WHERE_EXPECTED: &[(&str, &str)] = &[("ridge", "delta")];
 
+/// The values task 196 renamed (docs/PLAN.md §18): the model `type` tag
+/// (N1, the builder's, the README's and the core's spelling) and an
+/// `ew_cov` statistic (N10, beside `partial_corr`). A spec naming the old
+/// one is refused naming the new one, as [`RENAMED`] does for a key.
+pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr", "lag_corr")];
+
 /// `msg`, a deserialization error, with the rename named when the field it
-/// refuses as unknown is an old name.
+/// refuses as unknown is an old name, or the model `type` it refuses as an
+/// unknown variant is an old tag.
 pub fn name_renamed(msg: &str) -> String {
     // No citation: a wheel's user has no docs/PLAN.md (review 2026-10-06,
     // PC11).
@@ -2263,6 +2396,11 @@ pub fn name_renamed(msg: &str) -> String {
     }
     for (old, new) in RENAMED_WHERE_EXPECTED {
         if msg.contains(&format!("unknown field `{old}`")) && msg.contains(&format!("`{new}`")) {
+            return format!("{msg}; {old} was renamed {new}");
+        }
+    }
+    for (old, new) in RENAMED_VALUES {
+        if msg.contains(&format!("unknown variant `{old}`")) {
             return format!("{msg}; {old} was renamed {new}");
         }
     }
@@ -2351,7 +2489,7 @@ pub struct Spec {
     /// than the noise being fitted. Tracks the model, so adding a feature
     /// moves the gate with it, and reads Kish's `n` rather than the weight,
     /// so uneven weights withhold for longer. A ratio above 1; `inf` is off.
-    /// Gates the models that have the statistic (`ew_ridge`); the others are
+    /// Gates the models that have the statistic (`ewridge`); the others are
     /// left to `min_weight`.
     #[serde(default)]
     pub max_error_inflation: Option<Num>,
@@ -2360,7 +2498,7 @@ pub struct Spec {
     /// its fit came from, so a row leaning on a direction the data never
     /// showed reads large where the stream average cannot see it. One
     /// triangular solve a row, `O(k²)`, and the model keeps its factors --
-    /// which is why it is opt-in. Needs a model that has it (`ew_ridge`).
+    /// which is why it is opt-in. Needs a model that has it (`ewridge`).
     #[serde(default)]
     pub emit_error_inflation: bool,
     /// Emit `scored_clock` and `learned_clock` on every scored row: the row's
@@ -2653,23 +2791,6 @@ impl Spec {
                 | ModelKind::CorrChange { .. }
                 | ModelKind::Bocpd { .. } => {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
-                }
-                // For Holt the level half-life *is* the spec's half-life --
-                // `build_one` defaults one from the other, so they are one
-                // knob under two names -- and a spec that gives
-                // `level_half_life` has already said it. The README's own Holt
-                // example did not run before this (docs/IMPROVEMENTS.md U6).
-                ModelKind::Holt {
-                    level_half_life: Some(h),
-                    ..
-                } => {
-                    if !positive(h.value()) {
-                        return Err(format!(
-                            "spec {:?}: level_half_life must be > 0, got {h}",
-                            self.name
-                        ));
-                    }
-                    Ok(vec![(String::new(), Decay::Halflife(h.value()))])
                 }
                 _ => Err(format!(
                     "spec {:?}: one of half_life/lam is required",
@@ -3303,7 +3424,7 @@ impl Spec {
         if self.emit_error_inflation && !self.has_error_inflation() {
             return Err(format!(
                 "spec {:?}: emit_error_inflation needs a model with a ridge system to read \
-                 the leverage from (ew_ridge); {} has none",
+                 the leverage from (ewridge); {} has none",
                 self.name,
                 self.model.kind_name()
             ));
@@ -3463,6 +3584,43 @@ impl Spec {
                 ));
             }
         }
+        // The window's edge, Polars' `closed` (docs/PLAN.md task 196, N17):
+        // of its four values the two that leave out the window's last row
+        // cannot apply, and `"both"` with no window is a key that does
+        // nothing (review S10's rule).
+        if let (Some((window, _)), Some(closed)) =
+            (self.model.window_parts(), self.model.window_closed())
+        {
+            if model_edge(closed).is_none() {
+                return Err(format!(
+                    "spec {:?}: closed = \"{}\" leaves out the current row, the one the window \
+                     ends at; a model reads its fit after it has learned that row, so its window \
+                     always holds it: give \"right\" (the default) or \"both\"",
+                    self.name,
+                    closed.name()
+                ));
+            }
+            if closed == Closed::Both && window.is_none() {
+                return Err(format!(
+                    "spec {:?}: closed needs `window_size` (it says which edge holds a row \
+                     exactly one window old)",
+                    self.name
+                ));
+            }
+        }
+        // A row cap of no rows is no schedule, in every `max_rows_between_*`,
+        // as `max_rows_between_coefs`'s is since task 178; the clock form's
+        // `0` is every row. `0` was every row for four of them and refused
+        // for the fifth (review 2026-10-06, PC3 CB4 YA2; docs/PLAN.md task
+        // 196, U7).
+        for (key, cap, clock) in self.model.row_caps() {
+            if cap == Some(0) {
+                return Err(format!(
+                    "spec {:?}: {key} must be >= 1 ({clock} = 0 is every row), got 0",
+                    self.name
+                ));
+            }
+        }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).
         if let Some((window, Some(budget))) = self.model.window_parts() {
@@ -3554,7 +3712,6 @@ impl Spec {
         }
         match &self.model {
             ModelKind::Holt {
-                level_half_life,
                 trend_half_life,
                 trend,
             } => {
@@ -3562,25 +3719,6 @@ impl Spec {
                     return Err(format!(
                         "spec {:?}: holt trend_half_life applies only with a trend; trend = false \
                          holds it at zero",
-                        self.name
-                    ));
-                }
-                // One knob under two names: the level and `n_eff` followed
-                // `level_half_life`, and `sigma` and the diagnostics the
-                // spec's decay (review 2026-09-12, S22).
-                if level_half_life.is_some() && (self.half_life.is_some() || self.lam.is_some()) {
-                    return Err(format!(
-                        "spec {:?}: holt takes half_life and level_half_life as one knob; give \
-                         one (or lam)",
-                        self.name
-                    ));
-                }
-                if let Some(h) = level_half_life
-                    .as_ref()
-                    .filter(|h| h.value() <= 0.0 || h.value().is_nan())
-                {
-                    return Err(format!(
-                        "spec {:?}: level_half_life must be > 0, got {h}",
                         self.name
                     ));
                 }
@@ -3717,6 +3855,7 @@ impl Spec {
                 window_every: _,
                 max_rows_between_snapshots: _,
                 window_budget: _,
+                closed: _,
             } => {
                 if let Some(w) = window
                     && (!w.value().is_finite() || w.value() <= 0.0)
@@ -3735,13 +3874,23 @@ impl Spec {
                     "corr",
                     "partial_corr",
                     "mahal",
-                    "lagcorr",
+                    "lag_corr",
                 ];
                 if let Some(stats) = stats {
+                    // `stats = []` stays legal: it is the accumulate-only use
+                    // (docs/ENHANCEMENTS.md E43), which writes `weight_sum`
+                    // alone and keeps the Gram, not a spelling of absent.
                     for st in stats {
                         if !OK.contains(&st.as_str()) {
+                            let renamed = RENAMED_VALUES
+                                .iter()
+                                .find(|(old, _)| *old == st)
+                                .map_or(String::new(), |(old, new)| {
+                                    format!("; {old} was renamed {new}")
+                                });
                             return Err(format!(
-                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of {}",
+                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of \
+                                 {}{renamed}",
                                 self.name,
                                 OK.join(", ")
                             ));
@@ -3774,12 +3923,12 @@ impl Spec {
                         self.name
                     ));
                 }
-                let has_lagcorr = stats
+                let has_lag_corr = stats
                     .as_ref()
-                    .is_some_and(|st| st.iter().any(|s| s == "lagcorr"));
-                if has_lagcorr && lags.as_ref().is_none_or(|l| l.is_empty()) {
+                    .is_some_and(|st| st.iter().any(|s| s == "lag_corr"));
+                if has_lag_corr && lags.as_ref().is_none_or(|l| l.is_empty()) {
                     return Err(format!(
-                        "spec {:?}: ew_cov lagcorr needs `lags` (which lags to accumulate, e.g. \
+                        "spec {:?}: ew_cov lag_corr needs `lags` (which lags to accumulate, e.g. \
                          lags = [1, 2, 5])",
                         self.name
                     ));
@@ -3819,6 +3968,14 @@ impl Spec {
                         }
                     }
                 }
+                // `0` was a second spelling of absent (review 2026-10-06,
+                // PC9; docs/PLAN.md task 196, U7).
+                if *pca == Some(0) {
+                    return Err(format!(
+                        "spec {:?}: ew_cov pca = 0 asks for no component; leave it out for none",
+                        self.name
+                    ));
+                }
                 if let Some(r) = pca
                     && *r > self.k()
                 {
@@ -3853,9 +4010,9 @@ impl Spec {
             ModelKind::KMeans {
                 k,
                 seed_rule,
-                update_every,
+                update_every_rows,
                 split_merge,
-                split_merge_every,
+                split_merge_every_rows,
                 dead_frac,
                 scale_floor,
                 ..
@@ -3876,15 +4033,15 @@ impl Spec {
                         ));
                     }
                 }
-                if update_every.is_some_and(|v| v == 0) {
+                if update_every_rows.is_some_and(|v| v == 0) {
                     return Err(format!(
-                        "spec {:?}: update_every must be >= 1, got 0",
+                        "spec {:?}: update_every_rows must be >= 1, got 0",
                         self.name
                     ));
                 }
-                if split_merge_every.is_some_and(|v| v == 0) {
+                if split_merge_every_rows.is_some_and(|v| v == 0) {
                     return Err(format!(
-                        "spec {:?}: split_merge_every must be >= 1, got 0",
+                        "spec {:?}: split_merge_every_rows must be >= 1, got 0",
                         self.name
                     ));
                 }
@@ -3968,6 +4125,7 @@ impl Spec {
                 window_every: _,
                 max_rows_between_snapshots: _,
                 window_budget: _,
+                closed: _,
             } => {
                 if let Some(w) = window
                     && (!w.value().is_finite() || w.value() <= 0.0)
@@ -4644,7 +4802,7 @@ mod clock_tests {
     fn clock_fields_are_exactly_the_fields_that_take_a_duration() {
         let mut found: BTreeSet<(String, String)> = BTreeSet::new();
         let base =
-            r#""name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x"]"#;
+            r#""name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"]"#;
         for f in fields_of::<Spec>(&format!("{{{base}, \"zzz\": 1}}")) {
             if takes_duration::<Spec>(|v| format!("{{{base}, \"{f}\": {v}}}")) {
                 found.insert(("*".into(), f));
@@ -4751,7 +4909,7 @@ mod clock_tests {
     /// A spec whose one clock parameter under test is a duration.
     fn with_duration(owner: &str, field: &str) -> Spec {
         let model = match owner {
-            "*" => r#"{"type": "ew_ridge"}"#.to_string(),
+            "*" => r#"{"type": "ewridge"}"#.to_string(),
             kind => {
                 let required = match kind {
                     "lasso" => r#", "lasso_path": [0.1]"#,
@@ -4793,7 +4951,7 @@ mod clock_tests {
 
     fn spec(extra: &str) -> Spec {
         serde_json::from_str(&format!(
-            r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "targets": ["y"],
+            r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
                 "features": ["x"]{extra}}}"#
         ))
         .unwrap()
@@ -4883,7 +5041,7 @@ mod clock_tests {
     fn a_formula_target_with_group_needs_a_clock() {
         let formula = |extra: &str| {
             serde_json::from_str::<Spec>(&format!(
-                r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "features": ["x"],
+                r#"{{"name": "m", "model": {{"type": "ewridge"}}, "features": ["x"],
                     "targets": [{{"name": "fwd", "formula": ["-", ["rewm_mean", ["col", "mid"],
                         {{"half_life": 5, "window_size": 10}}], ["col", "mid"]]}}],
                     "half_life": 50, "embargo": 10{extra}}}"#

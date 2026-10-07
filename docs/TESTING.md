@@ -81,14 +81,14 @@ the classes do not name, and say where the suite runs.
 | class | status | what holds it |
 |---|---|---|
 | 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations); each window operator against its definition, Polars and the time-reversal identity ([below](#the-window-operators-and-formula-targets)). The last open one, a numpy `lasso_ref` for the lasso's *pred* path (T-A2), landed 2026-09-24 |
-| 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_rows` sweep) levels, in the window core at chunks of 1, 2, 3, 7, 50 and 499 rows, and for formula targets at 1, 7 and 600 chunks; save/load mid-stream identical. Which rows carry `coef`, and `support_coef` beside it, is excluded: a reporting cadence, chunk-dependent by design |
+| 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_size` sweep) levels, in the window core at chunks of 1, 2, 3, 7, 50 and 499 rows, and for formula targets at 1, 7 and 600 chunks; save/load mid-stream identical. Which rows carry `coef`, and `support_coef` beside it, is excluded: a reporting cadence, chunk-dependent by design |
 | 3. Out-of-sample by construction | Done | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
 | 4. Clock semantics | Done | cap, a step back (refused, or a restart past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
 | 5. Null policy & warmup | Done | feature/target/weight nulls and `min_weight`, for all ten regression models (T-A5) |
 | 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, below |
 | 6b. `predict` ≡ `fit_predict` of the next row | Done (E31) | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
 | 6c. Runner ≡ bank, every source and format | Done (E32) | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`; one `ew_ridge` spec until 2026-10-06, TA2). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own. It was defined but never executed before the repo had a remote |
+| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`; one `ewridge` spec until 2026-10-06, TA2). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own. It was defined but never executed before the repo had a remote |
 | 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
 **6. Arrow ≡ Polars output: retired, and replaced.** This row held the
@@ -119,7 +119,7 @@ line is held to the same numbers through `run_online` in `tests/conftest.py`
 Python-side sources of the old runner, a path, a `LazyFrame`, a `DataFrame`
 and an iterator, went with it in task 83. What a `ModelBank` takes now is held
 in `tests/test_bank_ergonomics.py`: `fit`, `fit_predict_batches`, over a
-plan, a frame or an iterator, and `chunk_rows`. A format is bound in the
+plan, a frame or an iterator, and `chunk_size`. A format is bound in the
 tests, never in the API.
 
 ### Against reference implementations
@@ -350,7 +350,7 @@ every row:
 
 | case | held by |
 |---|---|
-| chunked and whole: 1, 7 and 600 chunks in Rust, and `chunk_rows` of 1 and 97 in Python | `formula_targets.rs::a_formula_target_is_the_column_form_fed_back_under_the_embargo`; `test_formula_targets.py::test_a_formula_target_is_the_column_form_fed_back` |
+| chunked and whole: 1, 7 and 600 chunks in Rust, and `chunk_size` of 1 and 97 in Python | `formula_targets.rs::a_formula_target_is_the_column_form_fed_back_under_the_embargo`; `test_formula_targets.py::test_a_formula_target_is_the_column_form_fed_back` |
 | through every clock event: a gap past the cap, a session change, a step back the policy restarts on, groups restarting together, rows at one stamp, a row exactly one window later, a run of skipped rows longer than the cap, and the input ending inside a window | `test_parity_through_every_clock_event` |
 
 ### Resuming a run
@@ -367,7 +367,7 @@ much of its input it consumed:
 | a bank on input that overlaps its state | `ModelBank.skip_learned` keeps each row after its group's last clock, so the rerun learns each row once | `tests/test_skip_learned.py` (task 120) |
 | a formula target with a window open | a state saved mid-window resumes as one run | `a_state_saved_mid_window_resumes_as_one_run`, in `formula_targets.rs` and in `test_formula_targets.py` |
 | a window run, saved at a row | a save and load at row 1, 2, 17, 33 or 59 is one run | `test_a_save_and_load_at_every_row_is_one_run` |
-| a chain of window runs under a slice | six sliced runs, each resumed from the last state and saved again, then the rest, give one run's output, at `chunk_rows` of 1, 7 and 100,000 | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, and its Rust twin in `windows_frame.rs` |
+| a chain of window runs under a slice | six sliced runs, each resumed from the last state and saved again, then the rest, give one run's output, at `chunk_size` of 1, 7 and 100,000 | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, and its Rust twin in `windows_frame.rs` |
 | a window state and another input | the state knows its input. Another input is refused by name, and the next file goes on: with a clock column and without one, and from a state that holds no rows | the identity tests in `test_windows.py` and `windows_frame.rs`, such as `test_a_state_saved_under_a_slice_refuses_another_input` and `test_without_a_clock_the_next_file_begins_with_a_new_session` |
 | a state of another version | refused by its version, never misread | `windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`; `test_a_windows_state_of_another_version_is_refused_by_its_version`; `tests/test_released_state.py`, on the files each release in its `RELEASES` wrote |
 
@@ -517,7 +517,7 @@ path, since Pathway is BSL and not a dependency. That is asserted by checking
 it appears in no dependency group. The cursor examples,
 `examples/duckdb_cursors.py` and `examples/adbc_cursors.py`, run against
 real DuckDB and SQLite databases. `examples/bank.toml` goes through the real
-CLI for `--dry-run`, a full run, and `--resume` from the state the run wrote.
+CLI for `--dry-run`, a full run, and `--load-state` from the state the run wrote.
 A documented example that no longer works is worse than none, and until this
 test nothing ran either file.
 
@@ -1281,7 +1281,7 @@ the three path forms of `test_each_documented_windows_path_form_parses` and
 `test_an_extended_length_path_resolves_on_windows` (Windows only) repeats
 the same run with the UNC-style `\\?\C:\...` spelling. It does so in the
 config's `input`, `output` and `save_state`, and in the `--input`,
-`--output`, `--save-state` and `--resume` flags. Polars strips the prefix
+`--output`, `--save-state` and `--load-state` flags. Polars strips the prefix
 (`normalize_windows_path` in polars-utils). A network share,
 `\\server\share\...`, is out of a runner's reach and stays untested. The
 Windows-only test first ran on the push of `7d9a1c0` (2026-09-24), and passed
@@ -1356,7 +1356,7 @@ cross-platform one the first time CI ran, with no further work.
 **T-W8**, as first written. The bank writes state with `std::fs::write` and
 the runner opens the output parquet with `File::create`. A still-open reader
 on Windows makes rewriting fail where POSIX allows it. That is relevant to
-`--resume` loops. Both writes have since moved to a temporary file and a
+`--load-state` loops. Both writes have since moved to a temporary file and a
 rename (IMPROVEMENTS C6, `crates/online-polars/src/atomic.rs`).
 
 **T-W9.** `scripts/env.ps1` was added, dot-sourced (`. .\scripts\env.ps1`).

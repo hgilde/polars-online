@@ -13,9 +13,11 @@ the limit.
 
 The windows here run on a row-count clock, so a row's age is the number of
 rows between it and the reference row. A window keeps the rows whose age is
-**at most** ``window`` -- a row exactly ``window`` old is not older than the
-window, which is how ``crates/online-core/src/window.rs`` states the
-boundary -- each at weight ``0.5 ** (age / half_life)``.
+**less than** ``window`` -- a row exactly ``window`` old has left, under the
+default ``closed="right"``, as Polars' ``rolling_*_by`` and
+``crates/online-core/src/window.rs`` state the boundary (docs/PLAN.md task
+196) -- each at weight ``0.5 ** (age / half_life)``. ``closed="both"`` is
+held to its definition in ``tests/test_window.py``.
 """
 
 from __future__ import annotations
@@ -33,8 +35,9 @@ import polars_online as po
 def _window(
     ages: np.ndarray, half_life: float, window: float | None
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The rows a window keeps, and their weights."""
-    keep = np.ones(ages.shape, bool) if window is None else ages <= window
+    """The rows a window keeps, under the default ``closed="right"``, and
+    their weights."""
+    keep = np.ones(ages.shape, bool) if window is None else ages < window
     return keep, 0.5 ** (ages[keep] / half_life)
 
 
@@ -331,7 +334,7 @@ class TestWindowedSpread:
             # Row i is scored against the rows learned before it, inside the
             # window as it stood at row i - 1: the fit's own boundary.
             ages = (i - 1) - np.arange(i)
-            keep = (ages <= self.W) & ok[:i]
+            keep = (ages < self.W) & ok[:i]
             if not keep.any():
                 assert not np.isfinite(sigma[i]), i
                 continue
@@ -498,14 +501,14 @@ class TestWindowedGaussian:
 
 class TestMahalQuantiles:
     """C15: ``mahal_quantiles`` found the ``mahal`` slot with arithmetic of its
-    own, which counted ``lagcorr`` as ``k(k-1)/2`` slots instead of
-    ``len(lags)·k²`` -- so beside a ``lagcorr`` the quantile estimators were
+    own, which counted ``lag_corr`` as ``k(k-1)/2`` slots instead of
+    ``len(lags)·k²`` -- so beside a ``lag_corr`` the quantile estimators were
     fed a lagged correlation. The reference is ``numpy.quantile`` of the
     ``mahal`` column the bank itself emitted. Statistical tier: the P²
     estimator is approximate, so 10% -- the defect puts it at a quantile of a
     correlation, in ``[-1, 1]``, against a distance near 1.2."""
 
-    @pytest.mark.parametrize("stats", [["mahal"], ["lagcorr", "mahal"]])
+    @pytest.mark.parametrize("stats", [["mahal"], ["lag_corr", "mahal"]])
     def test_the_quantile_tracks_the_mahal_column(self, stats):
         rng = np.random.default_rng(23)
         n = 3000
@@ -514,7 +517,7 @@ class TestMahalQuantiles:
             "m",
             features=["x0", "x1"],
             stats=stats,
-            lags=[1] if "lagcorr" in stats else None,
+            lags=[1] if "lag_corr" in stats else None,
             precision_prior=1e-6,
             mahal_quantiles=[0.5, 0.9],
             half_life=float("inf"),
@@ -1447,7 +1450,7 @@ class TestALevelOnlyHoltIsAnEwMean:
             targets=["y"],
             clock="t",
             gap_cap=1e9,
-            level_half_life=self.HALFLIFE,
+            half_life=self.HALFLIFE,
             min_weight=0.0,
             weight="w",
             coef_every=0,
@@ -1940,10 +1943,10 @@ class TestAHopelessSerialFactorSaysSo:
         row = bank.marginal("m").row(0, named=True)
         rho_x = stattools.acf(x, nlags=1)[1]
         rho_y = stattools.acf(y, nlags=1)[1]
-        assert row["lagcorr_xx"][0] == pytest.approx(rho_x, abs=0.02)
-        assert row["lagcorr_yy"][0] == pytest.approx(rho_y, abs=0.02)
+        assert row["lag_corr_xx"][0] == pytest.approx(rho_x, abs=0.02)
+        assert row["lag_corr_yy"][0] == pytest.approx(rho_y, abs=0.02)
         if 1.0 + 2.0 * rho_x * rho_y > 0.0:
-            factor = 1.0 + 2.0 * row["lagcorr_xx"][0] * row["lagcorr_yy"][0]
+            factor = 1.0 + 2.0 * row["lag_corr_xx"][0] * row["lag_corr_yy"][0]
             assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
             assert np.isfinite(row["t_serial"])
         else:
@@ -1954,7 +1957,7 @@ class TestAHopelessSerialFactorSaysSo:
 
 class TestAWindowedLagIsTheWindows:
     """C18, the review's T-S11, and task 137. Under a ``window`` the lag
-    moments are truncated as the pair's are, so ``lagcorr_xx`` is the
+    moments are truncated as the pair's are, so ``lag_corr_xx`` is the
     autocorrelation of the rows inside the window. The reference is
     ``statsmodels``' ``acf`` of those rows, to the statistical tier T-S11
     gives, 0.02: each windowed lag moment is the increments made inside the
@@ -1965,7 +1968,7 @@ class TestAWindowedLagIsTheWindows:
     reading sat between the two before (live co-moment over windowed
     variance), and the pair is refused without ``window_lags=True``."""
 
-    def test_lagcorr_is_the_acf_of_the_rows_inside_the_window(self):
+    def test_lag_corr_is_the_acf_of_the_rows_inside_the_window(self):
         import statsmodels.tsa.stattools as stattools
 
         rng = np.random.default_rng(137)
@@ -1984,7 +1987,7 @@ class TestAWindowedLagIsTheWindows:
             half_life=float("inf"),
             clock="t",
             gap_cap=1.0,
-            window_size=float(window - 1),
+            window_size=float(window),
             window_lags=True,
         )
         bank = po.ModelBank([spec])
@@ -1993,7 +1996,7 @@ class TestAWindowedLagIsTheWindows:
         row = bank.marginal("m").row(0, named=True)
         inside = stattools.acf(x[-window:], nlags=3)[1:]
         whole = stattools.acf(x, nlags=3)[1:]
-        np.testing.assert_allclose(row["lagcorr_xx"], inside, atol=0.02)
+        np.testing.assert_allclose(row["lag_corr_xx"], inside, atol=0.02)
         assert np.all(np.abs(inside - whole) > 0.15), (inside, whole)
         assert row["weight_sum"] == pytest.approx(window, rel=1e-12)
 
@@ -2038,12 +2041,12 @@ class TestTheBartlettSerialFactor:
         row = bank.marginal("m").row(0, named=True)
         acf_x = stattools.acf(x, nlags=4)[1:]
         acf_y = stattools.acf(y, nlags=4)[1:]
-        np.testing.assert_allclose(row["lagcorr_xx"], acf_x, atol=0.02)
-        np.testing.assert_allclose(row["lagcorr_yy"], acf_y, atol=0.02)
+        np.testing.assert_allclose(row["lag_corr_xx"], acf_x, atol=0.02)
+        np.testing.assert_allclose(row["lag_corr_yy"], acf_y, atol=0.02)
         w = sandwich.weights_bartlett(max(lags))[1:]  # lags 1..L; the library's kernel
         np.testing.assert_allclose(w, [1 - lag / 5 for lag in lags], rtol=1e-15)
         factor = 1.0 + 2.0 * float(
-            np.sum(w * np.array(row["lagcorr_xx"]) * np.array(row["lagcorr_yy"]))
+            np.sum(w * np.array(row["lag_corr_xx"]) * np.array(row["lag_corr_yy"]))
         )
         assert factor > 0.0, factor
         assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)

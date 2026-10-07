@@ -571,7 +571,7 @@ class TestRunner:
             output=tmp_path / "scored.parquet",
             load_state=state,
             predict=True,
-            chunk_rows=300,
+            chunk_size=300,
         )
         got = pl.read_parquet(tmp_path / "scored.parquet")
         assert got.height == 1000
@@ -598,7 +598,7 @@ class TestRunner:
             output=again,
             load_state=state,
             predict=True,
-            chunk_rows=300,
+            chunk_size=300,
         )
         assert pl.read_parquet(again).equals(got, null_equal=True)
 
@@ -664,7 +664,7 @@ class TestRunner:
                     "min_weight = 20.0",
                     "",
                     "[specs.model]",
-                    'type = "ew_ridge"',
+                    'type = "ewridge"',
                     "",
                 ]
             ),
@@ -678,7 +678,7 @@ class TestRunner:
             [
                 str(online_cli), "--config", str(toml),
                 "--output", str(tmp_path / "scored.parquet"),
-                "--resume", str(state), "--predict", "--quiet",
+                "--load-state", str(state), "--predict", "--quiet",
             ],
             check=True,
             capture_output=True,
@@ -695,7 +695,7 @@ class TestRunner:
                 str(exe),
                 "--config", str(toml),
                 "--output", str(out),
-                "--resume", str(state),
+                "--load-state", str(state),
                 "--predict",
                 "--quiet",
             ],
@@ -711,7 +711,7 @@ class TestRunner:
                 str(exe),
                 "--config", str(toml),
                 "--output", str(out),
-                "--resume", str(state),
+                "--load-state", str(state),
                 "--save-state", str(toml.parent / "again.state"),
                 "--predict",
             ],

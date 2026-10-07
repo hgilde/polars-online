@@ -1,6 +1,6 @@
 """T-A5: the common semantics (docs/PLAN.md section 3) are claimed to be
 model-independent, so they are asserted for *every* model rather than only for
-ew_ridge.
+ewridge.
 
 Anything a model is genuinely allowed to differ on is listed explicitly here
 rather than skipped silently:

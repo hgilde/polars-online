@@ -507,7 +507,7 @@ def test_a_fixed_bin_no_row_lands_in_is_empty_not_absent():
 def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
     bank = po.ModelBank([spec(lags=[1, 2], serial_rule="truncated", group="g")])
     want = bank.marginal("m").columns
-    assert "bin_edges" in want and "lagcorr_xx" in want and "split_gain_t" in want
+    assert "bin_edges" in want and "lag_corr_xx" in want and "split_gain_t" in want
     df = stream(n=800, shape="threshold").with_columns(g=pl.lit("a"))
     bank.fit_predict(df)
     assert bank.marginal("m").columns == want
@@ -516,5 +516,7 @@ def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
     # `cross_lags=[]` drops the two cross columns and moves nothing else
     # (review 2026-09-26, F missing 9).
     none = po.ModelBank([spec(lags=[1, 2], serial_rule="truncated", cross_lags=[], group="g")])
-    assert none.marginal("m").columns == [c for c in want if c not in ("lagcorr_xy", "lagcorr_yx")]
+    assert none.marginal("m").columns == [
+        c for c in want if c not in ("lag_corr_xy", "lag_corr_yx")
+    ]
     assert none.specs[0]["model"]["cross_lags"] == []

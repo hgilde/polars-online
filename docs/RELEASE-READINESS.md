@@ -660,7 +660,7 @@ polars ever stops it". That R6 is the state workflow's; this document's
 own R6 is the history scan.
 
 **On 2.0.0rc1 it does narrow, and the narrowing is length-dependent.**
-Measured with `chunk_rows=500` and a failing downstream cast:
+Measured with `chunk_size=500` and a failing downstream cast:
 
 | rows | chunks | 1.44.1 writes the state? | 2.0.0rc1 |
 |---:|---:|---|---|

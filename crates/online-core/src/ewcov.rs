@@ -1237,7 +1237,7 @@ pub struct EwCovCfg {
     pub window_every: Option<f64>,
     /// At most this many rows between the window's snapshots, counted on
     /// every row the model is stepped with, rows of weight zero included;
-    /// `0` or `1` is every row.
+    /// `1` is every row, and `0` is refused (docs/PLAN.md task 196).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rows_between_snapshots: Option<usize>,
 }
@@ -1288,7 +1288,7 @@ impl EwCovCfg {
                 return Err(
                     "ew_cov: window_size and lags do not combine yet; the lagged co-moments are a \
                      second accumulator with its own ring, and truncating one and not the \
-                     other would report a windowed corr beside an unwindowed lagcorr"
+                     other would report a windowed corr beside an unwindowed lag_corr"
                         .into(),
                 );
             }
@@ -1310,7 +1310,7 @@ impl EwCovCfg {
         )?;
         if self.stats.contains(&EwCovStat::LagCorr) && self.lags.is_empty() {
             return Err(
-                "ew_cov: lagcorr needs `lags` (which lags to accumulate, e.g. lags = [1, 2, 5])"
+                "ew_cov: lag_corr needs `lags` (which lags to accumulate, e.g. lags = [1, 2, 5])"
                     .into(),
             );
         }
@@ -1355,7 +1355,7 @@ impl EwCovCfg {
     /// The slots one statistic occupies. One home for the arithmetic, read by
     /// `n_outputs` and by the step that finds the `mahal` slot for the
     /// quantile estimators; that step once had a copy of its own which counted
-    /// `lagcorr` as `k(k-1)/2` slots, so beside a `lagcorr` the quantiles were
+    /// `lag_corr` as `k(k-1)/2` slots, so beside a `lag_corr` the quantiles were
     /// fed a lagged correlation instead of the distance (review 2026-09-12,
     /// C15).
     pub fn width(&self, stat: &EwCovStat) -> usize {
@@ -1787,7 +1787,7 @@ impl EwCovModel {
                     for l in lags {
                         for a in names {
                             for b in names {
-                                out.push(format!("lagcorr_{a}_{b}_l{l}"));
+                                out.push(format!("lag_corr_{a}_{b}_l{l}"));
                             }
                         }
                     }
@@ -1936,6 +1936,12 @@ impl crate::OnlineModel for EwCovModel {
     fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
+        }
+    }
+
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
         }
     }
 
@@ -2254,9 +2260,20 @@ mod tests {
         }
     }
 
+    /// Whether a row `age` clock units old is inside a `window` with edge
+    /// `closed`, by the definition (docs/PLAN.md task 196, N17): less than
+    /// the window under `Right`, at most it under `Both`.
+    fn inside(age: f64, window: f64, closed: crate::WindowClosed) -> bool {
+        match closed {
+            crate::WindowClosed::Right => age < window,
+            crate::WindowClosed::Both => age <= window,
+        }
+    }
+
     /// A windowed weighted mean and covariance, written from the definition:
     /// every row inside the window, weighted by `lam^age`, and nothing else.
-    /// The boundary is inclusive: a row exactly `window` old is inside.
+    /// A row exactly `window` old is inside under `closed = "both"` and has
+    /// left under `"right"`, the default ([`inside`]).
     /// `t` are absolute clocks; the report at row `n` is referenced at the
     /// clock of row `n-1`, as every statistic in this library is.
     fn direct_window(
@@ -2265,6 +2282,7 @@ mod tests {
         half_life: f64,
         window: f64,
         upto: usize,
+        closed: crate::WindowClosed,
     ) -> (f64, Vec<f64>, Vec<f64>) {
         let k = xs[0].len();
         let now = t[upto - 1];
@@ -2272,7 +2290,7 @@ mod tests {
         let mut m = vec![0.0; k];
         let mut raw = vec![0.0; k * k];
         for i in 0..upto {
-            if now - t[i] > window {
+            if !inside(now - t[i], window, closed) {
                 continue;
             }
             let w = 0.5_f64.powf((now - t[i]) / half_life);
@@ -2296,16 +2314,21 @@ mod tests {
         (w_sum, m, cen)
     }
 
-    /// PLAN §13.4 (1): the truncated view against a direct windowed sum.
+    /// PLAN §13.4 (1): the truncated view against a direct windowed sum,
+    /// under either edge (docs/PLAN.md task 196, N17).
     #[test]
     fn a_window_reports_exactly_the_rows_inside_it() {
         let half_life = 40.0;
-        for &window in &[15.0, 60.0, 150.0] {
+        for (closed, &window) in [crate::WindowClosed::Right, crate::WindowClosed::Both]
+            .into_iter()
+            .flat_map(|c| [15.0, 60.0, 150.0].iter().map(move |w| (c, w)))
+        {
             let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Cov]);
             cfg.decay = crate::Decay::Halflife(half_life);
             cfg.min_weight = 0.0;
             cfg.window = Some(window);
             let mut m = EwCovModel::new(cfg).unwrap();
+            crate::OnlineModel::set_window_closed(&mut m, closed);
 
             let (mut xs, mut t, mut clock) = (Vec::new(), Vec::new(), 0.0);
             let mut on_the_boundary = 0;
@@ -2327,7 +2350,7 @@ mod tests {
                 if i > 0 {
                     // The report is referenced at the previous row's clock.
                     let got = crate::OnlineModel::predict(&m, &x, d);
-                    let (w, mean, cen) = direct_window(&xs, &t, half_life, window, i);
+                    let (w, mean, cen) = direct_window(&xs, &t, half_life, window, i, closed);
                     on_the_boundary += t.iter().filter(|&&tj| t[i - 1] - tj == window).count();
                     assert!(
                         (got.n_eff - w).abs() < 1e-9 * w.max(1.0),
@@ -2373,18 +2396,22 @@ mod tests {
     /// resolution of about 2 -- nothing, for unit-scale data. The oracle here
     /// is two-pass (centre on the window's own mean, then square), so it is
     /// right at any offset; `direct_window` above is not, which is why it runs
-    /// at `100` and this one needs its own. The boundary is inclusive, as the
-    /// module doc states it: a row exactly `window` old is not older than the
-    /// window.
+    /// at `100` and this one needs its own. A row exactly `window` old is
+    /// inside under `closed = "both"` and has left under `"right"`, the
+    /// default (docs/PLAN.md task 196): both are run.
     #[test]
     fn a_window_keeps_its_precision_at_a_large_offset() {
         let half_life = 40.0;
-        for &window in &[15.0, 60.0, 150.0] {
+        for (closed, &window) in [crate::WindowClosed::Right, crate::WindowClosed::Both]
+            .into_iter()
+            .flat_map(|c| [15.0, 60.0, 150.0].iter().map(move |w| (c, w)))
+        {
             let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Cov]);
             cfg.decay = crate::Decay::Halflife(half_life);
             cfg.min_weight = 0.0;
             cfg.window = Some(window);
             let mut m = EwCovModel::new(cfg).unwrap();
+            crate::OnlineModel::set_window_closed(&mut m, closed);
 
             let (mut xs, mut t, mut clock) = (Vec::<Vec<f64>>::new(), Vec::new(), 0.0);
             let mut on_the_boundary = 0;
@@ -2415,8 +2442,10 @@ mod tests {
                         got.n_eff
                     );
                     let now = t[i - 1];
-                    let keep: Vec<usize> = (0..i).filter(|&j| now - t[j] <= window).collect();
-                    on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
+                    let keep: Vec<usize> = (0..i)
+                        .filter(|&j| inside(now - t[j], window, closed))
+                        .collect();
+                    on_the_boundary += (0..i).filter(|&j| now - t[j] == window).count();
                     let w: Vec<f64> = keep
                         .iter()
                         .map(|&j| 0.5_f64.powf((now - t[j]) / half_life))
@@ -3169,7 +3198,7 @@ mod tests {
     }
 
     #[test]
-    fn lagcorr_fields_and_values_follow_the_lags() {
+    fn lag_corr_fields_and_values_follow_the_lags() {
         let k = 2;
         let mut cfg = model_cfg(k, vec![EwCovStat::Corr, EwCovStat::LagCorr]);
         cfg.decay = crate::Decay::Halflife(30.0);
@@ -3180,20 +3209,20 @@ mod tests {
             labels,
             [
                 "corr_a_b",
-                "lagcorr_a_a_l1",
-                "lagcorr_a_b_l1",
-                "lagcorr_b_a_l1",
-                "lagcorr_b_b_l1",
-                "lagcorr_a_a_l3",
-                "lagcorr_a_b_l3",
-                "lagcorr_b_a_l3",
-                "lagcorr_b_b_l3",
+                "lag_corr_a_a_l1",
+                "lag_corr_a_b_l1",
+                "lag_corr_b_a_l1",
+                "lag_corr_b_b_l1",
+                "lag_corr_a_a_l3",
+                "lag_corr_a_b_l3",
+                "lag_corr_b_a_l3",
+                "lag_corr_b_b_l3",
             ]
         );
         assert_eq!(cfg.n_outputs(), labels.len());
 
-        // `b` is `a` delayed by one row, so `lagcorr_b_a_l1` -- b now against
-        // a one row ago -- goes to 1 and `lagcorr_a_b_l1` does not.
+        // `b` is `a` delayed by one row, so `lag_corr_b_a_l1` -- b now against
+        // a one row ago -- goes to 1 and `lag_corr_a_b_l1` does not.
         let mut m = EwCovModel::new(cfg).unwrap();
         let mut s = 4u64;
         let mut prev = 0.0;
@@ -3206,8 +3235,8 @@ mod tests {
                 crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
         }
         // Slots: corr_a_b, then the four at lag 1, then the four at lag 3.
-        assert!(last[3] > 0.95, "lagcorr_b_a_l1 is {}", last[3]);
-        assert!(last[2].abs() < 0.2, "lagcorr_a_b_l1 is {}", last[2]);
+        assert!(last[3] > 0.95, "lag_corr_b_a_l1 is {}", last[3]);
+        assert!(last[2].abs() < 0.2, "lag_corr_a_b_l1 is {}", last[2]);
         // And the auto terms at lag 1 are the series' own autocorrelation,
         // which for white noise is near zero.
         assert!(last[1].abs() < 0.2 && last[4].abs() < 0.2);
@@ -3287,7 +3316,7 @@ mod tests {
         assert!(
             EwCovModel::new(cfg.clone())
                 .unwrap_err()
-                .contains("lagcorr needs `lags`")
+                .contains("lag_corr needs `lags`")
         );
         cfg.stats = vec![EwCovStat::Corr];
         cfg.lags = vec![2, 1];
@@ -3303,7 +3332,7 @@ mod tests {
     /// 2026-09-26, C7): the rule of the cadences that refresh what a model
     /// reads out -- the components, the window's snapshots, `coef_every`.
     /// The cadences that act on what new rows taught -- `kmeans`'
-    /// `update_every` and `split_merge_every`, `micro`'s
+    /// `update_every_rows` and `split_merge_every_rows`, `micro`'s
     /// `max_rows_between_prunes` -- count learned rows, since a row of
     /// weight zero gives them nothing to act on (the user, 2026-10-06, PLAN
     /// task 165). A stream alternating weight 1 and 0
@@ -4633,6 +4662,8 @@ mod tests {
             c.decay = crate::Decay::Halflife(f64::INFINITY);
             c.window = Some(10.0);
             let mut m = EwCovModel::new(c).unwrap();
+            // Eleven rows inside, the row exactly a window old among them.
+            crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
             let mut s = 5u64;
             for i in 0..1012 {
                 let x = [lcg(&mut s), lcg(&mut s)];
@@ -4657,6 +4688,8 @@ mod tests {
         c.decay = crate::Decay::Halflife(f64::INFINITY);
         c.window = Some(10.0);
         let mut m = EwCovModel::new(c).unwrap();
+        // Eleven rows inside, the row exactly a window old among them.
+        crate::OnlineModel::set_window_closed(&mut m, crate::WindowClosed::Both);
         let mut s = 5u64;
         let mut rows = Vec::new();
         for i in 0..1012 {

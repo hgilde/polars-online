@@ -1522,8 +1522,10 @@ fn zero_variance_feature_dropped_in_standardized_solve() {
 /// A windowed ridge fit, solved directly from the normal equations over
 /// exactly the rows inside the window. Written from the definition:
 /// `(Z'WZ + ridge·I) beta = Z'Wy` with `W = diag(lam^age)` over the rows
-/// whose age is at most the window (the boundary is inclusive, as
-/// `window.rs` states it), and nothing else.
+/// inside the window -- age less than it under `closed = "right"`, the
+/// default, at most it under `"both"` ([`inside`]; docs/PLAN.md task 196)
+/// -- and nothing else.
+#[allow(clippy::too_many_arguments)]
 fn direct_window_fit(
     xs: &[[f64; 1]],
     ys: &[f64],
@@ -1532,12 +1534,13 @@ fn direct_window_fit(
     window: f64,
     ridge: f64,
     upto: usize,
+    closed: crate::WindowClosed,
 ) -> [f64; 2] {
     let now = t[upto - 1];
     // z = [1, x]: a 2x2 normal system, solved in closed form.
     let (mut s11, mut s1x, mut sxx, mut s1y, mut sxy, mut wsum) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     for i in 0..upto {
-        if now - t[i] > window {
+        if !inside(now - t[i], window, closed) {
             continue;
         }
         let w = 0.5_f64.powf((now - t[i]) / half_life);
@@ -1557,10 +1560,26 @@ fn direct_window_fit(
     [(b1 * a22 - b2 * a12) / det, (b2 * a11 - b1 * a12) / det]
 }
 
+/// Whether a row `age` clock units old is inside a `window` with edge
+/// `closed`, by the definition (docs/PLAN.md task 196, N17).
+fn inside(age: f64, window: f64, closed: crate::WindowClosed) -> bool {
+    match closed {
+        crate::WindowClosed::Right => age < window,
+        crate::WindowClosed::Both => age <= window,
+    }
+}
+
 /// PLAN §13.4 (1), for the Gram: a windowed fit is the fit of the rows in
-/// the window, and nothing older reaches the coefficients.
+/// the window, and nothing older reaches the coefficients, under either
+/// edge.
 #[test]
 fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        windowed_fit_is_the_fit_of_the_rows_inside(closed);
+    }
+}
+
+fn windowed_fit_is_the_fit_of_the_rows_inside(closed: crate::WindowClosed) {
     let (half_life, window, ridge) = (30.0, 80.0, 1e-8);
     let mut c = cfg(1, 1);
     c.decay = Decay::Halflife(half_life);
@@ -1570,6 +1589,7 @@ fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
     c.max_rows_between_solves = 1; // solve every row, so beta is never stale
     c.window = Some(window);
     let mut m = EwRidge::new(c).unwrap();
+    m.set_window_closed(closed);
 
     let mut s = 11u64;
     let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
@@ -1603,7 +1623,7 @@ fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
             // rows are in, and any difference left is arithmetic.
             let now = t[i];
             let wsum: f64 = (0..=i)
-                .filter(|&j| now - t[j] <= window)
+                .filter(|&j| inside(now - t[j], window, closed))
                 .map(|j| 0.5_f64.powf((now - t[j]) / half_life))
                 .sum();
             on_the_boundary += (0..=i).filter(|&j| now - t[j] == window).count();
@@ -1612,7 +1632,7 @@ fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
                 "row {i}: n_eff {} vs {wsum} -- the window holds different rows",
                 m.n_eff()
             );
-            let want = direct_window_fit(&xs, &ys, &t, half_life, window, ridge, i + 1);
+            let want = direct_window_fit(&xs, &ys, &t, half_life, window, ridge, i + 1, closed);
             let got = m.coefficients().unwrap();
             for (slot, wanted) in want.iter().enumerate() {
                 // To rounding: the window is a subtraction, but at 2.7
@@ -3493,16 +3513,24 @@ fn a_blend_before_the_first_fit_solves_nothing() {
 }
 
 /// Kish's sample size and the residual spread under a window are those
-/// of the rows inside it, from the definition: the rows at most one
-/// window old, weighted `2^(-age / half_life)`.
+/// of the rows inside it, from the definition: the rows less than one
+/// window old (at most one, under `closed = "both"`), weighted
+/// `2^(-age / half_life)`.
 #[test]
 fn the_window_kish_and_spread_are_the_rows_inside_it() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        window_kish_and_spread_are_the_rows_inside(closed);
+    }
+}
+
+fn window_kish_and_spread_are_the_rows_inside(closed: crate::WindowClosed) {
     let (half_life, window) = (30.0, 80.0);
     let mut c = cfg(1, 1);
     c.decay = Decay::Halflife(half_life);
     c.window = Some(window);
     c.min_weight = 0.0;
     let mut m = EwRidge::new(c).unwrap();
+    m.set_window_closed(closed);
     let mut s = 31u64;
     let (mut t, mut resid, mut clock) = (vec![], vec![], 0.0);
     for i in 0..150 {
@@ -3521,7 +3549,7 @@ fn the_window_kish_and_spread_are_the_rows_inside_it() {
             continue;
         }
         let kept: Vec<(f64, Option<f64>)> = (0..=i)
-            .filter(|&r| clock - t[r] <= window)
+            .filter(|&r| inside(clock - t[r], window, closed))
             .map(|r| (0.5_f64.powf((clock - t[r]) / half_life), resid[r]))
             .collect();
         let (ws, wq) = kept
@@ -3551,14 +3579,22 @@ fn the_window_kish_and_spread_are_the_rows_inside_it() {
 /// its weight, mean, variance about the mean and `Q = Σw²`, weighted
 /// `2^(-age / half_life)`. They were `None` under a window, since the
 /// snapshots held none; the second target is missing on every third row.
+/// Under either edge.
 #[test]
 fn the_windowed_target_moments_are_the_rows_inside_it() {
+    for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+        windowed_target_moments_are_the_rows_inside(closed);
+    }
+}
+
+fn windowed_target_moments_are_the_rows_inside(closed: crate::WindowClosed) {
     let (half_life, window) = (30.0, 80.0);
     let mut c = cfg(1, 2);
     c.decay = Decay::Halflife(half_life);
     c.window = Some(window);
     c.min_weight = 0.0;
     let mut m = EwRidge::new(c).unwrap();
+    m.set_window_closed(closed);
     let mut s = 37u64;
     let (mut t, mut ys, mut clock, mut checked) = (vec![], vec![], 0.0, 0);
     for i in 0..160 {
@@ -3581,7 +3617,7 @@ fn the_windowed_target_moments_are_the_rows_inside_it() {
         let tm = tm.expect("the snapshots carry the target moments");
         for j in [0usize, 1] {
             let kept: Vec<(f64, f64)> = (0..=i)
-                .filter(|&r| clock - t[r] <= window)
+                .filter(|&r| inside(clock - t[r], window, closed))
                 .filter_map(|r| ys[r][j].map(|y| (0.5f64.powf((clock - t[r]) / half_life), y)))
                 .collect();
             let w: f64 = kept.iter().map(|k| k.0).sum();

@@ -32,7 +32,7 @@ There are three state formats, each versioned msgpack:
 
 | state | written by | read by |
 |---|---|---|
-| a bank's | `ModelBank.save` and `save_bytes`, `save_state=` on a query, the command line's `--save-state` | `ModelBank.load` and `load_bytes`, `load_state=` on a query, the command line's `--resume` or its TOML's `load_state` |
+| a bank's | `ModelBank.save` and `save_bytes`, `save_state=` on a query, the command line's `--save-state` | `ModelBank.load` and `load_bytes`, `load_state=` on a query, the command line's `--load-state` or its TOML's `load_state` |
 | a window run's | `po.stream.with_windows(save_state=)` | `po.stream.with_windows(load_state=)`, also inside a query |
 | a refresh-time grid's | `po.stream.refresh_time(save_state=)` | `po.stream.refresh_time(load_state=)` |
 

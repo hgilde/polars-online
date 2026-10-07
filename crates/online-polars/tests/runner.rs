@@ -91,7 +91,7 @@ fn spec_with_cadence(cadence: &str) -> online_polars::Spec {
     serde_json::from_str(&format!(
         r#"{{
             "name": "ridge",
-            "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+            "model": {{"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
             "targets": ["y"],
             "features": ["x0", "x1"],
             "clock": "t",
@@ -111,8 +111,9 @@ fn config(input: &Path, output: &Path) -> RunConfig {
         output: output.to_path_buf(),
         input_format: None,
         output_format: None,
-        chunk_rows: 64,
+        chunk_size: 64,
         load_state: None,
+        skip_learned: false,
         save_state: None,
         keep_columns: vec![],
         predict: false,
@@ -302,7 +303,7 @@ fn frames_from_an_iterator_equal_the_plan() {
     let output_iter = tmp("frames-iter.parquet");
     let cfg = config(Path::new(""), &output_plan);
     run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap();
-    // Uneven frames, and a size `chunk_rows` says nothing about.
+    // Uneven frames, and a size `chunk_size` says nothing about.
     let frames = (0..700)
         .step_by(150)
         .map(move |i| Ok(df.slice(i as i64, 150)));
@@ -363,7 +364,7 @@ fn frames_to_a_callback_equal_the_file() {
         Ok(())
     };
     let opts = RunOptions {
-        chunk_rows: 64,
+        chunk_size: 64,
         predict: false,
         learn_only: false,
     };

@@ -234,13 +234,13 @@ def _one(**kw):
 
 def test_fit_predict_batches_takes_a_plan_and_chunks_it():
     """A LazyFrame in, and the method does the chunking: the same rows and the
-    same numbers as feeding the chunks by hand, whatever `chunk_rows` is."""
+    same numbers as feeding the chunks by hand, whatever `chunk_size` is."""
     df = _stream()
     want = pl.concat(
         po.ModelBank([_one()]).fit_predict_batches(df.slice(i, 7) for i in range(0, 40, 7))
     )
     for rows in (7, 13, 1000):
-        got = pl.concat(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_rows=rows))
+        got = pl.concat(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=rows))
         # `coef` rides the chunk cadence; every other field is the same.
         drop = lambda f: f.with_columns(  # noqa: E731
             pl.col("m").struct.with_fields(
@@ -248,8 +248,8 @@ def test_fit_predict_batches_takes_a_plan_and_chunks_it():
             )
         )
         assert drop(got).equals(drop(want), null_equal=True), rows
-    with pytest.raises(ValueError, match="chunk_rows must be at least 1"):
-        list(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_rows=0))
+    with pytest.raises(ValueError, match="chunk_size must be at least 1"):
+        list(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_size=0))
 
 
 def test_a_frame_is_one_chunk():
@@ -264,40 +264,40 @@ def test_fit_leaves_the_state_fit_predict_batches_leaves():
     the frames."""
     df = _stream(seed=1)
     kept = po.ModelBank([_one()])
-    for _ in kept.fit_predict_batches(df.lazy(), chunk_rows=9):
+    for _ in kept.fit_predict_batches(df.lazy(), chunk_size=9):
         pass
     quiet = po.ModelBank([_one()])
-    assert quiet.fit(df.lazy(), chunk_rows=9) is None
+    assert quiet.fit(df.lazy(), chunk_size=9) is None
     assert quiet.save_bytes() == kept.save_bytes()
     assert quiet.rows_fed() == kept.rows_fed() == df.height
 
 
-def test_a_frame_with_chunk_rows_is_fed_in_slices():
-    """``chunk_rows`` on a ``DataFrame`` slices it, rather than being checked and
+def test_a_frame_with_chunk_size_is_fed_in_slices():
+    """``chunk_size`` on a ``DataFrame`` slices it, rather than being checked and
     then ignored (review 2026-09-17, B5): the same rows, in bounded pieces, and
     the state the plan route leaves, byte for byte."""
     df = _stream(seed=1)
-    outs = list(po.ModelBank([_one()]).fit_predict_batches(df, chunk_rows=9))
+    outs = list(po.ModelBank([_one()]).fit_predict_batches(df, chunk_size=9))
     assert len(outs) == -(-df.height // 9)
     assert pl.concat(outs).height == df.height
     sliced = po.ModelBank([_one()])
-    for _ in sliced.fit_predict_batches(df, chunk_rows=9):
+    for _ in sliced.fit_predict_batches(df, chunk_size=9):
         pass
     planned = po.ModelBank([_one()])
-    for _ in planned.fit_predict_batches(df.lazy(), chunk_rows=9):
+    for _ in planned.fit_predict_batches(df.lazy(), chunk_size=9):
         pass
     assert sliced.save_bytes() == planned.save_bytes()
     # Without a size, the frame is still one chunk.
     assert len(list(po.ModelBank([_one()]).fit_predict_batches(df))) == 1
 
 
-def test_an_iterator_is_fed_as_it_comes_whatever_chunk_rows_says():
-    """The docstring's promise, held (review round 4, SF11): ``chunk_rows``
+def test_an_iterator_is_fed_as_it_comes_whatever_chunk_size_says():
+    """The docstring's promise, held (review round 4, SF11): ``chunk_size``
     slices a plan or a frame, and an iterator of frames is fed as it comes,
     one chunk per frame, in the sizes it has."""
     df = _stream(seed=2)
     parts = [df.slice(0, 5), df.slice(5, 23), df.slice(28, 12)]
-    outs = list(po.ModelBank([_one()]).fit_predict_batches(iter(parts), chunk_rows=4))
+    outs = list(po.ModelBank([_one()]).fit_predict_batches(iter(parts), chunk_size=4))
     assert [o.height for o in outs] == [5, 23, 12]
 
 
@@ -476,5 +476,5 @@ def test_a_state_file_describes_itself(tmp_path):
         assert set(frame["spec"].unique()) == set(names), "and defaults to all of them"
     assert loaded.rows_fed() == 60
     # the model kind is in there too, so a caller can branch on it
-    assert loaded.specs[0]["model"]["type"] == "ew_ridge"
+    assert loaded.specs[0]["model"]["type"] == "ewridge"
     assert loaded.specs[1]["model"]["type"] == "ew_cov"

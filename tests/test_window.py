@@ -51,7 +51,15 @@ def run(df, window_size=None, chunks=1, **kw):
     return pl.concat([bank.fit_predict(p) for p in parts]).unnest("w")
 
 
-def oracle(df, window):
+def inside(age, window, closed="right"):
+    """The rows a window holds, by their age at the last learned row:
+    Polars' ``closed="right"`` keeps an age less than ``window`` (a row
+    exactly ``window`` old has left, as in ``rolling_*_by``), ``"both"``
+    keeps it too (docs/PLAN.md task 196, N17)."""
+    return age < window if closed == "right" else age <= window
+
+
+def oracle(df, window, closed="right"):
     """The same statistic in numpy: exponential weights over the rows inside
     the window, read at the previous row's clock, which is where every
     statistic in this library is referenced."""
@@ -63,7 +71,7 @@ def oracle(df, window):
             out.append(None)
             continue
         ref = t[i - 1]
-        keep = (t[:i] >= ref - window) if window is not None else np.ones(i, bool)
+        keep = inside(ref - t[:i], window, closed) if window is not None else np.ones(i, bool)
         if not keep.any():
             out.append(None)
             continue
@@ -72,11 +80,14 @@ def oracle(df, window):
     return out
 
 
-def test_the_window_is_the_weighted_mean_of_what_it_covers():
+@pytest.mark.parametrize("closed", ["right", "both"])
+def test_the_window_is_the_weighted_mean_of_what_it_covers(closed):
+    """On integer clocks, so rows sit exactly one window back and the edge
+    is the rule's, under either rule."""
     df = stream()
     for window in (20.0, 90.0, 400.0):
-        got = run(df, window)["mean_x"].to_list()
-        want = oracle(df, window)
+        got = run(df, window, closed=closed)["mean_x"].to_list()
+        want = oracle(df, window, closed)
         # `ew_cov` withholds a mean until two effective rows, so the first
         # rows are null by design; everything after must be the definition.
         nulls = 0
@@ -218,6 +229,37 @@ def test_a_bad_window_is_refused_by_name(kw, msg):
         po.ModelBank([spec(**kw)]).fit_predict(stream(20))
 
 
+WINDOWED = {
+    "ewridge": lambda **kw: po.spec.ewridge("m", targets=["y"], features=["x"], **kw),
+    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x"], lasso_path=[0.1], **kw),
+    "ew_cov": lambda **kw: po.spec.ew_cov("m", features=["x"], stats=["mean"], **kw),
+    "ew_class": lambda **kw: po.spec.ew_class(
+        "m", features=["x"], label="c", classes=["a", "b"], precision_prior=1.0, **kw
+    ),
+    "marginal": lambda **kw: po.spec.marginal("m", targets=["y"], features=["x"], **kw),
+}
+
+
+@pytest.mark.parametrize("closed", ["left", "none"])
+@pytest.mark.parametrize("model", sorted(WINDOWED))
+def test_a_closed_that_leaves_out_the_current_row_is_refused_with_the_reason(model, closed):
+    """N17: Polars' `"left"` and `"none"` leave the window's last row out,
+    and a model reads its fit after it has learned that row."""
+    with pytest.raises(ValueError, match=f'closed = "{closed}" leaves out the current row'):
+        WINDOWED[model](half_life=10.0, window_size=5.0, closed=closed)
+    with pytest.raises(ValueError, match=f'closed = "{closed}" leaves out the current row'):
+        spec = WINDOWED[model](half_life=10.0, window_size=5.0)
+        po.ModelBank([{**spec, "model": {**spec["model"], "closed": closed}}])
+
+
+@pytest.mark.parametrize("model", sorted(WINDOWED))
+def test_closed_both_needs_a_window(model):
+    """A parameter its mode ignores is refused (review S10's rule)."""
+    with pytest.raises(ValueError, match="closed needs `window_size`"):
+        WINDOWED[model](half_life=10.0, closed="both")
+    assert WINDOWED[model](half_life=10.0, window_size=5.0)["model"]["closed"] == "right"
+
+
 @pytest.mark.parametrize("model", ["rls", "kalman", "sgd", "holt", "hmm", "bocpd"])
 def test_only_the_models_that_can_honour_it_accept_it(model):
     """The identity holds where the state is a sum of per-row contributions.
@@ -293,38 +335,46 @@ def test_the_windowed_fit_is_the_weighted_least_squares_of_its_rows():
     assert got == pytest.approx(list(windowed_wls(df, age <= window)), rel=1e-5)
 
 
-def test_a_row_exactly_one_window_old_is_inside_it():
-    """The boundary is inclusive (`Snapshots::trim` in `window.rs`): a row
-    whose age is exactly `window` counts. Integer clocks put a row on the
-    boundary, and noise makes the fit depend on it. The noise-free regime
-    stream above cannot tell the two rules apart, which is how its oracle
-    kept `age < window` unnoticed (docs/PLAN.md task 109)."""
+@pytest.mark.parametrize("closed", [None, "right", "both"])
+def test_a_row_exactly_one_window_old_leaves_under_right_and_stays_under_both(closed):
+    """The edge is Polars' `closed` (docs/PLAN.md task 196, N17): under
+    `"right"`, the default, a row whose age is exactly `window` has left, as
+    it has in the window operators and `rolling_*_by`; under `"both"` it
+    counts (`Snapshots::trim` in `window.rs`). Integer clocks put a row on
+    the boundary, and noise makes the fit depend on it. The noise-free
+    regime stream above cannot tell the two rules apart, which is how its
+    oracle kept `age < window` unnoticed (docs/PLAN.md task 109)."""
     rng = np.random.default_rng(7)
     n, window = 120, 50.0
     x = rng.standard_normal(n)
     df = pl.DataFrame(
         {"t": np.arange(n, dtype=float), "x": x, "y": 1.5 * x + 0.3 + rng.standard_normal(n)}
     )
-    got = fit(df, window_size=window)
+    kw = {} if closed is None else {"closed": closed}
+    got = fit(df, window_size=window, **kw)
     age = df["t"][-1] - df["t"].to_numpy()
     assert (age == window).sum() == 1, "a row must sit exactly on the boundary"
-    inside, outside = windowed_wls(df, age <= window), windowed_wls(df, age < window)
-    assert got == pytest.approx(list(inside), rel=1e-9)
-    # The rule is what the test measures: leaving the boundary row out moves
-    # the fit by orders of magnitude more than the tolerance.
-    assert np.abs(inside - outside).max() > 1e-4 * np.abs(inside).max()
+    want = windowed_wls(df, inside(age, window, closed or "right"))
+    other = windowed_wls(df, inside(age, window, "both" if closed in (None, "right") else "right"))
+    assert got == pytest.approx(list(want), rel=1e-9)
+    # The rule is what the test measures: the boundary row moves the fit by
+    # orders of magnitude more than the tolerance.
+    assert np.abs(want - other).max() > 1e-4 * np.abs(want).max()
 
 
+@pytest.mark.parametrize("closed", ["right", "both"])
 @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
-def test_a_row_exactly_one_window_old_is_inside_it_on_a_temporal_clock(unit):
+def test_a_row_exactly_one_window_old_on_a_temporal_clock(unit, closed):
     """Task 175 (review CB1): every windowed model decides its edge on the
     decayed clock held exactly, integer nanoseconds on a temporal clock.
     Rows 1 ms apart under ``window_size="1s"`` and no decay, so
-    ``weight_sum`` counts the rows inside: 1001 from row 1001 on, the row
-    exactly a second old included. The oracle counts the rows at most 10⁹
-    ns behind the last learned row. The windows summed their own clock from
-    the steps, a thousand of 1 ms came to 1.0000000000000007 s, and they
-    dropped that row on rows 1001 to 1007."""
+    ``weight_sum`` counts the rows inside: under ``closed="both"`` 1001 from
+    row 1001 on, the row exactly a second old included, and under
+    ``"right"`` 1000, as ``rolling_sum_by("1s")`` counts (task 196, N17).
+    The oracle counts the rows less than (or at most) 10⁹ ns behind the
+    last learned row. The windows summed their own clock from the steps, a
+    thousand of 1 ms came to 1.0000000000000007 s, and they dropped that row
+    on rows 1001 to 1007."""
     n = 1_100
     rng = np.random.default_rng(11)
     ts = pl.datetime_range(
@@ -342,10 +392,17 @@ def test_a_row_exactly_one_window_old_is_inside_it_on_a_temporal_clock(unit):
         }
     )
     ns = ts.dt.cast_time_unit("ns").cast(pl.Int64).to_numpy()
-    want = np.array([i - np.searchsorted(ns[:i], ns[i - 1] - 10**9) for i in range(1, n)])
-    assert want[1000] == 1001, "a row sits exactly one window back"
+    side = "right" if closed == "right" else "left"
+    want = np.array(
+        [i - np.searchsorted(ns[:i], ns[i - 1] - 10**9, side=side) for i in range(1, n)]
+    )
+    assert want[1000] == (1000 if closed == "right" else 1001), "a row sits one window back"
+    if closed == "right":
+        # Polars' own count of the rows less than a second behind each row.
+        polars = df.select(pl.repeat(1.0, pl.len()).rolling_sum_by("t", window_size="1s"))
+        np.testing.assert_array_equal(want, polars.to_series().to_numpy()[:-1])
     common = dict(clock="t", gap_cap="1d", half_life=float("inf"), min_weight=0.0)
-    window = dict(window_size="1s")
+    window = dict(window_size="1s", closed=closed)
     specs = [
         po.spec.ewridge("ewridge", targets=["y"], features=["x"], **window, **common),
         po.spec.lasso(

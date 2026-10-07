@@ -207,7 +207,7 @@ def test_the_audits_stream_never_hands_a_model_an_infinite_step():
     t = [0.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 4.0] * 4
     t = [v + 10.0 * (i // 8) for i, v in enumerate(t)]
     df = pl.DataFrame({"t": t, "y": np.sin(np.arange(len(t)))})
-    holt = dict(targets=["y"], clock="t", gap_cap=5.0, level_half_life=3.0, min_weight=1.0)
+    holt = dict(targets=["y"], clock="t", gap_cap=5.0, half_life=3.0, min_weight=1.0)
     with pytest.raises(ValueError, match="goes backwards by 2 at row 4"):
         po.ModelBank([po.spec.holt("h", **holt)]).fit_predict(df)
     bank = po.ModelBank([po.spec.holt("h", restart_after_step_back=0.0, **holt)])
@@ -261,7 +261,7 @@ def test_predict_scores_rows_before_the_last_learned_clock_as_they_stand(policy)
     never refused and never a fresh stream. `holt` extrapolates over the step,
     so its score of an early row is its score at the last clock."""
     df = pl.DataFrame({"t": np.arange(60.0), "y": 0.5 * np.arange(60.0)})
-    holt = dict(targets=["y"], clock="t", gap_cap=5.0, level_half_life=10.0, **policy)
+    holt = dict(targets=["y"], clock="t", gap_cap=5.0, half_life=10.0, **policy)
     bank = po.ModelBank([po.spec.holt("h", **holt)])
     bank.fit_predict(df)
     early = bank.predict(df.slice(10, 20))["h"].struct

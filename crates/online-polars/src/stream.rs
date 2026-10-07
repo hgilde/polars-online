@@ -225,6 +225,11 @@ impl AnyModel {
         dispatch!(self, m => m.set_window_budget(budget))
     }
 
+    /// Set the model's window edge ([`OnlineModel::set_window_closed`]).
+    pub fn set_window_closed(&mut self, closed: online_core::WindowClosed) {
+        dispatch!(self, m => m.set_window_closed(closed))
+    }
+
     /// The model's window ring as a shadow ([`OnlineModel::window_shadow`]).
     pub fn window_shadow(&self) -> Option<WindowShadow> {
         dispatch!(self, m => m.window_shadow())
@@ -277,7 +282,7 @@ impl AnyModel {
     }
 
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
-    /// `ew_ridge` and `robust` count their jittered or failed factorizations,
+    /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
     /// rows whose scoring met a failed factorization, `hmm` the rows its
     /// filter could not evaluate, and `bocpd` the rows whose predictive could
@@ -486,6 +491,9 @@ fn constraint(
 fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     let mut m = build_bare(spec, decay)?;
     m.set_window_budget(spec.model.window_budget());
+    // The window's edge travels with the state, so it is set once, here,
+    // before the first row (docs/PLAN.md task 196, N17).
+    m.set_window_closed(spec.model.window_edge());
     Ok(m)
 }
 
@@ -502,7 +510,13 @@ fn resid_window(spec: &Spec) -> Result<Option<ResidWindow>, String> {
     if spec.model.predicts_no_target() || !read {
         return Ok(None);
     }
-    ResidWindow::new(window, cadence, spec.model.window_budget()).map(Some)
+    ResidWindow::new(
+        window,
+        cadence,
+        spec.model.window_edge(),
+        spec.model.window_budget(),
+    )
+    .map(Some)
 }
 
 fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
@@ -523,6 +537,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_every,
             max_rows_between_snapshots,
             window_budget: _,
+            closed: _,
         } => {
             let fs = feature_sets
                 .as_ref()
@@ -608,6 +623,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_every,
             max_rows_between_snapshots,
             window_budget: _,
+            closed: _,
         } => {
             let cfg = LassoCfg {
                 n_features: spec.k(),
@@ -771,6 +787,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_every,
             max_rows_between_snapshots,
             window_budget: _,
+            closed: _,
         } => {
             let names = stats
                 .clone()
@@ -785,7 +802,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     "corr" => Ok(EwCovStat::Corr),
                     "partial_corr" => Ok(EwCovStat::PartialCorr),
                     "mahal" => Ok(EwCovStat::Mahal),
-                    "lagcorr" => Ok(EwCovStat::LagCorr),
+                    "lag_corr" => Ok(EwCovStat::LagCorr),
                     other => Err(format!("unknown ew_cov statistic {other:?}")),
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -905,22 +922,19 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
         }
         ModelKind::Holt {
-            level_half_life,
             trend_half_life,
             trend,
         } => {
-            // Default the level to the spec's own half-life, so `half_life` means
-            // the same thing here as it does for every other model.
-            let level = match level_half_life {
-                Some(n) => n.value(),
-                None => match decay {
-                    Decay::Halflife(h) => h,
-                    // `lam = 1` forgets nothing, as for every other model; its
-                    // log is 0, and the division made it `-inf` (review
-                    // 2026-09-12, S30).
-                    Decay::Lam(1.0) => f64::INFINITY,
-                    Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
-                },
+            // The level's half-life is the spec's own, so `half_life` means
+            // the same thing here as it does for every other model; it had a
+            // second name, `level_half_life`, until task 196.
+            let level = match decay {
+                Decay::Halflife(h) => h,
+                // `lam = 1` forgets nothing, as for every other model; its
+                // log is 0, and the division made it `-inf` (review
+                // 2026-09-12, S30).
+                Decay::Lam(1.0) => f64::INFINITY,
+                Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
             };
             let cfg = HoltCfg {
                 n_targets: spec.m(),
@@ -936,9 +950,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             warm_rows,
             seed_rule,
             seed,
-            update_every,
+            update_every_rows,
             split_merge,
-            split_merge_every,
+            split_merge_every_rows,
             dead_frac,
             standardize,
             scale_floor,
@@ -965,9 +979,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 warm_rows: warm_rows.unwrap_or_else(|| (*k).max(500)),
                 seed_rule,
                 seed: seed.unwrap_or(0),
-                update_every: update_every.unwrap_or(1),
+                update_every_rows: update_every_rows.unwrap_or(1),
                 split_merge: split_merge.unwrap_or(0.5),
-                split_merge_every: split_merge_every.unwrap_or(100),
+                split_merge_every_rows: split_merge_every_rows.unwrap_or(100),
                 // The dead rule runs at a split-merge check, so with none it
                 // is 0, where a value above 0 is refused (CF6).
                 dead_frac: dead_frac.unwrap_or(if *split_merge == Some(0.0) { 0.0 } else { 0.05 }),
@@ -1015,6 +1029,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_every,
             max_rows_between_snapshots,
             window_budget: _,
+            closed: _,
         } => {
             let cfg = EwClassCfg {
                 n_features: spec.k(),
@@ -1045,6 +1060,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_every,
             max_rows_between_snapshots,
             window_budget: _,
+            closed: _,
             // A spec-level acceptance of the price, checked in `validate`.
             window_lags: _,
             feature_moments,
@@ -1207,7 +1223,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         scalar,
         crit,
         n_perm,
-        permute_every,
+        permute_every_rows,
         perm_block,
         norm,
         seed,
@@ -1259,7 +1275,11 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     );
     if !window {
         refuse(n_perm.is_some(), "n_perm", "\"window\"")?;
-        refuse(permute_every.is_some(), "permute_every", "\"window\"")?;
+        refuse(
+            permute_every_rows.is_some(),
+            "permute_every_rows",
+            "\"window\"",
+        )?;
         refuse(perm_block.is_some(), "perm_block", "\"window\"")?;
         refuse(seed.is_some(), "seed", "\"window\"")?;
         refuse(
@@ -1307,7 +1327,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         decay: online_core::Decay::Lam(1.0),
         crit: *crit,
         n_perm: n_perm.unwrap_or(200),
-        permute_every: permute_every.unwrap_or(50),
+        permute_every_rows: permute_every_rows.unwrap_or(50),
         perm_block: perm_block.unwrap_or(1),
         norm: match norm.as_deref() {
             None | Some("l1") => ChangeNorm::L1,

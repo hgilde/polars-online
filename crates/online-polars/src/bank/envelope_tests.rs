@@ -7,7 +7,7 @@ use crate::{Bank, Spec};
 
 fn spec(extra: &str) -> Spec {
     serde_json::from_str(&format!(
-        r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "targets": ["y"],
+        r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
                 "features": ["x"]{extra}}}"#
     ))
     .unwrap()

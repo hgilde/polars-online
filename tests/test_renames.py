@@ -39,7 +39,7 @@ RENAMED = {
     "coef_halflife": "coef_half_life",
     "revert_halflife": "revert_half_life",
     "select_halflife": "select_half_life",
-    "level_halflife": "level_half_life",
+    "level_halflife": "half_life",
     "trend_halflife": "trend_half_life",
     "label_delay": "embargo",
     "max_dclock": "gap_cap",
@@ -54,6 +54,13 @@ RENAMED = {
     "max_cd_iters": "max_iter",
     "cd_tol": "tol",
     "reset": "reset_on_flag",
+    # Task 196 (docs/PLAN.md §18, N14 and N16): the row counts say so, and
+    # holt's level takes the spec's `half_life`, which `level_halflife`
+    # now names directly.
+    "update_every": "update_every_rows",
+    "split_merge_every": "split_merge_every_rows",
+    "permute_every": "permute_every_rows",
+    "level_half_life": "half_life",
 }
 
 #: The output names that are gone, as substrings no field may carry.
@@ -78,7 +85,7 @@ def test_an_old_parameter_is_refused_naming_the_new_one(old):
         (
             {
                 "name": "m",
-                "model": {"type": "ew_ridge"},
+                "model": {"type": "ewridge"},
                 "targets": ["y"],
                 "features": ["x"],
                 "halflife": 10,
@@ -88,7 +95,7 @@ def test_an_old_parameter_is_refused_naming_the_new_one(old):
         (
             {
                 "name": "m",
-                "model": {"type": "ew_ridge", "window": 5},
+                "model": {"type": "ewridge", "window": 5},
                 "targets": ["y"],
                 "features": ["x"],
             },
@@ -295,3 +302,181 @@ def test_with_windows_refuses_an_old_clock_name_in_like_and_in_a_keyword():
         po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), like=like)
     with pytest.raises(TypeError, match="max_dclock was renamed gap_cap"):
         po.stream.with_windows(df, f=po.ewm_mean("x", half_life=2.0), clock="t", max_dclock=5.0)
+
+
+# --- task 196: the names in the specs, the models and the command line ------
+
+#: The parameters task 196 renamed or dropped (docs/PLAN.md §18, N14 N16):
+#: old name -> new name.
+RENAMED_196 = {
+    "update_every": "update_every_rows",
+    "split_merge_every": "split_merge_every_rows",
+    "permute_every": "permute_every_rows",
+    "level_half_life": "half_life",
+}
+
+
+def test_the_task_196_renames_are_in_the_builders_table():
+    for old, new in RENAMED_196.items():
+        assert _RENAMED[old] == new, old
+    assert _RENAMED["level_halflife"] == "half_life", "no chain through a refused name"
+
+
+@pytest.mark.parametrize(
+    ("builder", "kw", "old"),
+    [
+        (po.spec.kmeans, dict(features=["x0", "x1"], k=2), "update_every"),
+        (po.spec.kmeans, dict(features=["x0", "x1"], k=2), "split_merge_every"),
+        (po.spec.corrchange, dict(features=["x0", "x1"], kind="window"), "permute_every"),
+        (po.spec.holt, dict(targets=["y"], half_life=None), "level_half_life"),
+    ],
+)
+def test_a_task_196_parameter_is_refused_by_its_own_builder_naming_the_new_one(builder, kw, old):
+    with pytest.raises(TypeError, match=f"{old} was renamed {RENAMED_196[old]}"):
+        builder("m", **kw, **{old: 10})
+
+
+@pytest.mark.parametrize(
+    ("model", "old"),
+    [
+        (
+            {"type": "kmeans", "k": 2, "update_every": 1},
+            "update_every was renamed update_every_rows",
+        ),
+        (
+            {"type": "kmeans", "k": 2, "split_merge_every": 10},
+            "split_merge_every was renamed split_merge_every_rows",
+        ),
+        (
+            {"type": "corrchange", "kind": "window", "span_rows": 20, "permute_every": 10},
+            "permute_every was renamed permute_every_rows",
+        ),
+        ({"type": "holt", "level_half_life": 10.0}, "level_half_life was renamed half_life"),
+        ({"type": "ew_ridge"}, "ew_ridge was renamed ewridge"),
+    ],
+)
+def test_a_task_196_name_in_a_spec_dict_is_refused_naming_the_new_one(model, old):
+    """The Rust side, shared with the command line's TOML: a model key, and
+    the model's `type` itself (N1). Each dict is otherwise one the bank
+    builds."""
+    spec: dict = {"name": "m", "model": model, "features": ["x0", "x1"], "half_life": 10.0}
+    if model["type"] in ("corrchange", "holt"):
+        del spec["half_life"]
+    if model["type"] == "holt":
+        spec |= {"targets": ["y"], "features": []}
+    if model["type"] == "ew_ridge":
+        spec |= {"targets": ["y"], "features": ["x0"]}
+    with pytest.raises(ValueError, match=old):
+        po.ModelBank([spec])
+
+
+def test_the_model_type_is_ewridge_everywhere():
+    """N1: the builder's, the README's and the core's spelling is the tag."""
+    s = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+    assert s["model"]["type"] == "ewridge"
+    bank = po.ModelBank(
+        [
+            {
+                "name": "m",
+                "model": {"type": "ewridge"},
+                "targets": ["y"],
+                "features": ["x"],
+                "half_life": 10.0,
+            }
+        ]
+    )
+    assert bank.specs[0]["model"]["type"] == "ewridge"
+
+
+def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere():
+    """N10: the `stats` value, the field prefix and the state say `lag_corr`,
+    as `partial_corr` does, and `marginal`'s lists follow."""
+    with pytest.raises(ValueError, match="lagcorr was renamed lag_corr"):
+        po.spec.ew_cov("c", features=["x0", "x1"], stats=["lagcorr"], lags=[1], half_life=10.0)
+    with pytest.raises(ValueError, match="lagcorr was renamed lag_corr"):
+        po.ModelBank(
+            [
+                {
+                    "name": "c",
+                    "model": {"type": "ew_cov", "stats": ["lagcorr"], "lags": [1]},
+                    "features": ["x0", "x1"],
+                    "half_life": 10.0,
+                }
+            ]
+        )
+    s = po.spec.ew_cov("c", features=["x0", "x1"], stats=["lag_corr"], lags=[1], half_life=10.0)
+    fields = po.spec.output_fields(s)
+    assert "lag_corr_x0_x1_l1" in fields and not any("lagcorr" in f for f in fields)
+    assert "lagcorr" not in po.ModelBank([s]).to_json()
+    m = po.spec.marginal("m", targets=["y"], features=["x"], lags=[1], half_life=10.0)
+    rng = np.random.default_rng(196)
+    df = pl.DataFrame({"x": rng.standard_normal(50), "y": rng.standard_normal(50)})
+    bank = po.ModelBank([m])
+    bank.fit_predict(df)
+    cols = bank.marginal("m").columns
+    assert {"lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"} <= set(cols)
+    assert not any("lagcorr" in c for c in cols)
+
+
+def test_kmeans_writes_dist_second():
+    """N7: the distance to the second-nearest centre, which `dist2` read as
+    the square of `dist`."""
+    s = po.spec.kmeans("k", features=["x0", "x1"], k=2, half_life=50.0)
+    fields = po.spec.output_fields(s)
+    assert "dist_second" in fields and "dist2" not in fields
+
+
+def test_holt_takes_one_half_life():
+    """N16: one knob, one dict shape, one TOML key."""
+    s = po.spec.holt("m", targets=["y"], half_life=20.0)
+    assert "level_half_life" not in s["model"] and s["half_life"] == 20.0
+
+
+_FRAME = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
+_SPEC = po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)
+
+
+def _chunk_calls():
+    """Every call that takes the chunk size, as (name, call taking **kw)."""
+    lf = _FRAME.lazy()
+    fitted = po.ModelBank([_SPEC])
+    fitted.fit_predict(_FRAME)
+    window = po.ewm_mean("x", half_life=2.0)
+    refresh = pl.DataFrame({"s": ["a", "b"], "t": [0.0, 1.0], "v": [1.0, 2.0]})
+    refresh_kw = dict(series="s", names=["a", "b"], clock="t", value="v")
+    return [
+        ("ModelBank.fit", lambda **kw: po.ModelBank([_SPEC]).fit(lf, **kw)),
+        (
+            "ModelBank.fit_predict_batches",
+            lambda **kw: list(po.ModelBank([_SPEC]).fit_predict_batches(lf, **kw)),
+        ),
+        ("lf.online.fit_predict", lambda **kw: lf.online.fit_predict([_SPEC], **kw).collect()),
+        ("lf.online.predict", lambda **kw: lf.online.predict(fitted, **kw).collect()),
+        ("po.fit_predict", lambda **kw: po.fit_predict(lf, [_SPEC], **kw).collect()),
+        ("po.predict", lambda **kw: po.predict(lf, fitted, **kw).collect()),
+        (
+            "po.stream.with_windows",
+            lambda **kw: po.stream.with_windows(lf, f=window, clock="t", gap_cap=5.0, **kw),
+        ),
+        (
+            "lf.online.with_windows",
+            lambda **kw: lf.online.with_windows(f=window, clock="t", gap_cap=5.0, **kw).collect(),
+        ),
+        (
+            "df.online.with_windows",
+            lambda **kw: _FRAME.online.with_windows(f=window, clock="t", gap_cap=5.0, **kw),
+        ),
+        (
+            "po.stream.refresh_time",
+            lambda **kw: po.stream.refresh_time(refresh.lazy(), **refresh_kw, **kw).collect(),
+        ),
+    ]
+
+
+@pytest.mark.parametrize("which", range(10))
+def test_chunk_rows_is_refused_naming_chunk_size_and_chunk_size_works(which):
+    """N2: Polars' name on the call it feeds, `collect_batches(chunk_size=)`."""
+    _, call = _chunk_calls()[which]
+    with pytest.raises(TypeError, match="chunk_rows was renamed chunk_size"):
+        call(chunk_rows=2)
+    call(chunk_size=2)

@@ -192,7 +192,7 @@ def test_a_closed_marginal_row_carries_its_lags_and_bins():
     closing = po.ModelBank([po.spec.marginal("m", group="g", group_close="monotone", **kw)])
     closing.fit_predict(df)
     closed = closing.closed_groups()
-    assert closed.schema["pair_lagcorr_xx"] == pl.List(pl.List(pl.Float64))
+    assert closed.schema["pair_lag_corr_xx"] == pl.List(pl.List(pl.Float64))
     assert closed.schema["pair_bin_n"] == pl.List(pl.List(pl.Float64))
     row = closed.row(0, named=True)
     plain = po.ModelBank([po.spec.marginal("m", **kw)])
@@ -200,10 +200,10 @@ def test_a_closed_marginal_row_carries_its_lags_and_bins():
     want = plain.marginal("m")
     assert row["pair_feature"] == want["feature"].to_list() == ["x0", "x1"]
     for col in (
-        "lagcorr_xx",
-        "lagcorr_yy",
-        "lagcorr_xy",
-        "lagcorr_yx",
+        "lag_corr_xx",
+        "lag_corr_yy",
+        "lag_corr_xy",
+        "lag_corr_yx",
         "n_serial",
         "t_serial",
         "phi_x",
@@ -240,18 +240,18 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
     assert dict(empty.schema) == dict(got.schema)
     by_spec = {r["spec"]: r for r in got.iter_rows(named=True)}
     assert by_spec["plain"]["pair_corr"] is not None
-    for col in ("pair_lagcorr_xx", "pair_n_serial", "pair_bin_n", "pair_split_gain"):
+    for col in ("pair_lag_corr_xx", "pair_n_serial", "pair_bin_n", "pair_split_gain"):
         assert by_spec["plain"][col] is None, col
         assert by_spec["asked"][col] is not None, col
     # And a bank whose closing marginals asked for neither has neither
     # block, as `marginal()` has neither column.
     bare = po.ModelBank([po.spec.marginal("plain", **common)]).closed_groups()
-    assert not any(c.startswith(("pair_lagcorr", "pair_bin", "pair_split")) for c in bare.columns)
+    assert not any(c.startswith(("pair_lag_corr", "pair_bin", "pair_split")) for c in bare.columns)
 
 
 def test_the_cross_terms_follow_the_specs_that_keep_them():
-    """``cross_lags`` (E70) under the same rule: ``pair_lagcorr_xy`` and
-    ``pair_lagcorr_yx`` are there when any closing spec keeps a cross term,
+    """``cross_lags`` (E70) under the same rule: ``pair_lag_corr_xy`` and
+    ``pair_lag_corr_yx`` are there when any closing spec keeps a cross term,
     null on the row of one that keeps none, and absent when none does, as
     ``marginal()`` leaves them out under ``cross_lags=[]``."""
     common = dict(
@@ -270,13 +270,13 @@ def test_the_cross_terms_follow_the_specs_that_keep_them():
     )
     bank.fit_predict(frame(["a", "b"], n_per=20).with_columns(y=pl.col("x0")))
     by_spec = {r["spec"]: r for r in bank.closed_groups().iter_rows(named=True)}
-    assert by_spec["none"]["pair_lagcorr_xy"] is None
-    assert by_spec["none"]["pair_lagcorr_xx"] is not None
-    assert [len(v) for v in by_spec["one"]["pair_lagcorr_xy"]] == [1, 1], "one per cross lag"
-    assert [len(v) for v in by_spec["one"]["pair_lagcorr_xx"]] == [2, 2], "one per lag"
+    assert by_spec["none"]["pair_lag_corr_xy"] is None
+    assert by_spec["none"]["pair_lag_corr_xx"] is not None
+    assert [len(v) for v in by_spec["one"]["pair_lag_corr_xy"]] == [1, 1], "one per cross lag"
+    assert [len(v) for v in by_spec["one"]["pair_lag_corr_xx"]] == [2, 2], "one per lag"
     bare = po.ModelBank([po.spec.marginal("none", cross_lags=[], **common)]).closed_groups()
-    assert "pair_lagcorr_xx" in bare.columns
-    assert not {"pair_lagcorr_xy", "pair_lagcorr_yx"} & set(bare.columns)
+    assert "pair_lag_corr_xx" in bare.columns
+    assert not {"pair_lag_corr_xy", "pair_lag_corr_yx"} & set(bare.columns)
 
 
 def test_the_sidecar_carries_the_nested_lists(tmp_path):
@@ -296,7 +296,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
         group_close="monotone",
     )
     side = tmp_path / "closed.parquet"
-    df.lazy().online.fit_predict([spec], closed_groups=side, chunk_rows=25).collect()
+    df.lazy().online.fit_predict([spec], closed_groups=side, chunk_size=25).collect()
     driver = po.ModelBank([spec])
     frames = []
     for i in range(0, df.height, 25):
@@ -628,7 +628,7 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     df.write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.parquet"
     df.lazy().online.fit_predict(
-        [cov_spec(group_close="monotone")], closed_groups=side, chunk_rows=7
+        [cov_spec(group_close="monotone")], closed_groups=side, chunk_size=7
     ).collect()
     driver = po.ModelBank([cov_spec(group_close="monotone")])
     frames = []
@@ -639,7 +639,7 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
 
     other = tmp_path / "closed2.parquet"
     df.lazy().online.fit_predict(
-        [cov_spec(group_close="monotone")], closed_groups=other, chunk_rows=2
+        [cov_spec(group_close="monotone")], closed_groups=other, chunk_size=2
     ).collect()
     assert pl.read_parquet(other).equals(pl.read_parquet(side))
 
@@ -664,8 +664,8 @@ def _ipc_record_batches(path) -> int:
     return struct.unpack_from("<I", footer, table + field + rel)[0]
 
 
-@pytest.mark.parametrize(("chunk_rows", "batches"), [(7, 3), (100, 1)])
-def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches, online_cli):
+@pytest.mark.parametrize(("chunk_size", "batches"), [(7, 3), (100, 1)])
+def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_size, batches, online_cli):
     """The runner drains the bank after every chunk and hands each drain to
     the sidecar's writer, so a closed row reaches the file while the run is
     still going instead of waiting in the bank for its end (review
@@ -686,7 +686,7 @@ def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches,
         input=tmp_path / "in.parquet",
         output=tmp_path / "out.parquet",
         closed_groups=side,
-        chunk_rows=chunk_rows,
+        chunk_size=chunk_size,
     )
     assert _ipc_record_batches(side) == batches
     driver = po.ModelBank([cov_spec(group_close="monotone")])
@@ -704,7 +704,7 @@ def test_the_io_plugin_writes_the_same_sidecar(tmp_path):
     side = tmp_path / "closed.parquet"
     out = (
         df.lazy()
-        .online.fit_predict([cov_spec(group_close="monotone")], closed_groups=side, chunk_rows=5)
+        .online.fit_predict([cov_spec(group_close="monotone")], closed_groups=side, chunk_size=5)
         .collect()
     )
     assert out.height == df.height
@@ -788,15 +788,17 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 40 since
-    2026-10-07 (task 195: `sgd`'s and `pa`'s residual scales, `pa`'s
-    scaler, `bocpd`'s warm-up, the solving models' per-target thresholds and
-    `rls`'s `delta`; the bank refuses 39 and older), after 39 the same day
-    (task 194: a stream's state nests what it keeps beside its models, a
-    clock range is kept as clock values, a closed pair's statistic is
-    ``t_stat``, and the bank keeps each key column's form; the bank refuses
-    38), after 38 since
-    2026-10-06 (task 186: ``ew_ridge``'s kept systems lost a Gram index
+    """The version a bank file names, held to the library's: 41 since
+    2026-10-07 (task 196: a model window's ring keeps its edge, Polars'
+    ``closed``, and the specs say ``type = "ewridge"`` and task 196's other
+    names; the bank refuses 40 and older), after 40 the same day (task 195:
+    `sgd`'s and `pa`'s residual scales, `pa`'s scaler, `bocpd`'s warm-up,
+    the solving models' per-target thresholds and `rls`'s `delta`; the bank
+    refuses 39 and older), after 39 the same day (task 194: a stream's state
+    nests what it keeps beside its models, a clock range is kept as clock
+    values, a closed pair's statistic is ``t_stat``, and the bank keeps each
+    key column's form; the bank refuses 38), after 38 since
+    2026-10-06 (task 186: ``ewridge``'s kept systems lost a Gram index
     nothing read, and a closed ``rcov`` row's ``psd_repaired`` can be null;
     the bank refuses 37), after 37 the same day (task 180: the solve,
     component and checkpoint cadences keep
@@ -831,7 +833,7 @@ def test_schema_version_is_current():
     2026-09-28, when the solve cadence went by weight (task 115 (b)); 19 the
     same day, when `on_clock_reset` lost `"max"` and `"zero"` and a bank
     stopped loading any file from before it (task 120); 13 since
-    2026-09-21, for the readiness statistics -- `ew_ridge`'s per-slot
+    2026-09-21, for the readiness statistics -- `ewridge`'s per-slot
     degrees of freedom and data shares, the stream's decay time and its
     notices (docs/WARMUP-AND-CONVERGENCE.md); 12 since 2026-09-20, when the
     clock state dropped the three fields the two 0.8.x disorder rules kept;
@@ -840,7 +842,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 40
+    assert po.schema_version() == 41
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
