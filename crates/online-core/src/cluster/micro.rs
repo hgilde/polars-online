@@ -652,7 +652,13 @@ impl OnlineModel for Micro {
         self.since_prune.stamp_next(stamp);
     }
 
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature or a weight past the input bound was
+        // learned, the feature as a summary of its own.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.moments.w;
         let valid = x.iter().all(|v| v.is_finite());
@@ -704,6 +710,9 @@ impl OnlineModel for Micro {
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         // The clock decides admission: a summary's weight sets how far it
         // lets a row move its radius.
         let valid = x.iter().all(|v| v.is_finite());

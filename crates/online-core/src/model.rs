@@ -157,8 +157,10 @@ pub fn check_schema(state: &State) -> Result<(), StateError> {
 }
 
 /// The largest magnitude of a feature, target or weight a model has to cope
-/// with. The plumbing (`online-polars`) treats any value beyond it as missing,
-/// like a null or a NaN, so a model never sees one.
+/// with. Any value beyond it is missing, like a null or a NaN ([`usable`]):
+/// to the plumbing (`online-polars`), which never hands a model one, and to
+/// every model itself, which refuses one by the rule [`OnlineModel`] states
+/// (docs/PLAN.md task 183).
 ///
 /// Every model must keep a finite state, and go on learning, through any row
 /// within the bound -- including a weight of `1e100` and a feature of `1e100`
@@ -168,6 +170,178 @@ pub fn check_schema(state: &State) -> Result<(), StateError> {
 /// still fit, products of a weight and a square (`1e300`) still fit.
 pub const INPUT_BOUND: f64 = 1e100;
 
+/// Is a feature, target or weight value one a model learns from? Null
+/// (extracted as NaN), NaN, infinities and magnitudes beyond [`INPUT_BOUND`]
+/// are all "missing": a feature or weight that is not usable makes the row
+/// one of weight 0 that keeps nothing of its own, and a target that is not
+/// usable is absent, predict-only ([`OnlineModel`]'s rule; docs/PLAN.md §3,
+/// docs/IMPROVEMENTS.md C2). The plumbing (`online-polars`) reads values by
+/// this one definition too: it skips such a row, and makes such a target
+/// predict-only.
+#[inline]
+pub fn usable(v: f64) -> bool {
+    // One comparison: it is false for a NaN and for either infinity, so it
+    // is `v.is_finite() && v.abs() <= INPUT_BOUND` without a second test.
+    v.abs() <= INPUT_BOUND
+}
+
+/// [`usable`] over every value of a row. Not `Iterator::all`: its early
+/// exit is worth nothing on rows that are nearly always usable, and a plain
+/// fold over the compare vectorises where the exit does not
+/// (docs/PERFORMANCE.md §20).
+#[inline]
+pub fn all_usable(row: &[f64]) -> bool {
+    row.iter().fold(true, |ok, &v| ok & usable(v))
+}
+
+/// Every present target [`usable`]: a fold, as [`all_usable`] is.
+#[inline]
+fn targets_usable(y: &[Option<f64>]) -> bool {
+    y.iter().fold(true, |ok, v| ok & v.is_none_or(usable))
+}
+
+/// The targets as a model reads them: one that is not [`usable`] is absent.
+fn usable_targets(y: &[Option<f64>]) -> Vec<Option<f64>> {
+    y.iter().map(|v| v.filter(|t| usable(*t))).collect()
+}
+
+/// The [`Step`] of a row with a feature that is not usable: `s` with NaN in
+/// every slot and in every number of its `extra`, and its `n_eff`.
+fn reports_nothing(mut s: Step) -> Step {
+    s.pred.fill(f64::NAN);
+    if let Some(Extra::Lasso { lam_selected }) = s.extra.as_mut() {
+        lam_selected.fill(f64::NAN);
+    }
+    s
+}
+
+/// What every model's [`OnlineModel::step`] does first: the rule the trait
+/// states for a value that is not [`usable`]. `None` for a row whose every
+/// value is usable, which the model then learns as it stands. Otherwise the
+/// row's [`Step`], the row learned by the rule:
+///
+/// - a target that is not usable is absent;
+/// - a row with a feature or a weight that is not usable is the same row at
+///   weight 0, with every feature 0. What a row of weight 0 leaves does not
+///   depend on its features, which a zero weight reads into no moment, ring,
+///   warm-up buffer or likelihood (hard rule 9, held by
+///   `tests/model_contract.rs` against the row itself at weight 0), so this
+///   is that row's state with nothing of the row's own in it. And no `0 · d`
+///   meets a feature that is not a number: a zero-weight update forms one
+///   for each feature, and `0 · NaN` is NaN (docs/PLAN.md tasks 181-183);
+/// - such a row reports nothing where a feature is not usable, and what
+///   [`OnlineModel::predict_with`] reports, which never reads a weight,
+///   where only the weight is not.
+///
+/// The row goes back through the model's own `step`, every value usable,
+/// so the zero-weight path it takes is the one every row of weight 0 takes.
+/// A model that reads no features hands in an empty `x`.
+///
+/// The check is inlined into every `step` and the refusal is not: the
+/// refusal steps the row again, so a `step` that called the whole of it
+/// called into a cycle the compiler would not inline, and a step of two
+/// features paid 12% for it (docs/PLAN.md task 183).
+#[inline(always)]
+pub(crate) fn refused_step<M: OnlineModel>(
+    m: &mut M,
+    x: &[f64],
+    y: &[Option<f64>],
+    d_clock: f64,
+    weight: f64,
+) -> Option<Step> {
+    if all_usable(x) & usable(weight) & targets_usable(y) {
+        return None;
+    }
+    Some(refuse(m, x, y, d_clock, weight, M::step))
+}
+
+/// [`refused_step`] for a model with a second way to step a row
+/// (`Marginal::step_sharded`), which goes back through `step`, as `step`
+/// goes back through itself.
+#[inline(always)]
+pub(crate) fn refused_by<M: OnlineModel>(
+    m: &mut M,
+    x: &[f64],
+    y: &[Option<f64>],
+    d_clock: f64,
+    weight: f64,
+    step: impl FnOnce(&mut M, &[f64], &[Option<f64>], f64, f64) -> Step,
+) -> Option<Step> {
+    if all_usable(x) & usable(weight) & targets_usable(y) {
+        return None;
+    }
+    Some(refuse(m, x, y, d_clock, weight, step))
+}
+
+/// The refusal [`refused_step`] makes, for a row it found a value in that
+/// is not usable.
+#[cold]
+#[inline(never)]
+fn refuse<M: OnlineModel>(
+    m: &mut M,
+    x: &[f64],
+    y: &[Option<f64>],
+    d_clock: f64,
+    weight: f64,
+    step: impl FnOnce(&mut M, &[f64], &[Option<f64>], f64, f64) -> Step,
+) -> Step {
+    let (readable, weighed) = (all_usable(x), usable(weight));
+    let y = usable_targets(y);
+    if readable && weighed {
+        return step(m, x, &y, d_clock, weight);
+    }
+    let out = readable.then(|| m.predict_with(x, &y, d_clock));
+    let learned = step(m, &vec![0.0; x.len()], &y, d_clock, 0.0);
+    out.unwrap_or_else(|| reports_nothing(learned))
+}
+
+/// What every model's [`OnlineModel::predict`] that reads its features does
+/// first: `None` for a row whose features are all [`usable`], and for one
+/// that is not, its [`Step`] -- nothing reported, `n_eff` as on any row,
+/// read off the model with every feature 0, as [`refused_step`] learns it.
+#[inline(always)]
+pub(crate) fn refused_predict<M: OnlineModel>(m: &M, x: &[f64], d_clock: f64) -> Option<Step> {
+    if all_usable(x) {
+        return None;
+    }
+    Some(refuse_reading(m, x, d_clock))
+}
+
+/// The answer [`refused_predict`] gives for a row it refuses.
+#[cold]
+#[inline(never)]
+fn refuse_reading<M: OnlineModel>(m: &M, x: &[f64], d_clock: f64) -> Step {
+    reports_nothing(m.predict(&vec![0.0; x.len()], d_clock))
+}
+
+/// [`refused_predict`] for a model that reads a number out of the targets
+/// slot ([`OnlineModel::predict_with`]), which is absent where it is not
+/// [`usable`], as a target is.
+#[inline(always)]
+pub(crate) fn refused_predict_with<M: OnlineModel>(
+    m: &M,
+    x: &[f64],
+    y: &[Option<f64>],
+    d_clock: f64,
+) -> Option<Step> {
+    if all_usable(x) & targets_usable(y) {
+        return None;
+    }
+    Some(refuse_reading_with(m, x, y, d_clock))
+}
+
+/// The answer [`refused_predict_with`] gives for a row it refuses.
+#[cold]
+#[inline(never)]
+fn refuse_reading_with<M: OnlineModel>(m: &M, x: &[f64], y: &[Option<f64>], d_clock: f64) -> Step {
+    let y = usable_targets(y);
+    if all_usable(x) {
+        m.predict_with(x, &y, d_clock)
+    } else {
+        reports_nothing(m.predict_with(&vec![0.0; x.len()], &y, d_clock))
+    }
+}
+
 /// One row in, one [`Step`] out (docs/PLAN.md §2).
 ///
 /// Invariants:
@@ -175,13 +349,35 @@ pub const INPUT_BOUND: f64 = 1e100;
 ///   construction);
 /// - deterministic given input order;
 /// - no allocation in the hot path after warmup (buffers preallocated);
-/// - every input is finite and within [`INPUT_BOUND`]; the state stays finite
-///   and the model keeps learning after any such row.
+/// - the state stays finite, and the model keeps learning, after any row.
 ///
 /// `x` excludes the intercept (the model adds it if configured); `y[j] = None`
 /// means predict-only for target j; `d_clock` is already capped/gap-adjusted
 /// (see [`crate::ClockState`]); `weight >= 0` scales the row, and `0` means
 /// "advance the clock, learn nothing".
+///
+/// **A value that is not [`usable`]** -- not a number, infinite, or beyond
+/// [`INPUT_BOUND`] -- is refused, by every model the same way
+/// (docs/PLAN.md task 183):
+///
+/// 1. A target that is not usable is absent: predict-only for that target.
+///    So is a number read out of the targets slot (`bocpd`'s hazard,
+///    `hmm`'s exogenous value), in [`Self::predict_with`] too.
+/// 2. A row with a feature or a weight that is not usable is learned as a
+///    row of weight 0 that keeps nothing of its own. Its `d_clock` ages the
+///    state as a zero weight does, and nothing of its values enters the
+///    state: no moment, ring slot, warm-up row, count, cluster or
+///    likelihood. `n_eff` and every decayed weight are `λ^d` times what they
+///    were: the row is not counted, as the plumbing, which skips it, never
+///    counts it.
+/// 3. A row with a feature that is not usable reports nothing, NaN in every
+///    slot and in `extra`, from `step` and `predict` alike, and `n_eff` as
+///    any row does. A row whose weight alone is not usable reports what
+///    `predict` does, which never reads a weight.
+///
+/// `tests/model_contract.rs` holds every model to the three, against the
+/// same row at weight 0 with the feature finite, whose state the refused
+/// row's must equal byte for byte.
 ///
 /// ```
 /// use online_core::{Holt, HoltCfg, OnlineModel};

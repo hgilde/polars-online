@@ -1338,6 +1338,15 @@ impl Marginal {
         weight: f64,
         shards: &Shards<'_>,
     ) -> Step {
+        // A value that is not usable, by the rule `step` keeps
+        // (`OnlineModel`): the refused row is held as `step` learns it, a
+        // row of weight 0 of zeros, so the batch closes where it would.
+        let sharded = |m: &mut Self, x: &[f64], y: &[Option<f64>], d: f64, w: f64| {
+            m.step_sharded(x, y, d, w, shards)
+        };
+        if let Some(refused) = crate::model::refused_by(self, x, y, d_clock, weight, sharded) {
+            return refused;
+        }
         if shards.count <= 1 {
             self.flush(shards);
             return OnlineModel::step(self, x, y, d_clock, weight);
@@ -2241,6 +2250,15 @@ impl OnlineModel for Marginal {
         // follows them (`Marginal::step_sharded`).
         if self.defer.n > 0 {
             self.flush(&Shards::inline());
+        }
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature that is not a number reached every
+        // pair through the zero-weight update's `0 · d`, and a target that
+        // is not one reached its own moments (docs/PLAN.md task 183). A row
+        // of weight 0 takes no ring slot and no bin warm-up row, so neither
+        // does a refused row.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
         }
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);

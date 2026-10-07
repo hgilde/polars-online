@@ -142,14 +142,17 @@ impl SeqTest {
 }
 
 impl OnlineModel for SeqTest {
-    fn step(&mut self, _x: &[f64], y: &[Option<f64>], _d_clock: f64, weight: f64) -> Step {
-        let out = self.predict(_x, _d_clock);
+    fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A target or a weight that is not usable, by the rule every model
+        // keeps (`OnlineModel`): an infinite target is no sign, and an
+        // infinite weight no count. The test reads no features.
+        if let Some(refused) = crate::model::refused_step(self, &[], y, d_clock, weight) {
+            return refused;
+        }
+        let out = self.predict(_x, d_clock);
         if weight > 0.0 {
             for (j, yj) in y.iter().enumerate().take(self.cfg.n_targets) {
                 let Some(yj) = *yj else { continue };
-                // Callers hand in finite values; a NaN would compare false
-                // both ways and fall through as a tie, which is the right
-                // reading of "no sign" anyway.
                 let s = if yj > 0.0 {
                     1.0
                 } else if yj < 0.0 {
@@ -438,11 +441,27 @@ mod tests {
         assert!((b.n_eff() - 3.6).abs() < 1e-15);
     }
 
+    /// Any usable target counts by its sign alone, from the smallest to the
+    /// input bound. One past the bound is absent, by the rule every model
+    /// keeps (`OnlineModel`, task 183): an infinite target counted as a
+    /// sign, and so did `1e300`, which stood here as a large one.
     #[test]
     fn only_the_sign_matters() {
         let a = run(&[1.0, 2.0, -3.0, 0.5, -0.25]);
-        let b = run(&[1e-300, 1e300, -1e-9, 7.0, -1e100]);
+        let b = run(&[1e-300, crate::INPUT_BOUND, -1e-9, 7.0, -1e100]);
         assert_eq!(a, b);
+        let mut absent = SeqTest::new(cfg(1)).unwrap();
+        let mut past = absent.clone();
+        for (i, y) in [1.0, -2.0, 3.0].into_iter().enumerate() {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            absent.step(&[], &[Some(y)], d, 1.0);
+            past.step(&[], &[Some(y)], d, 1.0);
+        }
+        for bad in [f64::INFINITY, -1e300, f64::NAN] {
+            past.step(&[], &[Some(bad)], 1.0, 1.0);
+            absent.step(&[], &[None], 1.0, 1.0);
+        }
+        assert_eq!(past, absent);
     }
 
     #[test]

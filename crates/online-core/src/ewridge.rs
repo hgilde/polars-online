@@ -1752,6 +1752,16 @@ impl OnlineModel for EwRidge {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         debug_assert_eq!(y.len(), self.cfg.n_targets);
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature that is not a number reached the Gram
+        // through the zero-weight update's `0 · d`, and an infinite target
+        // the cross-moment through its `0 · dy` (docs/PLAN.md task 183).
+        // Under a blocked Gram the refused row is held as a row of zeros at
+        // weight 0, where the row itself at weight 0 would be held as it is:
+        // the block closes on the same row, and merges to the same moments.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let m = self.cfg.n_targets;
         let nc = self.cfg.n_combos();
         let lam = self.cfg.decay.factor(d_clock);
@@ -1825,8 +1835,11 @@ impl OnlineModel for EwRidge {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
         // The gate and the per-target test read the window's weights, so a
         // target with nothing in the window reports nothing (C2) -- the

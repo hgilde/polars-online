@@ -743,6 +743,13 @@ impl OnlineModel for Lasso {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`), `lam_selected` NaN with the slots: a feature that
+        // is not a number reached the Gram through the zero-weight update's
+        // `0 · d` (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let m = self.cfg.n_targets;
         let np = self.cfg.n_lambdas();
         let lam_decay = self.cfg.decay.factor(d_clock);
@@ -861,7 +868,10 @@ impl OnlineModel for Lasso {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         self.predict_with(x, self.window_weights().as_ref())
     }
 

@@ -1949,7 +1949,17 @@ impl crate::OnlineModel for EwCovModel {
         }))
     }
 
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature that is not a number reached the
+        // co-moments and the lag matrices through the zero-weight update's
+        // `0 · d`, and with a weight the ring (docs/PLAN.md task 183). A row
+        // of weight 0 takes no ring slot (`EwLagCov`), so the rows either
+        // side of a refused row are adjacent, as they are when the plumbing
+        // skips one.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
         let out = self.predict(x, d_clock);
@@ -2021,7 +2031,10 @@ impl crate::OnlineModel for EwCovModel {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         // With a `window`, every statistic -- and `n_eff` with them -- comes
         // from the truncated accumulator, so `min_weight` gates on the
         // weight *inside* the window, which stops growing once the window is
@@ -5864,3 +5877,6 @@ mod block_tests {
         assert_eq!((c.n_eff(), c.mean(0)), (1.0, 7.0));
     }
 }
+
+#[cfg(test)]
+mod refusal_tests;

@@ -615,6 +615,12 @@ impl OnlineModel for EwClass {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature or a weight past the input bound was
+        // learned (a label that is not usable was never a class).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.n_eff();
         let valid = x.iter().all(|v| v.is_finite());
@@ -664,7 +670,10 @@ impl OnlineModel for EwClass {
         }
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         Step {
@@ -1752,13 +1761,26 @@ mod tests {
         );
     }
 
-    /// A class matrix no jitter can factorize -- its co-moments overflowed
-    /// -- withholds the row and is counted.
+    /// A class's moments put where a test needs them, its co-moments and
+    /// weights kept: a mean past the input bound, which no usable row can
+    /// make, or co-moments that overflowed. Rows past the bound put them
+    /// there, and every model refuses those now (task 183).
+    fn place(m: &mut EwClass, c: usize, mean: &[f64], comoments: Option<&[f64]>) {
+        let cov = &mut m.classes[c];
+        let held = cov.comoments().to_vec();
+        let (w, q) = (cov.n_eff(), cov.q_sum());
+        cov.set_moments(mean, comoments.unwrap_or(&held), w, q);
+        m.factors.invalidate_all();
+    }
+
+    /// A class matrix no jitter can factorize -- its co-moments overflowed,
+    /// placed ([`place`]) -- withholds the row and is counted.
     #[test]
     fn a_class_matrix_that_will_not_factorize_is_counted() {
         let mut m = EwClass::new(cfg(2, 2, Covariance::Full)).unwrap();
-        m.step(&[1e200, 1e200], &[Some(0.0)], 0.0, 1.0);
-        m.step(&[-1e200, -1e200], &[Some(0.0)], 1.0, 1.0);
+        m.step(&[1.0, 1.0], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[-1.0, -1.0], &[Some(0.0)], 1.0, 1.0);
+        place(&mut m, 0, &[0.0, 0.0], Some(&[f64::INFINITY; 4]));
         assert!(
             m.class_cov(0).comoments().iter().all(|v| v.is_infinite()),
             "{:?}",
@@ -1771,20 +1793,26 @@ mod tests {
     }
 
     /// A class score that is not a number withholds the row, as a feature
-    /// that is not one does: NaN throughout, uncounted. Class 0 is learned
-    /// at `(1e160, 5e159)`, one point at that scale, and class 1 at the
-    /// origin, its two features correlated at 0.99, so a row on class 0 has
-    /// a finite score there and, against class 1's matrix, a quadratic form
-    /// whose terms overflow to `+∞` and `−∞`: NaN. `f64::max` clamped it to
-    /// 0, the row sitting on class 1's mean, and it was classed by that;
-    /// read as NaN, class 0 was reported with posteriors that are not
-    /// numbers. In both shapes that read a form (task 181). Under `full` a
-    /// row at the origin is scored, class 0's diagonal matrix taking its
-    /// form to `+∞`; under `shared` class 0 reads the pooled, correlated
-    /// matrix, and that row is withheld too.
+    /// that is not one does: NaN throughout, uncounted. One class is one
+    /// point and the other has its two features correlated at 0.99; the
+    /// classes stand `(1e160, 5e159)` apart. A row on the point has a finite
+    /// score there and, against the correlated class's matrix, a quadratic
+    /// form whose terms overflow to `+∞` and `−∞`: NaN. `f64::max` clamped
+    /// it to 0, the row sitting on that class's mean, and it was classed by
+    /// that; read as NaN, the point's class was reported with posteriors
+    /// that are not numbers. In both shapes that read a form (task 181).
+    ///
+    /// The distance is placed ([`place`]): the rows that made it, the point
+    /// learned at `(1e160, 5e159)`, are past the input bound, refused now
+    /// (task 183). So the correlated class is moved instead, and a usable
+    /// row sits on the point. And with the point moved there, under `full`
+    /// a row near the correlated class is scored, the point's diagonal
+    /// matrix taking its form to `+∞`; under `shared` the point reads the
+    /// pooled, correlated matrix, and that row is withheld.
     #[test]
     fn a_class_score_that_is_not_a_number_withholds_the_row() {
-        for covariance in [Covariance::Full, Covariance::Shared] {
+        let far = [1e160, 0.5e160];
+        let learned = |covariance: Covariance| {
             let mut m = EwClass::new(cfg(2, 2, covariance)).unwrap();
             let mut s = 61u64;
             let mut u = || {
@@ -1793,16 +1821,21 @@ mod tests {
                     .wrapping_add(1442695040888963407);
                 ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
             };
-            let far = [1e160, 0.5e160];
             for i in 0..40 {
                 let (z, n) = (u(), u());
                 let (x, label) = if i % 2 == 0 {
-                    (far, 0.0)
+                    ([0.0, 0.0], 0.0)
                 } else {
                     ([z, 0.99 * z + 0.14 * n], 1.0)
                 };
                 m.step(&x, &[Some(label)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
             }
+            m
+        };
+        for covariance in [Covariance::Full, Covariance::Shared] {
+            // The point moved away: a row near the correlated class.
+            let mut m = learned(covariance);
+            place(&mut m, 0, &far, None);
             let near = m.predict(&[0.1, 0.1], 1.0).pred;
             if covariance == Covariance::Full {
                 assert!(near.iter().all(|v| v.is_finite()), "{near:?}");
@@ -1810,9 +1843,12 @@ mod tests {
             } else {
                 assert!(near.iter().all(|v| v.is_nan()), "{near:?}");
             }
-            let out = m.predict(&far, 1.0).pred;
+            // The correlated class moved away: a row on the point.
+            let mut m = learned(covariance);
+            place(&mut m, 1, &[-far[0], -far[1]], None);
+            let out = m.predict(&[0.0, 0.0], 1.0).pred;
             assert!(out.iter().all(|v| v.is_nan()), "{covariance:?}: {out:?}");
-            let stepped = m.step(&far, &[None], 1.0, 1.0).pred;
+            let stepped = m.step(&[0.0, 0.0], &[None], 1.0, 1.0).pred;
             assert!(
                 stepped.iter().all(|v| v.is_nan()),
                 "{covariance:?}: {stepped:?}"

@@ -1028,7 +1028,14 @@ impl CorrChange {
 }
 
 impl crate::OnlineModel for CorrChange {
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a row with a weight was counted in `n_eff`, and
+        // fed to the scalar statistic's moments, whatever its features
+        // held (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);
         if weight <= 0.0 {
@@ -1088,7 +1095,10 @@ impl crate::OnlineModel for CorrChange {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         crate::Step {
             pred: self.read(x),
             n_eff: self.n_eff,
@@ -3115,6 +3125,70 @@ mod tests {
             assert_ne!(out[2], 1.0, "row {i}: {} against {top}", out[0]);
             if i == at {
                 assert_eq!(out[0], top);
+            }
+        }
+    }
+
+    /// A row with a value that is not usable takes no place in a span
+    /// (`OnlineModel`, task 183), as a row of weight 0 takes none: with no
+    /// decay the test is exactly as it was, so the stream with the row is
+    /// the stream without it, and every span closes on the same learned row.
+    /// A row with a weight was counted in `n_eff` whatever its features
+    /// held, and fed to the scalar statistic's moments, where a NaN never
+    /// leaves. Under both readings of the row; for a feature that is not a
+    /// number, one past the input bound and a weight that is not usable.
+    #[test]
+    fn a_refused_row_takes_no_place_in_a_span() {
+        // Bytes, not `==`: a state holds a NaN where a statistic is not set.
+        let bytes = |m: &CorrChange| rmp_serde::to_vec(&m.state()).unwrap();
+        let mut s = 17u64;
+        let mut u = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let rows: Vec<[f64; 3]> = (0..50).map(|_| [u(), u(), u()]).collect();
+        for scalar in [false, true] {
+            for (bad, w) in [
+                ([f64::NAN, 0.5, 0.1], 1.0),
+                ([0.5, -2.0 * crate::INPUT_BOUND, 0.1], 1.0),
+                ([0.5, 0.25, 0.1], f64::INFINITY),
+            ] {
+                let case = format!("scalar {scalar}, {bad:?} at weight {w}");
+                let c = CorrChangeCfg {
+                    span_rows: 20,
+                    scalar,
+                    ..cfg(3, CorrChangeKind::Monitor)
+                };
+                let mut with = CorrChange::new(c.clone()).unwrap();
+                let mut without = CorrChange::new(c).unwrap();
+                let mut closed = 0;
+                for (i, x) in rows.iter().enumerate() {
+                    if i == 30 {
+                        let ring = with.ring.clone();
+                        let out = with.step(&bad, &[], 1.0, w);
+                        assert_eq!(with.ring, ring, "{case}: the span took the row");
+                        assert!(
+                            !w.is_finite() || out.pred.iter().all(|v| v.is_nan()),
+                            "{case}: {out:?}"
+                        );
+                        assert_eq!(bytes(&with), bytes(&without), "{case}");
+                    }
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let a = with.step(x, &[], d, 1.0);
+                    let b = without.step(x, &[], d, 1.0);
+                    assert!(
+                        a.pred.len() == b.pred.len()
+                            && a.pred.iter().zip(&b.pred).all(|(p, q)| {
+                                p.to_bits() == q.to_bits() || (p.is_nan() && q.is_nan())
+                            }),
+                        "{case}, row {i}: {a:?} against {b:?}"
+                    );
+                    closed += usize::from(a.pred[0].is_finite());
+                }
+                assert_eq!(bytes(&with), bytes(&without), "{case}");
+                assert!(closed >= 2, "{case}: spans closed {closed}");
             }
         }
     }

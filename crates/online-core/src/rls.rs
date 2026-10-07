@@ -210,6 +210,11 @@ impl OnlineModel for Rls {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         self.ensure_buffers();
         let k = self.cfg.k_total();
         let lam = self.cfg.decay.factor(d_clock);
@@ -299,7 +304,10 @@ impl OnlineModel for Rls {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if self.seen {
@@ -809,20 +817,45 @@ mod tests {
         }
     }
 
-    /// A row whose squares overflow (`2^700`, past `1e154`) is rotated in by
-    /// `hypot`, which scales internally: the fit is the one the same rows
-    /// give at scale 1. The prior there is `2^-200`, as negligible beside the
-    /// rows as a prior of 1 is beside rows at `2^700`.
+    /// A rotation whose squares overflow is taken by `hypot`, which scales
+    /// internally. Rows at `2^700`, past the input bound, put the squares
+    /// there, the fit then the one the same rows give at scale 1; they are
+    /// refused now (task 183), and a usable row's squares, at most `1e300`,
+    /// overflow only beside a factor already near the top of the range. So
+    /// the factor is scaled: `R` and every `u` times `2^700`, which leaves
+    /// the fit where it was, and a usable row is rotated into it. Beside that
+    /// factor the row weighs `2^-1400` of what it would at scale 1, so the
+    /// fit does not move. The plain root of the overflowed squares made the
+    /// diagonal infinite, and the fit followed it.
     #[test]
     fn a_row_whose_squares_overflow_is_rotated_in_by_hypot() {
-        let scale = 2f64.powi(700);
-        assert!((scale * scale).is_infinite(), "the squares overflow");
-        assert_scale_free(
-            origin_cfg(f64::INFINITY, 1.0),
-            origin_cfg(f64::INFINITY, 2f64.powi(-200)),
-            scale,
-            None,
+        let mut m = Rls::new(origin_cfg(f64::INFINITY, 1.0)).unwrap();
+        let mut s = 5u64;
+        for _ in 0..30 {
+            let u = [lcg(&mut s), lcg(&mut s)];
+            let v = 2.0 * u[0] - u[1] + 0.1 * lcg(&mut s);
+            m.step(&u, &[Some(v)], 0.0, 1.0);
+        }
+        let before = m.coefficients()[0].clone();
+        assert!(
+            (before[0] - 2.0).abs() < 0.2,
+            "the fixture is a fit: {before:?}"
         );
+        let scale = 2f64.powi(700);
+        m.r.iter_mut().for_each(|v| *v *= scale);
+        m.u.iter_mut().flatten().for_each(|v| *v *= scale);
+        m.solve();
+        assert!((m.r[0] * m.r[0]).is_infinite(), "the squares overflow");
+        m.step(&[0.5, -0.25], &[Some(1.3)], 0.0, 1.0);
+        let after = &m.coefficients()[0];
+        for i in 0..2 {
+            assert!(
+                (after[i] - before[i]).abs() <= 1e-12 * before[i].abs(),
+                "slot {i}: {} against {}",
+                after[i],
+                before[i]
+            );
+        }
     }
 
     /// A row whose squares underflow to 0 (`2^-560`) is rotated in by `hypot`
@@ -862,8 +895,12 @@ mod tests {
     }
 
     /// A rotation whose `hypot` itself overflows (two entries at `1.5e308`)
-    /// cannot be represented, and the row is not taken in that direction:
-    /// two rows on `y = x` still give the line's slope, 1.
+    /// cannot be represented, and was not taken in that direction: two rows
+    /// on `y = x` gave the line's slope, 1. Rows at `1.5e308` are past the
+    /// input bound, and refused now as a row of weight 0 (task 183), so
+    /// neither moves the fit off the prior's. The guard stays, though no
+    /// usable row reaches it: a usable row's entry is at most `1e150`, and
+    /// beside a diagonal of at most `√f64::MAX` its `hypot` is finite.
     #[test]
     fn a_rotation_that_overflows_is_not_taken() {
         let mut m = Rls::new(RlsCfg {
@@ -873,11 +910,13 @@ mod tests {
         .unwrap();
         let x = 1.5e308f64;
         assert!(x.hypot(x).is_infinite(), "the second rotation overflows");
-        m.step(&[x], &[Some(x)], 0.0, 1.0);
-        assert_eq!(m.coefficients()[0], vec![1.0], "the first row's slope");
-        m.step(&[x], &[Some(x)], 0.0, 1.0);
-        assert_eq!(m.coefficients()[0], vec![1.0], "and still the line's");
-        assert_eq!(m.predict(&[1.0], 1.0).pred[0], 1.0);
+        let prior = m.clone();
+        for _ in 0..2 {
+            let out = m.step(&[x], &[Some(x)], 0.0, 1.0);
+            assert!(out.pred[0].is_nan(), "{out:?}");
+        }
+        assert_eq!(m.coefficients(), prior.coefficients(), "the prior's fit");
+        assert_eq!(m.w_sum, prior.w_sum, "and no weight");
     }
 
     /// Task 158: each per-target vector is held to the cfg's count and to

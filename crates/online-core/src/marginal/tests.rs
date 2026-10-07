@@ -4161,3 +4161,77 @@ fn a_row_with_no_finite_feature_leaves_the_histogram_empty_when_sharded() {
     sharded.flush(&shards);
     assert!(state_bytes(&plain) == state_bytes(&sharded));
 }
+
+/// A row with a value that is not usable takes no slot in the lag ring and
+/// no row of the bins' warm-up hold (`OnlineModel`, task 183), as a row of
+/// weight 0 takes neither: the rows either side of it are adjacent in the
+/// ring, as they are when the plumbing skips the row, and the hold only
+/// ages over it. The ring and the hold took no row with a feature that was
+/// not finite before either, but the pairs learned such a row, its NaN
+/// never leaving them, and a feature past the input bound was taken by all
+/// three. Through `step` and `step_sharded` alike, which holds the refused
+/// row in its batch as `step` learns it.
+#[test]
+fn a_refused_row_takes_no_ring_slot_and_no_warm_up_row() {
+    use crate::OnlineModel;
+    let mut c = cfg(2, 1);
+    c.lags = vec![1, 2];
+    c.bins = Some(bins_cfg(4, 30));
+    let ring = |m: &Marginal| -> Vec<(Vec<f64>, Vec<Option<f64>>)> {
+        let lag = m.lag.as_ref().unwrap();
+        (0..lag.depth())
+            .map(|i| {
+                let (x, y) = lag.ring_row(i);
+                (x.to_vec(), y.to_vec())
+            })
+            .collect()
+    };
+    let held = |m: &Marginal| m.bins.as_ref().unwrap().held.len();
+    let shards = Shards {
+        count: 3,
+        run: &run_in_order,
+    };
+    for (bad, w) in [
+        ([f64::NAN, 0.5], 1.0),
+        ([0.5, 2.0 * crate::INPUT_BOUND], 1.0),
+        ([0.5, 0.25], f64::NAN),
+    ] {
+        for sharded in [false, true] {
+            let case = format!("{bad:?} at weight {w}, sharded {sharded}");
+            let step = |m: &mut Marginal, x: &[f64], y: &[Option<f64>], d: f64, w: f64| {
+                if sharded {
+                    m.step_sharded(x, y, d, w, &shards)
+                } else {
+                    OnlineModel::step(m, x, y, d, w)
+                }
+            };
+            let mut with = Marginal::new(c.clone()).unwrap();
+            let mut without = Marginal::new(c.clone()).unwrap();
+            let mut s = 31u64;
+            for i in 0..12 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = [Some(x[0] - 0.5 * x[1])];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                step(&mut with, &x, &y, d, 1.0);
+                step(&mut without, &x, &y, d, 1.0);
+            }
+            with.flush(&shards);
+            let (ring_before, held_before) = (ring(&with), held(&with));
+            assert!(
+                ring_before.len() == 2 && held_before == 12,
+                "{case}: the fixture"
+            );
+            step(&mut with, &bad, &[Some(0.3)], 1.0, w);
+            with.flush(&shards);
+            assert_eq!(ring(&with), ring_before, "{case}: the ring took the row");
+            assert_eq!(held(&with), held_before, "{case}: the hold took the row");
+            let x = [0.3, -0.7];
+            step(&mut with, &x, &[Some(0.65)], 1.0, 1.0);
+            step(&mut without, &x, &[Some(0.65)], 2.0, 1.0);
+            with.flush(&shards);
+            without.flush(&shards);
+            assert_eq!(ring(&with), ring(&without), "{case}: the rows either side");
+            assert_eq!(held(&with), held(&without), "{case}");
+        }
+    }
+}

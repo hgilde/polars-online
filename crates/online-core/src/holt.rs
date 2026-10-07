@@ -199,6 +199,11 @@ impl OnlineModel for Holt {
     }
 
     fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A target or a weight that is not usable, by the rule every model
+        // keeps (`OnlineModel`); Holt reads no features.
+        if let Some(refused) = crate::model::refused_step(self, &[], y, d_clock, weight) {
+            return refused;
+        }
         let m = self.cfg.n_targets;
         // The decays for a target observed on the previous row, where `s` is
         // this row's delta: every target of a stream with no gaps.

@@ -849,7 +849,13 @@ fn lloyd(
 }
 
 impl OnlineModel for KMeans {
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature or a weight past the input bound was
+        // learned, the feature as a point, which no centre leaves.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let lam = self.cfg.decay.factor(d_clock);
         let n_before = self.moments.w;
         let valid = x.iter().all(|v| v.is_finite());
@@ -896,7 +902,10 @@ impl OnlineModel for KMeans {
         }
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let valid = x.iter().all(|v| v.is_finite());
         Step {
             pred: self.score(x, valid, self.moments.w),
@@ -2037,6 +2046,19 @@ mod tests {
         seeded_at(&centres, cfg(k))
     }
 
+    /// [`seeded_at`] with the centres written into the state, not learned:
+    /// for centres past the input bound, whose rows every model refuses
+    /// (task 183). From usable rows, a square overflows under a
+    /// standardised metric over a feature of tiny spread instead.
+    fn placed_at(centres: &[[f64; 2]], c: KMeansCfg) -> KMeans {
+        let near: Vec<[f64; 2]> = (0..centres.len()).map(|i| [i as f64, 0.0]).collect();
+        let mut m = seeded_at(&near, c);
+        for (cluster, centre) in m.clusters.iter_mut().zip(centres) {
+            cluster.c = centre.to_vec();
+        }
+        m
+    }
+
     /// The metric is all ones in raw units, and `1 / v_i` standardized,
     /// `v_i` each feature's variance over the rows (no decay, unit weights:
     /// the plain population variance).
@@ -2069,12 +2091,14 @@ mod tests {
     /// Among squares that overflow, the overflow-free norms decide the
     /// nearest and the runner-up, first minimum winning; where one square
     /// is finite, the squares decide, even against one that overflowed by a
-    /// rounding step and whose norm rounds to the finite one's.
+    /// rounding step and whose norm rounds to the finite one's. The centres
+    /// are placed ([`placed_at`]): the rows that put them there are past the
+    /// input bound, refused now (task 183).
     #[test]
     fn overflowed_squares_are_ranked_by_their_norms() {
         let origin = [0.0, 0.0];
         // Norms 1e200, 2e200, 3e200: nearest the first, runner-up the second.
-        let m = seeded_at(&[[1e200, 0.0], [0.0, 2e200], [-3e200, 0.0]], cfg(3));
+        let m = placed_at(&[[1e200, 0.0], [0.0, 2e200], [-3e200, 0.0]], cfg(3));
         assert!(
             m.clusters
                 .iter()
@@ -2082,7 +2106,7 @@ mod tests {
         );
         assert_eq!(m.predict(&origin, 1.0).pred, vec![0.0, 1e200, 2e200]);
         // Two equally far: the first is the nearest, the second the runner-up.
-        let m = seeded_at(&[[1e200, 0.0], [-1e200, 0.0], [0.0, 3e200]], cfg(3));
+        let m = placed_at(&[[1e200, 0.0], [-1e200, 0.0], [0.0, 3e200]], cfg(3));
         assert_eq!(m.predict(&origin, 1.0).pred, vec![0.0, 1e200, 1e200]);
         // The smallest double whose square overflows, before one whose
         // square is just finite and whose norm rounds to the same number
@@ -2096,7 +2120,7 @@ mod tests {
                 && dist(&under, &origin, &one) == dist(&over, &origin, &one),
             "the fixture"
         );
-        let m = seeded_at(&[over, under], cfg(2));
+        let m = placed_at(&[over, under], cfg(2));
         assert_eq!(m.predict(&origin, 1.0).pred[0], 1.0, "the finite square");
     }
 
@@ -2120,7 +2144,10 @@ mod tests {
 
     /// Until a cluster has a trusted radius nothing is far (the module
     /// docs), not even a row whose squared distance overflows: it is
-    /// learned into its cluster, not into the far summary.
+    /// learned into its cluster, not into the far summary. The square of a
+    /// usable row overflows under the metric of a feature of spread
+    /// `1e-150`, `1e300` (a feature of `1e200`, which overflowed it in raw
+    /// units, is past the input bound, refused now: task 183).
     #[test]
     fn before_a_trusted_radius_not_even_an_overflowed_square_is_far() {
         let mut m = seeded_at(
@@ -2132,7 +2159,10 @@ mod tests {
             },
         );
         assert_eq!(m.far_cut, f64::INFINITY, "no trusted radius yet");
-        m.step(&[1e200, 0.0], &[], 1.0, 1.0);
+        m.mw = vec![1e300, 1e300];
+        let row = [1e5, 0.0];
+        assert!(dist2(&row, &[1.0, 0.0], &m.mw).is_infinite(), "the fixture");
+        m.step(&row, &[], 1.0, 1.0);
         assert_eq!(m.rows.iter().sum::<u64>(), 3, "learned: {:?}", m.rows);
         assert_eq!(m.far_rows, vec![0, 0]);
     }
@@ -2605,6 +2635,40 @@ mod tests {
             (SeedRule::Lloyd, "\"lloyd\""),
         ] {
             assert_eq!(serde_json::to_string(&rule).unwrap(), name);
+        }
+    }
+
+    /// A row with a value that is not usable takes no row of the warm-up
+    /// buffer (`OnlineModel`, task 183), as a row of weight 0 takes none:
+    /// the buffer only ages over it, and the seeding replays the rows either
+    /// side of it. With no decay the model with the row is the model without
+    /// it, before the seeding and after. A feature or a weight past the
+    /// input bound was buffered, and seeded a centre with it.
+    #[test]
+    fn a_refused_row_takes_no_warm_up_row() {
+        let bytes = |m: &KMeans| rmp_serde::to_vec(&m.state()).unwrap();
+        let rows = blobs(4, 19);
+        for (bad, w) in [
+            ([f64::NAN, 0.5], 1.0),
+            ([2.0 * crate::INPUT_BOUND, 0.5], 1.0),
+            ([0.5, 0.25], 2.0 * crate::INPUT_BOUND),
+        ] {
+            let case = format!("{bad:?} at weight {w}");
+            let mut with = KMeans::new(cfg(3)).unwrap();
+            let mut without = KMeans::new(cfg(3)).unwrap();
+            for (i, x) in rows.iter().enumerate() {
+                if i == 3 {
+                    let buffered = with.buf.clone();
+                    let out = with.step(&bad, &[], 1.0, w);
+                    assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                    assert_eq!(with.buf, buffered, "{case}: the buffer took the row");
+                    assert_eq!(bytes(&with), bytes(&without), "{case}");
+                }
+                with.step(x, &[], 1.0, 1.0);
+                without.step(x, &[], 1.0, 1.0);
+            }
+            assert!(with.seeded(), "{case}: the fixture");
+            assert_eq!(bytes(&with), bytes(&without), "{case}");
         }
     }
 }

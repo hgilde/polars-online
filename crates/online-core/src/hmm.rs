@@ -605,29 +605,28 @@ impl Hmm {
 
     /// Age every state over a row it does not learn: a zero-weight update,
     /// which moves no mean and no co-moment and ages the weights by `lam`.
-    /// A row with a feature that is not a finite number ages them by
-    /// [`EwCov::decay`] instead, the same ageing without reading the row:
-    /// the update forms `0 · d` in each co-moment, and `0 · NaN` is NaN.
-    /// Such a row reaches here refused, before the states are seeded (task
-    /// 182) or after, its density NaN, the quadratic form keeping the NaN
-    /// (task 181), or at weight 0; either way the update wrote a NaN into
-    /// every state, which no later row washes out (CLAUDE.md hard rule 9).
+    /// Every feature here is usable: the update forms `0 · d` in each
+    /// co-moment, and a row holding a NaN, which wrote `0 · NaN` into every
+    /// state (task 181), is refused before it gets here (`OnlineModel`,
+    /// task 183).
     fn age_states(&mut self, x: &[f64], lam: f64) {
-        let readable = x.iter().all(|v| v.is_finite());
         for s in self.states.iter_mut() {
-            if readable {
-                s.update(x, lam, 0.0);
-            } else {
-                s.decay(lam);
-            }
+            s.update(x, lam, 0.0);
         }
     }
 }
 
 impl crate::OnlineModel for Hmm {
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): learned as a row of weight 0, which counts no
+        // failure, takes no warm-up row and moves no `p`; an exogenous value
+        // that is not usable is absent (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         self.ensure_factors();
-        let (pred, extra) = self.read(x, self.exog_of(_y));
+        let (pred, extra) = self.read(x, self.exog_of(y));
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
@@ -658,24 +657,25 @@ impl crate::OnlineModel for Hmm {
         }
         let before = self.n_eff;
         self.n_eff = lam * before + weight;
-        // A row that is not finite is not buffered either: seeding replayed
-        // it into a state, and every row after the seeding failed (task 182).
-        let readable = x.iter().all(|v| v.is_finite());
-        if !self.seeded && readable {
+        // Every row buffered here is usable: one holding a NaN was replayed
+        // into a state by the seeding, and every row after it failed (task
+        // 182); it is refused before it gets here (task 183).
+        if !self.seeded {
             self.buffer.push((x.to_vec(), weight));
             if self.buffer.len() >= self.cfg.warm_rows {
                 self.seed();
             }
             return out;
         }
-        let Some((post, logf)) = extra.filter(|_| readable) else {
-            // The row cannot be scored or learned: a feature is not finite,
-            // seeded or not, or a density was not -- a row past the double's
-            // range, or one holding a NaN, whose quadratic form keeps it
-            // (task 181). It still happened, so it ages the clock like a
-            // zero-weight row -- `n_eff`, the counts and the states all decay
-            // by `lam`, nothing is added -- rather than `n_eff` advancing on
-            // its own (review 2026-09-18).
+        let Some((post, logf)) = extra else {
+            // A state's factorization failed, or a density was not finite --
+            // a quadratic form overflowing against a state of tiny spread --
+            // so the row cannot be scored or learned: a usable row that fails
+            // of its own, and so counted. It still happened, so it ages the
+            // clock like a zero-weight row --
+            // `n_eff`, the counts and the states all decay by `lam`, nothing
+            // is added -- rather than `n_eff` advancing on its own (review
+            // 2026-09-18).
             self.solve_failures += 1;
             self.n_eff = lam * before;
             if self.cfg.learn {
@@ -720,7 +720,10 @@ impl crate::OnlineModel for Hmm {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let exog = self.cfg.tvtp.as_ref().map(|_| 0.0);
         crate::Step {
             pred: self.read(x, exog).0,
@@ -731,8 +734,12 @@ impl crate::OnlineModel for Hmm {
 
     /// The exogenous value rides in `y[0]` under `tvtp`, and `Π(t)` is a
     /// function of it, so the answer depends on it exactly as the step's
-    /// does (docs/REVIEW-E54-E64.md C1/H2).
-    fn predict_with(&self, x: &[f64], y: &[Option<f64>], _d_clock: f64) -> crate::Step {
+    /// does (docs/REVIEW-E54-E64.md C1/H2): absent where it is not usable,
+    /// as the step reads it.
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict_with(self, x, y, d_clock) {
+            return refused;
+        }
         crate::Step {
             pred: self.read(x, self.exog_of(y)).0,
             n_eff: self.n_eff,
@@ -813,23 +820,28 @@ mod tests {
     /// but it still happened: it must age `n_eff`, the counts and the states
     /// together, as a zero-weight row does -- not advance `n_eff` alone
     /// (review 2026-09-18). At `half_life = inf` (lam = 1) that means `n_eff`
-    /// does not move on the failed row. A huge but finite feature overflows
-    /// the quadratic form and forces the failure.
+    /// does not move on the failed row. A state whose moments hold a NaN,
+    /// which no factorization takes, forces the failure of a usable row. A
+    /// huge but finite feature, `1e300`, forced it by overflowing the
+    /// quadratic form; it is past the input bound, and now refused before it
+    /// is read, a row of weight 0 counted nowhere (task 183).
     #[test]
     fn a_row_that_fails_to_score_does_not_advance_n_eff() {
         let mut m = Hmm::new(cfg(2, 2)).unwrap();
         for (x, _) in &stream(200, 11, 40) {
             crate::OnlineModel::step(&mut m, x, &[], 1.0, 1.0);
         }
+        let (n_eff_before, fails) = (m.n_eff, m.solve_failures);
+        crate::OnlineModel::step(&mut m, &[1e300, 1e300], &[], 1.0, 1.0);
+        assert_eq!(m.solve_failures, fails, "a row past the bound is refused");
+        assert_eq!(m.n_eff, n_eff_before);
+        m.states[1].update(&[f64::NAN, f64::NAN], 1.0, 1.0);
+        m.factors.clear();
         let n_eff_before = m.n_eff;
         let sum_before: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
         let fails = m.solve_failures;
-        crate::OnlineModel::step(&mut m, &[1e300, 1e300], &[], 1.0, 1.0);
-        assert_eq!(
-            m.solve_failures,
-            fails + 1,
-            "the huge row did not fail to score"
-        );
+        crate::OnlineModel::step(&mut m, &[0.5, 0.5], &[], 1.0, 1.0);
+        assert_eq!(m.solve_failures, fails + 1, "the row did not fail to score");
         assert_eq!(m.n_eff, n_eff_before, "a failed row advanced n_eff alone");
         let sum_after: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
         assert_eq!(
@@ -1675,11 +1687,20 @@ mod tests {
         assert_eq!(m.state_cov(1).n_eff(), 1.0);
     }
 
-    /// A row of no weight, and a row that fails to score, age the transition
-    /// counts by the row's decay: one half-life halves them.
+    /// A row of no weight, a row past the input bound -- a row of weight 0
+    /// by the rule every model keeps (`OnlineModel`, task 183) -- and a row
+    /// that fails to score, against a state whose moments hold a NaN, age
+    /// the transition counts by the row's decay: one half-life halves them.
+    /// Only the failure is counted; the row past the bound, `1e300`, was
+    /// itself the failing row, its quadratic form overflowing.
     #[test]
     fn a_row_that_learns_nothing_ages_the_counts() {
-        for (x, w) in [([0.5, 0.5], 0.0), ([1e300, 1e300], 1.0)] {
+        for (x, w, broken) in [
+            ([0.5, 0.5], 0.0, false),
+            ([1e300, 1e300], 1.0, false),
+            ([0.5, 0.5], 1.0, true),
+        ] {
+            let case = format!("{x:?} at weight {w}");
             let mut m = Hmm::new(HmmCfg {
                 decay: Decay::Halflife(10.0),
                 ..cfg(2, 2)
@@ -1688,35 +1709,43 @@ mod tests {
             for (row, _) in stream(200, 11, 40) {
                 m.step(&row, &[], 1.0, 1.0);
             }
+            if broken {
+                m.states[1].update(&[f64::NAN, f64::NAN], 1.0, 1.0);
+                m.factors.clear();
+            }
             let (a, fails) = (m.a.clone(), m.solve_failures);
             assert!(a.iter().all(|v| *v > 0.0));
             m.step(&x, &[], 10.0, w);
             let halved: Vec<f64> = a.iter().map(|v| 0.5 * v).collect();
-            assert_eq!(m.a, halved, "weight {w}");
-            assert_eq!(m.solve_failures, fails + u64::from(w > 0.0), "weight {w}");
+            assert_eq!(m.a, halved, "{case}");
+            assert_eq!(m.solve_failures, fails + u64::from(broken), "{case}");
         }
     }
 
-    /// A row whose feature is not a number cannot be scored or learned, in
-    /// every covariance shape: it reports nulls, counts a failure if it
-    /// carries weight, and ages the clock as a row that fails to score
-    /// does -- `n_eff`, the counts and each state's weight decay by the
-    /// row's `lam`, no mean or co-moment moves, `p` stays -- and the rows
-    /// after it are scored. Under `full` and `shared` the quadratic form's
-    /// clamp, `f64::max(NaN, 0.0)`, read the row as a form of 0, sitting
-    /// on every state's mean, and it was learned; under `diagonal` its NaN
-    /// density refused it, and the ageing's zero-weight update formed
-    /// `0 · NaN` in every co-moment, as it did on a row of no weight in
-    /// every shape (task 181).
+    /// A row whose feature is not usable cannot be scored or learned, in
+    /// every covariance shape: it reports nulls and is a row of weight 0, by
+    /// the rule every model keeps (`OnlineModel`) -- `n_eff`, the counts and
+    /// each state's weight decay by the row's `lam`, no mean or co-moment
+    /// moves, `p` stays, no failure is counted -- and the rows after it are
+    /// scored. Its state is the same row's at weight 0, its feature finite,
+    /// byte for byte. Under `full` and `shared` the quadratic form's clamp,
+    /// `f64::max(NaN, 0.0)`, read the row as a form of 0, sitting on every
+    /// state's mean, and it was learned; under `diagonal` its NaN density
+    /// refused it, and the ageing's zero-weight update formed `0 · NaN` in
+    /// every co-moment, as it did on a row of no weight in every shape (task
+    /// 181). Task 181 counted a failure for such a row with a weight, which
+    /// a row of weight 0 does not (task 183).
     #[test]
     fn a_row_that_is_not_a_number_moves_nothing_in_any_shape() {
         let decay = Decay::Halflife(10.0);
         let lam = decay.factor(1.0);
+        let bytes = |m: &Hmm| rmp_serde::to_vec(&m.state()).unwrap();
         for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
             for (x, w) in [
                 ([f64::NAN, 0.5], 1.0),
                 ([0.5, f64::NAN], 1.0),
                 ([f64::NAN, 0.5], 0.0),
+                ([2.0 * crate::INPUT_BOUND, 0.5], 1.0),
             ] {
                 let case = format!("{covariance:?}, {x:?} at weight {w}");
                 let mut m = Hmm::new(HmmCfg {
@@ -1729,13 +1758,13 @@ mod tests {
                     m.step(&row, &[], 1.0, 1.0);
                 }
                 let before = m.clone();
+                let finite = x.map(|v| if crate::usable(v) { v } else { 0.25 });
+                let mut no_weight = m.clone();
+                no_weight.step(&finite, &[], 1.0, 0.0);
                 let out = m.step(&x, &[], 1.0, w);
                 assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
-                assert_eq!(
-                    m.solve_failures,
-                    before.solve_failures + u64::from(w > 0.0),
-                    "{case}"
-                );
+                assert_eq!(bytes(&m), bytes(&no_weight), "{case}");
+                assert_eq!(m.solve_failures, before.solve_failures, "{case}");
                 assert_eq!(m.n_eff, lam * before.n_eff, "{case}");
                 assert_eq!(m.p, before.p, "{case}");
                 let aged: Vec<f64> = before.a.iter().map(|v| lam * v).collect();
@@ -1750,22 +1779,19 @@ mod tests {
                     let out = m.step(&row, &[], 1.0, 1.0);
                     assert!(out.pred.iter().all(|v| v.is_finite()), "{case}: {out:?}");
                 }
-                assert_eq!(
-                    m.solve_failures,
-                    before.solve_failures + u64::from(w > 0.0),
-                    "{case}"
-                );
+                assert_eq!(m.solve_failures, before.solve_failures, "{case}");
             }
         }
     }
 
-    /// A row that is not finite before the states are seeded is refused as
+    /// A row that is not usable before the states are seeded is refused as
     /// one after them is (`a_row_that_is_not_a_number_moves_nothing_in_any_
-    /// shape`): nulls, a failure if it carries weight, the clock aged --
-    /// `n_eff` and every buffered weight by the row's `lam` -- and it is
-    /// not buffered, so seeding never replays it into a state. It was
-    /// buffered, the replay put its NaN in a state, and every row after the
-    /// seeding was a failure: rows 21 to 39 of 40 (task 182).
+    /// shape`): nulls, the clock aged -- `n_eff` and every buffered weight
+    /// by the row's `lam` -- no failure, and it is not buffered, so seeding
+    /// never replays it into a state. It was buffered, the replay put its NaN
+    /// in a state, and every row after the seeding was a failure: rows 21 to
+    /// 39 of 40 (task 182, which counted a failure for it with a weight; a
+    /// row of weight 0 counts none, task 183).
     #[test]
     fn a_warm_up_row_that_is_not_a_number_is_refused_and_not_buffered() {
         let decay = Decay::Halflife(10.0);
@@ -1774,6 +1800,7 @@ mod tests {
             ([f64::NAN, 0.5], 1.0),
             ([0.5, f64::INFINITY], 1.0),
             ([f64::NAN, 0.5], 0.0),
+            ([0.5, -2.0 * crate::INPUT_BOUND], 1.0),
         ] {
             let case = format!("{bad:?} at weight {w}");
             let mut m = Hmm::new(HmmCfg { decay, ..cfg(2, 2) }).unwrap();
@@ -1791,7 +1818,7 @@ mod tests {
                 let before = m.clone();
                 let out = m.step(&bad, &[], 1.0, w);
                 assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
-                assert_eq!(m.solve_failures, u64::from(w > 0.0), "{case}");
+                assert_eq!(m.solve_failures, 0, "{case}");
                 assert_eq!(m.n_eff, lam * before.n_eff, "{case}");
                 let aged: Vec<(Vec<f64>, f64)> = before
                     .buffer
@@ -1802,7 +1829,7 @@ mod tests {
                 assert!(!m.seeded, "{case}");
             }
             assert!(m.seeded, "{case}");
-            assert_eq!(m.solve_failures, u64::from(w > 0.0), "{case}");
+            assert_eq!(m.solve_failures, 0, "{case}");
         }
     }
 

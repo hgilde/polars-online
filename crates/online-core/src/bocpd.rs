@@ -148,8 +148,14 @@
 //! between them leave the posterior one step of `d_a + d_b` would, to
 //! rounding, since `(1 − h_a)(1 − h_b) = exp(−(d_a + d_b)/τ)`. A row whose
 //! predictive cannot be evaluated is the same: the time passes, and nothing
-//! is learned. A step that is no step (negative, NaN or infinite, which the
-//! plumbing never hands over) refuses the row, as an unusable hazard does.
+//! is learned; a usable row that fails so is counted, in `n_eff` and as a
+//! failure. A row with a feature or a weight that is not usable -- not a
+//! number, infinite, or past the input bound -- is a row of weight 0 by the
+//! rule every model keeps (`OnlineModel`): its step's chance applies, and it
+//! is counted nowhere. A hazard in the targets slot that is not usable is
+//! absent, the configured one (task 183). A step that is no step (negative,
+//! NaN or infinite, which the plumbing never hands over) refuses the row, as
+//! a hazard at or below 1 does.
 //!
 //! `ln(1 − h) = −d/τ` is a division: no libm, and exact where `(1 −
 //! h).ln()` would round away an `h` below `1e-16`. `ln h = ln(−expm1(−d/τ))`,
@@ -729,12 +735,13 @@ impl Bocpd {
             sigma.iter_mut().for_each(|v| *v *= scale);
             let f = SpdFactor::of(&sigma, d)?;
             let delta: Vec<f64> = x.iter().zip(&mun).map(|(a, b)| a - b).collect();
-            // A row that is not a number has no density: refused here, as
-            // the diagonal emission's NaN density refuses it. The quadratic
-            // form's clamp took a NaN to 0, and the row read as sitting on
-            // the mean and was learned (task 179). The form keeps the NaN
-            // now (task 181), but the refusal is said here rather than left
-            // to how `log_sum_exp`'s `f64::max` reads a NaN density.
+            // A row that is not a number has no density. `step` and
+            // `predict_with` refuse one before it gets here (`OnlineModel`,
+            // task 183); the check stays beside the form, whose clamp once
+            // took a NaN to 0, so the row read as sitting on the mean and
+            // was learned (task 179), and which keeps the NaN now (task 181),
+            // rather than leave it to how `log_sum_exp`'s `f64::max` reads a
+            // NaN density.
             if delta.iter().any(|v| v.is_nan()) {
                 return None;
             }
@@ -771,8 +778,11 @@ impl Bocpd {
 
     /// This row's hazard: the value in the targets slot under
     /// `hazard_from_row`, the configured one otherwise. A missing value
-    /// falls back to the configured hazard; an unusable one (`<= 1`, or not
-    /// finite) is refused by the plumbing before it reaches here.
+    /// falls back to the configured hazard, and so does one that is not
+    /// usable (not a number, infinite, or past the input bound), which is
+    /// absent by the time it reaches here (`OnlineModel`, task 183); a
+    /// usable one at or below 1 is no hazard, and refuses the row
+    /// (`Branches::per_row`).
     fn hazard_of(&self, y: &[Option<f64>]) -> f64 {
         if self.cfg.hazard_from_row {
             y.first().copied().flatten().unwrap_or(self.cfg.hazard)
@@ -986,6 +996,14 @@ impl Bocpd {
 
 impl crate::OnlineModel for Bocpd {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): learned as a row of weight 0 -- on the clock its
+        // step's chance applies, and nothing is counted, neither in `n_eff`
+        // nor as a failure -- and a hazard that is not usable is absent
+        // (the module docs; docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         // A row of no weight is scored as a row of the mean weight would be.
         let (rel, w_mean, w_rows) = if weight > 0.0 {
             self.relative(weight)
@@ -1015,10 +1033,12 @@ impl crate::OnlineModel for Bocpd {
         (self.w_mean, self.w_rows) = (w_mean, w_rows);
         let Some((new, weights)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
-            // and no run sees it. Counted, so a run of them is visible in
-            // `diagnostics` rather than silent (B1). The time still passed:
-            // on the clock its chance of a break applies, as on a row of no
-            // weight.
+            // and no run sees it. A usable row that fails -- a run's
+            // covariance no factorization takes, a usable hazard at or below
+            // 1 -- so counted, in `n_eff` and as a failure, so a run of them
+            // is visible in `diagnostics` rather than silent (B1). The time
+            // still passed: on the clock its chance of a break applies, as on
+            // a row of no weight.
             self.solve_failures += 1;
             if let Some(moved) = moved {
                 self.logjoint = moved;
@@ -1054,9 +1074,12 @@ impl crate::OnlineModel for Bocpd {
     }
 
     /// The hazard rides in `y[0]` under `hazard_from_row`, so the answer
-    /// depends on it exactly as the step's does (C1); on the clock it
-    /// depends on `d_clock` as the step's does.
+    /// depends on it exactly as the step's does (C1), absent where it is not
+    /// usable; on the clock it depends on `d_clock` as the step's does.
     fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict_with(self, x, y, d_clock) {
+            return refused;
+        }
         let (moved, next) = self.before_row(y, d_clock);
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
         crate::Step {
@@ -2250,12 +2273,17 @@ mod tests {
 
     /// A row's hazard must leave both branches a probability, `H = 1/hazard`
     /// strictly inside `(0, 1)`. A row hazard of 1 (`H = 1`: no run ever
-    /// grows) or of infinity (`H = 0`: no run ever starts) is refused at the
-    /// row: it reports nulls, is counted, and moves nothing. (The plumbing
-    /// refuses both before they arrive; the model holds the line too.)
+    /// grows) is a usable value and no hazard: refused at the row, it
+    /// reports nulls, is counted, and moves nothing. (The plumbing refuses it
+    /// before it arrives; the model holds the line too.) A hazard that is not
+    /// usable -- infinite (`H = 0`: no run ever starts), not a number, or
+    /// past the input bound -- is absent, as a target that is not usable is
+    /// (`OnlineModel`, task 183): the row reads the configured hazard, as one
+    /// with no hazard in the slot does, where infinity and NaN refused it and
+    /// counted it, and `2e100` was taken as a hazard.
     #[test]
-    fn a_row_hazard_of_one_or_infinity_is_refused() {
-        for bad in [1.0, f64::INFINITY] {
+    fn a_row_hazard_of_one_is_refused_and_one_not_usable_is_absent() {
+        let warm = || {
             let mut m = Bocpd::new(BocpdCfg {
                 hazard_from_row: true,
                 ..cfg(1)
@@ -2265,17 +2293,35 @@ mod tests {
             for _ in 0..20 {
                 m.step(&[n.normal()], &[None], 1.0, 1.0);
             }
-            let before = m.clone();
+            m
+        };
+        let mut m = warm();
+        let before = m.clone();
+        let shown = m.predict_with(&[0.3], &[Some(1.0)], 1.0);
+        assert!(shown.pred.iter().all(|v| v.is_nan()), "{shown:?}");
+        let out = m.step(&[0.3], &[Some(1.0)], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
+        assert_eq!(m.runs, before.runs);
+        assert_eq!(m.logjoint, before.logjoint);
+        assert_eq!(m.solve_failures, before.solve_failures + 1);
+        // And a usable row hazard is used.
+        let fine = m.step(&[0.3], &[Some(50.0)], 1.0, 1.0);
+        assert!(fine.pred.iter().all(|v| v.is_finite()), "{fine:?}");
+
+        for bad in [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            2.0 * crate::INPUT_BOUND,
+        ] {
+            let (mut m, mut absent) = (warm(), warm());
             let shown = m.predict_with(&[0.3], &[Some(bad)], 1.0);
-            assert!(shown.pred.iter().all(|v| v.is_nan()), "{bad}: {shown:?}");
+            assert_eq!(shown, absent.predict_with(&[0.3], &[None], 1.0), "{bad}");
             let out = m.step(&[0.3], &[Some(bad)], 1.0, 1.0);
-            assert!(out.pred.iter().all(|v| v.is_nan()), "{bad}: {out:?}");
-            assert_eq!(m.runs, before.runs, "{bad}");
-            assert_eq!(m.logjoint, before.logjoint, "{bad}");
-            assert_eq!(m.solve_failures, before.solve_failures + 1, "{bad}");
-            // And a usable row hazard is used.
-            let fine = m.step(&[0.3], &[Some(50.0)], 1.0, 1.0);
-            assert!(fine.pred.iter().all(|v| v.is_finite()), "{fine:?}");
+            assert!(out.pred.iter().all(|v| v.is_finite()), "{bad}: {out:?}");
+            assert_eq!(out, absent.step(&[0.3], &[None], 1.0, 1.0), "{bad}");
+            assert_eq!(m, absent, "{bad}");
+            assert_eq!(m.solve_failures, 0, "{bad}");
         }
     }
 
@@ -2360,15 +2406,24 @@ mod tests {
 
     /// `solve_failures` is left out of a state that never counted one, so
     /// such a state writes the bytes it always did; it is written where
-    /// there were some, so a round trip keeps the count. A row whose feature
-    /// is not a number is one: the predictive cannot be evaluated.
+    /// there were some, so a round trip keeps the count. A row with a hazard
+    /// of 1, a usable value and no hazard, is one. (A row whose feature is
+    /// not a number was one; it is a row of weight 0 now, counted nowhere,
+    /// task 183.)
     #[test]
     fn solve_failures_is_written_only_when_there_were_some() {
-        let mut m = Bocpd::new(cfg(1)).unwrap();
-        m.step(&[0.1], &[], 1.0, 1.0);
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard_from_row: true,
+            ..cfg(1)
+        })
+        .unwrap();
+        m.step(&[0.1], &[None], 1.0, 1.0);
         let v = serde_json::to_value(&m).unwrap();
         assert!(v.get("solve_failures").is_none(), "{v}");
-        let out = m.step(&[f64::NAN], &[], 1.0, 1.0);
+        m.step(&[f64::NAN], &[None], 1.0, 1.0);
+        let v = serde_json::to_value(&m).unwrap();
+        assert!(v.get("solve_failures").is_none(), "{v}");
+        let out = m.step(&[0.2], &[Some(1.0)], 1.0, 1.0);
         assert!(out.pred.iter().all(|v| v.is_nan()));
         assert_eq!(m.solve_failures, 1);
         let v = serde_json::to_value(&m).unwrap();
@@ -2378,42 +2433,66 @@ mod tests {
         assert_eq!(back, m);
     }
 
-    /// A row whose feature is not a number is a row the predictive cannot
-    /// read, under the full emission as under the diagonal one: it reports
-    /// nulls, counts a failure, and moves nothing, and the rows after it
-    /// read as before. The full emission's quadratic form is clamped at 0,
-    /// and `f64::max` takes a NaN to that 0, so the row read as sitting on
-    /// every run's mean and was learned. Every run's statistics then held a
-    /// NaN, and every learned row after it was a failure: 88 of the 99 that
-    /// followed one, in a stream task 179 ran. The bank never hands a NaN
-    /// feature over; the Rust API does.
+    /// A row whose feature is not usable is a row of weight 0 by the rule
+    /// every model keeps (`OnlineModel`, task 183), under the full emission
+    /// as under the diagonal one, on a per-row hazard and on the clock: it
+    /// reports nulls, no run sees it, its step's chance of a break applies
+    /// where there is one (on the clock), and it is counted nowhere, neither
+    /// in `n_eff` nor as a failure, where task 179 counted it in both (B1).
+    /// The whole state is the same row's at weight 0, its feature finite,
+    /// and the rows after it read as before. The full emission's quadratic
+    /// form was clamped at 0, and `f64::max` took a NaN to that 0, so the
+    /// row read as sitting on every run's mean and was learned. Every run's
+    /// statistics then held a NaN, and every learned row after it was a
+    /// failure: 88 of the 99 that followed one, in a stream task 179 ran. The
+    /// bank never hands a NaN feature over; the Rust API does.
     #[test]
     fn a_row_that_is_not_a_number_moves_nothing_under_either_emission() {
-        for emission in [BocpdEmission::Gaussian, BocpdEmission::Diag] {
-            let mut m = Bocpd::new(BocpdCfg {
-                emission,
-                prior_nu: Some(5.0),
-                ..cfg(3)
-            })
-            .unwrap();
-            let mut n = Normals::new(83);
-            for _ in 0..30 {
-                m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
+        for (emission, on_the_clock) in [
+            (BocpdEmission::Gaussian, false),
+            (BocpdEmission::Diag, false),
+            (BocpdEmission::Gaussian, true),
+            (BocpdEmission::Diag, true),
+        ] {
+            for bad in [f64::NAN, f64::INFINITY, -2.0 * crate::INPUT_BOUND] {
+                let case = format!("{emission:?}, on the clock {on_the_clock}, {bad}");
+                let mut m = Bocpd::new(BocpdCfg {
+                    emission,
+                    prior_nu: Some(5.0),
+                    hazard: if on_the_clock { 30.0 } else { 50.0 },
+                    hazard_on_clock: on_the_clock,
+                    ..cfg(3)
+                })
+                .unwrap();
+                let mut n = Normals::new(83);
+                for t in 0..30 {
+                    let d = if t == 0 { 0.0 } else { 1.0 };
+                    m.step(&[n.normal(), n.normal(), n.normal()], &[], d, 1.0);
+                }
+                let before = m.clone();
+                let mut no_weight = m.clone();
+                no_weight.step(&[0.4, 0.1, 0.2], &[], 1.0, 0.0);
+                let out = m.step(&[bad, 0.1, 0.2], &[], 1.0, 1.0);
+                assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                assert_eq!(out.n_eff, before.n_eff, "{case}");
+                assert_eq!(m, no_weight, "{case}");
+                assert_eq!(m.solve_failures, 0, "{case}");
+                assert_eq!(m.n_eff, before.n_eff, "{case}");
+                assert_eq!(m.runs, before.runs, "{case}");
+                if on_the_clock {
+                    assert_ne!(m.logjoint, before.logjoint, "{case}: the time did not pass");
+                } else {
+                    assert_eq!(m.logjoint, before.logjoint, "{case}");
+                }
+                for t in 0..20 {
+                    let out = m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
+                    assert!(
+                        out.pred.iter().all(|v| v.is_finite()),
+                        "{case} row {t} after: {out:?}"
+                    );
+                }
+                assert_eq!(m.solve_failures, 0, "{case}");
             }
-            let before = m.clone();
-            let out = m.step(&[f64::NAN, 0.1, 0.2], &[], 1.0, 1.0);
-            assert!(out.pred.iter().all(|v| v.is_nan()), "{emission:?}: {out:?}");
-            assert_eq!(m.solve_failures, 1, "{emission:?}");
-            assert_eq!(m.runs, before.runs, "{emission:?}");
-            assert_eq!(m.logjoint, before.logjoint, "{emission:?}");
-            for t in 0..20 {
-                let out = m.step(&[n.normal(), n.normal(), n.normal()], &[], 1.0, 1.0);
-                assert!(
-                    out.pred.iter().all(|v| v.is_finite()),
-                    "{emission:?} row {t} after: {out:?}"
-                );
-            }
-            assert_eq!(m.solve_failures, 1, "{emission:?}");
         }
     }
 
@@ -2691,8 +2770,8 @@ mod tests {
     /// and then a learned row leave the learned row's outputs, and the
     /// posterior after it, as one step over their summed time would, to
     /// rounding, and the runs to the bit. The rows of weight 0 move the
-    /// joint -- the time passed -- and nothing else. A learned row whose
-    /// predictive cannot be read lets the time pass the same way.
+    /// joint -- the time passed -- and nothing else. A row with a feature
+    /// that is not usable is one of them, whatever its weight (task 183).
     #[test]
     fn two_steps_with_nothing_learned_between_compose_into_one() {
         let mut base = Bocpd::new(on_clock(1, 30.0)).unwrap();
@@ -2732,15 +2811,17 @@ mod tests {
                 assert!((u - v).abs() <= 1e-13, "{steps:?}: {u} against {v}");
             }
         }
-        // A learned row whose feature is not a number: a failure, no run
-        // sees it, and its step applies as a row of weight 0's would.
-        let (mut failed, mut quiet) = (base.clone(), base.clone());
-        failed.step(&[f64::NAN], &[], 5.0, 1.0);
-        quiet.step(&[f64::NAN], &[], 5.0, 0.0);
-        assert_eq!(failed.solve_failures, base.solve_failures + 1);
-        assert_eq!(failed.runs, base.runs);
-        assert_eq!(failed.logjoint, quiet.logjoint);
-        assert_ne!(failed.logjoint, base.logjoint);
+        // A row with a weight and a feature that is not a number is a row of
+        // weight 0: no run sees it, its step applies, and it is counted
+        // nowhere, where task 179 counted it in `n_eff` and as a failure.
+        let (mut refused, mut quiet) = (base.clone(), base.clone());
+        refused.step(&[f64::NAN], &[], 5.0, 1.0);
+        quiet.step(&[0.7], &[], 5.0, 0.0);
+        assert_eq!(refused, quiet);
+        assert_eq!(refused.solve_failures, base.solve_failures);
+        assert_eq!(refused.n_eff, base.n_eff);
+        assert_eq!(refused.runs, base.runs);
+        assert_ne!(refused.logjoint, base.logjoint);
     }
 
     /// A step of 0 has no chance of a break: no time passed, so the row

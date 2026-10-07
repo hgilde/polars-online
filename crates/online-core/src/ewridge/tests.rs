@@ -3910,10 +3910,12 @@ fn a_combo_skipped_for_no_weight_is_its_own_slot_among_several() {
 /// A first solve that fails leaves no fit: every slot it could not solve
 /// holds NaN, so it predicts nothing, and the slots it solved hold their
 /// fit. The fit was the zeros `beta` starts at, so the slot predicted
-/// 0.0 as though it had learned it (review 2026-10-05, CA5). A NaN
-/// feature on the first row puts NaN in the Gram, which no jitter
-/// factorizes, and the next rows leave it there. Before the first solve
-/// there is no fit at all, as before.
+/// 0.0 as though it had learned it (review 2026-10-05, CA5). A NaN in the
+/// Gram, which no jitter factorizes and the next rows leave there, makes
+/// it fail. A NaN feature on the first row put it there; every model
+/// refuses one now (task 183), so it is written into the accumulator, as
+/// `a_solve_that_fails_keeps_the_last_fit_or_says_nan` writes it. Before
+/// the first solve there is no fit at all, as before.
 #[test]
 fn a_first_solve_that_fails_leaves_no_fit() {
     let mut c = cfg(2, 1);
@@ -3921,7 +3923,9 @@ fn a_first_solve_that_fails_leaves_no_fit() {
     let mut m = EwRidge::new(c).unwrap();
     assert!(m.coefficients().is_none(), "no fit before the first solve");
     assert!(m.predict(&[0.5, 1.0], 0.0).pred[0].is_nan());
-    m.step(&[f64::NAN, 1.0], &[Some(2.0)], 0.0, 1.0);
+    let g = m.acc.grams.of[0];
+    m.acc.grams.grams[g].update(&[f64::NAN; 3], 1.0, 1.0);
+    m.step(&[0.5, 1.0], &[Some(2.0)], 0.0, 1.0);
     assert!(m.solve_failures > 0, "the first solve failed");
     let beta = m.coefficients().expect("a solve ran");
     assert!(beta[0].iter().all(|v| v.is_nan()), "{beta:?}");
@@ -3939,7 +3943,9 @@ fn a_first_solve_that_fails_leaves_no_fit() {
     c.ridge = vec![0.1, 1.0];
     c.min_weight = 0.0;
     let mut m = EwRidge::new(c).unwrap();
-    m.step(&[f64::NAN, 1.0], &[Some(2.0), Some(1.0)], 0.0, 1.0);
+    let g = m.acc.grams.of[0];
+    m.acc.grams.grams[g].update(&[f64::NAN; 3], 1.0, 1.0);
+    m.step(&[0.5, 1.0], &[Some(2.0), Some(1.0)], 0.0, 1.0);
     assert!(m.solve_failures > 0, "the first solve failed");
     let beta = m.coefficients().expect("a solve ran");
     assert_eq!(beta.len(), 4);
@@ -4246,5 +4252,70 @@ fn solve_every_measures_the_stamps_it_is_handed() {
             m.rows_since_solve == 0
         });
         assert_eq!(got, want, "stamped: {stamped}");
+    }
+}
+
+/// Under a blocked Gram a row of weight 0 is held in the block as it is, to
+/// be merged with the rest. A row with a value that is not usable is a row
+/// of weight 0 by the rule every model keeps (`OnlineModel`, task 183), and
+/// is held as a row of zeros instead, so nothing of its own is kept: the
+/// one place a refused row's state is not the same row's at weight 0. While
+/// the block holds it the two differ in the held values alone. The block
+/// closes on the same row either way, and a held row of no weight merges to
+/// nothing, so every prediction after the row is that row's at weight 0, to
+/// the bit, and once the block has merged so is the state, byte for byte.
+#[test]
+fn a_blocked_gram_holds_a_refused_row_as_zeros() {
+    // A solve merges the held block first, so the solves are spaced to
+    // leave the refused row held after its own step: solves at rows 0, 6,
+    // 12 and 18, the refused row the 10th, three rows into a block of 8.
+    let mut c = cfg(2, 2);
+    c.gram_block_rows = 8;
+    c.solve_every = 6.0;
+    c.max_rows_between_solves = 1000;
+    c.min_weight = 0.0;
+    let same = |u: &f64, v: &f64| u.to_bits() == v.to_bits() || (u.is_nan() && v.is_nan());
+    let bytes = |m: &EwRidge| rmp_serde::to_vec(&m.state()).unwrap();
+    let pending = |m: &EwRidge| m.acc.grams.grams.iter().any(EwCov::has_pending);
+    let row = |s: &mut u64| {
+        let x = [lcg(s), lcg(s)];
+        (x, [Some(x[0] - 0.5 * x[1]), Some(2.0 * x[1])])
+    };
+    for (bad, w) in [
+        (Some([f64::NAN, 0.5]), 1.0),
+        (Some([0.5, f64::INFINITY]), 1.0),
+        (None, f64::NAN),
+    ] {
+        let case = format!("{bad:?} at weight {w}");
+        let mut refused = EwRidge::new(c.clone()).unwrap();
+        let mut zero = EwRidge::new(c.clone()).unwrap();
+        let mut s = 43u64;
+        for i in 0..9 {
+            let (x, y) = row(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            refused.step(&x, &y, d, 1.0);
+            zero.step(&x, &y, d, 1.0);
+        }
+        let (x, y) = row(&mut s);
+        refused.step(&bad.unwrap_or(x), &y, 1.0, w);
+        zero.step(&x, &y, 1.0, 0.0);
+        assert!(
+            pending(&refused) && pending(&zero),
+            "{case}: the fixture holds the row"
+        );
+        assert_ne!(
+            bytes(&refused),
+            bytes(&zero),
+            "{case}: the held values differ"
+        );
+        for i in 0..12 {
+            let (x, y) = row(&mut s);
+            let (a, b) = (refused.step(&x, &y, 1.0, 1.0), zero.step(&x, &y, 1.0, 1.0));
+            assert!(
+                a.pred.iter().zip(&b.pred).all(|(u, v)| same(u, v)),
+                "{case}, row {i} after: {a:?} against {b:?}"
+            );
+        }
+        assert_eq!(bytes(&refused), bytes(&zero), "{case}: after the merge");
     }
 }

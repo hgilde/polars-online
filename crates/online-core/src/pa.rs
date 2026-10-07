@@ -181,6 +181,11 @@ impl OnlineModel for Pa {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         self.ensure_buffers();
         let m = self.cfg.n_targets;
         let lam = self.cfg.decay.factor(d_clock);
@@ -256,7 +261,10 @@ impl OnlineModel for Pa {
         }
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
@@ -792,9 +800,11 @@ mod tests {
 
     /// A row whose prediction overflows takes no step: its loss is infinite,
     /// and a step from it would be permanent. One tiny feature makes a
-    /// coefficient of `1e204`, which a feature of `1e300` -- past
-    /// [`crate::INPUT_BOUND`], so the bank would have called it missing; the
-    /// guard is the model's own -- takes past `f64::MAX`.
+    /// coefficient of `1e204`; a coefficient of `1e300` takes a feature at
+    /// [`crate::INPUT_BOUND`] past `f64::MAX`. That one is written into the
+    /// state: a step of the size that makes it overflows `tau` first, and a
+    /// feature of `1e300`, which reached the same overflow from `1e204`, is
+    /// past the bound and refused before it is read (task 183).
     #[test]
     fn an_overflowing_prediction_takes_no_step() {
         use crate::OnlineModel;
@@ -805,10 +815,14 @@ mod tests {
         m.step(&[1e-104], &[Some(1e100)], 1.0, 1.0);
         let big = m.coefficients()[0][0];
         assert!(big > 1e200 && big.is_finite(), "{big}");
-        let p = m.predict(&[1e300], 1.0).pred[0];
+        m.beta[0][0] = 1e300;
+        let p = m.predict(&[crate::INPUT_BOUND], 1.0).pred[0];
         assert!(p.is_infinite(), "the prediction overflows: {p}");
+        m.step(&[crate::INPUT_BOUND], &[Some(0.0)], 1.0, 1.0);
+        assert_eq!(m.coefficients()[0][0], 1e300);
+        // A feature past the bound is refused, and moves nothing either.
         m.step(&[1e300], &[Some(0.0)], 1.0, 1.0);
-        assert_eq!(m.coefficients()[0][0], big);
+        assert_eq!(m.coefficients()[0][0], 1e300);
     }
 
     /// The bank's per-target `min_weight` gate reads each target's own

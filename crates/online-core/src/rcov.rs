@@ -1046,8 +1046,15 @@ fn clip_psd(cov: &[f64], k: usize) -> Option<(Vec<f64>, bool)> {
 }
 
 impl crate::OnlineModel for Rcov {
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], _d_clock: f64, weight: f64) -> crate::Step {
-        let out = self.predict(x, _d_clock);
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a row with a weight was a return of the block,
+        // whatever its features held, and a NaN in the sums never leaves
+        // them (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
+        let out = self.predict(x, d_clock);
         // A zero-weight row advances the clock and is not a return of the
         // block: it enters no accumulator and no ring.
         if weight > 0.0 {
@@ -2597,12 +2604,15 @@ mod tests {
 
     /// A variance near the top of the range survives the symmetrizing,
     /// which averages only the entries off the diagonal: averaging one with
-    /// itself would add two numbers past half of `f64::MAX`.
+    /// itself would add two numbers past half of `f64::MAX`. A return of
+    /// `1.2e154` is past the input bound, which `step` refuses (task 183),
+    /// so it is pushed as `step` pushes a return.
     #[test]
     fn a_variance_near_the_top_of_the_range_stays_finite() {
         let mut m = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
         let x = [1.2e154, 1.0];
-        m.step(&x, &[], 1.0, 1.0);
+        m.push(&x);
+        m.w_sum += 1.0;
         let cov = m.estimate().rcov.unwrap();
         assert!(cov[0] > f64::MAX / 2.0 && cov[0].is_finite(), "{cov:?}");
         assert_eq!(
@@ -2680,5 +2690,40 @@ mod tests {
         }
         assert_eq!(clip_psd(&[1.0, f64::NAN, f64::NAN, 1.0], 2), None);
         assert_eq!(clip_psd(&[f64::INFINITY, 0.0, 0.0, 1.0], 2), None);
+    }
+
+    /// A row with a value that is not usable is not a return of the block
+    /// (`OnlineModel`, task 183), as a row of weight 0 is not: the block
+    /// keeps no decay, so the estimator with the row is the estimator
+    /// without it, byte for byte, its rings and sums included, and the
+    /// returns either side of it are adjacent. A row with a weight entered
+    /// the sums and the rings whatever its features held, a NaN never
+    /// leaving them, and an infinite weight counted it. Under every kind.
+    #[test]
+    fn a_refused_row_is_not_a_return_of_the_block() {
+        use crate::OnlineModel;
+        let bytes = |m: &Rcov| rmp_serde::to_vec(&m.state()).unwrap();
+        let rows = returns(60, 2, 41, 0.1);
+        for kind in [RcovKind::Plain, RcovKind::Kernel, RcovKind::Preavg] {
+            for (bad, w) in [
+                ([f64::NAN, 0.5], 1.0),
+                ([0.5, 2.0 * crate::INPUT_BOUND], 1.0),
+                ([0.5, 0.25], f64::INFINITY),
+            ] {
+                let case = format!("{kind:?}, {bad:?} at weight {w}");
+                let mut with = Rcov::new(cfg(2, kind)).unwrap();
+                let mut without = Rcov::new(cfg(2, kind)).unwrap();
+                for (i, x) in rows.iter().enumerate() {
+                    if i == 30 {
+                        with.step(&bad, &[], 1.0, w);
+                        assert_eq!(bytes(&with), bytes(&without), "{case}");
+                    }
+                    with.step(x, &[], 1.0, 1.0);
+                    without.step(x, &[], 1.0, 1.0);
+                }
+                assert_eq!(bytes(&with), bytes(&without), "{case}");
+                assert_eq!(with.n_eff(), 60.0, "{case}");
+            }
+        }
     }
 }

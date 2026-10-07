@@ -5,11 +5,11 @@ use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
-    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans,
-    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
-    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
-    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
-    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg, Kalman,
+    KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState,
+    OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
+    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
+    StateError, WindowShadow,
 };
 use online_core::{ClockValue, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -2292,23 +2292,11 @@ impl Stream {
     }
 }
 
-/// Is a feature, target or weight value one the models are asked to learn
-/// from? Null (extracted as NaN), NaN, infinities and magnitudes beyond
-/// [`INPUT_BOUND`] are all "missing": a feature or weight skips the row, a
-/// target makes it predict-only (docs/PLAN.md §3, docs/IMPROVEMENTS.md C2).
-#[inline]
-pub fn usable(v: f64) -> bool {
-    v.is_finite() && v.abs() <= INPUT_BOUND
-}
-
-/// [`usable`] over every value of a row. Not `Iterator::all`: its early
-/// exit is worth nothing on rows that are nearly always usable, and a plain
-/// fold over the compare vectorises where the exit does not
-/// (docs/PERFORMANCE.md §20).
-#[inline]
-pub fn all_usable(row: &[f64]) -> bool {
-    row.iter().fold(true, |ok, &v| ok & usable(v))
-}
+/// The core's one definition of a value a model learns from, which the
+/// stream reads its rows by: a feature or weight that is not usable skips
+/// the row, a target that is not makes it predict-only (docs/PLAN.md §3,
+/// task 183).
+pub use online_core::{all_usable, usable};
 
 /// True when this target has not reached its own warmup threshold yet.
 #[inline]

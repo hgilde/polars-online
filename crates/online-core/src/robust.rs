@@ -905,6 +905,15 @@ impl OnlineModel for Robust {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): learned as a row of weight 0, so counted nowhere,
+        // `n_eff` and the target's present weight included. A feature that
+        // is not a number arrived at the loss as a least-squares row, with
+        // no finite prediction, and was learned there (task 182, which then
+        // refused it in that arm but counted it).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let m = self.cfg.n_targets;
         let k = self.cfg.k_total();
         if self.zbuf.len() != k {
@@ -941,7 +950,6 @@ impl OnlineModel for Robust {
             || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
-        let readable = x.iter().all(|v| v.is_finite());
         for j in 0..m {
             // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
             // it only with a target, a weight and a prediction to measure the
@@ -975,11 +983,9 @@ impl OnlineModel for Robust {
             match self.row_update(yj, pred[j], scale, weight, rows, aged_rows) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
-                // Nor can a row with a feature that is not a finite number:
-                // with no finite prediction it arrives as a least-squares row,
-                // and learned, its NaN reached the Gram and the cross-moment,
-                // and every solve after it failed (task 182).
-                RowUpdate::Fit { w, .. } if !readable || w.is_nan() || w <= 0.0 => {
+                // It is a usable row that fails, and counted as present above;
+                // a row holding a value that is not usable never gets here.
+                RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
                     continue;
@@ -1096,7 +1102,10 @@ impl OnlineModel for Robust {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.w_raw;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
@@ -2731,18 +2740,25 @@ mod tests {
     /// prediction, so it reached the loss as a least-squares row and was
     /// learned: its NaN went into the Gram and the cross-moment, every solve
     /// after it failed -- the 40 of 40 rows that followed one -- and the fit
-    /// froze where it stood. It is refused as a row the loss cannot learn
-    /// from is: counted where every row is, in `n_eff` and the target's
-    /// present weight, and learned nowhere, the Gram aged and the
-    /// cross-moment and the target's mean untouched (task 182). Huber and
-    /// the quantile loss alike, a NaN and an infinity alike.
+    /// froze where it stood. Task 182 refused it in that arm, and counted it
+    /// in `n_eff` and the target's present weight. By the rule every model
+    /// keeps (`OnlineModel`, task 183) it is a row of weight 0 and counted
+    /// nowhere: it reports nothing, the Gram ages, the cross-moment and the
+    /// target's mean stay, and the state is the same row's at weight 0, its
+    /// features finite, byte for byte. Huber and the quantile loss alike; a
+    /// NaN, an infinity and a feature past the input bound alike.
     #[test]
     fn a_row_that_is_not_a_number_is_not_learned() {
+        let bytes = |m: &Robust| rmp_serde::to_vec(&m.state()).unwrap();
         for loss in [
             RobustLoss::Huber { delta: 1.0 },
             RobustLoss::Quantile { tau: 0.5 },
         ] {
-            for bad in [[f64::NAN, 0.5], [0.5, f64::NEG_INFINITY]] {
+            for bad in [
+                [f64::NAN, 0.5],
+                [0.5, f64::NEG_INFINITY],
+                [2.0 * crate::INPUT_BOUND, 0.5],
+            ] {
                 let case = format!("{loss:?}, {bad:?}");
                 let mut c = cfg(2, 1, loss);
                 c.decay = Decay::Halflife(50.0);
@@ -2757,16 +2773,20 @@ mod tests {
                     let y = 1.0 + x[0] + 2.0 * x[1] + 0.1 * lcg(&mut s);
                     if i == 40 {
                         let before = m.clone();
+                        let mut no_weight = m.clone();
+                        no_weight.step(&x, &[Some(1.0)], 1.0, 0.0);
                         let out = m.step(&bad, &[Some(1.0)], 1.0, 1.0);
-                        assert!(!out.pred[0].is_finite(), "{case}: {out:?}");
+                        assert!(out.pred[0].is_nan(), "{case}: {out:?}");
                         assert_eq!(m.cross, before.cross, "{case}");
                         assert_eq!(m.ybar, before.ybar, "{case}");
                         assert_eq!(m.cov[0].means(), before.cov[0].means(), "{case}");
                         assert_eq!(m.cov[0].comoments(), before.cov[0].comoments(), "{case}");
                         assert_eq!(m.wj[0], lam * before.wj[0], "{case}");
-                        assert_eq!(m.w_raw, lam * before.w_raw + 1.0, "{case}");
-                        assert_eq!(m.wobs[0], lam * before.wobs[0] + 1.0, "{case}");
+                        assert_eq!(m.w_raw, lam * before.w_raw, "{case}");
+                        assert_eq!(m.wobs[0], lam * before.wobs[0], "{case}");
+                        assert_eq!(m.nobs[0], lam * before.nobs[0], "{case}");
                         assert_eq!(m.sig2, before.sig2, "{case}");
+                        assert_eq!(bytes(&m), bytes(&no_weight), "{case}");
                         at_the_row = m.coefficients().map(<[_]>::to_vec);
                         continue;
                     }

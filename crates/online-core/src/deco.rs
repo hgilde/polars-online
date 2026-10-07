@@ -64,11 +64,13 @@
 //! every column, and is NaN on such a row. Until the decision, a row with
 //! any such column taught no value anything.
 //!
-//! A feature that is not a finite number is read the same way, its column
-//! left out and `loglik` NaN, but the row is learned as a row of no weight:
-//! it teaches no value and not the standardiser, whose moments a NaN would
-//! never leave, and it ages the weights as any row of no weight does (task
-//! 182).
+//! A feature that is not usable -- not a number, infinite, or past the
+//! input bound -- is not a flat column. The row takes the rule every model
+//! keeps (`OnlineModel`): it reports nothing, `u`, `rho` and `loglik` all
+//! NaN, and is learned as a row of no weight, which teaches no value and not
+//! the standardiser, whose moments a NaN would never leave, and ages the
+//! weights as any row of no weight does (task 183). Task 182 read it as a
+//! row with that column missing, `u` and `rho` from the other columns.
 //!
 //! # The log-likelihood
 //!
@@ -448,21 +450,18 @@ fn n_values(k: usize) -> usize {
 }
 
 impl crate::OnlineModel for Deco {
-    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): nothing reported, and learned as a row of weight
+        // 0, so the standardiser reads no moment from it (the module docs).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         // Read before the update: `u`, `rho` and `loglik` are all as of the
         // state before this row, which is what makes them usable as features
         // for the same row.
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);
-        // A row with a feature that is not a finite number is read as a row
-        // with that column missing, and learned as a row of no weight: the
-        // standardiser learned the NaN, that column had no standardised
-        // value again, and `loglik` was NaN on every row after (task 182).
-        let weight = if x.iter().all(|v| v.is_finite()) {
-            weight
-        } else {
-            0.0
-        };
         let mut r = Vec::with_capacity(x.len());
         self.standardise(x, &mut r);
         let (s1, s2, n, _) = self.block_sums(&r);
@@ -475,7 +474,10 @@ impl crate::OnlineModel for Deco {
         out
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.diag.n_eff();
         let pred = if n_eff >= self.cfg.min_weight {
             self.read(x)
@@ -674,21 +676,27 @@ mod tests {
         }
     }
 
-    /// A row with a feature that is not a finite number is a row of no
-    /// weight. It is read as a row with that column missing -- left out of
-    /// its block, `loglik` NaN -- and teaches nothing, the standardiser
-    /// included: the state it leaves is the one a row of no weight leaves,
-    /// each weight aged by the row's `lam`. The standardiser learned the
-    /// NaN, that column had no standardised value again, and `loglik` was
-    /// NaN on every row after it: rows 30 to 59 of 60 (task 182). Under
-    /// both dynamics, and for an infinity as for a NaN.
+    /// A row with a feature that is not usable is a row of no weight, and
+    /// reports nothing, by the rule every model keeps (`OnlineModel`, task
+    /// 183): `u`, `rho` and `loglik` all NaN, and the state it leaves is the
+    /// one the same row leaves at weight 0, each weight aged by the row's
+    /// `lam`, the standardiser's included. The standardiser learned the NaN,
+    /// that column had no standardised value again, and `loglik` was NaN on
+    /// every row after it: rows 30 to 59 of 60. Task 182 then read the row
+    /// as one with that column missing, reporting `u` and `rho` from the
+    /// others. Under both dynamics, and for an infinity and a value past the
+    /// input bound as for a NaN.
     #[test]
     fn a_row_that_is_not_a_number_teaches_nothing() {
         for (dynamics, alpha, beta) in [
             (DecoDynamics::Ew, None, None),
             (DecoDynamics::Linear, Some(0.05), Some(0.9)),
         ] {
-            for bad in [[f64::NAN, 0.1, 0.2], [0.1, f64::INFINITY, 0.2]] {
+            for bad in [
+                [f64::NAN, 0.1, 0.2],
+                [0.1, f64::INFINITY, 0.2],
+                [0.1, 0.2, -2.0 * crate::INPUT_BOUND],
+            ] {
                 let case = format!("{dynamics:?}, {bad:?}");
                 let mut m = Deco::new(DecoCfg {
                     dynamics,
@@ -708,10 +716,10 @@ mod tests {
                     if i == 30 {
                         let mut no_weight = m.clone();
                         no_weight.step(&x, &[], 1.0, 0.0);
+                        let n_eff = m.n_eff();
                         let out = m.step(&bad, &[], 1.0, 1.0);
-                        assert!(out.pred[0].is_finite(), "{case}: u {out:?}");
-                        assert!(out.pred[1].is_finite(), "{case}: rho {out:?}");
-                        assert!(out.pred[2].is_nan(), "{case}: loglik {out:?}");
+                        assert!(out.pred.iter().all(|v| v.is_nan()), "{case}: {out:?}");
+                        assert_eq!(out.n_eff, n_eff, "{case}");
                         assert_eq!(m, no_weight, "{case}");
                         continue;
                     }

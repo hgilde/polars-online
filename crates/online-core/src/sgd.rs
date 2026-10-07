@@ -535,6 +535,12 @@ impl OnlineModel for Sgd {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature that is not a number made every
+        // coefficient NaN (docs/PLAN.md task 183).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         let m = self.cfg.n_targets;
         let off = usize::from(self.cfg.fit_intercept);
         let lam = self.cfg.decay.factor(d_clock);
@@ -690,6 +696,9 @@ impl OnlineModel for Sgd {
     }
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if self.w_target.iter().any(|w| *w >= self.cfg.min_weight) {

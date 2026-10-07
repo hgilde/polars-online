@@ -426,6 +426,11 @@ impl OnlineModel for Ftrl {
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`).
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            return refused;
+        }
         self.ensure_buffers();
         let k = self.cfg.k_total();
         let m = self.cfg.n_targets;
@@ -485,7 +490,10 @@ impl OnlineModel for Ftrl {
     /// The row scored from the fit as the last row that taught each target
     /// left it: a row that teaches nothing does not move it, so the clock
     /// since does not either (the module docs).
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            return refused;
+        }
         let n_eff = self.w_sum;
         let m = self.cfg.n_targets;
         let mut pred = vec![f64::NAN; m];

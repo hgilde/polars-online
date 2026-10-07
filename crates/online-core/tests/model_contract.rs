@@ -51,7 +51,7 @@ struct Report {
 /// value read before a row must equal the `n_eff` that row reports: they are
 /// the same number, and reporting two different ones would make `min_weight`
 /// mean something different from what a caller inspecting the model sees.
-fn probe_with<M: OnlineModel>(
+fn probe_with<M: OnlineModel + Clone>(
     mut m: M,
     targets: usize,
     n_eff_of: Option<&dyn Fn(&M) -> f64>,
@@ -86,6 +86,21 @@ fn probe_with<M: OnlineModel>(
     }
     let after_40 = row(&mut m, &mut s, 1.0).n_eff;
     n_eff.push(after_40);
+
+    // A value that is not usable, on the warm model, with the model's own
+    // accessor for the `n_eff` the refused row reports (task 183). On
+    // copies: `m` goes on below as it was.
+    let mut s4 = s;
+    let rows: Vec<Row3> = (0..13)
+        .map(|_| {
+            let x: Vec<f64> = (0..K).map(|_| lcg(&mut s4)).collect();
+            let y = (0..targets)
+                .map(|j| Some(0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1]))
+                .collect();
+            (x, y, 1.0)
+        })
+        .collect();
+    refuses_unusable_values(&m, &rows[0], &rows[1..], kind, n_eff_of);
 
     // Serialize here, before the two branches diverge.
     let bytes = rmp_serde::to_vec(&m.state()).unwrap();
@@ -1820,7 +1835,7 @@ fn same_step(kind: &str, i: usize, p: &Step, s: &Step) {
 /// and, being `&self`, it cannot have moved the state. That equality is the
 /// whole definition of `predict`; a model that computes its prediction any
 /// other way in one of the two places fails here.
-fn predict_is_the_step_without_the_step<M: OnlineModel>(
+fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
     build: impl Fn() -> M,
     targets: usize,
     binary: bool,
@@ -1887,6 +1902,7 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
     );
     zero_weight_rows_only_advance_the_clock(&build, targets, binary, kind);
     a_zero_weight_row_past_the_underflow_forgets(&build, targets, binary, kind);
+    unusable_values_are_refused(&build, targets, binary, kind);
 }
 
 /// Task 115 (c), decided 2026-09-28: a zero-weight row whose decay
@@ -2051,6 +2067,232 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
             a.pred,
             b.pred
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A value that is not usable, refused by every model by one rule (the
+// `OnlineModel` docs; docs/PLAN.md task 183).
+// ---------------------------------------------------------------------------
+
+/// The values a model reads as missing (`online_core::usable`): not a
+/// number, either infinity, and either sign past the input bound.
+const UNUSABLE: [f64; 5] = [
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    2.0 * INPUT_BOUND,
+    -2.0 * INPUT_BOUND,
+];
+
+/// A row: the features, the targets and the clock since the row before.
+type Row3 = (Vec<f64>, Vec<Option<f64>>, f64);
+
+fn state_bytes<M: OnlineModel>(m: &M) -> Vec<u8> {
+    rmp_serde::to_vec(&m.state()).unwrap()
+}
+
+/// The same numbers to the bit, NaN for NaN.
+fn same_number(u: f64, v: f64) -> bool {
+    u.to_bits() == v.to_bits() || (u.is_nan() && v.is_nan())
+}
+
+/// Two steps that report the same thing to the bit, NaN for NaN: every
+/// slot, `n_eff` and `extra`.
+fn same_bits(a: &Step, b: &Step) -> bool {
+    let extra = match (&a.extra, &b.extra) {
+        (Some(Extra::Lasso { lam_selected: u }), Some(Extra::Lasso { lam_selected: v })) => {
+            u.len() == v.len() && u.iter().zip(v).all(|(p, q)| same_number(*p, *q))
+        }
+        (u, v) => u == v,
+    };
+    a.pred.len() == b.pred.len()
+        && a.pred.iter().zip(&b.pred).all(|(u, v)| same_number(*u, *v))
+        && same_number(a.n_eff, b.n_eff)
+        && extra
+}
+
+/// Nothing reported: NaN in every slot, and in every number of `extra`.
+fn reports_nothing(s: &Step) -> bool {
+    s.pred.iter().all(|v| v.is_nan())
+        && match &s.extra {
+            None => true,
+            Some(Extra::Lasso { lam_selected }) => lam_selected.iter().all(|v| v.is_nan()),
+            Some(_) => false,
+        }
+}
+
+/// The rule for a value that is not usable, checked on `m` as it stands
+/// before `row`, with `after` the rows that follow it:
+///
+/// - **A feature**, in each position, as each of [`UNUSABLE`]: `step`,
+///   `predict` and `predict_with` report nothing, and `n_eff` as on any row
+///   (the accessor's, where `n_eff_of` is given); the state is the one the
+///   same row leaves at weight 0 with that feature as it was -- byte for
+///   byte, and so the same whatever the value and wherever it stands -- and
+///   the rows after it report, to the bit, what they report after that row.
+/// - **A target** is an absent one: `Some(bad)` and `None` leave the same
+///   state and report the same step, `predict_with`'s included.
+/// - **A weight**: the row reports what `predict_with` does, and leaves the
+///   state a row with a feature that is not usable leaves.
+///
+/// No model is excepted: no model's zero-weight row takes anything from the
+/// row's features into its state -- no ring slot, warm-up row or likelihood
+/// -- so the refused row, which takes none of it, leaves that row's state.
+/// A blocked `ewridge` Gram, which holds a zero-weight row in its block, is
+/// the one place one does, and is tested in `ewridge`'s own file.
+fn refuses_unusable_values<M: OnlineModel + Clone>(
+    m: &M,
+    (x, y, d): &Row3,
+    after: &[Row3],
+    kind: &str,
+    n_eff_of: Option<&dyn Fn(&M) -> f64>,
+) {
+    let d = *d;
+    // The same row at weight 0, and the rows after it from there.
+    let mut reference = m.clone();
+    let zero = reference.step(x, y, d, 0.0);
+    let zero_state = state_bytes(&reference);
+    let goes_on_as_the_reference = |mut a: M, what: &str| {
+        let mut b = reference.clone();
+        for (i, (x, y, d)) in after.iter().enumerate() {
+            let (sa, sb) = (a.step(x, y, *d, 1.0), b.step(x, y, *d, 1.0));
+            assert!(
+                same_bits(&sa, &sb),
+                "{kind}: {what}: row {i} after it reports {sa:?}, and {sb:?} after the row at \
+                 weight 0"
+            );
+        }
+    };
+
+    let mut refused_state: Option<Vec<u8>> = None;
+    for pos in 0..m.n_features() {
+        for bad in UNUSABLE {
+            let what = format!("feature {pos} = {bad:e}");
+            let mut xb = x.clone();
+            xb[pos] = bad;
+            let mut c = m.clone();
+            let s = c.step(&xb, y, d, 1.0);
+            assert!(
+                reports_nothing(&s),
+                "{kind}: {what}: the step reported {s:?}"
+            );
+            for (how, p) in [
+                ("predict", m.predict(&xb, d)),
+                ("predict_with", m.predict_with(&xb, y, d)),
+            ] {
+                assert!(
+                    same_bits(&p, &s),
+                    "{kind}: {what}: {how} reported {p:?}, the step {s:?}"
+                );
+            }
+            assert!(
+                same_number(s.n_eff, zero.n_eff),
+                "{kind}: {what}: n_eff {}, and {} on any row",
+                s.n_eff,
+                zero.n_eff
+            );
+            if let Some(n_eff) = n_eff_of {
+                assert_eq!(
+                    s.n_eff,
+                    n_eff(m),
+                    "{kind}: {what}: n_eff against the accessor"
+                );
+            }
+            let state = state_bytes(&c);
+            assert!(
+                state == zero_state,
+                "{kind}: {what}: the state is not the one the row leaves at weight 0"
+            );
+            match &refused_state {
+                Some(first) => assert!(
+                    *first == state,
+                    "{kind}: {what}: the state depends on the value or where it stands"
+                ),
+                None => refused_state = Some(state),
+            }
+            goes_on_as_the_reference(c, &what);
+        }
+    }
+
+    for j in 0..y.len() {
+        for bad in UNUSABLE {
+            let what = format!("target {j} = Some({bad:e})");
+            let (mut yb, mut yn) = (y.clone(), y.clone());
+            yb[j] = Some(bad);
+            yn[j] = None;
+            let (pb, pn) = (m.predict_with(x, &yb, d), m.predict_with(x, &yn, d));
+            assert!(
+                same_bits(&pb, &pn),
+                "{kind}: {what}: predict_with reported {pb:?}, and {pn:?} for None"
+            );
+            let (mut b, mut n) = (m.clone(), m.clone());
+            let (sb, sn) = (b.step(x, &yb, d, 1.0), n.step(x, &yn, d, 1.0));
+            assert!(
+                same_bits(&sb, &sn),
+                "{kind}: {what}: the step reported {sb:?}, and {sn:?} for None"
+            );
+            assert!(
+                state_bytes(&b) == state_bytes(&n),
+                "{kind}: {what}: the state is not the one None leaves"
+            );
+        }
+    }
+
+    // A model that reads no features is held to the row at weight 0.
+    let refused_state = refused_state.unwrap_or(zero_state);
+    for bad in UNUSABLE {
+        let what = format!("weight {bad:e}");
+        let p = m.predict_with(x, y, d);
+        let mut c = m.clone();
+        let s = c.step(x, y, d, bad);
+        assert!(
+            same_bits(&p, &s),
+            "{kind}: {what}: the step reported {s:?}, predict_with {p:?}"
+        );
+        assert!(
+            state_bytes(&c) == refused_state,
+            "{kind}: {what}: the state is not the one a row with a feature that is not \
+             usable leaves"
+        );
+        goes_on_as_the_reference(c, &what);
+    }
+}
+
+/// [`refuses_unusable_values`] at the head of a stream, at its fourth row
+/// (inside every warm-up the configurations here keep) and on a warm model
+/// at row 60: the stream of [`zero_weight_rows_only_advance_the_clock`],
+/// with twelve rows after each checked one.
+fn unusable_values_are_refused<M: OnlineModel + Clone>(
+    build: &impl Fn() -> M,
+    targets: usize,
+    binary: bool,
+    kind: &'static str,
+) {
+    let mut s = 20261006u64;
+    let rows: Vec<Row3> = (0..80usize)
+        .map(|i| {
+            let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+            let y = (0..targets)
+                .map(|j| {
+                    let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1];
+                    Some(if binary { f64::from(lin > 0.5) } else { lin })
+                })
+                .collect();
+            let d = match i {
+                0 => 0.0,
+                _ if i.is_multiple_of(5) => 3.0,
+                _ => 1.0,
+            };
+            (x, y, d)
+        })
+        .collect();
+    let mut m = build();
+    for (i, (x, y, d)) in rows.iter().enumerate() {
+        if matches!(i, 0 | 3 | 60) {
+            refuses_unusable_values(&m, &rows[i], &rows[i + 1..i + 13], kind, None);
+        }
+        m.step(x, y, *d, 1.0);
     }
 }
 
@@ -2288,21 +2530,36 @@ fn a_value_in_the_targets_slot_reaches_predict() {
     // The row's value has to *matter*, or the parity below is vacuous:
     // count the rows where ignoring it gives a different answer.
     let (mut bo_moved, mut hm_moved) = (0usize, 0usize);
+    // A hazard between 2 and 1000, never the configured 50; an exogenous
+    // value swinging either side of the default 0.
+    let (mut hazards, mut exogenous) = (Vec::new(), Vec::new());
     for i in 0..300 {
         let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
-        // A hazard between 2 and 1000, never the configured 50; an
-        // exogenous value swinging either side of the default 0.
-        let hz = [Some(2.0 + 499.0 * (1.0 + lcg(&mut s)))];
-        let z = [Some(3.0 * lcg(&mut s))];
+        let hz = vec![Some(2.0 + 499.0 * (1.0 + lcg(&mut s)))];
+        let z = vec![Some(3.0 * lcg(&mut s))];
         let d = if i == 0 { 0.0 } else { 1.0 };
+        hazards.push((x.clone(), hz, d));
+        exogenous.push((x, z, d));
+    }
+    for i in 0..300 {
+        let ((x, hz, d), (_, z, _)) = (&hazards[i], &exogenous[i]);
+        let d = *d;
+        // A value there that is not usable is an absent one, as a target
+        // that is not usable is (task 183): the configured hazard, the
+        // default exogenous value. At the head of the stream, and warm.
+        if matches!(i, 0 | 150) {
+            let next = i + 1..i + 13;
+            refuses_unusable_values(&bo, &hazards[i], &hazards[next.clone()], "bocpd", None);
+            refuses_unusable_values(&hm, &exogenous[i], &exogenous[next], "hmm", None);
+        }
 
-        let p = bo.predict_with(&x, &hz, d);
-        bo_moved += usize::from(!same_pred(&p, &bo.predict(&x, d)));
-        same_step("bocpd", i, &p, &bo.step(&x, &hz, d, 1.0));
+        let p = bo.predict_with(x, hz, d);
+        bo_moved += usize::from(!same_pred(&p, &bo.predict(x, d)));
+        same_step("bocpd", i, &p, &bo.step(x, hz, d, 1.0));
 
-        let p = hm.predict_with(&x, &z, d);
-        hm_moved += usize::from(!same_pred(&p, &hm.predict(&x, d)));
-        same_step("hmm", i, &p, &hm.step(&x, &z, d, 1.0));
+        let p = hm.predict_with(x, z, d);
+        hm_moved += usize::from(!same_pred(&p, &hm.predict(x, d)));
+        same_step("hmm", i, &p, &hm.step(x, z, d, 1.0));
     }
     assert!(
         bo_moved > 200,
