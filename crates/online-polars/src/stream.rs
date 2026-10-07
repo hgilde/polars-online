@@ -4650,26 +4650,16 @@ fn run_instance(
     // never negative, so the sign test about zero agreed on every row and
     // `hit_rate` read 1.0 whatever the fit. It is null, as `po.eval` nulls a
     // metric that is not defined (review round 4, CC5; docs/PLAN.md task
-    // 195, S5).
-    let no_hit_test = matches!(&inst.spec.model, ModelKind::Sgd { loss, .. }
+    // 195, S5). Every other target's test is about zero: task 201 removed
+    // the ratio target, whose test was about 1.
+    let poisson = matches!(&inst.spec.model, ModelKind::Sgd { loss, .. }
         if loss.as_deref() == Some("poisson"));
-    // Where a target's hit test is centred: 1 for a ratio, which is positive
-    // by construction and read 1.0 about zero whatever the fit (review
-    // 2026-09-26, D3); 0 for everything else, a difference and a log ratio
-    // included.
-    let hit_test = |target: usize| -> HitTest {
-        if no_hit_test {
-            return HitTest::Undefined;
-        }
-        if binary_loss {
-            return HitTest::Threshold;
-        }
-        match inst.spec.targets.defs().get(target) {
-            Some(t) if t.relative_to.is_some() && t.relative == crate::targets::Relative::Ratio => {
-                HitTest::About(1.0)
-            }
-            _ => HitTest::About(0.0),
-        }
+    let hit_test = if poisson {
+        HitTest::Undefined
+    } else if binary_loss {
+        HitTest::Threshold
+    } else {
+        HitTest::Sign
     };
     for plan in plans {
         if plan.reset {
@@ -5038,7 +5028,7 @@ fn run_instance(
                 }
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                    met.update_with(step.pred[slot], yj, lam, w, hit_test(slot / nc));
+                    met.update_with(step.pred[slot], yj, lam, w, hit_test);
                 }
             }
         }

@@ -21,11 +21,14 @@ sees a stream* is the guide to them. This is the reference.
     reads from the same row. A model with no target (``ew_cov``, ``kmeans``,
     ``micro``, ``deco``, ``bocpd``, ``corrchange``, ``hmm`` and ``rcov``)
     takes ``features`` alone. ``ew_class`` takes a ``label`` column in the
-    target's place. ``holt`` takes no features. A target may also be a
-    :func:`polars_online.target`, a column taken against another column of
-    its own row: ``po.target("price_5m", relative_to="mid")``. The model then
-    learns and predicts on that relative scale. Or a window expression
-    looking ahead (:mod:`polars_online.ops`), named by its alias:
+    target's place. ``holt`` takes no features. A target computed from its
+    own row's columns, such as a return against the mid, is a column: make
+    it with Polars' ``with_columns`` before the bank, as a log ratio
+    ``(pl.col("price_5m") / pl.col("mid")).log()`` or a difference, which
+    sit about zero where ``hit_rate`` takes its sign. A
+    :func:`polars_online.target` is a column under a name of its own. A
+    target may also be a window expression looking ahead
+    (:mod:`polars_online.ops`), named by its alias:
     ``(po.rewm_mean("mid", half_life="10s", window_size="1m") -
     pl.col("mid")).alias("fwd")``. The bank resolves it when the row's window
     closes, and learns the row then, under the ``embargo``. ``fit_predict``

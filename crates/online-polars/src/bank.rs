@@ -31,7 +31,7 @@ use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
 use crate::stream::{
     AnyModel, ChunkOut, ClockDtype, ClockRefusal, StepRefusal, Stream, StreamState, combo_labels,
-    last_accepted, usable,
+    last_accepted,
 };
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
 use online_core::ClockValue;
@@ -147,8 +147,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// `_rows`; a window's ring keeps its edge. A 40 file is refit. **42
 /// since task 200** (2026-10-07): an integer clock is held as an integer,
 /// in the streams' clocks and stamps and in the bank's clock dtypes, and a
-/// windows state is version 8; an older file is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 42;
+/// windows state is version 8; an older file is refit. **43 since task
+/// 201** (2026-10-07): relative targets were removed, so a 42 file's spec
+/// may hold a target table this build refuses, and a ratio target's metrics
+/// were kept about 1 where every target's are now kept about 0; a 42 file
+/// is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 43;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -444,28 +448,13 @@ fn extract(
             let c = t.column.as_str();
             // A formula target is not known at its row: the bank's window
             // core resolves it later (docs/PLAN.md task 104), so here it is
-            // null on every row. A scoring call may leave a target out; a
-            // relative one is out when either of its two columns is.
-            if t.is_formula() || optional(c) || t.relative_to.as_deref().is_some_and(optional) {
+            // null on every row. A scoring call may leave a target out.
+            if t.is_formula() || optional(c) {
                 Ok(vec![f64::NAN; chunk.height()])
             } else if let ModelKind::EwClass { classes, .. } = &spec.model {
                 label_column(chunk, spec, c, classes, layout)
             } else {
-                let mut v = f64_column(chunk, spec, "target", c, layout)?;
-                // A relative target, taken against its reference at the same
-                // row (docs/PLAN.md task 107a). A side the stream cannot use
-                // makes it null, before the arithmetic: two values past the
-                // input bound must not subtract into a usable one.
-                if let Some(r) = &t.relative_to {
-                    let refs = f64_column(chunk, spec, "relative_to", r, layout)?;
-                    for (y, &r) in v.iter_mut().zip(&refs) {
-                        *y = if usable(*y) && usable(r) {
-                            t.relative.of(*y, r)
-                        } else {
-                            f64::NAN
-                        };
-                    }
-                }
+                let v = f64_column(chunk, spec, "target", c, layout)?;
                 // A `strict_binary` target is 0 or 1, and anything else is an
                 // error naming the row, as a label outside `ew_class`'s
                 // classes is -- checked here, before any stream is touched, so

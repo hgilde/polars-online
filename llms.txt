@@ -72,6 +72,11 @@ bank.save("bank.state")
   weight, not a number of rows.
 - **A zero-weight row is legal** and means "advance the clock, learn nothing", including
   as the first row of a stream.
+- **A target derived from its row's columns is a column.** Make a return in the query
+  before the bank, `lf.with_columns(ret=(pl.col("p") / pl.col("mid")).log())`, and name
+  it in `targets`: a log ratio or a difference sits about zero, where `hit_rate` takes
+  its sign. `po.target` only names a target's output fields apart from its column; its
+  `relative_to=` was removed before 1.0 and is refused.
 - **Every spec adds one struct column**, named after the spec. `weight_sum` is in every one;
   the linear models add `pred_<target>`, `resid_<target>` and `coef`; diagnostics add
   theirs when switched on.

@@ -83,21 +83,21 @@ def test_count_11_finds_exception_and_raise_in_their_everyday_sense_only():
 
 
 def test_count_10_finds_a_call_walked_through_in_prose_and_not_one_its_code_shows():
-    """The `po.target` paragraph the user asked to be an example
+    """The shape of the `po.target` paragraph the user asked to be an example
     (docs/README-ITERATIONS.md, C12), in small: a call and its keyword
-    values in prose, under a heading whose code shows none of them."""
+    values in prose, under a heading whose code shows none of them. The
+    call is a window operator's since task 201 removed `po.target`'s
+    `relative=`, whose words the paragraph walked through."""
     prose = (
-        '`po.target("p", relative_to="mid")` is the target `p - mid`, under the '
-        'default `relative="difference"`, and `"ratio"` or `"log_ratio"` change the scale.\n'
+        '`po.rewm_mean("p", window_size="5m")` is the mean of `p` over the next five minutes, '
+        'under the default `closed="right"`, and `"left"` or `"both"` move the edges.\n'
     )
     plain = '```python\nspec = po.spec.ewridge("s", targets=["y"], features=["x0"])\n```\n\n'
     rows = hits("## Targets\n\n" + plain + prose, 10)
     assert len(rows) == 1
-    assert rows[0].startswith('[score 6: target*, relative*, "ratio", "log_ratio"]')
+    assert rows[0].startswith('[score 6: rewm_mean*, closed*, "left", "both"]')
     shows = (
-        "```python\n"
-        'one = po.target("p", relative_to="mid", relative="log_ratio")   # or "ratio"\n'
-        "```\n\n"
+        '```python\none = po.rewm_mean("p", window_size="5m", closed="left")   # or "both"\n```\n\n'
     )
     assert hits("## Targets\n\n" + shows + prose, 10) == []
 

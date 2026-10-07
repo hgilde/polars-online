@@ -12,8 +12,9 @@ One Rust core, reached two ways:
 
 A spec names a model and the columns it reads (:mod:`polars_online.spec`);
 every way in takes a list of them and writes one struct column per spec. A
-target may be taken against another column of its own row, a price against
-the mid, with :func:`target`.
+target is a column, a column under a name of its own (:func:`target`), or a
+window expression looking ahead; a target computed from its own row's
+columns, a price against the mid, is a column made with ``with_columns``.
 Around them: :mod:`polars_online.eval` scores the output;
 :mod:`polars_online.gram` solves and diagnoses the running sums a bank
 exports; :mod:`polars_online.corr` repairs and reads correlation matrices;

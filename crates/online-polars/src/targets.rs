@@ -1,35 +1,12 @@
-//! A spec's targets, each a column to learn against or a column taken
-//! against another of its own row (docs/PLAN.md task 107a).
+//! A spec's targets, each a column to learn against, under its own name or
+//! another, or a formula of the row's future.
 //!
-//! The user, 2026-09-11: "every target should have the option to be
-//! relative". A level -- a price, a VWAP -- is rarely what a regression
-//! should predict; where it goes from *now* is. So a target may name a
-//! reference column, read **at the target's own row**, and a way to take the
-//! target against it:
-//!
-//! ```text
-//! "difference"  y − r
-//! "ratio"       y / r        where y > 0 and r > 0
-//! "log_ratio"   ln(y / r)    where y > 0 and r > 0
-//! ```
-//!
-//! `r` is known when the row arrives, so a relative target is exactly as
-//! honest as the column it is built from: it adds no look-ahead. A value
-//! either side cannot use -- null, not finite, past the input bound -- or,
-//! for the two ratios, a `y` or `r` that is not positive, makes the target
-//! null on that row: not learned from, never a NaN in the state (hard rule
-//! 9). So does a result the model cannot use: a difference past the bound,
-//! or a ratio that over- or underflows (three hundred orders of magnitude
-//! apart, inside the bound on both sides), is null on that row too, by the
-//! same rule every target is held to. Everything downstream is on the
-//! relative scale: `pred`, `resid`, `sigma`, the metrics and the interval.
-//!
-//! On every surface a target is a string or a table: in Python
-//! `po.target("price_5m", relative_to="mid")`, in the CLI's TOML
-//! `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`. A
-//! table's `name`, which the output fields carry, is its `column` unless
-//! given. A spec whose targets are all plain columns writes them as the
-//! strings it always did, so its bytes do not move.
+//! On every surface a target is a string or a table: in Python a column's
+//! name or `po.target("p", name="price")`, in the CLI's TOML
+//! `targets = ["ret_5m", { column = "p", name = "price" }]`. A table's
+//! `name`, which the output fields carry, is its `column` unless given. A
+//! spec whose targets are all plain columns writes them as strings, so its
+//! bytes do not move.
 //!
 //! A target may also be a **formula of the row's future** (docs/PLAN.md task
 //! 104): a table with a `name` and a `formula`, task 143's compact tree of
@@ -38,6 +15,15 @@
 //! holding at least one forward operator. Its value is not known at its row:
 //! the bank's window core resolves it when the window closes, and the row is
 //! learned from then, under the spec's `embargo`.
+//!
+//! **Relative targets were removed** (docs/PLAN.md task 201). Task 107a let a
+//! table name a reference column of its own row, `relative_to`, and a way to
+//! take the target against it, `relative` (a difference, a ratio or a log
+//! ratio). Polars computes the same target as a column -- `with_columns(
+//! ret=pl.col("p") - pl.col("mid"))`, in the columns' own type -- and the bank
+//! learned it to the bit, so the table form duplicated an expression. A table
+//! naming either key is refused by name, saying to derive the column
+//! upstream.
 
 use std::fmt;
 use std::ops::Deref;
@@ -46,44 +32,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::formula::Node;
 
-/// How a relative target is taken against its reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Relative {
-    /// `y − r`.
-    #[default]
-    Difference,
-    /// `y / r`, where both are positive.
-    Ratio,
-    /// `ln(y / r)`, where both are positive.
-    LogRatio,
-}
+/// What a table naming `relative_to` or `relative` is told: the two keys
+/// were task 107a's relative target, which task 201 removed.
+pub const RELATIVE_REMOVED: &str = "relative targets were removed; derive the target column \
+     upstream (in Polars, with_columns(ret=pl.col(\"p\") - pl.col(\"mid\")), or for a return \
+     the log ratio (pl.col(\"p\") / pl.col(\"mid\")).log()) and name it in targets";
 
-impl Relative {
-    /// The target's value from the column's `y` and the reference's `r`, both
-    /// already usable ([`crate::stream::usable`]): NaN, a null target, where
-    /// a ratio has a side that is not positive.
-    #[inline]
-    pub fn of(self, y: f64, r: f64) -> f64 {
-        match self {
-            Relative::Difference => y - r,
-            Relative::Ratio if y > 0.0 && r > 0.0 => y / r,
-            Relative::LogRatio if y > 0.0 && r > 0.0 => (y / r).ln(),
-            Relative::Ratio | Relative::LogRatio => f64::NAN,
-        }
-    }
-}
-
-/// One target: the name its output fields carry, the column its values are
-/// read from, and for a relative target the column of the same row they are
-/// taken against, and how; or, for a formula target, the formula of the
-/// row's future (`column` is then empty and never read).
+/// One target: the name its output fields carry and the column its values
+/// are read from; or, for a formula target, the formula of the row's future
+/// (`column` is then empty and never read).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetDef {
     pub name: String,
     pub column: String,
-    pub relative_to: Option<String>,
-    pub relative: Relative,
     /// A formula over window operators, at least one looking ahead
     /// (docs/PLAN.md task 104); `None` for a column target.
     pub formula: Option<Node>,
@@ -96,8 +57,6 @@ impl TargetDef {
         Self {
             name: column.clone(),
             column,
-            relative_to: None,
-            relative: Relative::Difference,
             formula: None,
         }
     }
@@ -107,15 +66,13 @@ impl TargetDef {
         Self {
             name: name.into(),
             column: String::new(),
-            relative_to: None,
-            relative: Relative::Difference,
             formula: Some(tree),
         }
     }
 
     /// A column read as it is, under its own name: what a string target is.
     pub fn is_plain(&self) -> bool {
-        self.formula.is_none() && self.relative_to.is_none() && self.name == self.column
+        self.formula.is_none() && self.name == self.column
     }
 
     /// Whether the target is a formula of the row's future, resolved by the
@@ -134,14 +91,12 @@ impl TargetDef {
         }
     }
 
-    /// Every column the target reads: its own and its reference, or the
-    /// columns of its formula.
+    /// Every column the target reads: its own, or the columns of its
+    /// formula.
     pub fn columns(&self) -> Vec<String> {
         match &self.formula {
             Some(tree) => tree.columns(),
-            None => std::iter::once(self.column.clone())
-                .chain(self.relative_to.clone())
-                .collect(),
+            None => vec![self.column.clone()],
         }
     }
 }
@@ -155,14 +110,9 @@ pub struct Targets {
 }
 
 impl Targets {
-    /// Each target in order, with its column and reference.
+    /// Each target in order, with its column or formula.
     pub fn defs(&self) -> &[TargetDef] {
         &self.defs
-    }
-
-    /// Whether any target is taken against a reference.
-    pub fn any_relative(&self) -> bool {
-        self.defs.iter().any(|d| d.relative_to.is_some())
     }
 
     /// Whether any target is a formula of the row's future.
@@ -248,8 +198,8 @@ impl<'de> Deserialize<'de> for Written {
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
-                    "a column name, or a table with `column` and optionally `relative_to`, \
-                     `relative` and `name`, or a table with `name` and `formula`",
+                    "a column name, or a table with `column` and optionally `name`, or a table \
+                     with `name` and `formula`",
                 )
             }
 
@@ -276,13 +226,16 @@ struct Table {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     column: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    relative_to: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    relative: Option<Relative>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     formula: Option<Node>,
+    /// Task 107a's two keys, read only to be refused by name
+    /// ([`RELATIVE_REMOVED`]) where `deny_unknown_fields` would say only
+    /// "unknown field"; never written.
+    #[serde(default, skip_serializing)]
+    relative_to: Option<serde::de::IgnoredAny>,
+    #[serde(default, skip_serializing)]
+    relative: Option<serde::de::IgnoredAny>,
 }
 
 impl Serialize for Targets {
@@ -293,21 +246,13 @@ impl Serialize for Targets {
             .map(|d| {
                 if d.is_plain() {
                     Written::Name(d.column.clone())
-                } else if let Some(tree) = &d.formula {
-                    Written::Table(Table {
-                        column: None,
-                        relative: None,
-                        relative_to: None,
-                        name: Some(d.name.clone()),
-                        formula: Some(tree.clone()),
-                    })
                 } else {
                     Written::Table(Table {
-                        column: Some(d.column.clone()),
-                        relative: d.relative_to.as_ref().map(|_| d.relative),
-                        relative_to: d.relative_to.clone(),
-                        name: (d.name != d.column).then(|| d.name.clone()),
-                        formula: None,
+                        column: d.formula.is_none().then(|| d.column.clone()),
+                        name: Some(d.name.clone()),
+                        formula: d.formula.clone(),
+                        relative_to: None,
+                        relative: None,
                     })
                 }
             })
@@ -324,6 +269,13 @@ impl<'de> Deserialize<'de> for Targets {
             defs.push(match w {
                 Written::Name(column) => TargetDef::plain(column),
                 Written::Table(t) => {
+                    if t.relative_to.is_some() || t.relative.is_some() {
+                        let which = t.column.as_ref().or(t.name.as_ref());
+                        return Err(serde::de::Error::custom(match which {
+                            Some(c) => format!("target {c:?}: {RELATIVE_REMOVED}"),
+                            None => RELATIVE_REMOVED.to_string(),
+                        }));
+                    }
                     // A formula target (docs/PLAN.md task 104): a name and
                     // the tree, nothing of a column target's.
                     if let Some(tree) = t.formula {
@@ -338,11 +290,11 @@ impl<'de> Deserialize<'de> for Targets {
                                 "formula target: name must not be empty",
                             ));
                         }
-                        if t.column.is_some() || t.relative_to.is_some() || t.relative.is_some() {
+                        if t.column.is_some() {
                             return Err(serde::de::Error::custom(format!(
                                 "target {name:?}: a formula target has a name and a formula and \
-                                 no column; a relative target is a column taken against \
-                                 another, so put the subtraction in the formula instead"
+                                 no column; to take a window against a column of the row, put \
+                                 the subtraction in the formula"
                             )));
                         }
                         if !tree.has_forward_operator() {
@@ -369,21 +321,10 @@ impl<'de> Deserialize<'de> for Targets {
                             "a target table names a `column`, or a `name` and a `formula`",
                         ));
                     };
-                    if t.relative.is_some() && t.relative_to.is_none() {
-                        return Err(serde::de::Error::custom(format!(
-                            "target {:?}: relative needs relative_to, the column of the \
-                             same row the target is taken against",
-                            column
-                        )));
-                    }
                     // An empty name would give fields called `pred_`; an
-                    // empty column or reference names no column (review
-                    // 2026-09-26, D missing 5).
-                    for (what, value) in [
-                        ("column", Some(&column)),
-                        ("name", t.name.as_ref()),
-                        ("relative_to", t.relative_to.as_ref()),
-                    ] {
+                    // empty column names no column (review 2026-09-26, D
+                    // missing 5).
+                    for (what, value) in [("column", Some(&column)), ("name", t.name.as_ref())] {
                         if value.is_some_and(String::is_empty) {
                             return Err(serde::de::Error::custom(format!(
                                 "target {:?}: {what} must not be empty",
@@ -394,8 +335,6 @@ impl<'de> Deserialize<'de> for Targets {
                     TargetDef {
                         name: t.name.unwrap_or_else(|| column.clone()),
                         column,
-                        relative_to: t.relative_to,
-                        relative: t.relative.unwrap_or_default(),
                         formula: None,
                     }
                 }
@@ -414,57 +353,45 @@ mod tests {
     }
 
     /// A string is a plain column and writes back as the string, so a spec
-    /// without a relative target keeps its bytes; a table writes back as a
-    /// table, with only what it said.
+    /// of plain columns keeps its bytes; a table writes back as a table, with
+    /// only what it said, and a table naming its own column is the column.
     #[test]
     fn a_target_is_a_string_or_a_table_and_writes_back_as_it_was() {
-        let t = json(r#"["y", {"column": "p", "relative_to": "mid"}]"#).unwrap();
-        assert_eq!(t.as_slice(), ["y", "p"], "it reads as the names");
-        assert_eq!(t.defs()[0], TargetDef::plain("y"));
+        let plain = json(r#"["a", "b"]"#).unwrap();
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"["a","b"]"#);
+        assert_eq!(plain.defs()[0], TargetDef::plain("a"));
+        // Named apart from its column: a renamed column.
+        let named = json(r#"["y", {"column": "p", "name": "price"}]"#).unwrap();
+        assert_eq!(named.as_slice(), ["y", "price"], "it reads as the names");
         assert_eq!(
-            t.defs()[1],
+            named.defs()[1],
             TargetDef {
-                name: "p".into(),
+                name: "price".into(),
                 column: "p".into(),
-                relative_to: Some("mid".into()),
-                relative: Relative::Difference,
                 formula: None,
             }
         );
-        assert!(t.any_relative());
-        assert_eq!(
-            serde_json::to_string(&t).unwrap(),
-            r#"["y",{"column":"p","relative_to":"mid","relative":"difference"}]"#
-        );
-        let plain = json(r#"["a", "b"]"#).unwrap();
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"["a","b"]"#);
-        assert!(!plain.any_relative());
-        // Named apart from its column, with no reference: a renamed column.
-        let named = json(r#"[{"column": "p", "name": "price"}]"#).unwrap();
-        assert_eq!(named.as_slice(), ["price"]);
+        assert_eq!(named.defs()[1].columns(), ["p"]);
+        assert!(!named.defs()[1].is_plain());
         assert_eq!(
             serde_json::to_string(&named).unwrap(),
-            r#"[{"column":"p","name":"price"}]"#
+            r#"["y",{"column":"p","name":"price"}]"#
         );
+        let own = json(r#"[{"column": "p"}, {"column": "q", "name": "q"}]"#).unwrap();
+        assert_eq!(serde_json::to_string(&own).unwrap(), r#"["p","q"]"#);
     }
 
-    /// The CLI's TOML form, as docs/PLAN.md task 107 writes it.
+    /// The CLI's TOML form.
     #[test]
     fn the_toml_table_form_reads_the_same() {
         #[derive(Deserialize)]
         struct Holder {
             targets: Targets,
         }
-        let h: Holder = toml::from_str(
-            r#"targets = ["ret_5m", { column = "price_5m", relative_to = "mid", relative = "log_ratio" }]"#,
-        )
-        .unwrap();
-        let want = json(
-            r#"["ret_5m", {"column": "price_5m", "relative_to": "mid", "relative": "log_ratio"}]"#,
-        )
-        .unwrap();
+        let h: Holder =
+            toml::from_str(r#"targets = ["ret_5m", { column = "p", name = "price" }]"#).unwrap();
+        let want = json(r#"["ret_5m", {"column": "p", "name": "price"}]"#).unwrap();
         assert_eq!(h.targets, want);
-        assert_eq!(h.targets.defs()[1].relative, Relative::LogRatio);
     }
 
     /// A formula target: a name and task 143's tree, written back as it
@@ -533,28 +460,48 @@ mod tests {
 
     #[test]
     fn a_table_that_says_too_little_or_too_much_is_refused() {
-        let err = json(r#"[{"column": "p", "relative": "ratio"}]"#).unwrap_err();
-        assert!(err.contains("relative needs relative_to"), "{err}");
-        let err = json(r#"[{"column": "p", "relative_to": "m", "relative": "sum"}]"#).unwrap_err();
-        assert!(err.contains("unknown variant `sum`"), "{err}");
         let err = json(r#"[{"column": "p", "against": "m"}]"#).unwrap_err();
         assert!(err.contains("unknown field `against`"), "{err}");
         let err = json(r#"[3]"#).unwrap_err();
         assert!(err.contains("a column name, or a table"), "{err}");
+        for (table, what) in [
+            (r#"{"column": "", "name": "p"}"#, "column"),
+            (r#"{"column": "p", "name": ""}"#, "name"),
+        ] {
+            let err = json(&format!("[{table}]")).unwrap_err();
+            assert!(err.contains(&format!("{what} must not be empty")), "{err}");
+        }
     }
 
-    /// The three ways, and a ratio's refusal of a side that is not positive.
+    /// Task 201: relative targets were removed. A table naming `relative_to`
+    /// or `relative` -- a spec dict, the command line's TOML, a saved state
+    /// -- is refused by name, saying what replaces it, where serde would
+    /// have said only "unknown field".
     #[test]
-    fn the_three_ways_to_take_a_target() {
-        assert_eq!(Relative::Difference.of(5.0, 2.0), 3.0);
-        assert_eq!(Relative::Difference.of(-5.0, 2.0), -7.0);
-        assert_eq!(Relative::Ratio.of(5.0, 2.0), 2.5);
-        assert_eq!(Relative::LogRatio.of(5.0, 2.0), 2.5_f64.ln());
-        for how in [Relative::Ratio, Relative::LogRatio] {
-            assert!(how.of(0.0, 2.0).is_nan());
-            assert!(how.of(5.0, 0.0).is_nan());
-            assert!(how.of(-5.0, 2.0).is_nan());
-            assert!(how.of(5.0, -2.0).is_nan());
+    fn a_relative_target_is_refused_by_name() {
+        let removed = "relative targets were removed; derive the target column upstream";
+        let fwd = r#"["rewm_mean", ["col", "mid"], {"half_life": "10s", "window_size": "1m"}]"#;
+        for table in [
+            r#"{"column": "p", "relative_to": "mid"}"#.to_string(),
+            r#"{"column": "p", "relative_to": "mid", "relative": "log_ratio"}"#.to_string(),
+            r#"{"column": "p", "relative": "ratio"}"#.to_string(),
+            r#"{"column": "p", "name": "r", "relative_to": "mid"}"#.to_string(),
+            format!(r#"{{"name": "f", "formula": {fwd}, "relative_to": "mid"}}"#),
+        ] {
+            let err = json(&format!(r#"["y", {table}]"#)).unwrap_err();
+            assert!(err.contains(removed), "{table}: {err}");
         }
+        #[derive(Debug, Deserialize)]
+        struct Holder {
+            #[allow(dead_code)]
+            targets: Targets,
+        }
+        let err = toml::from_str::<Holder>(
+            r#"targets = ["ret_5m", { column = "price_5m", relative_to = "mid", relative = "log_ratio" }]"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(removed), "{err}");
+        assert!(err.contains(r#"target "price_5m""#), "{err}");
     }
 }

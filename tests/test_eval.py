@@ -309,72 +309,59 @@ def test_window_metrics_refuses_a_window_that_is_not_finite():
         po.eval.window_metrics(out, "m", clock="t", every=float("inf"))
 
 
-# --- A relative target (review round 4, YB1) ---------------------------------
+# --- A target read through its spec (review round 4, YB1) -------------------
 
-HOW = {
-    "difference": pl.col("p") - pl.col("mid"),
-    "ratio": pl.col("p") / pl.col("mid"),
-    "log_ratio": (pl.col("p") / pl.col("mid")).log(),
-}
+#: A return against the mid, as the column Polars makes (task 201 removed the
+#: relative target that took it inside the bank).
+LOG_RATIO = (pl.col("p") / pl.col("mid")).log()
 
 
-def _relative_frame(n: int = 600, seed: int = 3) -> pl.DataFrame:
-    """A price ``p`` about a drifting ``mid`` (``test_relative_targets.py``'s
-    frame), with what the bank cannot use on either side: a null, a value past
-    its input bound on both sides at once -- two values that must not subtract
-    into a usable zero -- and a ``mid`` that is not positive, which a ratio
-    cannot take. The last row's ``p`` is null: the bank reads its metrics
-    before each row, so the last row's are over every row before it, which
-    are the rows ``po.eval`` scores."""
+def _price_frame(n: int = 600, seed: int = 3) -> pl.DataFrame:
+    """A price ``p`` about a drifting ``mid``, with its log ratio ``ret`` as
+    a column, and what the bank cannot use in it: a null, and a value past
+    its input bound. The last row's ``ret`` is null: the bank reads its
+    metrics before each row, so the last row's are over every row before it,
+    which are the rows ``po.eval`` scores."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((n, 2))
     mid = 100.0 + np.cumsum(0.2 * rng.standard_normal(n))
     p = mid * np.exp(0.01 * (0.5 * x[:, 0] - 0.3 * x[:, 1]) + 0.002 * rng.standard_normal(n))
     i = pl.int_range(pl.len())
-    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "mid": mid, "p": p}).with_columns(
-        p=pl.when((i % 17 == 3) | (i == n - 1))
-        .then(None)
-        .when(i == 50)
-        .then(1e200)
-        .otherwise(pl.col("p")),
-        mid=pl.when(i % 23 == 5)
-        .then(None)
-        .when(i == 50)
-        .then(1e200)
-        .when(i % 29 == 7)
-        .then(-1.0)
-        .otherwise(pl.col("mid")),
+    return (
+        pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "mid": mid, "p": p})
+        .with_columns(ret=LOG_RATIO)
+        .with_columns(
+            ret=pl.when((i % 17 == 3) | (i == n - 1))
+            .then(None)
+            .when(i == 50)
+            .then(1e200)
+            .otherwise(pl.col("ret"))
+        )
     )
 
 
-def _relative_fit(relative: str, name: str | None = None):
-    target = po.target("p", relative_to="mid", relative=relative, name=name)
+def _named_fit(name: str | None):
+    target = "ret" if name is None else po.target("ret", name=name)
     spec = po.spec.ewridge(
         "m", targets=[target], features=["x0", "x1"], half_life=float("inf"), emit_metrics=True
     )
-    return spec, po.ModelBank([spec]).fit_predict(_relative_frame())
+    return spec, po.ModelBank([spec]).fit_predict(_price_frame())
 
 
-@pytest.mark.parametrize("name", [None, "ret"], ids=["named after its column", "named"])
-@pytest.mark.parametrize("relative", list(HOW))
-def test_a_relative_target_is_scored_as_the_bank_scores_it(relative, name):
-    """Review round 4 (YB1): ``po.eval`` read a relative target's raw column
-    as ``y`` -- the price, about 100, against a prediction of the price less
-    the mid, about 0 -- and reported ``r2 = -1723`` beside the bank's own
-    ``hit_rate`` of 0.86; a target with a name of its own raised polars'
-    ``ColumnNotFoundError``. With the spec in hand, ``y`` is the bank's: the
-    difference, the ratio or the log ratio, null where the bank cannot use a
-    side, and a ratio's hit test about 1. Held to the bank's own
+@pytest.mark.parametrize("name", [None, "fwd"], ids=["under its column's name", "renamed"])
+def test_a_target_is_scored_as_the_bank_scores_it(name):
+    """Review round 4 (YB1): a target with a name of its own raised polars'
+    ``ColumnNotFoundError``. With the spec in hand, ``y`` is the column the
+    bank read, under the name its fields carry. Held to the bank's own
     ``emit_metrics`` without decay, which over the same rows are the same
     three numbers."""
-    spec, out = _relative_fit(relative, name)
-    t = name or "p"
+    spec, out = _named_fit(name)
+    t = name or "ret"
     bank = out["m"].struct.unnest().tail(1)
-    centre = 1.0 if relative == "ratio" else 0.0
     pred = out["m"].struct.field(f"pred_{t}")
-    # A prediction exactly on the centre is a hit in the bank and a miss
-    # here (S6, not this test's): none may sit there.
-    assert pred.is_not_null().sum() > 500 and not (pred == centre).any()
+    # A prediction exactly at 0 is a hit in the bank and a miss here (S6,
+    # not this test's): none may sit there.
+    assert pred.is_not_null().sum() > 500 and not (pred == 0.0).any()
 
     def held(frame: pl.DataFrame) -> None:
         assert frame["target"].to_list() == [t]
@@ -396,42 +383,31 @@ def test_a_relative_target_is_scored_as_the_bank_scores_it(relative, name):
 
 
 def test_unpack_takes_a_target_as_its_spec_writes_it():
-    """``y`` is each target's own definition (``po.target``'s table), computed
-    in polars here as ``test_relative_targets.py`` computes it, and
-    ``target`` is the name the output fields carry. A column renamed with
-    ``name=`` is the column."""
-    df = _relative_frame()
-    targets = [
-        po.target("p", relative_to="mid", name="diff"),
-        po.target("p", relative_to="mid", relative="ratio", name="ratio"),
-        po.target("p", relative_to="mid", relative="log_ratio", name="log"),
-        po.target("p", name="price"),
-    ]
-    spec = po.spec.ewridge("m", targets=targets, features=["x0", "x1"], half_life=float("inf"))
+    """``y`` is each target's column, and ``target`` the name its output
+    fields carry: a column renamed with ``name=`` is the column."""
+    df = _price_frame()
+    spec = po.spec.ewridge(
+        "m",
+        targets=["ret", po.target("ret", name="fwd"), po.target("p", name="price")],
+        features=["x0", "x1"],
+        half_life=float("inf"),
+    )
     long = po.eval.unpack(po.ModelBank([spec]).fit_predict(df), "m", spec=spec)
-    usable = (pl.col("p").abs() <= 1e100) & (pl.col("mid").abs() <= 1e100)
-    positive = usable & (pl.col("p") > 0) & (pl.col("mid") > 0)
-    want = {
-        "diff": pl.when(usable).then(HOW["difference"]),
-        "ratio": pl.when(positive).then(HOW["ratio"]),
-        "log": pl.when(positive).then(HOW["log_ratio"]),
-        "price": pl.col("p"),
-    }
+    want = {"ret": "ret", "fwd": "ret", "price": "p"}
     assert long["target"].unique(maintain_order=True).to_list() == list(want)
-    for name, expr in want.items():
+    for name, column in want.items():
         got = long.filter(pl.col("target") == name)["y"]
-        assert got.equals(df.select(expr.alias("y"))["y"]), name
-        assert got.is_null().sum() >= 50 or name == "price", name
+        assert got.equals(df[column].alias("y")), name
 
 
 def test_without_the_spec_a_slot_named_after_no_column_says_to_pass_it():
     """A target with a name of its own writes ``pred_<name>``, which names no
     column: without the spec there is no way to know what ``y`` is, and the
     refusal says where it is written down."""
-    _, out = _relative_fit("log_ratio", "ret")
-    with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
+    _, out = _named_fit("fwd")
+    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass spec="):
         po.eval.metrics(out, "m", min_samples=1)
-    with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
+    with pytest.raises(ValueError, match=r"slot 'pred_fwd'.*pass spec="):
         po.eval.unpack(out, "m")
 
 
@@ -513,9 +489,9 @@ def test_sums_drops_a_row_whose_weight_the_bank_would_not_learn_from(bad):
     assert po.eval.sums(out, "m", weight="w")["n"][0] == scored, "the zero-weight row is in n"
 
 
-def test_a_prediction_at_the_centre_is_left_out_in_the_bank_and_here():
-    """docs/PLAN.md task 195 (S6; review round 4, YB8): a prediction exactly
-    at the hit test's centre says neither up nor down, and is left out of
+def test_a_prediction_at_zero_is_left_out_in_the_bank_and_here():
+    """docs/PLAN.md task 195 (S6; review round 4, YB8): a prediction of
+    exactly zero says neither up nor down, and is left out of
     ``hit_rate`` as a target there is, by the bank's ``emit_metrics`` and by
     :func:`metrics` and :func:`sums` alike. Rust's ``signum(+0.0)`` is 1, so
     the bank scored a prediction of 0 as "up", a hit on this frame's first
@@ -535,7 +511,7 @@ def test_a_prediction_at_the_centre_is_left_out_in_the_bank_and_here():
     out = po.ModelBank([spec]).fit_predict(d)
     assert out["m"].struct.field("pred_y")[0] == 0.0
     bank = out["m"].struct.field("hit_rate_y")
-    assert bank[1] is None, "read after the first row alone, whose prediction sits at the centre"
+    assert bank[1] is None, "read after the first row alone, whose prediction is zero"
     here = po.eval.metrics(out.head(3), "m", min_samples=1)["hit_rate"][0]
     assert here == pytest.approx(bank[3], abs=1e-15)
     sums = po.eval.sums(out.head(3), "m")

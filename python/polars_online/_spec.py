@@ -32,6 +32,7 @@ from polars_online._polars_online import (
     spec_output_index,
     validate_spec,
 )
+from polars_online._renamed import removed_keywords
 
 
 def _who(name: Any) -> str:
@@ -453,6 +454,14 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         for key, value in kwargs.items():
             if key == "name":
                 continue
+            if key == "targets" and isinstance(value, (list, tuple)):
+                # A table written by hand with a relative target's keys
+                # (task 201): refused by name, where the table's shape check
+                # would say only that `targets` is not a list of targets.
+                for t in value:
+                    if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
+                        what = t.get("column", t.get("name"))
+                        raise TypeError(f"{who}: target {json.dumps(what)}: {_RELATIVE_REMOVED}")
             hint = own.get(key, shared.get(key))
             if hint is None:
                 if key in _RENAMED:
@@ -540,11 +549,11 @@ __all__ = [
 
 class Target(TypedDict):
     """A target written as a table: what :func:`polars_online.target` returns,
-    and a ``[[specs]]`` target table in the CLI's TOML."""
+    and a ``[[specs]]`` target table in the CLI's TOML. ``column`` is read as
+    it is; ``name`` is what its output fields carry, ``column`` when not
+    given."""
 
     column: str
-    relative_to: NotRequired[str]
-    relative: NotRequired[str]
     name: NotRequired[str]
 
 
@@ -569,8 +578,17 @@ class FormulaTarget(TypedDict):
 #: builders refuse one by name when they run.
 TargetList = Sequence[str | Target | FormulaTarget | pl.Expr]
 
-#: How a relative target is taken against its reference.
-_RELATIVE = ("difference", "ratio", "log_ratio")
+#: The keys of task 107a's relative target, removed in task 201: a target
+#: table naming one is refused by name, with :data:`_RELATIVE_REMOVED`.
+_RELATIVE_KEYS = ("relative_to", "relative")
+
+#: What a relative target is told on the Python side; the Rust side says the
+#: same of a spec dict, a TOML file and a saved state.
+_RELATIVE_REMOVED = (
+    "relative targets were removed: compute the target as a column, e.g. "
+    '`lf.with_columns(ret=pl.col("p") - pl.col("mid"))`, and name it in `targets`; for a '
+    'return, prefer a log ratio, `(pl.col("p") / pl.col("mid")).log()`'
+)
 
 
 def target_name(t: str | Target | FormulaTarget) -> str:
@@ -584,17 +602,16 @@ def target_name(t: str | Target | FormulaTarget) -> str:
 
 
 def target_columns(t: str | Target | FormulaTarget) -> list[str]:
-    """The columns a target reads: a string target's own; a table's ``column``
-    and, for a relative one, the ``relative_to`` it is taken against; a
-    formula's columns. What a plan must keep for the bank (review 2026-09-26,
-    D1/F1)."""
+    """The columns a target reads: a string target's own; a table's
+    ``column``; a formula's columns. What a plan must keep for the bank
+    (review 2026-09-26, D1/F1)."""
     if isinstance(t, str):
         return [t]
     if "formula" in t:
         from polars_online import _formula
 
         return _formula.columns(typing.cast(FormulaTarget, t)["formula"])
-    return [t["column"]] + ([t["relative_to"]] if "relative_to" in t else [])
+    return [t["column"]]
 
 
 def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
@@ -637,78 +654,35 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
     return {"name": name, "formula": tree}
 
 
-def target(
-    column: str,
-    *,
-    relative_to: str | None = None,
-    relative: str = "difference",
-    name: str | None = None,
-) -> Target:
-    """A target column, optionally taken against another column of its own row.
+@removed_keywords("po.target", _RELATIVE_KEYS, _RELATIVE_REMOVED)
+def target(column: str, *, name: str | None = None) -> Target:
+    """A target column under a name of its own.
 
-    A level -- a price, a VWAP -- is rarely what a regression should predict;
-    where it goes from *now* is. ``po.target("price_5m", relative_to="mid")`` in a
-    spec's ``targets`` has the model learn and predict ``price_5m - mid``, with
-    ``mid`` read at the target's own row:
+    ``po.target("p", name="price")`` in a spec's ``targets`` has the model
+    learn the column ``p`` as it is, and name its output fields after
+    ``price``: ``pred_price`` and the rest. A string target is the same as
+    ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
+    A target's column used as a feature is refused, whatever its name.
 
-    .. code-block:: text
-
-        "difference"  y - r         (the default)
-        "ratio"       y / r         where y > 0 and r > 0
-        "log_ratio"   ln(y / r)     where y > 0 and r > 0
-
-    ``r`` is known when the row arrives, so a relative target is exactly as honest
-    as the column it is built from: it adds no look-ahead. A null ``y`` or ``r``,
-    one past the input bound, or for the two ratios one that is not positive,
-    makes the target null on that row: it is scored and not learned from.
-    Everything the model reports is on the relative scale -- ``pred``,
-    ``resid``, ``sigma``, the metrics and the conformal interval -- so a level
-    prediction is ``pred + r`` (``pred * r`` for a ratio), and ``r`` is on the row.
-    A ratio is positive by construction, so its ``hit_rate`` (``emit_metrics``)
-    is agreement about 1 -- did it go up or down -- where about zero two positive
-    numbers always agree; a difference and a log ratio are about zero, as a
-    plain target is. ``polars_online.eval`` scores a relative target the same
-    way, the ratio's centre included, when it is handed the spec
-    (``spec=``); without it, it reads the target's column as it is.
-    ``"log_ratio"`` goes through ``ln``, whose last bit can differ between
-    platforms, as any logarithm's does.
-
-    ``name`` is what the output fields are named after, ``pred_<name>`` and the
-    rest; the column's own name by default. A ``column`` with no
-    ``relative_to`` and a ``name`` of its own is the column renamed.
-
-    Only a model that regresses its targets takes a relative one: a model with
-    no target, ``ew_class``, ``seqtest``, ``ftrl`` with its logistic loss and
-    ``sgd`` with its logistic or Poisson loss refuse it by name. A target's
-    column used as a feature is refused, as a target is; its reference may be
-    a feature.
+    A target computed from its own row's columns, such as a price against
+    the mid, is a column: make it with Polars' ``with_columns`` in the query
+    before the bank, and name it in ``targets``. For a return, a log ratio
+    (``(pl.col("p") / pl.col("mid")).log()``) or a difference sits about
+    zero, where ``hit_rate`` takes its sign; a plain ratio sits about 1,
+    where two positive numbers always agree. Before 1.0 this function took
+    ``relative_to`` and ``relative`` for that; they are refused, and the
+    error says this. A target computed from the rows after its own is a
+    window expression looking ahead (:mod:`polars_online.ops`), named by
+    its alias.
 
     In the CLI's TOML the same target is a table:
-    ``targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]``.
+    ``targets = ["ret_5m", { column = "p", name = "price" }]``.
     """
     if not isinstance(column, str):
         raise TypeError(f"target: column must be a str, got {type(column).__name__}")
     if not column:
         raise ValueError("target: column must not be empty")
-    if relative not in _RELATIVE:
-        raise ValueError(
-            f"target {column!r}: relative must be one of {_RELATIVE}, got {relative!r}"
-        )
     out: Target = {"column": column}
-    if relative_to is not None:
-        if not isinstance(relative_to, str):
-            raise TypeError(
-                f"target {column!r}: relative_to must be a str, got {type(relative_to).__name__}"
-            )
-        if not relative_to:
-            raise ValueError(f"target {column!r}: relative_to must not be empty")
-        out["relative_to"] = relative_to
-        out["relative"] = relative
-    elif relative != "difference":
-        raise ValueError(
-            f"target {column!r}: relative={relative!r} needs relative_to, the column of the "
-            "same row the target is taken against"
-        )
     if name is not None:
         if not isinstance(name, str):
             raise TypeError(f"target {column!r}: name must be a str, got {type(name).__name__}")

@@ -2440,8 +2440,9 @@ mod tests {
         // and 41 for the models' window edge and task 196's names, the
         // windows state unchanged: a schema may move alone, a windows
         // version may not. 42 (task 200) moved with windows state 8, an
-        // integer clock held as an integer in its rows.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 42));
+        // integer clock held as an integer in its rows; 43 for the relative
+        // targets' removal (task 201), the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 43));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

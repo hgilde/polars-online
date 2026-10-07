@@ -2415,9 +2415,9 @@ pub struct Spec {
     /// Output struct column name.
     pub name: String,
     pub model: ModelKind,
-    /// Columns to learn against, each a name or a table that takes it
-    /// against another column of its row ([`Targets`], docs/PLAN.md task
-    /// 107a); reads as the names. Optional for a model that learns from no
+    /// Columns to learn against, each a name, a table naming a column
+    /// under another name, or a table holding a formula of the row's future
+    /// ([`Targets`]); reads as the names. Optional for a model that learns from no
     /// target (`ModelKind::is_unsupervised`), where
     /// [`Self::fill_defaults`] mirrors `features[0]` the way the Python
     /// builders do (docs/ENHANCEMENTS.md E53); required otherwise.
@@ -2559,11 +2559,10 @@ pub struct Spec {
     /// it over the collected frame (a streaming version would put a `ln`
     /// result into the state, which `docs/PLAN.md` §11a's B4 rule forbids).
     ///
-    /// A target taken as a ratio (`relative = "ratio"`) is positive by
-    /// construction, so its `hit_rate` is agreement about 1 -- did the
-    /// ratio go up or down -- where about zero it read 1.0 whatever the fit
-    /// (review 2026-09-26, D3); a difference and a log ratio are centred at
-    /// zero as a plain target is.
+    /// The sign test is about zero for every target, so a target that sits
+    /// about 1, such as a plain ratio of two prices, reads 1.0 whatever the
+    /// fit: two positive numbers always agree. A return is better a
+    /// difference or a log ratio, which sit about zero.
     #[serde(default)]
     pub emit_metrics: bool,
     /// Emit `lo_<slot>`, `hi_<slot>` and `coverage_<slot>`: an
@@ -3252,11 +3251,10 @@ impl Spec {
         // row, which is what makes an ew_cov statistic or a kmeans
         // assignment safe to use as a same-row feature (E1).
         let unsupervised = self.model.is_unsupervised();
-        // The leak is a feature that is a target's *column* (a relative
-        // target's as much as a plain one's, docs/PLAN.md task 107a); a
-        // target merely named like a feature reads another column, and its
-        // reference is read at the row, which a feature may be (review
-        // 2026-09-26, D7: the names were matched too, and refused that).
+        // The leak is a feature that is a target's *column* (a renamed
+        // target's as much as a plain one's); a target merely named like a
+        // feature reads another column (review 2026-09-26, D7: the names
+        // were matched too, and refused that).
         // A formula target's columns may be features (docs/PLAN.md task 104,
         // reviewed): a window over `mid` looking ahead is not the row's
         // `mid`, and `closed` decides whether the row's own value is in it.
@@ -3277,17 +3275,13 @@ impl Spec {
                 self.name
             ));
         }
-        // A relative target (docs/PLAN.md task 107a) is a regression target
-        // taken against another column of its row. Where the targets slot
-        // holds something else -- a column an unsupervised model mirrors, a
-        // label, a sign, a 0/1 a probability is fitted to -- it is refused
-        // by name rather than turned into a number that means nothing.
-        if self.targets.any_relative() || self.targets.any_formula() {
-            let what = if self.targets.any_relative() {
-                "a relative target (relative_to)"
-            } else {
-                "a formula target (a window expression looking ahead)"
-            };
+        // A formula target (docs/PLAN.md task 104) is a regression target.
+        // Where the targets slot holds something else -- a column an
+        // unsupervised model mirrors, a label, a sign, a 0/1 a probability is
+        // fitted to -- it is refused by name rather than turned into a number
+        // that means nothing.
+        if self.targets.any_formula() {
+            let what = "a formula target (a window expression looking ahead)";
             let why = match &self.model {
                 m if m.is_unsupervised() => Some("learns from no target"),
                 ModelKind::EwClass { .. } => Some("classifies its target as a label"),
@@ -3348,24 +3342,6 @@ impl Spec {
                     self.name, t.name
                 ));
             }
-        }
-        if let Some(t) = self
-            .targets
-            .defs()
-            .iter()
-            .find(|t| t.relative_to.as_deref() == Some(t.column.as_str()))
-        {
-            return Err(format!(
-                "spec {:?}: target {:?} is taken against its own column, which is \
-                 {} on every row",
-                self.name,
-                t.name,
-                if matches!(t.relative, crate::Relative::Difference) {
-                    "0"
-                } else {
-                    "the same"
-                }
-            ));
         }
         self.decays()?;
         self.clock_cfg()?;

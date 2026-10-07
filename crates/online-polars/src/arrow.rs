@@ -579,8 +579,8 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
             ModelKind::EwClass { .. } => Want::Text,
             _ => Want::Number,
         };
-        // A target's own column, and a relative target's reference, read at
-        // the same row as a number (docs/PLAN.md task 107a).
+        // A target's own column, read at its row; a formula target's
+        // columns, read by the window core.
         if s.model.compares().is_none() {
             for t in s.targets.defs() {
                 if t.is_formula() {
@@ -590,9 +590,6 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
                     continue;
                 }
                 push(&t.column, target_want);
-                if let Some(r) = &t.relative_to {
-                    push(r, Want::Number);
-                }
             }
         }
         if let Some(c) = &s.clock {
@@ -897,8 +894,8 @@ pub fn chunk_from_frame_at(
 
 /// Each column's first reader, for the errors a cast can raise: the first
 /// spec, in bank order, that reads the column in any role, and the first of
-/// its roles in the order features, targets (each target's column, then the
-/// reference it is taken against), clock, weight, session, group.
+/// its roles in the order features, targets (each target's column, or its
+/// formula's columns), clock, weight, session, group.
 /// Built once, where a scan of every spec's lists per column was quadratic
 /// in the columns (docs/PERFORMANCE.md §24).
 fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
@@ -925,7 +922,6 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
                 t.value_column()
                     .map(|c| (c, target_role))
                     .into_iter()
-                    .chain(t.relative_to.as_deref().map(|r| (r, "relative_to")))
                     .chain(formula)
             }))
             .chain(s.clock.as_deref().map(|c| (c, "clock")))
@@ -1040,8 +1036,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             // Read in seconds, a temporal column would feed any other
             // numeric role a number the spec never asked for.
             for other in specs {
-                // By column, not name, and the reference of a relative target
-                // is a numeric role too (review 2026-09-26, D6).
+                // By column, not name (review 2026-09-26, D6).
                 let defs = other.targets.defs();
                 let role = if other.features.iter().any(|f| f == clock) {
                     "a feature"
@@ -1052,8 +1047,6 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                     && !matches!(other.model, ModelKind::EwClass { .. })
                 {
                     "a target"
-                } else if defs.iter().any(|t| t.relative_to.as_deref() == Some(clock)) {
-                    "a relative_to reference"
                 } else if defs
                     .iter()
                     .any(|t| t.is_formula() && t.columns().iter().any(|c| c == clock))
@@ -1197,9 +1190,6 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
                     _ => "target",
                 };
             }
-            if t.relative_to.as_deref() == Some(name) {
-                return "relative_to";
-            }
             if t.is_formula() && t.columns().iter().any(|c| c == name) {
                 return "target formula";
             }
@@ -1327,12 +1317,12 @@ mod tests {
                 r#"{"name": "c", "model": {"type": "ewridge"}, "targets": ["x0"],
                     "features": ["w", "lab"], "group": "k"}"#,
             ),
-            // A relative target: its column is a target, its reference a
-            // `relative_to`, unless an earlier spec read either first.
+            // A renamed target: its column is a target, its name no column
+            // at all, unless an earlier spec read the column first.
             spec(
                 r#"{"name": "d", "model": {"type": "ewridge"},
-                    "targets": [{"column": "q", "relative_to": "r"},
-                                {"column": "t2", "relative_to": "x1"}],
+                    "targets": [{"column": "q", "name": "r"},
+                                {"column": "x1", "name": "t2"}],
                     "features": ["w"]}"#,
             ),
         ];
@@ -1357,7 +1347,7 @@ mod tests {
         assert_eq!(readers.get("lab"), Some(&("b", "label")));
         assert_eq!(readers.get("k"), Some(&("c", "group")));
         assert_eq!(readers.get("q"), Some(&("d", "target")));
-        assert_eq!(readers.get("r"), Some(&("d", "relative_to")));
+        assert!(!readers.contains_key("r") && !readers.contains_key("t2"));
         assert_eq!(
             readers.get("x1"),
             Some(&("a", "feature")),

@@ -788,8 +788,10 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 42 since
-    2026-10-07 (task 200: an integer clock is held as an integer, in the
+    """The version a bank file names, held to the library's: 43 since
+    2026-10-07 (task 201: relative targets were removed, and every target's
+    ``hit_rate`` is taken about 0; the bank refuses 42 and older), after 42
+    the same day (task 200: an integer clock is held as an integer, in the
     clock state, its stamps, the bank's clock dtypes and the windows state,
     version 8; the bank refuses 41 and older), after 41 the same day (task
     196: a model window's ring keeps its edge, Polars' ``closed``, and the
@@ -845,7 +847,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 42
+    assert po.schema_version() == 43
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

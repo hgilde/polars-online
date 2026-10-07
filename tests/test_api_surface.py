@@ -638,8 +638,6 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    target = python_refusal(po.target, {"column": "Y", "relative_to": "X"}, "relative")
-    out.append(f"  po.target.relative: {', '.join(sorted(taken_words('relative', target)))}")
     for op in ("ewm_mean", "ewm_rate", "ewm_sum", "rewm_mean", "rewm_rate", "rewm_sum"):
         for key in ("closed", "partial"):
             refuse = python_refusal(

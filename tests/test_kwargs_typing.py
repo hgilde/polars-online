@@ -99,7 +99,7 @@ import polars as pl
 
 import polars_online as po
 
-t = po.target("y", relative_to="m")
+t = po.target("y", name="m")
 cols: list[str] = ["y"]
 mixed: list[str | po.Target] = ["y", t]
 forward = (po.rewm_mean("y", half_life="1m", window_size="1m") - pl.col("y")).alias("f")
@@ -109,7 +109,7 @@ po.spec.ewridge("m", targets=[t], features=["x"])
 po.spec.ewridge("m", targets=[forward], features=["x"], embargo="1m", clock="t", gap_cap="1m")
 po.spec.ewridge("m", targets=["y", t], features=["x"])
 po.spec.ewridge("m", targets=mixed, features=["x"])
-po.spec.ewridge("m", targets=["ret", {"column": "p", "relative_to": "mid"}], features=["x"])
+po.spec.ewridge("m", targets=["ret", {"column": "p", "name": "price"}], features=["x"])
 po.spec.rls("m", targets=("y", t), features=["x"])
 """
 

@@ -369,20 +369,16 @@ class TestEachMixtureIsRefused:
         with pytest.raises(ValueError, match="can only be a clock"):
             po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
 
-    def test_a_temporal_clock_is_not_a_target_or_a_reference_either(self):
-        """A table target's column, and the column it is taken against, are
-        numeric roles too (review 2026-09-26, D6: the check read the names
-        and knew no reference, so the refusal came later, with another
-        message)."""
+    def test_a_temporal_clock_is_not_a_renamed_target_either(self):
+        """A table target's column is a numeric role too, by its column and
+        not its name (review 2026-09-26, D6: the check read the names, so the
+        refusal came later, with another message)."""
         df = _temporal(_frame())
-        for target, role in [
-            (po.target("t", relative_to="y", name="tt"), "a target"),
-            (po.target("y", relative_to="t"), "a relative_to reference"),
-        ]:
-            other = po.spec.ewridge("f", targets=[target], features=["x0"], half_life=50.0)
-            with pytest.raises(ValueError, match="can only be a clock") as exc:
-                po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
-            assert role in str(exc.value), str(exc.value)
+        target = po.target("t", name="tt")
+        other = po.spec.ewridge("f", targets=[target], features=["x0"], half_life=50.0)
+        with pytest.raises(ValueError, match="can only be a clock") as exc:
+            po.ModelBank([_ridge("t", half_life="10m", gap_cap="30m"), other]).fit_predict(df)
+        assert "a target" in str(exc.value), str(exc.value)
 
 
 class TestADurationSurvives:

@@ -391,11 +391,9 @@ comparison such as `pl.col("venue") == "X"` for a category.
 A target is often one value less another, such as the next five minutes'
 mean trade price less the mid at the row. Build it in one of two ways, by
 when its value is known. Only a model that regresses its targets takes a
-target expression or
-[`po.target`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.target).
-Four kinds of model refuse both by name: a model that reads only its
-features, `ew_class`, `seqtest`, and an `ftrl` or `sgd` fitting a
-probability or a count.
+target expression. Four kinds of model refuse one by name: a model that
+reads only its features, `ew_class`, `seqtest`, and an `ftrl` or `sgd`
+fitting a probability or a count.
 
 **To use a target computed from the rows after its row, write it as a
 Polars expression and put it in the spec's `targets`.** Its `.alias` names
@@ -458,26 +456,28 @@ late](#labels-that-arrive-late)). To make a column from a window over the
 stream, looking back or ahead, use `po.stream.with_windows` in the query
 before the bank ([Windows as columns](#windows-as-columns)).
 
-**To take one column against another of its row without `with_columns`,
-put `po.target` in `targets`.** Here three targets take each trade's
-`price` against the `mid` of its row, each on a scale of its own, and
-regress it on the `flow` of the first example:
+**To take a trade's price against the mid of its row, make the target a
+column with `with_columns` in the same way.** For a return, use a log ratio
+or a difference, which sit about zero. A plain ratio sits about 1, where
+two positive numbers always agree, so its `hit_rate` would read 1.0 whatever
+the fit. This code regresses both on the `flow` of the first example:
 
 ```python
-vs_mid = po.spec.ewridge(
-    "vs_mid", features=["flow"], clock="ts", gap_cap="5m", half_life="30m", group="symbol",
-    targets=[                                                                      # name= tells apart one column taken two ways
-        po.target("price", relative_to="mid", name="diff"),                       # price - mid: the default, relative="difference"
-        po.target("price", relative_to="mid", relative="ratio", name="ratio"),    # price / mid, which sits about 1: its hit_rate asks which side of 1
-        po.target("price", relative_to="mid", relative="log_ratio", name="log"),  # ln(price / mid), which sits about 0
-    ],
+returns = flows.with_columns(
+    log_ret=(pl.col("price") / pl.col("mid")).log(),                    # ln(price / mid), about zero
+    diff=pl.col("price") - pl.col("mid"),                               # price - mid, about zero too
 )
-# A null price or mid, or under a ratio one at or below 0, makes the row's target null: it is scored, not learned from.
-against_mid = flows.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()   # pred_diff, pred_ratio, pred_log: each on its own scale
-level = against_mid["pred_diff"] + against_mid["mid"]                                 # the trade price predicted: pred + mid, or pred * mid for the ratio
-# In the command line's TOML, each target is a table, as
-# targets = [{ column = "price", relative_to = "mid", relative = "ratio", name = "ratio" }]
+vs_mid = po.spec.ewridge("vs_mid", targets=["log_ret", "diff"], features=["flow"],
+                         clock="ts", gap_cap="5m", half_life="30m", group="symbol")
+against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()   # pred_log_ret, pred_diff
+level = against_mid["mid"] * against_mid["pred_log_ret"].exp()                         # the trade price predicted, back from the log ratio
 ```
+
+The command line has no `with_columns`, so make such a column in the file
+it reads. Before 1.0, `po.target` took `relative_to=` and `relative=` for
+this. Both are now refused, and the error shows the `with_columns` form.
+[`po.target`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.target)
+now only names a target's output fields apart from its column.
 
 ### Time and decay
 
@@ -2305,8 +2305,8 @@ prediction and outcome fall on the same side of zero.** A row where either
 is exactly zero is on neither side, and both leave it out. So on a target
 that is always positive, such as a plain ratio, every row counts as a hit.
 [Relative and look-ahead targets](#relative-and-look-ahead-targets) says
-how to write a ratio target about zero with Polars expressions. An `sgd`
-fit with `loss="poisson"` has no side to be on, a positive rate against a
+how to write a return about zero with Polars expressions. An `sgd` fit
+with `loss="poisson"` has no side to be on, a positive rate against a
 count, and its `hit_rate` is null.
 
 On an `sgd` or `ftrl` fit with `loss="logistic"`, `pred` is a probability
@@ -2399,12 +2399,12 @@ po.eval.unpack(out, "ridge")                                   # long form: one 
                                                                # target, pred and y, for your own group_by
 ```
 
-**Pass the spec as `spec=` when a target is relative or renamed.** The
+**Pass the spec as `spec=` when a target is renamed or looks ahead.** The
 output frame does not record how a target was formed, so without the spec
-each slot is scored against the column named after it. A target taken
-against another column, as `po.target("p", relative_to="mid")`, is then
-scored against the raw `p`, not the difference the bank learned. A target
-renamed with `name=` names no column, and the call asks for `spec=`.
+each slot is scored against the column named after it. A target renamed
+with `name=` names no column, and the call asks for `spec=`. A target
+expression looking ahead is scored against a column of its own name, which
+`po.stream.with_windows` makes.
 `metrics`, `window_metrics`, `sums` and `unpack` take `spec=`, and
 `compare_specs` takes the list as `specs=`.
 

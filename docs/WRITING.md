@@ -250,7 +250,9 @@ with comments (PHRASING: "A bank says what it holds", "As a query").
 So is a paragraph that walks through a call's forms: *`po.target("price_5m",
 relative_to="mid")` is the target `price_5m − mid` … In the CLI's TOML it
 is a table* became three targets in one spec, a comment on each scale
-(PHRASING: "`po.target`, in Relative and look-ahead targets").
+(PHRASING: "`po.target`, in Relative and look-ahead targets"). Task 201
+later removed `relative_to`, and the example became the same targets made
+with `with_columns`.
 
 | the prose was | it becomes |
 |---|---|
@@ -324,9 +326,11 @@ it does, and a line's own comment says what it gives.
 them.** Where a spec takes a Polars expression, the example writes one, and
 a helper that does the same job comes second, if at all. The user found
 the expressions clearer than `po.target("price_5m", relative_to="mid")`
-(PHRASING: "relative targets as expressions"). An expression such as
-`(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")` shows what
-is computed and over which rows, in a language the reader already knows.
+(PHRASING: "relative targets as expressions"), and task 201 removed that
+helper for the `with_columns` expression that does its job. An expression
+such as `(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")`
+shows what is computed and over which rows, in a language the reader
+already knows.
 
 **Prose that stays must carry what a comment cannot hold at comment
 length.** A reason earns its sentence: *filter after the bank, because a

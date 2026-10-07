@@ -1263,11 +1263,12 @@ the `lo` it was, which is what falling through to the next test does"""
 
 [[equivalent]]
 file = "crates/online-core/src/stats.rs"
-function = "SlotMetrics::update_about"
+function = "SlotMetrics::update_with"
 mutation = "replace > with >="
 line_has = "if denom > 0.0 {"
 why = """a scored row has w > 0, so denom = lam * W + w is positive and the branch \
-is always taken (the entry for `SlotMetrics::update`, whose body moved here)"""
+is always taken (the body is in `update_with`, which takes task 195's hit \
+tests, since task 201 removed `update_about`'s centre)"""
 
 [[equivalent]]
 file = "crates/online-core/src/sgd.rs"

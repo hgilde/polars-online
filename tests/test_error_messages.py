@@ -764,8 +764,7 @@ def test_a_hand_built_dict_is_checked_by_path():
     [
         ("feature", dict(features=["nope"])),
         ("target", dict(targets=["nope"])),
-        ("target", dict(targets=[po.target("nope", relative_to="y")])),
-        ("relative_to", dict(targets=[po.target("y", relative_to="nope")])),
+        ("target", dict(targets=[po.target("nope", name="tt")])),
         ("clock", dict(clock="nope", gap_cap=5.0)),
         ("session", dict(session="nope", session_gap=1.0)),
         ("weight", dict(weight="nope")),
@@ -788,7 +787,7 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
     [
         ("feature", dict(features=["s"])),
         ("target", dict(targets=["s"])),
-        ("relative_to", dict(targets=[po.target("y", relative_to="s")])),
+        ("target", dict(targets=[po.target("s", name="ss")])),
         ("clock", dict(clock="s", gap_cap=5.0)),
         ("weight", dict(weight="s")),
     ],

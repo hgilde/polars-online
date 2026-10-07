@@ -518,7 +518,15 @@ pub use window::{
 ///   holds (windows state 8). A float or temporal clock's state is the
 ///   bytes it was. The bank refuses a file older than 42 by number, and
 ///   pre-1.0 no loader is written. A model's own state loads as it did.
-pub const SCHEMA_VERSION: u32 = 42;
+/// - 43 (2026-10-07, task 201): relative targets were removed. A spec's
+///   target table no longer takes `relative_to` or `relative`, and a target
+///   derived from its row's columns is a column computed upstream; the
+///   stream reads no reference column, and every target's `hit_rate` is
+///   taken about 0, where a ratio target's was taken about 1. A 42 file's
+///   spec may hold such a table, and its metrics were kept on the other
+///   centre, so the bank refuses a file older than 43 by number; pre-1.0 no
+///   loader is written. No model's own state moved.
+pub const SCHEMA_VERSION: u32 = 43;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -550,7 +558,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///
 /// Every other model's state from 14 on decodes and loads. A bank file is
 /// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 42). How the number came
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 43). How the number came
 /// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the

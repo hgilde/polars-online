@@ -10,10 +10,9 @@ a stream too long to hold, and :func:`sums`, :func:`merge_sums` and
 :func:`from_sums` reduce each chunk to ten numbers per key and add them up
 exactly.
 
-A target that is not a plain column -- one taken against another column of
-its row (:func:`polars_online.target` with ``relative_to``), or one with a
-name of its own -- is read through the spec that wrote the output: pass it as
-``spec``, and ``y`` is the target the bank learned, on its scale (see
+A target that is not a column under its own name -- a column renamed with
+:func:`polars_online.target`, or a window expression looking ahead -- is
+read through the spec that wrote the output: pass it as ``spec`` (see
 :func:`unpack`).
 
 What each function raises is what :func:`unpack` raises, since each starts
@@ -133,20 +132,14 @@ def unpack(
     Pass ``spec`` to read each slot's target as the spec writes it, through
     :func:`polars_online.spec.output_index` and the spec's ``targets``. A
     plain target is its column, and so is a column renamed with ``name=``. A
-    target taken against another column (:func:`polars_online.target` with
-    ``relative_to``) is the value the bank learned: the difference, the ratio
-    or the log ratio, null where the bank could not use a side (null, NaN,
-    infinite or past its input bound of 1e100, or for a ratio not positive).
-    A formula target is read from a column of its own name, which
+    formula target is read from a column of its own name, which
     :func:`polars_online.stream.with_windows` makes; the bank resolves it
     inside its stream and does not write it out.
 
     Without ``spec`` a name-based rule is used: a slot is read against the
     column named after it. That can misattribute a target whose name embeds
-    another's, and a target taken against another column under that column's
-    own name (``po.target("p", relative_to="mid")`` writes ``pred_p``) is read
-    as the column ``p``, not as ``p - mid``: the frame does not record which
-    targets are relative, so only ``spec`` can say.
+    another's, and a renamed target (``po.target("p", name="price")`` writes
+    ``pred_price``) names no column, so only ``spec`` can say what it read.
 
     .. code-block:: python
 
@@ -165,16 +158,6 @@ def unpack(
       column is named after the slot) and, with ``spec``, whatever
       :func:`polars_online.spec.output_index` raises for it.
     """
-    return _unpack(df, spec_name, spec, targets)[0]
-
-
-def _unpack(
-    df: pl.DataFrame, spec_name: str, spec: dict | None, targets: Sequence[str] | None
-) -> tuple[pl.DataFrame, dict[str, float]]:
-    """:func:`unpack`, and the centre each slot's hit test is taken about:
-    1 for a ratio target, which is positive by construction, as the bank's
-    ``emit_metrics`` takes it (review 2026-09-26, D3), and 0 for every other
-    (review round 4, YB1)."""
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
     # With the spec in hand, the slot -> target mapping comes from
@@ -184,13 +167,12 @@ def _unpack(
     # frame but no spec.
     exact = {} if spec is None else _spec_targets(spec, df)
     frames = []
-    centres: dict[str, float] = {}
     for slot in fields:
         if slot in exact:
-            target, y, centres[slot] = exact[slot]
+            target, y = exact[slot]
         else:
             target = _target_of(slot, df, targets)
-            y, centres[slot] = pl.col(target), 0.0
+            y = pl.col(target)
         frames.append(
             df.select(
                 *keep,
@@ -200,12 +182,12 @@ def _unpack(
                 y.alias("y"),
             )
         )
-    return pl.concat(frames), centres
+    return pl.concat(frames)
 
 
-def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr, float]]:
-    """Each ``pred`` field of ``spec`` -> its target's name, the expression
-    of the target's value on the frame, and its hit-test centre."""
+def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr]]:
+    """Each ``pred`` field of ``spec`` -> its target's name and the
+    expression of the target's value on the frame."""
     from polars_online import spec as _spec_mod
     from polars_online._spec import target_name
 
@@ -214,20 +196,18 @@ def _spec_targets(spec: dict, df: pl.DataFrame) -> dict[str, tuple[str, pl.Expr,
     return {
         r["field"]: (
             r["target"],
-            *_target_value(r["field"], tables.get(r["target"]), r["target"], df),
+            _target_value(r["field"], tables.get(r["target"]), r["target"], df),
         )
         for r in idx.iter_rows(named=True)
         if r["target"] is not None
     }
 
 
-def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> tuple[pl.Expr, float]:
-    """A target's value on the frame as the bank reads it, and its hit-test
-    centre (``crates/online-polars/src/targets.rs``: a side the stream
-    cannot use makes the target null before the arithmetic, so two values
-    past the input bound do not subtract into a usable 0, and a ratio's
-    side must be positive; a result past the bound is null too, which
-    :func:`_scored` drops)."""
+def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> pl.Expr:
+    """A target's value on the frame as the bank reads it: its column, or
+    for a formula target the column of its own name that
+    :func:`polars_online.stream.with_windows` writes. A value the bank
+    would not learn from is dropped by :func:`_scored`."""
 
     def column(c: str) -> pl.Expr:
         if c not in df.columns:
@@ -239,7 +219,7 @@ def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> tuple[p
         return pl.col(c)
 
     if table is None or isinstance(table, str):
-        return column(name if table is None else table), 0.0
+        return column(name if table is None else table)
     if "formula" in table:
         if name not in df.columns:
             msg = (
@@ -248,17 +228,8 @@ def _target_value(slot: str, table: Any, name: str, df: pl.DataFrame) -> tuple[p
                 f"{name!r} to score it against; add one with po.stream.with_windows"
             )
             raise ValueError(msg)
-        return pl.col(name), 0.0
-    value = column(table["column"])
-    if "relative_to" not in table:
-        return value, 0.0  # a column renamed
-    y, r = value.cast(pl.Float64), column(table["relative_to"]).cast(pl.Float64)
-    usable = _usable(y) & _usable(r)
-    how = table.get("relative", "difference")
-    if how == "difference":
-        return pl.when(usable).then(y - r), 0.0
-    ratio = pl.when(usable & (y > 0.0) & (r > 0.0)).then(y / r)
-    return (ratio, 1.0) if how == "ratio" else (ratio.log(), 0.0)
+        return pl.col(name)
+    return column(table["column"])  # a column renamed
 
 
 def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> str:
@@ -272,9 +243,8 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     if not matches:
         msg = (
             f"cannot infer the target column for slot {slot!r}: no column of the frame is named "
-            "after it. A target with a name of its own, or one taken against another column "
-            "(po.target with name= or relative_to=), is read through the spec that wrote it: "
-            "pass spec="
+            "after it. A target with a name of its own (po.target with name=) is read through "
+            "the spec that wrote it: pass spec="
         )
         raise ValueError(msg)
     return max(matches, key=len)
@@ -306,24 +276,7 @@ def _scored(long: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _centred(long: pl.DataFrame, centres: dict[str, float]) -> tuple[pl.DataFrame, str | None]:
-    """``long`` with each row's hit-test centre in a column of its own, and
-    that column's name; ``long`` as it is, and ``None``, where every slot's
-    centre is 0, the sign test about zero."""
-    ones = [slot for slot, centre in centres.items() if centre == 1.0]
-    if not ones:
-        return long, None
-    name = "__po_centre"
-    while name in long.columns:
-        name = "_" + name
-    return long.with_columns(
-        pl.when(pl.col("slot").is_in(ones)).then(1.0).otherwise(0.0).alias(name)
-    ), name
-
-
-def _metric_exprs(
-    min_samples: int, *, binary: bool = False, centre: str | None = None
-) -> list[pl.Expr]:
+def _metric_exprs(min_samples: int, *, binary: bool = False) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     # The centred sums, as :func:`sums` keeps them: a metric is null where
     # one it divides by is 0, as :func:`from_sums` gives it, where this gave
@@ -365,14 +318,11 @@ def _metric_exprs(
     else:
         # Fraction of rows where the sign of pred matches the sign of y
         # (rows with y == 0 or pred == 0 excluded: neither up nor down, not a
-        # class), and null where no row has a sign. A ratio target's signs
-        # are taken about its centre, 1, as the bank's `emit_metrics` takes
-        # them, and a prediction at the centre is left out as the bank leaves
-        # it out (docs/PLAN.md task 195, S6): polars' `sign(0)` is 0, a miss
-        # here, where the bank's `signum(+0.0)` was 1, a hit.
+        # class), and null where no row has a sign. A prediction of exactly
+        # zero is left out as the bank leaves it out (docs/PLAN.md task 195,
+        # S6): polars' `sign(0)` is 0, a miss here, where the bank's
+        # `signum(+0.0)` was 1, a hit.
         y, pred = pl.col("y"), pl.col("pred")
-        if centre is not None:
-            y, pred = y - pl.col(centre), pred - pl.col(centre)
         scored = (y != 0) & (pred != 0)
         signed = scored.sum()
         hits = ((pred.sign() == y.sign()) & scored).sum()
@@ -416,10 +366,11 @@ def metrics(
         varied.
     ``hit_rate``
         The share of rows whose sign the prediction got right, rows with ``y ==
-        0`` or ``pred == 0`` excluded, since either says neither up nor down;
-        null where every row is excluded. A ratio target read through ``spec``
-        is positive by construction, so its signs are taken about 1 instead.
-        Both are as the bank's ``emit_metrics`` takes them.
+        0`` or ``pred == 0`` excluded, since either says neither up nor down,
+        as the bank's ``emit_metrics`` takes them; null where every row is
+        excluded. A target that sits about 1, such as a plain ratio of two
+        prices, reads 1.0 whatever the fit, so a return is better a
+        difference or a log ratio.
     ``mse``
         The mean squared residual.
 
@@ -444,10 +395,9 @@ def metrics(
     Raises as :func:`unpack` does; a ``group`` column the frame has not got is
     polars' ``ColumnNotFoundError``.
     """
-    long, centres = _unpack(df, spec_name, spec, targets)
-    long, centre = _centred(_scored(long), centres)
+    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
     keys = ["slot", "target", *_group_keys(group)]
-    exprs = _metric_exprs(min_samples, binary=binary, centre=centre)
+    exprs = _metric_exprs(min_samples, binary=binary)
     out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
@@ -536,10 +486,11 @@ def window_metrics(
         )
     else:
         start = pl.col(clock).dt.truncate(format_duration(ns))
-    long, centres = _unpack(df, spec_name, spec, targets)
-    long, centre = _centred(_scored(long).with_columns(start.alias("window_start")), centres)
+    long = _scored(unpack(df, spec_name, spec=spec, targets=targets)).with_columns(
+        start.alias("window_start")
+    )
     keys = ["slot", "target", *_group_keys(group), "window_start"]
-    exprs = _metric_exprs(min_samples, binary=binary, centre=centre)
+    exprs = _metric_exprs(min_samples, binary=binary)
     out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
@@ -802,10 +753,9 @@ def sums(
         The residual sum of squares.
     ``hits``, ``signed``
         For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
-        with ``y != 0`` and ``pred != 0`` (about 1 for a ratio target read through
-        ``spec``, as :func:`metrics` takes them). Under ``binary=True`` (:func:`metrics`'s
-        reading), ``hits`` counts agreement at a 0.5 threshold and ``signed``
-        every row, since every row scores.
+        with ``y != 0`` and ``pred != 0``, as :func:`metrics` takes them. Under
+        ``binary=True`` (:func:`metrics`'s reading), ``hits`` counts agreement
+        at a 0.5 threshold and ``signed`` every row, since every row scores.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
@@ -835,8 +785,7 @@ def sums(
         scores = po.eval.from_sums(running, min_samples=10)          # r2, ic, hit_rate, mse, rmse
 
     """
-    long, centres = _unpack(df, spec_name, spec, targets)
-    long = _scored(long)
+    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
     if weight is not None:
         # What the bank does with the same weight: it skips a row whose
         # weight it cannot use and refuses a negative one (review round 4,
@@ -845,18 +794,17 @@ def sums(
         long = long.filter(_usable(wexpr) & (wexpr >= 0.0))
     else:
         wexpr = pl.lit(1.0)
-    long, centre = _centred(long.with_columns(wexpr.alias("__w")), centres)
+    long = long.with_columns(wexpr.alias("__w"))
     w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
     tw = w.sum()
     my, mp = (w * y).sum() / tw, (w * p).sum() / tw
     if binary:
         hits, signed = w * ((p > 0.5) == (y > 0.5)), w
     else:
-        dy, dp = (y, p) if centre is None else (y - pl.col(centre), p - pl.col(centre))
-        # A target or a prediction at the centre has no sign, as in
-        # :func:`metrics` and the bank (docs/PLAN.md task 195, S6).
-        scored = (dy != 0) & (dp != 0)
-        hits, signed = w * ((dy.sign() == dp.sign()) & scored), w * scored
+        # A target or a prediction of zero has no sign, as in :func:`metrics`
+        # and the bank (docs/PLAN.md task 195, S6).
+        scored = (y != 0) & (p != 0)
+        hits, signed = w * ((y.sign() == p.sign()) & scored), w * scored
     keys = ["slot", "target", *_group_keys(group)]
     return (
         long.group_by(keys)

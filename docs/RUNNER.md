@@ -38,13 +38,19 @@ output = "fitted.parquet"    # the input's columns, plus one column per spec
 
 [[specs]]                    # one table per spec
 name = "ridge"               # the name of the spec's output column
-targets = ["y"]              # or a table: { column = "p", relative_to = "mid" }, as po.target
+targets = ["y"]              # or a table: { column = "p", name = "price" }, as po.target
 features = ["x0"]
 half_life = 500.0            # in rows, since the spec names no clock column
 min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
 [specs.model]
 type = "ewridge"
 ```
+
+**A target computed from its row's columns, such as a return against the
+mid, is a column of the input, so make it upstream.** A formula target in
+the configuration must look ahead, as in Python. The table form
+`{ column = "p", relative_to = "mid" }` was removed before 1.0 and is
+refused by name.
 
 A dry run checks the configuration and prints the output schema without
 feeding the bank a row. It reads the input's schema as the run's scan

@@ -98,7 +98,7 @@ pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,
 };
 pub use summary::{ColumnStats, DataSummary, Role};
-pub use targets::{Relative, TargetDef, Targets};
+pub use targets::{TargetDef, Targets};
 pub use windows::{
     Closed, Direction, Emitted, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
 };

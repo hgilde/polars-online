@@ -889,7 +889,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         # trades between them, for two symbols on the clock `ts`.
         "trades": _trades(),
         # The "relative and look-ahead targets" section builds it in its first
-        # block, and its `po.target` block reuses it.
+        # block, and its `with_columns` return block reuses it.
         "flows": pl.scan_parquet(tmp_path / "trades.parquet").with_columns(
             flow=pl.when(pl.col("side") == "buy")
             .then(pl.col("quantity"))

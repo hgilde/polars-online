@@ -110,7 +110,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 **The dated sections use the names of their day, and so does every dated
 record under `docs/`.** Task 144 (2026-10-02) renamed the public
 parameters and output fields to Polars' words. A few other tasks renamed
-one name each, and tasks 83, 85 and 143 removed three surfaces. A spec
+one name each, and tasks 83, 85, 143 and 201 removed four surfaces. A spec
 that passes a parameter task 144 renamed is refused, and the message names
 the new one. A record that uses an old name points to this table:
 
@@ -150,6 +150,7 @@ the new one. A record that uses an old name points to this table:
 | `kmeans`' `update_every` and `split_merge_every`; `corrchange`'s `permute_every` | `update_every_rows`, `split_merge_every_rows`; `permute_every_rows` | task 196 |
 | `holt`'s `level_half_life` | the spec's `half_life` | task 196 |
 | a model window that keeps a row exactly `window_size` old | `closed="both"`; the default, `closed="right"`, drops it | task 196 |
+| a relative target: `po.target`'s `relative_to=` and `relative=`, and a target table's `relative_to` and `relative` keys | removed: the target made as a column, `with_columns(ret=(pl.col("p") / pl.col("mid")).log())` or a difference, made upstream for the command line; a window looking ahead less a column of the row stays a formula target | task 201 |
 
 ### How the numbers are made
 
