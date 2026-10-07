@@ -249,6 +249,92 @@ fn the_clock_range_is_the_clock_columns_own_to_the_nanosecond() {
     );
 }
 
+/// Task 200: an integer clock's range comes out in its own integer dtype,
+/// exactly, in `summary`, `groups` and the closed frame, and in
+/// `scored_clock`: an `Int64` of epoch nanoseconds near 1.79e18, which a
+/// double would round to 256, an `Int32` and a `UInt32`. A chunk whose clock
+/// is a float, or an integer of another width, is refused by name, before
+/// anything moves, in `fit_predict` and in `predict`.
+#[test]
+fn an_integer_clock_is_held_and_shown_in_its_own_dtype() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x"],
+            "group": "g", "group_close": "monotone", "clock": "t", "half_life": 50.0,
+            "gap_cap": 1e6, "emit_clocks": true}"#,
+    );
+    let frame = |t: Series| {
+        df!(
+            "g" => [0i64, 0, 0, 1, 1, 1],
+            "x" => [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            "y" => [0.7, 0.9, 1.1, 1.3, 1.5, 1.7]
+        )
+        .unwrap()
+        .hstack(&[t.into()])
+        .unwrap()
+    };
+    let base: i64 = 1_790_000_000_000_000_000;
+    let offs = [0i64, 1, 8, 108, 109, 116];
+    let cases = [
+        (DataType::Int64, base),
+        (DataType::Int32, 2_000_000_000),
+        (DataType::UInt32, 4_000_000_000),
+    ];
+    for (dtype, at) in cases {
+        let t: Vec<i64> = offs.iter().map(|o| at + o).collect();
+        let df = frame(Series::new("t".into(), t.clone()).cast(&dtype).unwrap());
+        let mut bank = Bank::new(vec![s.clone()]).unwrap();
+        let out = bank.fit_predict(&df).unwrap();
+        let ints = |c: &Column| -> Vec<Option<i64>> {
+            assert_eq!(c.dtype(), &dtype, "{}", c.name());
+            let ca = c.cast(&DataType::Int64).unwrap();
+            ca.i64().unwrap().iter().collect()
+        };
+        let summary = bank.summary(0, None).unwrap();
+        assert_eq!(ints(summary.column("clock_min").unwrap()), vec![Some(t[3])]);
+        assert_eq!(
+            ints(summary.column("last_clock").unwrap()),
+            vec![Some(t[5])]
+        );
+        let groups = bank.groups_table(&[0]).unwrap();
+        assert_eq!(ints(groups.column("last_clock").unwrap()), vec![Some(t[5])]);
+        let closed = bank.closed_groups(None, true).unwrap();
+        assert_eq!(ints(closed.column("clock_min").unwrap()), vec![Some(t[0])]);
+        assert_eq!(ints(closed.column("clock_max").unwrap()), vec![Some(t[2])]);
+        let fields = out[0].as_materialized_series().struct_().unwrap().clone();
+        let scored = fields.field_by_name("scored_clock").unwrap().into_column();
+        let want: Vec<Option<i64>> = t.iter().map(|v| Some(*v)).collect();
+        assert_eq!(ints(&scored), want);
+    }
+    let t: Vec<i64> = offs.iter().map(|o| base + o).collect();
+    let df = frame(Series::new("t".into(), t));
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&df.slice(0, 3)).unwrap();
+    let saved = bank.save_bytes().unwrap();
+    for (dtype, want) in [
+        (DataType::Float64, "was i64 and is now f64"),
+        (DataType::Int32, "was i64 and is now i32"),
+    ] {
+        let shifted = Series::new("t".into(), offs[3..].to_vec())
+            .cast(&dtype)
+            .unwrap();
+        let mut other = df.slice(3, 3);
+        other.with_column(shifted.into()).unwrap();
+        let err = bank.fit_predict(&other).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!(r#"clock column "t" {want}"#)),
+            "{err}"
+        );
+        let err = bank.predict(&other).unwrap_err().to_string();
+        assert!(err.contains(want), "{err}");
+        assert_eq!(
+            bank.save_bytes().unwrap(),
+            saved,
+            "a refused chunk moves nothing"
+        );
+    }
+    bank.fit_predict(&df.slice(3, 3)).unwrap();
+}
+
 /// Review round 4, N21 (PA10): a reader narrows to keys, the null group
 /// among them, which a string could not name; an integer column's keys are
 /// listed as numbers, the null group first, where they sorted as text.

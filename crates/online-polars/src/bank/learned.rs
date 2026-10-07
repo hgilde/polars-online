@@ -62,7 +62,8 @@ impl Learned {
     /// reads a clock, a clock after its group's last one, a group the bank
     /// has not seen, or a null clock, which is kept for the bank to judge. A
     /// row at its group's last clock counts as learned. A temporal clock is
-    /// compared in the integer nanoseconds the bank keeps.
+    /// compared in the integer nanoseconds the bank keeps, and an integer
+    /// clock in integers (task 200).
     ///
     /// # Errors
     ///
@@ -85,17 +86,40 @@ impl Learned {
                     let now = match clocks {
                         ClockArray::F64(a) => a.get(i).map(ClockValue::F64),
                         ClockArray::Nanos(a) => a.get(i).map(ClockValue::Ns),
+                        // An integer clock, compared in integers (task 200).
+                        ClockArray::I64(a) => a.get(i).map(ClockValue::I64),
+                        // Past `i64::MAX` is after every clock an integer
+                        // bank holds: kept, for the bank to refuse by row,
+                        // as `ModelBank.skip_learned` keeps it.
+                        ClockArray::U64(a) => match a.get(i).map(i64::try_from) {
+                            None => None,
+                            Some(Ok(v)) => Some(ClockValue::I64(v)),
+                            Some(Err(_)) => continue,
+                        },
                     };
+                    let not_after =
+                        |o: Option<std::cmp::Ordering>| o != Some(std::cmp::Ordering::Greater);
                     let learned = match (now, last) {
                         (None, _) => false,
                         (Some(ClockValue::F64(now)), ClockValue::F64(last)) => {
-                            now.partial_cmp(last) != Some(std::cmp::Ordering::Greater)
+                            not_after(now.partial_cmp(last))
                         }
                         (Some(ClockValue::Ns(now)), ClockValue::Ns(last)) => now <= *last,
+                        (Some(ClockValue::I64(now)), ClockValue::I64(last)) => now <= *last,
+                        // An integer and a float clock are both numbers,
+                        // compared as doubles, as `ModelBank.skip_learned`
+                        // compares them; the bank refuses the chunk by its
+                        // dtype (task 200).
+                        (Some(ClockValue::I64(now)), ClockValue::F64(last)) => {
+                            not_after((now as f64).partial_cmp(last))
+                        }
+                        (Some(ClockValue::F64(now)), ClockValue::I64(last)) => {
+                            not_after(now.partial_cmp(&(*last as f64)))
+                        }
                         (Some(now), _) => {
                             let (is, was) = match now {
                                 ClockValue::Ns(_) => ("temporal", "numeric"),
-                                ClockValue::F64(_) => ("numeric", "temporal"),
+                                ClockValue::F64(_) | ClockValue::I64(_) => ("numeric", "temporal"),
                             };
                             polars_bail!(ComputeError:
                                 "spec {:?}: clock column {:?} is {is} in the frame and was {was} \

@@ -92,7 +92,7 @@ fn resolver_config(spec: &Spec) -> WindowsConfig {
 /// in: the clock and the session as the chunk holds them, and a formula's
 /// columns as numbers or text. The group is the core's key, not a column.
 fn resolver_columns(spec: &Spec) -> Vec<(String, &'static [Form])> {
-    const CLOCK: &[Form] = &[Form::Clock, Form::Number];
+    const CLOCK: &[Form] = &[Form::Clock, Form::Key, Form::Number];
     const SESSION: &[Form] = &[Form::Text, Form::Key, Form::Number];
     // A column holds the boolean form only when it is a boolean, so that
     // form comes first: a boolean another role reads as a number has both

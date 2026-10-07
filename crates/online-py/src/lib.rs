@@ -648,13 +648,14 @@ impl PyModelBank {
         Ok(this.inner.group_counts())
     }
 
-    /// Per spec: `(group, numeric clock, temporal clock in ns)` for every
-    /// group held, one of the two clocks set, or neither before the first
-    /// row and on a row-count clock.
+    /// Per spec: `(group, float clock, temporal clock in ns, integer
+    /// clock)` for every group held, one of the three clocks set, or none
+    /// before the first row and on a row-count clock. An integer clock is
+    /// handed over as its integer (task 200), which a double would round.
     #[allow(clippy::type_complexity)]
     fn last_clocks(
         slf: &Bound<'_, Self>,
-    ) -> PyResult<Vec<Vec<(Option<String>, Option<f64>, Option<i64>)>>> {
+    ) -> PyResult<Vec<Vec<(Option<String>, Option<f64>, Option<i64>, Option<i64>)>>> {
         let this = slf.try_borrow().map_err(|_| busy("last_clocks"))?;
         Ok(this
             .inner
@@ -663,9 +664,10 @@ impl PyModelBank {
             .map(|v| {
                 v.into_iter()
                     .map(|(k, c)| match c {
-                        Some(ClockValue::F64(t)) => (k.0, Some(t), None),
-                        Some(ClockValue::Ns(ns)) => (k.0, None, Some(ns)),
-                        None => (k.0, None, None),
+                        Some(ClockValue::F64(t)) => (k.0, Some(t), None, None),
+                        Some(ClockValue::Ns(ns)) => (k.0, None, Some(ns), None),
+                        Some(ClockValue::I64(v)) => (k.0, None, None, Some(v)),
+                        None => (k.0, None, None, None),
                     })
                     .collect()
             })

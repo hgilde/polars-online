@@ -20,7 +20,7 @@ use online_core::{ClockCfg, ClockValue};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{NanosRole, key_text, nanos_array};
+use crate::arrow::{NanosRole, fits_64, key_text, nanos_array};
 use crate::formula::{Formula, Node, OpNode};
 use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
@@ -63,8 +63,11 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
-/// 7 since task 159 (F2): the group and session columns' dtypes, which a
-/// resumed input must match; 6 since task 159 (W3): a number clock's raw
+/// 8 since task 200: an integer clock rides in a row's `off` as its own
+/// value, beside the form `off` holds, where a bool said nanoseconds or
+/// the bits of a double, and an increment of an integer input keeps its
+/// previous value as an integer; 7 since task 159 (F2): the group and
+/// session columns' dtypes, which a resumed input must match; 6 since task 159 (W3): a number clock's raw
 /// value rides in a row's `off`, where 5 left it 0; 5 since review R6
 /// (D1): the last row read, beside the rows held, as a
 /// sliced state's identity of its input; 4 since review R5 (C5): the skip
@@ -75,7 +78,7 @@ const WINDOWS_MAGIC: &str = "polars-online windows";
 /// task 143: formulas over operators, where 1 held descriptions. An older
 /// state would load with defaults and misbehave. The bank's schema moves
 /// with this number (review R4, A2; R6, D5).
-const WINDOWS_VERSION: u32 = 7;
+const WINDOWS_VERSION: u32 = 8;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -139,9 +142,11 @@ struct Header {
 struct IncrState {
     key: Option<String>,
     /// Per increment: the previous value, NaN for none; a temporal input in
-    /// nanoseconds.
+    /// nanoseconds; an integer input in integers (docs/PLAN.md task 200),
+    /// whose step is taken in integers before it becomes a double.
     prev: Vec<f64>,
     prev_ns: Vec<Option<i64>>,
+    prev_int: Vec<Option<i128>>,
     session: Option<u64>,
     clock: Option<ClockValue>,
 }
@@ -384,18 +389,63 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
 }
 
 /// The kind of clock a run is fed. A state resumes only on the kind that
-/// wrote it: the other cannot be ordered against its last row.
+/// wrote it: the other cannot be ordered against its last row, and an
+/// integer clock's edges are decided in integers, a float clock's in
+/// doubles (docs/PLAN.md task 200).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClockKind {
     Numeric,
     Temporal,
+    Integer,
+}
+
+impl ClockKind {
+    fn name(self) -> &'static str {
+        match self {
+            ClockKind::Numeric => "a float",
+            ClockKind::Temporal => "a temporal",
+            ClockKind::Integer => "an integer",
+        }
+    }
 }
 
 fn kind_of(v: ClockValue) -> ClockKind {
     match v {
         ClockValue::F64(_) => ClockKind::Numeric,
         ClockValue::Ns(_) => ClockKind::Temporal,
+        ClockValue::I64(_) => ClockKind::Integer,
     }
+}
+
+/// Whether the clock stepped back from `prev` to `now` by more than
+/// `restart`, which the policy reads as a new start: on an integer clock
+/// the step in integers against it, exactly (task 200).
+fn back_past(prev: ClockValue, now: ClockValue, restart: f64) -> bool {
+    if let Some(step) = now.int_step(prev) {
+        return step < 0
+            && online_core::cmp_int_f64(-step, restart) == Some(std::cmp::Ordering::Greater);
+    }
+    let back = match (prev, now) {
+        (ClockValue::Ns(p), ClockValue::Ns(c)) => {
+            online_core::seconds_of_ns(i128::from(p) - i128::from(c))
+        }
+        (p, c) => p.seconds() - c.seconds(),
+    };
+    back > 0.0 && back > restart
+}
+
+/// An integer column's values, as `i128` so an unsigned 64-bit one is
+/// whole too, null where null.
+fn integer_values(s: &Series) -> PolarsResult<Vec<Option<i128>>> {
+    Ok(if *s.dtype() == DataType::UInt64 {
+        s.u64()?.iter().map(|v| v.map(i128::from)).collect()
+    } else {
+        s.cast(&DataType::Int64)?
+            .i64()?
+            .iter()
+            .map(|v| v.map(i128::from))
+            .collect()
+    })
 }
 
 /// Durations and numbers must match the clock, as a spec's must
@@ -1242,9 +1292,22 @@ impl WindowsRun {
         );
         let mut cols: Vec<Column> = Vec::with_capacity(self.increments.len());
         let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(n); self.increments.len()];
+        // An integer input's values as integers (task 200): its step is
+        // taken in integers and then converted, where two doubles of an
+        // epoch-nanosecond column near 1.8e18 tied at a step of 1.
+        let integer: Vec<Option<Vec<Option<i128>>>> = (0..self.increments.len())
+            .map(|i| {
+                let c = inputs.column(input_column(i).as_str())?;
+                if self.increments[i].2 || !c.dtype().is_integer() || !fits_64(c.dtype()) {
+                    Ok(None)
+                } else {
+                    integer_values(c.as_materialized_series()).map(Some)
+                }
+            })
+            .collect::<PolarsResult<_>>()?;
         let numeric: Vec<Option<Vec<Option<f64>>>> = (0..self.increments.len())
             .map(|i| {
-                if self.increments[i].2 {
+                if self.increments[i].2 || integer[i].is_some() {
                     Ok(None)
                 } else {
                     let s = inputs
@@ -1280,6 +1343,7 @@ impl WindowsRun {
                         key: keys[r].map(str::to_string),
                         prev: vec![f64::NAN; self.increments.len()],
                         prev_ns: vec![None; self.increments.len()],
+                        prev_int: vec![None; self.increments.len()],
                         session: None,
                         clock: None,
                     });
@@ -1296,43 +1360,47 @@ impl WindowsRun {
             // every group in the core, so every group's increments start
             // over too (review R1, S4).
             let now_clock = clock.as_ref().map(|c| c[r]);
-            if let (Some(now), Some(prev)) = (now_clock, self.stream_clock) {
-                let back = match (prev, now) {
-                    (ClockValue::Ns(p), ClockValue::Ns(c)) => {
-                        online_core::seconds_of_ns(i128::from(p) - i128::from(c))
-                    }
-                    (p, c) => p.seconds() - c.seconds(),
-                };
-                if restarts && back > 0.0 && back > restart {
-                    for st in &mut self.incr_state {
-                        st.prev.iter_mut().for_each(|p| *p = f64::NAN);
-                        st.prev_ns.iter_mut().for_each(|p| *p = None);
-                    }
+            if let (Some(now), Some(prev)) = (now_clock, self.stream_clock)
+                && restarts
+                && back_past(prev, now, restart)
+            {
+                for st in &mut self.incr_state {
+                    st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+                    st.prev_ns.iter_mut().for_each(|p| *p = None);
+                    st.prev_int.iter_mut().for_each(|p| *p = None);
                 }
             }
             self.stream_clock = now_clock;
             let st = &mut self.incr_state[gi];
             let now_session = session.map(|s| s[r]);
             let mut new_start = st.session != now_session && st.session.is_some();
-            if let (Some(now), Some(prev)) = (now_clock, st.clock) {
-                let back = match (prev, now) {
-                    (ClockValue::Ns(p), ClockValue::Ns(c)) => {
-                        online_core::seconds_of_ns(i128::from(p) - i128::from(c))
-                    }
-                    (p, c) => p.seconds() - c.seconds(),
-                };
-                if restarts && back > 0.0 && back > restart {
-                    new_start = true;
-                }
+            if let (Some(now), Some(prev)) = (now_clock, st.clock)
+                && restarts
+                && back_past(prev, now, restart)
+            {
+                new_start = true;
             }
             if new_start {
                 st.prev.iter_mut().for_each(|p| *p = f64::NAN);
                 st.prev_ns.iter_mut().for_each(|p| *p = None);
+                st.prev_int.iter_mut().for_each(|p| *p = None);
             }
             st.session = now_session;
             st.clock = now_clock;
             for i in 0..self.increments.len() {
-                if let Some(vals) = &numeric[i] {
+                if let Some(vals) = &integer[i] {
+                    let v = vals[r];
+                    out[i].push(match (v, st.prev_int[i]) {
+                        (Some(c), Some(p)) => Some((c - p) as f64),
+                        // A previous value a float input of another chunk left.
+                        (Some(c), None) if !st.prev[i].is_nan() => Some(c as f64 - st.prev[i]),
+                        _ => None,
+                    });
+                    if let Some(c) = v {
+                        st.prev_int[i] = Some(c);
+                        st.prev[i] = c as f64;
+                    }
+                } else if let Some(vals) = &numeric[i] {
                     let v = match vals[r] {
                         Some(x) if usable(x) => x,
                         _ => f64::NAN,
@@ -1344,6 +1412,7 @@ impl WindowsRun {
                     });
                     if !v.is_nan() {
                         st.prev[i] = v;
+                        st.prev_int[i] = None;
                     }
                 } else if let Some(vals) = &temporal[i] {
                     let v = vals[r];
@@ -1390,6 +1459,22 @@ impl WindowsRun {
             (0..ns.len())
                 .map(|i| ns.get(i).map(ClockValue::Ns).ok_or_else(|| bad(i)))
                 .collect::<PolarsResult<_>>()?
+        } else if col.dtype().is_integer() && fits_64(col.dtype()) {
+            // An integer clock as its integers (task 200), as the bank reads
+            // one; an unsigned value past an `i64` is refused by row.
+            integer_values(col.as_materialized_series())?
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let v = v.ok_or_else(|| bad(i))?;
+                    i64::try_from(v).map(ClockValue::I64).map_err(|_| {
+                        polars_err!(ComputeError:
+                            "{WHO}: row {} has clock {c:?} = {v}, past {}, the largest value \
+                             an integer clock holds (an Int64's)",
+                            base + i as u64, i64::MAX)
+                    })
+                })
+                .collect::<PolarsResult<_>>()?
         } else {
             let s = col.cast(&DataType::Float64)?;
             s.f64()?
@@ -1406,10 +1491,10 @@ impl WindowsRun {
             && kind_of(*first) != kind_of(last)
         {
             polars_bail!(ComputeError:
-                "{WHO}: clock column {c:?} is {}, and the state it resumes was fed a {} one; \
+                "{WHO}: clock column {c:?} is {}, and the state it resumes was fed {} one; \
                  resume a state on the kind of clock that wrote it",
                 col.dtype(),
-                match kind_of(last) { ClockKind::Numeric => "numeric", ClockKind::Temporal => "temporal" }
+                kind_of(last).name()
             );
         }
         Ok(Some(values))
@@ -1431,6 +1516,10 @@ impl WindowsRun {
                     (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p))) => {
                         i64::try_from(i128::from(p) - i128::from(c))
                             .map_or_else(|_| back.to_string(), format_duration)
+                    }
+                    // In integers, exactly (task 200).
+                    (Some(ClockValue::I64(c)), Some(ClockValue::I64(p))) => {
+                        (i128::from(p) - i128::from(c)).to_string()
                     }
                     _ => crate::spec::num_label(back),
                 };
@@ -2257,7 +2346,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 7)"),
+            err.contains("state version 2 not supported (this build reads 8)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2350,8 +2439,9 @@ mod tests {
         // 161, 163, 162, 174, 175, 170, 176, 178, 179, 180, 186, 194, 195),
         // and 41 for the models' window edge and task 196's names, the
         // windows state unchanged: a schema may move alone, a windows
-        // version may not.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (7, 41));
+        // version may not. 42 (task 200) moved with windows state 8, an
+        // integer clock held as an integer in its rows.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 42));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

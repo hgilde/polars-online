@@ -152,16 +152,38 @@ pub struct RefreshTime {
     rows_fed: usize,
 }
 
-/// A clock value as the order check compares it: a number as itself, a
-/// temporal value in integer nanoseconds since the epoch, exactly, whatever
-/// the column's unit. Read as a double, a `Datetime` in nanoseconds resolves
-/// 256 ns at today's dates, and a step back smaller than that was a tie
-/// (task 120). In nanoseconds, a state saved from one unit resumes on
-/// another (task 105).
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+/// A clock value as the order check compares it: a float as itself, an
+/// integer as itself (docs/PLAN.md task 200), a temporal value in integer
+/// nanoseconds since the epoch, exactly, whatever the column's unit. Read
+/// as a double, a `Datetime` in nanoseconds resolves 256 ns at today's
+/// dates, and a step back smaller than that was a tie (task 120); so did an
+/// `Int64` column of epoch nanoseconds, cast to a double. In nanoseconds, a
+/// state saved from one unit resumes on another (task 105); an integer and
+/// a float are ordered exactly against each other, so a state saved from
+/// one resumes on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum Instant {
     Number(f64),
     Nanos(i64),
+    Int(i64),
+}
+
+impl PartialOrd for Instant {
+    /// Within a kind, the values' own order; an integer against a float,
+    /// exactly ([`online_core::cmp_int_f64`]); none between a number and a
+    /// temporal value, which the kind check refuses before.
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        use online_core::cmp_int_f64;
+        match (*self, *other) {
+            (Self::Number(a), Self::Number(b)) => a.partial_cmp(&b),
+            (Self::Nanos(a), Self::Nanos(b)) | (Self::Int(a), Self::Int(b)) => a.partial_cmp(&b),
+            (Self::Int(a), Self::Number(b)) => cmp_int_f64(i128::from(a), b),
+            (Self::Number(a), Self::Int(b)) => {
+                cmp_int_f64(i128::from(b), a).map(std::cmp::Ordering::reverse)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Instant {
@@ -170,6 +192,7 @@ impl Instant {
         const DAY: i64 = 86_400 * 1_000_000_000;
         match (self, dtype) {
             (Self::Number(v), _) => format!("{v}"),
+            (Self::Int(v), _) => format!("{v}"),
             (Self::Nanos(v), DataType::Datetime(_, tz)) => {
                 format!(
                     "{}",
@@ -189,7 +212,7 @@ impl Instant {
 
     fn kind(self) -> ClockKind {
         match self {
-            Self::Number(_) => ClockKind::Numeric,
+            Self::Number(_) | Self::Int(_) => ClockKind::Numeric,
             Self::Nanos(_) => ClockKind::Temporal,
         }
     }
@@ -481,6 +504,7 @@ impl RefreshTime {
             ),
             _ => self.grouped = Some(grouped),
         }
+        let integer = time_dtype.is_integer() && crate::arrow::fits_64(&time_dtype);
         let (numbers, nanos) = if time_dtype.is_temporal() {
             let ns = crate::arrow::nanos_array(
                 time_col.as_materialized_series(),
@@ -488,14 +512,44 @@ impl RefreshTime {
                 crate::arrow::NanosRole::Clock,
             )?;
             (None, Some(ns))
+        } else if integer {
+            (None, None)
         } else {
             (Some(time_col.cast(&DataType::Float64)?), None)
         };
+        // An integer clock as its integers (task 200): its order is the
+        // integers', where two doubles near 1.8e18 tie at a step of 1. An
+        // unsigned value past an `i64` is refused by row.
+        let ints: Option<Vec<Option<i64>>> = if integer {
+            let s = time_col.as_materialized_series();
+            Some(if time_dtype == DataType::UInt64 {
+                s.u64()?
+                    .iter()
+                    .enumerate()
+                    .map(|(row, v)| {
+                        v.map(|v| {
+                            i64::try_from(v).map_err(|_| {
+                                polars_err!(ComputeError:
+                                    "refresh_time: row {} has {:?} = {v}, past {}, the largest \
+                                     value an integer clock holds (an Int64's)",
+                                    base + row, cols.clock, i64::MAX)
+                            })
+                        })
+                        .transpose()
+                    })
+                    .collect::<PolarsResult<_>>()?
+            } else {
+                s.cast(&DataType::Int64)?.i64()?.iter().collect()
+            })
+        } else {
+            None
+        };
         let numbers = numbers.as_ref().map(|c| c.f64()).transpose()?;
         let instant = |row: usize| -> Option<Instant> {
-            match (numbers, nanos.as_ref()) {
-                (Some(n), _) => n.get(row).filter(|t| t.is_finite()).map(Instant::Number),
-                (_, Some(p)) => p.get(row).map(Instant::Nanos),
+            match (numbers, nanos.as_ref(), ints.as_ref()) {
+                (Some(n), _, _) => n.get(row).filter(|t| t.is_finite()).map(Instant::Number),
+                (_, Some(p), _) => p.get(row).map(Instant::Nanos),
+                (_, _, Some(v)) => v[row].map(Instant::Int),
                 _ => None,
             }
         };

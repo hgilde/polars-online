@@ -144,8 +144,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// from before it is refit. **41 since task 196** (2026-10-07): a spec's
 /// model is `type = "ewridge"`, a windowed one carries `closed`, `holt`'s
 /// has no `level_half_life`, and `kmeans`' and `corrchange`'s row counts say
-/// `_rows`; a window's ring keeps its edge. A 40 file is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 41;
+/// `_rows`; a window's ring keeps its edge. A 40 file is refit. **42
+/// since task 200** (2026-10-07): an integer clock is held as an integer,
+/// in the streams' clocks and stamps and in the bank's clock dtypes, and a
+/// windows state is version 8; an older file is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 42;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -529,6 +532,22 @@ fn extract(
                 spec.name, c, chunk.row_base() + source_row(layout, j)
             )
         };
+        // An integer column's values in the stream's row order, a null
+        // refused by row.
+        let gather_i64 = |a: &polars_arrow::array::Int64Array| -> PolarsResult<Vec<i64>> {
+            let values = a.values().as_slice();
+            if let Some(validity) = a.validity().filter(|v| v.unset_bits() > 0) {
+                let n = layout.map_or(values.len(), <[usize]>::len);
+                let source = |j: usize| layout.map_or(j, |perm| perm[j]);
+                if let Some(j) = (0..n).find(|&j| !validity.get_bit(source(j))) {
+                    return Err(bad(j));
+                }
+            }
+            Ok(match layout {
+                Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                None => values.to_vec(),
+            })
+        };
         Ok(Some(match chunk.clock(spec, c)? {
             ClockArray::F64(a) => {
                 let values = f64_values(a);
@@ -541,19 +560,31 @@ fn extract(
                 }
                 ClockCol::F64(v)
             }
-            ClockArray::Nanos(a) => {
-                let values = a.values().as_slice();
-                if let Some(validity) = a.validity().filter(|v| v.unset_bits() > 0) {
-                    let n = layout.map_or(values.len(), <[usize]>::len);
-                    let source = |j: usize| layout.map_or(j, |perm| perm[j]);
-                    if let Some(j) = (0..n).find(|&j| !validity.get_bit(source(j))) {
+            ClockArray::Nanos(a) => ClockCol::Ns(gather_i64(a)?),
+            // An integer clock, as its integers (task 200).
+            ClockArray::I64(a) => ClockCol::I64(gather_i64(a)?),
+            // An unsigned clock past what an `i64` holds is refused by
+            // row: an integer clock is held as one (task 200), and a cast
+            // to a double, which took it before, resolved 2048 there.
+            ClockArray::U64(a) => {
+                let n = layout.map_or(a.len(), <[usize]>::len);
+                let source = |j: usize| layout.map_or(j, |perm| perm[j]);
+                let mut v = Vec::with_capacity(n);
+                for j in 0..n {
+                    let Some(x) = a.get(source(j)) else {
                         return Err(bad(j));
-                    }
+                    };
+                    let Ok(x) = i64::try_from(x) else {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: clock column {:?} has {} at row {}, past {}, the \
+                             largest value an integer clock holds (an Int64's); shift the \
+                             clock, or cast it to Int64 after subtracting an origin",
+                            spec.name, c, x, chunk.row_base() + source_row(layout, j), i64::MAX
+                        );
+                    };
+                    v.push(x);
                 }
-                ClockCol::Ns(match layout {
-                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
-                    None => values.to_vec(),
-                })
+                ClockCol::I64(v)
             }
         }))
     };
@@ -1164,10 +1195,15 @@ fn backwards_clock(spec: &Spec, refusal: ClockRefusal, row_base: usize) -> Polar
     let column = spec.clock.as_deref().unwrap_or("<row count>");
     let row = row_base + refusal.row;
     // The step exactly: in integer nanoseconds on a temporal clock, where the
-    // double of seconds resolves more than a nanosecond above about 104 days.
-    let step = match refusal.back_ns.and_then(|ns| i64::try_from(ns).ok()) {
-        Some(ns) => crate::span::format_duration(ns),
-        None => clock_amount(spec, -refusal.raw),
+    // double of seconds resolves more than a nanosecond above about 104 days;
+    // in integers on an integer clock (task 200).
+    let step = match (
+        refusal.back_ns.and_then(|ns| i64::try_from(ns).ok()),
+        refusal.back_int,
+    ) {
+        (Some(ns), _) => crate::span::format_duration(ns),
+        (None, Some(back)) => back.to_string(),
+        (None, None) => clock_amount(spec, -refusal.raw),
     };
     match refusal.disorder {
         None => polars_err!(ComputeError:
@@ -3339,24 +3375,10 @@ impl Bank {
             polars_bail!(ComputeError: "{}", why);
         }
         // The clock column's type, as first seen: what the clock fields
-        // come out as, kept in the state for `last_row` (task 152).
-        let seen: Vec<crate::stream::ClockDtype> = self
-            .specs
-            .iter()
-            .map(|s| {
-                crate::stream::ClockDtype::of(
-                    s.clock.is_some(),
-                    s.clock.as_deref().and_then(|c| chunk.clock_dtype(c)),
-                )
-            })
-            .collect();
-        // Kept only once the chunk is taken: a refused chunk changes nothing.
-        let merged: Vec<Option<crate::stream::ClockDtype>> = self
-            .clock_dtypes
-            .iter()
-            .zip(seen)
-            .map(|(slot, dt)| slot.clone().or(Some(dt)))
-            .collect();
+        // come out as, kept in the state for `last_row` (task 152), and
+        // another number type refused (task 200). Kept only once the chunk
+        // is taken: a refused chunk changes nothing.
+        let merged = self.clock_forms(chunk)?;
         // The key columns' forms, refused if another, kept as the clock's is.
         let keys = self.key_forms(chunk)?;
         // Everything parallel below -- the `par_iter`s here and the
@@ -3367,6 +3389,47 @@ impl Bank {
         self.clock_dtypes = merged;
         self.key_dtypes = keys;
         Ok(out)
+    }
+
+    /// Each spec's clock column's type in `chunk`, against the one the bank
+    /// keeps from its first chunk (task 152): the types, with a spec's first
+    /// now known, or the refusal of a number type that reads the clock
+    /// another way (docs/PLAN.md task 200, [`crate::stream::ClockDtype::conflicts`])
+    /// -- an integer clock after a float one or the other way round, or an
+    /// integer clock of another width -- naming the spec, the column and
+    /// both dtypes, as a key column of another form is refused. A chunk
+    /// without the clock column says nothing here: its absence is another
+    /// check's to name.
+    fn clock_forms(
+        &self,
+        chunk: &ArrowChunk,
+    ) -> PolarsResult<Vec<Option<crate::stream::ClockDtype>>> {
+        self.specs
+            .iter()
+            .zip(&self.clock_dtypes)
+            .map(|(s, kept)| {
+                let now = crate::stream::ClockDtype::of(
+                    s.clock.is_some(),
+                    s.clock
+                        .as_deref()
+                        .and_then(|c| chunk.clock_dtype(c))
+                        .as_ref(),
+                );
+                match (kept, s.clock.as_deref()) {
+                    (Some(was), Some(c)) if chunk.has(c) && was.conflicts(&now) => {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: clock column {:?} was {} and is now {}; an integer \
+                             clock's steps are taken in integers and a float clock's in doubles, \
+                             and an integer clock's fields come out in its own width, so a \
+                             stream keeps the type it began with. Cast it back to {}",
+                            s.name, c, was.dtype(), now.dtype(), was.dtype()
+                        )
+                    }
+                    (Some(was), _) => Ok(Some(was.clone())),
+                    (None, _) => Ok(Some(now)),
+                }
+            })
+            .collect()
     }
 
     /// Each spec's key columns in `chunk`, against the forms the bank keeps
@@ -3860,20 +3923,9 @@ impl Bank {
 
     fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         // Scoring changes nothing, so a type the bank has not seen is read
-        // off the chunk and not kept (task 152).
-        let clock_dtypes: Vec<Option<crate::stream::ClockDtype>> = self
-            .specs
-            .iter()
-            .enumerate()
-            .map(|(si, s)| {
-                self.clock_dtypes[si].clone().or_else(|| {
-                    Some(crate::stream::ClockDtype::of(
-                        s.clock.is_some(),
-                        s.clock.as_deref().and_then(|c| chunk.clock_dtype(c)),
-                    ))
-                })
-            })
-            .collect();
+        // off the chunk and not kept (task 152); another number type than
+        // the bank's is refused, as in a learning run (task 200).
+        let clock_dtypes = self.clock_forms(chunk)?;
         let n = chunk.height();
         self.refuse_if_broken()?;
         self.refuse_name_clash(chunk.names())?;

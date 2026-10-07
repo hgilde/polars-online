@@ -245,13 +245,16 @@ fn a_name_may_appear_as_a_number_and_as_a_key() {
 
 /// A column present in a form the role does not read is named as such, not
 /// reported "not found" beside a list that includes it (review 2026-09-17, B3).
+/// A clock given as text: an integer array is an integer clock since task
+/// 200 (`an_integer_array_is_an_integer_clock`).
 #[test]
 fn a_column_in_the_wrong_form_is_named_as_such() {
     let d = data(20);
-    let t = Int64Array::from_iter(d.t.iter().map(|v| Some(*v as i64)));
+    let t: Vec<String> = d.t.iter().map(|v| v.to_string()).collect();
+    let t: Vec<&str> = t.iter().map(String::as_str).collect();
     let cols = vec![
         ("g", ArrowCol::Str(text(&d.g))),
-        ("t", ArrowCol::I64(t)),
+        ("t", ArrowCol::Str(text(&t))),
         ("x0", ArrowCol::F64(opt_nums(&d.x0))),
         ("x1", ArrowCol::F64(nums(&d.x1))),
         ("y", ArrowCol::F64(opt_nums(&d.y))),
@@ -263,12 +266,98 @@ fn a_column_in_the_wrong_form_is_named_as_such() {
         .fit_predict_arrow(&chunk)
         .unwrap_err()
         .to_string();
-    assert!(
-        err.contains("clock column \"t\" is given as an integer key"),
-        "{err}"
-    );
+    assert!(err.contains("clock column \"t\" is given as text"), "{err}");
     assert!(err.contains("read as a number"), "{err}");
     assert!(!err.contains("not found"), "{err}");
+}
+
+/// Task 200: a clock given as an integer array is an integer clock, held
+/// as its integers: a hand-built chunk of epoch nanoseconds near 1.79e18,
+/// where a double resolves 256, learns what the same frame with an `Int64`
+/// clock does, and the clock fields come out as `Int64`, exact. An
+/// unsigned array is one too, its values past an `i64` refused by row.
+#[test]
+fn an_integer_array_is_an_integer_clock() {
+    const T0: i64 = 1_790_000_000_000_000_000;
+    let d = data(300);
+    let ticks: Vec<i64> = d.t.iter().map(|v| T0 + (*v * 7.0) as i64).collect();
+    let mut df = frame(&d);
+    df.with_column(Series::new("t".into(), ticks.clone()).into())
+        .unwrap();
+    let names = vec!["g", "t", "x0", "x1", "y", "w"];
+    let cols = |t: ArrowCol| {
+        vec![
+            ("g", ArrowCol::Str(text(&d.g))),
+            ("t", t),
+            ("x0", ArrowCol::F64(opt_nums(&d.x0))),
+            ("x1", ArrowCol::F64(nums(&d.x1))),
+            ("y", ArrowCol::F64(opt_nums(&d.y))),
+            ("w", ArrowCol::F64(nums(&d.w))),
+        ]
+    };
+    let signed = ArrowChunk::new(
+        d.t.len(),
+        cols(ArrowCol::I64(Int64Array::from_iter(
+            ticks.iter().map(|v| Some(*v)),
+        ))),
+        names.clone(),
+    )
+    .unwrap();
+    let spec = |emit: bool| {
+        let mut s = spec();
+        s.emit_clocks = emit;
+        s
+    };
+    let want = Bank::new(vec![spec(true)])
+        .unwrap()
+        .fit_predict(&df)
+        .unwrap();
+    let got = Bank::new(vec![spec(true)])
+        .unwrap()
+        .fit_predict_arrow(&signed)
+        .unwrap();
+    let scored = got[0].values()[got[0]
+        .fields()
+        .iter()
+        .position(|f| f.name == "scored_clock")
+        .unwrap()]
+    .clone();
+    assert_eq!(
+        scored.dtype(),
+        &polars_arrow::datatypes::ArrowDataType::Int64
+    );
+    same(&want, got);
+    let unsigned = |v: Vec<u64>| {
+        ArrowChunk::new(
+            v.len(),
+            cols(ArrowCol::U64(UInt64Array::from_iter(
+                v.into_iter().map(Some),
+            ))),
+            names.clone(),
+        )
+        .unwrap()
+    };
+    let fine: Vec<u64> = ticks.iter().map(|v| *v as u64).collect();
+    let got = Bank::new(vec![spec(false)])
+        .unwrap()
+        .fit_predict_arrow(&unsigned(fine.clone()))
+        .unwrap();
+    let want = Bank::new(vec![spec(false)])
+        .unwrap()
+        .fit_predict(&df)
+        .unwrap();
+    same(&want, got);
+    let mut past = fine;
+    past[5] = 1 << 63;
+    let err = Bank::new(vec![spec(false)])
+        .unwrap()
+        .fit_predict_arrow(&unsigned(past))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("clock column \"t\" has 9223372036854775808 at row 5"),
+        "{err}"
+    );
 }
 
 /// The chunk with the group key in a given form; everything else as `chunk`.

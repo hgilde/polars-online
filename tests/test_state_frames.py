@@ -181,16 +181,13 @@ def test_summary_and_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
     df = clocked(dtype)
     bank = po.ModelBank([clock_spec(df)])
     out = bank.fit_predict(df)
-    # The bank reads a number clock as a double, and says so in the dtype
-    # `emit_clocks` gives it: that is the clock's own dtype as the bank
-    # keeps it.
+    # The dtype `emit_clocks` gives it, the clock's own: an integer clock is
+    # held as an integer (task 200).
     want = out["m"].struct.field("scored_clock").dtype
-    assert want == (pl.Float64 if dtype.is_numeric() else dtype)
+    assert want == dtype
     by = df.group_by("g", maintain_order=True).agg(
         lo=pl.col("t").min(), hi=pl.col("t").max(), last=pl.col("t").last()
     )
-    if dtype.is_numeric():
-        by = by.with_columns(pl.col("lo", "hi", "last").cast(pl.Float64))
     summary = bank.summary()
     groups = bank.groups()
     for col in ("clock_min", "clock_max", "last_clock"):
@@ -208,11 +205,8 @@ def test_closed_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
     bank = po.ModelBank([clock_spec(df, group_close="monotone")])
     bank.fit_predict(df)
     closed = bank.closed_groups()
-    want = pl.Float64 if dtype.is_numeric() else dtype
-    assert closed["clock_min"].dtype == want and closed["clock_max"].dtype == want
+    assert closed["clock_min"].dtype == dtype and closed["clock_max"].dtype == dtype
     first = df.filter(pl.col("g") == 0)["t"]
-    if dtype.is_numeric():
-        first = first.cast(pl.Float64)
     assert closed["clock_min"].to_list() == [first.min()]
     assert closed["clock_max"].to_list() == [first.max()]
 

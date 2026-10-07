@@ -168,15 +168,20 @@ class TestTypes:
         assert st.field("scored_clock").dtype == pl.Duration("ms")
         assert st.field("scored_clock").to_list() == df["t"].to_list()
 
-    def test_an_integer_clock_comes_back_as_a_float(self):
+    def test_an_integer_clock_comes_back_as_its_integers(self):
+        """Task 200: an integer clock is held as an integer and comes back
+        in its own dtype, where it came back as a float."""
         n = 30
         rng = np.random.default_rng(6)
         x = rng.standard_normal(n)
         df = pl.DataFrame({"t": np.arange(n), "x": x, "y": x + rng.standard_normal(n)})
         out = po.ModelBank([spec()]).fit_predict(df)
         st = out["m"].struct
-        assert st.field("scored_clock").dtype == pl.Float64
-        assert st.field("scored_clock").to_list() == [float(i) for i in range(n)]
+        assert st.field("scored_clock").dtype == pl.Int64
+        assert st.field("scored_clock").to_list() == list(range(n))
+        df = df.with_columns(pl.col("t").cast(pl.UInt16))
+        out = po.ModelBank([spec()]).fit_predict(df)
+        assert out["m"].struct.field("scored_clock").dtype == pl.UInt16
 
     def test_no_clock_is_the_rows_index_in_its_group(self):
         n = 60

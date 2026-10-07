@@ -939,17 +939,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     (38 refused), 40 since task 195, for the residual scales, ``pa``'s
     scaler, ``bocpd``'s warm-up, the per-target thresholds and ``rls``'s
     ``delta`` (39 refused), and 41 since task 196, for the models' window
-    edge and its names (40 refused), the windows state unchanged each time."""
+    edge and its names (40 refused), the windows state unchanged each time;
+    42 since task 200, with windows state 8, for an integer clock held as an
+    integer (41 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 41, state[i]
-    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
+    assert state[i] == 42, state[i]
+    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 41"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 42"
         ):
             po.ModelBank.load_bytes(old)
 

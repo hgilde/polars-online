@@ -317,7 +317,9 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     step back ``restart_after_step_back`` reads as a new start, in the row's
     group or on the stream across groups. Seconds on a temporal column; on a
     time of day, the step in its seconds since midnight, so a step across
-    midnight is negative, as Polars' ``diff`` on a ``Time`` gives. The
-    input of a sum or a rate over a running total, so a day's notional of
-    1e10 is read as its trades (docs/PLAN.md task 143, *Numerics*)."""
+    midnight is negative, as Polars' ``diff`` on a ``Time`` gives. On an
+    integer column the step is taken in integers, then made a float, so a
+    running count past ``2**53`` keeps its steps of 1. The input of a sum or
+    a rate over a running total, so a day's notional of 1e10 is read as its
+    trades (docs/PLAN.md task 143, *Numerics*)."""
     return operator("increment", input)

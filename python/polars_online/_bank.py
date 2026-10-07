@@ -154,8 +154,8 @@ class ModelBank:
             The group's rows that the null policy did not skip.
         ``last_clock``
             Its last clock value, in the clock column's own dtype, exactly: a
-            ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, and a
-            ``Float64`` for a number clock, which the bank reads as a double (the
+            ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, an
+            integer clock in its own width, and a ``Float64`` for a float clock (the
             dtype ``emit_clocks`` gives ``scored_clock``). Null before the first row,
             or on a row-count clock, where the column is a ``Float64`` of nulls.
 
@@ -238,7 +238,7 @@ class ModelBank:
         :meth:`fit_predict` to judge. Row order is kept, and a ``LazyFrame``
         stays lazy. The comparison is exact: a temporal clock is compared in
         the integer nanoseconds the bank keeps, whatever its unit or time
-        zone.
+        zone, and an integer clock in integers.
 
         ``ValueError`` when:
 
@@ -1576,7 +1576,7 @@ def _unlearned(
     name: str,
     clock: str,
     group: str | None,
-    groups: list[tuple[str | None, float | None, int | None]],
+    groups: list[tuple[str | None, float | None, int | None, int | None]],
     schema: pl.Schema,
 ) -> pl.Expr:
     """True on the rows of one spec's input its state has not learned: a clock
@@ -1606,10 +1606,10 @@ def _unlearned(
         msg = f"spec {name!r}: clock column {clock!r} has dtype {dtype}, which is not a clock"
         raise ValueError(msg)
     temporal = not dtype.is_numeric()
-    kind: type[pl.DataType] = pl.Int64 if temporal else pl.Float64
     lasts: dict[str | None, float | int] = {}
-    for key, number, nanos in groups:
-        if number is None and nanos is None:
+    whole = True
+    for key, number, nanos, integer in groups:
+        if number is None and nanos is None and integer is None:
             continue
         if (nanos is not None) != temporal:
             was, now = ("temporal", "numeric") if nanos is not None else ("numeric", "temporal")
@@ -1621,10 +1621,23 @@ def _unlearned(
         seen: float | int
         if nanos is not None:
             seen = nanos // per
+        elif integer is not None:
+            seen = integer
         else:
             assert number is not None
             seen = number
+            whole = False
         lasts[key] = seen
+    # An integer clock the bank held as one is compared in integers (task
+    # 200): as doubles, two epoch nanoseconds near 1.8e18 a step apart tie,
+    # and the later row was dropped as learned. A value past an `Int64` is
+    # kept, null, for the bank to refuse by name.
+    integer_clock = dtype.is_integer() and whole
+    if integer_clock:
+        value = pl.col(clock).cast(pl.Int64, strict=False)
+    elif not temporal:
+        lasts = {k: float(v) for k, v in lasts.items()}
+    kind: type[pl.DataType] = pl.Int64 if temporal or integer_clock else pl.Float64
     last: pl.Expr
     if group is None:
         last = pl.lit(lasts.get(""), dtype=kind)

@@ -364,7 +364,7 @@ impl DataSummary {
         }
         let finite = |c: ClockValue| match c {
             ClockValue::F64(v) => v.is_finite(),
-            ClockValue::Ns(_) => true,
+            ClockValue::Ns(_) | ClockValue::I64(_) => true,
         };
         match (self.clock_min, self.clock_max) {
             (None, None) => {}

@@ -36,11 +36,14 @@ pub enum ArrowCol {
     F64(Float64Array),
     /// A key or a label, as text.
     Str(Utf8ViewArray),
-    /// A signed integer group key. Kept as an integer so the bank can bucket
-    /// on the value itself -- no cast, no hash, no collision to document
-    /// (docs/PERFORMANCE.md P11).
+    /// A signed integer: a group key, kept as an integer so the bank can
+    /// bucket on the value itself -- no cast, no hash, no collision to
+    /// document (docs/PERFORMANCE.md P11) -- or an integer clock, kept as
+    /// an integer so its steps are taken in integers (docs/PLAN.md task
+    /// 200).
     I64(Int64Array),
-    /// The same, unsigned, for a `u64` key whose values do not fit an `i64`.
+    /// The same, unsigned, for a `u64` column whose values do not fit an
+    /// `i64`.
     U64(UInt64Array),
     /// A temporal clock, as nanoseconds since the Unix epoch whatever the
     /// source column's unit. Kept as an integer so the gap between two rows
@@ -155,12 +158,17 @@ pub enum Form {
     Bool,
 }
 
-/// A chunk's clock column in the form the source had it: a numeric clock's
-/// numbers, or a temporal clock's nanoseconds since the Unix epoch.
+/// A chunk's clock column in the form the source had it: a float clock's
+/// numbers, an integer clock's integers (docs/PLAN.md task 200), or a
+/// temporal clock's nanoseconds since the Unix epoch.
 #[derive(Clone, Copy, Debug)]
 pub enum ClockArray<'a> {
     F64(&'a Float64Array),
     Nanos(&'a Int64Array),
+    I64(&'a Int64Array),
+    /// An unsigned 64-bit clock, whose values past `i64::MAX` the bank
+    /// refuses by row.
+    U64(&'a UInt64Array),
 }
 
 /// A stream's clock column as the bank hands it to a stream: a
@@ -169,6 +177,8 @@ pub enum ClockArray<'a> {
 pub enum ClockCol {
     F64(Vec<f64>),
     Ns(Vec<i64>),
+    /// An integer clock, in the column's own units (task 200).
+    I64(Vec<i64>),
 }
 
 impl ClockCol {
@@ -178,6 +188,7 @@ impl ClockCol {
         match self {
             Self::F64(v) => ClockValue::F64(v[i]),
             Self::Ns(v) => ClockValue::Ns(v[i]),
+            Self::I64(v) => ClockValue::I64(v[i]),
         }
     }
 }
@@ -205,8 +216,8 @@ pub struct ArrowChunk {
     /// i`, so a surface that feeds an input in chunks names the input's row,
     /// not the chunk's (task 120). 0 unless [`Self::with_row_base`] says.
     row_base: usize,
-    /// Each temporal clock column's dtype as it arrived, for the clock
-    /// fields to echo it (docs/PLAN.md task 152).
+    /// Each temporal or integer clock column's dtype as it arrived, for the
+    /// clock fields to echo it (docs/PLAN.md tasks 152 and 200).
     clock_dtypes: Vec<(PlSmallStr, DataType)>,
     /// The group key columns held as text that are integers, too wide for
     /// a 64-bit form (task 160, PA3): `group_close = "monotone"` orders
@@ -299,13 +310,19 @@ impl ArrowChunk {
         self.integer_text.contains(name)
     }
 
-    /// The dtype a temporal clock column arrived with (task 152); `None`
-    /// for a numeric clock, or a column that is not a clock here.
-    pub fn clock_dtype(&self, name: &str) -> Option<&DataType> {
-        self.clock_dtypes
-            .iter()
-            .find(|(n, _)| n.as_str() == name)
-            .map(|(_, d)| d)
+    /// The dtype a temporal or integer clock column arrived with (tasks 152
+    /// and 200); for an Arrow caller's chunk, which names no dtype, the
+    /// integer form it holds the column in, an `Int64` or a `UInt64`.
+    /// `None` for a float clock, or a column that is not a clock here.
+    pub fn clock_dtype(&self, name: &str) -> Option<DataType> {
+        if let Some((_, d)) = self.clock_dtypes.iter().find(|(n, _)| n.as_str() == name) {
+            return Some(d.clone());
+        }
+        match self.find(name, |c| matches!(c, ArrowCol::I64(_) | ArrowCol::U64(_))) {
+            Some(ArrowCol::I64(_)) => Some(DataType::Int64),
+            Some(ArrowCol::U64(_)) => Some(DataType::UInt64),
+            _ => None,
+        }
     }
 
     #[must_use]
@@ -398,13 +415,25 @@ impl ArrowChunk {
     }
 
     /// The clock column in the form the source had it -- a temporal clock's
-    /// nanoseconds where the adapter read one, else the numeric form -- or
-    /// the error naming the spec.
+    /// nanoseconds or an integer clock's integers where the adapter read
+    /// one (task 200), else the float form -- or the error naming the spec.
+    /// The integer form comes first: one column may be held both ways, a
+    /// float for a spec that reads it as a feature.
     pub fn clock(&self, spec: &Spec, name: &str) -> PolarsResult<ClockArray<'_>> {
-        match self.find(name, |c| matches!(c, ArrowCol::Nanos(_) | ArrowCol::F64(_))) {
+        let exact = self.find(name, |c| {
+            matches!(c, ArrowCol::Nanos(_) | ArrowCol::I64(_) | ArrowCol::U64(_))
+        });
+        match exact.or_else(|| self.find(name, |c| matches!(c, ArrowCol::F64(_)))) {
             Some(ArrowCol::Nanos(a)) => Ok(ClockArray::Nanos(a)),
+            Some(ArrowCol::I64(a)) => Ok(ClockArray::I64(a)),
+            Some(ArrowCol::U64(a)) => Ok(ClockArray::U64(a)),
             Some(ArrowCol::F64(a)) => Ok(ClockArray::F64(a)),
-            _ => Err(self.missing(spec, "clock", name, "a number or a temporal clock")),
+            _ => Err(self.missing(
+                spec,
+                "clock",
+                name,
+                "a number, an integer or a temporal clock",
+            )),
         }
     }
 
@@ -519,6 +548,10 @@ enum Want {
     Text,
     /// A group key: an integer stays an integer, anything else becomes text.
     Key,
+    /// A clock (docs/PLAN.md task 200): a temporal column as its
+    /// nanoseconds, an integer one as its integers, as a key keeps them,
+    /// and anything else as a number.
+    Clock,
     /// A column of a formula target (docs/PLAN.md task 104): a number as a
     /// number, text as text, so the formula reads what the frame has. A
     /// temporal column is refused, as in every role but the clock.
@@ -563,7 +596,7 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
             }
         }
         if let Some(c) = &s.clock {
-            push(c, Want::Number);
+            push(c, Want::Clock);
         }
         if let Some(w) = &s.weight {
             push(w, Want::Number);
@@ -585,8 +618,10 @@ fn form_of(want: Want, dtype: &DataType) -> &'static str {
     match want {
         Want::Number => "a number",
         Want::Text => "text",
-        Want::Key if fits_64(dtype) => "an integer key",
+        Want::Key | Want::Clock if fits_64(dtype) => "an integer key",
         Want::Key => "text",
+        Want::Clock if dtype.is_temporal() => "a temporal clock",
+        Want::Clock => "a number",
         Want::Value if value_is_number(dtype) => "a number",
         Want::Value if *dtype == DataType::Boolean => "a boolean",
         Want::Value => "text",
@@ -627,6 +662,10 @@ fn cast_to(
             Ok(ArrowCol::F64(arr))
         }
         Want::Text => Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?)),
+        // A temporal clock is read in nanoseconds before a cast is asked
+        // for (`chunk_from_frame_at`).
+        Want::Clock if fits_64(s.dtype()) => cast_to(s, Want::Key, spec_name, role, name),
+        Want::Clock => cast_to(s, Want::Number, spec_name, role, name),
         Want::Value => {
             let dtype = s.dtype();
             if dtype.is_temporal() {
@@ -686,7 +725,7 @@ fn cast_to(
 /// forms holds every value of it. A wider one (`Int128`) is read as its
 /// text, which holds every value too, and is still ordered as a number
 /// ([`ArrowChunk::is_integer_text`]).
-fn fits_64(dtype: &DataType) -> bool {
+pub(crate) fn fits_64(dtype: &DataType) -> bool {
     matches!(
         dtype,
         DataType::Int8
@@ -814,17 +853,20 @@ pub fn chunk_from_frame_at(
         // seconds would be 60_000 / 60_000_000 / 60_000_000_000 clock units
         // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
         // already refused a spec that gives this clock plain numbers.
-        if want == Want::Number
-            && s.dtype().is_temporal()
-            && specs
-                .iter()
-                .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
-        {
+        if want == Want::Clock && s.dtype().is_temporal() {
             let col = ArrowCol::Nanos(nanos_array(s, row_base, NanosRole::Clock)?);
             clock_dtypes.push((name.clone(), s.dtype().clone()));
             have.insert((name.clone(), col.form()));
             cols.push((name.clone(), col));
             continue;
+        }
+        // An integer clock is read as its integers, the form a key keeps
+        // them in, so its steps are taken in integers (task 200): cast to a
+        // double, an epoch-nanosecond column resolved 256 of them. Its dtype
+        // is kept for the clock fields, whether or not a key of the same
+        // column has made the array already.
+        if want == Want::Clock && fits_64(s.dtype()) {
+            clock_dtypes.push((name.clone(), s.dtype().clone()));
         }
         // Marked whether or not the cast below runs: a session read from the
         // same column may have made the text already.

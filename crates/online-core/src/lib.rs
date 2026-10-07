@@ -105,7 +105,7 @@ mod window;
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
-    SessionGap, Stamp, ns_of_seconds, seconds_of_ns,
+    SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,
 };
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
@@ -509,7 +509,16 @@ pub use window::{
 ///   `type = "ewridge"`, carry `closed`, and no longer `holt`'s
 ///   `level_half_life` -- and pre-1.0 no loader is written. Every other
 ///   model's state loads as it did at 40.
-pub const SCHEMA_VERSION: u32 = 41;
+/// - 42 (2026-10-07, task 200): an integer clock column is held as an
+///   integer ([`ClockValue::I64`]), where it was a double that resolved 256
+///   at today's epoch nanoseconds: the clock state keeps an integer clock's
+///   last value, its stamps ([`Stamp::Int`]) and the skipped and removed
+///   time in the column's own units; the bank keeps an integer clock's
+///   width with its dtype; and a windows state's rows say what their `off`
+///   holds (windows state 8). A float or temporal clock's state is the
+///   bytes it was. The bank refuses a file older than 42 by number, and
+///   pre-1.0 no loader is written. A model's own state loads as it did.
+pub const SCHEMA_VERSION: u32 = 42;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -541,7 +550,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///
 /// Every other model's state from 14 on decodes and loads. A bank file is
 /// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 41). How the number came
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 42). How the number came
 /// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the

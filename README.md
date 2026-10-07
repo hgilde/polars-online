@@ -531,10 +531,21 @@ reads only the gap between consecutive rows, taken in integer nanoseconds
 before it becomes seconds, so a nanosecond timestamp keeps its nanoseconds
 whatever the stream's age.
 
+**An integer clock is read as its integers**: any column from `Int8` to
+`Int64` or `UInt8` to `UInt64`. The step between two rows is taken in
+integers before it becomes a double. Every decision on the clock is taken on
+the integers too: a step back, a gap past `gap_cap`, a cadence, a window's
+edge and an embargo's release. So an `Int64` column of epoch nanoseconds keeps
+its nanoseconds, where a double near 1.8e18 resolves 256 of them. Its clock
+parameters stay numbers, and a fractional one such as `gap_cap=0.5` is
+compared as the number it is. A `UInt64` value past the largest `Int64` is
+refused by row. A later chunk whose clock is a float, or an integer of
+another width, is refused by name.
+
 **Quantities measured on a temporal clock reach the output in seconds.**
-`holt`'s trend is per second, and `summary()` gives the clock's range as
-seconds since 1970. Only `emit_clocks` writes clocks in the clock column's
-own type ([Labels that arrive late](#labels-that-arrive-late)).
+`holt`'s trend is per second. The clocks themselves keep the clock column's
+own type: `emit_clocks` ([Labels that arrive late](#labels-that-arrive-late)),
+and the clock columns of `summary()`, `groups()` and `closed_groups()`.
 
 #### Sessions, gaps and steps back
 
@@ -993,7 +1004,7 @@ fwd = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 | case | what `embargo` does |
 |---|---|
 | what the delay counts | the time that passed on the clock column, skipped rows included, and `session_gap` where a session restarts the clock. It is not the capped step the model decays by, so the release depends on the rows alone and survives any chunking |
-| exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
+| exactly at the delay | the row is learned. The time that passed is held exactly: in integer nanoseconds on a temporal clock, and by one subtraction of the two rows' values on a number clock, in integers on an integer clock. Rows 1 ms apart under `embargo="2s"` are each learned 2,000 rows on |
 | with no clock column | one unit is one row of the group, a skipped row included: `embargo=20` is twenty rows |
 | at a break | nothing is released early. A break's own effect, such as a lag ring's clearing or `session_shrink`'s blend, waits with the row after it, and runs when that row is learned. A reset drops the rows still waiting |
 | at the end of the stream | the rows still waiting are not learned, unless the state is saved and another run resumes from it |
@@ -1596,7 +1607,8 @@ bank.
 **A bank keeps every group until you drop it, so in a long-running bank,
 drop the quiet ones with `bank.drop_groups`.** `bank.groups()` gives each
 group's `last_clock` in the clock column's own dtype: a `Datetime` in its
-unit and zone, a number clock as a `Float64`. Compare it with the current
+unit and zone, an integer clock in its own width, a float clock as a
+`Float64`. Compare it with the current
 time of the same kind. This code uses `df` and `lf` from
 [Example data](#example-data):
 

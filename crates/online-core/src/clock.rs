@@ -236,7 +236,7 @@ pub enum Stamp {
     /// A temporal clock: the steps since the stream began, or last started
     /// over, each capped, summed in integer nanoseconds.
     Ns(i128),
-    /// A number clock, or none: the row's raw clock value (its place in the
+    /// A float clock, or none: the row's raw clock value (its place in the
     /// stream, without a clock column), and the time the caps and session
     /// steps have removed before it. The decayed clock is the first less
     /// the second, and two rows with no capped gap or session change between
@@ -247,6 +247,16 @@ pub enum Stamp {
         #[serde(with = "crate::humanfloat::f64_or_tag")] f64,
         #[serde(with = "crate::humanfloat::f64_or_tag")] f64,
     ),
+    /// An integer clock (docs/PLAN.md task 200): the decayed clock in the
+    /// column's own units, as a whole number of them, exact, and the
+    /// fraction beside it that a fractional `gap_cap` or `session_gap`
+    /// left, a double kept between −1 and 1. The whole number is the row's
+    /// raw value less the whole units the caps and session steps removed
+    /// before it, so two rows with no capped gap or session change between
+    /// them differ by one subtraction of their raw values, in integers, at
+    /// any size: an epoch-nanosecond column near 1.8e18, where a double
+    /// resolves 256, keeps its 1 ns steps.
+    Int(i128, #[serde(with = "crate::humanfloat::f64_or_tag")] f64),
 }
 
 impl Stamp {
@@ -263,7 +273,15 @@ impl Stamp {
     ///   against the span's nanoseconds;
     /// - two raw stamps: the difference of their raw values less the
     ///   difference of their removed times, which is exactly one subtraction
-    ///   when the removed times are equal.
+    ///   when the removed times are equal;
+    /// - two integer stamps: the difference of their whole parts, in
+    ///   integers, against the span less the difference of their fractions,
+    ///   compared exactly ([`cmp_int_f64`]): where every `gap_cap` and
+    ///   `session_gap` is whole the fractions are 0 and the integer
+    ///   difference meets the span itself, so a difference of exactly the
+    ///   span is equal to it at any size of clock (task 200). Across a break
+    ///   a fractional parameter made, the fractions' difference is a double
+    ///   below 2 in size, rounded there and never at the clock's magnitude.
     ///
     /// Stamps of two forms -- which no stream hands one model -- compare
     /// their decayed clocks as numbers. A comparison with no answer (a NaN
@@ -284,6 +302,10 @@ impl Stamp {
             (Stamp::Ns(a), Stamp::Ns(b), Some(w)) => return a.saturating_sub(b).cmp(&w),
             (Stamp::Ns(a), Stamp::Ns(b), None) => seconds_of_ns(a.saturating_sub(b)),
             (Stamp::Raw(a, ra), Stamp::Raw(b, rb), _) => (a - b) - (ra - rb),
+            (Stamp::Int(a, fa), Stamp::Int(b, fb), _) => {
+                return cmp_int_f64(a.saturating_sub(b), span - (fa - fb))
+                    .unwrap_or(Ordering::Equal);
+            }
             (a, b, _) => a.value() - b.value(),
         };
         diff.partial_cmp(&span).unwrap_or(Ordering::Equal)
@@ -295,7 +317,123 @@ impl Stamp {
         match self {
             Stamp::Ns(n) => seconds_of_ns(n),
             Stamp::Raw(raw, removed) => raw - removed,
+            Stamp::Int(whole, frac) => whole as f64 + frac,
         }
+    }
+
+    /// An integer stamp moved back by `d` clock units, a finite double:
+    /// its whole part by `d`'s, exactly, and its fraction by the rest
+    /// (`crate::since`'s start of a stream). `None` for any other stamp, or
+    /// a `d` with no finite value.
+    pub(crate) fn int_back_by(self, d: f64) -> Option<Stamp> {
+        match (self, Ticks::of(d)) {
+            (Stamp::Int(whole, frac), Some(back)) => {
+                let t = Ticks::norm(whole, frac).minus(back);
+                Some(Stamp::Int(t.whole, t.frac))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How an integer compares with a double, exactly: neither is rounded to
+/// the other's type (docs/PLAN.md task 200). An integer clock's step is an
+/// integer and its parameters are doubles, possibly fractional (`gap_cap =
+/// 0.5`), and a step of `2^53 + 1` against a cap of `2^53` is past it,
+/// where the step's double ties with the cap. `None` for a NaN, which
+/// orders with nothing.
+pub fn cmp_int_f64(i: i128, f: f64) -> Option<Ordering> {
+    // 2^127: every double at or past it is past every i128, and every one
+    // below −2^127 is below every i128.
+    const EDGE: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+    if f.is_nan() {
+        return None;
+    }
+    if f >= EDGE {
+        return Some(Ordering::Less);
+    }
+    if f < -EDGE {
+        return Some(Ordering::Greater);
+    }
+    let floor = f.floor();
+    // Exact: `floor` is a whole number inside i128's range.
+    match i.cmp(&(floor as i128)) {
+        Ordering::Equal if f > floor => Some(Ordering::Less),
+        o => Some(o),
+    }
+}
+
+/// An amount of an integer clock's time (docs/PLAN.md task 200): whole
+/// units, exact, and the fraction a parameter with one added, a double
+/// kept between −1 and 1 so that summing fractions rounds at their own
+/// size, never at the clock's. Where every parameter is whole the fraction
+/// is 0 and the amount is an integer, exactly.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Ticks {
+    whole: i128,
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
+    frac: f64,
+}
+
+impl Ticks {
+    const ZERO: Ticks = Ticks {
+        whole: 0,
+        frac: 0.0,
+    };
+
+    fn int(i: i128) -> Self {
+        Ticks {
+            whole: i,
+            frac: 0.0,
+        }
+    }
+
+    /// A finite double, exactly: its whole part and its fraction, which
+    /// `f − trunc(f)` gives without rounding. `None` for an infinite or NaN
+    /// value: no amount (an infinite cap is no cap).
+    fn of(f: f64) -> Option<Self> {
+        if !f.is_finite() {
+            return None;
+        }
+        let whole = f.trunc();
+        Some(Ticks {
+            whole: whole as i128,
+            frac: f - whole,
+        })
+    }
+
+    /// `whole + frac` with the fraction's whole part moved into the whole.
+    fn norm(whole: i128, frac: f64) -> Self {
+        let carry = frac.trunc();
+        Ticks {
+            whole: whole.saturating_add(carry as i128),
+            frac: frac - carry,
+        }
+    }
+
+    fn plus(self, o: Self) -> Self {
+        Self::norm(self.whole.saturating_add(o.whole), self.frac + o.frac)
+    }
+
+    fn minus(self, o: Self) -> Self {
+        Self::norm(self.whole.saturating_sub(o.whole), self.frac - o.frac)
+    }
+
+    /// `self` against `o`: the whole parts' difference, in integers,
+    /// against the fractions' ([`cmp_int_f64`]).
+    fn cmp(self, o: Self) -> Ordering {
+        cmp_int_f64(self.whole.saturating_sub(o.whole), o.frac - self.frac)
+            .unwrap_or(Ordering::Equal)
+    }
+
+    /// The amount as a double, rounded once where the whole part is past
+    /// what a double holds.
+    fn to_f64(self) -> f64 {
+        self.whole as f64 + self.frac
+    }
+
+    fn is_zero(&self) -> bool {
+        self.whole == 0 && self.frac == 0.0
     }
 }
 
@@ -365,6 +503,30 @@ struct Exact {
     /// clock, the step back less the session's gap, which it counts instead.
     #[serde(with = "crate::humanfloat::f64_or_tag")]
     elapsed_removed: f64,
+    /// An integer clock: `removed` in the column's own units, exact where
+    /// every parameter is whole (task 200). Written only while it holds
+    /// time, so a float or temporal clock's state is the bytes it was.
+    #[serde(default, skip_serializing_if = "Ticks::is_zero")]
+    removed_int: Ticks,
+    /// An integer clock: `elapsed_removed` in the column's own units.
+    #[serde(default, skip_serializing_if = "Ticks::is_zero")]
+    elapsed_removed_int: Ticks,
+}
+
+/// One row of an integer clock as [`ClockState`] decided it, exactly
+/// (task 200): handed to [`Exact::step`] for the row's stamps.
+#[derive(Debug, Clone, Copy)]
+struct IntRow {
+    /// The column's step, `None` on the first row.
+    raw: Option<i128>,
+    /// What the model sees of the step: the step itself, the cap, the
+    /// session's gap or nothing.
+    d: Ticks,
+    /// The time that passed: the step forward, or the session's gap.
+    elapsed: Ticks,
+    /// The skipped rows' steps and this row's, before the cap: what an
+    /// accepted row's fold is judged on.
+    total: Ticks,
 }
 
 impl Exact {
@@ -375,7 +537,8 @@ impl Exact {
     /// none. The stamp of an accepted row, its skipped predecessors' steps
     /// folded in under the cap as [`ClockState::advance`] folds them, and its
     /// place on the elapsed clock, every row's step counted whole; `None`
-    /// for both on a skipped row.
+    /// for both on a skipped row. An integer clock's row (`int`) is the
+    /// same decisions in the column's own units, exactly (task 200).
     #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
@@ -388,6 +551,7 @@ impl Exact {
         d: f64,
         elapsed: f64,
         pending: f64,
+        int: Option<IntRow>,
         reset: bool,
         accept: bool,
     ) -> (Option<Stamp>, Option<Stamp>) {
@@ -398,6 +562,35 @@ impl Exact {
         }
         let place = self.rows as f64;
         self.rows = self.rows.saturating_add(1);
+        if let (Some(ClockValue::I64(v)), Some(row)) = (now, int) {
+            // An integer clock: as a number clock's, with the removed time
+            // in the column's own units -- the step less what the model
+            // sees of it, and the fold's total past the cap -- so a stretch
+            // without a break removes exactly nothing and two of its rows
+            // differ by one subtraction in integers.
+            if let Some(r) = row.raw.filter(|_| !reset) {
+                let r = Ticks::int(r);
+                self.removed_int = self.removed_int.plus(r.minus(row.d));
+                self.elapsed_removed_int = self.elapsed_removed_int.plus(r.minus(row.elapsed));
+            }
+            if !accept {
+                return (None, None);
+            }
+            if let Some(cap) = Ticks::of(cfg.gap_cap)
+                && row.total.cmp(cap) == Ordering::Greater
+            {
+                self.removed_int = self.removed_int.plus(row.total.minus(cap));
+            }
+            let at = Ticks::int(i128::from(v));
+            let (s, e) = (
+                at.minus(self.removed_int),
+                at.minus(self.elapsed_removed_int),
+            );
+            return (
+                Some(Stamp::Int(s.whole, s.frac)),
+                Some(Stamp::Int(e.whole, e.frac)),
+            );
+        }
         if let Some(ClockValue::Ns(_)) = now {
             let cap = caps
                 .gap_cap_ns
@@ -494,51 +687,75 @@ impl Exact {
     }
 }
 
-/// One row's clock value, in the form the source had it: a number, or a
-/// temporal clock's nanoseconds since the Unix epoch. A stream keeps its
-/// previous row's value in that form, and the delta between two `Ns` values
-/// is taken in integers before it becomes seconds, so a nanosecond
-/// timestamp's gaps are exact whatever the stream's age. Read as a double
-/// of seconds from any origin, a clock resolves only 2^-52 of the time
-/// since that origin: under a nanosecond for six weeks, four nanoseconds
-/// after a year (docs/PLAN.md task 88).
+/// One row's clock value, in the form the source had it: a float, an
+/// integer, or a temporal clock's nanoseconds since the Unix epoch. A
+/// stream keeps its previous row's value in that form, and the delta
+/// between two `Ns` values, or two `I64` ones, is taken in integers before
+/// it becomes a double, so a nanosecond timestamp's gaps are exact whatever
+/// the stream's age. Read as a double of seconds from any origin, a clock
+/// resolves only 2^-52 of the time since that origin: under a nanosecond
+/// for six weeks, four nanoseconds after a year (docs/PLAN.md task 88); an
+/// integer column of epoch nanoseconds read as a double resolves 256 of
+/// them in 2026 (task 200).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ClockValue {
-    /// A numeric clock, in the column's own units.
+    /// A float clock, in the column's own units.
     F64(f64),
     /// A temporal clock, in nanoseconds since the Unix epoch.
     Ns(i64),
+    /// An integer clock, in the column's own units (task 200): any integer
+    /// column up to 64 bits wide, read without passing through a double.
+    I64(i64),
 }
 
 impl ClockValue {
-    /// The value as a number a caller can report: a numeric clock as it
-    /// is, a temporal one as seconds since the Unix epoch, which a double
-    /// resolves to about a quarter of a microsecond at today's dates. For
-    /// reporting; the delta a model sees never goes through this.
+    /// The value as a number a caller can report: a float or integer clock
+    /// as it is (an integer past `2^53` rounded to a double), a temporal
+    /// one as seconds since the Unix epoch, which a double resolves to
+    /// about a quarter of a microsecond at today's dates. For reporting;
+    /// the delta a model sees never goes through this.
     pub fn seconds(self) -> f64 {
         match self {
             Self::F64(v) => v,
             Self::Ns(ns) => seconds_of_ns(i128::from(ns)),
+            Self::I64(v) => v as f64,
         }
     }
 
     /// `self` minus `prev`, in clock units: for two temporal values, the
-    /// seconds between them, taken in integer nanoseconds and rounded once.
+    /// seconds between them, taken in integer nanoseconds and rounded once;
+    /// for two integer ones, their difference in integers, rounded once.
     fn delta(self, prev: Self) -> f64 {
         match (self, prev) {
             (Self::Ns(c), Self::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
             (Self::F64(c), Self::F64(p)) => c - p,
+            (Self::I64(c), Self::I64(p)) => (i128::from(c) - i128::from(p)) as f64,
             // A stream's clock keeps one form for its life -- the bank
-            // refuses a chunk in the other form -- so this arm is a direct
+            // refuses a chunk in another -- so this arm is a direct
             // caller's, and it reads both as the numbers they report.
             (c, p) => c.seconds() - p.seconds(),
         }
     }
 
-    /// Whether `self` is before `prev`: exact between two temporal values.
+    /// `self` minus `prev` in integers, for two integer values: what every
+    /// decision on an integer clock's step is taken on (task 200). `None`
+    /// for any other pair.
+    pub fn int_step(self, prev: Self) -> Option<i128> {
+        match (self, prev) {
+            (Self::I64(c), Self::I64(p)) => Some(i128::from(c) - i128::from(p)),
+            _ => None,
+        }
+    }
+
+    /// Whether `self` is before `prev`: exact between two temporal values,
+    /// two integer ones, and an integer and a float.
     pub fn is_before(self, prev: Self) -> bool {
         match (self, prev) {
-            (Self::Ns(c), Self::Ns(p)) => c < p,
+            (Self::Ns(c), Self::Ns(p)) | (Self::I64(c), Self::I64(p)) => c < p,
+            (Self::I64(c), Self::F64(p)) => cmp_int_f64(i128::from(c), p) == Some(Ordering::Less),
+            (Self::F64(c), Self::I64(p)) => {
+                cmp_int_f64(i128::from(p), c) == Some(Ordering::Greater)
+            }
             (c, p) => c.seconds() < p.seconds(),
         }
     }
@@ -591,6 +808,13 @@ pub struct ClockState {
     /// window operators -- whose state writes the bytes it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     exact: Option<Exact>,
+    /// An integer clock's skipped rows' deltas, in the column's own units,
+    /// exact where every parameter is whole: `pending` for an integer
+    /// clock, whose fold is judged against `gap_cap` exactly (task 200).
+    /// Written only while it holds time, so a float or temporal clock's
+    /// state is the bytes it was.
+    #[serde(default, skip_serializing_if = "Ticks::is_zero")]
+    pending_int: Ticks,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -742,6 +966,21 @@ impl ClockState {
             (Some(s), Some(p)) => s != p,
             _ => false,
         };
+        // An integer clock's step in integers (task 200): every decision on
+        // the step below is taken on it, exactly, against parameters that
+        // are doubles, where `raw` is its double, for the model. An epoch-
+        // nanosecond column near 1.8e18 steps by 1 where its doubles tie.
+        let int_raw = match (clock, self.prev_clock) {
+            (Some(c), Some(p)) => c.int_step(p),
+            _ => None,
+        };
+        let integer = matches!(clock, Some(ClockValue::I64(_)))
+            && matches!(self.prev_clock, None | Some(ClockValue::I64(_)));
+        // `raw > x`, on the integers where the clock is one.
+        let past = |raw: f64, x: f64| match int_raw {
+            Some(i) => cmp_int_f64(i, x) == Some(Ordering::Greater),
+            None => raw > x,
+        };
 
         // The time that passed: the column's forward step; across a session
         // change that restarts the clock, the session's gap, the only
@@ -760,6 +999,9 @@ impl ClockState {
         let mut backwards = None;
         let mut disorder = None;
         let mut capped = false;
+        // Whether the row's `d` is its own step, whole: what an integer
+        // clock holds as the integers' difference.
+        let mut whole = false;
         let mut d = match raw {
             None => 0.0,
             Some(raw) => {
@@ -774,7 +1016,8 @@ impl ClockState {
                             g.clamp(0.0, cfg.gap_cap)
                         }
                         None => {
-                            capped = raw > cfg.gap_cap;
+                            capped = past(raw, cfg.gap_cap);
+                            whole = raw >= 0.0 && !capped;
                             raw.clamp(0.0, cfg.gap_cap)
                         }
                     }
@@ -787,6 +1030,13 @@ impl ClockState {
                     // caught at a one-day minimum -- and a larger one starts
                     // the model over.
                     let back = -raw;
+                    let late = match int_raw {
+                        Some(i) => matches!(
+                            cmp_int_f64(-i, cfg.min_backwards_jump),
+                            Some(Ordering::Less | Ordering::Equal)
+                        ),
+                        None => back <= cfg.min_backwards_jump,
+                    };
                     if scoring {
                         0.0
                     } else {
@@ -795,7 +1045,7 @@ impl ClockState {
                                 backwards = Some(raw);
                                 0.0
                             }
-                            OnClockReset::ResetState if back <= cfg.min_backwards_jump => {
+                            OnClockReset::ResetState if late => {
                                 disorder = Some(Disorder {
                                     back,
                                     min_backwards_jump: cfg.min_backwards_jump,
@@ -810,7 +1060,8 @@ impl ClockState {
                         }
                     }
                 } else {
-                    capped = raw > cfg.gap_cap;
+                    capped = past(raw, cfg.gap_cap);
+                    whole = !capped;
                     raw.min(cfg.gap_cap)
                 }
             }
@@ -818,10 +1069,34 @@ impl ClockState {
 
         if reset {
             self.pending = 0.0;
+            self.pending_int = Ticks::ZERO;
             self.skipped_elapsed = 0.0;
             d = 0.0;
             elapsed = 0.0;
         }
+        // The same row in the integer clock's own units, exactly: the step
+        // the model sees -- the integers' difference where it is the step
+        // whole, else the cap or the session's gap, whose doubles split
+        // exactly into whole units and a fraction -- the time that passed,
+        // and the fold's total, which an accepted row is judged on.
+        let int_row = integer.then(|| {
+            let d = match int_raw {
+                Some(i) if whole && !reset => Ticks::int(i),
+                _ => Ticks::of(d).unwrap_or(Ticks::ZERO),
+            };
+            IntRow {
+                raw: int_raw,
+                d,
+                elapsed: match int_raw {
+                    Some(i) if i >= 0 && !reset => Ticks::int(i),
+                    _ => Ticks::of(elapsed).unwrap_or(Ticks::ZERO),
+                },
+                total: self
+                    .pending_int
+                    .plus(Ticks::of(self.pending).unwrap_or(Ticks::ZERO))
+                    .plus(d),
+            }
+        });
         // The same step held exactly, for a caller that stamps its rows
         // (task 175), and the time that passed held exactly beside it (task
         // 176): read before this row's clock replaces the last.
@@ -836,6 +1111,7 @@ impl ClockState {
                 d,
                 elapsed,
                 self.pending,
+                int_row,
                 reset,
                 accept,
             )
@@ -849,25 +1125,50 @@ impl ClockState {
             // ceiling holds for the total: `gap_cap` is the most a model
             // sees between two rows it learns from. Ten skipped rows 100
             // apart under a cap of 60 handed the next one 660 (review
-            // 2026-09-12, S3). A total over the cap is a capped gap.
-            let total = self.pending + d;
+            // 2026-09-12, S3). A total over the cap is a capped gap. On an
+            // integer clock the total is the integers' and judged on them.
+            let (d_clock, over) = match int_row {
+                Some(row) => {
+                    let over = Ticks::of(cfg.gap_cap)
+                        .is_some_and(|cap| row.total.cmp(cap) == Ordering::Greater);
+                    let d = if over {
+                        cfg.gap_cap
+                    } else {
+                        row.total.to_f64().min(cfg.gap_cap)
+                    };
+                    (d, over)
+                }
+                None => {
+                    let mut total = self.pending + d;
+                    // Integer steps a direct caller's stream of mixed forms
+                    // left waiting; never in a bank's stream.
+                    if !self.pending_int.is_zero() {
+                        total += self.pending_int.to_f64();
+                    }
+                    (total.min(cfg.gap_cap), total > cfg.gap_cap)
+                }
+            };
             self.pending = 0.0;
+            self.pending_int = Ticks::ZERO;
             let elapsed = self.skipped_elapsed + elapsed;
             self.skipped_elapsed = 0.0;
             ClockAdvance {
-                d_clock: total.min(cfg.gap_cap),
+                d_clock,
                 reset,
                 accepted: true,
                 backwards,
                 disorder,
                 session_changed,
-                capped: capped || total > cfg.gap_cap,
+                capped: capped || over,
                 elapsed,
                 stamp,
                 elapsed_stamp,
             }
         } else {
-            self.pending += d;
+            match int_row {
+                Some(row) => self.pending_int = self.pending_int.plus(row.d),
+                None => self.pending += d,
+            }
             self.skipped_elapsed += elapsed;
             ClockAdvance {
                 d_clock: 0.0,
@@ -1201,6 +1502,7 @@ mod tests {
         for clock in [
             [Some(ClockValue::Ns(T0)), Some(ClockValue::Ns(T0 + 5))],
             [Some(ClockValue::F64(3.0)), Some(ClockValue::F64(8.5))],
+            [Some(ClockValue::I64(T0)), Some(ClockValue::I64(T0 + 1))],
             [None, None],
         ] {
             let mut c = ClockState::new();
@@ -1211,6 +1513,7 @@ mod tests {
             let start = match clock[1] {
                 Some(ClockValue::Ns(_)) => Stamp::Ns(0),
                 Some(ClockValue::F64(v)) => Stamp::Raw(v, 0.0),
+                Some(ClockValue::I64(v)) => Stamp::Int(i128::from(v), 0.0),
                 None => Stamp::Raw(0.0, 0.0),
             };
             assert_eq!(adv.stamp, Some(start), "{clock:?}");
@@ -2216,6 +2519,329 @@ mod tests {
         assert!(a.capped, "a folded total past the cap is a capped gap");
     }
 
+    /// Epoch nanoseconds in 2026, a multiple of 256: a double resolves 256
+    /// here, so `T_INT + 1` to `T_INT + 127` are all `T_INT` as one.
+    const T_INT: i64 = 1_790_000_000_000_000_000;
+
+    fn int(v: i64) -> Option<ClockValue> {
+        Some(ClockValue::I64(v))
+    }
+
+    /// Task 200: an integer clock's step is the integers' difference, at any
+    /// size: ticks 1, 7 and 100 apart near 1.79e18 are steps of 1, 7 and 100,
+    /// where the same values as doubles are one value and steps of 0.
+    #[test]
+    fn an_integer_clocks_step_is_exact_at_any_size() {
+        let cfg = ClockCfg {
+            gap_cap: 1e6,
+            ..ClockCfg::default()
+        };
+        let mut c = ClockState::new();
+        let mut f = ClockState::new();
+        let mut at = T_INT;
+        assert_eq!(c.advance(&cfg, int(at), None, true).d_clock, 0.0);
+        f.advance(&cfg, Some(ClockValue::F64(at as f64)), None, true);
+        for step in [1i64, 7, 100, 1, 1] {
+            at += step;
+            let a = c.advance(&cfg, int(at), None, true);
+            assert_eq!((a.d_clock, a.elapsed), (step as f64, step as f64), "{step}");
+            let lost = f.advance(&cfg, Some(ClockValue::F64(at as f64)), None, true);
+            assert_eq!(lost.d_clock, 0.0, "a double loses the step of {step}");
+        }
+        assert_eq!(c.last_clock(), int(at));
+        assert!(ClockValue::I64(T_INT).is_before(ClockValue::I64(T_INT + 1)));
+        assert!(!ClockValue::F64(T_INT as f64).is_before(ClockValue::F64((T_INT + 1) as f64)));
+    }
+
+    /// Every decision on an integer clock's step is taken on the integers,
+    /// against parameters that are doubles: a step of `2^53 + 1` is past a
+    /// cap of `2^53`, whose double the step's ties with; a step back of
+    /// `2^53 + 1` is past a late-row minimum of `2^53`, and starts the
+    /// stream over; a step back of exactly the minimum is a late row; a step
+    /// of exactly the cap is not capped; and a fractional parameter is
+    /// compared as the number it is.
+    #[test]
+    fn an_integer_step_is_judged_on_the_integers() {
+        let two53: i64 = 1 << 53;
+        assert_eq!((two53 + 1) as f64, two53 as f64, "the doubles tie");
+        let cfg = ClockCfg {
+            gap_cap: two53 as f64,
+            on_clock_reset: OnClockReset::ResetState,
+            session_gap: None,
+            min_backwards_jump: two53 as f64,
+        };
+        let from = |v: i64| {
+            let mut c = ClockState::new();
+            c.advance(&cfg, int(v), None, true);
+            c
+        };
+        let a = from(0).advance(&cfg, int(two53 + 1), None, true);
+        assert!(a.capped, "past the cap by one");
+        assert_eq!(a.d_clock, two53 as f64);
+        let a = from(0).advance(&cfg, int(two53), None, true);
+        assert!(!a.capped, "exactly the cap");
+        let base = 2 * two53 + 10;
+        let a = from(base).advance(&cfg, int(base - two53 - 1), None, true);
+        assert!(a.reset && a.disorder.is_none(), "past the minimum by one");
+        let a = from(base).advance(&cfg, int(base - two53), None, true);
+        assert_eq!(
+            a.disorder,
+            Some(Disorder {
+                back: two53 as f64,
+                min_backwards_jump: two53 as f64
+            }),
+            "exactly the minimum is a late row"
+        );
+        // Near 1.79e18, against small parameters.
+        let small = ClockCfg {
+            gap_cap: 100.0,
+            on_clock_reset: OnClockReset::ResetState,
+            session_gap: None,
+            min_backwards_jump: 100.0,
+        };
+        for (step, capped) in [(100i64, false), (101, true)] {
+            let mut c = ClockState::new();
+            c.advance(&small, int(T_INT + 27), None, true);
+            let a = c.advance(&small, int(T_INT + 27 + step), None, true);
+            assert_eq!(a.capped, capped, "a step of {step}");
+        }
+        for (back, late) in [(100i64, true), (101, false)] {
+            let mut c = ClockState::new();
+            c.advance(&small, int(T_INT + 228), None, true);
+            let a = c.advance(&small, int(T_INT + 228 - back), None, true);
+            assert_eq!(a.disorder.is_some(), late, "a step back of {back}");
+            assert_eq!(a.reset, !late, "a step back of {back}");
+        }
+        let mut c = ClockState::new();
+        c.advance(&small, int(T_INT + 5), None, true);
+        assert_eq!(
+            c.advance(&small, int(T_INT + 4), None, true).backwards,
+            Some(-1.0)
+        );
+        // A fractional cap: a step of 1 is past 0.5, and its model sees 0.5.
+        let half = ClockCfg {
+            gap_cap: 0.5,
+            ..ClockCfg::default()
+        };
+        let mut c = ClockState::new();
+        c.advance(&half, int(T_INT), None, true);
+        let a = c.advance(&half, int(T_INT + 1), None, true);
+        assert!(a.capped && a.d_clock == 0.5);
+    }
+
+    /// Skipped rows' steps fold into the next accepted row in integers, and
+    /// the total is judged against the cap exactly: two skipped steps of
+    /// `2^52` and an accepted one of 1 come to `2^53 + 1`, past a cap of
+    /// `2^53`, which their doubles' sum ties with.
+    #[test]
+    fn an_integer_fold_is_judged_on_the_integers() {
+        let two52: i64 = 1 << 52;
+        let cfg = ClockCfg {
+            gap_cap: (2 * two52) as f64,
+            ..ClockCfg::default()
+        };
+        let mut c = ClockState::new();
+        c.advance(&cfg, int(0), None, true);
+        c.advance(&cfg, int(two52), None, false);
+        c.advance(&cfg, int(2 * two52), None, false);
+        let a = c.advance(&cfg, int(2 * two52 + 1), None, true);
+        assert!(a.capped, "a total one past the cap");
+        assert_eq!(a.d_clock, (2 * two52) as f64);
+        let mut c = ClockState::new();
+        c.advance(&cfg, int(0), None, true);
+        c.advance(&cfg, int(two52), None, false);
+        let a = c.advance(&cfg, int(2 * two52), None, true);
+        assert!(!a.capped, "a total of exactly the cap");
+        assert_eq!(a.d_clock, (2 * two52) as f64);
+    }
+
+    /// On an integer clock a row's stamp is its raw value less the time the
+    /// caps and session steps removed, in integers: two rows of a stretch
+    /// differ by one subtraction of their values, so a difference of exactly
+    /// a span is equal to it near 1.79e18; across a capped gap the decayed
+    /// clock moves by the cap exactly, and across a session change by the
+    /// session's gap; skipped rows fold under the cap; a reset starts the
+    /// stamps over at the row's own value. The elapsed clock counts every
+    /// step whole. The oracle is the steps written out in integers.
+    #[test]
+    fn an_integer_stamp_is_the_decayed_clock_in_integers() {
+        let cfg = ClockCfg {
+            gap_cap: 100.0,
+            session_gap: Some(SessionGap::Gap(30.0)),
+            on_clock_reset: OnClockReset::ResetState,
+            min_backwards_jump: 1000.0,
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut row =
+            |v: i64, s: u64, accept: bool| c.advance_stamped(&cfg, &caps, int(v), Some(s), accept);
+        let first = row(T_INT, 1, true);
+        assert_eq!(first.stamp, Some(Stamp::Int(i128::from(T_INT), 0.0)));
+        let (d0, e0) = (first.stamp.unwrap(), first.elapsed_stamp.unwrap());
+        let (mut last, mut at) = (d0, T_INT);
+        for step in [1i64, 7, 100, 7, 1, 0] {
+            at += step;
+            let a = row(at, 1, true);
+            let s = a.stamp.unwrap();
+            let span = (at - T_INT) as f64;
+            assert_eq!(s.cmp_span(last, step as f64), Ordering::Equal, "{step}");
+            assert_eq!(s.cmp_span(d0, span), Ordering::Equal, "{step}");
+            assert_eq!(s.cmp_span(d0, span - 0.5), Ordering::Greater, "{step}");
+            assert_eq!(s.cmp_span(d0, span + 0.5), Ordering::Less, "{step}");
+            assert_eq!(a.elapsed_stamp.unwrap().cmp_span(e0, span), Ordering::Equal);
+            last = s;
+        }
+        // As doubles every one of these rows was `T_INT`: the stamps of a
+        // number clock compare them as one.
+        let raw = |v: i64| Stamp::Raw(v as f64, 0.0);
+        assert_eq!(raw(at).cmp_span(raw(T_INT), 0.0), Ordering::Equal);
+    }
+
+    /// The decisions a stamp keeps across breaks, on an integer clock with
+    /// whole parameters: a gap of 10^15 past a cap of 100 moves the decayed
+    /// clock by 100 exactly and the elapsed clock by the whole gap; a session
+    /// change moves it by the session's gap; skipped rows fold under the
+    /// cap; a reset starts it over.
+    #[test]
+    fn an_integer_stamp_keeps_whole_parameters_exact_across_breaks() {
+        let cfg = ClockCfg {
+            gap_cap: 100.0,
+            session_gap: Some(SessionGap::Gap(30.0)),
+            on_clock_reset: OnClockReset::ResetState,
+            min_backwards_jump: 1000.0,
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut row =
+            |v: i64, s: u64, accept: bool| c.advance_stamped(&cfg, &caps, int(v), Some(s), accept);
+        let start = row(T_INT, 1, true);
+        let (d0, e0) = (start.stamp.unwrap(), start.elapsed_stamp.unwrap());
+        let mut at = T_INT + 1_000_000_000_000_000;
+        let gap = row(at, 1, true);
+        assert!(gap.capped);
+        assert_eq!(gap.stamp.unwrap().cmp_span(d0, 100.0), Ordering::Equal);
+        assert_eq!(
+            gap.elapsed_stamp.unwrap().cmp_span(e0, 1e15),
+            Ordering::Equal,
+            "the elapsed clock counts the gap whole"
+        );
+        at += 1;
+        let session = row(at, 2, true);
+        assert_eq!(session.stamp.unwrap().cmp_span(d0, 130.0), Ordering::Equal);
+        assert_eq!(
+            session.elapsed_stamp.unwrap().cmp_span(e0, 1e15 + 1.0),
+            Ordering::Equal
+        );
+        // Three skipped rows 60 apart, then one 1 on: 181 folded, under the
+        // cap of 100.
+        for _ in 0..3 {
+            at += 60;
+            assert_eq!(row(at, 2, false).stamp, None);
+        }
+        at += 1;
+        let folded = row(at, 2, true);
+        assert!(folded.capped);
+        assert_eq!(folded.stamp.unwrap().cmp_span(d0, 230.0), Ordering::Equal);
+        assert_eq!(
+            folded.stamp.unwrap(),
+            Stamp::Int(i128::from(T_INT) + 230, 0.0)
+        );
+        // A step back past the minimum starts the stamps over at the row.
+        let reset = row(at - 5000, 2, true);
+        assert!(reset.reset);
+        assert_eq!(reset.stamp, Some(Stamp::Int(i128::from(at - 5000), 0.0)));
+        assert_eq!(reset.elapsed_stamp, reset.stamp);
+    }
+
+    /// A fractional cap on an integer clock: each capped step moves the
+    /// decayed clock by the cap, its fraction carried beside the whole
+    /// units, so three steps capped at 0.5 come to 1.5 exactly; and an
+    /// integer stamp moved back by a fractional amount keeps it.
+    #[test]
+    fn an_integer_stamp_carries_a_fractional_cap_beside_the_whole_units() {
+        let cfg = ClockCfg {
+            gap_cap: 0.5,
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let first = c
+            .advance_stamped(&cfg, &caps, int(T_INT), None, true)
+            .stamp
+            .unwrap();
+        let mut s = first;
+        for k in 1..=3 {
+            s = c
+                .advance_stamped(&cfg, &caps, int(T_INT + 10 * k), None, true)
+                .stamp
+                .unwrap();
+        }
+        assert_eq!(s.cmp_span(first, 1.5), Ordering::Equal);
+        assert_eq!(s.cmp_span(first, 1.25), Ordering::Greater);
+        let back = s.int_back_by(0.25).unwrap();
+        assert_eq!(back.cmp_span(first, 1.25), Ordering::Equal);
+        assert_eq!(Stamp::Raw(1.0, 0.0).int_back_by(0.25), None);
+    }
+
+    /// `cmp_int_f64` orders an integer and a double without rounding either:
+    /// at `2^53 + 1` against `2^53`, around a fraction on either sign, at
+    /// zero of either sign, past every i128 and at a NaN.
+    #[test]
+    fn an_integer_and_a_double_compare_exactly() {
+        let two53 = 1i128 << 53;
+        let cases = [
+            (two53 + 1, two53 as f64, Some(Ordering::Greater)),
+            (two53, two53 as f64, Some(Ordering::Equal)),
+            (5, 5.5, Some(Ordering::Less)),
+            (6, 5.5, Some(Ordering::Greater)),
+            (-5, -5.5, Some(Ordering::Greater)),
+            (-6, -5.5, Some(Ordering::Less)),
+            (0, -0.0, Some(Ordering::Equal)),
+            (-1, -0.5, Some(Ordering::Less)),
+            (i128::MAX, f64::INFINITY, Some(Ordering::Less)),
+            (i128::MIN, f64::NEG_INFINITY, Some(Ordering::Greater)),
+            (i128::MAX, 1e300, Some(Ordering::Less)),
+            (i128::MIN, -1e300, Some(Ordering::Greater)),
+            (
+                i128::MIN,
+                -170_141_183_460_469_231_731_687_303_715_884_105_728.0,
+                Some(Ordering::Equal),
+            ),
+            (0, f64::NAN, None),
+        ];
+        for (i, f, want) in cases {
+            assert_eq!(cmp_int_f64(i, f), want, "{i} against {f}");
+        }
+    }
+
+    /// An integer clock's state reads back, and a float clock's writes none
+    /// of the integer fields: its bytes are what they were.
+    #[test]
+    fn an_integer_clocks_state_reads_back() {
+        let cfg = ClockCfg {
+            gap_cap: 0.5,
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        c.advance_stamped(&cfg, &caps, int(T_INT), None, true);
+        c.advance_stamped(&cfg, &caps, int(T_INT + 3), None, false);
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("pending_int").is_some(), "{json}");
+        let bytes = rmp_serde::to_vec_named(&c).unwrap();
+        let mut back: ClockState = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, c);
+        let a = back.advance_stamped(&cfg, &caps, int(T_INT + 4), None, true);
+        let b = c.advance_stamped(&cfg, &caps, int(T_INT + 4), None, true);
+        assert_eq!(a, b);
+        let mut f = ClockState::new();
+        f.advance_stamped(&cfg, &caps, Some(ClockValue::F64(1.0)), None, true);
+        f.advance_stamped(&cfg, &caps, Some(ClockValue::F64(4.0)), None, false);
+        let json = serde_json::to_value(&f).unwrap();
+        assert!(json.get("pending_int").is_none(), "{json}");
+        assert!(json["exact"].get("removed_int").is_none(), "{json}");
+    }
+
     #[test]
     fn decay_factors() {
         assert!((Decay::Halflife(10.0).factor(10.0) - 0.5).abs() < 1e-15);
@@ -2296,6 +2922,40 @@ mod finite_steps {
                         d.is_finite() && d >= 0.0 && d <= cfg.gap_cap,
                         "{what} step {d} under {cfg:?}"
                     );
+                }
+            }
+        }
+
+        /// The same over an integer clock (task 200), its values anywhere
+        /// in an `i64`, near one another or at its two ends, stamped, so
+        /// the exact fold and the removed time run too.
+        #[test]
+        fn every_integer_step_is_finite(
+            (cfg, _) in cfg(),
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![any::<i64>(), -1000i64..1000, Just(i64::MAX), Just(i64::MIN)],
+                    0u64..3,
+                    any::<bool>(),
+                ),
+                1..40,
+            ),
+        ) {
+            let cfg = ClockCfg { gap_cap: cfg.gap_cap.min(1e12), ..cfg };
+            let caps = ExactCaps::default();
+            let mut learned = ClockState::new();
+            for (t, session, accept) in rows {
+                let c = Some(ClockValue::I64(t));
+                let scored = learned.clone().advance_scoring(&cfg, c, Some(session));
+                let a = learned.advance_stamped(&cfg, &caps, c, Some(session), accept);
+                for (what, d) in [("learned", a.d_clock), ("scored", scored.d_clock)] {
+                    prop_assert!(
+                        d.is_finite() && d >= 0.0 && d <= cfg.gap_cap,
+                        "{what} step {d} under {cfg:?}"
+                    );
+                }
+                if let Some(Stamp::Int(_, frac)) = a.stamp {
+                    prop_assert!(frac.abs() < 1.0, "{frac}");
                 }
             }
         }

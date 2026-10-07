@@ -1337,7 +1337,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 7\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 8\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )

@@ -121,9 +121,10 @@ pub(crate) fn events_on_millisecond_rows(
 /// it. Exact at `d = 0`, the stamp itself, which is the case of a stream
 /// whose first row is learned; past a skipped first row, the stamp of the
 /// stream's start to the rounding of `d`, a sum of doubles. A temporal
-/// stamp moves by `d`'s nanoseconds ([`ns_of_seconds`]), a number one by
-/// adding `d` to the time it removes; a `d` with no nanoseconds (infinite)
-/// leaves a number of the same clock.
+/// stamp moves by `d`'s nanoseconds ([`ns_of_seconds`]), a float one by
+/// adding `d` to the time it removes, an integer one by `d`'s whole units
+/// and its fraction (task 200); a `d` with no nanoseconds (infinite) leaves
+/// a number of the same clock.
 fn back_by(stamp: Stamp, d: f64) -> Stamp {
     if d == 0.0 {
         return stamp;
@@ -134,6 +135,9 @@ fn back_by(stamp: Stamp, d: f64) -> Stamp {
             None => Stamp::Raw(seconds_of_ns(n) - d, 0.0),
         },
         Stamp::Raw(raw, removed) => Stamp::Raw(raw, removed + d),
+        Stamp::Int(whole, frac) => stamp
+            .int_back_by(d)
+            .unwrap_or(Stamp::Raw(whole as f64 + frac - d, 0.0)),
     }
 }
 

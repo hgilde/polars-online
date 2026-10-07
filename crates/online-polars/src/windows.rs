@@ -821,13 +821,14 @@ struct Group {
     /// The raw clock the policy time is measured from: the first row of
     /// the stretch (review R1, C2).
     origin: Option<ClockValue>,
-    /// The last row's raw clock in integer nanoseconds, and whether that
-    /// is exact (a temporal clock), else the bits of the clock's value (of
-    /// the policy time without a clock column): a window's edge between two
-    /// rows is decided from the difference of their raw clocks, never from
-    /// two rounded policy times (review R2, W1; task 159, W3).
+    /// The last row's raw clock in integer nanoseconds (a temporal clock),
+    /// as its integer (an integer clock, docs/PLAN.md task 200), else the
+    /// bits of the clock's value (of the policy time without a clock
+    /// column), `form` saying which: a window's edge between two rows is
+    /// decided from the difference of their raw clocks, never from two
+    /// rounded policy times (review R2, W1; task 159, W3).
     off: i64,
-    exact: bool,
+    form: OffForm,
     /// The next row starts the windows over: the group has no row yet, or
     /// an event since its last row ended them.
     restart: bool,
@@ -1037,14 +1038,26 @@ mod clock_form {
 enum Gap {
     Ns(i64),
     Secs(f64),
+    /// An integer clock's gap in the column's own units, exact (task 200).
+    Int(i128),
+}
+
+/// What a row's `off` holds: a temporal clock's nanoseconds, an integer
+/// clock's value (docs/PLAN.md task 200), or the bits of a double -- a float
+/// clock's value, or the policy time without a clock column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum OffForm {
+    Ns,
+    Int,
+    Bits,
 }
 
 #[inline]
-fn gap(exact: bool, from_off: i64, to_off: i64) -> Gap {
-    if exact {
-        Gap::Ns(to_off.saturating_sub(from_off))
-    } else {
-        Gap::Secs(f64::from_bits(to_off as u64) - f64::from_bits(from_off as u64))
+fn gap(form: OffForm, from_off: i64, to_off: i64) -> Gap {
+    match form {
+        OffForm::Ns => Gap::Ns(to_off.saturating_sub(from_off)),
+        OffForm::Int => Gap::Int(i128::from(to_off) - i128::from(from_off)),
+        OffForm::Bits => Gap::Secs(f64::from_bits(to_off as u64) - f64::from_bits(from_off as u64)),
     }
 }
 
@@ -1073,14 +1086,31 @@ impl Gap {
         match self {
             Gap::Ns(n) => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, span_ns),
             Gap::Secs(s) => Stamp::Raw(s, 0.0).cmp_span_ns(Stamp::Raw(0.0, 0.0), span, None),
+            Gap::Int(n) => Stamp::Int(n, 0.0).cmp_span_ns(Stamp::Int(0, 0.0), span, None),
         }
     }
 }
 
+/// `now` minus `last` in clock units: between two temporal values, taken
+/// in integer nanoseconds and rounded once; between two integer ones, in
+/// integers and rounded once (task 200).
 fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
     match (now, last) {
         (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
-        (c, p) => c.seconds() - p.seconds(),
+        (c, p) => match c.int_step(p) {
+            Some(step) => step as f64,
+            None => c.seconds() - p.seconds(),
+        },
+    }
+}
+
+/// Whether `now` is more than `cap` clock units after `last`: on an
+/// integer clock their difference in integers against the cap, exactly
+/// (task 200), and as [`elapsed`] gives it otherwise.
+fn past_cap(now: ClockValue, last: ClockValue, cap: f64) -> bool {
+    match now.int_step(last) {
+        Some(step) => online_core::cmp_int_f64(step, cap) == Some(Ordering::Greater),
+        None => elapsed(now, last) > cap,
     }
 }
 
@@ -1435,7 +1465,7 @@ impl Windows {
             tau: 0.0,
             origin: None,
             off: 0,
-            exact: false,
+            form: OffForm::Bits,
             restart: true,
             queues: self.members.iter().map(|m| Queue::new(m.len())).collect(),
             open: vec![None; self.kernels.len()],
@@ -1631,12 +1661,13 @@ impl Windows {
         // put a row exactly one window back outside the edge, `0.4 − 0.1`
         // not being `0.3` (task 159, W3); the policy time's bits without a
         // clock column, where the two are one.
-        (g.off, g.exact) = match row.clock {
-            Some(ClockValue::Ns(c)) => (c, true),
-            Some(ClockValue::F64(c)) => (c.to_bits() as i64, false),
-            None => (g.tau.to_bits() as i64, false),
+        (g.off, g.form) = match row.clock {
+            Some(ClockValue::Ns(c)) => (c, OffForm::Ns),
+            Some(ClockValue::I64(c)) => (c, OffForm::Int),
+            Some(ClockValue::F64(c)) => (c.to_bits() as i64, OffForm::Bits),
+            None => (g.tau.to_bits() as i64, OffForm::Bits),
         };
-        let (tau, off, exact) = (g.tau, g.off, g.exact);
+        let (tau, off, form) = (g.tau, g.off, g.form);
         let new_stamp = g.stamp != row.clock || !has_clock;
 
         // Forward kernels: the windows this row reaches past close first --
@@ -1652,7 +1683,7 @@ impl Windows {
             // "both", so the window closes only past it.
             while g.closed[ki] < g.waiting.len() && {
                 let t = g.waiting[g.closed[ki]];
-                let d = gap(exact, t.off, off).cmp_window(k);
+                let d = gap(form, t.off, off).cmp_window(k);
                 if k.closed.far(Direction::Forward) {
                     d == Ordering::Greater
                 } else {
@@ -1680,7 +1711,7 @@ impl Windows {
                     t,
                     End::Complete,
                     t.tau + w,
-                    exact,
+                    form,
                     held,
                 );
             }
@@ -1737,7 +1768,7 @@ impl Windows {
                     &mut self.scratch_sum,
                     tau,
                     off,
-                    exact,
+                    form,
                     &mut g.stamp_values[ki],
                 );
             }
@@ -1843,7 +1874,7 @@ impl Windows {
         if g.pending.is_empty() {
             return;
         }
-        let (tau, off, exact) = (g.tau, g.off, g.exact);
+        let (tau, off, form) = (g.tau, g.off, g.form);
         let pending = std::mem::take(&mut g.pending);
         for (ki, k) in self.kernels.iter().enumerate() {
             if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
@@ -1858,7 +1889,7 @@ impl Windows {
                 &mut self.scratch_sum,
                 tau,
                 off,
-                exact,
+                form,
                 &mut g.stamp_values[ki],
             );
             let complete = k.window_size.is_none_or(|w| tau >= w);
@@ -1900,7 +1931,7 @@ impl Windows {
             let last = self.groups[gi]
                 .last_raw
                 .expect("a listed group has a clock");
-            if elapsed(now, last) <= cap {
+            if !past_cap(now, last, cap) {
                 break;
             }
             self.end_group(gi, End::Cut);
@@ -1935,7 +1966,7 @@ impl Windows {
                 // it already. A reset discards every other window.
                 let whole = matches!(how, End::Cut | End::Discard)
                     && k.closed.far(Direction::Forward)
-                    && gap(g.exact, t.off, g.off).cmp_window(k) == Ordering::Equal;
+                    && gap(g.form, t.off, g.off).cmp_window(k) == Ordering::Equal;
                 let (how, far) = if whole {
                     (End::Complete, t.tau + w)
                 } else {
@@ -1960,7 +1991,7 @@ impl Windows {
                     t,
                     how,
                     far,
-                    g.exact,
+                    g.form,
                     held,
                 );
             }
@@ -2140,7 +2171,7 @@ fn read_backward(
     scratch: &mut [f64],
     tau: f64,
     off: i64,
-    exact: bool,
+    form: OffForm,
     out: &mut [f64],
 ) {
     if k.window_size.is_some() {
@@ -2150,7 +2181,7 @@ fn read_backward(
         // every time.
         let far = k.closed.far(Direction::Backward);
         q.evict(k, scratch, |_, _, t_off| {
-            let age = gap(exact, t_off, off).cmp_window(k);
+            let age = gap(form, t_off, off).cmp_window(k);
             if far {
                 age == Ordering::Greater
             } else {
@@ -2259,7 +2290,7 @@ fn close(
     t: Wait,
     how: End,
     end_tau: f64,
-    exact: bool,
+    form: OffForm,
     held: Held<'_>,
 ) {
     let w = k.window_size.expect("a forward kernel has a window");
@@ -2270,7 +2301,7 @@ fn close(
     // span from the row (review R2, W1).
     let near_in = k.closed.near(Direction::Forward);
     q.evict(k, scratch, |_, _, j_off| {
-        let ahead = gap(exact, t.off, j_off).cmp_zero();
+        let ahead = gap(form, t.off, j_off).cmp_zero();
         if near_in {
             ahead == Ordering::Less
         } else {
@@ -2287,7 +2318,7 @@ fn close(
     // The open row may be the row itself, when the next row closed the
     // window before the row joined the queue: in under "left" and "both".
     let open = open.filter(|&(_, _, o_off)| {
-        let ahead = gap(exact, t.off, o_off);
+        let ahead = gap(form, t.off, o_off);
         let (near, far) = (ahead.cmp_zero(), ahead.cmp_window(k));
         (if near_in {
             near != Ordering::Less
@@ -2652,6 +2683,7 @@ mod tests {
         match (now, last) {
             (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
             (ClockValue::F64(c), ClockValue::F64(p)) => c - p,
+            (ClockValue::I64(c), ClockValue::I64(p)) => (i128::from(c) - i128::from(p)) as f64,
             _ => unreachable!("a test stream keeps one kind of clock"),
         }
     }
@@ -2673,6 +2705,9 @@ mod tests {
         match (rows[s.rows[from]].clock, rows[s.rows[to]].clock) {
             (Some(ClockValue::Ns(x)), Some(ClockValue::Ns(y))) => Gap::Ns(y - x),
             (Some(ClockValue::F64(x)), Some(ClockValue::F64(y))) => Gap::Secs(y - x),
+            (Some(ClockValue::I64(x)), Some(ClockValue::I64(y))) => {
+                Gap::Int(i128::from(y) - i128::from(x))
+            }
             _ => Gap::Secs(s.tau[to] - s.tau[from]),
         }
     }
@@ -3171,6 +3206,49 @@ mod tests {
             };
             let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
             assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
+    }
+
+    /// Task 200: on an integer clock of epoch nanoseconds near 1.79e18,
+    /// where a double resolves 256, the core decides every edge, gap and
+    /// silence from the integers: it matches the brute force, whose edges
+    /// are the integers' differences, and gives what the same stream
+    /// shifted to 0 gives as a float clock, every value of which a double
+    /// holds -- to the bit. The streams are the half-unit grid doubled, so
+    /// rows land exactly a window apart and exactly at the cap, often.
+    #[test]
+    fn an_integer_clock_decides_its_edges_in_integers() {
+        const T0: i64 = 1_790_000_000_000_000_000;
+        let (kernels, ops) = all_kernels();
+        for (seed, groups, sessions) in [(21u64, 1usize, false), (22, 3, true), (23, 2, false)] {
+            let grid = grid_stream(seed, 400, groups, sessions, true);
+            let at = |r: &Row| match r.clock {
+                Some(ClockValue::F64(t)) => (2.0 * t) as i64,
+                _ => unreachable!("the grid is a float clock"),
+            };
+            let int: Vec<Row> = grid
+                .iter()
+                .map(|r| Row {
+                    clock: Some(ClockValue::I64(T0 + at(r))),
+                    ..r.clone()
+                })
+                .collect();
+            let shifted: Vec<Row> = grid
+                .iter()
+                .map(|r| Row {
+                    clock: Some(ClockValue::F64(at(r) as f64)),
+                    ..r.clone()
+                })
+                .collect();
+            let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
+            assert_matches_brute(&kernels, &ops, c, &int, seed);
+            let (a, b) = (
+                run(&kernels, &ops, c, &int, 1).unwrap(),
+                run(&kernels, &ops, c, &shifted, 1).unwrap(),
+            );
+            if let Err((_, _, e)) = a.close_to(&b, 0.0) {
+                panic!("seed {seed}: {e}");
+            }
         }
     }
 
