@@ -400,5 +400,5 @@ def test_a_chain_of_two_plan_forms_over_an_empty_frame_does_not_warn() -> None:
         windowed = empty.lazy().online.with_windows(f=po.ewm_mean(feature, half_life=5.0))
         batches = list(po.ModelBank([SPEC]).fit_predict_batches(windowed))
     assert chained.height == 0 and twice.height == 0
-    assert fitted.rows_seen() == 0 and sum(b.height for b in batches) == 0
+    assert fitted.rows_fed() == 0 and sum(b.height for b in batches) == 0
     assert not [w for w in caught if issubclass(w.category, po.ConsumedSourceWarning)]

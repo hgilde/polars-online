@@ -194,7 +194,7 @@ def test_a_plan_already_holding_a_bank_still_runs_under_another():
     )
     bank = po.ModelBank([outer])
     quiet(lambda: bank.fit(inner))
-    assert bank.rows_seen() == 9
+    assert bank.rows_fed() == 9
 
 
 def _serializes(lf: pl.LazyFrame) -> bool:

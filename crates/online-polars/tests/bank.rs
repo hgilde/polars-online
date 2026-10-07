@@ -2,6 +2,11 @@
 //! per-group independence (docs/PLAN.md §9). The oracle tests live in pytest.
 
 use online_polars::{Bank, ChunkOut, GroupKey, ModelKind, Spec, Stream};
+
+/// A group key, as a reader is narrowed to it.
+fn key(g: &str) -> GroupKey {
+    GroupKey(Some(g.into()))
+}
 use polars::prelude::*;
 
 /// The fixture's clock is one clock over every row, so no view of it steps
@@ -52,7 +57,7 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
         .to_string();
     assert!(err.contains("goes backwards by"), "{err}");
     assert!(err.contains("restart_after_step_back is unset"), "{err}");
-    assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
+    assert_eq!(bank.rows_fed(), 0, "the refused chunk taught nothing");
 }
 
 /// Deterministic stream over 2 groups with nulls sprinkled in, on one clock.
@@ -268,14 +273,14 @@ fn a_clock_step_past_the_largest_double_is_refused_by_row() {
             && e.contains("the bank was not updated"),
         "{e}"
     );
-    assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
+    assert_eq!(bank.rows_fed(), 0, "the refused chunk taught nothing");
     // The step from the last chunk's row, named by its row in the frame
     // passed, as a step back is.
     let mut bank = Bank::new(vec![spec.clone()]).unwrap();
     bank.fit_predict(&frame(&[1e308])).unwrap();
     let e = bank.fit_predict(&frame(&[-1e308])).unwrap_err().to_string();
     assert!(e.contains("steps from 1e308 to -1e308 at row 0"), "{e}");
-    assert_eq!(bank.rows_seen(), 1);
+    assert_eq!(bank.rows_fed(), 1);
     // A finite step of the same values' size is a step like any other.
     let mut bank = Bank::new(vec![spec]).unwrap();
     bank.fit_predict(&frame(&[-1e307, 1e307, 1e307])).unwrap();
@@ -309,7 +314,7 @@ fn groups_can_be_listed_and_dropped() {
     let df = make_df(400);
     let mut bank = Bank::new(vec![spec_json("m", true), spec_json("u", false)]).unwrap();
     assert_eq!(bank.groups(), vec![vec![], vec![]]);
-    assert_eq!(bank.rows_seen(), 0);
+    assert_eq!(bank.rows_fed(), 0);
     bank.fit_predict(&df.slice(0, 200)).unwrap();
 
     let key = |k: &str| GroupKey(Some(k.to_string()));
@@ -320,7 +325,7 @@ fn groups_can_be_listed_and_dropped() {
         (0..200)
             .rev()
             .find(|&i| g.is_none_or(|g| gs.get(i) == Some(g)))
-            .map(|i| t.get(i).unwrap())
+            .map(|i| online_polars::online_core::ClockValue::F64(t.get(i).unwrap()))
     };
     // A group's count is of the rows the null policy let through.
     let processed = |g: Option<&str>| {
@@ -344,7 +349,7 @@ fn groups_can_be_listed_and_dropped() {
         ]
     );
     // The bank counts every row it was fed, skipped or not.
-    assert_eq!(bank.rows_seen(), 200);
+    assert_eq!(bank.rows_fed(), 200);
 
     // Scoped to one spec, counting only what was actually there.
     assert_eq!(bank.drop_groups(&[key("g1"), key("zz")], Some(0)), Ok(1));
@@ -384,14 +389,14 @@ fn groups_can_be_listed_and_dropped() {
             .equals_missing(expected.column("m").unwrap().as_materialized_series())
     );
     // The dropped group's rows still count as fed, and the count survives a save.
-    assert_eq!(bank.rows_seen(), 400);
+    assert_eq!(bank.rows_fed(), 400);
     // ... but the restarted group only processed the second chunk's rows.
     assert_eq!(
         bank.groups()[0][1].1 + processed(Some("g1")),
         control.groups()[0][1].1
     );
     let reloaded = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
-    assert_eq!(reloaded.rows_seen(), 400);
+    assert_eq!(reloaded.rows_fed(), 400);
     assert_eq!(reloaded.groups(), bank.groups());
 }
 
@@ -535,8 +540,8 @@ fn coef_is_the_output_s_last_coef_per_group() {
         assert_eq!(row.coef.as_deref(), Some(reported.as_slice()), "group {g}");
         assert_eq!(reported.len(), 3, "intercept + 2 features");
     }
-    assert_eq!(bank.coef(0, Some("g0")).unwrap().len(), 1);
-    assert!(bank.coef(0, Some("zzz")).unwrap().is_empty());
+    assert_eq!(bank.coef(0, Some(&[key("g0")])).unwrap().len(), 1);
+    assert!(bank.coef(0, Some(&[key("zzz")])).unwrap().is_empty());
     assert!(
         bank.coef(1, None)
             .unwrap_err()
@@ -734,12 +739,23 @@ fn integer_group_keys_match_the_string_cast() {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        want.sort();
+        // The integer column lists its keys as numbers, the null group
+        // first, where the text column lists them as text (review round 4,
+        // N21): the same groups, in another order.
+        want.sort_by_key(|k| k.0.as_ref().map(|s| s.parse::<i128>().unwrap()));
         let have: Vec<GroupKey> = bank.groups()[0].iter().map(|(k, _, _)| k.clone()).collect();
         assert_eq!(have, want, "{dtype}: key text");
+        let by_text = |mut g: Vec<(
+            GroupKey,
+            u64,
+            Option<online_polars::online_core::ClockValue>,
+        )>| {
+            g.sort_by(|a, b| a.0.cmp(&b.0));
+            g
+        };
         assert_eq!(
-            bank.groups(),
-            bank_text.groups(),
+            by_text(bank.groups()[0].clone()),
+            by_text(bank_text.groups()[0].clone()),
             "{dtype}: same groups, counts and clocks"
         );
     }
@@ -1162,7 +1178,7 @@ fn every_bank_reader_survives_a_held_block() {
         1,
         "g1 is the one open group"
     );
-    bank.gram(0, Some("g1")).unwrap();
+    bank.gram(0, Some(&[key("g1")])).unwrap();
     bank.coef(0, None).unwrap();
     bank.last_row(0, None).unwrap();
     bank.summary(0, None).unwrap();

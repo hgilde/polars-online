@@ -281,7 +281,7 @@ def test_predict_scores_the_bank_as_it_stands(tmp_path):
         # `predict` reports coef on each chunk's last row, as fit_predict does.
         chunked = today.lazy().online.predict(b, chunk_rows=300).collect()
         assert _no_coef(chunked).equals(_no_coef(want)), name
-    assert bank.rows_seen() == 3000  # nothing learned
+    assert bank.rows_fed() == 3000  # nothing learned
     # The target is optional when scoring.
     no_target = today.lazy().online.predict(bank).select("t")
     assert no_target.collect().equals(today.select("t"))

@@ -652,7 +652,7 @@ What the window truncates depends on the model:
 | `lasso` | the same, and the error that selects the penalty. A feature that stays constant inside the window has no evidence there, and goes to exactly zero | |
 | `ew_cov` | every moment, and `mahal`, `partial_corr` and the principal components read from them | `lags`, `mahal_quantiles` |
 | `ew_class` | each class's moments, so the classifier follows class means that move | |
-| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t` describe the window. Its lag moments, under `window_lags=True`, are an estimate rather than exact | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
+| `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag moments, under `window_lags=True`, are an estimate rather than exact | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
 
 **`window_budget` caps the snapshots' memory, per ring, in MiB.** The
 ring's memory grows with the window: for an `ew_cov` over 20 columns, a
@@ -726,7 +726,8 @@ which the caller supplies.
 - **Chunk invariance.** One chunk or a thousand, with or without a save and
   resume in the middle, gives bit-identical numbers. Only which rows carry
   `coef`, and `support_coef` beside it, can differ, and only by default:
-  the bank then writes them on each group's last row in every chunk, so
+  the bank then writes them on each group's last accepted row in every
+  chunk, so
   smaller chunks report them more often. Under `coef_every` or
   `max_rows_between_coefs` they do not move ([Coefficients](#coefficients)).
 
@@ -829,6 +830,14 @@ per_stock = po.spec.ewridge(
     group_close="monotone",     # or "session": when a group is finished, write it out and free its memory
 )
 ```
+
+**A group or session column keeps the type its first chunk had.** A key is
+its value's text, so an `Int64` `1` and a `Float64` `1.0` would be two
+groups. The bank refuses a column of another kind by name, and keeps the
+kind in its state: integer, float, text, boolean, or a temporal type with
+its unit and zone. An `Int32` after an `Int64`, or a `Categorical` after a
+`String`, is the same kind and goes on. `bank.groups()` and the other
+readers list an integer column's keys as numbers, the null group first.
 
 **Without `group_close`, the bank keeps every group it has seen.** To free
 the groups that have gone quiet, find them with `bank.groups()` and drop
@@ -1577,14 +1586,15 @@ bank.
 
 **A bank keeps every group until you drop it, so in a long-running bank,
 drop the quiet ones with `bank.drop_groups`.** `bank.groups()` gives each
-group's `last_clock`, in the clock's own units, or in seconds since 1970 on
-a temporal clock, so compare it with the current time in the same units.
-This code uses `df` and `lf` from [Example data](#example-data):
+group's `last_clock` in the clock column's own dtype: a `Datetime` in its
+unit and zone, a number clock as a `Float64`. Compare it with the current
+time of the same kind. This code uses `df` and `lf` from
+[Example data](#example-data):
 
 ```python
 bank = po.ModelBank([spec])
 bank.fit(lf)
-now = df["t"].max()                        # the current time on the clock t; on a temporal clock, time.time()
+now = df["t"].max()                        # the current time on the clock t; on a temporal clock, a datetime
 stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
 bank.drop_groups(stale["group"])           # they start over if they reappear
 ```
@@ -1707,7 +1717,7 @@ every group's clock back, which the bank refuses unless
 rows after each group's last clock (a row at that clock counts as learned)
 and every row of a group the bank has not seen. It keeps a `LazyFrame`
 lazy. For a bank whose specs all count rows, it raises `ValueError`; drop
-the learned rows with `frame.slice(bank.rows_seen())` instead, when the
+the learned rows with `frame.slice(bank.rows_fed())` instead, when the
 input starts where the saved one did.
 
 **A query abandoned before its last row, or ended by an error inside the
@@ -1769,7 +1779,7 @@ the same coefficients score every row. How `predict` reads a row:
 | of a group the bank has never seen | scores null |
 | before the last clock its group learned | is scored against the state as it stands, with a clock step of 0: never refused, never a restart |
 | where `session_gap="reset"` or `group_close="session"` would restart its group | scores null, with `weight_sum` 0 |
-| after rows an `embargo` still holds | sees the state as it stands: a held row whose delay has passed by the scored row's clock is not released |
+| after rows an `embargo` still holds | sees the state as it stands, since `predict` releases nothing: a held row whose delay has passed by the scored row's clock stays held until the next `fit_predict` learns it, so `weight_sum` and `learned_clock` are the state's on every row |
 
 ### Reading a state without this library
 
@@ -1813,7 +1823,7 @@ what it was fed.
 ```python
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 
-repr(bank)                # ModelBank(['ridge'], groups=4, rows_seen=400)
+repr(bank)                # ModelBank(['ridge'], groups=4, rows_fed=400)
 bank.specs                # every spec back, as the dict its builder made
 bank.groups()             # one row per (spec, group):
                           #   ┌───────┬───────┬────────────────┬────────────┐
@@ -1824,7 +1834,7 @@ bank.groups()             # one row per (spec, group):
                           #   │ ridge ┆ b3    ┆ 100            ┆ 399.0      │
                           #   └───────┴───────┴────────────────┴────────────┘
 bank.output_fields()      # {'ridge': ['pred_y__r0.000001', ..., 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', ...]}
-bank.rows_seen()          # rows fed, over every chunk and group
+bank.rows_fed()           # rows fed, over every chunk and group
 bank.solve_failures()     # per spec, per group: solves that needed jitter or kept the previous fit
 ```
 
@@ -1878,7 +1888,7 @@ an infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 | `rows_skipped` | rows the model skipped, because a feature or the weight was missing |
 | `rows_learned` | rows that moved the fit: a weight above zero and a target present. Under an embargo a row is counted as it arrives; a window target's row, when it is released |
 | `rows_zero_weight` | rows that advanced the clock and nothing else |
-| `weight_sum`, `clock_min`, `clock_max`, `last_clock` | the weight behind the state, and the clock's range and last value |
+| `weight_sum`, `clock_min`, `clock_max`, `last_clock` | the weight behind the state, and the clock's range and last value, in the clock column's own dtype |
 | `session_changes`, `clock_backwards`, `resets` | what the clock rules met |
 | `settled_frac`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row |
 
@@ -1985,7 +1995,8 @@ saved = pl.scan_parquet("fitted.parquet").online.unnest("ols.state").collect()
 
 **`coef_every=0` writes `coef` on every row but a skipped one**, as a list
 of one float per term. Without a cadence the bank writes it on each
-group's last row in a chunk. A number of clock units, or a duration such as
+group's last accepted row in a chunk, and on none for a group whose rows
+there were all skipped. A number of clock units, or a duration such as
 `"5m"` on a temporal clock, writes it once the clock has moved that far
 since the group's last `coef` row, as `solve_every` schedules a solve.
 `max_rows_between_coefs` writes it after that many rows, and with both,
@@ -3585,10 +3596,10 @@ bank = po.ModelBank([rk])
 bank.fit_predict(returns)
 finished = bank.closed_groups()
 # rcov, rcorr                  vech of the upper triangle: its entries as one flat list
-# rcov_n, rcov_kind, bandwidth_used
-# omega2, iv_sparse            the noise variance and sparse integrated variance behind the bandwidth
-# iq                           a realised-quarticity proxy, labelled one
-# psd_repaired                 whether the estimate had to be made positive semi-definite; null where
+# rcov_n, rcov_kind, rcov_bandwidth_used
+# rcov_omega2, rcov_iv_sparse  the noise variance and sparse integrated variance behind the bandwidth
+# rcov_iq                      a realised-quarticity proxy, labelled one
+# rcov_psd_repaired            whether the estimate had to be made positive semi-definite; null where
 #                              the repair could not run, on an estimate with an entry that is not finite
 # a block too short to estimate from gives nulls, not an error
 
@@ -3605,7 +3616,7 @@ average observations already in the state at close, and a product enters
 `Γ̂_h` only once both its legs are final.
 
 **`psd=True`, the default, clips any negative eigenvalue and reports
-`psd_repaired`.** For a correlation read on its own under `"preavg"`, give
+`rcov_psd_repaired`.** For a correlation read on its own under `"preavg"`, give
 `psd=False`. It selects the balanced form, a shorter window of
 `k_n = floor(theta * sqrt(block_rows))` rows with the bias term subtracted,
 which was the more accurate on
@@ -3622,7 +3633,7 @@ the matrix must be.
 block's expected length in rows, and `H` is set from the data** as
 `H = ceil(c* xi^(4/5) n^(3/5))` with `c* = 3.5134`. `block_rows` is a sizing
 hint for the ring: a longer block runs, clipped, and reports
-`bandwidth_used`. `"preavg"` needs `block_rows` unless `preavg_rows=` is
+`rcov_bandwidth_used`. `"preavg"` needs `block_rows` unless `preavg_rows=` is
 given.
 
 **A clock gap past `gap_cap`, or a session change, splits a block into
@@ -4493,7 +4504,7 @@ parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_rows=100)) 
 ```
 
 The chunk size changes only which rows carry `coef` and `support_coef`:
-each group's last row of every chunk.
+each group's last accepted row of every chunk.
 
 **For a wide frame, use larger chunks, because each chunk carries a fixed
 overhead.** At 10,000 columns, handing a chunk across from Polars alone

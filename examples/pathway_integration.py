@@ -63,7 +63,7 @@ class BankOperator:
     * chunking never changes the numbers, so however the engine batches the
       stream, the predictions are the same (`coef` and `support_coef`, which
       sits on `coef`'s rows, are the fields that differ, because they are
-      snapshotted on each chunk's last row -- a reporting cadence, not a
+      snapshotted on each group's last accepted row in a chunk -- a reporting cadence, not a
       computed value);
     * `save_bytes()` / `load_bytes()` round-trip exactly, so the engine's
       snapshotting can checkpoint the model along with everything else.

@@ -24,6 +24,7 @@ use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field
 
 use online_core::ClockValue;
 use polars_utils::aliases::{PlHashMap, PlHashSet};
+use serde::{Deserialize, Serialize};
 
 use crate::spec::{ClockScale, ModelKind, Spec};
 
@@ -100,6 +101,50 @@ impl ArrowCol {
     }
 }
 
+/// What a group or session key's text depends on besides its value
+/// (review round 4, N22): two columns of one form give one key for one
+/// value, whatever their width -- an `Int32` `1` and an `Int64` `1` are
+/// `"1"` -- and two forms two keys, an `Int64` `1` being `"1"` and a
+/// `Float64` one `"1.0"`. A temporal key's text has its unit in it, and a
+/// zoned one is its instant, so such a column's form is its whole dtype, as
+/// is any other dtype's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyForm {
+    Integer,
+    Float,
+    Text,
+    Boolean,
+    /// This dtype, as polars names it.
+    Dtype(String),
+}
+
+/// A key column's form, and the dtype it was first seen as, which the
+/// refusal of another form names (review round 4, N22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyDtype {
+    pub form: KeyForm,
+    pub dtype: String,
+}
+
+impl KeyDtype {
+    /// The form of a polars column: `None` for a column of nulls with no
+    /// type of its own (`Null`), which is the null key in every form.
+    pub fn of(dtype: &DataType) -> Option<Self> {
+        let form = match dtype {
+            DataType::Null => return None,
+            d if d.is_integer() => KeyForm::Integer,
+            d if d.is_float() => KeyForm::Float,
+            DataType::String | DataType::Categorical(..) | DataType::Enum(..) => KeyForm::Text,
+            DataType::Boolean => KeyForm::Boolean,
+            d => KeyForm::Dtype(d.to_string()),
+        };
+        Some(Self {
+            form,
+            dtype: dtype.to_string(),
+        })
+    }
+}
+
 /// The forms a chunk holds a column in ([`ArrowChunk::series`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Form {
@@ -167,6 +212,11 @@ pub struct ArrowChunk {
     /// a 64-bit form (task 160, PA3): `group_close = "monotone"` orders
     /// them as numbers, as it does the integer forms.
     integer_text: PlHashSet<PlSmallStr>,
+    /// Each group and session column's dtype as it arrived (review round 4,
+    /// N22), for the bank to keep the form of from the first chunk. An Arrow
+    /// caller's chunk has none: its form is its array's
+    /// ([`Self::key_form`]).
+    key_dtypes: Vec<(PlSmallStr, DataType)>,
 }
 
 impl ArrowChunk {
@@ -230,6 +280,7 @@ impl ArrowChunk {
             row_base: 0,
             clock_dtypes: Vec::new(),
             integer_text: PlHashSet::default(),
+            key_dtypes: Vec::new(),
         })
     }
 
@@ -261,6 +312,33 @@ impl ArrowChunk {
     pub fn with_clock_dtypes(mut self, dtypes: Vec<(PlSmallStr, DataType)>) -> Self {
         self.clock_dtypes = dtypes;
         self
+    }
+
+    /// The chunk, with each key column's source dtype (review round 4, N22).
+    #[must_use]
+    pub fn with_key_dtypes(mut self, dtypes: Vec<(PlSmallStr, DataType)>) -> Self {
+        self.key_dtypes = dtypes;
+        self
+    }
+
+    /// The form of key column `name` in this chunk (review round 4, N22):
+    /// from the dtype the source gave it, or else from the array the chunk
+    /// holds it in -- an integer one, or text. `None` for a column the chunk
+    /// has not got, and for a column of nulls with no type of its own.
+    pub fn key_form(&self, name: &str) -> Option<KeyDtype> {
+        if let Some((_, dtype)) = self.key_dtypes.iter().find(|(n, _)| n.as_str() == name) {
+            return KeyDtype::of(dtype);
+        }
+        let held = self
+            .find(name, |c| matches!(c, ArrowCol::I64(_) | ArrowCol::U64(_)))
+            .or_else(|| self.find(name, |c| matches!(c, ArrowCol::Str(_))))?;
+        KeyDtype::of(&match held {
+            ArrowCol::I64(_) => DataType::Int64,
+            ArrowCol::U64(_) => DataType::UInt64,
+            // Text the caller marked as integers too wide for 64 bits.
+            _ if self.is_integer_text(name) => DataType::Int128,
+            _ => DataType::String,
+        })
     }
 
     /// The chunk, as rows `row_base..` of a longer input: what an error
@@ -702,6 +780,20 @@ pub fn chunk_from_frame_at(
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     let mut clock_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
     let mut integer_text: Vec<PlSmallStr> = Vec::new();
+    // Every key column's dtype as the frame has it, before any cast: what
+    // decides its keys' text, which the bank keeps the form of (N22).
+    let mut key_dtypes: Vec<(PlSmallStr, DataType)> = Vec::new();
+    for c in specs
+        .iter()
+        .flat_map(|s| [s.group.as_deref(), s.session.as_deref()])
+        .flatten()
+    {
+        if let Ok(col) = df.column(c)
+            && !key_dtypes.iter().any(|(n, _)| n.as_str() == c)
+        {
+            key_dtypes.push((c.into(), col.dtype().clone()));
+        }
+    }
     let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -757,7 +849,8 @@ pub fn chunk_from_frame_at(
     Ok(ArrowChunk::new(df.height(), cols, names)?
         .with_row_base(row_base)
         .with_clock_dtypes(clock_dtypes)
-        .with_integer_text_keys(integer_text))
+        .with_integer_text_keys(integer_text)
+        .with_key_dtypes(key_dtypes))
 }
 
 /// Each column's first reader, for the errors a cast can raise: the first

@@ -175,7 +175,7 @@ fn fit_predict_refuses_a_short_embargo_and_fit_takes_it() {
             "{err}"
         );
         assert!(err.contains("takes any embargo"), "{err}");
-        assert_eq!(bank.rows_seen(), 0);
+        assert_eq!(bank.rows_fed(), 0);
     }
     let later = df.slice(250, 50);
     let mut covered = Bank::new(vec![native(Some(10.0))]).unwrap();

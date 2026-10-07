@@ -91,7 +91,7 @@ fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
     bank.fit_predict(&frame()).unwrap();
     let bytes = bank.save_bytes().unwrap();
     let damaged = reencoded(&bytes, |f| {
-        let held = &mut f.states[0][0].1.pending;
+        let held = &mut f.states[0][0].1.persisted.pending;
         assert!(!held.is_empty(), "the group holds rows");
         held[0].arrived = None;
     });
@@ -141,7 +141,7 @@ fn a_held_row_whose_values_the_bank_never_sends_is_refused() {
     ];
     for (what, f) in damage {
         let b = reencoded(&bytes, |file| {
-            let held = &mut file.states[0][0].1.pending;
+            let held = &mut file.states[0][0].1.persisted.pending;
             assert!(!held.is_empty(), "the group holds rows");
             f(&mut held[0]);
         });
@@ -172,7 +172,7 @@ fn a_residual_sketch_of_the_wrong_shape_is_refused() {
     let specs = std::slice::from_ref(&s);
     assert!(Bank::load_bytes(&bytes, Some(specs)).is_ok(), "as saved");
     let damaged = reencoded(&bytes, |file| {
-        let q = &mut file.states[0][0].1.resid_q[0][0];
+        let q = &mut file.states[0][0].1.persisted.resid_q[0][0];
         let mut v = serde_json::to_value(&*q).unwrap();
         v["at"] = serde_json::json!([-60_000, -60_000]);
         *q = serde_json::from_value(v).unwrap();
@@ -188,7 +188,7 @@ fn a_residual_sketch_of_the_wrong_shape_is_refused() {
 
 /// PA8: every per-spec entry of the envelope names a spec the bank has.
 /// One past the specs was dropped in silence (`high_water`,
-/// `clock_dtypes`, `key_integer`, `resolvers`) or kept and saved again for
+/// `clock_dtypes`, `key_dtypes`, `resolvers`) or kept and saved again for
 /// ever (`pca_prev`, `pca_prev_by_group`), where a `states` list or a
 /// closed row of the same shape is refused (task 160, PA1/PA2).
 #[test]
@@ -209,7 +209,7 @@ fn an_envelope_entry_for_a_spec_the_bank_has_not_got_is_refused() {
         ("clock_dtypes", &|f| {
             f.clock_dtypes.push((7, crate::stream::ClockDtype::Numeric));
         }),
-        ("key_integer", &|f| f.key_integer.push((7, true))),
+        ("key_dtypes", &|f| f.key_dtypes.push((7, [None, None]))),
         ("resolvers", &|f| {
             f.resolvers.push((7, vec![(z(), vec![1, 2])]))
         }),
@@ -324,7 +324,7 @@ fn a_row_count_at_the_top_of_its_range_saturates() {
     let bytes = reencoded(&bank.save_bytes().unwrap(), |f| f.rows_fed = u64::MAX);
     let mut loaded = Bank::load_bytes(&bytes, Some(&specs)).unwrap();
     loaded.fit_predict(&frame()).unwrap();
-    assert_eq!(loaded.rows_seen(), u64::MAX);
+    assert_eq!(loaded.rows_fed(), u64::MAX);
 }
 
 /// A summary whose learned rows wrap past zero when added to its
@@ -336,7 +336,12 @@ fn a_summary_count_that_wraps_is_refused() {
     let mut bank = Bank::new(specs.clone()).unwrap();
     bank.fit_predict(&frame()).unwrap();
     let bytes = reencoded(&bank.save_bytes().unwrap(), |f| {
-        let summary = f.states[0][0].1.summary.as_mut().expect("a summary");
+        let summary = f.states[0][0]
+            .1
+            .persisted
+            .summary
+            .as_mut()
+            .expect("a summary");
         summary.rows_learned = u64::MAX;
         summary.rows_zero_weight = 1;
     });
@@ -347,8 +352,8 @@ fn a_summary_count_that_wraps_is_refused() {
 }
 
 /// PA9: a chunk `"monotone"` refuses for its key order leaves the bank as
-/// it was, the order its keys are read in included: that was kept
-/// before the check ran.
+/// it was, the order its keys are read in included -- the group column's
+/// form since review round 4, N22 -- which was kept before the check ran.
 #[test]
 fn a_refused_monotone_chunk_keeps_no_key_order() {
     let (s, _) = closing();
@@ -362,12 +367,13 @@ fn a_refused_monotone_chunk_keeps_no_key_order() {
     let err = bank.fit_predict(&backwards).unwrap_err().to_string();
     assert!(err.contains("non-decreasing order"), "{err}");
     let file: BankFile = rmp_serde::from_slice(&bank.save_bytes().unwrap()).unwrap();
-    assert!(file.key_integer.is_empty(), "{:?}", file.key_integer);
+    assert!(file.key_dtypes.is_empty(), "{:?}", file.key_dtypes);
     // Taken, the chunk keeps it.
     let forwards = df!("g" => [1i64, 2], "x" => [1.0, 2.0], "y" => [2.0, 4.0]).unwrap();
     bank.fit_predict(&forwards).unwrap();
     let file: BankFile = rmp_serde::from_slice(&bank.save_bytes().unwrap()).unwrap();
-    assert_eq!(file.key_integer, vec![(0, true)]);
+    let integer = crate::arrow::KeyDtype::of(&DataType::Int64);
+    assert_eq!(file.key_dtypes, vec![(0, [integer, None])]);
 }
 
 /// PA7: under `group_close = "session"` the PCA sign continuity is kept

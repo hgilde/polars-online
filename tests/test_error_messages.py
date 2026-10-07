@@ -1446,7 +1446,7 @@ def test_a_clock_step_past_the_largest_double_is_refused_by_row():
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(frame)
     assert 'clock column "t" steps from -1e308 to 1e308 at row 1' in str(exc.value)
-    assert bank.rows_seen() == 0
+    assert bank.rows_fed() == 0
 
 
 def test_a_mismatched_spec_on_load_is_named():

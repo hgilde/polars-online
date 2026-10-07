@@ -26,19 +26,27 @@ fn a_schema_14_stream_rebuilds_the_held_rows_clock_from_the_held_rows() {
     bank.fit_predict(&df).unwrap();
     let saved = bank.states[0].values().next().unwrap().save();
     assert!(
-        !saved.pending.is_empty(),
+        !saved.persisted.pending.is_empty(),
         "the stream should end with rows held"
     );
-    let held: f64 = saved.pending.iter().map(|p| p.d_clock).sum();
+    let held: f64 = saved.persisted.pending.iter().map(|p| p.d_clock).sum();
 
     let mut old = saved.clone();
-    old.pending_clock.clear();
-    let rebuilt = Stream::restore(&spec, &old).unwrap().save().pending_clock;
+    old.persisted.pending_clock.clear();
+    let rebuilt = Stream::restore(&spec, &old)
+        .unwrap()
+        .save()
+        .persisted
+        .pending_clock;
     assert!(
         !rebuilt.is_empty() && rebuilt.iter().all(|&c| c == held),
         "{rebuilt:?}"
     );
 
-    let kept = Stream::restore(&spec, &saved).unwrap().save().pending_clock;
-    assert_eq!(kept, saved.pending_clock);
+    let kept = Stream::restore(&spec, &saved)
+        .unwrap()
+        .save()
+        .persisted
+        .pending_clock;
+    assert_eq!(kept, saved.persisted.pending_clock);
 }

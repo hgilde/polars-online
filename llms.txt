@@ -47,7 +47,7 @@ bank.save("bank.state")
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
   gives identical output, bit for bit, and a test enforces it. The one exception is
   which rows carry `coef`, and `support_coef` on the same rows, by default: they are
-  filled on each group's last row in every chunk, so that schedule follows the
+  filled on each group's last accepted row in every chunk, so that schedule follows the
   chunking. Under a cadence those rows do not move either: `coef_every` is a clock
   parameter, as `solve_every` is (`0` every row, `"5m"` a row once five minutes of the
   clock have passed), and `max_rows_between_coefs` writes one after that many rows.

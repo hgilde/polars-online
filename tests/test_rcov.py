@@ -121,7 +121,7 @@ def test_the_kernel_is_its_definition():
     got = unvech(rows["rcov"][0].to_list(), 2)
     assert np.allclose(got, (want + want.T) / 2, rtol=1e-9, atol=1e-15)
     assert rows["rcov_n"][0] == len(y)
-    assert rows["bandwidth_used"][0] == h
+    assert rows["rcov_bandwidth_used"][0] == h
 
 
 @pytest.mark.parametrize("m", [1, 2, 3, 4])
@@ -144,13 +144,13 @@ def test_the_jitter_moves_the_estimate_barely(m):
 def test_the_auto_bandwidth_is_reported_and_clipped_to_the_ring():
     df = ticks(n=400)
     rows, _ = block(df, kind="kernel", block_rows=400)
-    h = rows["bandwidth_used"][0]
+    h = rows["rcov_bandwidth_used"][0]
     assert h is not None and h >= 1
-    assert rows["omega2"][0].to_list()[0] > 0
-    assert rows["iv_sparse"][0].to_list()[0] > 0
+    assert rows["rcov_omega2"][0].to_list()[0] > 0
+    assert rows["rcov_iv_sparse"][0].to_list()[0] > 0
     # A tiny ring clips it.
     tight, _ = block(df, kind="kernel", block_rows=400, max_bandwidth=2)
-    assert tight["bandwidth_used"][0] == 2
+    assert tight["rcov_bandwidth_used"][0] == 2
 
 
 # --- pre-averaging -----------------------------------------------------------
@@ -214,12 +214,12 @@ def test_the_psd_form_is_a_longer_window_without_the_bias_term():
     assert np.allclose(got, want, rtol=1e-9, atol=1e-15)
     # A longer window means fewer pre-averaged blocks.
     assert repaired["rcov_n"][0] == len(ybar) < strict["rcov_n"][0]
-    assert repaired["psd_repaired"][0] is False
+    assert repaired["rcov_psd_repaired"][0] is False
 
 
 @pytest.mark.parametrize("kind", ["plain", "kernel"])
 def test_a_negative_eigenvalue_is_clipped_and_reported(kind):
-    """``psd_repaired``'s other side: a block with fewer returns than
+    """``rcov_psd_repaired``'s other side: a block with fewer returns than
     features has a covariance of lower rank, whose zero eigenvalues come out
     of the arithmetic a hair either side of 0. Under ``psd = True`` each
     negative one is clipped and the block says so, and the matrix reported is
@@ -245,8 +245,8 @@ def test_a_negative_eigenvalue_is_clipped_and_reported(kind):
 
     repaired, raw = close(True), close(False)
     assert repaired.height == blocks - 1  # the last group never closes
-    fired = repaired["psd_repaired"].to_list()
-    assert raw["psd_repaired"].to_list() == [False] * (blocks - 1)
+    fired = repaired["rcov_psd_repaired"].to_list()
+    assert raw["rcov_psd_repaired"].to_list() == [False] * (blocks - 1)
     assert any(fired), fired
     for got, was, did in zip(repaired["rcov"].to_list(), raw["rcov"].to_list(), fired, strict=True):
         if not did:
@@ -300,7 +300,7 @@ def test_a_zero_weight_row_is_not_a_return():
     )
     got, _ = block(padded, kind="kernel", weight="w")
     # The row was fed, so the summary counts it; nothing else moved.
-    block_cols = ["rcov", "rcorr", "rcov_n", "bandwidth_used", "weight_sum"]
+    block_cols = ["rcov", "rcorr", "rcov_n", "rcov_bandwidth_used", "weight_sum"]
     assert got.select(block_cols).equals(want.select(block_cols))
     assert got["rows_fed"][0] == want["rows_fed"][0] + 1
 

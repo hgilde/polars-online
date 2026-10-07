@@ -356,23 +356,23 @@ def test_a_high_water_mark_read_under_the_wrong_dtype_is_refused_both_ways():
     """A mark and the keys have to be ordered the same way, or the mark lets
     through exactly the groups it exists to refuse: ``"10"`` comes after
     ``"9"`` as an integer and before it as text
-    (docs/REVIEW-E54-E64.md G1)."""
+    (docs/REVIEW-E54-E64.md G1). Since review round 4 (N22) the bank keeps
+    every group column's form, and refuses a column of another form before
+    the mark is read, for every spec and not for ``"monotone"`` alone."""
     spec = cov_spec(group_close="monotone")
 
     # Saved under an integer column, resumed under a text one.
     bank = po.ModelBank([spec])
     bank.fit_predict(frame([9, 10, 11]))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
-    with pytest.raises(ValueError, match="saved under a integer group column"):
+    with pytest.raises(ValueError, match='group column "g" was i64 and is now str'):
         again.fit_predict(frame(["12", "13"]))
 
-    # And the other way. A file written before the flag existed does not
-    # carry it, and there the mark itself gives the mismatch away -- "c"
-    # cannot be an integer key; both refusals are in `check_monotone`.
+    # And the other way.
     bank = po.ModelBank([spec])
     bank.fit_predict(frame(["a", "b", "c"]))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
-    with pytest.raises(ValueError, match="saved under a text group column"):
+    with pytest.raises(ValueError, match='group column "g" was str and is now i64'):
         again.fit_predict(frame([9, 10]))
 
 
@@ -788,7 +788,11 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 38 since
+    """The version a bank file names, held to the library's: 39 since
+    2026-10-07 (task 194: a stream's state nests what it keeps beside its
+    models, a clock range is kept as clock values, a closed pair's statistic
+    is ``t_stat``, and the bank keeps each key column's form; the bank
+    refuses 38), after 38 since
     2026-10-06 (task 186: ``ew_ridge``'s kept systems lost a Gram index
     nothing read, and a closed ``rcov`` row's ``psd_repaired`` can be null;
     the bank refuses 37), after 37 the same day (task 180: the solve,
@@ -833,7 +837,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 38
+    assert po.schema_version() == 39
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

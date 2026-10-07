@@ -306,7 +306,7 @@ class TestTheRule:
         assert len(got) > df.height // 2, got
         assert got == [i for i in range(got[0], df.height) if acc[i]]
 
-    def test_unset_writes_each_group_s_last_row_in_each_chunk(self):
+    def test_unset_writes_each_group_s_last_accepted_row_in_each_chunk(self):
         df = frame(irregular()).with_columns(
             g=pl.when(pl.int_range(pl.len()) % 3 == 0).then(pl.lit("a")).otherwise(pl.lit("b"))
         )
@@ -319,9 +319,12 @@ class TestTheRule:
         for start in range(0, df.height, 50):
             for g in ("a", "b"):
                 rows = [i for i in range(start, min(start + 50, df.height)) if df["g"][i] == g]
-                # The group's last row in the chunk, if the stream accepts it.
-                if rows and acc[rows[-1]]:
-                    want.append(rows[-1])
+                # The group's last accepted row in the chunk, which the last
+                # row was alone, and none when it was skipped (review round 4,
+                # PB2).
+                kept = [i for i in rows if acc[i]]
+                if kept:
+                    want.append(kept[-1])
         assert got == [r for r in sorted(want) if r in fitted]
         assert len(got) >= 12, got
 

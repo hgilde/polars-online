@@ -77,7 +77,7 @@ decision reads exactly these:
 
 Not read anywhere: the cross terms past the first lag, the `lagcorr_xx` /
 `lagcorr_yy` lists themselves (only through `n_serial`), `phi_x`, `phi_y`,
-`t`, `t_serial`, `beta`, `mean_*`, `var_*`, `split_at`, `split_gain_t`,
+`t` (`t_stat` since task 194), `t_serial`, `beta`, `mean_*`, `var_*`, `split_at`, `split_gain_t`,
 and the four `bin_*` lists. Everything below keeps every one of them
 available; the asks are about what is *computed per row*, not what is
 reported.

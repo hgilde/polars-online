@@ -2,7 +2,8 @@
 
 Status as of 2026-08-31: **S1, S2, S3 and S4 are done. S5 and S6 are declined
 on their own stated grounds; S7 has not met its own bar.** S7 met it later, at
-five callers, and was done on 2026-09-27 (below). A read of the
+five callers, and was done on 2026-09-27 (below), and S6 on 2026-10-07, when
+its schema bump came due (task 194, below). A read of the
 codebase after the P1–P8 performance work, looking for complexity that can go
 without costing features, performance, stability, or any stated goal.
 
@@ -33,7 +34,7 @@ already measured as noise beside the O(k³) factorization.
 **S6 — still deferred**, on its own terms: it changes the state file layout and
 so needs a `SCHEMA_VERSION` bump plus a second frozen fixture. Worth doing the
 next time that version has to move anyway; not worth moving it for an internal
-tidy.
+tidy. *Done 2026-10-07 (task 194, review round 4's D7), below.*
 
 **S7 — bar not met.** It set its own threshold at "the third caller, or now if
 the release workflow ends up needing it too". There are still two callers, and
@@ -218,6 +219,16 @@ real work for an internal tidy.
 **Verdict: not now.** Worth doing the *next* time `SCHEMA_VERSION` has to move
 for another reason, so the migration cost is already being paid. Recorded here
 so the opportunity is not forgotten.
+
+**Done 2026-10-07 (task 194).** The schema had moved 32 times by then, and
+review round 4 (D7) noted that after 1.0 a layout change needs a loader. The
+persisted fields are one `Persisted` struct, held by `Stream` as
+`persisted` and written by `StreamState` beside the models' states, so
+`Stream::save` is one clone, and `Stream::restore` takes the whole saved
+value and replaces only what it checks against the spec. Schema 39; the
+pre-1.0 waiver (hard rule 5) asks for no loader. Every save/resume,
+chunk-invariance and damaged-state test passes as it did, with its field
+paths through `persisted`.
 
 ---
 

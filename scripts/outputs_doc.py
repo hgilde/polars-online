@@ -184,7 +184,7 @@ STATE_ONLY = {
     "rcov": (
         "`rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the "
         "row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's "
-        "`psd_repaired` is null where the repair could not run, on an estimate with an entry "
+        "`rcov_psd_repaired` is null where the repair could not run, on an estimate with an entry "
         "that is not finite."
     ),
 }
@@ -249,7 +249,8 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "after the rows this row releases, and is the fit the next row is predicted with "
         "only when the next row releases none",
         "on every row but those `coef_every` or `max_rows_between_coefs` fills, which with "
-        "neither are each group's last row in each chunk; and before the model has anything "
+        "neither are each group's last accepted row in each chunk; and before the model has "
+        "anything "
         "to report, such as a first solve",
     ),
 ]

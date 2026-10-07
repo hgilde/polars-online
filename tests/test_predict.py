@@ -4,7 +4,10 @@ and learns nothing.
 The contract is stated as one equality: row ``i`` of ``predict(df)`` is row 0
 of ``fit_predict(df.slice(i, 1))`` on a fresh copy of the bank -- the same
 struct, field for field, that the row would get as the next row of its
-stream. Everything else here is a consequence: the state is untouched (the
+stream -- except under an ``embargo``, where ``predict`` releases nothing
+and ``fit_predict`` learns the held rows whose delay has passed
+(``test_state_frames.py::test_predict_under_an_embargo_releases_nothing``,
+review round 4, PB3 and TB6). Everything else here is a consequence: the state is untouched (the
 bytes say so), targets and weights are optional, unknown groups are null, a
 trend model extrapolates over the clock, and any number of threads may score
 at once.
@@ -340,11 +343,11 @@ class TestInputs:
                 assert a.equals(b, null_equal=True), f
 
     def test_the_bank_does_not_move(self):
-        before = self.bank.rows_seen()
+        before = self.bank.rows_fed()
         snap = self.bank.save_bytes()
         for _ in range(3):
             self.bank.predict(self.later)
-        assert self.bank.rows_seen() == before
+        assert self.bank.rows_fed() == before
         assert self.bank.save_bytes() == snap
         # ...and the stream picks up exactly where it was.
         want = po.ModelBank.load_bytes(snap, self.specs).fit_predict(self.later)

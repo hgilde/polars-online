@@ -284,7 +284,7 @@ def test_a_row_exactly_one_window_later_waits_for_the_window_to_close() -> None:
     # No embargo at all, under `fit`: the same rows learned at the same
     # time, since the window closing is what releases them. Held to the
     # `embargo = W` run's count of rows learned and to its Gram, bit for bit;
-    # `rows_seen() == height` alone was true of any fit (review 2026-10-05,
+    # `rows_fed() == height` alone was true of any fit (review 2026-10-05,
     # TA8). A longer embargo, W + 2.5, learns six rows here, not seven.
     fitted = {}
     for embargo in (None, W):
@@ -312,7 +312,7 @@ def test_fit_predict_refuses_an_embargo_below_the_window_and_fit_takes_it() -> N
             bank.fit_predict(df)
         with pytest.raises(ValueError, match="takes any embargo"):
             list(bank.fit_predict_batches(df, chunk_rows=10))
-        assert bank.rows_seen() == 0
+        assert bank.rows_fed() == 0
     later = df.slice(250, 50)
     covered = po.ModelBank([spec(fwd(), embargo=W)])
     covered.fit(df.slice(0, 250), chunk_rows=40)
@@ -357,7 +357,7 @@ def test_predict_scores_without_the_target() -> None:
     bank.fit_predict(df.slice(0, 150))
     scored = bank.predict(df.slice(150, 50).drop("mid"))
     assert sum(p is not None for p in field(scored, "pred_fwd")) > 40
-    assert bank.rows_seen() == 150
+    assert bank.rows_fed() == 150
     # The summary counts a row handed a formula target as learned from, as
     # it counts a plain target held under an embargo.
     assert bank.summary()["rows_learned"][0] > 100
@@ -833,7 +833,7 @@ def test_no_output_is_the_command_lines_fit(online_cli: Any, tmp_path: Any) -> N
         save_state=tmp_path / "bank.state",
         args=["--no-output"],
     )
-    assert po.ModelBank.load(tmp_path / "bank.state").rows_seen() == 120
+    assert po.ModelBank.load(tmp_path / "bank.state").rows_fed() == 120
 
 
 def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
@@ -845,7 +845,7 @@ def test_every_surface_takes_a_raw_dict_with_a_window_expression() -> None:
     bank = po.ModelBank([raw])
     bank.fit_predict(stream(80, 45))
     again = po.ModelBank.load_bytes(bank.save_bytes(), [raw])
-    assert again.rows_seen() == 80
+    assert again.rows_fed() == 80
 
 
 def test_a_raw_dict_takes_a_duration_under_a_clock_parameter() -> None:
@@ -878,7 +878,7 @@ def test_a_refused_chunk_leaves_every_specs_core_as_it_was() -> None:
     bank = po.ModelBank([a, b])
     with pytest.raises(ValueError, match="ask"):
         bank.fit_predict(df.drop("ask"))
-    assert bank.rows_seen() == 0
+    assert bank.rows_fed() == 0
     again = bank.fit_predict(df)
     assert field(again, "pred_fwd") == field(fresh, "pred_fwd")
 
@@ -933,19 +933,20 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     embargo's elapsed clock, 35 since task 178, for ``coef_every`` on the
     clock, 36 since task 179, for ``bocpd``'s hazard on the clock (35 still
     loaded), 37 since task 180, for the solve, component and checkpoint
-    cadences on the exact clock (36 refused), and 38 since task 186, for
+    cadences on the exact clock (36 refused), 38 since task 186, for
     ``ew_ridge``'s kept systems and ``rcov``'s ``psd_repaired`` (37
-    refused), the windows state unchanged each time."""
+    refused), and 39 since task 194, for the stream's and the bank's state
+    (38 refused), the windows state unchanged each time."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 38, state[i]
-    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37):
+    assert state[i] == 39, state[i]
+    for before in (25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 38"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 39"
         ):
             po.ModelBank.load_bytes(old)
 

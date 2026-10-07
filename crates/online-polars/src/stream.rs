@@ -1702,6 +1702,55 @@ impl ClockDtype {
         }
     }
 
+    /// The column's type as polars names it: what [`Self::array`] makes.
+    pub fn dtype(&self) -> polars::prelude::DataType {
+        use polars::prelude::{DataType as D, TimeUnit as T};
+        let unit = |u: &ClockUnit| match u {
+            ClockUnit::Ms => T::Milliseconds,
+            ClockUnit::Us => T::Microseconds,
+            ClockUnit::Ns => T::Nanoseconds,
+        };
+        match self {
+            Self::Rows => D::Int64,
+            Self::Numeric => D::Float64,
+            Self::Date => D::Date,
+            // A zone polars gave the column is one it reads back.
+            Self::Datetime { unit: u, tz } => D::Datetime(
+                unit(u),
+                polars::prelude::TimeZone::opt_try_new(tz.clone())
+                    .ok()
+                    .flatten(),
+            ),
+            Self::Duration { unit: u } => D::Duration(unit(u)),
+        }
+    }
+
+    /// A frame's clock column of `values` (review round 4, N18): in the
+    /// clock column's own dtype, exactly, as `scored_clock` is -- a
+    /// `Datetime` in its unit and zone, a `Date`, a `Duration`, a `Float64`
+    /// for a number clock -- and a `Float64` of nulls where there is no
+    /// clock column (`Rows`) or no chunk has said what it is (`None`).
+    pub fn column(
+        dtype: Option<&ClockDtype>,
+        name: &str,
+        values: &[Option<ClockValue>],
+    ) -> polars::prelude::PolarsResult<polars::prelude::Column> {
+        use polars::prelude::{Column, Series};
+        match dtype {
+            Some(d) if *d != Self::Rows => Ok(Column::from(Series::from_arrow(
+                name.into(),
+                d.array(values),
+            )?)),
+            _ => Ok(Column::new(
+                name.into(),
+                values
+                    .iter()
+                    .map(|c| c.map(ClockValue::seconds))
+                    .collect::<Vec<Option<f64>>>(),
+            )),
+        }
+    }
+
     /// The values as an Arrow array of the column's type, null where `None`.
     pub fn array(&self, values: &[Option<ClockValue>]) -> Box<dyn polars_arrow::array::Array> {
         use polars_arrow::array::PrimitiveArray;
@@ -1873,7 +1922,8 @@ impl Embargo {
 /// (docs/PLAN.md task 178).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CoefPlan {
-    /// Neither given: each group's last row in each chunk.
+    /// Neither given: each group's last accepted row in each chunk
+    /// ([`last_accepted`]).
     ChunkEnds,
     /// A cadence, as `solve_every` and `max_rows_between_solves` schedule a
     /// solve: a `coef` row once the clock has moved `clock` units since the
@@ -2013,11 +2063,24 @@ pub struct FormulaTargets<'a> {
     pub resolved: Option<&'a Resolutions>,
 }
 
-/// Serialized per-stream state: the clock plus each half-life's model.
+/// Serialized per-stream state: each half-life's model, and the rest of the
+/// stream as it runs ([`Persisted`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamState {
-    pub clock: ClockState,
     pub models: Vec<State>,
+    pub persisted: Persisted,
+}
+
+/// Everything a stream keeps across a save but its models: the fields
+/// [`Stream`] runs on, held there as one value, so [`Stream::save`] is one
+/// clone of it and a field added here is saved by construction, where
+/// `save` once copied two dozen by hand and a forgotten one was silently
+/// not persisted (docs/SIMPLIFICATION.md S6, review round 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Persisted {
+    /// The clock the stream's rows are measured on.
+    pub clock: ClockState,
+    /// Rows the null policy accepted: what `rows_processed` reports.
     pub rows_seen: u64,
     /// EW mean squared out-of-sample residual, per model instance and output
     /// slot. `#[serde(default)]` so state files written before this existed
@@ -2057,9 +2120,10 @@ pub struct StreamState {
     /// a running `+=`/`-=` and a fresh sum of the held rows round
     /// differently, so rebuilding it made `settled_frac` depend on where a
     /// chunk ended (hard rule 3; found by a property test, 2026-09-24).
-    /// Written only by a stream with a `embargo`, so a spec without one
-    /// writes what it always did. Empty in a schema-14 file, whose loader
-    /// rebuilds it the way 0.10.0 did at a chunk boundary.
+    /// Kept only by a stream with an `embargo`, and empty without one, so a
+    /// spec without one writes what it always did. Empty in a schema-14
+    /// file, whose loader rebuilds it the way 0.10.0 did at a chunk
+    /// boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_clock: Vec<f64>,
     /// Per model instance, which readiness notices it has raised (§3), so a
@@ -2090,7 +2154,7 @@ pub struct StreamState {
     /// which the release scores the row against. Skipped when there is none, so a spec
     /// without a delay writes the same bytes it always did.
     #[serde(default, skip_serializing_if = "no_score_preds")]
-    pub score_pred: Vec<Vec<Vec<f64>>>,
+    pub score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
     /// Per model instance, the ring a windowed spread is cut from (review
     /// 2026-09-12, S1): `None` for an instance with no window, or whose spec
     /// reads no spread. Skipped when every entry is `None`, so no file
@@ -2111,9 +2175,9 @@ pub struct StreamState {
     pub coef_cadence: CoefCadence,
 }
 
-/// `StreamState::score_pred` holds nothing worth writing.
-fn no_score_preds(v: &[Vec<Vec<f64>>]) -> bool {
-    v.iter().all(Vec::is_empty)
+/// [`Persisted::score_pred`] holds nothing worth writing.
+fn no_score_preds(v: &[std::collections::VecDeque<Vec<f64>>]) -> bool {
+    v.iter().all(std::collections::VecDeque::is_empty)
 }
 
 /// Which readiness notices one model instance has raised
@@ -2168,42 +2232,22 @@ pub struct Readiness {
     pub n_coef: u64,
 }
 
-/// `StreamState::resid_win` holds no ring.
+/// [`Persisted::resid_win`] holds no ring.
 fn no_resid_windows(v: &[Option<ResidWindow>]) -> bool {
     v.iter().all(Option::is_none)
 }
 
-/// Live per-stream state.
+/// Live per-stream state: the models, what a save keeps beside them
+/// ([`Persisted`]), and what the spec configures.
 pub struct Stream {
-    pub clock: ClockState,
     pub models: Vec<(String, AnyModel)>,
-    pub rows_seen: u64,
+    /// Everything else a save keeps, as it keeps it.
+    pub persisted: Persisted,
     /// Decay of each model instance, needed to age `resid_var` on the same
     /// clock the model itself uses.
     decays: Vec<Decay>,
-    /// EW mean squared out-of-sample residual per instance and slot, and its
-    /// weight sum. Kept here rather than in the models so that every model gets
-    /// the same definition: the models' own `sigma2` fields serve different
-    /// internal purposes (robust scaling, Kalman observation noise) and are not
-    /// all present or comparable.
-    resid_var: Vec<Vec<f64>>,
-    resid_w: Vec<Vec<f64>>,
-    /// Under a window, the ring that cuts the spread at the fit's boundary,
-    /// per instance ([`StreamState::resid_win`]).
-    resid_win: Vec<Option<ResidWindow>>,
-    /// Page-Hinkley detectors per instance and slot, when `emit_drift` is on.
-    drift: Vec<Vec<PageHinkley>>,
     /// Warmup threshold per target (ENHANCEMENTS E7).
     min_weight: Vec<f64>,
-    /// Quantile sketches per instance and slot, every requested level from
-    /// one (ENHANCEMENTS E23, docs/PLAN.md task 146).
-    resid_q: Vec<Vec<EwQuantile>>,
-    /// EW residual autocorrelation per instance and slot.
-    autocorr: Vec<Vec<EwAutoCorr>>,
-    /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
-    metrics: Vec<Vec<SlotMetrics>>,
-    /// Conformal radius and coverage per instance and slot (ENHANCEMENTS E36).
-    conformal: Vec<Vec<Conformal>>,
     /// Row scratch, reused for the life of the stream so the chunk loop
     /// itself allocates nothing (docs/PERFORMANCE.md P1). The `pred` `Vec`
     /// inside each `Step` is the one per-row allocation left, and it is cheap
@@ -2217,40 +2261,6 @@ pub struct Stream {
     /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
     /// configuration from the spec, like `embargo`.
     exact_caps: ExactCaps,
-    /// Rows accepted but not yet released into the models, oldest first.
-    pending: Vec<PendingRow>,
-    /// The break skipped rows raised since the last accepted row, waiting
-    /// for the next one ([`HeldBreak`]).
-    held_break: HeldBreak,
-    /// The clock of the newest row the models have learned from at a
-    /// positive weight: `None` before the first and after a reset
-    /// (task 152).
-    last_learned: Option<ClockValue>,
-    /// Rows fed to this group, skipped ones included: a clockless row's
-    /// clock is its index here.
-    fed: u64,
-    /// Per model instance, the score-time prediction of each row in
-    /// `pending`, in the same order (C21); see [`StreamState::score_pred`].
-    score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
-    /// What the output struct said on the last row this stream learned
-    /// from, kept for [`Stream::save`] (docs/PLAN.md task 34).
-    last_row: Option<LastRow>,
-    /// Counts, clock range and per-column statistics over every row fed
-    /// (docs/PLAN.md task 35). `None` only for a stream restored from a file
-    /// written before the summary existed.
-    summary: Option<DataSummary>,
-    /// Per instance, the decay time seen; see [`StreamState::decay_time`].
-    decay_time: Vec<f64>,
-    /// Per instance, the held rows' clock; see [`StreamState::pending_clock`].
-    pending_clock: Vec<f64>,
-    /// Per instance, the readiness notices raised; see
-    /// [`StreamState::notified`].
-    notified: Vec<Notified>,
-    /// The session value of the span this stream is in (E54); see
-    /// [`StreamState::last_session`].
-    pub last_session: Option<String>,
-    /// Where the `coef` cadence stands; see [`StreamState::coef_cadence`].
-    coef_cadence: CoefCadence,
 }
 
 impl Stream {
@@ -2263,7 +2273,8 @@ impl Stream {
             .iter()
             .find_map(|(_, m)| m.window_over_budget())
             .or_else(|| {
-                self.resid_win
+                self.persisted
+                    .resid_win
                     .iter()
                     .flatten()
                     .find_map(ResidWindow::over_budget)
@@ -2279,7 +2290,8 @@ impl Stream {
     /// order (docs/WARMUP-AND-CONVERGENCE.md §3); each is raised once per
     /// instance for the life of the stream.
     pub fn take_notices(&mut self) -> Vec<String> {
-        self.notified
+        self.persisted
+            .notified
             .iter_mut()
             .flat_map(|n| std::mem::take(&mut n.pending))
             .collect()
@@ -2290,7 +2302,7 @@ impl Stream {
     pub fn readiness(&self, spec: &Spec) -> Readiness {
         let decay = self.decays.first().copied();
         let settled = decay.map_or(f64::NAN, |d| {
-            settled_frac(d, self.decay_time.first().copied().unwrap_or(0.0))
+            settled_frac(d, self.persisted.decay_time.first().copied().unwrap_or(0.0))
         });
         let model = self.models.first().map(|(_, m)| m);
         let mut infl = Vec::new();
@@ -2350,7 +2362,7 @@ impl Stream {
     /// (docs/PLAN.md task 34): what [`Stream::process_chunk`] wrote for it,
     /// kept across [`Stream::save`] and [`Stream::restore`].
     pub fn last_row(&self) -> Option<&LastRow> {
-        self.last_row.as_ref()
+        self.persisted.last_row.as_ref()
     }
 
     /// What this stream has been fed (docs/PLAN.md task 35), accumulated
@@ -2358,7 +2370,7 @@ impl Stream {
     /// [`Stream::restore`]. `None` for a stream restored from a file
     /// written before the summary existed.
     pub fn summary(&self) -> Option<&DataSummary> {
-        self.summary.as_ref()
+        self.persisted.summary.as_ref()
     }
 
     /// Keep the last learned row of a run's buffers as [`Self::last_row`]:
@@ -2368,7 +2380,8 @@ impl Stream {
     /// for a `coef` the row carried.
     pub fn remember_last(&mut self, out: &ChunkOut) {
         if let Some(ri) = out.processed.iter().rposition(|&p| p) {
-            self.last_row
+            self.persisted
+                .last_row
                 .get_or_insert_with(Default::default)
                 .take(out, ri);
         }
@@ -2380,6 +2393,30 @@ impl Stream {
 /// the row, a target that is not makes it predict-only (docs/PLAN.md §3,
 /// task 183).
 pub use online_core::{all_usable, usable};
+
+/// Whether the stream accepts input row `i`: every feature and the weight
+/// usable. The one test [`Stream::process_chunk`]'s schedule and
+/// [`last_accepted`] share, so the row `coef` is promised on is a row the
+/// schedule accepts.
+#[inline]
+fn accepts(features: &FeatureRows, weight: Option<&[f64]>, i: usize) -> bool {
+    all_usable(features.row(i)) && weight.map(|w| usable(w[i])).unwrap_or(true)
+}
+
+/// The last of a group's input rows `base..base + n` in the chunk that the
+/// stream accepts: where `coef` is written without a cadence (review round
+/// 4, PB2). `None` when every one is skipped, and the chunk writes no
+/// `coef` for the group.
+pub fn last_accepted(
+    features: &FeatureRows,
+    weight: Option<&[f64]>,
+    base: usize,
+    n: usize,
+) -> Option<usize> {
+    (base..base + n)
+        .rev()
+        .find(|&i| accepts(features, weight, i))
+}
 
 /// True when this target has not reached its own warmup threshold yet.
 #[inline]
@@ -2776,100 +2813,84 @@ impl Stream {
             .iter()
             .map(|_| resid_window(spec))
             .collect::<Result<Vec<_>, String>>()?;
+        let instances = slots.len();
+        let embargo = spec.embargo.as_ref().map(Embargo::of);
         Ok(Self {
-            clock: ClockState::new(),
-            resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
-            resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
-            resid_win,
-            drift,
-            resid_q: match &spec.resid_quantiles {
-                Some(levels) => {
-                    let proto = EwQuantile::new(levels)?;
+            persisted: Persisted {
+                clock: ClockState::new(),
+                rows_seen: 0,
+                resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
+                resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
+                resid_win,
+                drift,
+                resid_q: match &spec.resid_quantiles {
+                    Some(levels) => {
+                        let proto = EwQuantile::new(levels)?;
+                        slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                    }
+                    None => Vec::new(),
+                },
+                autocorr: if spec.emit_autocorr {
+                    let proto = EwAutoCorr::new(spec.resid_autocorr_lag_or_default())?;
                     slots.iter().map(|&n| vec![proto.clone(); n]).collect()
-                }
-                None => Vec::new(),
-            },
-            autocorr: if spec.emit_autocorr {
-                let proto = EwAutoCorr::new(spec.resid_autocorr_lag_or_default())?;
-                slots.iter().map(|&n| vec![proto.clone(); n]).collect()
-            } else {
-                Vec::new()
-            },
-            metrics: if spec.emit_metrics {
-                slots.iter().map(|&n| vec![SlotMetrics::new(); n]).collect()
-            } else {
-                Vec::new()
-            },
-            conformal: match spec.conformal {
-                Some(level) => {
-                    let proto = Conformal::new(level, spec.conformal_rate_or_default())?;
-                    slots.iter().map(|&n| vec![proto.clone(); n]).collect()
-                }
-                None => Vec::new(),
+                } else {
+                    Vec::new()
+                },
+                metrics: if spec.emit_metrics {
+                    slots.iter().map(|&n| vec![SlotMetrics::new(); n]).collect()
+                } else {
+                    Vec::new()
+                },
+                conformal: match spec.conformal {
+                    Some(level) => {
+                        let proto = Conformal::new(level, spec.conformal_rate_or_default())?;
+                        slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                    }
+                    None => Vec::new(),
+                },
+                last_row: None,
+                summary: Some(DataSummary::new(spec)),
+                decay_time: vec![0.0; instances],
+                // Only a delay ever holds rows: without one there is no
+                // clock to keep, and none is written.
+                pending_clock: if embargo.is_some() {
+                    vec![0.0; instances]
+                } else {
+                    Vec::new()
+                },
+                notified: vec![Notified::default(); instances],
+                pending: Vec::new(),
+                held_break: HeldBreak::default(),
+                last_learned: None,
+                fed: 0,
+                score_pred: (0..instances)
+                    .map(|_| std::collections::VecDeque::new())
+                    .collect(),
+                last_session: None,
+                coef_cadence: CoefCadence::default(),
             },
             min_weight: spec.min_periods_per_target(),
             models,
             decays,
-            rows_seen: 0,
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
-            last_row: None,
-            summary: Some(DataSummary::new(spec)),
-            decay_time: vec![0.0; slots.len()],
-            pending_clock: vec![0.0; slots.len()],
-            notified: vec![Notified::default(); slots.len()],
-            embargo: spec.embargo.as_ref().map(Embargo::of),
+            embargo,
             exact_caps: spec.exact_caps(),
-            pending: Vec::new(),
-            held_break: HeldBreak::default(),
-            last_learned: None,
-            fed: 0,
-            score_pred: slots
-                .iter()
-                .map(|_| std::collections::VecDeque::new())
-                .collect(),
-            last_session: None,
-            coef_cadence: CoefCadence::default(),
         })
     }
 
+    /// The stream as a state file keeps it: each model's state, and the rest
+    /// as it stands ([`Persisted`]).
     pub fn save(&self) -> StreamState {
         StreamState {
-            clock: self.clock.clone(),
             models: self.models.iter().map(|(_, m)| m.state()).collect(),
-            rows_seen: self.rows_seen,
-            resid_var: self.resid_var.clone(),
-            resid_w: self.resid_w.clone(),
-            resid_win: self.resid_win.clone(),
-            drift: self.drift.clone(),
-            resid_q: self.resid_q.clone(),
-            autocorr: self.autocorr.clone(),
-            metrics: self.metrics.clone(),
-            conformal: self.conformal.clone(),
-            last_row: self.last_row.clone(),
-            summary: self.summary.clone(),
-            decay_time: self.decay_time.clone(),
-            // Only a delay ever holds rows; without one this stays empty
-            // and is not written.
-            pending_clock: if self.embargo.is_some() {
-                self.pending_clock.clone()
-            } else {
-                Vec::new()
-            },
-            notified: self.notified.clone(),
-            pending: self.pending.clone(),
-            held_break: self.held_break,
-            last_learned: self.last_learned,
-            fed: self.fed,
-            score_pred: self
-                .score_pred
-                .iter()
-                .map(|q| q.iter().cloned().collect())
-                .collect(),
-            last_session: self.last_session.clone(),
-            coef_cadence: self.coef_cadence,
+            persisted: self.persisted.clone(),
         }
     }
 
+    /// [`Self::save`]'s inverse, for `spec`: everything the state holds is
+    /// taken, once it is checked to be this spec's -- a field the spec has
+    /// since gained or lost the option for starts afresh, and one shaped for
+    /// another spec, which would index past this one's slots, is refused.
     pub fn restore(spec: &Spec, saved: &StreamState) -> Result<Self, String> {
         let mut stream = Stream::new(spec)?;
         if stream.models.len() != saved.models.len() {
@@ -2906,17 +2927,16 @@ impl Stream {
         for (_, m) in stream.models.iter_mut() {
             m.set_window_budget(budget);
         }
-        stream.clock = saved.clock.clone();
-        stream.rows_seen = saved.rows_seen;
-        stream.coef_cadence = saved.coef_cadence;
+        let fresh = &stream.persisted;
+        let mut p = saved.persisted.clone();
         // The decay time and the notices, per instance; a file written
         // before either existed leaves the fresh zeros, so for such a file
         // `settled_frac` counts from the load.
-        if saved.decay_time.len() == stream.decay_time.len() {
-            stream.decay_time = saved.decay_time.clone();
+        if p.decay_time.len() != fresh.decay_time.len() {
+            p.decay_time = fresh.decay_time.clone();
         }
-        if saved.notified.len() == stream.notified.len() {
-            stream.notified = saved.notified.clone();
+        if p.notified.len() != fresh.notified.len() {
+            p.notified = fresh.notified.clone();
         }
         // A saved per-instance, per-slot diagnostic is taken when it is
         // shaped as this spec's; one absent, or sized for another spec
@@ -2927,49 +2947,48 @@ impl Stream {
         // loops as a panic (review 2026-09-18, B3).
         fn take_diag<T: Clone>(
             name: &str,
-            saved: &[Vec<T>],
-            live: &mut Vec<Vec<T>>,
+            kept: &mut Vec<Vec<T>>,
+            fresh: &[Vec<T>],
             same: impl Fn(&T, &T) -> bool,
         ) -> Result<(), String> {
-            if saved.len() != live.len() {
+            if kept.len() != fresh.len() {
+                *kept = fresh.to_vec();
                 return Ok(());
             }
-            let fits = saved
+            let fits = kept
                 .iter()
-                .zip(live.iter())
+                .zip(fresh)
                 .all(|(s, l)| s.len() == l.len() && s.iter().zip(l).all(|(a, b)| same(a, b)));
             if !fits {
                 return Err(format!("saved state's {name} do not fit this spec"));
             }
-            *live = saved.to_vec();
             Ok(())
         }
         // The variance and its weight are one estimate: both or neither.
-        let n = stream.resid_var.len();
-        if saved.resid_var.len() == n || saved.resid_w.len() == n {
-            let fits = saved.resid_var.len() == n
-                && saved.resid_w.len() == n
-                && saved
-                    .resid_var
+        let n = fresh.resid_var.len();
+        if p.resid_var.len() == n || p.resid_w.len() == n {
+            let fits = p.resid_var.len() == n
+                && p.resid_w.len() == n
+                && p.resid_var
                     .iter()
-                    .zip(&stream.resid_var)
-                    .chain(saved.resid_w.iter().zip(&stream.resid_w))
+                    .zip(&fresh.resid_var)
+                    .chain(p.resid_w.iter().zip(&fresh.resid_w))
                     .all(|(s, l)| s.len() == l.len());
             if !fits {
                 return Err("saved state's residual variances do not fit this spec".into());
             }
-            stream.resid_var = saved.resid_var.clone();
-            stream.resid_w = saved.resid_w.clone();
+        } else {
+            p.resid_var = fresh.resid_var.clone();
+            p.resid_w = fresh.resid_w.clone();
         }
         // A spread's ring, where the spec still keeps one. A file written
         // before it existed (S1) leaves the fresh one, so for one window the
         // spread counts only the rows after the load.
-        let budget = spec.model.window_budget();
-        for ((live, saved), slots) in stream
-            .resid_win
+        let mut rings = fresh.resid_win.clone();
+        for ((live, saved), slots) in rings
             .iter_mut()
-            .zip(&saved.resid_win)
-            .zip(stream.resid_var.iter().map(Vec::len))
+            .zip(&p.resid_win)
+            .zip(fresh.resid_var.iter().map(Vec::len))
         {
             if let (Some(live), Some(saved)) = (live.as_mut(), saved) {
                 if !saved.fits(slots) {
@@ -2979,32 +2998,28 @@ impl Stream {
                 live.set_budget(budget);
             }
         }
-        take_diag(
-            "drift detectors",
-            &saved.drift,
-            &mut stream.drift,
-            |_, _| true,
-        )?;
+        p.resid_win = rings;
+        take_diag("drift detectors", &mut p.drift, &fresh.drift, |_, _| true)?;
         // A sketch is held to its own shape too, as `ew_cov`'s is: the next
         // residual indexes its buckets by its pointers (review 2026-10-06,
         // CB2's class).
         take_diag(
             "residual quantiles",
-            &saved.resid_q,
-            &mut stream.resid_q,
+            &mut p.resid_q,
+            &fresh.resid_q,
             |s, l| s.levels() == l.levels() && s.has_shape(),
         )?;
         take_diag(
             "autocorrelations",
-            &saved.autocorr,
-            &mut stream.autocorr,
+            &mut p.autocorr,
+            &fresh.autocorr,
             |s, l| s.same_shape(l),
         )?;
-        take_diag("metrics", &saved.metrics, &mut stream.metrics, |_, _| true)?;
+        take_diag("metrics", &mut p.metrics, &fresh.metrics, |_, _| true)?;
         take_diag(
             "conformal intervals",
-            &saved.conformal,
-            &mut stream.conformal,
+            &mut p.conformal,
+            &fresh.conformal,
             |_, _| true,
         )?;
         // A file written by a spec with a `embargo` carries the rows it
@@ -3017,8 +3032,7 @@ impl Stream {
         // place on the elapsed clock, which its release is measured from
         // (task 176): every row a stream holds has one.
         let (nf, nt) = (spec.features.len(), spec.targets.len());
-        if saved
-            .pending
+        if p.pending
             .iter()
             .any(|r| r.xs.len() != nf || r.ys.len() != nt || r.arrived.is_none())
         {
@@ -3031,7 +3045,7 @@ impl Stream {
         // step `ClockState` hands a model is -- is refused here (review
         // 2026-10-06, PB4).
         let cap = spec.clock_cfg()?.gap_cap;
-        for (i, r) in saved.pending.iter().enumerate() {
+        for (i, r) in p.pending.iter().enumerate() {
             let what = if !all_usable(&r.xs) {
                 "a feature that is not a usable number"
             } else if !r.ys.iter().flatten().all(|&y| usable(y)) {
@@ -3045,48 +3059,48 @@ impl Stream {
             };
             return Err(format!("saved state's held row {i} is damaged: {what}"));
         }
-        stream.pending = saved.pending.clone();
-        stream.held_break = saved.held_break;
-        stream.last_learned = saved.last_learned;
-        stream.fed = saved.fed;
-        // The held rows' clock per instance. A schema-14 file has none, and
-        // its loader rebuilds it as 0.10.0 did at every chunk boundary: the
-        // sum over the rows still held.
-        stream.pending_clock = if saved.pending_clock.len() == stream.decay_time.len() {
-            saved.pending_clock.clone()
-        } else {
-            let held: f64 = stream.pending.iter().map(|p| p.d_clock).sum();
-            vec![held; stream.decay_time.len()]
-        };
+        // The held rows' clock per instance, kept where a delay holds rows.
+        // A schema-14 file has none, and its loader rebuilds it as 0.10.0
+        // did at every chunk boundary: the sum over the rows still held.
+        let instances = fresh.decay_time.len();
+        if p.pending_clock.len() != instances {
+            p.pending_clock = if fresh.pending_clock.is_empty() && p.pending.is_empty() {
+                Vec::new()
+            } else {
+                let held: f64 = p.pending.iter().map(|r| r.d_clock).sum();
+                vec![held; instances]
+            };
+        }
         // The score-time predictions ride with the waiting rows (C21). A file
         // written before they were kept has none: each of its waiting rows
         // gets an empty record, at the front where those rows sit, so every
         // queue stays in step with `pending` and those rows fold nothing when
         // they mature -- there being no honest prediction to fold.
-        for (mi, q) in stream.score_pred.iter_mut().enumerate() {
-            let saved_q: &[Vec<f64>] = saved.score_pred.get(mi).map_or(&[], Vec::as_slice);
-            let kept = &saved_q[saved_q.len().saturating_sub(stream.pending.len())..];
-            let missing = stream.pending.len() - kept.len();
-            q.extend(std::iter::repeat_n(Vec::new(), missing));
-            q.extend(kept.iter().cloned());
-        }
-        stream.last_session = saved.last_session.clone();
+        let held = p.pending.len();
+        p.score_pred = (0..instances)
+            .map(|mi| {
+                let saved_q = saved.persisted.score_pred.get(mi);
+                let kept = saved_q.map_or(0, |q| q.len().min(held));
+                let mut q: std::collections::VecDeque<Vec<f64>> =
+                    std::iter::repeat_n(Vec::new(), held - kept).collect();
+                if let Some(saved_q) = saved_q {
+                    q.extend(saved_q.iter().skip(saved_q.len() - kept).cloned());
+                }
+                q
+            })
+            .collect();
         // Checked here, where a file that is not its spec's is refused with
         // the models, rather than at the first read.
-        if let Some(last) = &saved.last_row {
+        if let Some(last) = &p.last_row {
             last.to_chunk(spec, stream.n_models(), stream.n_slots(), 0)?;
-            stream.last_row = Some(last.clone());
         }
         // A file from before the summary existed leaves it `None` for good:
         // the alternative, counting from here on, would report a number
         // that looks like the whole history and is not.
-        stream.summary = match &saved.summary {
-            Some(summary) => {
-                summary.validate(spec, saved.rows_seen)?;
-                Some(summary.clone())
-            }
-            None => None,
-        };
+        if let Some(summary) = &p.summary {
+            summary.validate(spec, p.rows_seen)?;
+        }
+        stream.persisted = p;
         Ok(stream)
     }
 
@@ -3108,7 +3122,7 @@ impl Stream {
         let Some(ClockCol::F64(values)) = clock else {
             return Ok(());
         };
-        let mut prev = match self.clock.last_clock() {
+        let mut prev = match self.persisted.clock.last_clock() {
             Some(ClockValue::F64(p)) => Some(p),
             _ => None,
         };
@@ -3156,7 +3170,7 @@ impl Stream {
         if !can_refuse {
             return Ok(());
         }
-        let mut state = self.clock.clone();
+        let mut state = self.persisted.clock.clone();
         for (ri, &row) in rows.iter().enumerate() {
             let at = base + ri;
             // `accept` only routes the delta into `pending`; whether the row
@@ -3194,21 +3208,21 @@ impl Stream {
         weight: Option<&[f64]>,
         rows: &[usize],
         base: usize,
-        last: bool,
+        coef_at: Option<usize>,
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
-        let mut clock_state = self.clock.clone();
-        let mut rows_seen = self.rows_seen;
-        let mut fed = self.fed;
+        let mut clock_state = self.persisted.clock.clone();
+        let mut rows_seen = self.persisted.rows_seen;
+        let mut fed = self.persisted.fed;
         let coef_plan = CoefPlan::of(spec);
-        let mut coef_cadence = self.coef_cadence;
+        let mut coef_cadence = self.persisted.coef_cadence;
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
             // Null arrives as NaN from extraction, so one `usable` covers
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
-            let accept = all_usable(features.row(i)) && w.map(usable).unwrap_or(true);
+            let accept = accepts(features, weight, i);
             let c = clock.map(|c| c.at(i));
             // A clock below the previous row's, before the schedule decides
             // what to do about it; the summary counts them (task 35).
@@ -3237,12 +3251,14 @@ impl Stream {
             // the row's index in the group, every row counted.
             let shown = c.or(Some(ClockValue::F64(fed as f64)));
             fed = fed.saturating_add(1);
-            // With no cadence the chunk's last row reports the coefficients;
-            // `last` says whether this run ends the chunk
-            // (`ChunkOut::run_rows`). A cadence reads the clock and the rows
-            // alone, so its rows do not move with the chunking (task 178).
+            // With no cadence the group's last accepted row in the chunk
+            // reports the coefficients, `coef_at`, which may sit in an earlier
+            // run than the chunk's last (`ChunkOut::run_rows`); a chunk whose
+            // last row of the group was skipped carried none (review round 4,
+            // PB2). A cadence reads the clock and the rows alone, so its rows
+            // do not move with the chunking (task 178).
             let want_coef = match coef_plan {
-                CoefPlan::ChunkEnds => accept && last && ri + 1 == n_rows,
+                CoefPlan::ChunkEnds => accept && coef_at == Some(i),
                 CoefPlan::Cadence { clock: every, rows } => {
                     coef_cadence.step(every, rows, c, &adv, accept)
                 }
@@ -3306,21 +3322,21 @@ impl Stream {
         let mut live = self.window_shadows();
         // A learned row adds at most one snapshot to a ring, and the rows a
         // `embargo` holds are learned in this chunk at the most.
-        let most = rows.len() + self.pending.len();
+        let most = rows.len() + self.persisted.pending.len();
         if !live.iter().any(|s| s.could_refuse(most)) {
             return None;
         }
-        if !self.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
+        if !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
         let mut plans = self
             .schedule(
-                spec, cfg, features, clock, session, weight, rows, base, false,
+                spec, cfg, features, clock, session, weight, rows, base, None,
             )
             .ok()?
             .plans;
-        let mut pending = self.pending.clone();
-        let mut held_break = self.held_break;
+        let mut pending = self.persisted.pending.clone();
+        let mut held_break = self.persisted.held_break;
         Self::apply_label_delay(
             self.embargo,
             &mut pending,
@@ -3363,7 +3379,7 @@ impl Stream {
     /// Whether a ring of this stream could refuse a chunk of `rows` rows
     /// past its budget: what the window pre-pass replays for.
     pub(crate) fn could_refuse_window(&self, rows: usize) -> bool {
-        let most = rows + self.pending.len();
+        let most = rows + self.persisted.pending.len();
         self.window_shadows().iter().any(|s| s.could_refuse(most))
     }
 
@@ -3372,7 +3388,13 @@ impl Stream {
         self.models
             .iter()
             .filter_map(|(_, m)| m.window_shadow())
-            .chain(self.resid_win.iter().flatten().map(|r| r.shadow(n_slots)))
+            .chain(
+                self.persisted
+                    .resid_win
+                    .iter()
+                    .flatten()
+                    .map(|r| r.shadow(n_slots)),
+            )
             .collect()
     }
 
@@ -3405,8 +3427,9 @@ impl Stream {
     /// groups in.
     ///
     /// The bank feeds a chunk's rows in runs of [`ChunkOut::run_rows`], each
-    /// into its own buffers, and says with `last` which run ends the chunk:
-    /// that run's final row is where the coefficients are reported. Chunk
+    /// into its own buffers, and says with `coef_at` which input row is the
+    /// group's last accepted one in the chunk ([`last_accepted`]): that row
+    /// is where the coefficients are reported without a cadence. Chunk
     /// invariance makes the runs the same computation as one.
     #[allow(clippy::too_many_arguments)]
     pub fn process_chunk(
@@ -3421,7 +3444,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         out: &mut ChunkOut,
-        last: bool,
+        coef_at: Option<usize>,
         formulas: Option<FormulaTargets<'_>>,
     ) -> Result<(), ClockRefusal> {
         let n_rows = rows.len();
@@ -3437,30 +3460,30 @@ impl Stream {
             coef_cadence,
             mut plans,
         } = self.schedule(
-            spec, cfg, features, clock, session, weight, rows, base, last,
+            spec, cfg, features, clock, session, weight, rows, base, coef_at,
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
             out.processed[plan.ri] = true;
         }
 
-        self.clock = clock_state;
-        self.rows_seen = rows_seen;
-        self.fed = fed;
-        self.coef_cadence = coef_cadence;
+        self.persisted.clock = clock_state;
+        self.persisted.rows_seen = rows_seen;
+        self.persisted.fed = fed;
+        self.persisted.coef_cadence = coef_cadence;
 
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
         // nothing; per row in row order, so chunking cannot move a bit; and
         // before `embargo` moves a break's events onto the row that
         // learns them, so a break counts where it arrived.
-        if let Some(summary) = self.summary.as_mut() {
+        if let Some(summary) = self.persisted.summary.as_mut() {
             for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
                 summary.feed_row(
                     features.row(i),
                     targets,
                     weight.map(|w| w[i]),
-                    clock.map(|c| c.at(i).seconds()),
+                    clock.map(|c| c.at(i)),
                     i,
                 );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
@@ -3480,8 +3503,8 @@ impl Stream {
         // on the rows alone, so chunking cannot move a single one.
         let released = Self::apply_label_delay(
             self.embargo,
-            &mut self.pending,
-            &mut self.held_break,
+            &mut self.persisted.pending,
+            &mut self.persisted.held_break,
             &mut plans,
             features,
             targets,
@@ -3495,7 +3518,7 @@ impl Stream {
         // any weight, as a plain target's do at its row: the row was fed,
         // and counted a null, before its window closed (review round 4,
         // PA9).
-        if let (Some(summary), Some(f)) = (self.summary.as_mut(), formulas) {
+        if let (Some(summary), Some(f)) = (self.persisted.summary.as_mut(), formulas) {
             let n_features = spec.features.len();
             for plan in plans.iter().filter(|p| !p.direct()) {
                 let ys = &released[plan.pending].ys;
@@ -3521,14 +3544,14 @@ impl Stream {
         // released just before this one counts, and a reset clears it.
         for plan in &plans {
             if plan.reset {
-                self.last_learned = None;
+                self.persisted.last_learned = None;
             }
             if spec.emit_clocks && plan.emit && plan.accept {
                 out.scored_clock[plan.ri] = plan.clock;
-                out.learned_clock[plan.ri] = self.last_learned;
+                out.learned_clock[plan.ri] = self.persisted.last_learned;
             }
             if plan.accept && plan.learn && plan.w > 0.0 {
-                self.last_learned = if plan.direct() {
+                self.persisted.last_learned = if plan.direct() {
                     plan.clock
                 } else {
                     released[plan.pending].clock
@@ -3538,28 +3561,29 @@ impl Stream {
 
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
-        let coupled = !self.drift.is_empty() && drift_resets;
+        let coupled = !self.persisted.drift.is_empty() && drift_resets;
         // `min_weight` is read by every instance; move it out so the split
         // below can borrow the rest of `self` mutably.
         let min_weight = std::mem::take(&mut self.min_weight);
         let models = self.models.iter_mut().map(|(_, m)| ModelRef::Learn(m));
         let rings = self
+            .persisted
             .resid_win
             .iter_mut()
             .map(|r| r.as_mut().map(SpreadRef::Learn));
         let diag = Diagnostics {
-            resid_var: &mut self.resid_var,
-            resid_w: &mut self.resid_w,
-            drift: &mut self.drift,
-            resid_q: &mut self.resid_q,
-            autocorr: &mut self.autocorr,
-            metrics: &mut self.metrics,
-            conformal: &mut self.conformal,
+            resid_var: &mut self.persisted.resid_var,
+            resid_w: &mut self.persisted.resid_w,
+            drift: &mut self.persisted.drift,
+            resid_q: &mut self.persisted.resid_q,
+            autocorr: &mut self.persisted.autocorr,
+            metrics: &mut self.persisted.metrics,
+            conformal: &mut self.persisted.conformal,
             scratch: &mut self.scratch,
-            score_pred: &mut self.score_pred,
-            decay_time: &mut self.decay_time,
-            pending_clock: &mut self.pending_clock,
-            notified: &mut self.notified,
+            score_pred: &mut self.persisted.score_pred,
+            decay_time: &mut self.persisted.decay_time,
+            pending_clock: &mut self.persisted.pending_clock,
+            notified: &mut self.persisted.notified,
         };
         let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
         if coupled && insts.len() > 1 {
@@ -3868,7 +3892,7 @@ impl Stream {
             let i = base + ri;
             let accept = all_usable(features.row(i));
             // Every row is the first after the last learned one.
-            let adv = self.clock.clone().advance_scoring(
+            let adv = self.persisted.clock.clone().advance_scoring(
                 cfg,
                 clock.map(|c| c.at(i)),
                 session.map(|s| s[i]),
@@ -3888,9 +3912,9 @@ impl Stream {
                 // rows learned, then this call's rows in order, as
                 // `fit_predict` counts them (task 159, B2: every scored row
                 // showed the count of rows fed).
-                clock: clock
-                    .map(|c| c.at(i))
-                    .or(Some(ClockValue::F64((self.fed + ri as u64) as f64))),
+                clock: clock.map(|c| c.at(i)).or(Some(ClockValue::F64(
+                    (self.persisted.fed + ri as u64) as f64,
+                ))),
                 reset: false,
                 blend: false,
                 session_changed: false,
@@ -3913,7 +3937,7 @@ impl Stream {
             // the fit's last learned row on every row (task 152).
             if spec.emit_clocks && accept {
                 out.scored_clock[ri] = plan.clock;
-                out.learned_clock[ri] = self.last_learned;
+                out.learned_clock[ri] = self.persisted.last_learned;
             }
             // A new session's row under `group_close = "session"` is a fresh
             // stream's first row, as `fit_predict` restarts the stream at the
@@ -3996,19 +4020,26 @@ impl Stream {
         // copy is a few hundred bytes per slot, and a quantile sketch's
         // buckets, a few kilobytes.
         let n = self.models.len();
-        let (mut resid_var, mut resid_w) = (self.resid_var.clone(), self.resid_w.clone());
-        let (mut drift, mut resid_q) = (self.drift.clone(), self.resid_q.clone());
-        let (mut autocorr, mut metrics) = (self.autocorr.clone(), self.metrics.clone());
-        let mut conformal = self.conformal.clone();
+        let (mut resid_var, mut resid_w) = (
+            self.persisted.resid_var.clone(),
+            self.persisted.resid_w.clone(),
+        );
+        let (mut drift, mut resid_q) =
+            (self.persisted.drift.clone(), self.persisted.resid_q.clone());
+        let (mut autocorr, mut metrics) = (
+            self.persisted.autocorr.clone(),
+            self.persisted.metrics.clone(),
+        );
+        let mut conformal = self.persisted.conformal.clone();
         let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
         // Scoring buffers nothing and replays nothing, so its queues stay empty.
         let mut score_pred: Vec<std::collections::VecDeque<Vec<f64>>> =
             (0..n).map(|_| std::collections::VecDeque::new()).collect();
         // Scoring learns nothing, so the decay time does not move and no
         // notice a scoring row might raise is kept.
-        let mut decay_time = self.decay_time.clone();
-        let mut pending_clock = self.pending_clock.clone();
-        let mut notified = self.notified.clone();
+        let mut decay_time = self.persisted.decay_time.clone();
+        let mut pending_clock = self.persisted.pending_clock.clone();
+        let mut notified = self.persisted.notified.clone();
         let diag = Diagnostics {
             resid_var: &mut resid_var,
             resid_w: &mut resid_w,
@@ -4025,6 +4056,7 @@ impl Stream {
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
+            .persisted
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
@@ -4201,7 +4233,8 @@ fn build_instances<'a>(
             o_support_coef: o_support_coef.next().expect("one per instance"),
             decay_time: decay_time.next().expect("one per instance"),
             notified: notified.next().expect("one per instance"),
-            pending_clock: pending_clock.next().expect("one per instance"),
+            // None without an embargo, which keeps no held rows' clock.
+            pending_clock: pending_clock.next(),
         })
         .collect()
 }
@@ -4383,8 +4416,9 @@ struct Instance<'a> {
     /// is released. `settled_frac` counts it, so a scored row reads what the
     /// doubled stream (E47's oracle) reads for it, where every held row has
     /// already decayed the model as a weight-0 row (§8). The stream keeps
-    /// it across chunks ([`StreamState::pending_clock`]).
-    pending_clock: &'a mut f64,
+    /// it across chunks ([`Persisted::pending_clock`]), and keeps none
+    /// without an embargo, where no row is ever held.
+    pending_clock: Option<&'a mut f64>,
 }
 
 impl Instance<'_> {
@@ -4494,7 +4528,9 @@ fn run_instance(
             // not (C5); the record of what they were scored with goes too,
             // and so does the clock they covered (E47).
             inst.score_pred.clear();
-            *inst.pending_clock = 0.0;
+            if let Some(c) = inst.pending_clock.as_deref_mut() {
+                *c = 0.0;
+            }
         } else {
             if plan.blend {
                 // A gentler alternative to resetting: revert partway toward
@@ -4549,7 +4585,8 @@ fn run_instance(
         // is at or above it, so a model may put a bound below the limit in
         // place of a ratio that costs it an `O(k³)` read (docs/PLAN.md task
         // 140); `summary` reads the exact one.
-        let settled = settled_frac(inst.decay, *inst.decay_time + *inst.pending_clock);
+        let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
+        let settled = settled_frac(inst.decay, *inst.decay_time + held);
         let max_infl = inst.spec.max_error_inflation_or_default();
         let has_infl = inst
             .model
@@ -4899,10 +4936,12 @@ fn run_instance(
         if learn {
             *inst.decay_time += plan.d_clock;
         }
-        if plan.buffered {
-            *inst.pending_clock += plan.d_clock;
-        } else if !plan.direct() {
-            *inst.pending_clock -= plan.d_clock;
+        if let Some(c) = inst.pending_clock.as_deref_mut() {
+            if plan.buffered {
+                *c += plan.d_clock;
+            } else if !plan.direct() {
+                *c -= plan.d_clock;
+            }
         }
         if plan.want_coef {
             // A model that has not solved yet has nothing to report, and

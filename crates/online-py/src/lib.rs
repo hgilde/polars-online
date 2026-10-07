@@ -164,6 +164,12 @@ struct PyModelBank {
 /// `e` as the `OSError` Python raises for its kind -- pyo3 chooses the
 /// subclass (`FileNotFoundError`, `PermissionError`, ...) -- carrying `msg`,
 /// since an `io::Error`'s own message has no path in it.
+/// `group=` as the bank's readers take it: `None` for every group, else
+/// the keys, `None` among them for the null group (review round 4, N21).
+fn keys(group: Option<Vec<Option<String>>>) -> Option<Vec<GroupKey>> {
+    group.map(|g| g.into_iter().map(GroupKey).collect())
+}
+
 fn os_err(kind: std::io::ErrorKind, msg: String) -> PyErr {
     PyErr::from(std::io::Error::new(kind, msg))
 }
@@ -484,12 +490,12 @@ impl PyModelBank {
     fn gram(
         slf: &Bound<'_, Self>,
         spec: usize,
-        group: Option<&str>,
+        group: Option<Vec<Option<String>>>,
     ) -> PyResult<Vec<GramRowWithLags>> {
         let this = slf.try_borrow().map_err(|_| busy("gram"))?;
         Ok(this
             .inner
-            .gram(spec, group)
+            .gram(spec, keys(group).as_deref())
             .map_err(PyValueError::new_err)?
             .into_iter()
             .map(|g| {
@@ -519,11 +525,15 @@ impl PyModelBank {
     /// The coefficients behind a spec's fit, per (group, instance): the flat
     /// `coef` list the output reports, as of the last row learned from.
     #[pyo3(signature = (spec, group=None))]
-    fn coef(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<Vec<CoefRow>> {
+    fn coef(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<Vec<Option<String>>>,
+    ) -> PyResult<Vec<CoefRow>> {
         let this = slf.try_borrow().map_err(|_| busy("coef"))?;
         Ok(this
             .inner
-            .coef(spec, group)
+            .coef(spec, keys(group).as_deref())
             .map_err(PyValueError::new_err)?
             .into_iter()
             .map(|c| (c.group.0, c.instance, c.n_eff, c.coef))
@@ -537,12 +547,12 @@ impl PyModelBank {
     fn last_row(
         slf: &Bound<'_, Self>,
         spec: usize,
-        group: Option<&str>,
+        group: Option<Vec<Option<String>>>,
     ) -> PyResult<(Vec<Option<String>>, PySeries)> {
         let this = slf.try_borrow().map_err(|_| busy("last_row"))?;
         let (keys, col) = this
             .inner
-            .last_row(spec, group)
+            .last_row(spec, keys(group).as_deref())
             .map_err(PyValueError::new_err)?;
         Ok((
             keys.into_iter().map(|k| k.0).collect(),
@@ -550,13 +560,17 @@ impl PyModelBank {
         ))
     }
 
-    /// What each group of a spec has been fed (`Bank::summary`), one row per
-    /// group.
-    #[pyo3(signature = (spec, group=None))]
-    fn summary(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+    /// What each group of these specs has been fed (`Bank::summary_table`),
+    /// one row per (spec, group).
+    #[pyo3(signature = (specs, group=None))]
+    fn summary(
+        slf: &Bound<'_, Self>,
+        specs: Vec<usize>,
+        group: Option<Vec<Option<String>>>,
+    ) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("summary"))?;
         this.inner
-            .summary(spec, group)
+            .summary_table(&specs, keys(group).as_deref())
             .map(PyDataFrame)
             .map_err(PyValueError::new_err)
     }
@@ -564,10 +578,14 @@ impl PyModelBank {
     /// Per-column statistics of what each group of a spec has been fed
     /// (`Bank::describe`), one row per (group, column).
     #[pyo3(signature = (spec, group=None))]
-    fn describe(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+    fn describe(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<Vec<Option<String>>>,
+    ) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("describe"))?;
         this.inner
-            .describe(spec, group)
+            .describe(spec, keys(group).as_deref())
             .map(PyDataFrame)
             .map_err(PyValueError::new_err)
     }
@@ -591,10 +609,14 @@ impl PyModelBank {
     /// The pairs of a `marginal` spec (`Bank::marginal`), one row per
     /// (group, instance, feature, target).
     #[pyo3(signature = (spec, group=None))]
-    fn marginal(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+    fn marginal(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<Vec<Option<String>>>,
+    ) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("marginal"))?;
         this.inner
-            .marginal(spec, group)
+            .marginal(spec, keys(group).as_deref())
             .map(PyDataFrame)
             .map_err(PyValueError::new_err)
     }
@@ -610,16 +632,20 @@ impl PyModelBank {
         serde_json::to_string(this.inner.specs()).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Per spec: `(group, rows_processed, last_clock)` for every group held.
-    #[allow(clippy::type_complexity)]
-    fn groups(slf: &Bound<'_, Self>) -> PyResult<Vec<Vec<(Option<String>, u64, Option<f64>)>>> {
+    /// The groups these specs hold state for (`Bank::groups_table`), one row
+    /// per (spec, group), the clock in the clock column's own dtype.
+    fn groups(slf: &Bound<'_, Self>, specs: Vec<usize>) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("groups"))?;
-        Ok(this
-            .inner
-            .groups()
-            .into_iter()
-            .map(|v| v.into_iter().map(|(k, n, c)| (k.0, n, c)).collect())
-            .collect())
+        this.inner
+            .groups_table(&specs)
+            .map(PyDataFrame)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// The number of groups each spec holds state for.
+    fn group_counts(slf: &Bound<'_, Self>) -> PyResult<Vec<usize>> {
+        let this = slf.try_borrow().map_err(|_| busy("group_counts"))?;
+        Ok(this.inner.group_counts())
     }
 
     /// Per spec: `(group, numeric clock, temporal clock in ns)` for every
@@ -659,9 +685,9 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)
     }
 
-    fn rows_seen(slf: &Bound<'_, Self>) -> PyResult<u64> {
-        let this = slf.try_borrow().map_err(|_| busy("rows_seen"))?;
-        Ok(this.inner.rows_seen())
+    fn rows_fed(slf: &Bound<'_, Self>) -> PyResult<u64> {
+        let this = slf.try_borrow().map_err(|_| busy("rows_fed"))?;
+        Ok(this.inner.rows_fed())
     }
 }
 

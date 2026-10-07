@@ -4,8 +4,13 @@
 //! that it survives the file, ignores `predict`, and steps back over the
 //! skipped rows a chunk may end in.
 
-use online_polars::{Bank, Spec, Stream};
+use online_polars::{Bank, GroupKey, Spec, Stream};
 use polars::prelude::*;
+
+/// A group key, as a reader is narrowed to it.
+fn key(g: &str) -> GroupKey {
+    GroupKey(Some(g.into()))
+}
 
 /// Every diagnostic there is, on a two-half-life grid over two groups, so
 /// every buffer of the row is exercised: `sigma`, `zscore`, the conformal
@@ -230,10 +235,10 @@ fn last_row_is_the_output_s_last_learned_row_per_group() {
     }
 
     // Narrowed to a group, a group never seen, a spec out of range.
-    let (keys, col) = bank.last_row(0, Some("g1")).unwrap();
+    let (keys, col) = bank.last_row(0, Some(&[key("g1")])).unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(col.len(), 1);
-    let (keys, col) = bank.last_row(0, Some("zzz")).unwrap();
+    let (keys, col) = bank.last_row(0, Some(&[key("zzz")])).unwrap();
     assert!(keys.is_empty());
     assert_eq!(col.len(), 0);
     assert_eq!(col.name(), "m");
@@ -345,13 +350,13 @@ fn a_saved_row_of_the_wrong_shape_is_refused() {
     // The same state with a row that is not this spec's shape.
     let saved = {
         let mut s = stream.save();
-        s.last_row = None;
+        s.persisted.last_row = None;
         s
     };
     stream = Stream::restore(&spec, &saved).unwrap();
     assert!(stream.last_row().is_none());
     let mut bad = saved.clone();
-    bad.last_row = Some(online_polars::LastRow {
+    bad.persisted.last_row = Some(online_polars::LastRow {
         pred: vec![0.0; 3],
         ..Default::default()
     });

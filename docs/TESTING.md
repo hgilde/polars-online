@@ -470,7 +470,7 @@ bugs in the new flat slot-major buffers. It lives in `tests/test_hardening.py`:
 | parameter edges: half-life 1e-3 and inf, k=64, quantile levels 0.001/0.999 | half-life 1e-3 and inf give their exact limits |
 | **weight-scale invariance at 1e±6** | all weights ×c changes nothing but `weight_sum`: the test that the accumulators are in the mean form. Task 147's `tests/test_weight_scale.py` runs it over every kind, less the exceptions each model's docs name |
 | twelve targets with per-target warmup | each lands on the exact ceil(threshold) row |
-| the `coef` cadence: unset, `coef_every` 0 and 997 clock units, `max_rows_between_coefs` 997 | across chunk boundaries: each chunk's last row unset, the same rows under a cadence (task 178) |
+| the `coef` cadence: unset, `coef_every` 0 and 997 clock units, `max_rows_between_coefs` 997 | across chunk boundaries: each group's last accepted row in each chunk unset (review round 4, PB2), the same rows under a cadence (task 178) |
 | P6's reader thread, on a corrupt file and on a mid-stream bank error | a clean exception, with no deadlock on either side of the channel |
 | the P5 spec cache | two specs on one thread stay distinct |
 

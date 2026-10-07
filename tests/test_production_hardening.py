@@ -1134,7 +1134,7 @@ class TestReadmeExamples:
         So the block runs here as written, on the example data's
         `ticks.parquet`, and every prediction, residual and weight it writes
         must be that spec's in Python, bit for bit. The coefficients are left
-        out: they come on each group's last row of each chunk, and the two
+        out: they come on each group's last accepted row of each chunk, and the two
         runs chunk differently (PLAN §3)."""
         monkeypatch.chdir(tmp_path)
         shown = [code for _, _, code in _doc_blocks("README.md", "toml")]

@@ -826,13 +826,14 @@ class TestNanosecondsAreKept:
         with pytest.raises(ValueError, match="backwards"):
             bank.fit_predict(late)
         assert bank.save_bytes() == untouched
-        # Accepted, the clock range and the last clock come back as seconds
-        # since 1970.
+        # Accepted, the clock range and the last clock come back in the clock
+        # column's own dtype, exactly (review round 4, N18: seconds since
+        # 1970 before).
         bank.fit_predict(df.slice(0, 50))
-        first = df["t_s"][0]
-        assert bank.summary()["clock_min"][0] == pytest.approx(first, abs=1e-6)
-        assert bank.summary()["clock_max"][0] == pytest.approx(df["t_s"][49], abs=1e-6)
-        assert bank.groups()["last_clock"][0] == pytest.approx(df["t_s"][49], abs=1e-6)
+        assert bank.summary()["clock_min"].dtype == df["t"].dtype
+        assert bank.summary()["clock_min"][0] == df["t"][0]
+        assert bank.summary()["clock_max"][0] == df["t"][49]
+        assert bank.groups()["last_clock"][0] == df["t"][49]
 
     def test_scoring_first_then_learning_changes_nothing(self):
         df = _temporal(_frame())
@@ -852,7 +853,8 @@ class TestNanosecondsAreKept:
     def test_the_previous_instant_survives_a_save_and_load(self, tmp_path):
         """The previous row's instant is in the state, so a loaded bank takes
         the next row's gap from it exactly: the numbers go on as the
-        unbroken run's, and the clock range reports seconds since 1970."""
+        unbroken run's, and the clock range comes back in the clock column's
+        own dtype, exactly (review round 4, N18)."""
         df = _temporal(_frame())
         spec = _ridge("t", half_life="10m", gap_cap="30m")
         whole = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -867,8 +869,8 @@ class TestNanosecondsAreKept:
                 .slice(100)
                 .equals(tail.struct.field(field), null_equal=True)
             )
-        assert loaded.summary()["clock_min"][0] == pytest.approx(df["t_s"][0], abs=1e-6)
-        assert loaded.summary()["clock_max"][0] == pytest.approx(df["t_s"][-1], abs=1e-6)
+        assert loaded.summary()["clock_min"][0] == df["t"][0]
+        assert loaded.summary()["clock_max"][0] == df["t"][-1]
 
     @pytest.mark.parametrize("dtype", [pl.Datetime("ms"), pl.Date], ids=["Datetime(ms)", "Date"])
     def test_an_instant_past_2262_is_refused_by_row(self, dtype):

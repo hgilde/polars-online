@@ -105,7 +105,8 @@ the cross term are `lagcorr_xy` and `lagcorr_yx` as they are there.
 ### Outputs
 
 Nothing per row. In `ModelBank.marginal()`, per pair, beside today's
-columns:
+columns (the t-statistic among them is `t_stat`, named `t` until review
+round 4, CD13):
 
 | column | meaning |
 |---|---|
@@ -114,7 +115,7 @@ columns:
 | `lagcorr_xy` | `C(x_t, y_{t−ℓ}) / (sd_x · sd_y)` — the feature *now* against the target ℓ rows *ago*. For two series that describe the same moment, how far the feature follows the target. Against a forward-looking target it also holds what the two share: the target ℓ rows ago is built partly from the feature's newest ℓ rows (E75) |
 | `lagcorr_yx` | `C(y_t, x_{t−ℓ}) / (sd_x · sd_y)` — the target now against the feature ℓ rows ago: the lead. Both orientations, because a lagged matrix is not symmetric |
 | `n_serial` | `n_kish / [1 + 2 Σ_ℓ ρ_x(ℓ) ρ_y(ℓ)]` per `serial_rule`; null without one, and null where `"geometric"` cannot fit |
-| `t_serial` | `corr · sqrt((n_serial − 2) / (1 − corr²))`, `±inf` where `t` is |
+| `t_serial` | `corr · sqrt((n_serial − 2) / (1 − corr²))`, `±inf` where `t_stat` is |
 | `phi_x`, `phi_y` | the fitted decays under `"geometric"`; null otherwise |
 
 Lists rather than `_l<ℓ>` columns, because `marginal()` is a frame with one
@@ -128,7 +129,7 @@ So the eight numbers a pair and `ew_cov(lags=, stats=["lagcorr"])` report
 for the same two columns agree to the bit, and a test holds them to it
 through weights, a session change and a capped gap.
 
-`t` stays as it is. The lead/lag pair (`lagcorr_yx` vs `lagcorr_xy`) is a
+`t_stat` stays as it is. The lead/lag pair (`lagcorr_yx` vs `lagcorr_xy`) is a
 by-product worth having, and it is read with the target's construction in
 hand. For two series that describe the same moment, `lagcorr_xy[0]` above
 `corr` means the feature follows the target. Against a forward-looking
@@ -212,8 +213,8 @@ the Bartlett inflation, `sd(t_serial)` near one, the fitted decays within
 `state_round_trips_and_continues_identically`, `validation_rejects_each_bad_field`;
 `crates/online-core/tests/state_encoding.rs`.
 
-`tests/test_marginal_lags.py`: `t` claims significance that `t_serial`
-does not (on that stream `t = 2.39`, `t_serial = 1.03`); the geometric fit
+`tests/test_marginal_lags.py`: `t_stat` claims significance that `t_serial`
+does not (on that stream `t_stat = 2.39`, `t_serial = 1.03`); the geometric fit
 recovers the decays; the autocorrelations decay like the process; the
 cross-correlations say which series leads; chunk invariance, plain and
 through every event; the lagged pair is `ew_cov(lags=)` to the bit; the
@@ -329,7 +330,7 @@ Nothing per row. In `marginal()` and the closed-group row, per pair:
 |---|---|
 | `split_gain` | the fraction of the target's variance removed by the best single cut, `max_c (w_L·w_R/W²)·(ȳ_L − ȳ_R)²/var_y` over the `bins − 1` cuts. This is the best stump's `R²`, directly comparable with `corr²` for the same pair, so `split_gain − corr²` is the nonlinear surplus |
 | `split_at` | the edge that achieves it, in the feature's units |
-| `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise; `+inf` at a gain of one, as `t` is at `corr = ±1`. **Optimistic**, because the cut was chosen by maximising over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
+| `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t_stat` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise; `+inf` at a gain of one, as `t_stat` is at `corr = ±1`. **Optimistic**, because the cut was chosen by maximising over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
 | `bin_edges` | the fixed edges (list) |
 | `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram: the response curve `E[y \| x ∈ bin]`, its weight and its dispersion. A bin no row has landed in is *present* with `bin_n = 0` and null moments — a `"fixed"` bin over a gap in the feature's support is empty, not absent, and the lists stay aligned with `bin_edges` |
 
@@ -462,7 +463,7 @@ there before any row and for a group never seen.
 
 ## Order
 
-E66 first: it changes what `t` means for every wide, smooth input and
+E66 first: it changes what `t_stat` means for every wide, smooth input and
 reuses code that exists. E67 second: new state, a new read path, and the
 warm-up rule to get right. Both are additive to `marginal`'s contract;
 neither touches another model, and neither bumps the state schema. The

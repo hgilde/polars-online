@@ -285,7 +285,7 @@ def signature() -> dict[str, float | str | None]:
         if spec["model"]["type"] == "marginal":
             for pair in bank.marginal(name).iter_rows(named=True):
                 where = f"[{pair['group']}/{pair['feature']}]@end"
-                for field in ("weight_sum", "n_kish", "corr", "beta", "t"):
+                for field in ("weight_sum", "n_kish", "corr", "beta", "t_stat"):
                     sig[f"{name}.{field}{where}"] = pair[field]
         # `corrchange` reports only where a span closes, and the picks
         # above are ordinary rows, so the statistics are pinned in the
@@ -299,7 +299,7 @@ def signature() -> dict[str, float | str | None]:
     for row in bank.closed_groups(drop=False).iter_rows(named=True):
         where = f"[{row['spec']}/{row['group']}/{row['session']}]"
         sig[f"{row['spec']}.rcov_n{where}"] = row["rcov_n"]
-        sig[f"{row['spec']}.bandwidth{where}"] = row["bandwidth_used"]
+        sig[f"{row['spec']}.bandwidth{where}"] = row["rcov_bandwidth_used"]
         for i, v in enumerate(row["rcov"] or []):
             sig[f"{row['spec']}.rcov{i}{where}"] = v
     return sig
@@ -757,22 +757,22 @@ GOLDEN: dict[str, float | str | None] = {
     "marginal.n_kish[a/x0]@end": 22.588085651395215,
     "marginal.corr[a/x0]@end": 0.38573773334037753,
     "marginal.beta[a/x0]@end": 1.2316780579628355,
-    "marginal.t[a/x0]@end": 1.89706698898827,
+    "marginal.t_stat[a/x0]@end": 1.89706698898827,
     "marginal.weight_sum[a/x1]@end": 14.643505957885951,
     "marginal.n_kish[a/x1]@end": 22.588085651395215,
     "marginal.corr[a/x1]@end": -0.8869994444789747,
     "marginal.beta[a/x1]@end": -0.7081876904377251,
-    "marginal.t[a/x1]@end": -8.715757847257636,
+    "marginal.t_stat[a/x1]@end": -8.715757847257636,
     "marginal.weight_sum[b/x0]@end": 14.25784941881905,
     "marginal.n_kish[b/x0]@end": 23.20892217040503,
     "marginal.corr[b/x0]@end": 0.41913584410223514,
     "marginal.beta[b/x0]@end": 0.9210410451370624,
-    "marginal.t[b/x0]@end": 2.1260076771757284,
+    "marginal.t_stat[b/x0]@end": 2.1260076771757284,
     "marginal.weight_sum[b/x1]@end": 14.25784941881905,
     "marginal.n_kish[b/x1]@end": 23.20892217040503,
     "marginal.corr[b/x1]@end": -0.7634819469727878,
     "marginal.beta[b/x1]@end": -0.6068290466325642,
-    "marginal.t[b/x1]@end": -5.444279522504034,
+    "marginal.t_stat[b/x1]@end": -5.444279522504034,
     "corrchange.stat@25": None,
     "corrchange.stat@60": None,
     "corrchange.stat@119": None,

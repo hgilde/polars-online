@@ -278,7 +278,14 @@ def describe_api(cli: Path | None = None) -> str:
     # so a fresh bank already has every column. Each kind as the registry
     # builds it, closing on a key, plus the three blocks only an option
     # turns on: `ew_cov`'s PCA, and `marginal`'s lags and bins.
-    w("[closed_groups columns]  # in order: a column renamed, moved or added is a diff here")
+    # Each column as `name: dtype`, as `[frame columns]` gives the other
+    # frames (task 194: the counts went to `UInt64`, and a dtype is as much
+    # API as a name). A fresh bank has seen no clock, so its clock range is
+    # the `Float64` of nulls a bank without a clock column gives.
+    w(
+        "[closed_groups columns]  # column: dtype, in order: a column renamed, retyped, moved"
+        " or added is a diff here"
+    )
     from test_model_registry import MINIMAL  # it imports this module
 
     variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL)] + [
@@ -294,7 +301,8 @@ def describe_api(cli: Path | None = None) -> str:
         s = getattr(po.spec, label.split(" ")[0])(
             "m", **{k: v for k, v in kw.items() if v is not None}
         )
-        frames.append((label, po.ModelBank([s]).closed_groups().columns))
+        schema = po.ModelBank([s]).closed_groups().schema
+        frames.append((label, [f"{c}: {dtype_text(t)}" for c, t in schema.items()]))
     shared = [c for c in frames[0][1] if all(c in cols for _, cols in frames)]
     w("  shared:")
     for c in shared:

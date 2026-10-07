@@ -6,7 +6,13 @@
 //! ignore `predict`, and that a file whose summary is not its spec's is
 //! refused rather than reported.
 
-use online_polars::{Bank, ModelKind, Spec, Stream};
+use online_polars::online_core::ClockValue;
+use online_polars::{Bank, GroupKey, ModelKind, Spec, Stream};
+
+/// A group key, as a reader is narrowed to it.
+fn key(g: &str) -> GroupKey {
+    GroupKey(Some(g.into()))
+}
 use polars::prelude::*;
 
 /// The input bound the models apply (`online_core::INPUT_BOUND`): a
@@ -465,7 +471,11 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 .iter()
                 .find(|(k, _, _)| k.as_str() == Some(g))
                 .unwrap();
-            assert_eq!(f("last_clock"), *last_clock, "{what}: last_clock");
+            assert_eq!(
+                f("last_clock"),
+                last_clock.map(ClockValue::seconds),
+                "{what}: last_clock"
+            );
             assert_eq!(u("rows_processed"), Some(*rows_seen), "{what}: rows_seen");
 
             // The columns, in spec order: features, targets, weight -- with
@@ -525,7 +535,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
         }
     }
     // Every kind of missing value in `x0` was seen as a null.
-    let d = bank.describe(0, Some("g0")).unwrap();
+    let d = bank.describe(0, Some(&[key("g0")])).unwrap();
     let x0 = d
         .filter(&d.column("column").unwrap().str().unwrap().equal("x0"))
         .unwrap();
@@ -666,10 +676,10 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
         );
     }
     // Narrowed to a group; a group never seen; a spec out of range.
-    assert_eq!(bank.summary(0, Some("g1")).unwrap().height(), 1);
-    assert_eq!(bank.describe(0, Some("g1")).unwrap().height(), 4);
-    assert_eq!(bank.summary(0, Some("zzz")).unwrap().height(), 0);
-    assert_eq!(bank.describe(0, Some("zzz")).unwrap().height(), 0);
+    assert_eq!(bank.summary(0, Some(&[key("g1")])).unwrap().height(), 1);
+    assert_eq!(bank.describe(0, Some(&[key("g1")])).unwrap().height(), 4);
+    assert_eq!(bank.summary(0, Some(&[key("zzz")])).unwrap().height(), 0);
+    assert_eq!(bank.describe(0, Some(&[key("zzz")])).unwrap().height(), 0);
     assert!(
         bank.summary(6, None)
             .unwrap_err()
@@ -711,7 +721,7 @@ fn a_group_of_skipped_rows_is_fed_and_not_processed() {
             assert_eq!(f64s(&r, "weight_sum")[0], Some(0.0));
             assert!(f64s(&r, "clock_min")[0].is_some(), "the clock still moved");
         }
-        let d = bank.describe(si, Some("g0")).unwrap();
+        let d = bank.describe(si, Some(&[key("g0")])).unwrap();
         let x0 = d
             .filter(&d.column("column").unwrap().str().unwrap().equal("x0"))
             .unwrap();
@@ -733,9 +743,9 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
         let mut st = Stream::new(&specs[0]).unwrap().save();
         // Start from a real summary: a freshly built stream's would pass.
         let live = Bank::load_bytes(&bytes, Some(&specs)).unwrap();
-        let live = live.summary(0, Some("g0")).unwrap();
-        st.rows_seen = u64s(&live, "rows_processed")[0].unwrap();
-        let mut summary = st.summary.clone().unwrap();
+        let live = live.summary(0, Some(&[key("g0")])).unwrap();
+        st.persisted.rows_seen = u64s(&live, "rows_processed")[0].unwrap();
+        let mut summary = st.persisted.summary.clone().unwrap();
         summary.rows_fed = u64s(&live, "rows_fed")[0].unwrap();
         // Make the columns consistent with `rows_fed` first, and give it a
         // clock range to halve.
@@ -743,18 +753,19 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
             c.nulls = summary.rows_fed;
         }
         summary.rows_learned = 0;
-        (summary.clock_min, summary.clock_max) = (Some(0.0), Some(1.0));
+        (summary.clock_min, summary.clock_max) =
+            (Some(ClockValue::F64(0.0)), Some(ClockValue::F64(1.0)));
         assert!(
             Stream::restore(&specs[0], &{
                 let mut ok = st.clone();
-                ok.summary = Some(summary.clone());
+                ok.persisted.summary = Some(summary.clone());
                 ok
             })
             .is_ok(),
             "the starting point passes"
         );
-        mutate(&mut summary, &mut st.rows_seen);
-        st.summary = Some(summary);
+        mutate(&mut summary, &mut st.persisted.rows_seen);
+        st.persisted.summary = Some(summary);
         let err = Stream::restore(&specs[0], &st).err().unwrap_or_default();
         assert!(
             err.contains("saved data summary of spec \"m\" is not its spec's"),
@@ -778,7 +789,9 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
     refused(&|s, _| s.weight_sum = -1.0, "a negative weight sum");
     refused(&|s, _| s.clock_min = None, "half a clock range");
     refused(
-        &|s, _| (s.clock_min, s.clock_max) = (Some(2.0), Some(1.0)),
+        &|s, _| {
+            (s.clock_min, s.clock_max) = (Some(ClockValue::F64(2.0)), Some(ClockValue::F64(1.0)))
+        },
         "a backwards clock range",
     );
     refused(&|s, _| s.resets = s.rows_fed + 1, "more resets than rows");
@@ -795,10 +808,10 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
     // frozen 0.1.x and schema-2 fixtures feed such a bank on and check that
     // `None` it stays: `tests/state_v1.rs`, `tests/state_schema2.rs`).
     let mut st = Stream::new(&specs[0]).unwrap().save();
-    st.summary = None;
+    st.persisted.summary = None;
     let stream = Stream::restore(&specs[0], &st).unwrap();
     assert!(stream.summary().is_none());
-    assert!(stream.save().summary.is_none());
+    assert!(stream.save().persisted.summary.is_none());
 }
 
 /// Every prefix of a state file, and every one of a spread of bit flips,

@@ -312,7 +312,7 @@ Polars' own pool and how the two interact.
 It never changes the numbers: one chunk or a thousand gives the same
 output, and it only trades memory for overhead. Only which rows carry
 `coef`, and `support_coef` beside it, can differ, and only by default. The
-bank then writes them on each group's last row in every chunk, so smaller
+bank then writes them on each group's last accepted row in every chunk, so smaller
 chunks report them more often. Under `coef_every` or
 `max_rows_between_coefs` they do not move.
 

@@ -26,7 +26,7 @@ PAIR_FIELDS = [
     "cov",
     "corr",
     "beta",
-    "t",
+    "t_stat",
 ]
 COLUMNS = ["group", "instance", "feature", "target", *PAIR_FIELDS]
 
@@ -147,7 +147,7 @@ def oracle(
                 cov=cov,
                 corr=corr,
                 beta=beta,
-                t=tstat,
+                t_stat=tstat,
             )
     return out, n_eff_col
 
@@ -227,10 +227,10 @@ class TestArithmetic:
         got = bank.marginal("m")
         y0 = got.filter(pl.col("target") == "y0")
         y1_ = got.filter(pl.col("target") == "y1")
-        assert y0["corr"].null_count() == 0 and y0["t"].null_count() == 0
+        assert y0["corr"].null_count() == 0 and y0["t_stat"].null_count() == 0
         assert y1_["weight_sum"].to_list() == [3.0] * 3 and y1_["n_kish"].to_list() == [3.0] * 3
         assert y1_["mean_y"].to_list() == [2.0] * 3
-        assert y1_.select("corr", "beta", "t").null_count().sum_horizontal().item() == 9
+        assert y1_.select("corr", "beta", "t_stat").null_count().sum_horizontal().item() == 9
         # A per-target list applies per target.
         bank = po.ModelBank([spec(half_life=float("inf"), min_weight=[5.0, 3.0])])
         bank.fit_predict(df)
@@ -244,7 +244,7 @@ class TestArithmetic:
         got = bank.marginal("m").filter(pl.col("feature") == "x2")
         assert got["var_x"].to_list() == [0.0, 0.0]
         assert got["cov"].to_list() == [0.0, 0.0]
-        assert got.select("corr", "beta", "t").null_count().sum_horizontal().item() == 6
+        assert got.select("corr", "beta", "t_stat").null_count().sum_horizontal().item() == 6
         # Two rows: n_kish = 2, so the t-statistic is undefined, and the
         # correlation is +-1 by construction -- which is why min_weight
         # defaults to 3.
@@ -252,7 +252,7 @@ class TestArithmetic:
         bank.fit_predict(df.head(2))
         two = bank.marginal("m").filter(pl.col("feature") == "x0")
         assert [abs(c) for c in two["corr"].to_list()] == pytest.approx([1.0, 1.0])
-        assert two["t"].null_count() == 2
+        assert two["t_stat"].null_count() == 2
         for rows, nulls in ((2, 2), (3, 0)):
             bank = po.ModelBank([spec(half_life=float("inf"))])
             bank.fit_predict(df.head(rows))
@@ -371,7 +371,10 @@ class TestPlumbing:
         got = bank.marginal("m")
         assert got["weight_sum"].to_list() == [0.0] * 6
         assert got.select(pl.col(PAIR_FIELDS).is_nan().any()).sum_horizontal().item() == 0
-        assert got.select("n_kish", "corr", "beta", "t").null_count().sum_horizontal().item() == 24
+        assert (
+            got.select("n_kish", "corr", "beta", "t_stat").null_count().sum_horizontal().item()
+            == 24
+        )
         # A zero-weight first row, then real rows: the zero row left no trace.
         w = [0.0] + [1.0] * 29
         with_zero = po.ModelBank([spec(weight="w")])

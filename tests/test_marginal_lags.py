@@ -93,7 +93,7 @@ def test_t_claims_significance_that_t_serial_does_not():
     """Two independent AR(1) series: the true correlation is zero, so a
     statistic that respects serial dependence should not be large."""
     row = pairs(stream(seed=3), serial_rule="geometric")
-    assert abs(row["t"]) > 2.0, "the uncorrected statistic should look significant"
+    assert abs(row["t_stat"]) > 2.0, "the uncorrected statistic should look significant"
     assert abs(row["t_serial"]) < 2.0
     assert row["n_serial"] < row["n_kish"] / 3, "the correction should bite hard at phi=0.9/0.8"
 
@@ -299,7 +299,16 @@ def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
     for key in ("lagcorr_xy", "lagcorr_yx"):
         assert len(every[key]) == len(LAGS), key
         assert some[key] == [every[key][i] for i in at], key
-    for key in ("lagcorr_xx", "lagcorr_yy", "n_serial", "t_serial", "phi_x", "phi_y", "corr", "t"):
+    for key in (
+        "lagcorr_xx",
+        "lagcorr_yy",
+        "n_serial",
+        "t_serial",
+        "phi_x",
+        "phi_y",
+        "corr",
+        "t_stat",
+    ):
         assert some[key] == every[key], key
     assert every["n_serial"] is not None, "the correction was computed, not null on both sides"
 

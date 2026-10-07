@@ -11,11 +11,12 @@
 //! the same bits (hard rule 3). Nothing here is read by a model: the models'
 //! own view of the data is exponentially weighted and lives in their state.
 
+use online_core::ClockValue;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::spec::Spec;
-use crate::stream::usable;
+use crate::stream::{ClockDtype, usable};
 
 /// Count, nulls and moments of one input column over the rows fed.
 ///
@@ -187,10 +188,13 @@ pub struct DataSummary {
     /// Sum of the processed rows' weights (1 each without a weight column):
     /// the undecayed total the models were handed.
     pub weight_sum: f64,
-    /// The clock range over the rows fed; `None` on a row-count clock or
+    /// The clock range over the rows fed, as the stream holds its clock: a
+    /// temporal one in integer nanoseconds, so the frames give it back
+    /// exactly in the column's own dtype, where a double of seconds was 64 ns
+    /// off at 2024 (review round 4, N18). `None` on a row-count clock or
     /// before the first row.
-    pub clock_min: Option<f64>,
-    pub clock_max: Option<f64>,
+    pub clock_min: Option<ClockValue>,
+    pub clock_max: Option<ClockValue>,
     /// Rows whose session id differed from the previous row's.
     pub session_changes: u64,
     /// Rows whose clock was below the previous row's within a session --
@@ -244,7 +248,7 @@ impl DataSummary {
         features: &[f64],
         targets: &[Vec<f64>],
         weight: Option<f64>,
-        clock: Option<f64>,
+        clock: Option<ClockValue>,
         i: usize,
     ) {
         self.rows_fed = self.rows_fed.saturating_add(1);
@@ -273,8 +277,14 @@ impl DataSummary {
             c.push(w, n_row, inv_row);
         }
         if let Some(c) = clock {
-            self.clock_min = Some(self.clock_min.map_or(c, |m| m.min(c)));
-            self.clock_max = Some(self.clock_max.map_or(c, |m| m.max(c)));
+            self.clock_min = Some(
+                self.clock_min
+                    .map_or(c, |m| if c.is_before(m) { c } else { m }),
+            );
+            self.clock_max = Some(
+                self.clock_max
+                    .map_or(c, |m| if m.is_before(c) { c } else { m }),
+            );
         }
     }
 
@@ -352,9 +362,13 @@ impl DataSummary {
         if !(self.weight_sum.is_finite() && self.weight_sum >= 0.0) {
             return fail("weight sum is not a finite non-negative number");
         }
+        let finite = |c: ClockValue| match c {
+            ClockValue::F64(v) => v.is_finite(),
+            ClockValue::Ns(_) => true,
+        };
         match (self.clock_min, self.clock_max) {
             (None, None) => {}
-            (Some(lo), Some(hi)) if lo.is_finite() && hi.is_finite() && lo <= hi => {}
+            (Some(lo), Some(hi)) if finite(lo) && finite(hi) && !hi.is_before(lo) => {}
             _ => return fail("clock range is not a range"),
         }
         if self.session_changes > self.rows_fed
@@ -379,7 +393,7 @@ impl DataSummary {
 pub struct SummaryRow<'a> {
     pub group: Option<&'a str>,
     pub rows_processed: u64,
-    pub last_clock: Option<f64>,
+    pub last_clock: Option<ClockValue>,
     pub summary: Option<&'a DataSummary>,
     /// Where the stream stands on the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
@@ -392,8 +406,15 @@ pub struct SummaryRow<'a> {
 /// `weight_sum`, `clock_min`, `clock_max`, `last_clock`, `session_changes`,
 /// `clock_backwards`, `resets`, and the readiness statistics
 /// (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`, `error_inflation`,
-/// `min_support_coef`, `min_support_coef_feature` and `n_coef`.
-pub fn summary_frame(rows: &[SummaryRow<'_>]) -> PolarsResult<DataFrame> {
+/// `min_support_coef`, `min_support_coef_feature` and `n_coef`. The three
+/// clock columns are in `clock`'s dtype ([`ClockDtype::column`]).
+pub fn summary_frame(
+    rows: &[SummaryRow<'_>],
+    clock: Option<&ClockDtype>,
+) -> PolarsResult<DataFrame> {
+    let clocks = |name: &str, f: &dyn Fn(&SummaryRow<'_>) -> Option<ClockValue>| {
+        ClockDtype::column(clock, name, &rows.iter().map(f).collect::<Vec<_>>())
+    };
     let s = |f: fn(&DataSummary) -> u64| -> Vec<Option<u64>> {
         rows.iter().map(|r| r.summary.map(f)).collect()
     };
@@ -421,24 +442,9 @@ pub fn summary_frame(rows: &[SummaryRow<'_>]) -> PolarsResult<DataFrame> {
                 .map(|r| r.summary.map(|d| d.weight_sum))
                 .collect::<Vec<Option<f64>>>(),
         ),
-        Column::new(
-            "clock_min".into(),
-            rows.iter()
-                .map(|r| r.summary.and_then(|d| d.clock_min))
-                .collect::<Vec<Option<f64>>>(),
-        ),
-        Column::new(
-            "clock_max".into(),
-            rows.iter()
-                .map(|r| r.summary.and_then(|d| d.clock_max))
-                .collect::<Vec<Option<f64>>>(),
-        ),
-        Column::new(
-            "last_clock".into(),
-            rows.iter()
-                .map(|r| r.last_clock)
-                .collect::<Vec<Option<f64>>>(),
-        ),
+        clocks("clock_min", &|r| r.summary.and_then(|d| d.clock_min))?,
+        clocks("clock_max", &|r| r.summary.and_then(|d| d.clock_max))?,
+        clocks("last_clock", &|r| r.last_clock)?,
         Column::new("session_changes".into(), s(|d| d.session_changes)),
         Column::new("clock_backwards".into(), s(|d| d.clock_backwards)),
         Column::new("resets".into(), s(|d| d.resets)),

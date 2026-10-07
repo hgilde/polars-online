@@ -475,7 +475,18 @@ pub use window::{
 ///   not run (CE9), which a 37 build cannot read. The bank refuses a file
 ///   older than 38 by number, and pre-1.0 no loader is written. Every other
 ///   model's state loads as it did at 37.
-pub const SCHEMA_VERSION: u32 = 38;
+/// - 39 (2026-10-07, task 194): no model state changes; a bank file does.
+///   A stream keeps what a save writes beside its models as one value, so
+///   the file nests it under `persisted` (docs/SIMPLIFICATION.md S6); a
+///   data summary and a closed row keep their clock range as the clock
+///   values themselves, a temporal one in integer nanoseconds, where they
+///   kept a double of seconds (review round 4, N18); a marginal's closed
+///   pair names its statistic `t_stat`; and the bank keeps the form of each
+///   group and session column, `key_dtypes`, where it kept a `"monotone"`
+///   spec's `key_integer` alone (N22). The bank refuses a file older than 39
+///   by number, and pre-1.0 no loader is written. A model's own state loads
+///   as it did at 38.
+pub const SCHEMA_VERSION: u32 = 39;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last

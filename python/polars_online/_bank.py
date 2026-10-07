@@ -6,7 +6,7 @@ import copy
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, overload
+from typing import Any, NoReturn, overload
 
 import polars as pl
 
@@ -23,6 +23,32 @@ _INTERCEPT = "intercept"
 _NO_TARGET_GRAM = ("ew_cov",)
 
 __all__ = ["ModelBank"]
+
+
+def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | None:
+    """``group=`` on the readers, as the native side takes it: one key, or
+    several, each as :meth:`ModelBank.groups` reports it -- a string, or
+    ``None`` for the null group, which a lone ``None``, every group, cannot
+    name (review round 4, N21)."""
+    if group is None:
+        return None
+    if isinstance(group, str):
+        return [group]
+    if not isinstance(group, Iterable):
+        msg = (
+            "group: a key is a str or None, as groups() reports it, or a list of them; "
+            f"got {type(group).__name__} {group!r}"
+        )
+        raise TypeError(msg)
+    keys = list(group)
+    for k in keys:
+        if k is not None and not isinstance(k, str):
+            msg = (
+                "group: a key is a str or None, as groups() reports it; "
+                f"got {type(k).__name__} {k!r}"
+            )
+            raise TypeError(msg)
+    return keys
 
 
 class ModelBank:
@@ -94,16 +120,21 @@ class ModelBank:
 
     def __repr__(self) -> str:
         names = ", ".join(repr(s["name"]) for s in self._specs)
-        n_groups = max((len(g) for g in self._native.groups()), default=0)
-        return f"ModelBank([{names}], groups={n_groups}, rows_seen={self.rows_seen()})"
+        n_groups = max(self._native.group_counts(), default=0)
+        return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed()})"
 
-    def rows_seen(self) -> int:
+    def rows_fed(self) -> int:
         """Rows fed so far, over every chunk and group.
 
         Skipped rows and dropped groups are counted too, so this is not the sum of
-        :meth:`groups`.
+        :meth:`summary`'s ``rows_fed``, the same count per group.
         """
-        return self._native.rows_seen()
+        return self._native.rows_fed()
+
+    def rows_seen(self) -> NoReturn:
+        """Renamed :meth:`rows_fed`, the frames' word for the same count."""
+        msg = "ModelBank.rows_seen was renamed rows_fed"
+        raise AttributeError(msg)
 
     def groups(self, spec: str | int | None = None) -> pl.DataFrame:
         """The groups the bank holds state for: one row per (spec, group).
@@ -115,7 +146,14 @@ class ModelBank:
         ``rows_processed``
             The group's rows that the null policy did not skip.
         ``last_clock``
-            Its last clock value; null before the first row, or on a row-count clock.
+            Its last clock value, in the clock column's own dtype, exactly: a
+            ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, and a
+            ``Float64`` for a number clock, which the bank reads as a double (the
+            dtype ``emit_clocks`` gives ``scored_clock``). Null before the first row,
+            or on a row-count clock, where the column is a ``Float64`` of nulls.
+
+        Groups are sorted by key: integer keys as numbers, text keys as text, the
+        null group first.
 
         State lives until :meth:`drop_groups` removes it, so this is how a
         long-running bank finds the groups that have gone quiet:
@@ -128,34 +166,20 @@ class ModelBank:
             )
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
-            now = df["ts"].dt.epoch("s").max()     # last_clock is seconds since 1970
-            stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
+            now = df["ts"].max()                   # last_clock is a Datetime, as ts is
+            month = pl.lit(now) - pl.duration(days=30)
+            stale = bank.groups().filter(pl.col("last_clock") < month)
             bank.drop_groups(stale["group"])     # the groups quiet for 30 days
 
         ``spec``, a name or a position, narrows the table to one spec: ``KeyError``
         for a name the bank has not got (the message lists the names), ``IndexError``
-        for a position it has not got.
+        for a position it has not got. One column holds one dtype, so a bank whose
+        specs read clocks of different dtypes is read one spec at a time:
+        ``ValueError`` names them otherwise.
         """
-        names = self._native.spec_names()
-        per_spec = self._native.groups()
-        if spec is not None:
-            i = self._spec_index(spec)
-            names, per_spec = [names[i]], [per_spec[i]]
-        rows = [
-            (name, key, n, clock)
-            for name, groups in zip(names, per_spec, strict=True)
-            for key, n, clock in groups
-        ]
-        return pl.DataFrame(
-            rows,
-            schema={
-                "spec": pl.String,
-                "group": pl.String,
-                "rows_processed": pl.UInt64,
-                "last_clock": pl.Float64,
-            },
-            orient="row",
-        )
+        n = len(self._native.spec_names())
+        picked = range(n) if spec is None else [self._spec_index(spec)]
+        return self._native.groups(list(picked))
 
     def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
         """Forget the state of these groups, in every spec or in one, and return how many
@@ -164,7 +188,7 @@ class ModelBank:
         Keys are as :meth:`groups` reports them; a key the bank does not hold is not
         an error, it drops nothing. A dropped group starts cold if it appears again,
         exactly as a never-seen one would. Nothing else in the bank changes, and
-        :meth:`rows_seen` still counts the rows it was fed. ``spec`` is as for
+        :meth:`rows_fed` still counts the rows it was fed. ``spec`` is as for
         :meth:`groups` (``KeyError`` / ``IndexError`` for one the bank has not got).
         """
         index = None if spec is None else self._spec_index(spec)
@@ -366,7 +390,11 @@ class ModelBank:
         A row that ``session_gap = "reset"`` would restart on is scored the same way.
         A row before the group's last learned clock is scored against the state as it
         stands, whatever ``restart_after_step_back`` says: scoring learns nothing,
-        so it neither refuses the row nor starts over.
+        so it neither refuses the row nor starts over. Under an ``embargo``,
+        ``predict`` releases nothing: a held row whose delay has passed by the scored
+        row's clock is still held, and learned by the next ``fit_predict``, so every
+        row is scored against the model the last ``fit_predict`` left, its
+        ``weight_sum`` and ``learned_clock`` included.
 
         .. code-block:: python
 
@@ -589,11 +617,11 @@ class ModelBank:
         )
 
         drained: list[pl.DataFrame] = []
-        rows_seen = 0
+        fed = 0
         try:
             for chunk in source:
-                out = self._fit_predict_from(chunk, rows_seen, learn_only, what)
-                rows_seen += chunk.height
+                out = self._fit_predict_from(chunk, fed, learn_only, what)
+                fed += chunk.height
                 if path is not None:
                     rows = self.closed_groups()
                     if rows.height:
@@ -605,7 +633,7 @@ class ModelBank:
         # After the loop and outside the `finally`, so an error on the way
         # through is the thing the caller hears about, not this.
         ours = started is not None and _sources_ran_since(started)
-        if guard is not None and rows_seen == 0 and not ours:
+        if guard is not None and fed == 0 and not ours:
             warnings.warn(
                 ConsumedSourceWarning(
                     f"{guard}: the plan yielded no rows, and its source is a Python scan -- "
@@ -697,7 +725,9 @@ class ModelBank:
         for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
             pass
 
-    def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+    def coef(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
         """The coefficients behind every fit: one row per (spec, group, instance,
         position).
 
@@ -744,20 +774,22 @@ class ModelBank:
 
         ``spec`` and ``group`` are as for :meth:`gram`: ``KeyError`` / ``IndexError``
         for a spec the bank has not got, and a group it has never seen gives an empty
-        frame with the same columns. ``ValueError`` for a named ``ew_cov`` spec, which
+        frame with the same columns. Groups come in :meth:`groups`' order.
+        ``ValueError`` for a named ``ew_cov`` spec, which
         writes statistics, not coefficients, and for a named ``seqtest`` spec, which
         writes evidence.
         """
         names = self._native.spec_names()
+        keys = _group_keys(group)
         if spec is not None:
             i = self._spec_index(spec)
-            return self._coef_one(i, group, names[i])
+            return self._coef_one(i, keys, names[i])
         frames = [
             f
             for i in range(len(names))
             # A spec that emits statistics or evidence rather than coefficients
             # is skipped when sweeping, and still refused when named.
-            if (f := self._coef_try(i, group, names[i])) is not None
+            if (f := self._coef_try(i, keys, names[i])) is not None
         ]
         if not frames:
             # Every `coef()` frame's columns, `coef_index`'s among them, so
@@ -775,14 +807,14 @@ class ModelBank:
             )
         return pl.concat(frames, how="diagonal_relaxed")
 
-    def _coef_try(self, idx: int, group: str | None, name: str) -> pl.DataFrame | None:
+    def _coef_try(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame | None:
         """[`_coef_one`] or ``None`` for a spec that has no coefficients."""
         try:
             return self._coef_one(idx, group, name)
         except ValueError:
             return None
 
-    def _coef_one(self, idx: int, group: str | None, name: str) -> pl.DataFrame:
+    def _coef_one(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame:
         layout = coef_index(self._specs[idx])
         n = layout.height
         groups: list[str | None] = []
@@ -811,14 +843,16 @@ class ModelBank:
             pl.Series("spec", [name] * len(instances), pl.String),
         ).select("spec", "group", "instance", "weight_sum", *layout.columns, "coef")
 
-    def last_row(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+    def last_row(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
         """The output struct as it stood on the last row each stream learned from: one
         row per (spec, group).
 
         It is the row :meth:`fit_predict` reported for that row, field for
         field, unnested after ``spec`` and ``group``: ``pred``, ``resid``,
         ``sigma``, the metrics, the residual quantiles, ``weight_sum``, and
-        ``coef`` when the row carried it. A chunk's last row does by default;
+        ``coef`` when the row carried it. A group's last accepted row in a chunk does by default;
         under ``coef_every`` or ``max_rows_between_coefs`` only a row on the
         cadence does. :meth:`coef` has the coefficients whichever row was last. It travels
         with the state, so a bank loaded from a file says how each model was
@@ -835,8 +869,10 @@ class ModelBank:
 
         ``spec``, a name or a position, narrows the table to one spec
         (``KeyError`` / ``IndexError`` for one the bank has not got, as
-        :meth:`groups`). ``group`` narrows it to one group, and a group the
-        bank has never seen gives an empty frame. Specs with different fields
+        :meth:`groups`). ``group`` narrows it to one group's key, or to a list
+        of keys with ``None`` among them for the null group (``group=None`` is
+        every group), and a key the bank has never seen gives nothing. Groups
+        come in :meth:`groups`' order. Specs with different fields
         are stacked ``diagonal_relaxed``, so a field one spec has not got is
         null on its rows. A group with no learned row yet (every row skipped
         so far) is a row of nulls.
@@ -845,9 +881,10 @@ class ModelBank:
         """
         names = self._native.spec_names()
         picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        wanted = _group_keys(group)
         frames: list[pl.DataFrame] = []
         for i in picked:
-            keys, struct = self._native.last_row(i, group)
+            keys, struct = self._native.last_row(i, wanted)
             frames.append(
                 pl.DataFrame(
                     [
@@ -859,7 +896,9 @@ class ModelBank:
             )
         return pl.concat(frames, how="diagonal_relaxed")
 
-    def summary(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+    def summary(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
         """What each stream has been fed: one row per (spec, group).
 
         Counts and ranges over every row routed to the group since its state
@@ -887,8 +926,9 @@ class ModelBank:
             The sum of the processed rows' weights (1 per row without a
             weight column).
         ``clock_min``, ``clock_max``, ``last_clock``
-            The clock range fed and the last value; null on a row-count
-            clock.
+            The clock range fed and the last value, in the clock column's
+            own dtype, exactly, as :meth:`groups` gives ``last_clock``; null
+            on a row-count clock.
         ``session_changes``
             Rows whose session differed from the previous row's.
         ``clock_backwards``
@@ -907,20 +947,21 @@ class ModelBank:
             and the coefficients per target, likewise.
 
         ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one
-        the bank has not got), ``group`` to one group; a group never seen
-        gives an empty frame. :meth:`predict` moves none of it, and feeding
-        the same rows in one chunk or a thousand gives the same numbers to
-        the bit.
+        the bank has not got), ``group`` to one group's key or a list of keys,
+        ``None`` among them for the null group (``group=None`` is every
+        group); a key never seen gives nothing. Groups come in
+        :meth:`groups`' order, and a bank whose specs read clocks of
+        different dtypes is read one spec at a time, as :meth:`groups` is.
+        :meth:`predict` moves none of it, and feeding the same rows in one
+        chunk or a thousand gives the same numbers to the bit.
         """
-        names = self._native.spec_names()
-        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
-        frames = [
-            self._native.summary(i, group).select(pl.lit(names[i]).alias("spec"), pl.all())
-            for i in picked
-        ]
-        return pl.concat(frames)
+        n = len(self._native.spec_names())
+        picked = range(n) if spec is None else [self._spec_index(spec)]
+        return self._native.summary(list(picked), _group_keys(group))
 
-    def describe(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+    def describe(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
         """Per-column statistics of what each stream has been fed: one row per (spec,
         group, input column), in spec order -- features, then targets, then the weight
         column.
@@ -945,13 +986,16 @@ class ModelBank:
         """
         names = self._native.spec_names()
         picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        keys = _group_keys(group)
         frames = [
-            self._native.describe(i, group).select(pl.lit(names[i]).alias("spec"), pl.all())
+            self._native.describe(i, keys).select(pl.lit(names[i]).alias("spec"), pl.all())
             for i in picked
         ]
         return pl.concat(frames)
 
-    def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
+    def gram(
+        self, spec: str | int, group: str | Iterable[str | None] | None = None
+    ) -> list[dict[str, Any]]:
         """The running sums behind a spec's fit, per group and instance, as numpy arrays.
 
         One dict per (group, decay instance), and per Gram where a spec reads more
@@ -1092,7 +1136,9 @@ class ModelBank:
 
         ``spec`` is a spec name or position (``KeyError`` / ``IndexError`` for one the
         bank has not got, as for :meth:`groups`); ``group`` narrows the list to one
-        group. A group the bank has never seen gives an empty list, as does a model
+        group's key, or to a list of keys with ``None`` among them for the null group
+        (``group=None`` is every group), in :meth:`groups`' order. A group the bank
+        has never seen gives an empty list, as does a model
         that keeps no co-moments; neither is an error. Requires numpy, which is not a
         dependency of this package (polars does not require it either): ``pip install
         polars-online[numpy]`` adds it, and without it the call raises
@@ -1117,7 +1163,7 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out = []
-        for row, lag, (tidx, by_target, centred) in self._native.gram(idx, group):
+        for row, lag, (tidx, by_target, centred) in self._native.gram(idx, _group_keys(group)):
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
             lags = None if lag is None else lag[0]
@@ -1157,7 +1203,9 @@ class ModelBank:
             )
         return out
 
-    def marginal(self, spec: str | int, group: str | None = None) -> pl.DataFrame:
+    def marginal(
+        self, spec: str | int, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
         """The pairs a ``marginal`` spec keeps: one row per (group, instance, feature,
         target).
 
@@ -1186,11 +1234,11 @@ class ModelBank:
         ``mean_x``, ``var_x``, ``mean_y``, ``var_y``, ``cov``
             The pair's EW moments, population form, over the decayed weights, so
             ``var`` is never negative.
-        ``corr``, ``beta``, ``t``
+        ``corr``, ``beta``, ``t_stat``
             ``cov / sqrt(var_x var_y)``; ``cov / var_x``, the slope of the target on
             that feature alone; and ``corr * sqrt((n_kish - 2) / (1 - corr^2))``, the
-            t-statistic of that correlation at the Kish sample size. Read ``t`` as a
-            scale for comparing pairs, not a p-value: the rows are neither independent
+            t-statistic of that correlation at the Kish sample size. Read ``t_stat`` as
+            a scale for comparing pairs, not a p-value: the rows are neither independent
             nor Gaussian. Null until ``weight_sum`` reaches the target's ``min_weight``,
             and null where undefined (a constant column, ``n_kish <= 2``).
 
@@ -1234,7 +1282,7 @@ class ModelBank:
             the feature, and where that cut falls. Directly comparable with ``corr **
             2``, so ``split_gain - corr ** 2`` is the nonlinear surplus.
         ``split_gain_t``
-            The ``t`` a ``corr`` would need to match that gain, against ``n_serial``
+            The ``t_stat`` a ``corr`` would need to match that gain, against ``n_serial``
             where there is one. Optimistic, because the cut was chosen by maximising
             over the candidates: a ranking, not a p-value.
 
@@ -1245,14 +1293,16 @@ class ModelBank:
             )
             bank = po.ModelBank([pairs])
             bank.fit_predict(df)
-            table = bank.marginal("pairs").sort("t", descending=True)   # the pairs, strongest first
+            table = bank.marginal("pairs").sort("t_stat", descending=True)   # strongest first
 
-        A group the bank has never seen gives an empty frame; a spec that is not a
+        ``group`` narrows the frame to one group's key, or to a list of keys with
+        ``None`` among them for the null group (``group=None`` is every group). A
+        group the bank has never seen gives an empty frame; a spec that is not a
         ``marginal`` is refused (``ValueError``); an ``ew_cov``'s moments are read
         with :meth:`gram`. ``spec`` is a name or position (``KeyError`` /
         ``IndexError`` for one the bank has not got).
         """
-        return self._native.marginal(self._spec_index(spec), group)
+        return self._native.marginal(self._spec_index(spec), _group_keys(group))
 
     def closed_groups(self, spec: str | int | None = None, *, drop: bool = True) -> pl.DataFrame:
         """The groups that have finished and not yet been read, oldest first, as one long
@@ -1280,7 +1330,8 @@ class ModelBank:
         ``weight_sum``, ``n_kish``
             As :meth:`gram` reports them, at the moment of the close.
         ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
-            The span's own :meth:`summary` counts and clock range.
+            The span's own :meth:`summary` counts, ``UInt64`` as there, and clock
+            range, in the clock column's own dtype as there.
 
         Then a block per kind, present when any spec of the bank closes
         groups and is of that kind, null on the rows of other kinds:
@@ -1317,8 +1368,8 @@ class ModelBank:
                eigensolver's arbitrary choice
            * - an ``rcov``
              - ``rcov``, ``rcorr``, ``rcov_n``, ``rcov_kind``,
-               ``bandwidth_used``, ``omega2``, ``iv_sparse``, ``iq`` and
-               ``psd_repaired``
+               ``rcov_bandwidth_used``, ``rcov_omega2``, ``rcov_iv_sparse``,
+               ``rcov_iq`` and ``rcov_psd_repaired``
              - :func:`polars_online.spec.rcov` explains each
            * - a ``marginal``
              - ``pair_*``
@@ -1352,7 +1403,10 @@ class ModelBank:
         undrained is saved with the state, so a driver that saves between
         chunks does not lose rows silently. ``spec`` narrows the frame to one
         spec's rows (a name or a position; ``KeyError`` / ``IndexError`` for
-        one the bank has not got). :meth:`predict` never closes anything.
+        one the bank has not got). A bank whose closing specs read clocks of
+        different dtypes is drained one spec at a time, as :meth:`groups` is
+        read: ``ValueError`` names them otherwise, and drains nothing.
+        :meth:`predict` never closes anything.
         """
         idx = None if spec is None else self._spec_index(spec)
         return self._native.closed_groups(idx, drop)

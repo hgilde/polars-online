@@ -5020,7 +5020,7 @@ def rcov(
         xi^(4/5) n^(3/5))`` with ``c* = 3.5134``, which needs ``block_rows``: the
         ring has to be sized before the first row and ``n`` is known only at the
         close. ``block_rows`` is a sizing hint, not a limit: a longer block runs,
-        clipped, and reports ``bandwidth_used``. ``max_bandwidth`` fixes the ring
+        clipped, and reports ``rcov_bandwidth_used``. ``max_bandwidth`` fixes the ring
         depth itself (default ``ceil(c* block_rows^(3/5))`` under the automatic
         bandwidth, the depth at which the noise equals the block's integrated
         variance); it must not cap the ring below a fixed ``bandwidth``. The
@@ -5037,7 +5037,7 @@ def rcov(
         False`` is the balanced, bias-corrected form (optimal rate, not guaranteed
         PSD); ``psd = True`` (the default) is the longer window ``k_n =
         ceil(theta * block_rows^0.6)`` without the bias term, and clips any
-        negative eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes
+        negative eigenvalue, reporting ``rcov_psd_repaired``. ``preavg_rows`` fixes
         ``k_n`` instead of deriving it from ``block_rows``: at least 2, and at
         least 3 under ``psd = False``, where a window of 2 leaves nothing once
         the bias is subtracted.
@@ -5082,18 +5082,18 @@ def rcov(
     ``rcov``, ``rcorr``
         The covariance and correlation estimates, as ``vech`` of the upper
         triangle.
-    ``rcov_n``, ``rcov_kind``, ``bandwidth_used``
+    ``rcov_n``, ``rcov_kind``, ``rcov_bandwidth_used``
         The effective returns, the estimator, and the ``H`` used. The
         effective returns are the returns under ``"plain"``; the jittered
         returns under ``"kernel"``, ``n - 2 * jitter + 2`` of a block of
         ``n`` with no break; and the pre-averaged terms under ``"preavg"``,
         ``n - k_n + 2`` per stretch.
-    ``omega2``, ``iv_sparse``
+    ``rcov_omega2``, ``rcov_iv_sparse``
         The noise variance and the sparse integrated variance behind an automatic
         bandwidth.
-    ``iq``
+    ``rcov_iq``
         A realised-quarticity proxy, and labelled one.
-    ``psd_repaired``
+    ``rcov_psd_repaired``
         Whether a negative eigenvalue was clipped. Null where the repair
         could not run, an entry that is not finite or an eigendecomposition
         that failed; the matrix is then reported as it stands.
@@ -5113,7 +5113,7 @@ def rcov(
         )
         bank = po.ModelBank([r])
         bank.fit_predict(by_block.select("x0", "x1", "block"))
-        blocks = bank.closed_groups()    # rcov, rcorr, rcov_n, bandwidth_used, omega2, iv_sparse
+        blocks = bank.closed_groups()    # rcov, rcorr, rcov_n, rcov_bandwidth_used, ...
 
 
     .. rubric:: Raises

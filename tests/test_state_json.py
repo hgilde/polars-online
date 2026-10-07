@@ -192,7 +192,7 @@ def test_the_export_is_the_state_and_not_a_summary():
 
     assert doc["schema_version"] == po.schema_version()
     assert doc["specs"] == json.loads(json.dumps(bank.specs))
-    assert doc["rows_fed"] == bank.rows_seen()
+    assert doc["rows_fed"] == bank.rows_fed()
     assert len(doc["states"]) == len(specs), "one block per spec"
     for block, spec in zip(doc["states"], specs, strict=True):
         held = bank.groups(spec["name"]).height

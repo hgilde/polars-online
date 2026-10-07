@@ -818,7 +818,7 @@ that section ([the mechanism](#s--the-mechanism-one-api-snapshot-test--done)):
 | `ModelBank`'s methods, `__init__` included | `[ModelBank]` |
 | the `.online` namespace | `[frame namespaces]` |
 | the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
-| the closed-groups frame's column names | `[closed_groups columns]`, in order |
+| the closed-groups frame's columns | `[closed_groups columns]`, each column with its dtype, in order |
 | the helper modules' functions, each with its signature | `[helper modules]` |
 | output field names | `[output field grammar]` |
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
@@ -1043,7 +1043,7 @@ co-moments on `ew_cov`. In API terms:
 | **every new output field name** | pinned by `tests/api_surface.txt`, which then gained a `[helper modules]` section, and by `tests/test_golden_pipeline.py`, which fixes the numbers of a twenty-five-spec bank at three rows |
 | **three new defaults, measured rather than chosen** | `bocpd`'s `robust_beta = 0.1` (above ~0.2 nothing is ever detected), `bocpd`'s `emission = "diag"`, and `rcov`'s automatic bandwidth. The measurements are in `docs/PLAN.md` task 55 and `docs/ENHANCEMENTS.md` E61 for `bocpd`, and in E57 for `rcov`. Changing one of them is a breaking change, by [the policy](#the-policy) |
 | **no new Polars interface** | two of the three streaming paths of the time still carried no guarantee (CLAUDE.md rule 13): `ModelBank` and the IO plugin. The batch added no polars API dependency beyond `LazyFrame.collect_batches`, which is already the floor |
-| **the closed-group frame's *column* names** | pinned since 2026-09-24 (`spec`, `group`, `session`, `rcov`, `bandwidth_used`, …). They are as much API as an output field is, and until then only `test_closed_groups.py` read them by name. `tests/api_surface.txt` now records them in order, as `[closed_groups columns]`: the shared columns, and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag and bin blocks switched on |
+| **the closed-group frame's *column* names** | pinned since 2026-09-24 (`spec`, `group`, `session`, `rcov`, `rcov_bandwidth_used`, …). They are as much API as an output field is, and until then only `test_closed_groups.py` read them by name. `tests/api_surface.txt` now records them in order, as `[closed_groups columns]`: the shared columns, and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag and bin blocks switched on |
 
 ## CI cost while the repo was private
 

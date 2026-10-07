@@ -12,6 +12,7 @@
 //! refused chunk still leaves the bank untouched. tests/bank.rs pins the same
 //! invariants on small frames, where every step runs on one thread.
 
+use online_polars::online_core::ClockValue;
 use online_polars::{Bank, GroupKey, PAR_MIN_ROWS, Spec};
 use polars::prelude::*;
 
@@ -226,9 +227,9 @@ fn is_key(df: &DataFrame, key: Option<&str>) -> BooleanChunked {
 /// in the order [`Bank::groups`] would list them: a group's `g` and `gi`
 /// values pair up row by row, the null key stays null.
 fn as_int_keys(
-    groups: &[(GroupKey, u64, Option<f64>)],
+    groups: &[(GroupKey, u64, Option<ClockValue>)],
     df: &DataFrame,
-) -> Vec<(GroupKey, u64, Option<f64>)> {
+) -> Vec<(GroupKey, u64, Option<ClockValue>)> {
     let g = df.column("g").unwrap().str().unwrap();
     let gi = df.column("gi").unwrap().i32().unwrap();
     let mut int_of = std::collections::HashMap::new();
@@ -246,7 +247,9 @@ fn as_int_keys(
         .iter()
         .map(|(k, c, t)| (GroupKey(k.as_str().map(|s| int_of[s].clone())), *c, *t))
         .collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
+    // An integer column's keys list as numbers, the null key first
+    // (review round 4, N21).
+    v.sort_by_key(|(k, ..)| k.as_str().map(|s| s.parse::<i64>().unwrap()));
     v
 }
 
