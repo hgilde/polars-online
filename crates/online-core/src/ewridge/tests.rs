@@ -4179,7 +4179,9 @@ fn a_target_absent_from_the_window_has_no_fit() {
 }
 
 /// A target first seen after the last solve has weight but no statistic
-/// yet: its inflation is infinite, never `sqrt(1 + NaN)`.
+/// yet: its inflation is infinite, never `sqrt(1 + NaN)`. Its own
+/// `min_weight` is above its one row, so its own first solve (task 195,
+/// S9b) has not come either.
 #[test]
 fn a_target_seen_since_the_last_solve_reads_infinite_inflation() {
     let mut c = cfg(2, 2);
@@ -4190,6 +4192,7 @@ fn a_target_seen_since_the_last_solve_reads_infinite_inflation() {
     c.solve_every = 1e9;
     c.max_rows_between_solves = 5;
     let mut m = EwRidge::new(c).unwrap();
+    m.set_target_min_weight(vec![0.0, 3.0]).unwrap();
     let mut s = 89u64;
     for i in 0..7 {
         let x = [lcg(&mut s), lcg(&mut s)];
@@ -4207,9 +4210,11 @@ fn a_target_seen_since_the_last_solve_reads_infinite_inflation() {
 /// until a solve has seen them. The solve read its cross-moments of zero
 /// as data and left it zeros -- a fit of nothing -- so it was predicted as
 /// exactly 0.0 until the next scheduled solve, 56 rows of 80 under
-/// `solve_every = 1000` (review round 4, CC1). It waits for the cadence's
-/// next solve (no first solve of its own, S9b): the row cap, 25 rows after
-/// the first solve at row 1. Both target layouts, standardized and not.
+/// `solve_every = 1000` (review round 4, CC1). And it has a first solve of
+/// its own, as a fresh model has: on the row its own weight first reaches
+/// its `min_weight`, the fifth of its rows, row 14, where it waited for the
+/// cadence's next solve, the row cap 25 rows after the first solve at row 4
+/// (docs/PLAN.md task 195, S9b). Both target layouts, standardized and not.
 #[test]
 fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
     for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
@@ -4217,7 +4222,7 @@ fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
             let case = format!("{gaps:?}, standardize {standardize}");
             let mut c = cfg(1, 2);
             c.ridge = vec![1e-6, 0.5];
-            c.min_weight = 2.0;
+            c.min_weight = 5.0;
             c.solve_every = f64::INFINITY;
             c.max_rows_between_solves = 25;
             c.target_gaps = gaps;
@@ -4235,20 +4240,33 @@ fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
                 );
                 // Target 1's two slots, one per ridge.
                 let late = &p.pred[2..];
-                if i <= 26 {
+                if i <= 14 {
                     assert!(
                         late.iter().all(|v| v.is_nan()),
                         "{case}, row {i}: predicted {late:?} from a fit nobody solved"
                     );
-                } else {
+                } else if gaps == TargetGaps::OwnRows {
                     assert!(
                         (late[0] - (1.0 - 2.0 * x[0])).abs() < 0.2,
                         "{case}, row {i}: {late:?}"
                     );
+                } else {
+                    // Pairwise reads the Gram over every row beside the
+                    // target's own cross-moments: a fit, not its five
+                    // rows' least squares.
+                    assert!(late.iter().all(|v| v.is_finite()), "{case}, row {i}");
                 }
-                // After the row: the solve at the end of row 26 has seen it.
-                if (2..=25).contains(&i) {
-                    let beta = m.coefficients().expect("solved at row 1");
+                // After the row: the target's own first solve at the end of
+                // row 14 has seen it.
+                if i == 14 {
+                    let beta = m.coefficients().expect("solved at row 4");
+                    assert!(
+                        beta[2..].iter().flatten().all(|v| v.is_finite()),
+                        "{case}, row {i}: its own first solve: {beta:?}"
+                    );
+                }
+                if (4..=13).contains(&i) {
+                    let beta = m.coefficients().expect("solved at row 4");
                     assert!(
                         beta[2..].iter().flatten().all(|v| v.is_nan()),
                         "{case}, row {i}: {beta:?}"

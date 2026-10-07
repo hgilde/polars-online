@@ -607,6 +607,8 @@ _ORDER_FREE_ANY = frozenset(
         "fit_intercept",
         "standardize",
         "ridge",
+        # `rls`'s prior strength, its `ridge` until task 195 (N11).
+        "delta",
         "coef_prior",
         "solve_every",
         "max_rows_between_solves",

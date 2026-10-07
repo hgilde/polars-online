@@ -130,6 +130,28 @@ mod kinds_tests {
             super::name_renamed("unknown field `rigde`"),
             "unknown field `rigde`"
         );
+        // `rls`'s `ridge` is `delta` (task 195, N11): named where the model
+        // takes `delta`, and not where another model refuses a `ridge` it
+        // never had.
+        let rls = serde_json::from_str::<super::Spec>(
+            r#"{"name": "m", "model": {"type": "rls", "ridge": 1.0}, "targets": ["y"],
+                "features": ["x"], "half_life": 10}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        let rls = super::name_renamed(&rls);
+        assert!(rls.contains("ridge was renamed delta"), "{rls}");
+        let sgd = serde_json::from_str::<super::Spec>(
+            r#"{"name": "m", "model": {"type": "sgd", "ridge": 1.0}, "targets": ["y"],
+                "features": ["x"], "half_life": 10}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        let sgd = super::name_renamed(&sgd);
+        assert!(
+            sgd.contains("unknown field `ridge`") && !sgd.contains("renamed"),
+            "{sgd}"
+        );
     }
 }
 
@@ -734,7 +756,8 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.5, filled
+        /// Cut point in units of the EW residual std. Default 1.345, the
+        /// constant of 95% efficiency at the normal (Huber 1981), filled
         /// where the model is built ([`crate::build_models`]); `"inf"` cuts
         /// nothing, which is least squares.
         #[serde(default)]
@@ -862,13 +885,15 @@ pub enum ModelKind {
         /// "poisson" or "logistic".
         #[serde(default)]
         loss: Option<String>,
-        /// Huber cut, in target units; `"inf"` clips nothing, which is the
+        /// Huber cut, in units of the target's EW residual std, as
+        /// `huber`'s; default 1.345. `"inf"` clips nothing, which is the
         /// squared loss.
         #[serde(default)]
         huber_delta: Option<Num>,
         #[serde(default)]
         quantile: Option<f64>,
-        /// Width of the insensitive tube.
+        /// Half-width of the insensitive tube, in units of the target's EW
+        /// residual std; default 0.1.
         #[serde(default)]
         eps: Option<f64>,
         #[serde(default)]
@@ -888,7 +913,9 @@ pub enum ModelKind {
         clip_gradient: Option<Num>,
         /// Standardize features against their running moments before the
         /// gradient step, unscaling the coefficients on the way out.
-        #[serde(default)]
+        /// Default true, as `kalman`'s: a gradient step's one learning rate
+        /// has to suit every feature (docs/PLAN.md task 195, U2).
+        #[serde(default = "default_true")]
         standardize: bool,
         /// Lower bound per slope (ENHANCEMENTS E40): one number for every
         /// feature or a list with one entry per feature; "-inf" for none.
@@ -903,6 +930,11 @@ pub enum ModelKind {
         /// 0` and `coef_sum = 1` the slopes are weights on the simplex.
         #[serde(default)]
         coef_sum: Option<f64>,
+        /// Refuse a chunk whose target is not 0 or 1, naming the row, rather
+        /// than clamp it into [0, 1]: `ftrl`'s rule. Logistic loss only
+        /// (docs/PLAN.md task 195, S4).
+        #[serde(default)]
+        strict_binary: bool,
     },
     /// Passive-aggressive regression (ENHANCEMENTS E17). No learning rate:
     /// each row's update is the smallest change that satisfies it.
@@ -914,7 +946,8 @@ pub enum ModelKind {
         /// either bounded mode is "pa".
         #[serde(default)]
         c: Option<Num>,
-        /// Insensitive tube: rows already this close leave the fit alone.
+        /// Insensitive tube, in units of the target's EW residual std: rows
+        /// already this close leave the fit alone. Default 0.1.
         #[serde(default)]
         eps: Option<f64>,
         /// Bounds and sum on the slopes, as for `sgd` (ENHANCEMENTS E40).
@@ -924,6 +957,10 @@ pub enum ModelKind {
         coef_max: Option<FloatOrList>,
         #[serde(default)]
         coef_sum: Option<f64>,
+        /// Standardize features against `sgd`'s running moments. Default
+        /// true (docs/PLAN.md task 195, U2).
+        #[serde(default = "default_true")]
+        standardize: bool,
     },
     /// Holt's linear trend method (ENHANCEMENTS E25): level plus slope, no
     /// features. The baseline a feature-based model should have to beat.
@@ -945,10 +982,12 @@ pub enum ModelKind {
         trend: Option<bool>,
     },
     Rls {
-        /// Prior strength: `A0 = ridge I`, i.e. `P0 = I / ridge`. Scalar only
-        /// (baked into the state).
+        /// Prior strength: `A0 = delta I`, i.e. `P0 = I / delta`, the
+        /// classic RLS name; `ew_ridge`'s `ridge` under `ridge_scale =
+        /// "sum"`, not its `ridge` (docs/PLAN.md task 195, N11). Default 1.
+        /// Scalar only (baked into the state).
         #[serde(default)]
-        ridge: Option<f64>,
+        delta: Option<f64>,
         #[serde(default)]
         coef_prior: Option<Vec<Vec<f64>>>,
     },
@@ -1457,14 +1496,18 @@ pub enum ModelKind {
         /// `"gaussian"`, `"diag"` (default) or `"robust"`.
         #[serde(default)]
         emission: Option<String>,
+        /// `μ₀`; absent, the first `warm_rows` learned rows' sample mean.
         #[serde(default)]
         prior_mean: Option<Vec<f64>>,
         #[serde(default)]
         prior_kappa: Option<f64>,
+        /// `ν₀`; absent, `d + 2` under `"gaussian"` and 3 under `"diag"`
+        /// and `"robust"` (docs/PLAN.md task 195, U5).
         #[serde(default)]
         prior_nu: Option<f64>,
-        /// A scalar for `sI`, or a `d x d` matrix. **Set it from the data's
-        /// scale.**
+        /// A scalar for `sI`, or a `d x d` matrix, in the data's units;
+        /// absent, the first `warm_rows` learned rows' sample covariance
+        /// (its diagonal under `"diag"` and `"robust"`; task 195, U4).
         #[serde(default)]
         prior_scale: Option<Vec<f64>>,
         /// `"robust"`'s β.
@@ -1474,6 +1517,11 @@ pub enum ModelKind {
         prune_below: Option<f64>,
         #[serde(default)]
         max_run: Option<usize>,
+        /// Learned rows held, reporting nothing, to set the priors left out
+        /// from; default `d + 2`. Refused beside both `prior_mean` and
+        /// `prior_scale` (task 195, U4).
+        #[serde(default)]
+        warm_rows: Option<usize>,
     },
 }
 
@@ -2195,6 +2243,14 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("reset", "reset_on_flag"),
 ];
 
+/// The parameters renamed in one model whose old name another model keeps:
+/// `rls`'s `ridge` is `delta` (docs/PLAN.md task 195, N11), and `ridge` is
+/// still `ew_ridge`'s, `huber`'s and `quantile`'s. Named only where the
+/// refused field's model takes the new name -- where serde's list of the
+/// fields it expected holds it -- so a model with neither is told nothing
+/// about another's rename.
+pub const RENAMED_WHERE_EXPECTED: &[(&str, &str)] = &[("ridge", "delta")];
+
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name.
 pub fn name_renamed(msg: &str) -> String {
@@ -2202,6 +2258,11 @@ pub fn name_renamed(msg: &str) -> String {
     // PC11).
     for (old, new) in RENAMED {
         if msg.contains(&format!("unknown field `{old}`")) {
+            return format!("{msg}; {old} was renamed {new}");
+        }
+    }
+    for (old, new) in RENAMED_WHERE_EXPECTED {
+        if msg.contains(&format!("unknown field `{old}`")) && msg.contains(&format!("`{new}`")) {
             return format!("{msg}; {old} was renamed {new}");
         }
     }
@@ -3565,6 +3626,7 @@ impl Spec {
                 learning_rate,
                 schedule,
                 power,
+                strict_binary,
                 ..
             } => {
                 if let Some(l) = loss {
@@ -3624,6 +3686,7 @@ impl Spec {
                     ("huber_delta", huber_delta.is_some(), "loss", "huber", loss),
                     ("quantile", quantile.is_some(), "loss", "quantile", loss),
                     ("eps", eps.is_some(), "loss", "epsilon_insensitive", loss),
+                    ("strict_binary", *strict_binary, "loss", "logistic", loss),
                     (
                         "power",
                         power.is_some(),
@@ -4379,10 +4442,10 @@ impl Spec {
                     ));
                 }
             }
-            ModelKind::Rls { ridge, coef_prior } => {
-                if let Some(r) = ridge.filter(|r| !positive(*r) || !r.is_finite()) {
+            ModelKind::Rls { delta, coef_prior } => {
+                if let Some(r) = delta.filter(|r| !positive(*r) || !r.is_finite()) {
                     return Err(format!(
-                        "spec {:?}: rls ridge must be finite and > 0, got {r}",
+                        "spec {:?}: rls delta must be finite and > 0, got {r}",
                         self.name
                     ));
                 }

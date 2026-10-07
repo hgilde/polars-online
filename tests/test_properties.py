@@ -29,7 +29,7 @@ INPUT_BOUND = 1e100
 
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
-    ("rls", {"ridge": 1.0}),
+    ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 50.0}),
     ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),

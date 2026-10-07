@@ -34,7 +34,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning"
 #: The specs whose outputs a weight's scale reaches, and why: each is in its
 #: builder's docs.
 EXCEPTIONS = {
-    "rls": "A <- lam A + w z z' starts from ridge * I: a sum-scale prior a heavier "
+    "rls": "A <- lam A + w z z' starts from delta * I: a sum-scale prior a heavier "
     "stream outweighs sooner (classic RLS regularization)",
     "kalman": "a row's weight scales its observation's precision: its variance is obs_var / w",
     "sgd": "the gradient is d * z * w: a weight is a step size",

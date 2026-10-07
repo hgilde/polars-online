@@ -2280,10 +2280,13 @@ So on heavy-tailed data, increase `drift_threshold` until a stretch you know
 to be stable stays unflagged.
 
 **`hit_rate`, in `emit_metrics` and in `po.eval.metrics`, asks whether
-prediction and outcome fall on the same side of zero.** So on a target
+prediction and outcome fall on the same side of zero.** A row where either
+is exactly zero is on neither side, and both leave it out. So on a target
 that is always positive, such as a plain ratio, every row counts as a hit.
 [Relative and look-ahead targets](#relative-and-look-ahead-targets) says
-how to write a ratio target about zero with Polars expressions.
+how to write a ratio target about zero with Polars expressions. An `sgd`
+fit with `loss="poisson"` has no side to be on, a positive rate against a
+count, and its `hit_rate` is null.
 
 On an `sgd` or `ftrl` fit with `loss="logistic"`, `pred` is a probability
 and `y` a 0/1 label, so the three metrics mean something else under the
@@ -2510,7 +2513,7 @@ Ten models predict a numeric target. Nine regress it on features, and
 | `solve_every`, `max_rows_between_solves` | `ewridge`, `lasso`, `huber`, `quantile` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
 | `target_gaps` | `ewridge`, `lasso` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
 | `window_size` | `ewridge`, `lasso` | [A hard window](#a-hard-window) |
-| `standardize` | `ewridge`, `huber`, `quantile`, `sgd`, and `kalman`, where it is the default | `ewridge` and `kalman` |
+| `standardize` | `ewridge`, `huber` and `quantile`; and `kalman`, `sgd` and `pa`, where it is the default | `ewridge` and `kalman` |
 | `coef_min`, `coef_max`, `coef_sum` | `sgd`, `pa` | [`sgd`](#sgd--stochastic-gradient-descent) |
 | `weight` | every model, though `rls`, `kalman`, `sgd`, `pa` and `ftrl` read it differently from a weighted mean | [Weights](#weights) |
 
@@ -2524,7 +2527,7 @@ What `half_life` decays differs by model:
 | `kalman` | the observation-noise estimate and the features' standardization; `coef_half_life` sets how fast a coefficient may drift |
 | `huber`, `quantile` | their running sums, kept per target |
 | `sgd` | `weight_sum`, the running moments `standardize` scales by, and adagrad's sums, but not the coefficients |
-| `pa` | `weight_sum` and each target's own weight, but not the coefficients |
+| `pa` | `weight_sum`, each target's own weight and the running moments `standardize` scales by, but not the coefficients |
 | `ftrl` | its per-coordinate sums, and its penalties with them |
 | `holt` | the level, as `level_half_life`; the trend has `trend_half_life` |
 
@@ -2681,17 +2684,18 @@ them on every row in O(k²) time, without a solve. Its fit equals
 `ewridge(ridge_scale="sum")` solved on every row, to better than 1e-9.
 
 `A` and `b_j` are the decayed sums of `zzᵀ` and `y_j z`, started from the
-ridge:
+prior strength `delta`, the classic RLS name for `P₀ = I/δ`:
 
 ```
 A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j        decayed sums, not means
-A₀ = ridge·I         b₀ = ridge·coef_prior
+A₀ = delta·I         b₀ = delta·coef_prior
 ```
 
-Because `A` is a sum, a row's weight is on the sum scale, and a heavier
-stream outweighs the starting ridge sooner ([Weights](#weights)). Unlike
-`ewridge`'s default, the starting ridge penalizes every coefficient, the
-intercept included. The targets share one Cholesky factor of `A`, so a row
+Because `A` is a sum, `delta` is in the features' squared units summed over
+rows, a row's weight is on the sum scale, and a heavier stream outweighs
+the starting prior sooner ([Weights](#weights)). It is `ewridge`'s `ridge`
+under `ridge_scale="sum"`, not its default `ridge`, which never fades, and
+it penalizes every coefficient, the intercept included. The targets share one Cholesky factor of `A`, so a row
 with any target null is scored but teaches none of them. So when the
 targets go missing on different rows, give each its own `rls` spec.
 Otherwise one spec holds them all.
@@ -2699,7 +2703,7 @@ Otherwise one spec holds them all.
 ```python
 rls = po.spec.rls(
     "rls", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
-    ridge=1e-3,                    # A starts at ridge * I (default 1)
+    delta=1e-3,                    # A starts at delta * I (default 1)
 )
 ```
 
@@ -2934,11 +2938,20 @@ The loss sets the link and the gradient:
 | loss | link | `dL/d eta` | its constant |
 |---|---|---|---|
 | `squared` | identity | `p − y` | |
-| `huber` | identity | `clamp(p − y, ±delta)` | `delta` is `huber_delta=`, in the target's units |
+| `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
-| `epsilon_insensitive` | identity | 0 inside the tube, else `sign(p − y)` | the tube's half-width is `eps=`, in the target's units |
+| `epsilon_insensitive` | identity | 0 within `eps·s` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.1 by default, in units of `s` |
 | `poisson` | log, for count targets | `p − y` | |
-| `logistic` | sigmoid, for 0/1 targets | `p − y` | |
+| `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
+
+**`s` is the exponentially weighted standard deviation of the target's
+out-of-sample residuals**, as `huber`'s `σ` is, so a cut and a tube mean
+the same thing at any scale of the target: until the target has one, the
+Huber row is a squared-loss row and the tube has no width. In the target's
+own units a tube of 0.1 never let a target in thousandths be learned.
+`sgd` standardizes its features by default, as `kalman` does: one learning
+rate has to suit every feature, and raw, features in hundreds took the
+default fit's R² from 0.96 to below −70,000.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
@@ -2983,16 +2996,20 @@ caller's units even under `standardize=True`.
 *API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](crates/online-core/src/pa.rs) — *Outputs:* [fields](docs/OUTPUTS.md#pa)
 
 Use `pa` to step on every row without tuning a learning rate. Each row asks
-the fit to come within `eps` of its target, and the update is the smallest
-change that does so:
+the fit to come within `eps·σ` of its target, `σ` the exponentially weighted
+standard deviation of its residuals as `huber`'s and `sgd`'s, and the update
+is the smallest change that does so:
 
 ```
-loss = max(0, |y − p| − eps)      s = ‖z‖²
+loss = max(0, |y − p| − eps·σ)      s = ‖z‖²
 pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s + 1/(2c))
 β    += min(w, 1) · τ · sign(y − p) · z
 ```
 
-A row weight below 1 scales the step, and a weight above 1 counts as 1.
+In the target's units, a tube of 0.1 held a target in hundredths on every
+row, and the model never learned it. `pa` standardizes its features by
+default, with `sgd`'s scaler, so `s` and `c` are not in the features'
+units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:
 
 | `mode` | the step |
@@ -3006,7 +3023,7 @@ pa = po.spec.pa(
     "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
     mode="pa1",                  # the default
     c=0.1,
-    eps=0.05,                    # inside this margin a row is "close enough", and nothing moves
+    eps=0.05,                    # within 0.05 residual stds a row is "close enough", and nothing moves
 )
 ```
 
@@ -4143,7 +4160,7 @@ runs = po.spec.bocpd(
     "regime", features=["ret"], group="stock_id",
     hazard=250.0,                # the expected run length: H = 1/hazard is the chance of a break after each row
     prior_nu=2.0,                # the prior on the variance, as 2a ...
-    prior_scale=[2e-4],          # ... and 2b: the one prior to set from your data
+    prior_scale=[2e-4],          # ... and 2b; left out, both come from the first rows
     emission="diag",             # the default: a normal-inverse-gamma per feature
     prune_below=1e-6,            # drop the runs holding less than this share of the mass
     max_run=None,                # 10,000 by default
@@ -4160,12 +4177,18 @@ started = out.with_columns(      # the row each group's current run began on, co
 )
 ```
 
-**Set `prior_scale` to `prior_nu` times the variance you expect of the
-feature,** measured with Polars' `var()` on data from before the stream. Too
-large a scale makes no row surprising, so no break is found. `prior_nu` and
-`prior_scale` are 2a and 2b in the gamma parametrisation. So the example's
-values are Adams and MacKay's own finance example (a = 1, b = 1e-4,
-hazard = 250): a variance of 1e-4.
+**Leave `prior_mean` and `prior_scale` out, and the first rows set them.**
+The first `warm_rows` learned rows, `d + 2` by default, report null; their
+mean and covariance (the diagonal under `"diag"` and `"robust"`) become the
+prior, and they are then read as rows of a model that had it from the start.
+A prior in the data's units decides what counts as surprising: the identity
+it once defaulted to made every row of data in 1e-4 a break, and no row of
+data at 1e4 able to begin a run. `prior_nu` defaults to the smallest value
+that gives the prior's variance a mean, `d + 2` under `"gaussian"` and 3
+otherwise, and at it the prior's mean variance is that covariance.
+`prior_nu` and `prior_scale` are 2a and 2b in the gamma parametrisation. So
+the example's values are Adams and MacKay's own finance example (a = 1, b =
+1e-4, hazard = 250): a precision of 1e4 on average.
 
 **Read the regime's age from `run_mode`, and use `p_change` only as an
 alarm.** `p_change` is a per-row likelihood ratio, so it is spiky, and its
@@ -4176,7 +4199,7 @@ kinds of break:
 |---|---|---|
 | a ten-fold variance step | 0.83 on the row itself | finds it one to three rows later, and dates it to the right row |
 | a four-sigma mean shift, with a diffuse prior | barely lifts | finds it one to three rows later, and dates it to the right row |
-| a change in correlation alone | never moves at all | reaches it only under `emission="gaussian"`, a median of 98 rows later ([docs/REGIMES.md §5](docs/REGIMES.md#5-two-changepoint-detectors-on-the-same-break)) |
+| a change in correlation alone | never moves at all | reaches it only under `emission="gaussian"`, a median of 121 rows later ([docs/REGIMES.md §5](docs/REGIMES.md#5-two-changepoint-detectors-on-the-same-break)) |
 
 **`p_change` reports `P(r ≤ 1)`, because `P(r = 0)` equals `H` on every
 row:** the two branches share one predictive, so the normalised mass at
@@ -4334,9 +4357,9 @@ The [linear models](#linear-models):
 | `kalman` | k=20, `revert_half_life` | 1,677,506 | |
 | `lasso` | k=20, 1 target (3-point path) | 1,629,739 | |
 | `huber` | k=20, 1 target | 3,267,509 | |
-| `sgd` | k=20, squared loss | 8,423,373 | |
-| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,288,779 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.7 times slower |
-| `pa` | k=20 | 8,284,518 | |
+| `sgd` | k=20, squared loss, `standardize=False` | 8,423,373 | the raw step; the default, `standardize=True`, scales each feature on the row first |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1`, `standardize=False` | 2,288,779 | a simplex constraint sorts `2k` breakpoints per row, which makes `sgd` 3.7 times slower |
+| `pa` | k=20, `standardize=False` | 8,284,518 | the raw step, as for `sgd` |
 | `ftrl` | k=20, 1 target | 3,873,282 | |
 
 **List several targets on the same features in one spec's `targets`, where

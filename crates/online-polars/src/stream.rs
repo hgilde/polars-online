@@ -5,11 +5,11 @@ use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
-    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg, Kalman,
-    KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState,
-    OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
-    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
-    StateError, WindowShadow,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg,
+    Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg,
+    ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
+    SlotMetrics, State, StateError, WindowShadow,
 };
 use online_core::{ClockValue, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -576,15 +576,20 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let mut m = EwRidge::new(cfg)?;
             // The per-row leverage needs the factors kept (§2.1).
             m.set_keep_factor(spec.emit_error_inflation);
+            // Each target's own threshold, for its own first solve (task
+            // 195, S9b); left out, every target's is the model's.
+            if spec.min_weight.is_some() {
+                m.set_target_min_weight(spec.min_periods_per_target())?;
+            }
             Ok(AnyModel::EwRidge(Box::new(m)))
         }
-        ModelKind::Rls { ridge, coef_prior } => {
+        ModelKind::Rls { delta, coef_prior } => {
             let cfg = RlsCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
                 fit_intercept: spec.fit_intercept,
                 decay,
-                ridge: ridge.unwrap_or(1.0),
+                delta: delta.unwrap_or(1.0),
                 coef_prior: coef_prior.clone(),
                 min_weight: spec.min_periods_or_default(),
             };
@@ -673,8 +678,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_targets: spec.m(),
                 fit_intercept: spec.fit_intercept,
                 decay,
+                // The 95%-efficiency constant (Huber 1981; statsmodels'
+                // `HuberT`, scikit-learn's 1.35): task 195, U3.
                 loss: RobustLoss::Huber {
-                    delta: huber_delta.map_or(1.5, |n| n.0),
+                    delta: huber_delta.map_or(1.345, |n| n.0),
                 },
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
@@ -686,7 +693,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: 1e-3,
             };
-            Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
+            let mut m = Robust::new(cfg)?;
+            // Each target's own threshold, for its own first solve (S9b).
+            m.set_target_min_weight(spec.min_periods_per_target())?;
+            Ok(AnyModel::Robust(Box::new(m)))
         }
         ModelKind::Quantile {
             quantile,
@@ -712,7 +722,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: quantile_eps.unwrap_or(0.2),
             };
-            Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
+            let mut m = Robust::new(cfg)?;
+            // Each target's own threshold, for its own first solve (S9b).
+            m.set_target_min_weight(spec.min_periods_per_target())?;
+            Ok(AnyModel::Robust(Box::new(m)))
         }
         ModelKind::Ftrl {
             alpha,
@@ -816,12 +829,15 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             standardize,
             coef_min,
             coef_max,
+            strict_binary,
             coef_sum,
         } => {
             let loss = match loss.as_deref().unwrap_or("squared") {
                 "squared" => SgdLoss::Squared,
+                // In units of the target's residual std, `huber`'s constant
+                // under `huber`'s name (task 195, U1 and U3).
                 "huber" => SgdLoss::Huber {
-                    delta: huber_delta.map_or(1.0, |n| n.0),
+                    delta: huber_delta.map_or(1.345, |n| n.0),
                 },
                 "quantile" => SgdLoss::Quantile {
                     tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
@@ -855,6 +871,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
                 standardize: *standardize,
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
+                strict_binary: *strict_binary,
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
         }
@@ -865,6 +882,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             coef_min,
             coef_max,
             coef_sum,
+            standardize,
         } => {
             let mode = match mode.as_deref().unwrap_or("pa1") {
                 "pa" => PaMode::Pa,
@@ -882,6 +900,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 eps: eps.unwrap_or(0.1),
                 min_weight: spec.min_periods_or_default(),
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
+                standardize: *standardize,
             };
             Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
         }
@@ -1133,6 +1152,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         robust_beta,
         prune_below,
         max_run,
+        warm_rows,
     } = &spec.model
     else {
         return Err("not a bocpd spec".into());
@@ -1170,6 +1190,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         prune_below: prune_below.unwrap_or(1e-6),
         max_run: max_run.unwrap_or(10_000),
         min_weight: spec.min_periods_or_default(),
+        warm_rows: *warm_rows,
         hazard_on_clock: hazard.as_ref().is_some_and(Span::is_duration),
     })
 }
@@ -4509,16 +4530,29 @@ fn run_instance(
         ModelKind::Ftrl { loss, .. } => loss.as_deref().unwrap_or("logistic") == "logistic",
         _ => false,
     };
+    // A Poisson fit has no sign to hit: a rate is positive and a count is
+    // never negative, so the sign test about zero agreed on every row and
+    // `hit_rate` read 1.0 whatever the fit. It is null, as `po.eval` nulls a
+    // metric that is not defined (review round 4, CC5; docs/PLAN.md task
+    // 195, S5).
+    let no_hit_test = matches!(&inst.spec.model, ModelKind::Sgd { loss, .. }
+        if loss.as_deref() == Some("poisson"));
     // Where a target's hit test is centred: 1 for a ratio, which is positive
     // by construction and read 1.0 about zero whatever the fit (review
     // 2026-09-26, D3); 0 for everything else, a difference and a log ratio
     // included.
-    let hit_centre = |target: usize| -> f64 {
+    let hit_test = |target: usize| -> HitTest {
+        if no_hit_test {
+            return HitTest::Undefined;
+        }
+        if binary_loss {
+            return HitTest::Threshold;
+        }
         match inst.spec.targets.defs().get(target) {
             Some(t) if t.relative_to.is_some() && t.relative == crate::targets::Relative::Ratio => {
-                1.0
+                HitTest::About(1.0)
             }
-            _ => 0.0,
+            _ => HitTest::About(0.0),
         }
     };
     for plan in plans {
@@ -4888,8 +4922,7 @@ fn run_instance(
                 }
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                    let centre = hit_centre(slot / nc);
-                    met.update_about(step.pred[slot], yj, lam, w, binary_loss, centre);
+                    met.update_with(step.pred[slot], yj, lam, w, hit_test(slot / nc));
                 }
             }
         }

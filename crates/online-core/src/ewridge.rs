@@ -402,6 +402,13 @@ pub struct EwRidge {
     /// state, since the systems it keeps do.
     #[serde(default)]
     keep_factor: bool,
+    /// Per target, the threshold its own weight is checked against, as a
+    /// bank checks it on the output (hard rule 8): the weight at which a
+    /// target no solve has fit has its own first solve (docs/PLAN.md task
+    /// 195, S9b; [`EwRidge::set_target_min_weight`]). Empty: `min_weight`
+    /// for every target.
+    #[serde(default)]
+    target_min_weight: Vec<f64>,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary fit writes no ring.
     ///
@@ -499,6 +506,7 @@ impl EwRidge {
             zbuf: vec![0.0; k_total],
             ready: Readiness::default(),
             keep_factor: false,
+            target_min_weight: Vec::new(),
             factors: Factors::default(),
             cfg,
         })
@@ -506,6 +514,44 @@ impl EwRidge {
 
     pub fn cfg(&self) -> &EwRidgeCfg {
         &self.cfg
+    }
+
+    /// Each target's own `min_weight`, as a bank holds a list of them: one
+    /// value `>= 0` per target, or none for `min_weight` everywhere. A
+    /// target no solve has fit is solved on the row its own weight first
+    /// reaches its own threshold, as a fresh model's first solve fires on
+    /// the row its weight reaches `min_weight` (docs/PLAN.md task 195, S9b).
+    pub fn set_target_min_weight(&mut self, own: Vec<f64>) -> Result<(), String> {
+        crate::model::check_target_min_weight("ew_ridge", &own, self.cfg.n_targets)?;
+        self.target_min_weight = own;
+        Ok(())
+    }
+
+    /// Whether a row carrying the targets `y` at `weight` takes a target's
+    /// own weight across its own threshold while no solve has fit it: the
+    /// row its own first solve falls on (S9b). Read before the row is
+    /// learned; a target's weight grows only on a row that carries it, `lam
+    /// · W_j + w` there as `Acc::learn` forms it. The accumulator's weight,
+    /// not a window's: a target that has just joined has all its rows in
+    /// the window.
+    fn own_first_solve(&self, y: &[Option<f64>], lam: f64, weight: f64) -> bool {
+        if !(weight > 0.0 && weight.is_finite()) {
+            return false;
+        }
+        let nc = self.cfg.n_combos();
+        y.iter().enumerate().any(|(j, yj)| {
+            let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
+            let reached = |w: f64| w >= t && w > 0.0;
+            let before = self.acc.wj[j];
+            yj.is_some()
+                && !reached(before)
+                && reached(lam * before + weight)
+                && !self.beta.as_ref().is_some_and(|b| {
+                    b[j * nc..(j + 1) * nc]
+                        .iter()
+                        .all(|slot| slot.iter().all(|v| !v.is_nan()))
+                })
+        })
     }
 
     /// Per-target EW residual variance of the first slot's prediction; under
@@ -1890,6 +1936,8 @@ impl OnlineModel for EwRidge {
                 _ => self.wsig[j] = aged,
             }
         }
+        // Read before the row moves the target weights.
+        let own_first = self.own_first_solve(y, lam, weight);
         self.acc.learn(&self.zbuf, y, lam, weight, gaps);
 
         // ---- solve schedule ----
@@ -1903,9 +1951,16 @@ impl OnlineModel for EwRidge {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
+        // A fresh model's first solve fires on the row its weight reaches
+        // `min_weight`; so does a target's own, on the row its own weight
+        // first reaches its own, where no solve has fit it -- a target that
+        // joins after the first solve. It waited for the cadence's next
+        // solve, null until then: under `solve_every = 1000` all 56 of its
+        // rows of 80 (review round 4, CC1; docs/PLAN.md task 195, S9b).
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
+            || own_first;
         if due {
             self.solve();
         }
@@ -1999,6 +2054,11 @@ impl OnlineModel for EwRidge {
                     return Err(StateError::Invalid(
                         "ew_ridge: the window's snapshots have the wrong shape".into(),
                     ));
+                }
+                if let Err(e) =
+                    crate::model::check_target_min_weight("ew_ridge", &m.target_min_weight, n)
+                {
+                    return Err(StateError::Invalid(e));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
                 // C4; `EwCovModel::restore` says why).

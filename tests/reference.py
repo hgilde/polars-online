@@ -833,7 +833,7 @@ def robust_ref(
     reset: np.ndarray | None = None,
     half_life: float = 300.0,
     loss: str = "huber",
-    huber_delta: float = 1.5,
+    huber_delta: float = 1.345,
     quantile: float = 0.5,
     quantile_eps: float = 0.2,
     ridge: float = 1e-6,

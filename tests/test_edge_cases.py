@@ -357,13 +357,17 @@ class TestDegenerateSolves:
             ("quantile", {"quantile": 0.5}),
         ],
     )
-    def test_a_target_no_solve_has_fit_predicts_nothing(self, model, extra):
+    def test_a_late_target_is_solved_when_its_own_weight_reaches_min_weight(self, model, extra):
         """Review round 4, CC1: a target that joins after the first solve had
         no weight there, and the solve gave it zeros and spent the trigger, so
         once its rows came it was predicted as exactly 0.0 until the next
-        scheduled solve, 56 rows of 80 under ``solve_every = 1000`` here. No
-        solve has fit it, so it predicts nothing and its ``coef`` is null; it
-        waits for the cadence's next solve, which here never comes."""
+        scheduled solve, 56 rows of 80 under ``solve_every = 1000`` here. Task
+        186 made it predict nothing until a solve had fit it, which here never
+        came. Task 195 (S9b) gives it a first solve of its own, as a fresh
+        model has: on the row its own weight first reaches its ``min_weight``.
+        It joins at row 20, and four rows of a half-life of 1000 are the
+        first past 3, so the solve at the end of row 23 fits it and it is
+        predicted from row 24, where the bank's gate opens for it."""
         n = 80
         rng = np.random.default_rng(0)
         x0, x1 = rng.normal(size=n), rng.normal(size=n)
@@ -396,13 +400,14 @@ class TestDegenerateSolves:
         assert late and early, out.columns
         for c in late:
             assert (out[c] == 0.0).sum() == 0, f"{model}: {c} predicted from zeros"
-            assert out[c].null_count() == n, f"{model}: {c}"
+            assert out[c][:24].null_count() == 24, f"{model}: {c}"
+            assert out[c][24:].null_count() == 0, f"{model}: {c}"
+            r = np.corrcoef(out[c][24:].to_numpy(), b[24:])[0, 1]
+            assert r > 0.95, f"{model}: {c} against b: {r}"
         for c in early:
             assert out[c].drop_nulls().len() > 70, f"{model}: {c}"
         coef = out["coef"][n - 1].to_list()
-        half = len(coef) // 2
-        assert all(v is not None for v in coef[:half]), (model, coef)
-        assert all(v is None for v in coef[half:]), (model, coef)
+        assert all(v is not None for v in coef), (model, coef)
 
 
 class TestDegenerateClocks:

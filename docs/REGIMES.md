@@ -91,8 +91,8 @@ to 0.18 against a nominal 0.05, as the paper warns
 
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
-median of 29 rows and flags 51 rows per 1000 quiet ones. `bocpd` takes 98
-rows and raises 0.68 alarms per 1000. Neither is better: they answer
+median of 29 rows and flags 51 rows per 1000 quiet ones. `bocpd` takes 121
+rows and raises 0.53 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
@@ -392,7 +392,7 @@ number of rows from row 1000 to the first alarm at or after it.
 | detector | settings | what counts as its alarm |
 |---|---|---|
 | `corrchange(kind="window")` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
-| `bocpd` | `emission="gaussian"`, `hazard=500`, `prior_nu=5`, `prior_scale=[0.1]`, `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
+| `bocpd` | `emission="gaussian"`, `hazard=500`, `prior_nu=5`, `prior_scale=[0.1]`, `prior_mean` left out (the first 5 rows' mean), `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
 
 **`bocpd` is measured with `emission="gaussian"`, not its default
 `"diag"`.** The default models each feature on its own, and only the
@@ -402,7 +402,7 @@ section](../README.md#bocpd--how-long-has-this-regime-lasted)).
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
 | corrchange, `kind="window"` | 51.33                          | 20/20           | 29           | 53          |
-| bocpd              | 0.68                           | 20/20           | 98           | 351         |
+| bocpd              | 0.53                           | 20/20           | 121          | 351         |
 
 **The two detectors answer different questions, which is why both are
 here.** `corrchange(kind="window")` is a test of one thing: whether the
@@ -416,9 +416,9 @@ events.
 `bocpd` is a full joint model of the rows, and a correlation change is the
 one break its `p_change` cannot see: no single row is surprising, only the
 sequence is. Its run-length posterior has to accumulate that evidence,
-which takes a median of 98 rows and 351 at worst. In return it dates the
+which takes a median of 121 rows and 351 at worst. In return it dates the
 regime, saying which row the current one began on. And it almost never
-says so when nothing has happened: 0.68 alarms per 1000 quiet rows.
+says so when nothing has happened: 0.53 alarms per 1000 quiet rows.
 
 ## 6. The Epps effect, and the two ways out
 

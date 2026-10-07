@@ -511,3 +511,33 @@ def test_sums_drops_a_row_whose_weight_the_bank_would_not_learn_from(bad):
     assert got.equals(want), (got, want)
     scored = out["m"].struct.field("pred_y0").is_not_null().sum()
     assert po.eval.sums(out, "m", weight="w")["n"][0] == scored, "the zero-weight row is in n"
+
+
+def test_a_prediction_at_the_centre_is_left_out_in_the_bank_and_here():
+    """docs/PLAN.md task 195 (S6; review round 4, YB8): a prediction exactly
+    at the hit test's centre says neither up nor down, and is left out of
+    ``hit_rate`` as a target there is, by the bank's ``emit_metrics`` and by
+    :func:`metrics` and :func:`sums` alike. Rust's ``signum(+0.0)`` is 1, so
+    the bank scored a prediction of 0 as "up", a hit on this frame's first
+    row, where polars' ``sign(0)`` is 0 and this module scored it a miss: the
+    two read 1.0 and 0.0 on one row."""
+    d = pl.DataFrame({"x": [1.0] * 4, "y": [1.0, -1.0, 1.0, 1.0]})
+    spec = po.spec.sgd(
+        "m",
+        targets=["y"],
+        features=["x"],
+        half_life=float("inf"),
+        min_weight=0.0,
+        emit_metrics=True,
+        learning_rate=0.01,
+        standardize=False,
+    )
+    out = po.ModelBank([spec]).fit_predict(d)
+    assert out["m"].struct.field("pred_y")[0] == 0.0
+    bank = out["m"].struct.field("hit_rate_y")
+    assert bank[1] is None, "read after the first row alone, whose prediction sits at the centre"
+    here = po.eval.metrics(out.head(3), "m", min_obs=1)["hit_rate"][0]
+    assert here == pytest.approx(bank[3], abs=1e-15)
+    sums = po.eval.sums(out.head(3), "m")
+    assert sums["signed"][0] == 2.0
+    assert po.eval.from_sums(sums, min_obs=1)["hit_rate"][0] == pytest.approx(here, abs=1e-15)

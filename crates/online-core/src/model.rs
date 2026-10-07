@@ -174,6 +174,28 @@ pub(crate) fn restore_target_weights(w: &mut Vec<f64>, w_sum: f64, n_targets: us
     w.len() == n_targets
 }
 
+/// Each target's own `min_weight`, as a bank holds a list of them: none,
+/// for the model's one threshold everywhere, or one value `>= 0` per target
+/// (`lasso`'s `target_min_weight`, and the solving models' own first solve,
+/// docs/PLAN.md task 195, S9b).
+pub(crate) fn check_target_min_weight(
+    who: &str,
+    own: &[f64],
+    n_targets: usize,
+) -> Result<(), String> {
+    if !(own.is_empty() || own.len() == n_targets) || own.iter().any(|t| t.is_nan() || *t < 0.0) {
+        return Err(format!(
+            "{who}: target_min_weight must be empty or one value >= 0 per target, got {own:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Target `j`'s own threshold: its entry of `own`, or `min_weight`.
+pub(crate) fn min_weight_of(own: &[f64], min_weight: f64, j: usize) -> f64 {
+    own.get(j).copied().unwrap_or(min_weight)
+}
+
 /// A solving model's coefficients, `ewridge`'s, `huber`'s and `quantile`'s
 /// and `lasso`'s, written as the vectors themselves and compared by their
 /// bits. A slot nothing solved is NaN by definition -- no fit, which
@@ -714,7 +736,7 @@ mod tests {
             n_targets: 2,
             fit_intercept: true,
             decay: crate::Decay::Halflife(10.0),
-            ridge: 1.0,
+            delta: 1.0,
             coef_prior: None,
             min_weight: 0.0,
         })

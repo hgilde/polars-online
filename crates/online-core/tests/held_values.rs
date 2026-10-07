@@ -453,6 +453,7 @@ fn sgd_predicts_the_same_at_every_level() {
         l2: 0.0,
         min_weight: 10.0,
         standardize: true,
+        strict_binary: false,
         clip_gradient: f64::INFINITY,
         constraint: None,
     };
@@ -767,6 +768,7 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
         l2: 0.0,
         min_weight: 10.0,
         standardize: true,
+        strict_binary: false,
         clip_gradient: f64::INFINITY,
         constraint: None,
     };
@@ -903,6 +905,7 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             l2: 0.0,
             min_weight: 10.0,
             standardize: true,
+            strict_binary: false,
             clip_gradient: f64::INFINITY,
             constraint: None,
         })
@@ -1109,6 +1112,7 @@ fn a_row_of_no_weight_moves_no_mean() {
             l2: 0.0,
             min_weight: 10.0,
             standardize: true,
+            strict_binary: false,
             clip_gradient: f64::INFINITY,
             constraint: None,
         })
@@ -1355,7 +1359,7 @@ fn bocpd_held(on_clock: bool) -> Bocpd {
         hazard: if on_clock { 30.0 } else { 50.0 },
         hazard_from_row: false,
         emission: BocpdEmission::Diag,
-        prior_mean: None,
+        prior_mean: Some(vec![0.0; 3]),
         prior_kappa: 1.0,
         prior_nu: Some(2.0),
         prior_scale: Some(vec![1.0]),
@@ -1363,6 +1367,7 @@ fn bocpd_held(on_clock: bool) -> Bocpd {
         prune_below: 1e-6,
         max_run: 200,
         min_weight: 0.0,
+        warm_rows: None,
         hazard_on_clock: on_clock,
     })
     .unwrap()

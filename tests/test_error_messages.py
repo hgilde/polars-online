@@ -174,7 +174,7 @@ VALUES = [
     (po.spec.lasso, dict(lasso_path=[0.1], max_iter=0), "max_iter must be >= 1, got 0"),
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
-    (po.spec.rls, dict(ridge=-INF), "ridge must be finite, got float -inf"),
+    (po.spec.rls, dict(delta=-INF), "delta must be finite, got float -inf"),
     (po.spec.ewridge, dict(conformal=INF), "conformal must be finite, got float inf"),
     (
         po.spec.ewridge,
@@ -382,7 +382,7 @@ VALUES = [
     (po.spec.ftrl, dict(beta=-1.0), "ftrl beta must be finite and >= 0, got -1"),
     (po.spec.ftrl, dict(l1=-1.0), "ftrl l1 must be finite and >= 0, got -1"),
     (po.spec.ftrl, dict(l2=-1.0), "ftrl l2 must be finite and >= 0, got -1"),
-    (po.spec.rls, dict(ridge=-1.0), "rls ridge must be finite and > 0, got -1"),
+    (po.spec.rls, dict(delta=-1.0), "rls delta must be finite and > 0, got -1"),
     (
         po.spec.kmeans,
         dict(features=["x0", "y"], targets=None, k=2, split_merge=-1.0),

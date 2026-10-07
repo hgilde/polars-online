@@ -106,6 +106,44 @@ def test_a_spec_dict_with_an_old_name_is_refused_naming_the_new_one(spec, old):
         po.ModelBank([spec])
 
 
+def test_rls_ridge_is_refused_naming_delta(tmp_path, online_cli):
+    """docs/PLAN.md task 195 (N11; review round 4, CA7): ``rls``'s prior
+    strength is ``delta``, the classic RLS name for ``P₀ = I/δ``, and not
+    ``ridge``, which in ``ewridge``, ``huber`` and ``quantile`` is a
+    per-observation penalty that never fades. ``rls``'s is ``ewridge``'s
+    ``ridge_scale="sum"`` prior. The old name is refused naming the new one,
+    by the builder, a spec dict and a TOML file; ``ridge`` stays the other
+    models' name, and a model with neither is told nothing about ``delta``."""
+    from conftest import run_online
+
+    kw = {"targets": ["y"], "features": ["x"], "half_life": 10.0}
+    with pytest.raises(TypeError, match="ridge was renamed delta"):
+        po.spec.rls("m", **kw, ridge=1.0)
+    spec = po.spec.rls("m", **kw, delta=2.0)
+    assert spec["model"]["delta"] == 2.0
+    raw = dict(spec, model={"type": "rls", "ridge": 1.0})
+    with pytest.raises(ValueError, match="ridge was renamed delta"):
+        po.ModelBank([raw])
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
+    df.write_parquet(tmp_path / "in.parquet")
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [raw],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        args=["--dry-run"],
+        check=False,
+    )
+    assert res.returncode != 0 and "ridge was renamed delta" in res.stderr, res.stderr
+    po.spec.ewridge("m", **kw, ridge=1.0)
+    sgd = po.spec.sgd("m", **kw)
+    with pytest.raises(ValueError) as refused:
+        po.ModelBank([dict(sgd, model={**sgd["model"], "ridge": 1.0})])
+    assert "unknown field `ridge`" in str(refused.value), refused.value
+    assert "renamed" not in str(refused.value), refused.value
+
+
 def test_no_output_carries_an_old_name():
     """Every spec of the release probe's workload, every kind the bank builds."""
     for name, builder, kw, _ in probe.WORKLOAD:

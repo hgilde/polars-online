@@ -354,7 +354,7 @@ class TestOutputSchemaStability:
     #: targets and `holt` no features, so both are given explicitly.
     _ALL_MODELS = [
         ("ewridge", {"features": ["x0", "x1"]}),
-        ("rls", {"features": ["x0", "x1"], "ridge": 1.0}),
+        ("rls", {"features": ["x0", "x1"], "delta": 1.0}),
         ("kalman", {"features": ["x0", "x1"], "coef_half_life": 100.0}),
         ("lasso", {"features": ["x0", "x1"], "lasso_path": [0.1, 0.0]}),
         ("huber", {"features": ["x0", "x1"]}),

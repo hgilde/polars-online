@@ -225,7 +225,7 @@ fn rls_golden() {
         n_targets: 1,
         fit_intercept: true,
         decay: Decay::Halflife(20.0),
-        ridge: 0.5,
+        delta: 0.5,
         coef_prior: None,
         min_weight: 3.0,
     })
@@ -367,6 +367,7 @@ fn sgd_golden() {
         clip_gradient: 1e3,
         constraint: None,
         standardize: true,
+        strict_binary: false,
         min_weight: 3.0,
     })
     .unwrap();
@@ -388,6 +389,7 @@ fn sgd_squared_golden() {
         clip_gradient: 1e3,
         constraint: None,
         standardize: false,
+        strict_binary: false,
         min_weight: 3.0,
     })
     .unwrap();
@@ -406,6 +408,7 @@ fn pa_golden() {
         eps: 0.05,
         min_weight: 3.0,
         constraint: None,
+        standardize: false,
     })
     .unwrap();
     check("pa", &signature(&mut m, 0), GOLDEN_PA);
@@ -432,6 +435,7 @@ fn sgd_simplex_golden() {
             sum: Some(1.0),
         }),
         standardize: false,
+        strict_binary: false,
         min_weight: 3.0,
     })
     .unwrap();
@@ -456,6 +460,7 @@ fn pa_box_golden() {
             hi: vec![1.0, 0.0],
             sum: Some(0.5),
         }),
+        standardize: false,
     })
     .unwrap();
     check("pa_box", &signature(&mut m, 0), GOLDEN_PA_BOX);
@@ -506,7 +511,7 @@ fn bocpd_golden() {
         hazard: 30.0,
         hazard_from_row: false,
         emission: BocpdEmission::Diag,
-        prior_mean: None,
+        prior_mean: Some(vec![0.0, 0.0]),
         prior_kappa: 1.0,
         prior_nu: Some(2.0),
         prior_scale: Some(vec![1.0]),
@@ -514,6 +519,7 @@ fn bocpd_golden() {
         prune_below: 1e-8,
         max_run: 100,
         min_weight: 0.0,
+        warm_rows: None,
         hazard_on_clock: false,
     })
     .unwrap();
@@ -533,7 +539,7 @@ fn bocpd_on_the_clock_golden() {
         hazard: 30.0,
         hazard_from_row: false,
         emission: BocpdEmission::Diag,
-        prior_mean: None,
+        prior_mean: Some(vec![0.0, 0.0]),
         prior_kappa: 1.0,
         prior_nu: Some(2.0),
         prior_scale: Some(vec![1.0]),
@@ -541,6 +547,7 @@ fn bocpd_on_the_clock_golden() {
         prune_below: 1e-8,
         max_run: 100,
         min_weight: 0.0,
+        warm_rows: None,
         hazard_on_clock: true,
     })
     .unwrap();
@@ -1204,7 +1211,7 @@ fn bocpd_emissions_golden() {
         hazard: 30.0,
         hazard_from_row: false,
         emission,
-        prior_mean: None,
+        prior_mean: Some(vec![0.0, 0.0]),
         prior_kappa: 1.0,
         prior_nu: Some(4.0),
         prior_scale: Some(vec![1.0]),
@@ -1212,6 +1219,7 @@ fn bocpd_emissions_golden() {
         prune_below: 1e-8,
         max_run: 100,
         min_weight: 0.0,
+        warm_rows: None,
         hazard_on_clock: false,
     };
     let mut m = Bocpd::new(cfg(BocpdEmission::Gaussian, 0.0)).unwrap();
@@ -1533,24 +1541,29 @@ const GOLDEN_FTRL_SQUARED: &[f64] = &[
 const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5899321334553916, 0.45251642778855805];
 // Regenerated for docs/PLAN.md task 74 (2026-09-08): `standardize`
 // standardises against the moments with the row admitted, so every
-// prediction of this scaled fit moved.
+// prediction of this scaled fit moved. Again for task 195 (2026-10-07):
+// `huber_delta` is in units of the residual's EW std (U1), so the cut of 0.5
+// is 0.5·s where it was 0.5 of the target; a replica of the docstring's
+// recursion -- the scaler with the row admitted, `s²` the EW mean of the
+// squared out-of-sample residuals -- gives these three to 1e-15.
 const GOLDEN_SGD: &[f64] = &[
-    -0.07297166262948546,
-    0.8917464075109357,
-    -0.06371638800622832,
+    -9.140859901712872e-5,
+    0.8740905120546256,
+    -0.026418737010923815,
 ];
 const GOLDEN_SGD_SQUARED: &[f64] = &[
     0.31727038792368356,
     1.429415537069254,
     -0.007974524370910653,
 ];
-const GOLDEN_PA: &[f64] = &[
-    0.35403211576284754,
-    2.1379339164214444,
-    -0.061839814133866494,
-];
+// Regenerated for task 195 (2026-10-07): `eps` is in units of the residual's
+// EW std (U1), the tube 0.05·σ where it was 0.05 of the target.
+// `tests/reference_paths.py::pa_ref`, written from the docstring, gives
+// these to the bit on this stream, and the same recursion with the box and
+// the sum projected gives `GOLDEN_PA_BOX`'s to 6e-16.
+const GOLDEN_PA: &[f64] = &[0.32828759676094155, 2.150099331537884, -0.05475595006868121];
 const GOLDEN_SGD_SIMPLEX: &[f64] = &[0.5169094734826561, 1.109247996359838, -0.020146022626397198];
-const GOLDEN_PA_BOX: &[f64] = &[0.5287388518302499, 1.679384820401434, 0.15906888911203854];
+const GOLDEN_PA_BOX: &[f64] = &[0.5437994410205795, 1.6916555501733417, 0.18817111678844467];
 // Re-frozen 2026-09-13: a null target is transparent to `holt` now -- the
 // next observed row forecasts over the clock since the last one -- where the
 // level stood still across it (review 2026-09-12, C22). Row 20 comes before

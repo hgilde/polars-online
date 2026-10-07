@@ -122,10 +122,7 @@ impl LassoCfg {
 
     /// Target `j`'s own threshold ([`Self::target_min_weight`]).
     pub fn min_weight_of(&self, j: usize) -> f64 {
-        self.target_min_weight
-            .get(j)
-            .copied()
-            .unwrap_or(self.min_weight)
+        crate::model::min_weight_of(&self.target_min_weight, self.min_weight, j)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -330,6 +327,32 @@ impl Lasso {
     /// Coefficients per (target, path point), in original units.
     pub fn coefficients(&self) -> Option<&Vec<Vec<Vec<f64>>>> {
         self.beta.as_deref()
+    }
+
+    /// Whether a row carrying the targets `y` at `weight` takes a target's
+    /// own weight across its own threshold while no solve has fit it: the
+    /// row its own first solve falls on (docs/PLAN.md task 195, S9b), as a
+    /// fresh model's first solve falls on the row its weight reaches
+    /// `min_weight`. Read before the row is learned; a target's weight grows
+    /// only on a row that carries it, `lam · W_j + w` there as `Acc::learn`
+    /// forms it. The accumulator's weight, not a window's: a target that has
+    /// just joined has all its rows in the window.
+    fn own_first_solve(&self, y: &[Option<f64>], lam: f64, weight: f64) -> bool {
+        if !(weight > 0.0 && weight.is_finite()) {
+            return false;
+        }
+        y.iter().enumerate().any(|(j, yj)| {
+            let t = self.cfg.min_weight_of(j);
+            let reached = |w: f64| w >= t && w > 0.0;
+            let before = self.acc.wj[j];
+            yj.is_some()
+                && !reached(before)
+                && reached(lam * before + weight)
+                && !self
+                    .beta
+                    .as_ref()
+                    .is_some_and(|b| b[j].iter().flatten().all(|v| !v.is_nan()))
+        })
     }
 
     /// Selected lambda per target.
@@ -896,6 +919,8 @@ impl OnlineModel for Lasso {
         }
 
         // ---- update accumulators ----
+        // Read before the row moves the target weights.
+        let own_first = self.own_first_solve(y, lam_decay, weight);
         self.acc
             .learn(&self.zbuf, y, lam_decay, weight, self.cfg.target_gaps);
 
@@ -909,9 +934,16 @@ impl OnlineModel for Lasso {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
+        // A fresh model's first solve fires on the row its weight reaches
+        // `min_weight`; so does a target's own, on the row its own weight
+        // first reaches its own, where no solve has fit it -- a target that
+        // joins after the first solve, which waited for the cadence's next
+        // solve, null until then (review round 4, CC1; docs/PLAN.md task
+        // 195, S9b).
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_weight)
+            || own_first;
         if due {
             self.solve();
         }
@@ -1181,9 +1213,12 @@ mod tests {
     /// path point of it is NaN, so once its rows arrive it predicts nothing
     /// until a solve has seen them. Unwindowed it kept the zeros `beta`
     /// starts at, and was predicted as exactly 0.0 at every path point
-    /// until the next scheduled solve (review round 4, CC1). It waits for
-    /// the cadence's next solve (S9b): the row cap, 25 rows after the first
-    /// solve at row 1. Both target layouts.
+    /// until the next scheduled solve (review round 4, CC1). And it has a
+    /// first solve of its own, as a fresh model has: on the row its own
+    /// weight first reaches its `min_weight`, the second of its rows, row
+    /// 11, where it waited for the cadence's next solve, the row cap 25 rows
+    /// after the first solve at row 1 (docs/PLAN.md task 195, S9b). Both
+    /// target layouts.
     #[test]
     fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
         use crate::OnlineModel;
@@ -1205,7 +1240,7 @@ mod tests {
                     1.0,
                 );
                 let late = &p.pred[2..];
-                if i <= 26 {
+                if i <= 11 {
                     assert!(
                         late.iter().all(|v| v.is_nan()),
                         "{gaps:?}, row {i}: predicted {late:?} from a fit nobody solved"
@@ -1221,11 +1256,13 @@ mod tests {
                     // over the target's rows against every row's.
                     assert!(late.iter().all(|v| v.is_finite()), "{gaps:?}, row {i}");
                 }
-                // After the row: the solve at the end of row 26 has seen it.
-                if (2..=25).contains(&i) {
+                // After the row: the target's own first solve at the end
+                // of row 11 has seen it, and none before.
+                if (2..=11).contains(&i) {
                     let beta = m.coefficients().expect("solved at row 1");
-                    assert!(
+                    assert_eq!(
                         beta[1].iter().flatten().all(|v| v.is_nan()),
+                        i < 11,
                         "{gaps:?}, row {i}: {:?}",
                         beta[1]
                     );

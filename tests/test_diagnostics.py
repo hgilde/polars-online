@@ -17,7 +17,7 @@ import polars_online as po
 
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
-    ("rls", {"ridge": 1.0}),
+    ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),

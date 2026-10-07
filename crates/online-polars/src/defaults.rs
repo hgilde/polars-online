@@ -95,12 +95,16 @@ fn numbers(v: &[f64]) -> Value {
 /// leaves `None`, read through the model's own functions.
 fn derived(model: &AnyModel) -> Option<Value> {
     match model {
+        // A prior left out is the first rows' own, which no build of a
+        // spec can show: it reads "data", beside the rows that set it
+        // (docs/PLAN.md task 195, U4).
         AnyModel::Bocpd(m) => {
             let c = m.cfg();
             Some(json!({
-                "prior_mean": numbers(&c.mu0()),
+                "prior_mean": c.prior_mean.as_ref().map_or(json!("data"), |_| numbers(&c.mu0())),
                 "prior_nu": number(c.nu0()),
-                "prior_scale": numbers(&c.psi0()),
+                "prior_scale": c.prior_scale.as_ref().map_or(json!("data"), |_| numbers(&c.psi0())),
+                "warm_rows": if c.warms_up() { json!(c.warm_rows_or_default()) } else { Value::Null },
             }))
         }
         AnyModel::Rcov(m) => {

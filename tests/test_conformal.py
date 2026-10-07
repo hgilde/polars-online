@@ -221,7 +221,7 @@ def messy(n=3000, seed=0, *, groups=1):
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("ewridge", {"ridge": [1e-6, 1.0], "feature_sets": {"a": ["x0"], "b": ["x0", "x1"]}}),
-    ("rls", {"ridge": 1.0}),
+    ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
@@ -326,7 +326,7 @@ class TestOracleOnTheStreamPlumbing:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            ridge=1.0,
+            delta=1.0,
             half_life=[50.0, 400.0],
             min_weight=3.0,
             emit_sigma=True,

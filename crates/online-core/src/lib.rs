@@ -154,7 +154,7 @@ pub use runs::Runs;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
-pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, SlotMetrics};
+pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
 pub use window::{
     At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowShadow, truncated,
     truncated_mean, truncated_scalar,
@@ -486,7 +486,18 @@ pub use window::{
 ///   spec's `key_integer` alone (N22). The bank refuses a file older than 39
 ///   by number, and pre-1.0 no loader is written. A model's own state loads
 ///   as it did at 38.
-pub const SCHEMA_VERSION: u32 = 39;
+/// - 40 (2026-10-07, task 195): `sgd` and `pa` keep each target's EW
+///   residual variance, the scale their `huber_delta` and `eps` are in
+///   (U1); `pa` keeps `sgd`'s scaler under `standardize` (U2); `bocpd`
+///   keeps the rows its warm-up holds and the prior they set (U4);
+///   `ew_ridge` and `robust` keep each target's own `min_weight` for its own
+///   first solve (S9b); `rls`'s cfg names its prior strength `delta` (N11);
+///   and `sgd`'s cfg carries `strict_binary` (S4). A state of those models
+///   from before 40 does not decode, and its `huber_delta` and `eps` meant
+///   other numbers; the bank refuses a file older than 40 by number, and
+///   pre-1.0 no loader is written. Every other model's state loads as it
+///   did at 38.
+pub const SCHEMA_VERSION: u32 = 40;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -515,7 +526,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///
 /// Every other model's state from 14 on decodes and loads. A bank file is
 /// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 37). How the number came
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 40). How the number came
 /// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the

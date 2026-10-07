@@ -91,7 +91,7 @@ def test_the_posterior_is_the_longhand_algorithm_one():
     """Every reported number against the recursion written out, at every
     row, with the truncation off."""
     x = np.concatenate([normals(60, 1), normals(60, 2, loc=3.0)])
-    out = run(x, hazard=50.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
+    out = run(x, hazard=50.0, prior_mean=[0.0], prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     posts, scores = longhand(x, 50.0)
     # Row one is gated out: `P(r <= 1)` is 1 there whatever the data, so
     # every comparison starts at row two -- the row is still *learned*.
@@ -115,9 +115,10 @@ def longhand_gaussian(x, hazard, k0=1.0):
     """Algorithm 1 again, with the ``gaussian`` emission: a normal-inverse-
     Wishart run whose predictive is a multivariate Student-t, written from the
     textbook -- raw sums, ``numpy.linalg.solve`` and ``slogdet`` -- where the
-    model keeps centred sums and a Cholesky factor. The prior is the spec's
-    default: ``mu0 = 0``, ``nu0 = d + 2``, ``Psi0 = I``. Returns the row's log
-    score and ``P(r <= 1)`` after it, per row."""
+    model keeps centred sums and a Cholesky factor. The prior is ``mu0 = 0``,
+    ``nu0 = d + 2``, ``Psi0 = I``, given whole to the spec it is held against
+    (left out, the first rows set ``mu0`` and ``Psi0``, docs/PLAN.md task 195).
+    Returns the row's log score and ``P(r <= 1)`` after it, per row."""
     x = np.asarray(x, dtype=float)
     d = x.shape[1]
     nu0, psi0, mu0 = d + 2.0, np.eye(d), np.zeros(d)
@@ -176,7 +177,9 @@ def test_the_gaussian_emission_is_the_longhand_at_three_features():
             rng.multivariate_normal([2.0, -1.0, 1.5], cov, 60),
         ]
     )
-    common = dict(hazard=50.0, prune_below=0.0)
+    common = dict(
+        hazard=50.0, prune_below=0.0, prior_mean=[0.0] * 3, prior_scale=[1.0], prior_nu=5.0
+    )
     out = run(x, emission="gaussian", **common)
     scores, p_change = longhand_gaussian(x, 50.0)
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
@@ -200,7 +203,9 @@ def test_two_features_are_a_product_of_student_ts():
     """The diagonal emission on `d > 1`, against the same longhand."""
     rng = np.random.default_rng(11)
     x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80)])
-    out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
+    out = run(
+        x, hazard=40.0, prior_mean=[0.0] * 2, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0
+    )
     _, scores = longhand(x, 40.0)
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
@@ -280,7 +285,7 @@ def test_the_log_score_prefers_the_model_that_saw_the_break():
 
 def test_truncation_changes_little_and_max_run_caps_the_state():
     x = np.concatenate([normals(200, 14), normals(200, 15, loc=3.0)])
-    base = dict(hazard=100.0, prior_scale=[1.0], prior_nu=2.0)
+    base = dict(hazard=100.0, prior_mean=[0.0], prior_scale=[1.0], prior_nu=2.0)
     exact = run(x, prune_below=0.0, **base)
     cut = run(x, prune_below=1e-4, **base)
     worst = max(
@@ -408,7 +413,7 @@ def test_a_zero_weight_row_advances_nothing():
 def test_the_first_row_of_every_group_is_silent():
     x = normals(40, 20)
     g = ["a"] * 20 + ["b"] * 20
-    out = run(x, hazard=50.0, prior_scale=[1.0], prior_nu=2.0, group="g", g=g)
+    out = run(x, hazard=50.0, prior_mean=[0.0], prior_scale=[1.0], prior_nu=2.0, group="g", g=g)
     assert out["p_change"][0] is None and out["p_change"][20] is None
     assert out["p_change"][1] is not None and out["p_change"][21] is not None
     # And the groups are independent: the second starts its run over.
@@ -446,7 +451,15 @@ def test_a_real_shift_survives_a_small_robust_beta(beta):
     20-sigma row is still a non-event; from about 0.3 up, nothing is ever
     detected again. 0.1 is the default."""
     x = np.concatenate([normals(150, 22), normals(150, 23, loc=4.0)])
-    out = run(x, emission="robust", robust_beta=beta, hazard=250.0, prior_scale=[1.0], prior_nu=2.0)
+    out = run(
+        x,
+        emission="robust",
+        robust_beta=beta,
+        hazard=250.0,
+        prior_mean=[0.0],
+        prior_scale=[1.0],
+        prior_nu=2.0,
+    )
     mode = out["run_mode"].to_list()
     found = next(t for t in range(150, 300) if mode[t] < 20)
     assert found <= 153
@@ -473,7 +486,7 @@ def test_the_gaussian_emission_sees_the_correlation_the_diagonal_one_cannot():
     r = 0.95
     after = np.sqrt(r) * f + np.sqrt(1 - r) * rng.standard_normal((200, 2))
     x = np.vstack([before, after])
-    base = dict(hazard=250.0, prior_scale=[1.0], prune_below=1e-8)
+    base = dict(hazard=250.0, prior_mean=[0.0, 0.0], prior_scale=[1.0], prune_below=1e-8)
     full = run(x, emission="gaussian", prior_nu=4.0, **base)
     diag = run(x, emission="diag", prior_nu=2.0, **base)
     assert full["run_mode"][260] < 100, "the full one abandoned the old run"
@@ -533,7 +546,9 @@ def test_three_features_are_a_product_of_student_ts():
     `d = 2` test (review 2026-09-18, phase 4)."""
     rng = np.random.default_rng(12)
     x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80), rng.normal(0, 0.5, 80)])
-    out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
+    out = run(
+        x, hazard=40.0, prior_mean=[0.0] * 3, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0
+    )
     _, scores = longhand(x, 40.0)
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
@@ -661,7 +676,14 @@ def run_clock(x, secs, hazard, w=None, **kw):
         kw["weight"] = "w"
     kw = dict(dict(gap_cap="1d", prune_below=0.0, max_run=10_000, min_weight=0.0), **kw)
     spec = po.spec.bocpd(
-        "b", features=["x0"], hazard=hazard, clock="t", prior_nu=2.0, prior_scale=[1.0], **kw
+        "b",
+        features=["x0"],
+        hazard=hazard,
+        clock="t",
+        prior_mean=[0.0],
+        prior_nu=2.0,
+        prior_scale=[1.0],
+        **kw,
     )
     return po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
 
@@ -778,6 +800,7 @@ def test_a_number_hazard_on_a_temporal_clock_is_still_per_row():
         "b",
         features=["x0"],
         hazard=50.0,
+        prior_mean=[0.0],
         prior_nu=2.0,
         prior_scale=[1.0],
         prune_below=0.0,
@@ -869,3 +892,102 @@ def test_a_hazard_on_the_clock_is_chunk_invariant_and_resumes():
 def test_a_duration_hazard_is_refused_where_it_cannot_run(kwargs, message):
     with pytest.raises(ValueError, match=message):
         po.spec.bocpd("b", features=["x0"], **kwargs)
+
+
+# --- the prior from the first rows (docs/PLAN.md task 195, U4 and U5) ---------
+
+
+def stepping(level, sd, n=600, seed=11):
+    """Two features whose means step up 4 spreads at row 200 and back at row
+    400, at `level` with a spread of `sd`: a shift `robust` dates, where a
+    larger one it forgives row by row."""
+    rng = np.random.default_rng(seed)
+    shift = np.where((np.arange(n) >= 200) & (np.arange(n) < 400), 4.0, 0.0)
+    return np.column_stack(
+        [level + sd * (shift + rng.normal(size=n)), level + sd * (0.5 * shift + rng.normal(size=n))]
+    )
+
+
+def breaks(out):
+    """The rows a break is dated to: where the pre-row run mode falls under
+    20 from 20 or over, at `t - mode`, the row the run began on."""
+    mode = out["run_mode"].to_numpy()
+    found, last = [], 0.0
+    for t, m in enumerate(mode):
+        if np.isfinite(m):
+            if m < 20 and last >= 20:
+                found.append(t - int(m))
+            last = m
+    return found
+
+
+@pytest.mark.parametrize("emission", ["diag", "gaussian", "robust"])
+def test_the_prior_from_the_first_rows_finds_the_same_breaks_at_any_level(emission):
+    """With no `prior_mean` and no `prior_scale`, the first `warm_rows` rows
+    set both: their sample mean and covariance. So a stream at a level of
+    1e4 with a spread of 1e-2 is dated as the same stream at 0 with a spread
+    of 1 is, under ``"diag"`` and ``"gaussian"``, whose ``p_change`` agree to
+    1e-9. The prior was a mean of 0 and the identity in the data's units,
+    under which a run beginning on any row of the first stream had no
+    density, and no break was found (review round 4, CE5). ``"robust"`` is
+    held at level 0 alone: its tempered message ``pi ** w`` carries the
+    data's units as a factor ``c ** -w`` that differs from run to run, so its
+    posterior moves with the scale whatever the prior (reported beside task
+    195, not changed by it)."""
+    unit = run(stepping(0.0, 1.0), emission=emission, hazard=250.0)
+    assert all(any(abs(b - e) <= 1 for b in breaks(unit)) for e in (200, 400)), breaks(unit)
+    if emission != "robust":
+        scaled = run(stepping(1e4, 1e-2), emission=emission, hazard=250.0)
+        assert breaks(scaled) == breaks(unit)
+        gap = (unit["p_change"] - scaled["p_change"]).abs().max()
+        assert gap < 1e-9, gap
+
+
+def test_the_first_rows_report_nothing_and_are_replayed():
+    """The `warm_rows` rows (default `d + 2`) are buffered and report null;
+    then the runs see them, so the row after them is read as one more row of
+    a model that saw them all. A prior given whole runs from the first row."""
+    x = stepping(0.0, 1.0, n=50)
+    out = run(x)
+    assert out["p_change"][:4].null_count() == 4
+    assert out["p_change"][4:].null_count() == 0
+    out = run(x, warm_rows=10)
+    assert out["p_change"][:10].null_count() == 10
+    assert out["p_change"][10:].null_count() == 0
+    # Given whole, the prior reads from the first row, which `min_weight`'s
+    # default of 1 withholds alone.
+    given = run(x, prior_mean=[0.0, 0.0], prior_scale=[1.0])
+    assert given["p_change"][0] is None
+    assert given["p_change"][1:].null_count() == 0
+
+
+def test_the_warm_up_is_chunk_invariant_and_resumes():
+    """The buffer is state: a stream cut inside the warm-up, or saved and
+    loaded there, goes on as the stream that never stopped."""
+    x = stepping(3.0, 0.5, n=120)
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
+    spec = po.spec.bocpd("b", features=["x0", "x1"], warm_rows=7)
+    whole = po.ModelBank([spec]).fit_predict(df)
+    bank = po.ModelBank([spec])
+    parts = pl.concat([bank.fit_predict(df.slice(i, 3)) for i in range(0, df.height, 3)])
+    assert parts.equals(whole)
+    for at in (2, 6, 7, 8):
+        warm = po.ModelBank([spec])
+        first = warm.fit_predict(df[:at])
+        second = po.ModelBank.load_bytes(warm.save_bytes()).fit_predict(df[at:])
+        assert pl.concat([first, second]).equals(whole), at
+
+
+def test_a_constant_feature_does_not_break_the_prior():
+    """A feature that does not move over the first rows gives the prior no
+    variance; it takes a floor, and the model still finds the break in the
+    other feature, at level 0 and away from it."""
+    rng = np.random.default_rng(5)
+    n = 400
+    for level in (0.0, 1e4):
+        x = np.column_stack(
+            [np.full(n, level), np.where(np.arange(n) < 200, 0.0, 6.0) + rng.normal(size=n)]
+        )
+        out = run(x, hazard=250.0)
+        assert out["p_change"][10:].null_count() == 0, level
+        assert any(abs(b - 200) <= 1 for b in breaks(out)), level

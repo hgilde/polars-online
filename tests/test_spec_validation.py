@@ -82,7 +82,7 @@ REJECTED = [
     ),
     # A plain f64 on the Rust side: refused in Python by name (IMPROVEMENTS U2).
     (po.spec.quantile, dict(half_life=10.0, quantile=0.5, ridge=INF), "ridge must be finite"),
-    (po.spec.rls, dict(half_life=10.0, ridge=INF), "ridge must be finite"),
+    (po.spec.rls, dict(half_life=10.0, delta=INF), "delta must be finite"),
     (
         po.spec.kalman,
         dict(half_life=10.0, coef_half_life=10.0, obs_var=INF),
@@ -94,8 +94,8 @@ REJECTED = [
         dict(half_life=10.0, quantile=0.5, quantile_eps=NAN),
         "quantile_eps must not be NaN",
     ),
-    (po.spec.rls, dict(half_life=10.0, ridge=0.0), "rls ridge must be finite and > 0"),
-    (po.spec.rls, dict(half_life=10.0, ridge=-1.0), "rls ridge must be finite and > 0"),
+    (po.spec.rls, dict(half_life=10.0, delta=0.0), "rls delta must be finite and > 0"),
+    (po.spec.rls, dict(half_life=10.0, delta=-1.0), "rls delta must be finite and > 0"),
     (
         po.spec.lasso,
         dict(half_life=10.0, lasso_path=[0.1, 0.1]),

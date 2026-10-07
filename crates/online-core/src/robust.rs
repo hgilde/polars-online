@@ -352,6 +352,13 @@ pub struct Robust {
     /// are skipped, which must stay last.
     #[serde(default)]
     systems: BandSystems,
+    /// Per target, the threshold its own weight is checked against, as a
+    /// bank checks it on the output (hard rule 8): the weight at which a
+    /// target no solve has fit has its own first solve (docs/PLAN.md task
+    /// 195, S9b; [`Self::set_target_min_weight`]). Empty: `min_weight` for
+    /// every target.
+    #[serde(default)]
+    target_min_weight: Vec<f64>,
     /// The row's augmented values ([`RowBuf`]). Not state.
     #[serde(skip)]
     zbuf: RowBuf,
@@ -413,6 +420,7 @@ impl Robust {
             ybar_lo: vec![0.0; m],
             zbuf: RowBuf(vec![0.0; k]),
             systems: BandSystems(vec![None; m]),
+            target_min_weight: Vec::new(),
             nudge: NudgeScratch::default(),
             cfg,
         })
@@ -420,6 +428,36 @@ impl Robust {
 
     pub fn cfg(&self) -> &RobustCfg {
         &self.cfg
+    }
+
+    /// Each target's own `min_weight`, as a bank holds a list of them: one
+    /// value `>= 0` per target, or none for `min_weight` everywhere. A
+    /// target no solve has fit is solved on the row its own weight first
+    /// reaches its own threshold, as a fresh model's first solve fires on
+    /// the row its weight reaches `min_weight` (docs/PLAN.md task 195, S9b).
+    pub fn set_target_min_weight(&mut self, own: Vec<f64>) -> Result<(), String> {
+        crate::model::check_target_min_weight("robust", &own, self.cfg.n_targets)?;
+        self.target_min_weight = own;
+        Ok(())
+    }
+
+    /// Whether target `j`'s own weight, before this row and after it,
+    /// crosses into its own threshold while no solve has fit it: the row
+    /// its own first solve falls on (S9b). A target's weight grows only on
+    /// a row that carries it, `lam·W + w` there as in the update below.
+    fn own_first_solve(&self, j: usize, present: bool, lam: f64, weight: f64) -> bool {
+        if !present || !(weight > 0.0 && weight.is_finite()) {
+            return false;
+        }
+        let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
+        let reached = |w: f64| w >= t && w > 0.0;
+        let before = self.wobs[j];
+        !reached(before)
+            && reached(lam * before + weight)
+            && !self
+                .beta
+                .as_ref()
+                .is_some_and(|b| b[j].iter().all(|v| !v.is_nan()))
     }
 
     pub fn sigma2(&self) -> &[f64] {
@@ -980,9 +1018,16 @@ impl OnlineModel for Robust {
             Some(share) => self.weight_since_solve >= share * self.w_raw,
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
         };
+        // A fresh model's first solve fires on the row its weight reaches
+        // `min_weight`; so does a target's own, on the row its own weight
+        // first reaches its own, where no solve has fit it -- a target that
+        // joins after the first solve. It waited for the cadence's next
+        // solve, null until then: under `solve_every = 1000` all 56 of its
+        // rows of 80 (review round 4, CC1; docs/PLAN.md task 195, S9b).
         let due = by_cadence
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight);
+            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight)
+            || (0..m).any(|j| self.own_first_solve(j, y[j].is_some(), lam, weight));
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
         for j in 0..m {
@@ -1196,6 +1241,11 @@ impl OnlineModel for Robust {
                 // its Gram is refused rather than read.
                 if let Err(e) = m.band_systems_fit() {
                     return Err(StateError::Invalid(format!("robust: {e}")));
+                }
+                if let Err(e) =
+                    crate::model::check_target_min_weight("robust", &m.target_min_weight, n)
+                {
+                    return Err(StateError::Invalid(e));
                 }
                 // No window here: a state written before the runs' flag keeps
                 // none from here (review 2026-09-26, C4).
@@ -2454,9 +2504,12 @@ mod tests {
     /// until a solve has seen them. The solve left it the zeros `beta`
     /// starts at and spent the first-solve trigger, so the target was
     /// predicted as exactly 0.0 until the next scheduled solve, 56 rows of
-    /// 80 under `solve_every = 1000` (review round 4, CC1). A late target
-    /// waits for the next solve on the cadence (no first solve of its own,
-    /// S9b): here the row cap, 25 rows after the first solve at row 1.
+    /// 80 under `solve_every = 1000` (review round 4, CC1). And a late
+    /// target has a first solve of its own, as a fresh model has: on the row
+    /// its own weight first reaches its `min_weight`, here the second of its
+    /// rows, row 11, so it is predicted from row 12 on. It waited for the
+    /// next solve on the cadence, the row cap 25 rows after the first solve
+    /// at row 1, and was null until row 27 (docs/PLAN.md task 195, S9b).
     #[test]
     fn a_target_that_joins_after_the_first_solve_is_not_predicted_from_zeros() {
         for loss in [
@@ -2479,32 +2532,63 @@ mod tests {
                     1.0,
                 );
                 match i {
-                    // No weight before its first row is learned.
-                    0..=10 => assert!(p.pred[1].is_nan(), "{loss:?}, row {i}: {:?}", p.pred),
-                    // Rows, but no solve since: no fit.
-                    11..=26 => assert!(
-                        p.pred[1].is_nan(),
-                        "{loss:?}, row {i}: predicted {} from a fit nobody solved",
-                        p.pred[1]
-                    ),
-                    // The solve at the end of row 26 saw them.
+                    // No weight before its first row is learned, and one
+                    // row's worth before its second.
+                    0..=11 => assert!(p.pred[1].is_nan(), "{loss:?}, row {i}: {:?}", p.pred),
+                    // Its own first solve, at the end of row 11, saw them.
                     _ => assert!(
                         (p.pred[1] - (1.0 - 2.0 * x[0])).abs() < 0.1,
                         "{loss:?}, row {i}: {:?}",
                         p.pred
                     ),
                 }
-                // After the row: the solve at the end of row 26 has seen it.
-                if (2..=25).contains(&i) {
+                // After the row: the target's own first solve at the end of
+                // row 11 has seen it, and none before.
+                if (2..=11).contains(&i) {
                     let beta = m.coefficients().expect("solved at row 1");
-                    assert!(
+                    assert_eq!(
                         beta[1].iter().all(|v| v.is_nan()),
+                        i < 11,
                         "{loss:?}, row {i}: {beta:?}"
                     );
                     assert!(beta[0].iter().all(|v| v.is_finite()), "{loss:?}, row {i}");
                 }
             }
         }
+    }
+
+    /// The threshold a late target's own first solve waits for is its own,
+    /// as a bank holds one per target: at 5 the target joining at row 10 is
+    /// first solved at the end of its fifth row, row 14, where at the
+    /// model's 2 it was row 11; one solve, and none on the rows between. A
+    /// threshold list of the wrong length, or one below 0, is refused, and
+    /// so is a state holding one (docs/PLAN.md task 195, S9b).
+    #[test]
+    fn a_late_targets_first_solve_waits_for_its_own_min_weight() {
+        let mut c = cfg(1, 2, RobustLoss::Huber { delta: 1.345 });
+        c.min_weight = 2.0;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 1000;
+        let mut m = Robust::new(c).unwrap();
+        assert!(m.set_target_min_weight(vec![2.0]).is_err());
+        assert!(m.set_target_min_weight(vec![2.0, -1.0]).is_err());
+        m.set_target_min_weight(vec![2.0, 5.0]).unwrap();
+        let mut s = 7u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s)];
+            let b = (i >= 10).then(|| 1.0 - 2.0 * x[0]);
+            m.step(&x, &[Some(x[0]), b], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let fit = m
+                .coefficients()
+                .is_some_and(|b| b[1].iter().all(|v| v.is_finite()));
+            assert_eq!(fit, i >= 14, "row {i}");
+        }
+        let mut st = m.state();
+        let crate::ModelState::Robust(inner) = &mut st.model else {
+            unreachable!()
+        };
+        inner.target_min_weight = vec![1.0];
+        assert!(matches!(Robust::restore(&st), Err(StateError::Invalid(_))));
     }
 
     /// A target whose weight a gap takes to exactly 0 keeps the fit its

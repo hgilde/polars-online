@@ -130,7 +130,7 @@ def main() -> None:
     )
     models = {
         "ew_ridge": po.spec.ewridge("m", **common),
-        "rls": po.spec.rls("m", ridge=1.0, **common),
+        "rls": po.spec.rls("m", delta=1.0, **common),
         "kalman": po.spec.kalman("m", coef_half_life=2000.0, **common),
         "lasso": po.spec.lasso("m", lasso_path=[0.1, 0.01, 0.0], **common),
         "huber": po.spec.huber("m", **common),
@@ -161,13 +161,21 @@ def main() -> None:
             "k=20, 90% interval",
             po.spec.ewridge("m", conformal=0.9, **common),
         ),
-        ("sgd", "k=20, squared loss", po.spec.sgd("m", learning_rate=0.01, **common)),
+        # The raw step, as the README's figures were measured before `standardize`
+        # became the default (docs/PLAN.md task 195, U2).
+        (
+            "sgd",
+            "k=20, squared loss, standardize=False",
+            po.spec.sgd("m", learning_rate=0.01, standardize=False, **common),
+        ),
         (
             "sgd, simplex",
             "k=20, coef >= 0, sum 1",
-            po.spec.sgd("m", learning_rate=0.01, coef_min=0.0, coef_sum=1.0, **common),
+            po.spec.sgd(
+                "m", learning_rate=0.01, coef_min=0.0, coef_sum=1.0, standardize=False, **common
+            ),
         ),
-        ("pa", "k=20", po.spec.pa("m", **common)),
+        ("pa", "k=20, standardize=False", po.spec.pa("m", standardize=False, **common)),
         (
             "kalman + revert",
             "k=20, revert_half_life",

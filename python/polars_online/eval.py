@@ -336,14 +336,18 @@ def _metric_exprs(
         )
     else:
         # Fraction of rows where the sign of pred matches the sign of y
-        # (rows with y == 0 excluded: neither up nor down, not a class), and
-        # null where no row has a sign. A ratio target's signs are taken
-        # about its centre, 1, as the bank's `emit_metrics` takes them.
+        # (rows with y == 0 or pred == 0 excluded: neither up nor down, not a
+        # class), and null where no row has a sign. A ratio target's signs
+        # are taken about its centre, 1, as the bank's `emit_metrics` takes
+        # them, and a prediction at the centre is left out as the bank leaves
+        # it out (docs/PLAN.md task 195, S6): polars' `sign(0)` is 0, a miss
+        # here, where the bank's `signum(+0.0)` was 1, a hit.
         y, pred = pl.col("y"), pl.col("pred")
         if centre is not None:
             y, pred = y - pl.col(centre), pred - pl.col(centre)
-        signed = (y != 0).sum()
-        hits = ((pred.sign() == y.sign()) & (y != 0)).sum()
+        scored = (y != 0) & (pred != 0)
+        signed = scored.sum()
+        hits = ((pred.sign() == y.sign()) & scored).sum()
         exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
     exprs.append(resid.pow(2).mean().alias("mse"))
     exprs.append(pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough"))
@@ -382,9 +386,10 @@ def metrics(
         varied.
     ``hit_rate``
         The share of rows whose sign the prediction got right, rows with ``y ==
-        0`` excluded; null where every row is excluded. A ratio target read
-        through ``spec`` is positive by construction, so its signs are taken
-        about 1 instead, as the bank's ``emit_metrics`` takes them.
+        0`` or ``pred == 0`` excluded, since either says neither up nor down;
+        null where every row is excluded. A ratio target read through ``spec``
+        is positive by construction, so its signs are taken about 1 instead.
+        Both are as the bank's ``emit_metrics`` takes them.
     ``mse``
         The mean squared residual.
 
@@ -750,8 +755,8 @@ def sums(
         The residual sum of squares.
     ``hits``, ``signed``
         For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
-        with ``y != 0`` (about 1 for a ratio target read through ``spec``, as
-        :func:`metrics` takes them). Under ``binary=True`` (:func:`metrics`'s
+        with ``y != 0`` and ``pred != 0`` (about 1 for a ratio target read through
+        ``spec``, as :func:`metrics` takes them). Under ``binary=True`` (:func:`metrics`'s
         reading), ``hits`` counts agreement at a 0.5 threshold and ``signed``
         every row, since every row scores.
 
@@ -800,7 +805,10 @@ def sums(
         hits, signed = w * ((p > 0.5) == (y > 0.5)), w
     else:
         dy, dp = (y, p) if centre is None else (y - pl.col(centre), p - pl.col(centre))
-        hits, signed = w * ((dy.sign() == dp.sign()) & (dy != 0)), w * (dy != 0)
+        # A target or a prediction at the centre has no sign, as in
+        # :func:`metrics` and the bank (docs/PLAN.md task 195, S6).
+        scored = (dy != 0) & (dp != 0)
+        hits, signed = w * ((dy.sign() == dp.sign()) & scored), w * scored
     keys = ["slot", "target", *by]
     return (
         long.group_by(keys)

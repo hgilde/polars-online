@@ -22,7 +22,7 @@ import polars_online as po
 #: `test_model_registry` holds this list to exactly that.
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
-    ("rls", {"ridge": 1.0}),
+    ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
     ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
@@ -119,10 +119,12 @@ class TestNullPolicy:
         way to advance the clock and learn nothing, field for field and
         ``coef`` included -- but ``weight_sum``, the shared weight, which
         counts every processed row (hard rule 8) and so is the zero-weight
-        stream's plus the row's weight, decayed. `kalman` runs
-        unstandardized here: its standardizer takes every processed row's
-        features, a null target's included, as `kalman.rs` documents."""
-        if model == "kalman":
+        stream's plus the row's weight, decayed. `kalman`, `sgd` and `pa`
+        run unstandardized here: their standardizer takes every processed
+        row's features, a null target's included, as `kalman.rs` and
+        `sgd.rs` document (`standardize` is their default since docs/PLAN.md
+        task 195)."""
+        if model in ("kalman", "sgd", "pa"):
             extra = {**extra, "standardize": False}
         df = frame(binary=model == "ftrl")
         y = df["y0"].to_list()

@@ -207,6 +207,7 @@ class TestPassiveAggressive:
             gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -225,6 +226,7 @@ class TestPassiveAggressive:
             gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
             fit_intercept=False,
             **kw,
         )
@@ -263,6 +265,7 @@ class TestSgd:
             gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -280,6 +283,7 @@ class TestSgd:
             gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
             fit_intercept=False,
             **kw,
         )
@@ -306,6 +310,7 @@ class TestSgd:
             gap_cap=MAX_DCLOCK,
             weight="w",
             coef_every=0,
+            standardize=False,  # the oracle reads the features as they stand
             fit_intercept=fit_intercept,
             **kw,
         )

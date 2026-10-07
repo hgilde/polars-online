@@ -397,6 +397,11 @@ _RENAMED = {
     "reset": "reset_on_flag",
 }
 
+#: The parameters renamed in one builder whose old name another keeps
+#: (docs/PLAN.md task 195, N11): ``rls``'s ``ridge`` is ``delta``, and
+#: ``ridge`` is still :func:`ewridge`'s, :func:`huber`'s and :func:`quantile`'s.
+_RENAMED_IN = {"rls": {"ridge": "delta"}}
+
 
 def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Check each keyword against ``fn``'s annotations (and ``_common``'s for
@@ -421,6 +426,8 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             if hint is None:
                 if key in _RENAMED:
                     raise TypeError(f"{who}: {key} was renamed {_RENAMED[key]}")
+                if key in _RENAMED_IN.get(fn.__name__, {}):
+                    raise TypeError(f"{who}: {key} was renamed {_RENAMED_IN[fn.__name__][key]}")
                 raise TypeError(
                     f"{who}: {fn.__name__}() got an unexpected keyword argument {key!r}"
                 )
@@ -1403,7 +1410,7 @@ def rls(
     *,
     targets: TargetList,
     features: list[str],
-    ridge: float | None = None,
+    delta: float | None = None,
     coef_prior: list[list[float]] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -1419,7 +1426,7 @@ def rls(
     .. code-block:: text
 
         A <- lam * A + w * z z'        b_j <- lam * b_j + w * y_j * z        beta_j = A^-1 b_j
-        A_0 = ridge * I                b_0 = ridge * coef_prior
+        A_0 = delta * I                b_0 = delta * coef_prior
 
     What is stored is the factor ``R`` of ``A = R'R`` and ``u_j = R^-T b_j``: a
     row is folded in by Givens rotations and ``beta`` read off by one
@@ -1431,10 +1438,14 @@ def rls(
 
     .. rubric:: Parameters
 
-    ``ridge``
-        The prior's strength: ``A_0 = ridge * I``, which is ``P_0 = I / ridge``.
-        Default 1.0. Unlike :func:`ewridge` it penalizes the intercept too, and it
-        fades as data arrives, since ``A`` is a decayed sum.
+    ``delta``
+        The prior's strength: ``A_0 = delta * I``, which is ``P_0 = I / delta``,
+        the classic RLS name. Default 1.0, in the units of ``A``, a decayed sum of
+        ``w * z z'``: the features' squared, summed over rows. It is
+        :func:`ewridge`'s ``ridge`` under ``ridge_scale = "sum"``, not its default
+        ``ridge``, a penalty on the means that never fades: this one penalizes the
+        intercept too and fades as data arrives. It was called ``ridge`` until
+        task 195, and that name is refused naming this one.
     ``coef_prior``
         The coefficients the fit starts from and is shrunk toward, one vector per
         target in the features' original units; zeros when left out.
@@ -1474,7 +1485,7 @@ def rls(
         rls = po.spec.rls(
             "rls", targets=["y"], features=["x0", "x1"],
             clock="t", gap_cap=300.0, half_life=600.0,
-            ridge=1e-3,    # A starts at ridge * I: this penalizes the intercept too
+            delta=1e-3,    # A starts at delta * I: this penalizes the intercept too
         )
         out = po.ModelBank([rls]).fit_predict(df)
 
@@ -1482,7 +1493,7 @@ def rls(
 
     As every builder does (:mod:`polars_online.spec`).
     """
-    model: dict[str, Any] = {"type": "rls", "ridge": ridge, "coef_prior": coef_prior}
+    model: dict[str, Any] = {"type": "rls", "delta": delta, "coef_prior": coef_prior}
     return _common(name, model, targets=targets, features=features, **common)
 
 
@@ -1860,10 +1871,18 @@ def huber(
 
     ``huber_delta``
         The cut, in units of ``s``: a residual within it counts at full weight.
-        Default 1.5; ``inf`` cuts nothing, which is least squares.
+        Default 1.345, the cut at which Huber's estimator is 95% as efficient as
+        least squares when the errors are normal (Huber 1981): with ``Z``
+        standard normal and ``ψ`` the residual clipped at ``±k``, the efficiency
+        is ``(2Φ(k) − 1)² / E[ψ(Z)²]``, which is 0.95 at ``k = 1.345``.
+        statsmodels' ``HuberT`` takes 1.345 and scikit-learn's
+        ``HuberRegressor`` 1.35. ``inf`` cuts nothing, which is least squares.
+        :func:`sgd`'s ``huber_delta`` is the same constant in the same unit.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
         As for :func:`ewridge`: the penalty (default ``1e-6``), correlation-form
-        solving, and the solve schedule.
+        solving, and the solve schedule. ``ridge`` is on the mean-form Gram, in
+        the features' squared units, and dimensionless under ``standardize``,
+        which solves in correlation form.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -1899,7 +1918,7 @@ def huber(
         hub = po.spec.huber(
             "hub", targets=["y"], features=["x0", "x1"],
             clock="t", gap_cap=300.0, half_life=600.0,
-            huber_delta=1.5,    # a residual beyond 1.5 sigma is down-weighted
+            huber_delta=2.0,    # a residual beyond 2 sigma is down-weighted
         )
         out = po.ModelBank([hub]).fit_predict(df)
 
@@ -2005,7 +2024,9 @@ def quantile(
         quantile.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
         As for :func:`ewridge`: the penalty (default ``1e-6``), correlation-form
-        solving, and the solve schedule.
+        solving, and the solve schedule. ``ridge`` is on the mean-form Gram, in
+        the features' squared units, and dimensionless under ``standardize``,
+        which solves in correlation form.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2141,6 +2162,15 @@ def ftrl(
     ``l1``, ``l2``
         The penalties: ``l1`` zeroes a coefficient whose evidence is below
         it. Defaults 0.0 and 1.0.
+
+    None of the four is free of units. A coefficient is ``zz_i`` over
+    ``r_i + l2``, and ``g_i`` is the target (a probability, under the
+    logistic loss) times the feature, at the row's weight. So ``beta`` is in
+    the units of ``sqrt(n_i)``, a gradient, ``alpha`` in the coefficient's,
+    the target per unit of the feature, ``l1`` in the summed gradient's, and
+    ``l2`` in ``r_i``'s, the feature squared. A feature scaled by ``c`` fits
+    the same model at ``alpha / c``, ``beta * c``, ``l1 * c`` and ``l2 * c**2``.
+
     ``strict_binary``
         Refuse a chunk whose target is not 0 or 1, naming the row, before any
         stream is touched. Default ``False``: such a target is clamped into
@@ -2480,10 +2510,11 @@ def sgd(
     power: float | None = None,
     l2: float | None = None,
     clip_gradient: float | None = None,
-    standardize: bool = False,
+    standardize: bool = True,
     coef_min: float | list[float] | None = None,
     coef_max: float | list[float] | None = None,
     coef_sum: float | None = None,
+    strict_binary: bool = False,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Stochastic gradient descent with a choice of losses: one gradient step per
@@ -2512,7 +2543,7 @@ def sgd(
        * - ``huber``
          - identity
          - ``eta``
-         - ``clamp(p - y, +/- delta)``
+         - ``clamp(p - y, +/- delta * s)``
        * - ``quantile``
          - identity
          - ``eta``
@@ -2520,7 +2551,7 @@ def sgd(
        * - ``epsilon_insensitive``
          - identity
          - ``eta``
-         - 0 inside the tube, else ``sign(p - y)``
+         - 0 within ``eps * s`` of ``y``, else ``sign(p - y)``
        * - ``poisson``
          - log
          - ``exp(clamp(eta, +/- 30))``
@@ -2528,13 +2559,24 @@ def sgd(
        * - ``logistic``
          - sigmoid
          - ``sigmoid(eta)``
-         - ``p - y``
+         - ``p - clamp(y, 0, 1)``
 
     then ``g_i = d * z_i * w + l2 * b_i`` for a slope, and ``g_0 = d * w`` for
     the intercept, which is not penalised; each ``g_i`` is clamped to ``+/-
     clip_gradient``; then ``b_i -= lr_i * g_i``. The Poisson link clamps
     ``eta`` to ``+/- 30`` before the ``exp``, so a Poisson prediction never
     exceeds ``e ** 30``, about ``1.07e13``.
+
+    ``s`` is the EW standard deviation of the target's out-of-sample
+    residuals, as the row arrives, as for :func:`huber`. Its square is the EW
+    mean of ``(y - p) ** 2`` over the rows with the target, a weight above 0
+    and a prediction, each joining after its own step; its weight ages on
+    every row. Until the target has an ``s`` above 0 the Huber row is a
+    squared-loss row and the tube has no width. In the target's own units, a
+    cut and a tube fitted one scale and failed the others: a target in
+    thousandths never left a tube of 0.1, so it was never learned, and the
+    cut never bound on it. With ``s``, the squared and Huber losses fit a
+    target scaled by ``c`` as the unscaled one, scaled by ``c``.
 
     .. rubric:: Parameters
 
@@ -2543,21 +2585,26 @@ def sgd(
         sign-valued subgradient, so a constant rate oscillates in a band around
         the optimum; use ``schedule = "inv_scaling"`` with it.
     ``huber_delta``
-        The Huber cut, in target units -- not in units of the residual std, as for
-        :func:`huber`. Default 1.0; ``inf`` clips nothing, which is the squared
-        loss.
+        The Huber cut, in units of ``s``, the residual's std, as for
+        :func:`huber`, with its default, 1.345. ``inf`` clips nothing, which is the
+        squared loss.
     ``quantile``
         The level for ``loss = "quantile"``; required for it.
     ``eps``
-        The half-width of the insensitive tube, in target units. Default 0.1.
+        The half-width of the insensitive tube, in units of ``s``. Default 0.1.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
         ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power`` default 0.5)
-        or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). AdaGrad's sum of squared
-        gradients and ``weight_sum`` both decay on the model's clock, so an annealed or
-        adapted rate opens up again after a long gap instead of staying frozen.
-        The coefficients themselves do not decay: every row's step moves them,
-        so under ``"constant"`` their memory is in rows, about ``1 / (lr *
+        or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). The rate is per gradient
+        coordinate: a step is ``lr * g_i``, so ``lr`` is in the coefficient's
+        units over the gradient's -- one over the feature squared for the squared
+        and Huber losses, and the target over the feature squared for the
+        sign-valued quantile and epsilon-insensitive ones -- in standardized
+        units under ``standardize``. AdaGrad's sum of squared gradients and
+        ``weight_sum`` both decay on the model's clock, so an annealed or adapted
+        rate opens up again after a long gap instead of staying frozen. The
+        coefficients themselves do not decay: every row's step moves them, so
+        under ``"constant"`` their memory is in rows, about ``1 / (lr *
         E[z**2])`` of them, whatever the clock between rows. ``half-life``
         reaches ``weight_sum`` and ``min_weight``, the scaler and AdaGrad's sum,
         not the coefficients: at half-life 10 and 10,000 a constant rate fits
@@ -2567,14 +2614,18 @@ def sgd(
         penalised. Default 0.0.
     ``clip_gradient``
         A cap on each coordinate of the gradient, which clamps each ``g_i`` to
-        ``+/- clip_gradient``: a box, not a cap on the gradient's norm. Default
-        ``1e3``, not off, because ``poisson`` needs it: ``p = exp(eta)``, so a
-        row that pushes ``eta`` up makes the next gradient exponentially larger
-        and a constant rate diverges within a few thousand rows. It does not
-        bind at ordinary scales for an identity-link fit.
+        ``+/- clip_gradient``: a box, not a cap on the gradient's norm, in the
+        gradient's units, the target times the feature at the row's weight
+        (the standardized feature under ``standardize``). Default ``1e3``, not
+        off, because ``poisson`` needs it: ``p = exp(eta)``, so a row that
+        pushes ``eta`` up makes the next gradient exponentially larger and a
+        constant rate diverges within a few thousand rows. It does not bind at
+        ordinary scales for an identity-link fit.
     ``standardize``
         Take the step in standardized coordinates, which is the difference between
-        one learning rate for every column and one per scale. Default ``False``.
+        one learning rate for every column and one per scale. Default ``True``,
+        as for :func:`kalman`: raw, features times 100 took the defaults' fit from
+        an R² of 0.96 to -71847.
         Each row is standardized against the running moments with the row
         admitted, sklearn's ``StandardScaler.partial_fit`` then ``transform``.
         That bounds a standardized value by ``sqrt(weight_sum)``, and it is not a leak:
@@ -2604,6 +2655,12 @@ def sgd(
         an infinite bound on the wrong side is refused by name; floors of ``[0.1,
         0.2, 0.3]`` accept a sum of ``0.6`` although they add up to
         ``0.6000000000000001``.
+    ``strict_binary``
+        Under ``loss = "logistic"``, refuse a chunk whose target is not 0 or 1,
+        naming the row, before any stream is touched, as :func:`ftrl` does.
+        Default ``False``: such a target is clamped into ``[0, 1]``. Taken as it
+        stood, a label of 5 pushed the linear predictor up on every row for
+        ever. Refused beside another loss.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2612,7 +2669,7 @@ def sgd(
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed, where ``weight_sum`` counts every row, so rows with a null
     target do not warm up coefficients they never moved (docs/PLAN.md task
-    115 (d)).
+    115 (d)). A label ``strict_binary`` refuses is not one of them.
 
     .. rubric:: Output
 
@@ -2634,7 +2691,9 @@ def sgd(
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. ``pred_<t>`` is a probability under ``"logistic"`` and a rate
     under ``"poisson"``, and ``emit_metrics`` reads a logistic fit as
-    probabilities against labels.
+    probabilities against labels. A Poisson fit's ``hit_rate_<t>`` is null: a rate
+    is positive and a count is never negative, so there is no sign to hit, and
+    the sign test about zero read 1.0 whatever the fit.
 
     .. rubric:: Example
 
@@ -2655,10 +2714,11 @@ def sgd(
 
     As every builder does (:mod:`polars_online.spec`); ``quantile`` is required
     for ``loss = "quantile"``, ``learning_rate`` refuses ``inf``, and the
-    constraints are checked as above. ``huber_delta``, ``quantile`` and ``eps``
-    belong to the losses ``"huber"``, ``"quantile"`` and
-    ``"epsilon_insensitive"``, and ``power`` to ``schedule = "inv_scaling"``:
-    each is refused beside another (``ValueError``), rather than ignored.
+    constraints are checked as above. ``huber_delta``, ``quantile``, ``eps``
+    and ``strict_binary`` belong to the losses ``"huber"``, ``"quantile"``,
+    ``"epsilon_insensitive"`` and ``"logistic"``, and ``power`` to ``schedule =
+    "inv_scaling"``: each is refused beside another (``ValueError``), rather than
+    ignored.
     """
     model: dict[str, Any] = {
         "type": "sgd",
@@ -2675,6 +2735,7 @@ def sgd(
         "coef_min": coef_min,
         "coef_max": coef_max,
         "coef_sum": coef_sum,
+        "strict_binary": strict_binary,
     }
     spec = _common(name, model, targets=targets, features=features, **common)
     # A parameter of a loss or a schedule the spec does not use is refused, as
@@ -2706,25 +2767,37 @@ def pa(
     coef_min: float | list[float] | None = None,
     coef_max: float | list[float] | None = None,
     coef_sum: float | None = None,
+    standardize: bool = True,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Passive-aggressive regression (Crammer et al. 2006): each row asks the fit to
-    come within ``eps`` of its target, and the update is the smallest change that
-    does so.
+    come within ``eps`` residual standard deviations of its target, and the update
+    is the smallest change that does so.
 
     Passive when the constraint already holds, aggressive when it does not, and
     there is no learning rate to tune. O(k) per row, like :func:`sgd`.
 
     .. rubric:: The fit
 
-    With ``p = z . b``, ``loss = max(0, |y - p| - eps)`` and ``s = ||z||^2``:
+    With ``p = z . b``, ``loss = max(0, |y - p| - eps * sigma)`` and ``s =
+    ||z||^2``, the intercept's 1 inside ``z``:
 
     .. code-block:: text
 
         pa    tau = loss / s                 (unbounded)
         pa1   tau = min(c, loss / s)         (capped at c)
         pa2   tau = loss / (s + 1 / (2c))    (damped by c)
-        b    += tau * sign(y - p) * z
+        b    += min(w, 1) * tau * sign(y - p) * z
+
+    ``sigma`` is the EW standard deviation of the target's out-of-sample
+    residuals, as the row arrives, as for :func:`huber` and :func:`sgd`: its
+    square is the EW mean of ``(y - p) ** 2`` over the rows with the target, a
+    weight above 0 and a prediction, each joining after its own step, and its
+    weight ages on every row. Before the target has a ``sigma`` above 0 the tube
+    has no width. In the target's own units a tube of 0.1 held a target in
+    hundredths on every row: passive for ever, every prediction 0.0 and R² -0.05
+    where the same target unscaled scored 0.96. Under ``"pa"`` a target scaled
+    by ``k`` fits as the unscaled one, scaled by ``k``.
 
     The model keeps no accumulators, so there is nothing for the clock to decay:
     each step fully satisfies the current row, and older rows survive only through
@@ -2738,17 +2811,27 @@ def pa(
         when outliers are possible: plain ``"pa"`` moves the fit as far as it
         takes to satisfy a single bad row.
     ``c``
-        The cap (``pa1``) or damping (``pa2``). Default 1.0; ``inf`` caps nothing,
-        so either bounded mode is then ``"pa"``.
+        The cap (``pa1``) or damping (``pa2``) on ``tau``, which is in the
+        target's units over ``s``'s: the features' squared, or standardized ones
+        under ``standardize``, so ``c`` is in the target's units alone there.
+        Default 1.0; ``inf`` caps nothing, so either bounded mode is then
+        ``"pa"``.
     ``eps``
-        The margin, in target units: the row is close enough inside it and nothing
-        moves. Default 0.1.
+        The margin, in units of ``sigma``: the row is close enough inside it and
+        nothing moves. Default 0.1.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:
         it is the closest feasible coefficient to the one that would. A truth
         outside the feasible set is never realizable, so the model keeps stepping
         against the walls; a small ``c`` keeps those steps small.
+    ``standardize``
+        Take the step in standardized coordinates, :func:`sgd`'s scaler and its
+        rule: each row standardized against the running moments with the row
+        admitted, the coefficients read back in the caller's units, and a box or
+        a sum projected with its bounds carried over. Default ``True``: raw, ``s``
+        and ``c`` are in the features' units, so one feature in thousands makes
+        every step tiny and one in thousandths every step the cap.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2789,7 +2872,7 @@ def pa(
         pa = po.spec.pa(
             "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
             mode="pa1", c=0.1,   # the step is capped at c
-            eps=0.05,            # inside this margin nothing moves
+            eps=0.05,            # within 0.05 residual stds nothing moves
         )
         out = po.ModelBank([pa]).fit_predict(df)
 
@@ -2806,6 +2889,7 @@ def pa(
         "coef_min": coef_min,
         "coef_max": coef_max,
         "coef_sum": coef_sum,
+        "standardize": standardize,
     }
     return _common(name, model, targets=targets, features=features, **common)
 
@@ -4174,6 +4258,7 @@ def bocpd(
     robust_beta: float | None = None,
     prune_below: float | None = None,
     max_run: int | None = None,
+    warm_rows: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Bayesian online changepoint detection (Adams & MacKay 2007): a posterior over
@@ -4285,7 +4370,7 @@ def bocpd(
              - a normal-inverse-Wishart over all of them
              - the one that can see a break in the correlation with the
                marginals unchanged: in ``run_mode``, since ``p_change`` never
-               moves, and late, a median of 98 rows after the break in
+               moves, and late, a median of 121 rows after the break in
                ``docs/REGIMES.md`` §5
            * - ``"robust"``
              - each row weighted by ``(pi(x) / pi(mode)) ** robust_beta`` in
@@ -4312,25 +4397,49 @@ def bocpd(
              - default
            * - ``prior_mean``
              - ``mu_0``
-             - zeros
+             - the first ``warm_rows`` rows' mean
            * - ``prior_kappa``
              - the weight of that mean in rows
              - 1.0
            * - ``prior_nu``
              - the degrees of freedom
-             - ``d + 2``, the smallest that gives the Wishart a mean
+             - the smallest integer that gives the prior's variance a mean:
+               ``d + 2`` under ``"gaussian"``, whose inverse-Wishart needs
+               ``nu > d + 1``, and 3 under ``"diag"`` and ``"robust"``, whose
+               per-feature normal-inverse-gamma needs ``nu > 2`` whatever ``d``
            * - ``prior_scale``
-             - the prior scale of the variance as a list: one positive
-               number ``[s]`` for ``s`` times the identity, or the ``d * d``
-               entries of a symmetric positive-definite matrix, row by row
-             - the identity
+             - the prior scale of the variance as a list, in the data's units:
+               one positive number ``[s]`` for ``s`` times the identity, or the
+               ``d * d`` entries of a symmetric positive-definite matrix, row by
+               row
+             - the first ``warm_rows`` rows' covariance, its diagonal under
+               ``"diag"`` and ``"robust"``
 
-        ``prior_scale`` is the one parameter to set from the data: too large
-        and the model goes quiet, because no row is ever surprising under a
-        predictive that wide. ``prior_nu`` and ``prior_scale`` are ``2a`` and
-        ``2b`` in the gamma parametrisation, which is how Adams and MacKay
-        give their own finance example (``a = 1``, ``b = 1e-4``, ``hazard =
-        250``).
+        A prior in the data's units decides what counts as surprising: too
+        wide and the model goes quiet, because no row is surprising under a
+        predictive that wide, and too narrow or off-centre and every run
+        that begins on a row has no density for it. So the defaults are the
+        data's own. With ``prior_mean`` or ``prior_scale`` left out, the first
+        ``warm_rows`` learned rows report null and are held. Their weighted
+        mean and covariance (``numpy.cov``'s with ``aweights``, the sample
+        covariance at equal weights) set what was left out, and then they are
+        read, in order, as rows of a model that had that prior from the start.
+        At the default ``prior_nu`` the prior's mean variance is then that
+        covariance. A feature that does not move over those rows has no
+        variance to give; it takes ``2**-52 * max(mean**2, 1)``, the spread of
+        a value known to ``2**-26`` of its level, since a predictive of no
+        spread has no density. Under ``"gaussian"`` a covariance that is not
+        positive definite, two features that are one, gives its diagonal. With
+        both given there is no warm-up. ``prior_nu`` and ``prior_scale`` are
+        ``2a`` and ``2b`` in the gamma parametrisation, which is how Adams and
+        MacKay give their own finance example (``a = 1``, ``b = 1e-4``, ``hazard
+        = 250``).
+    ``warm_rows``
+        The learned rows held to set the prior from, where ``prior_mean`` or
+        ``prior_scale`` is left out. Default ``d + 2``, the smallest count whose
+        covariance is positive definite in general, as :func:`hmm` and
+        :func:`kmeans` name theirs. At least 2, and refused beside both priors,
+        which leave nothing to set.
     ``prune_below``, ``max_run``
         The share of the mass below which a run is dropped (default
         ``1e-6``), and the run length every longer run is folded into
@@ -4436,6 +4545,7 @@ def bocpd(
         "robust_beta": robust_beta,
         "prune_below": prune_below,
         "max_run": max_run,
+        "warm_rows": warm_rows,
     }
     mirror = _mirror_target(name, "bocpd", features, common, "its change points are in")
     targets = [hazard_col] if hazard_col is not None else mirror
@@ -4605,8 +4715,9 @@ def corrchange(
         statistic covers every pair at once, so there is nothing to spread,
         and an ``alpha_adjust`` other than the default is refused. Under
         ``"sequential"`` without ``crit`` each pair's share is refused below
-        ``2**-52``: one minus it is 1 as a double, or within two steps of
-        it, and there is no quantile to read there.
+        ``5e-11``: the critical value is solved from the boundary's law, and
+        in a smaller tail the solve's quantile is off by more than the 0.03
+        Wied and Galeano's own table is good to.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
         ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left.

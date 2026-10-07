@@ -427,9 +427,13 @@ The diagnostics add, per slot:
      - ``ic_<slot>``, ``r2_<slot>``, ``hit_rate_<slot>``
      - Exponentially weighted correlation of prediction with target,
        out-of-sample R² against the running mean, and the share of rows
-       whose sign the prediction got right. On a logistic ``sgd`` or
+       whose sign the prediction got right, a row whose target or
+       prediction is exactly 0 (1 for a ratio target) left out, as
+       ``po.eval.metrics`` leaves it out. On a logistic ``sgd`` or
        ``ftrl`` fit: the point-biserial correlation, the Brier skill score
-       and accuracy at a 0.5 threshold, under the same names.
+       and accuracy at a 0.5 threshold, under the same names. On a Poisson
+       ``sgd`` fit ``hit_rate`` is null: a positive rate against a count
+       has no sign to hit.
    * - ``conformal``
      - ``lo_<slot>``, ``hi_<slot>``, ``coverage_<slot>``
      - An interval ``pred ± q`` at the asked coverage, and the coverage it

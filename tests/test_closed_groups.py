@@ -788,11 +788,14 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 39 since
-    2026-10-07 (task 194: a stream's state nests what it keeps beside its
-    models, a clock range is kept as clock values, a closed pair's statistic
-    is ``t_stat``, and the bank keeps each key column's form; the bank
-    refuses 38), after 38 since
+    """The version a bank file names, held to the library's: 40 since
+    2026-10-07 (task 195: `sgd`'s and `pa`'s residual scales, `pa`'s
+    scaler, `bocpd`'s warm-up, the solving models' per-target thresholds and
+    `rls`'s `delta`; the bank refuses 39 and older), after 39 the same day
+    (task 194: a stream's state nests what it keeps beside its models, a
+    clock range is kept as clock values, a closed pair's statistic is
+    ``t_stat``, and the bank keeps each key column's form; the bank refuses
+    38), after 38 since
     2026-10-06 (task 186: ``ew_ridge``'s kept systems lost a Gram index
     nothing read, and a closed ``rcov`` row's ``psd_repaired`` can be null;
     the bank refuses 37), after 37 the same day (task 180: the solve,
@@ -837,7 +840,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 39
+    assert po.schema_version() == 40
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

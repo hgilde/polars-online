@@ -39,7 +39,7 @@ class TestRls:
             group="group",
             min_weight=5.0,
         )
-        a = po.ModelBank([po.spec.rls("m", ridge=0.7, **common)]).fit_predict(df)
+        a = po.ModelBank([po.spec.rls("m", delta=0.7, **common)]).fit_predict(df)
         b = po.ModelBank(
             [
                 po.spec.ewridge(
@@ -82,12 +82,15 @@ class TestRls:
             half_life=5.0,
             gap_cap=10.0,
             weight="w",
-            ridge=5.0,
             min_weight=2.0,
         )
-        a = po.ModelBank([po.spec.rls("m", **common)]).fit_predict(df)
+        a = po.ModelBank([po.spec.rls("m", delta=5.0, **common)]).fit_predict(df)
         b = po.ModelBank(
-            [po.spec.ewridge("m", ridge_scale="sum", max_rows_between_solves=1, **common)]
+            [
+                po.spec.ewridge(
+                    "m", ridge=5.0, ridge_scale="sum", max_rows_between_solves=1, **common
+                )
+            ]
         ).fit_predict(df)
         pa, pb = _np(a, "pred_y0"), _np(b, "pred_y0")
         m = np.isfinite(pa) & np.isfinite(pb)
@@ -104,7 +107,7 @@ class TestRls:
             half_life=HL,
             gap_cap=MAXD,
             weight="w",
-            ridge=1.0,
+            delta=1.0,
             min_weight=5.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)

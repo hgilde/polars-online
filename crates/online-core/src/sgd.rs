@@ -10,11 +10,11 @@
 //! | loss | link | `p` | `d` |
 //! |---|---|---|---|
 //! | `Squared` | identity | `eta` | `p − y` |
-//! | `Huber` | identity | `eta` | `clamp(p − y, ±delta)` |
+//! | `Huber` | identity | `eta` | `clamp(p − y, ±delta·s)` |
 //! | `Quantile` | identity | `eta` | `1{y < p} − tau` |
-//! | `EpsilonInsensitive` | identity | `eta` | `0` if `|p − y| ≤ eps`, else `sign(p − y)` |
+//! | `EpsilonInsensitive` | identity | `eta` | `0` if `|p − y| ≤ eps·s`, else `sign(p − y)` |
 //! | `Poisson` | log | `exp(clamp(eta, −30, 30))` | `p − y` |
-//! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − y` |
+//! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − clamp(y, 0, 1)` |
 //!
 //! then `g_i = d · z_i · w + l2 · b_i` for a slope and `g_0 = d · w` for the
 //! intercept, which is not penalised; then `b_i -= lr_i · g_i`. The Poisson
@@ -22,6 +22,34 @@
 //! and `e^30 ≈ 1.1e13`, and a linear predictor past either end predicts as
 //! that end does: the prediction and its gradient stay finite, where `exp`
 //! alone overflows past 709.
+//!
+//! **`delta` and `eps` are in units of `s`**, the target's EW residual
+//! standard deviation as the row arrives, as `huber`'s `huber_delta` is
+//! (`crate::Robust`): a cut and a tube in the target's own units fitted
+//! one scale and failed the others -- a target in thousandths never left a
+//! tube of 0.1, so the model was passive for ever, and one in thousands
+//! never entered it (docs/PLAN.md task 195, review round 4 CC4). `s²` is
+//! the EW mean of the squared out-of-sample residual `y − p`, aged on every
+//! row on the model's clock and learned from a row with the target, a
+//! weight above 0 and a prediction, after the row has used it:
+//!
+//! ```text
+//! W_s ← lam·W_s;   s² ← (W_s·s² + w·(y − p)²) / (W_s + w),   W_s ← W_s + w
+//! ```
+//!
+//! skipped where it would not be finite, as `huber`'s is. Before the target
+//! has one -- no residual yet, or every one so far exactly 0 -- there is
+//! nothing to draw a cut or a tube in: the Huber row is a squared-loss row
+//! and the tube has no width, `huber`'s rule for its rows before a scale.
+//! The squared loss is then equivariant in the target's scale -- a target
+//! scaled by `c` fits as the unscaled one, scaled by `c` -- and so is the
+//! Huber loss; the quantile and epsilon-insensitive losses step by the
+//! sign of the residual, so their `learning_rate` is in the target's units.
+//!
+//! **A logistic label outside {0, 1}** is clamped into `[0, 1]`, as `ftrl`
+//! clamps it; `strict_binary` instead learns nothing from it, and the bank
+//! refuses the chunk naming the row. `p − y` with `y = 5` pushed the linear
+//! predictor up on every row for ever (review round 4, CC9).
 //!
 //! Learning rates ([`LearningRate`]): a constant, an inverse-scaling schedule
 //! that anneals with `n_eff`, or AdaGrad's per-coordinate `lr / (sqrt(G_i) + eps)`.
@@ -41,14 +69,16 @@ use crate::{Constraint, Decay, EwDiag};
 #[serde(rename_all = "snake_case")]
 pub enum SgdLoss {
     Squared,
-    /// `delta` is in target units (not residual std, unlike `robust`'s Huber).
+    /// `delta` is in units of the target's EW residual std, as `robust`'s
+    /// Huber is (the module docs).
     Huber {
         delta: f64,
     },
     Quantile {
         tau: f64,
     },
-    /// Ignores residuals within `eps` — the SVR loss.
+    /// Ignores residuals within `eps` of the target's EW residual std — the
+    /// SVR loss (the module docs).
     EpsilonInsensitive {
         eps: f64,
     },
@@ -146,6 +176,12 @@ pub struct SgdCfg {
     /// row, and the initial `0` is projected too, so a simplex starts uniform.
     #[serde(default)]
     pub constraint: Option<Constraint>,
+    /// A logistic label that is not 0 or 1 is not learned from, where the
+    /// default clamps it into `[0, 1]`: `ftrl`'s rule. Logistic only. The
+    /// bank never hands the model such a row: it refuses the chunk, naming
+    /// the row (docs/PLAN.md task 195, S4).
+    #[serde(default)]
+    pub strict_binary: bool,
 }
 
 impl SgdCfg {
@@ -197,6 +233,9 @@ impl SgdCfg {
         if let Some(c) = &self.constraint {
             c.validate(self.n_features, "sgd")?;
         }
+        if self.strict_binary && self.loss != SgdLoss::Logistic {
+            return Err("sgd: strict_binary applies to the logistic loss only".into());
+        }
         Ok(())
     }
 }
@@ -219,6 +258,11 @@ pub struct Sgd {
     /// `min_weight = 10` with every coefficient at zero.
     #[serde(default)]
     w_target: Vec<f64>,
+    /// Per target, the EW variance of the out-of-sample residual, `s²`, and
+    /// its weight: the scale `huber_delta` and `eps` are in (the module
+    /// docs; docs/PLAN.md task 195).
+    sig2: Vec<f64>,
+    wsig: Vec<f64>,
     /// The standardized row `[1, z]` under a scaler; unused without one,
     /// where the model reads `x` in place.
     #[serde(skip)]
@@ -251,6 +295,8 @@ struct SgdV3 {
     w_sum: f64,
     #[serde(default)]
     w_target: Vec<f64>,
+    sig2: Vec<f64>,
+    wsig: Vec<f64>,
 }
 
 impl TryFrom<SgdV3> for Sgd {
@@ -258,6 +304,7 @@ impl TryFrom<SgdV3> for Sgd {
 
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
+        let (sig2, wsig) = (v.sig2, v.wsig);
         let mut w_target = v.w_target;
         let k = cfg.k_total();
         let m = cfg.n_targets;
@@ -288,6 +335,9 @@ impl TryFrom<SgdV3> for Sgd {
         if !crate::model::restore_target_weights(&mut w_target, w_sum, m) {
             return Err("sgd: the state's target weights have the wrong shape".into());
         }
+        if sig2.len() != m || wsig.len() != m {
+            return Err("sgd: the state's residual variances have the wrong shape".into());
+        }
         Ok(Self {
             cfg,
             scaler,
@@ -295,6 +345,8 @@ impl TryFrom<SgdV3> for Sgd {
             g2,
             w_sum,
             w_target,
+            sig2,
+            wsig,
             zbuf: vec![],
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
@@ -328,6 +380,8 @@ impl Sgd {
             g2,
             w_sum: 0.0,
             w_target: vec![0.0; m],
+            sig2: vec![0.0; m],
+            wsig: vec![0.0; m],
             zbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
@@ -347,54 +401,15 @@ impl Sgd {
         let Some(sc) = &self.scaler else {
             return self.beta.clone();
         };
-        let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.fit_intercept);
-        let scales = self.scales();
-        self.beta
-            .iter()
-            .map(|b| {
-                let mut c = vec![0.0; k];
-                for i in off..k {
-                    c[i] = b[i] / scales[i];
-                }
-                if self.cfg.fit_intercept {
-                    let mut b0 = b[0];
-                    for (i, ci) in c.iter().enumerate().skip(off) {
-                        b0 -= ci * sc.mean(i);
-                    }
-                    c[0] = b0;
-                }
-                c
-            })
-            .collect()
+        unscaled(&self.beta, sc, self.cfg.fit_intercept)
     }
 
     /// Per-slot scale: the running sd for features, 1 for the intercept and for
     /// a feature with no spread yet.
     fn scales(&self) -> Vec<f64> {
-        let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.fit_intercept);
         match &self.scaler {
-            None => vec![1.0; k],
-            Some(sc) => (0..k)
-                .map(|i| {
-                    if i < off {
-                        return 1.0;
-                    }
-                    if off == 0 {
-                        // No intercept: the raw second moment's scale, the
-                        // one the step standardizes with (C13).
-                        let raw = sc.raw(i);
-                        return if raw > 0.0 { raw.sqrt() } else { 1.0 };
-                    }
-                    let v = sc.var(i);
-                    if crate::variance_is_usable(v, sc.raw(i)) {
-                        v.sqrt()
-                    } else {
-                        1.0
-                    }
-                })
-                .collect(),
+            None => vec![1.0; self.cfg.k_total()],
+            Some(sc) => scales_of(sc, usize::from(self.cfg.fit_intercept)),
         }
     }
 
@@ -425,20 +440,52 @@ impl Sgd {
         }
     }
 
-    /// `dL/d(eta)` for the configured loss.
-    fn dloss(&self, p: f64, y: f64) -> f64 {
+    /// Per target, the EW variance of the out-of-sample residual, `s²` (the
+    /// module docs).
+    pub fn sigma2(&self) -> &[f64] {
+        &self.sig2
+    }
+
+    /// Target `j`'s residual scale `s = √s²` once it has one: `s²` finite
+    /// and above 0. `None` before -- no residual yet, or every one so far
+    /// exactly 0 -- where there is no cut and no tube to draw (`huber`'s
+    /// rule, `Robust`).
+    fn residual_scale(&self, j: usize) -> Option<f64> {
+        let s2 = self.sig2[j];
+        (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+    }
+
+    /// `dL/d(eta)` for the configured loss, with `scale` the target's
+    /// residual scale `s` (`None` before it has one: no cut, and a tube of
+    /// no width).
+    fn dloss(&self, p: f64, y: f64, scale: Option<f64>) -> f64 {
         let r = p - y;
         match self.cfg.loss {
             SgdLoss::Squared | SgdLoss::Poisson | SgdLoss::Logistic => r,
-            SgdLoss::Huber { delta } => r.clamp(-delta, delta),
+            SgdLoss::Huber { delta } => match scale {
+                Some(s) => r.clamp(-delta * s, delta * s),
+                None => r,
+            },
             SgdLoss::Quantile { tau } => f64::from(y < p) - tau,
             SgdLoss::EpsilonInsensitive { eps } => {
-                if r.abs() <= eps {
+                if r.abs() <= scale.map_or(0.0, |s| eps * s) {
                     0.0
                 } else {
                     r.signum()
                 }
             }
+        }
+    }
+
+    /// The label a row teaches target `j` with: `y` itself, except under
+    /// the logistic loss, where a label outside {0, 1} is clamped into
+    /// `[0, 1]`, or under `strict_binary` teaches nothing (`None`), `ftrl`'s
+    /// rule (docs/PLAN.md task 195, S4).
+    fn label(&self, y: f64) -> Option<f64> {
+        match self.cfg.loss {
+            SgdLoss::Logistic if self.cfg.strict_binary => (y == 0.0 || y == 1.0).then_some(y),
+            SgdLoss::Logistic => Some(y.clamp(0.0, 1.0)),
+            _ => Some(y),
         }
     }
 
@@ -458,15 +505,68 @@ thread_local! {
     static PREDICT_Z: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The scaler's per-slot scale, `k` slots with `off` of them the
+/// intercept: the running sd for a feature, 1 for the intercept and for a
+/// feature with no spread yet; through the origin (`off = 0`) the root of
+/// the raw second moment, the scale the step standardizes with (C13).
+/// `pa` reads it too (docs/PLAN.md task 195, U2).
+pub(crate) fn scales_of(sc: &EwDiag, off: usize) -> Vec<f64> {
+    (0..sc.k())
+        .map(|i| {
+            if i < off {
+                return 1.0;
+            }
+            if off == 0 {
+                // No intercept: the raw second moment's scale, the
+                // one the step standardizes with (C13).
+                let raw = sc.raw(i);
+                return if raw > 0.0 { raw.sqrt() } else { 1.0 };
+            }
+            let v = sc.var(i);
+            if crate::variance_is_usable(v, sc.raw(i)) {
+                v.sqrt()
+            } else {
+                1.0
+            }
+        })
+        .collect()
+}
+
+/// Coefficients learned in the coordinates `sc` standardizes into, read
+/// out in the caller's units with the moments as they stand: each slope
+/// over its feature's scale, and the intercept absorbing the shift of the
+/// means. `pa` reads them out the same way (docs/PLAN.md task 195, U2).
+pub(crate) fn unscaled(beta: &[Vec<f64>], sc: &EwDiag, fit_intercept: bool) -> Vec<Vec<f64>> {
+    let off = usize::from(fit_intercept);
+    let scales = scales_of(sc, off);
+    let k = scales.len();
+    beta.iter()
+        .map(|b| {
+            let mut c = vec![0.0; k];
+            for i in off..k {
+                c[i] = b[i] / scales[i];
+            }
+            if fit_intercept {
+                let mut b0 = b[0];
+                for (i, ci) in c.iter().enumerate().skip(off) {
+                    b0 -= ci * sc.mean(i);
+                }
+                c[0] = b0;
+            }
+            c
+        })
+        .collect()
+}
+
 /// `x` standardized against the moments of `sc` with the row itself
 /// admitted at unit weight after a decay of `lam` ([`EwDiag::including`];
 /// `SgdCfg::standardize` says why the row is in): feature `i` sits in
 /// slot `off + i` of the scaler, and is divided by that sd, or by 1 while
-/// it has no spread (the per-slot scale of [`Sgd::scales`]). Lazy: `step`
+/// it has no spread (the per-slot scale of [`scales_of`]). Lazy: `step`
 /// writes it into the model's buffer and `predict` into the thread's, with
-/// no vector of scales in between.
+/// no vector of scales in between. `pa` standardizes with it too.
 #[inline]
-fn standardized<'a>(
+pub(crate) fn standardized<'a>(
     sc: &'a EwDiag,
     off: usize,
     x: &'a [f64],
@@ -617,11 +717,30 @@ impl OnlineModel for Sgd {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
+            // `s²`'s weight ages on every row, as `huber`'s does, whatever
+            // the row then teaches (the module docs).
+            self.wsig[j] *= lam;
             let Some(yj) = y[j] else { continue };
             if weight <= 0.0 || !yj.is_finite() {
                 continue;
             }
-            let d = self.dloss(p, yj);
+            let Some(yj) = self.label(yj) else { continue };
+            // The cut and the tube are drawn in the scale as the row
+            // arrives; the row's own residual joins it afterwards, from the
+            // prediction the row reports, as `huber`'s does: a row with no
+            // prediction (`min_weight` unmet) adds nothing.
+            let d = self.dloss(p, yj, self.residual_scale(j));
+            if pred[j].is_finite() {
+                let resid = yj - p;
+                let ws_new = self.wsig[j] + weight;
+                let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
+                // Skipped where it would not be finite, as `huber`'s is: an
+                // `inf` scale would make every cut and tube infinite for good.
+                if s2.is_finite() {
+                    self.sig2[j] = s2;
+                    self.wsig[j] = ws_new;
+                }
+            }
             // Per slot: `g = d * z_i * w`, plus `l2 * beta_i` off the
             // intercept, clipped; `beta_i -= lr * g`. The intercept's `z`
             // is 1 (`d * 1 * w` is `d * w` exactly), and it is not
@@ -706,9 +825,12 @@ impl OnlineModel for Sgd {
             }
         }
         self.w_sum = lam * self.w_sum + weight;
+        // A label `strict_binary` refuses carries no weight for its target,
+        // as in `ftrl`: it taught nothing.
+        let strict = self.cfg.strict_binary;
         crate::model::age_target_weights(
             &mut self.w_target,
-            |j| y[j].is_some_and(f64::is_finite),
+            |j| y[j].is_some_and(|v| v.is_finite() && (!strict || v == 0.0 || v == 1.0)),
             lam,
             weight,
         );
@@ -810,6 +932,7 @@ mod tests {
             clip_gradient: 1e12,
             constraint: None,
             standardize: false,
+            strict_binary: false,
         }
     }
 
@@ -882,33 +1005,41 @@ mod tests {
         let m = |loss| Sgd::new(cfg(1, loss)).unwrap();
 
         // Squared: the plain residual, in both directions.
-        assert_eq!(m(SgdLoss::Squared).dloss(3.0, 1.0), 2.0);
-        assert_eq!(m(SgdLoss::Squared).dloss(1.0, 3.0), -2.0);
+        let one = Some(1.0);
+        assert_eq!(m(SgdLoss::Squared).dloss(3.0, 1.0, one), 2.0);
+        assert_eq!(m(SgdLoss::Squared).dloss(1.0, 3.0, one), -2.0);
 
-        // Huber: the residual, clipped symmetrically at delta.
+        // Huber: the residual, clipped symmetrically at delta residual
+        // stds, and not at all before the target has a scale.
         let h = m(SgdLoss::Huber { delta: 1.5 });
-        assert_eq!(h.dloss(1.0, 0.0), 1.0, "inside the band: squared");
-        assert_eq!(h.dloss(9.0, 0.0), 1.5, "outside: clipped");
-        assert_eq!(h.dloss(-9.0, 0.0), -1.5);
+        assert_eq!(h.dloss(1.0, 0.0, one), 1.0, "inside the band: squared");
+        assert_eq!(h.dloss(9.0, 0.0, one), 1.5, "outside: clipped");
+        assert_eq!(h.dloss(-9.0, 0.0, one), -1.5);
+        assert_eq!(h.dloss(9.0, 0.0, Some(2.0)), 3.0, "delta stds of 2");
+        assert_eq!(h.dloss(9.0, 0.0, None), 9.0, "no scale: no cut");
 
         // Quantile: a constant gradient whose sign depends on which side of
         // the prediction the target fell, asymmetric except at tau = 0.5.
         let q = m(SgdLoss::Quantile { tau: 0.9 });
-        assert_eq!(q.dloss(5.0, 1.0), 1.0 - 0.9, "over-predicted");
-        assert_eq!(q.dloss(1.0, 5.0), -0.9, "under-predicted");
+        assert_eq!(q.dloss(5.0, 1.0, one), 1.0 - 0.9, "over-predicted");
+        assert_eq!(q.dloss(1.0, 5.0, one), -0.9, "under-predicted");
         let med = m(SgdLoss::Quantile { tau: 0.5 });
         assert_eq!(
-            med.dloss(5.0, 1.0),
-            -med.dloss(1.0, 5.0),
+            med.dloss(5.0, 1.0, one),
+            -med.dloss(1.0, 5.0, one),
             "symmetric at 0.5"
         );
 
-        // Epsilon-insensitive: exactly zero inside the tube.
+        // Epsilon-insensitive: exactly zero inside the tube of eps residual
+        // stds, and a tube of no width before the target has a scale.
         let e = m(SgdLoss::EpsilonInsensitive { eps: 1.0 });
-        assert_eq!(e.dloss(0.5, 0.0), 0.0);
-        assert_eq!(e.dloss(1.0, 0.0), 0.0, "the boundary is inside");
-        assert!(e.dloss(3.0, 0.0) > 0.0);
-        assert!(e.dloss(-3.0, 0.0) < 0.0);
+        assert_eq!(e.dloss(0.5, 0.0, one), 0.0);
+        assert_eq!(e.dloss(1.0, 0.0, one), 0.0, "the boundary is inside");
+        assert!(e.dloss(3.0, 0.0, one) > 0.0);
+        assert!(e.dloss(-3.0, 0.0, one) < 0.0);
+        assert_eq!(e.dloss(3.0, 0.0, Some(4.0)), 0.0, "a tube of 4");
+        assert_eq!(e.dloss(0.5, 0.0, None), 1.0, "no scale: no tube");
+        assert_eq!(e.dloss(0.0, 0.0, None), 0.0, "on the target");
 
         // Links. Squared and the robust losses are the identity; logistic and
         // Poisson are not, and both must stay finite at extreme inputs.
@@ -1156,36 +1287,64 @@ mod tests {
         // shrink near the optimum: with a constant rate the coefficient
         // oscillates in a band, and only an annealed schedule settles. Both
         // halves are asserted, because the constant-rate behaviour is a real
-        // property of this loss rather than a bug.
+        // property of this loss rather than a bug. The band is the slope's
+        // range over the last 2000 of 30000 rows: a final value alone is one
+        // draw from it.
+        let band = |c: SgdCfg| {
+            let mut m = Sgd::new(c).unwrap();
+            let mut s = 19u64;
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for i in 0..30000 {
+                let x = [lcg(&mut s)];
+                let y = 2.0 * x[0] + 0.1 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                if i >= 28000 {
+                    let b = m.coefficients()[0][1];
+                    (lo, hi) = (lo.min(b), hi.max(b));
+                }
+            }
+            (lo, hi)
+        };
         let mut constant = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.2 });
         constant.learning_rate = 0.01;
-        let b_const = fit(constant, 30000, 19, |x, s| 2.0 * x[0] + 0.1 * lcg(s));
+        let (c_lo, c_hi) = band(constant);
 
         let mut annealed = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.2 });
         annealed.learning_rate = 0.5;
         annealed.schedule = LearningRate::InvScaling { power: 0.5 };
-        let b_anneal = fit(annealed, 30000, 19, |x, s| 2.0 * x[0] + 0.1 * lcg(s));
+        let (a_lo, a_hi) = band(annealed);
 
         assert!(
-            (b_anneal[1] - 2.0).abs() < (b_const[1] - 2.0).abs(),
-            "annealed {} should beat constant {} (truth 2.0)",
-            b_anneal[1],
-            b_const[1]
+            a_hi - a_lo < 0.75 * (c_hi - c_lo),
+            "annealed band [{a_lo}, {a_hi}] should be narrower than constant [{c_lo}, {c_hi}]"
         );
         assert!(
-            (b_anneal[1] - 2.0).abs() < 0.2,
-            "annealed slope {}",
-            b_anneal[1]
+            (a_lo - 2.0).abs() < 0.05 && (a_hi - 2.0).abs() < 0.05,
+            "annealed band [{a_lo}, {a_hi}] (truth 2.0)"
         );
     }
 
+    /// A residual inside the tube, `eps` residual stds wide, leaves the fit
+    /// alone, and one outside it steps: the "insensitive" of the name. The
+    /// first row has no scale to draw a tube in, so it steps whatever its
+    /// residual; its residual, 1, is the scale the next rows are judged in
+    /// (docs/PLAN.md task 195, U1).
     #[test]
     fn epsilon_insensitive_ignores_residuals_inside_the_tube() {
-        // A pure-noise target smaller than eps must leave the fit at zero.
-        let mut c = cfg(1, SgdLoss::EpsilonInsensitive { eps: 1.0 });
+        let mut c = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.8 });
         c.learning_rate = 0.01;
-        let b = fit(c, 5000, 21, |_, s| 0.3 * lcg(s));
-        assert!(b[0].abs() < 1e-12 && b[1].abs() < 1e-12, "moved: {b:?}");
+        c.min_weight = 0.0;
+        let mut m = Sgd::new(c).unwrap();
+        m.step(&[1.0], &[Some(1.0)], 0.0, 1.0);
+        let first = m.coefficients()[0].clone();
+        assert_eq!(first, vec![0.01, 0.01], "no scale yet: a step");
+        assert_eq!(m.sigma2(), &[1.0]);
+        // The prediction is now 0.02: a residual of 0.5 is inside 0.8 · 1.
+        m.step(&[1.0], &[Some(0.52)], 1.0, 1.0);
+        assert_eq!(m.coefficients()[0], first, "inside the tube");
+        // s² is now (1 + 0.25) / 2, so the tube is 0.8 · 0.79 = 0.63.
+        m.step(&[1.0], &[Some(0.72)], 1.0, 1.0);
+        assert_ne!(m.coefficients()[0], first, "outside the tube");
     }
 
     #[test]
@@ -1696,7 +1855,7 @@ mod tests {
             );
         }
         let q = Sgd::new(cfg(1, SgdLoss::Quantile { tau: 0.9 })).unwrap();
-        assert_eq!(q.dloss(1.0, 1.0), -0.9);
+        assert_eq!(q.dloss(1.0, 1.0, Some(1.0)), -0.9);
     }
 
     /// Without an intercept, `standardize` divides each feature by the root
@@ -1911,5 +2070,177 @@ mod tests {
             out[1] < 0.5 * out[0],
             "the sparse target's own weight: {out:?}"
         );
+    }
+
+    /// Bits of a prediction, every NaN one value: a withheld row is NaN
+    /// whatever its sign or payload.
+    fn bits_of(v: f64) -> u64 {
+        if v.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            v.to_bits()
+        }
+    }
+
+    /// `huber_delta` is in units of the target's EW residual standard
+    /// deviation σ, as `huber`'s is (`robust.rs`): a target scaled by a power
+    /// of two fits as the unscaled one does, scaled by it, to the bit, since
+    /// every number the step forms -- the residual, σ, the cut, the gradient
+    /// -- scales with it exactly. In the target's units the cut bound on the
+    /// outliers at scale 1, never at 2^-10 and on every row at 2^10 (review
+    /// round 4, CC4; docs/PLAN.md task 195, U1). The squared loss, which has
+    /// no cut, is the control.
+    #[test]
+    fn the_huber_cut_is_in_units_of_the_residual_std() {
+        for loss in [SgdLoss::Huber { delta: 1.345 }, SgdLoss::Squared] {
+            let run = |c: f64| -> Vec<u64> {
+                let mut cf = cfg(2, loss);
+                cf.standardize = true;
+                cf.clip_gradient = f64::INFINITY;
+                let mut m = Sgd::new(cf).unwrap();
+                let mut s = 5u64;
+                (0..400)
+                    .map(|i| {
+                        let x = [lcg(&mut s), lcg(&mut s)];
+                        let noise = lcg(&mut s);
+                        let outlier = if i % 37 == 5 { 20.0 } else { 0.0 };
+                        let y = c * (0.5 + 2.0 * x[0] - x[1] + 0.3 * noise + outlier);
+                        let d = if i == 0 { 0.0 } else { 1.0 };
+                        bits_of(m.step(&x, &[Some(y)], d, 1.0).pred[0] / c)
+                    })
+                    .collect()
+            };
+            let one = run(1.0);
+            for c in [2f64.powi(-10), 2f64.powi(10)] {
+                let scaled = run(c);
+                let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
+                assert_eq!(
+                    differ, 0,
+                    "{loss:?} at scale {c}: {differ} of 400 rows differ"
+                );
+            }
+        }
+    }
+
+    /// `eps` is in units of σ too: a target whose spread is under 0.1 of its
+    /// own units -- a return in decimal -- is learned. In the target's units
+    /// every residual sat inside the tube, so the model was passive for
+    /// ever and every coefficient stayed 0 (review round 4, CC4).
+    #[test]
+    fn a_target_smaller_than_the_tube_in_its_own_units_is_learned() {
+        let mut cf = cfg(1, SgdLoss::EpsilonInsensitive { eps: 0.1 });
+        cf.standardize = true;
+        cf.learning_rate = 1e-4;
+        let mut m = Sgd::new(cf).unwrap();
+        let mut s = 9u64;
+        for i in 0..2000 {
+            let x = [lcg(&mut s)];
+            let y = 1e-3 * (0.5 + 2.0 * x[0] + 0.3 * lcg(&mut s));
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let c = &m.coefficients()[0];
+        assert!(
+            (c[1] - 2e-3).abs() < 1e-3,
+            "the slope is 2e-3 in the target's units: {c:?}"
+        );
+    }
+
+    /// A logistic label outside {0, 1} is clamped into [0, 1], as `ftrl`
+    /// clamps it: a label of 5 teaches what a label of 1 does and one of -2
+    /// what 0 does, to the bit. `p - y` with `p` in (0, 1) and `y = 5` pushed
+    /// the linear predictor up on every row for ever (review round 4, CC9;
+    /// docs/PLAN.md task 195, S4).
+    #[test]
+    fn a_logistic_label_outside_zero_and_one_is_clamped() {
+        let fit = |hi: f64, lo: f64| {
+            let mut m = Sgd::new(cfg(1, SgdLoss::Logistic)).unwrap();
+            let mut s = 21u64;
+            for i in 0..300 {
+                let x = [lcg(&mut s)];
+                let y = if x[0] + 0.5 * lcg(&mut s) > 0.0 {
+                    hi
+                } else {
+                    lo
+                };
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.coefficients()[0]
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fit(5.0, -2.0), fit(1.0, 0.0));
+        assert_eq!(fit(1.0, -0.5), fit(1.0, 0.0));
+    }
+
+    /// Under `strict_binary` a label that is not 0 or 1 teaches nothing and
+    /// counts nothing toward its target's weight, as in `ftrl`; the option
+    /// is the logistic loss's alone (docs/PLAN.md task 195, S4).
+    #[test]
+    fn strict_binary_skips_a_label_that_is_not_zero_or_one() {
+        let mut c = cfg(1, SgdLoss::Logistic);
+        c.strict_binary = true;
+        c.min_weight = 0.0;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        m.step(&[0.5], &[Some(1.0)], 0.0, 1.0);
+        let (before, w) = (m.coefficients(), m.target_weights()[0]);
+        m.step(&[0.5], &[Some(0.7)], 1.0, 1.0);
+        assert_eq!(m.coefficients(), before, "a label of 0.7 taught nothing");
+        assert_eq!(m.target_weights()[0], w, "and counted nothing");
+        m.step(&[0.5], &[Some(0.0)], 1.0, 1.0);
+        assert_ne!(m.coefficients(), before, "a label of 0 teaches");
+        let mut bad = c;
+        bad.loss = SgdLoss::Squared;
+        let err = bad.validate().unwrap_err();
+        assert!(err.contains("strict_binary"), "{err}");
+    }
+
+    /// `s²` is the EW mean of the squared out-of-sample residuals of the
+    /// rows that carried the target, a weight above 0 and a prediction
+    /// (the module docs): held to that mean from its definition, every
+    /// qualifying row's weight aged by the clock since it, over irregular
+    /// steps and weights, null targets, zero weights and the rows before
+    /// `min_weight`, which add nothing.
+    #[test]
+    fn the_residual_variance_is_the_ew_mean_of_the_squared_residuals() {
+        let mut c = cfg(2, SgdLoss::Huber { delta: 1.345 });
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 3.0;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        let mut seen: Vec<(f64, f64)> = Vec::new();
+        let mut s = 7u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i % 9 != 4).then(|| 1.0 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s));
+            let w = if i % 13 == 6 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 + lcg(&mut s).abs() };
+            let lam = c.decay.factor(d);
+            let p = m.step(&x, &[y], d, w).pred[0];
+            for (_, wi) in seen.iter_mut() {
+                *wi *= lam;
+            }
+            if let Some(yv) = y
+                && w > 0.0
+                && p.is_finite()
+            {
+                seen.push(((yv - p) * (yv - p), w));
+            }
+            let total: f64 = seen.iter().map(|(_, wi)| wi).sum();
+            let want = if total > 0.0 {
+                seen.iter().map(|(r2, wi)| r2 * wi).sum::<f64>() / total
+            } else {
+                0.0
+            };
+            let got = m.sigma2()[0];
+            assert!(
+                (got - want).abs() <= 1e-12 * want,
+                "row {i}: s² {got} against {want}"
+            );
+        }
+        assert!(seen.len() > 150, "{} rows taught it", seen.len());
     }
 }

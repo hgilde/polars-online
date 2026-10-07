@@ -104,9 +104,18 @@ def test_bounded_variants_resist_outliers():
 
 
 def test_wide_tube_is_passive():
+    """Once the target has a residual spread to draw it in, a tube of a
+    million spreads holds every row and nothing moves. Before that there is
+    no tube: the ten rows ``min_weight`` withholds, whose residuals the
+    spread does not take, and the first predicted row teach (docs/PLAN.md
+    task 195, U1)."""
     df = _linear(n=500)
-    c, _ = _fit(df, eps=1e6)
-    assert np.abs(c).max() == 0.0, "nothing should move inside a huge tube"
+    # Raw features, so a coefficient moves only where the fit does: under
+    # `standardize` it is read through the scaler as it stands.
+    c, out = _fit(df, eps=1e6, standardize=False)
+    coef = out["m"].struct.field("coef").to_list()
+    assert coef[11] == list(c), "nothing should move inside a huge tube"
+    assert np.abs(c).max() > 0.0, "the rows before the spread taught"
 
 
 def test_out_of_sample_on_noise():
@@ -158,3 +167,46 @@ def test_bad_config_rejected():
         _spec(c=0.0)
     with pytest.raises(ValueError, match="pa eps must be finite and >= 0"):
         _spec(eps=-1.0)
+
+
+def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
+    """Review round 4's CC4 stream: `y = 0.5 + 2x + 0.3·noise`, the target
+    and the feature each scaled."""
+    rng = np.random.default_rng(2)
+    x, noise = rng.normal(size=n), rng.normal(size=n)
+    return pl.DataFrame({"x": scale_x * x, "y": scale_y * (0.5 + 2.0 * x + 0.3 * noise)})
+
+
+def _oos(df, **kw):
+    spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
+    p = po.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
+    y = df["y"].to_numpy()
+    ok = np.isfinite(p)
+    return 1.0 - np.sum((y[ok] - p[ok]) ** 2) / np.sum((y[ok] - y[ok].mean()) ** 2), p
+
+
+def test_a_target_in_hundredths_fits_as_the_unscaled_one_does():
+    """docs/PLAN.md task 195 (U1; review round 4, CC4): `eps` is in units of
+    the target's EW residual standard deviation, as `huber`'s `huber_delta`
+    is. In the target's units, at the defaults, a target scaled by 0.01 sat
+    inside the tube on every row: passive for ever, every prediction 0.0 and
+    R² -0.051, against +0.961 unscaled."""
+    unscaled, _ = _oos(_cc4())
+    scaled, p = _oos(_cc4(scale_y=0.01))
+    assert unscaled > 0.95
+    assert scaled > 0.95, scaled
+    assert abs(scaled - unscaled) < 0.01
+    assert np.sum(p == 0.0) == 0
+
+
+def test_standardize_is_offered_and_on_by_default():
+    """docs/PLAN.md task 195 (U2; review round 4, CC6): `pa` standardizes its
+    features against the EW scaler `sgd` uses, so `tau = loss / |z|²` and
+    `c` stop being in the features' units: features times 128 give the same
+    predictions as features times 1, to the bit, at the default and under
+    `standardize=True` alike."""
+    base = _oos(_cc4())[1]
+    for kw in ({}, {"standardize": True}):
+        np.testing.assert_array_equal(_oos(_cc4(scale_x=128.0), **kw)[1], base)
+    raw = _oos(_cc4(scale_x=128.0), standardize=False)[1]
+    assert not np.array_equal(raw, base, equal_nan=True)

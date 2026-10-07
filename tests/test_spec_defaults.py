@@ -105,3 +105,26 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
     stream = resolved(spec)["stream"]
     assert stream["min_settled_frac"] == 0.0
     assert stream["max_error_inflation"] == 2**0.5
+
+
+def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
+    """docs/PLAN.md task 195 (U1, U2, U3, U5, N11): the Huber constant is
+    1.345 under one name in both models that take it, `eps` is 0.1 of the
+    residual's spread in both, `sgd` and `pa` standardize, `bocpd`'s `nu`
+    is the smallest integer giving each emission's variance a mean, and
+    `rls`'s prior strength is `delta`."""
+    kw = {"targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 50.0}
+    assert resolved(po.spec.huber("m", **kw))["model"]["loss"] == {"huber": {"delta": 1.345}}
+    sgd = resolved(po.spec.sgd("m", **kw, loss="huber"))["model"]
+    assert sgd["loss"] == {"huber": {"delta": 1.345}}
+    assert sgd["standardize"] is True
+    eps = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive"))["model"]["loss"]
+    assert eps == {"epsilon_insensitive": {"eps": 0.1}}
+    pa = resolved(po.spec.pa("m", **kw))["model"]
+    assert (pa["eps"], pa["standardize"]) == (0.1, True)
+    assert resolved(po.spec.rls("m", **kw))["model"]["delta"] == 1.0
+    feats = {"features": kw["features"]}
+    for emission, nu in (("diag", 3.0), ("robust", 3.0), ("gaussian", 5.0)):
+        derived = resolved(po.spec.bocpd("m", **feats, emission=emission))["derived"]
+        assert derived["prior_nu"] == nu, emission
+        assert derived["warm_rows"] == 5, emission

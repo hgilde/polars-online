@@ -138,7 +138,8 @@ pub struct CorrChangeCfg {
     pub span_rows: usize,
     /// Nominal level; under `monitor` and `sequential` the critical value is
     /// the quantile at `1 − alpha/npairs` under Bonferroni. Under
-    /// `sequential`, a share below `2^-52` with no `crit` is refused
+    /// `sequential`, a share below 5e-11
+    /// ([`crate::boundary::MIN_SEQUENTIAL_TAIL`]) with no `crit` is refused
     /// ([`Self::validate`]).
     pub alpha: f64,
     /// `"bonferroni"` (default) or `"none"`: whether `monitor` and
@@ -270,10 +271,13 @@ impl CorrChangeCfg {
                 // and could never flag, saying nothing (review round 4,
                 // CD12). The tail cannot be read in its own right either:
                 // the series and the solve both give the mass inside the
-                // boundary, `1 −` the tail, and the solve's error is far
-                // above a tail that small. A configured `crit` reads no
-                // `alpha`.
-                let floor = 2f64.powi(-52);
+                // boundary, `1 −` the tail. And well above `2^-52` the
+                // solve's quantile is not accurate: below 5e-11 it is off
+                // the series at `γ = 0` by more than the 0.03 the paper's
+                // table is good to, and at `γ > 0` it stopped rising with
+                // `γ` (`boundary::MIN_SEQUENTIAL_TAIL`; docs/PLAN.md task
+                // 195). A configured `crit` reads no `alpha`.
+                let floor = crate::boundary::MIN_SEQUENTIAL_TAIL;
                 if self.crit.is_none() && self.pair_alpha() < floor {
                     let share = if self.alpha_adjust == "bonferroni" {
                         format!(
@@ -286,8 +290,9 @@ impl CorrChangeCfg {
                     };
                     return Err(format!(
                         "corrchange: kind = \"sequential\" tests each pair at {share}, below \
-                         2^-52: as a double, 1 minus that is 1 or within two steps of it, where \
-                         no critical value can be read; raise alpha, or give crit"
+                         5e-11: the critical value is solved from the boundary's law, and in a \
+                         tail that small the solve's quantile is off by more than the 0.03 Wied \
+                         and Galeano's own table is good to; raise alpha, or give crit"
                     ));
                 }
             }
@@ -1346,16 +1351,20 @@ mod tests {
         }
     }
 
-    /// Under `"sequential"` an `alpha` whose share per pair is below
-    /// `2^-52` is refused, by name: `1 − alpha/npairs` rounds to 1 there,
+    /// Under `"sequential"` an `alpha` whose share per pair is below 5e-11
+    /// is refused, by name. Below `2^-52`, `1 − alpha/npairs` rounds to 1,
     /// the boundary's quantile of 1 is NaN, and the detector ran, reported
     /// its statistic and could never flag, saying nothing (review round 4,
-    /// CD12). A share at the limit runs, and its critical value is a
-    /// number. A configured `crit` reads no `alpha`, and `"monitor"`'s
-    /// quantile saturates, so neither refuses one.
+    /// CD12); and below 5e-11 the solve's quantile is off by more than the
+    /// paper's 0.03, and stopped rising with `γ` near `2^-52` (10.42 at
+    /// 0.25, 9.15 at 0.45; docs/PLAN.md task 195,
+    /// `boundary::MIN_SEQUENTIAL_TAIL`). A share at the limit runs, and its
+    /// critical value is a number that rises with `γ`. A configured `crit`
+    /// reads no `alpha`, and `"monitor"`'s quantile saturates, so neither
+    /// refuses one.
     #[test]
     fn an_alpha_too_small_for_its_quantile_is_refused_under_sequential() {
-        let limit = 2f64.powi(-52);
+        let limit = crate::boundary::MIN_SEQUENTIAL_TAIL;
         // Three columns: three pairs under Bonferroni.
         let with = |alpha: f64, adjust: &str| CorrChangeCfg {
             alpha,
@@ -1366,11 +1375,12 @@ mod tests {
             (1e-17, "bonferroni"),
             (2.9 * limit, "bonferroni"),
             (1e-17, "none"),
+            (1e-12, "none"),
             (0.9 * limit, "none"),
         ] {
             let err = with(alpha, adjust).validate().unwrap_err();
             assert!(
-                err.contains("alpha") && err.contains("2^-52"),
+                err.contains("alpha") && err.contains("5e-11") && err.contains("0.03"),
                 "{alpha:e} {adjust}: {err}"
             );
         }
@@ -1384,6 +1394,21 @@ mod tests {
             let crit = c.fixed_crit().expect("sequential has one");
             assert!(crit.is_finite(), "{alpha:e} {adjust}: {crit}");
         }
+        let crits: Vec<f64> = [0.05, 0.25, 0.45]
+            .iter()
+            .map(|&g| {
+                let c = CorrChangeCfg {
+                    boundary_gamma: g,
+                    ..with(limit, "none")
+                };
+                c.validate().unwrap();
+                c.fixed_crit().expect("sequential has one")
+            })
+            .collect();
+        assert!(
+            crits.windows(2).all(|w| w[0] < w[1]),
+            "the critical value rises with gamma at the floor: {crits:?}"
+        );
         CorrChangeCfg {
             crit: Some(2.0),
             ..with(1e-300, "none")

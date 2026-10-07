@@ -5,8 +5,8 @@
 //! `ridge_scale` mode of [`crate::EwRidge`], which the agreement test exploits:
 //!
 //! ```text
-//! A   <- lam A   + w z z^T          A_0 = ridge I
-//! b_j <- lam b_j + w y_j z          b_0 = ridge coef0_j
+//! A   <- lam A   + w z z^T          A_0 = delta I
+//! b_j <- lam b_j + w y_j z          b_0 = delta coef0_j
 //! beta_j = A^-1 b_j
 //! ```
 //!
@@ -35,8 +35,13 @@
 //! orthogonal: nothing cancels, an outlier's information decays with
 //! `sqrt(lam)` per row like everything else, and every later row is kept.
 //!
-//! `ridge` is the classic RLS prior strength (`P_0 = I / ridge`, i.e.
-//! `A_0 = ridge I`), and the intercept is penalized too.
+//! `delta` is the classic RLS prior strength (`P_0 = I / delta`, i.e.
+//! `A_0 = delta I`), and the intercept is penalized too. It is
+//! [`crate::EwRidge`]'s `ridge` under `ridge_scale = "sum"`, a prior on the
+//! sums that fades as the rows arrive, and **not** its default `ridge`, a
+//! penalty on the means that never fades; the two were one name until
+//! docs/PLAN.md task 195 (N11; review round 4, CA7). Its unit is the
+//! features' squared, summed: `A` is `Σ w z zᵀ`.
 //!
 //! Null policy deviation, documented: a row with ANY null target is predict-only
 //! for all targets, because `R` is shared across targets and a per-target
@@ -54,8 +59,9 @@ pub struct RlsCfg {
     pub n_targets: usize,
     pub fit_intercept: bool,
     pub decay: Decay,
-    /// Prior strength: `P0 = I / ridge`.
-    pub ridge: f64,
+    /// Prior strength: `P0 = I / delta`, `A_0 = delta I`, in the units of
+    /// `Σ w z zᵀ` (the module docs).
+    pub delta: f64,
     /// Initial coefficients per target (length `k_total`), default zeros.
     pub coef_prior: Option<Vec<Vec<f64>>>,
     pub min_weight: f64,
@@ -75,10 +81,10 @@ impl RlsCfg {
         }
         // Finite too, as the spec layer has it: at `inf` every rotation is
         // skipped and every coefficient is 0 (review 2026-10-06, CA6).
-        if !(self.ridge.is_finite() && self.ridge > 0.0) {
+        if !(self.delta.is_finite() && self.delta > 0.0) {
             return Err(format!(
-                "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got {}",
-                self.ridge
+                "rls: delta must be finite and > 0 (it sets P0 = I / delta), got {}",
+                self.delta
             ));
         }
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
@@ -91,7 +97,7 @@ impl RlsCfg {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
                 return Err("rls: coef_prior must be n_targets x k_total".into());
             }
-            // The prior enters `u_0 = sqrt(ridge) * prior`, and a non-finite
+            // The prior enters `u_0 = sqrt(delta) * prior`, and a non-finite
             // entry there never leaves the QR state; `ew_ridge` refused it,
             // this did not (review 2026-09-18, B4).
             if c.iter().flatten().any(|v| !v.is_finite()) {
@@ -131,7 +137,7 @@ impl Rls {
     pub fn new(cfg: RlsCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k = cfg.k_total();
-        let root = cfg.ridge.sqrt();
+        let root = cfg.delta.sqrt();
         let mut r = vec![0.0; k * k];
         for i in 0..k {
             r[i * k + i] = root;
@@ -140,7 +146,7 @@ impl Rls {
             .coef_prior
             .clone()
             .unwrap_or_else(|| vec![vec![0.0; k]; cfg.n_targets]);
-        // A_0 = ridge I, b_0 = ridge coef_prior  =>  u_0 = R_0^-T b_0 = sqrt(ridge) coef_prior.
+        // A_0 = delta I, b_0 = delta coef_prior  =>  u_0 = R_0^-T b_0 = sqrt(delta) coef_prior.
         let u = beta
             .iter()
             .map(|b| b.iter().map(|v| root * v).collect())
@@ -188,7 +194,7 @@ impl Rls {
 
     /// `beta_j = R^-1 u_j` by back-substitution. A zero pivot is a direction
     /// no row has ever excited after the prior has decayed away entirely
-    /// (`sqrt(ridge) lam_acc^(1/2)` underflows after ~2000 half-lives without
+    /// (`sqrt(delta) lam_acc^(1/2)` underflows after ~2000 half-lives without
     /// data): the coefficient there is set to zero rather than to `0/0`.
     fn solve(&mut self) {
         let k = self.cfg.k_total();
@@ -461,7 +467,7 @@ mod tests {
             n_targets: m,
             fit_intercept: true,
             decay: Decay::Halflife(hl),
-            ridge,
+            delta: ridge,
             coef_prior: None,
             min_weight: 0.0,
         }
@@ -479,10 +485,10 @@ mod tests {
         };
         bad(&|c| c.n_features = 0, "must be >= 1");
         bad(&|c| c.n_targets = 0, "must be >= 1");
-        // ridge sets P0 = I/ridge, so zero would be an infinite prior variance.
-        bad(&|c| c.ridge = 0.0, "ridge must be finite and > 0");
-        bad(&|c| c.ridge = -1.0, "ridge must be finite and > 0");
-        bad(&|c| c.ridge = f64::NAN, "ridge must be finite and > 0");
+        // delta sets P0 = I/delta, so zero would be an infinite prior variance.
+        bad(&|c| c.delta = 0.0, "delta must be finite and > 0");
+        bad(&|c| c.delta = -1.0, "delta must be finite and > 0");
+        bad(&|c| c.delta = f64::NAN, "delta must be finite and > 0");
         // coef_prior is one vector per target, each of length k_total (2 + intercept).
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
@@ -492,7 +498,7 @@ mod tests {
             &|c| c.coef_prior = Some(vec![vec![0.0; 2]]),
             "n_targets x k_total",
         );
-        // A non-finite entry enters `u_0 = sqrt(ridge) * prior` and the QR
+        // A non-finite entry enters `u_0 = sqrt(delta) * prior` and the QR
         // state never recovers; `ew_ridge` refuses it, this did not (review
         // 2026-09-18, B4).
         bad(

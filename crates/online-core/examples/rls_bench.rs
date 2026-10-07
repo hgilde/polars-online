@@ -22,7 +22,7 @@ fn main() {
                 n_targets: 1,
                 fit_intercept: true,
                 decay: Decay::Halflife(500.0),
-                ridge: 1.0,
+                delta: 1.0,
                 coef_prior: None,
                 min_weight: 25.0,
             })

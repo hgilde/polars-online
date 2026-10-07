@@ -235,8 +235,10 @@ fn a_window_runs_under_a_256_mib_refusing_budget_unless_told() {
 }
 
 /// The values a model derives from a field left unset, by its documented
-/// rule: `bocpd`'s `nu0 = d + 2`, an identity `Psi0` and a zero mean
-/// (`BocpdCfg`); `rcov`'s pre-averaging window `ceil(theta * n^0.6)` (CKP
+/// rule: `bocpd`'s `nu0` (3 under `diag`, `d + 2` under `gaussian`) and the
+/// first `warm_rows = d + 2` rows' mean and scale, which no build of a spec
+/// can show and read "data" (`BocpdCfg`; docs/PLAN.md task 195, U4 and U5);
+/// `rcov`'s pre-averaging window `ceil(theta * n^0.6)` (CKP
 /// Eq. 16, `theta` 1) and ring `ceil(c* * n^0.6)` with BNHLS's Parzen
 /// `c* = 3.5134`; `marginal`'s bin budget of 256 MiB; and a single shard.
 #[test]
@@ -248,12 +250,16 @@ fn the_models_derive_what_their_spec_leaves_unset() {
     };
     assert_eq!(
         bocpd("")["derived"],
-        json!({"prior_mean": [0.0, 0.0], "prior_nu": 4.0, "prior_scale": [1.0, 0.0, 0.0, 1.0]})
+        json!({"prior_mean": "data", "prior_nu": 3.0, "prior_scale": "data", "warm_rows": 4})
+    );
+    assert_eq!(
+        bocpd("emission = \"gaussian\"\nwarm_rows = 9")["derived"],
+        json!({"prior_mean": "data", "prior_nu": 4.0, "prior_scale": "data", "warm_rows": 9})
     );
     let given = bocpd("prior_nu = 7.0\nprior_scale = [2.0]\nprior_mean = [1.0, -1.0]");
     assert_eq!(
         given["derived"],
-        json!({"prior_mean": [1.0, -1.0], "prior_nu": 7.0, "prior_scale": [2.0, 0.0, 0.0, 2.0]})
+        json!({"prior_mean": [1.0, -1.0], "prior_nu": 7.0, "prior_scale": [2.0, 0.0, 0.0, 2.0], "warm_rows": null})
     );
     let rcov = resolved(
         "name = \"m\"\nfeatures = [\"x0\", \"x1\"]\ngroup = \"g\"\ngroup_close = \"monotone\"\n\

@@ -62,6 +62,7 @@ fn main() {
                             l2,
                             min_weight: 5.0,
                             standardize: scale,
+                            strict_binary: false,
                             clip_gradient: 5.0,
                             constraint: None,
                         };

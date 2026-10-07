@@ -626,7 +626,7 @@ def rls_paths_ref(
     w: np.ndarray,
     *,
     half_life: float,
-    ridge: float = 1.0,
+    delta: float = 1.0,
     coef_prior: np.ndarray | None = None,
     fit_intercept: bool = True,
     min_weight: float | None = None,
@@ -636,10 +636,10 @@ def rls_paths_ref(
     docstring), summed from the raw rows rather than rotated in::
 
         A <- lam * A + w * z z'        b_j <- lam * b_j + w * y_j * z        beta_j = A^-1 b_j
-        A_0 = ridge * I                b_0 = ridge * coef_prior
+        A_0 = delta * I                b_0 = delta * coef_prior
 
     so after rows at ages ``a_r`` (the prior's age is the whole stream's),
-    ``A = ridge * lam^T I + sum_r w_r lam^a_r z_r z_r'`` and ``b_j`` likewise.
+    ``A = delta * lam^T I + sum_r w_r lam^a_r z_r z_r'`` and ``b_j`` likewise.
     The factor ``R`` is shared, so a row with any null target is learned
     for none (it still ages the sums). Scoring: once the weight of the rows
     learned from reaches ``min_weight`` (default the number of
@@ -669,7 +669,7 @@ def rls_paths_ref(
     def solve(t: float) -> np.ndarray:
         age = t - np.asarray(T)
         om = np.asarray(Wr) * 0.5 ** (age / half_life) * np.asarray(learned)
-        prior_w = ridge * 0.5 ** (t / half_life)
+        prior_w = delta * 0.5 ** (t / half_life)
         za, ya = np.asarray(Z), np.nan_to_num(np.asarray(Yr))
         A = prior_w * np.eye(kt) + (om[:, None, None] * np.einsum("ri,rj->rij", za, za)).sum(axis=0)
         b = prior_w * prior.T + (om[:, None, None] * np.einsum("ri,rj->rij", za, ya)).sum(axis=0)
@@ -731,13 +731,19 @@ def pa_ref(
     gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Passive-aggressive regression, Crammer et al. (2006), as the ``pa``
-    builder's docstring states it::
+    builder's docstring states it, its features unstandardized
+    (``standardize=False``)::
 
-        p = z . b    loss = max(0, |y - p| - eps)    s = ||z||^2  (the intercept's 1 included)
+        p = z . b    loss = max(0, |y - p| - eps * sigma)    s = ||z||^2  (the intercept's 1 in)
         pa: tau = loss / s    pa1: tau = min(c, loss / s)    pa2: tau = loss / (s + 1 / (2c))
         b += min(w, 1) * tau * sign(y - p) * z
 
-    per target, from zero. A null target or a zero weight moves nothing; the
+    per target, from zero. ``sigma`` is the EW std of the target's
+    out-of-sample residuals as the row arrives: ``sigma ** 2`` the EW mean of
+    ``(y - p) ** 2`` over the rows with the target, a weight above 0 and a
+    prediction, each joining after its own step, its weight aged by every
+    row's decay; before it is above 0 the tube has no width (docs/PLAN.md
+    task 195). A null target or a zero weight moves nothing; the
     coefficients never decay, ``weight_sum`` does. ``pred_j`` is null while the
     target's own weight, the rows that carried it, decayed, is below
     ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d)); ``weight_sum`` is
@@ -751,24 +757,32 @@ def pa_ref(
     b = np.zeros((m, kt))
     w_sum = 0.0
     w_target = np.zeros(m)
+    sig2, wsig = np.zeros(m), np.zeros(m)
     for i, d in _accepted_steps(X, dclock, gap_cap):
+        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
+        wsig *= lam
         z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
         weight_sum[i] = w_sum
         p = b @ z
         pred[i] = np.where(w_target >= min_weight, p, np.nan)
         s = z @ z
         for j in range(m):
-            if np.isnan(Y[i, j]) or not w[i] > 0.0 or s <= 0.0:
+            if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
             r = Y[i, j] - p[j]
-            loss = max(0.0, abs(r) - eps)
+            tube = eps * np.sqrt(sig2[j]) if sig2[j] > 0.0 else 0.0
+            if np.isfinite(pred[i, j]):
+                sig2[j] = (wsig[j] * sig2[j] + w[i] * r * r) / (wsig[j] + w[i])
+                wsig[j] += w[i]
+            if s <= 0.0:
+                continue
+            loss = max(0.0, abs(r) - tube)
             tau = {
                 "pa": loss / s,
                 "pa1": min(c, loss / s),
                 "pa2": loss / (s + 1.0 / (2.0 * c)),
             }[mode]
             b[j] += min(w[i], 1.0) * tau * np.sign(r) * z
-        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
         coef[i] = b
@@ -785,7 +799,7 @@ def sgd_ref(
     learning_rate: float = 0.01,
     schedule: str = "constant",
     power: float = 0.5,
-    huber_delta: float = 1.0,
+    huber_delta: float = 1.345,
     quantile: float = 0.5,
     eps: float = 0.1,
     half_life: float = np.inf,
@@ -796,13 +810,19 @@ def sgd_ref(
     clip_gradient: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
-    it::
+    it, its features unstandardized (``standardize=False``)::
 
         eta = z . b    p = link(eta)    d = dL / d eta
-        squared: p - y                huber: clamp(p - y, +/- delta)
-        quantile: 1{y < p} - tau      epsilon_insensitive: 0 inside the tube, else sign(p - y)
-        poisson: exp(eta) - y         logistic: sigmoid(eta) - y
+        squared: p - y                huber: clamp(p - y, +/- delta * s)
+        quantile: 1{y < p} - tau      epsilon_insensitive: 0 within eps * s, else sign(p - y)
+        poisson: exp(eta) - y         logistic: sigmoid(eta) - clamp(y, 0, 1)
         g_i = clamp(d * z_i * w + l2 * b_i, +/- clip_gradient)    b_i -= lr_i * g_i
+
+    ``s`` is the EW std of the target's out-of-sample residuals as the row
+    arrives: ``s ** 2`` the EW mean of ``(y - p) ** 2`` over the rows with the
+    target, a weight above 0 and a prediction, each joining after its own
+    step, its weight aged by every row's decay. Before it is above 0 the Huber
+    loss cuts nothing and the tube has no width (docs/PLAN.md task 195).
 
     the ridge on the slopes only (the intercept's ``g_0 = clamp(d * w)``),
     and the clip a cap on each coordinate of the gradient, not on its norm
@@ -830,6 +850,7 @@ def sgd_ref(
     clipped = 0
     w_sum = 0.0
     w_target = np.zeros(m)
+    sig2, wsig = np.zeros(m), np.zeros(m)
     links = {
         "poisson": np.exp,
         "logistic": lambda e: 1.0 / (1.0 + np.exp(-e)),
@@ -837,6 +858,7 @@ def sgd_ref(
     for i, d in _accepted_steps(X, dclock, gap_cap):
         lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
         G *= lam
+        wsig *= lam
         z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
         weight_sum[i] = w_sum
         p = links.get(loss, lambda e: e)(b @ z)
@@ -844,15 +866,22 @@ def sgd_ref(
         for j in range(m):
             if np.isnan(Y[i, j]) or not w[i] > 0.0:
                 continue
-            e = p[j] - Y[i, j]
+            yj = min(max(Y[i, j], 0.0), 1.0) if loss == "logistic" else Y[i, j]
+            e = p[j] - yj
+            s = np.sqrt(sig2[j]) if sig2[j] > 0.0 else None
+            cut = huber_delta * s if s is not None else np.inf
+            tube = eps * s if s is not None else 0.0
             dl = {
                 "squared": e,
                 "poisson": e,
                 "logistic": e,
-                "huber": min(max(e, -huber_delta), huber_delta),
-                "quantile": float(Y[i, j] < p[j]) - quantile,
-                "epsilon_insensitive": 0.0 if abs(e) <= eps else float(np.sign(e)),
+                "huber": min(max(e, -cut), cut),
+                "quantile": float(yj < p[j]) - quantile,
+                "epsilon_insensitive": 0.0 if abs(e) <= tube else float(np.sign(e)),
             }[loss]
+            if np.isfinite(pred[i, j]):
+                sig2[j] = (wsig[j] * sig2[j] + w[i] * e * e) / (wsig[j] + w[i])
+                wsig[j] += w[i]
             g = dl * z * w[i] + l2 * penalised * b[j]
             clipped += int((np.abs(g) > clip_gradient).sum())
             g = np.clip(g, -clip_gradient, clip_gradient)

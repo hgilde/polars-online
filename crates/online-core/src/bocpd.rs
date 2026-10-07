@@ -91,6 +91,29 @@
 //! to.
 
 //!
+//! # The prior from the first rows (docs/PLAN.md task 195, U4)
+//!
+//! The prior decides what counts as surprising, and in the data's units: a
+//! scale of 1 makes every row of data in 1e-4 a break, and a mean of 0
+//! leaves no row of data at 1e4 any density under a run that begins on it.
+//! So where `prior_mean` or `prior_scale` is left out, the first
+//! `warm_rows` learned rows (default `d + 2`) are held and report nothing;
+//! their weighted mean and covariance, with the weights over their largest,
+//!
+//! ```text
+//! x̄ = Σ w x / V₁        S = Σ w (x − x̄)(x − x̄)ᵀ / (V₁ − V₂/V₁)        V₁ = Σ w,  V₂ = Σ w²
+//! ```
+//!
+//! (the diagonal under `diag` and `robust`) set what was left out, and the
+//! held rows are then read in order as rows of a model that had that prior
+//! from the start. At the default `prior_nu` the prior's mean variance is
+//! `S`. A variance that is not above 0 -- a feature that did not move --
+//! takes `2^-52·max(x̄², 1)`; under `gaussian` an `S` that is not positive
+//! definite gives its diagonal. A row of weight 0 inside the warm-up learns
+//! nothing, and its step joins the next held row's. `gaussian` and `diag`
+//! are then free of the data's units; `robust`'s tempered message `π^w`
+//! still carries them, as `c^-w` with `w` different from run to run.
+//!
 //! **Row weights** (docs/PLAN.md task 147). A row of weight `w` enters at
 //! `w / w̄`, `w̄` the mean weight of the rows learned from, this one
 //! included, in its run's sufficient statistics and in the likelihood it
@@ -227,15 +250,23 @@ pub struct BocpdCfg {
     #[serde(default)]
     pub hazard_from_row: bool,
     pub emission: BocpdEmission,
-    /// `μ₀`, zeros when absent.
+    /// `μ₀`; when absent, the first `warm_rows` learned rows' sample mean
+    /// ([`Bocpd`]'s warm-up).
     pub prior_mean: Option<Vec<f64>>,
     /// `κ₀`, the prior's weight in rows.
     pub prior_kappa: f64,
-    /// `ν₀`; `d + 2` when absent, the smallest value with a finite mean.
+    /// `ν₀`; when absent, the smallest integer that gives the prior's
+    /// variance a mean: `d + 2` for `gaussian`'s inverse-Wishart (`ν > d +
+    /// 1`), 3 for the per-feature normal-inverse-gamma of `diag` and
+    /// `robust` (`ν > 2`), whatever `d` (docs/PLAN.md task 195, U5).
     pub prior_nu: Option<f64>,
-    /// `Ψ₀`: a scalar for `sI`, or a `d×d` matrix. **Set it from the data's
-    /// scale** -- it is the prior guess at the covariance, and 1.0 on data
-    /// measured in 1e-4 makes every row look like a changepoint.
+    /// `Ψ₀`: a scalar for `sI`, or a `d×d` matrix -- the prior guess at
+    /// the covariance, in the data's units. When absent, the first
+    /// `warm_rows` learned rows' sample covariance, or its diagonal under
+    /// `diag` and `robust` ([`Bocpd`]'s warm-up). The identity it was in
+    /// their place made every row of data in 1e-4 look like a changepoint
+    /// and no row of data at 1e4 ever begin a run (docs/PLAN.md task 195,
+    /// U4).
     pub prior_scale: Option<Vec<f64>>,
     /// `robust`'s β; 0 makes it `diag`.
     pub robust_beta: f64,
@@ -249,6 +280,12 @@ pub struct BocpdCfg {
     /// below it.
     pub max_run: usize,
     pub min_weight: f64,
+    /// Learned rows buffered to set the prior from, where `prior_mean` or
+    /// `prior_scale` is absent; `None` is `d + 2`, the name and the default
+    /// `hmm` and `kmeans` give theirs (docs/PLAN.md task 195, U4). Refused
+    /// beside both, which leave nothing to learn.
+    #[serde(default)]
+    pub warm_rows: Option<usize>,
     /// `hazard` is `τ`, the expected clock time between changepoints: the
     /// step of `d` clock units into a row carries the chance `1 −
     /// exp(−d/τ)` of a break, applied before the row is read (the module
@@ -259,9 +296,27 @@ pub struct BocpdCfg {
     pub hazard_on_clock: bool,
 }
 
+/// The most rows the warm-up buffers, MiB: `kmeans`' budget for its own.
+pub const WARM_BUDGET_MIB: f64 = 256.0;
+
 impl BocpdCfg {
     pub fn nu0(&self) -> f64 {
-        self.prior_nu.unwrap_or(self.n_features as f64 + 2.0)
+        self.prior_nu.unwrap_or(match self.emission {
+            BocpdEmission::Gaussian => self.n_features as f64 + 2.0,
+            BocpdEmission::Diag | BocpdEmission::Robust => 3.0,
+        })
+    }
+
+    /// Whether the prior is set from the first rows: a `prior_mean` or a
+    /// `prior_scale` left out.
+    pub fn warms_up(&self) -> bool {
+        self.prior_mean.is_none() || self.prior_scale.is_none()
+    }
+
+    /// The learned rows the warm-up buffers: `warm_rows`, or `d + 2`.
+    pub fn warm_rows_or_default(&self) -> usize {
+        self.warm_rows
+            .unwrap_or_else(|| self.n_features.saturating_add(2))
     }
 
     /// `Ψ₀` as a `d×d` matrix.
@@ -420,8 +475,118 @@ impl BocpdCfg {
         if self.min_weight.is_nan() || self.min_weight < 0.0 {
             return Err("bocpd: min_weight must be >= 0".into());
         }
+        if let Some(n) = self.warm_rows {
+            if !self.warms_up() {
+                return Err(
+                    "bocpd: warm_rows sets the prior from the first rows, and prior_mean and \
+                     prior_scale are both given; leave one out, or warm_rows"
+                        .into(),
+                );
+            }
+            if n < 2 {
+                return Err(format!(
+                    "bocpd: warm_rows must be at least 2, got {n}: the prior's scale is a \
+                     variance, which takes two rows"
+                ));
+            }
+        }
+        // The buffer is `d` values a row, sized by a spec value, so it has a
+        // ceiling, as `kmeans`' has (review 2026-10-06, CD10).
+        let rows = self.warm_rows_or_default() as f64;
+        let mib = rows * (self.n_features as f64 + 4.0) * 8.0 / f64::from(1 << 20);
+        if self.warms_up() && mib > WARM_BUDGET_MIB {
+            return Err(format!(
+                "bocpd: the warm-up buffer would hold {} MiB (warm_rows {rows} rows of {d} \
+                 features), over the {WARM_BUDGET_MIB} MiB it is held to; lower warm_rows",
+                crate::budget::mib_over(mib, WARM_BUDGET_MIB),
+            ));
+        }
         Ok(())
     }
+}
+
+/// The prior the first rows set, where the cfg leaves `prior_mean` or
+/// `prior_scale` out: their weighted sample mean and covariance, `Ψ₀` as a
+/// `d×d` matrix (diagonal under `diag` and `robust`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DataPrior {
+    mean: Vec<f64>,
+    scale: Vec<f64>,
+}
+
+impl DataPrior {
+    /// The weighted mean `x̄ = Σw·x / V₁` and covariance `S = Σw·(x −
+    /// x̄)(x − x̄)' / (V₁ − V₂/V₁)`, `V₁ = Σw` and `V₂ = Σw²` -- reliability
+    /// weights, numpy's `cov(aweights=)`, the sample covariance at equal
+    /// weights -- with the weights over their largest, so a weight's scale
+    /// moves nothing. A variance that is not above 0, a feature that did
+    /// not move over the rows, takes the floor `2^-52·max(x̄², 1)`: the
+    /// spread of a value known to `2^-26` of its level, or of 1 below a
+    /// level of 1. A predictive of no spread has no density, and every row
+    /// after it failed. Under `gaussian` a covariance that is not positive
+    /// definite with that floor -- collinear features -- gives its diagonal.
+    fn of(rows: &[WarmRow], d: usize, full: bool) -> Self {
+        let top = rows.iter().map(|r| r.weight).fold(0.0, f64::max);
+        let w: Vec<f64> = rows.iter().map(|r| r.weight / top).collect();
+        let v1: f64 = w.iter().sum();
+        let v2: f64 = w.iter().map(|w| w * w).sum();
+        let mut mean = vec![0.0; d];
+        for (r, wi) in rows.iter().zip(&w) {
+            for (m, x) in mean.iter_mut().zip(&r.x) {
+                *m += wi * x;
+            }
+        }
+        mean.iter_mut().for_each(|m| *m /= v1);
+        let reliable = v1 - v2 / v1;
+        let denom = if reliable > 0.0 { reliable } else { v1 };
+        let mut scale = vec![0.0; d * d];
+        for (r, wi) in rows.iter().zip(&w) {
+            for i in 0..d {
+                let di = r.x[i] - mean[i];
+                let upto = if full { d } else { i + 1 };
+                for j in i..upto {
+                    scale[i * d + j] += wi * di * (r.x[j] - mean[j]);
+                }
+            }
+        }
+        // The upper triangle, mirrored: the matrix is symmetric to the bit.
+        for i in 0..d {
+            for j in i..d {
+                let v = scale[i * d + j] / denom;
+                scale[i * d + j] = v;
+                scale[j * d + i] = v;
+            }
+        }
+        for i in 0..d {
+            let v = scale[i * d + i];
+            if !(v > 0.0 && v.is_finite()) {
+                scale[i * d + i] = 2f64.powi(-52) * (mean[i] * mean[i]).max(1.0);
+            }
+        }
+        if full && !matches!(SpdFactor::of(&scale, d), Some(f) if f.attempts() == 0) {
+            for i in 0..d {
+                for j in 0..d {
+                    if i != j {
+                        scale[i * d + j] = 0.0;
+                    }
+                }
+            }
+        }
+        Self { mean, scale }
+    }
+}
+
+/// A learned row the warm-up holds until the prior is set, to be read then:
+/// its features, its hazard where the row carries one, its step -- with the
+/// steps of the rows of no weight before it, which learn nothing and whose
+/// time the next row's step carries, as two steps compose into one -- and
+/// its weight.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct WarmRow {
+    x: Vec<f64>,
+    hazard: Option<f64>,
+    d_clock: f64,
+    weight: f64,
 }
 
 /// One run's conjugate sufficient statistics, centred: the weighted mean of
@@ -628,6 +793,15 @@ pub struct Bocpd {
     w_mean: f64,
     #[serde(default)]
     w_rows: f64,
+    /// The prior the first rows set, once they have, where the cfg leaves
+    /// `prior_mean` or `prior_scale` out ([`DataPrior`]; docs/PLAN.md task
+    /// 195, U4).
+    data_prior: Option<DataPrior>,
+    /// The learned rows held until there are `warm_rows` of them, and the
+    /// step of the rows of no weight since the last one, which the next
+    /// carries. Empty once the prior is set.
+    warm: Vec<WarmRow>,
+    warm_gap: f64,
     /// Rows whose predictive could not be evaluated -- a scale matrix that
     /// would not factorize, or a non-finite value reaching the emission.
     /// The row reports nulls and the posterior does not move; without a
@@ -652,8 +826,86 @@ impl Bocpd {
             solve_failures: 0,
             w_mean: 0.0,
             w_rows: 0.0,
+            data_prior: None,
+            warm: Vec::new(),
+            warm_gap: 0.0,
             cfg,
         })
+    }
+
+    /// Whether rows are still being held for the prior (the warm-up).
+    fn warming(&self) -> bool {
+        self.cfg.warms_up() && self.data_prior.is_none()
+    }
+
+    /// `μ₀` as the model reads it: the cfg's, or the first rows' mean.
+    fn mu0(&self) -> Vec<f64> {
+        match (&self.cfg.prior_mean, &self.data_prior) {
+            (None, Some(p)) => p.mean.clone(),
+            _ => self.cfg.mu0(),
+        }
+    }
+
+    /// `Ψ₀` as the model reads it, `d×d`: the cfg's, or the first rows'
+    /// covariance.
+    fn psi0(&self) -> Vec<f64> {
+        match (&self.cfg.prior_scale, &self.data_prior) {
+            (None, Some(p)) => p.scale.clone(),
+            _ => self.cfg.psi0(),
+        }
+    }
+
+    /// The prior's mean and scale as the model reads them (`Ψ₀` as a `d×d`
+    /// matrix), `None` while the first rows are still held for them.
+    pub fn prior(&self) -> Option<(Vec<f64>, Vec<f64>)> {
+        (!self.warming()).then(|| (self.mu0(), self.psi0()))
+    }
+
+    /// A row the warm-up holds: it reports nothing and counts in `n_eff`,
+    /// as a learned row does. The `warm_rows`-th sets the prior from them
+    /// all and they are read, in order, as rows of a model that had it from
+    /// the start, as `hmm` replays its warm-up into its states. A row of no
+    /// weight learns nothing: its step joins the next row's.
+    fn hold(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        let out = crate::Step {
+            pred: vec![f64::NAN; Self::n_outputs_for(self.cfg.n_features)],
+            n_eff: self.n_eff,
+            extra: None,
+        };
+        if weight <= 0.0 {
+            self.warm_gap += d_clock;
+            return out;
+        }
+        self.warm.push(WarmRow {
+            x: x.to_vec(),
+            hazard: if self.cfg.hazard_from_row {
+                y.first().copied().flatten()
+            } else {
+                None
+            },
+            d_clock: d_clock + self.warm_gap,
+            weight,
+        });
+        self.warm_gap = 0.0;
+        self.n_eff += weight;
+        if self.warm.len() >= self.cfg.warm_rows_or_default() {
+            let full = self.full();
+            self.data_prior = Some(DataPrior::of(&self.warm, self.cfg.n_features, full));
+            let rows = std::mem::take(&mut self.warm);
+            // What the rows learn is counted as they are read, failures
+            // left out, as on any row.
+            self.n_eff = 0.0;
+            for r in &rows {
+                let hazard = [r.hazard];
+                let y: &[Option<f64>] = if self.cfg.hazard_from_row {
+                    &hazard
+                } else {
+                    &[]
+                };
+                self.learn(&r.x, y, r.d_clock, r.weight);
+            }
+        }
+        out
     }
 
     /// A row of weight `w > 0` against the mean weight of the rows learned
@@ -699,7 +951,7 @@ impl Bocpd {
     /// to the bit.
     fn run_mean_of(&self, run: &Run) -> Vec<f64> {
         let k0 = self.cfg.prior_kappa;
-        let mu0 = self.cfg.mu0();
+        let mu0 = self.mu0();
         let kn = k0 + run.n;
         mu0.iter()
             .zip(&run.mean)
@@ -713,13 +965,13 @@ impl Bocpd {
     fn log_predictive(&self, run: &Run, x: &[f64]) -> Option<(f64, f64)> {
         let d = self.cfg.n_features;
         let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
-        let mu0 = self.cfg.mu0();
+        let mu0 = self.mu0();
         let kn = k0 + run.n;
         let nun = nu0 + run.n;
         let mun = self.run_mean_of(run);
         if self.full() {
             // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
-            let mut psi = self.cfg.psi0();
+            let mut psi = self.psi0();
             for i in 0..d {
                 for j in 0..d {
                     let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
@@ -755,7 +1007,7 @@ impl Bocpd {
         } else {
             // Per feature, a normal-inverse-gamma: `t_{νₙ}` with scale²
             // `ψₙ(κₙ+1)/(νₙκₙ)`.
-            let psi0 = self.cfg.psi0();
+            let psi0 = self.psi0();
             let mut lp = 0.0;
             let mut mode = 0.0;
             for i in 0..d {
@@ -1004,6 +1256,105 @@ impl crate::OnlineModel for Bocpd {
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
             return refused;
         }
+        if self.warming() {
+            return self.hold(x, y, d_clock, weight);
+        }
+        self.learn(x, y, d_clock, weight)
+    }
+
+    /// Never told the row's hazard column, so a per-row hazard read from
+    /// the row falls back to the configured one.
+    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
+        self.predict_with(x, &[], d_clock)
+    }
+
+    /// The hazard rides in `y[0]` under `hazard_from_row`, so the answer
+    /// depends on it exactly as the step's does (C1), absent where it is not
+    /// usable; on the clock it depends on `d_clock` as the step's does.
+    /// Nothing while the warm-up holds the first rows.
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> crate::Step {
+        if let Some(refused) = crate::model::refused_predict_with(self, x, y, d_clock) {
+            return refused;
+        }
+        if self.warming() {
+            return crate::Step {
+                pred: vec![f64::NAN; Self::n_outputs_for(self.cfg.n_features)],
+                n_eff: self.n_eff,
+                extra: None,
+            };
+        }
+        let (moved, next) = self.before_row(y, d_clock);
+        let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
+        crate::Step {
+            pred: self.read(x, joint, next, 1.0).0,
+            n_eff: self.n_eff,
+            extra: None,
+        }
+    }
+
+    fn state(&self) -> crate::State {
+        crate::State::new(crate::ModelState::Bocpd(Box::new(self.clone())))
+    }
+
+    fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
+        crate::check_schema(s)?;
+        match &s.model {
+            crate::ModelState::Bocpd(m) => {
+                let m = (**m).clone();
+                crate::model::check_cfg("bocpd", m.cfg.validate())?;
+                // One log-joint per run, at least one run, and every run's
+                // moments at the emission's width (review 2026-09-18, B3);
+                // the warm-up's rows and the prior they set at the cfg's
+                // width, and rows held only while no prior is set.
+                let d = m.cfg.n_features;
+                let m2 = if m.cfg.emission == BocpdEmission::Gaussian {
+                    d * d
+                } else {
+                    d
+                };
+                let prior_ok = m
+                    .data_prior
+                    .as_ref()
+                    .is_none_or(|p| p.mean.len() == d && p.scale.len() == d * d);
+                if m.runs.is_empty()
+                    || m.runs.len() != m.logjoint.len()
+                    || m.runs.iter().any(|r| r.mean.len() != d || r.m2.len() != m2)
+                    || !prior_ok
+                    || m.warm.iter().any(|r| r.x.len() != d)
+                    || (m.data_prior.is_some() && !m.warm.is_empty())
+                    || m.warm.len() >= m.cfg.warm_rows_or_default()
+                {
+                    return Err(crate::StateError::Invalid(
+                        "bocpd: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
+            other => Err(crate::StateError::WrongModel {
+                expected: "bocpd",
+                found: other.kind(),
+            }),
+        }
+    }
+
+    fn n_targets(&self) -> usize {
+        0
+    }
+
+    fn n_features(&self) -> usize {
+        self.cfg.n_features
+    }
+
+    fn n_outputs(&self) -> usize {
+        Self::n_outputs_for(self.cfg.n_features)
+    }
+}
+
+impl Bocpd {
+    /// A row read against the prior as it stands and learned (Algorithm 1;
+    /// the module docs): every row once the prior is set, and the warm-up's
+    /// rows when it is.
+    fn learn(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
         // A row of no weight is scored as a row of the mean weight would be.
         let (rel, w_mean, w_rows) = if weight > 0.0 {
             self.relative(weight)
@@ -1071,75 +1422,6 @@ impl crate::OnlineModel for Bocpd {
         self.prune();
         out
     }
-
-    /// Never told the row's hazard column, so a per-row hazard read from
-    /// the row falls back to the configured one.
-    fn predict(&self, x: &[f64], d_clock: f64) -> crate::Step {
-        self.predict_with(x, &[], d_clock)
-    }
-
-    /// The hazard rides in `y[0]` under `hazard_from_row`, so the answer
-    /// depends on it exactly as the step's does (C1), absent where it is not
-    /// usable; on the clock it depends on `d_clock` as the step's does.
-    fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> crate::Step {
-        if let Some(refused) = crate::model::refused_predict_with(self, x, y, d_clock) {
-            return refused;
-        }
-        let (moved, next) = self.before_row(y, d_clock);
-        let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
-        crate::Step {
-            pred: self.read(x, joint, next, 1.0).0,
-            n_eff: self.n_eff,
-            extra: None,
-        }
-    }
-
-    fn state(&self) -> crate::State {
-        crate::State::new(crate::ModelState::Bocpd(Box::new(self.clone())))
-    }
-
-    fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
-        crate::check_schema(s)?;
-        match &s.model {
-            crate::ModelState::Bocpd(m) => {
-                let m = (**m).clone();
-                crate::model::check_cfg("bocpd", m.cfg.validate())?;
-                // One log-joint per run, at least one run, and every run's
-                // moments at the emission's width (review 2026-09-18, B3).
-                let d = m.cfg.n_features;
-                let m2 = if m.cfg.emission == BocpdEmission::Gaussian {
-                    d * d
-                } else {
-                    d
-                };
-                if m.runs.is_empty()
-                    || m.runs.len() != m.logjoint.len()
-                    || m.runs.iter().any(|r| r.mean.len() != d || r.m2.len() != m2)
-                {
-                    return Err(crate::StateError::Invalid(
-                        "bocpd: the state has the wrong shape".into(),
-                    ));
-                }
-                Ok(m)
-            }
-            other => Err(crate::StateError::WrongModel {
-                expected: "bocpd",
-                found: other.kind(),
-            }),
-        }
-    }
-
-    fn n_targets(&self) -> usize {
-        0
-    }
-
-    fn n_features(&self) -> usize {
-        self.cfg.n_features
-    }
-
-    fn n_outputs(&self) -> usize {
-        Self::n_outputs_for(self.cfg.n_features)
-    }
 }
 
 #[cfg(test)]
@@ -1198,13 +1480,15 @@ mod tests {
         );
     }
 
+    /// A prior given whole, so no warm-up: the longhand tests read Algorithm
+    /// 1 from the first row.
     fn cfg(d: usize) -> BocpdCfg {
         BocpdCfg {
             n_features: d,
             hazard: 100.0,
             hazard_from_row: false,
             emission: BocpdEmission::Diag,
-            prior_mean: None,
+            prior_mean: Some(vec![0.0; d]),
             prior_kappa: 1.0,
             prior_nu: Some(2.0),
             prior_scale: Some(vec![1.0]),
@@ -1212,6 +1496,7 @@ mod tests {
             prune_below: 0.0,
             max_run: 100_000,
             min_weight: 0.0,
+            warm_rows: None,
             hazard_on_clock: false,
         }
     }
@@ -2660,9 +2945,20 @@ mod tests {
             ..cfg(1)
         })
         .unwrap();
+        // `ν₀` absent: 3 for the per-feature emissions, `d + 2` for the
+        // inverse-Wishart (task 195, U5).
         assert_eq!(
             BocpdCfg {
                 prior_nu: None,
+                ..cfg(3)
+            }
+            .nu0(),
+            3.0
+        );
+        assert_eq!(
+            BocpdCfg {
+                prior_nu: None,
+                emission: BocpdEmission::Gaussian,
                 ..cfg(3)
             }
             .nu0(),
@@ -2670,8 +2966,10 @@ mod tests {
         );
     }
 
-    /// `Ψ₀`'s short forms are the matrices they name, run for run: absent is
-    /// the identity and a scalar `s` is `sI`; and `ν₀` absent is `d + 2`.
+    /// `Ψ₀`'s short forms are the matrices they name, run for run: a scalar
+    /// `s` is `sI`; and `ν₀` absent is `d + 2` under `gaussian` and 3 under
+    /// `diag`. Absent, `Ψ₀` is the first rows' covariance, which the warm-up
+    /// tests hold (task 195, U4).
     #[test]
     fn the_prior_scale_and_nu_short_forms_run_as_what_they_name() {
         let run = |c: BocpdCfg| {
@@ -2696,14 +2994,21 @@ mod tests {
         let identity = run(gaussian(Some(vec![1.0, 0.0, 0.0, 1.0])));
         let twice = run(gaussian(Some(vec![2.0, 0.0, 0.0, 2.0])));
         assert_ne!(identity, twice, "the scale moves the outputs");
-        assert_eq!(run(gaussian(None)), identity);
+        assert_eq!(run(gaussian(Some(vec![1.0]))), identity);
         assert_eq!(run(gaussian(Some(vec![2.0]))), twice);
         let diag = |nu: Option<f64>| BocpdCfg {
             prior_nu: nu,
             ..cfg(3)
         };
-        assert_ne!(run(diag(Some(5.0))), run(diag(Some(6.0))));
-        assert_eq!(run(diag(None)), run(diag(Some(5.0))));
+        assert_ne!(run(diag(Some(3.0))), run(diag(Some(6.0))));
+        assert_eq!(run(diag(None)), run(diag(Some(3.0))));
+        let wishart = |nu: Option<f64>| BocpdCfg {
+            emission: BocpdEmission::Gaussian,
+            prior_nu: nu,
+            prior_mean: Some(vec![0.0; 3]),
+            ..cfg(3)
+        };
+        assert_eq!(run(wishart(None)), run(wishart(Some(5.0))));
     }
 
     /// A matrix `prior_scale` is held to symmetry cell by cell, each upper
@@ -3009,6 +3314,317 @@ mod tests {
                     assert_eq!(back.step(&x, &[], d, 1.0), twin.step(&x, &[], d, 1.0));
                 }
             }
+        }
+    }
+
+    /// The emissions with their default priors: no `prior_mean`, no
+    /// `prior_scale`, no `prior_nu`, `robust`'s β at the polars layer's 0.1.
+    fn from_the_data(d: usize, emission: BocpdEmission) -> BocpdCfg {
+        BocpdCfg {
+            emission,
+            robust_beta: if emission == BocpdEmission::Robust {
+                0.1
+            } else {
+                0.0
+            },
+            hazard: 250.0,
+            prior_mean: None,
+            prior_nu: None,
+            prior_scale: None,
+            prune_below: 1e-6,
+            max_run: 1000,
+            ..cfg(d)
+        }
+    }
+
+    /// The breaks a stream shows: the rows the run-length posterior's mode
+    /// restarts on. `run_mode` is the pre-row run length, so a row whose
+    /// mode is under 20, after one at 20 or over, dates a break at `t -
+    /// mode`, the row the run began on: `robust` forgives the first rows of
+    /// a new regime one at a time, so its mode moves a few rows late
+    /// (`a_sustained_shift_survives_a_small_beta_and_not_a_large_one`).
+    fn breaks_of(m: &mut Bocpd, rows: impl Iterator<Item = Vec<f64>>) -> Vec<usize> {
+        let (mut found, mut last) = (Vec::new(), 0.0);
+        for (t, x) in rows.enumerate() {
+            let mode = m.step(&x, &[], 1.0, 1.0).pred[1];
+            if mode.is_finite() {
+                if mode < 20.0 && last >= 20.0 {
+                    found.push(t - mode as usize);
+                }
+                last = mode;
+            }
+        }
+        found
+    }
+
+    /// Two features whose means step at rows 200 and 400, at `level` with a
+    /// spread of `sd`: up 4 spreads and back, a shift `robust` dates (its
+    /// trade is that a larger one is forgiven row by row).
+    fn stepping(level: f64, sd: f64) -> impl Iterator<Item = Vec<f64>> {
+        let mut n = Normals::new(17);
+        (0..600).map(move |t| {
+            let shift = if (200..400).contains(&t) { 4.0 } else { 0.0 };
+            vec![
+                level + sd * (shift + n.normal()),
+                level + sd * (0.5 * shift + n.normal()),
+            ]
+        })
+    }
+
+    /// With no `prior_mean` and no `prior_scale` the prior is the first
+    /// rows' own: their sample mean and covariance (docs/PLAN.md task 195,
+    /// U4). So a stream at a level of 1e4 with a spread of 1e-2 shows the
+    /// breaks the same stream at level 0 with a spread of 1 shows, on the
+    /// same rows, under `gaussian` and `diag`, whose posterior is free of
+    /// the data's units once the prior is (3e-11 apart in `p_change`,
+    /// measured). The prior was a mean of 0 and the identity in the data's
+    /// units: at 1e4 a run that begins on a row has the prior's predictive,
+    /// under which no row of the data has any density, so no break was ever
+    /// found (review round 4, CE5). `robust` is held at level 0 alone: its
+    /// tempered message `π^w` carries the data's units as a factor `c^-w`,
+    /// which differs from run to run, so its posterior moves with the scale
+    /// whatever the prior -- at a spread of 2e3 it dates breaks that are not
+    /// there and misses the one at 200 (a property of the emission, reported
+    /// beside task 195 and not changed by it).
+    #[test]
+    fn the_prior_from_the_first_rows_finds_the_breaks_at_any_level_and_scale() {
+        for emission in [
+            BocpdEmission::Gaussian,
+            BocpdEmission::Diag,
+            BocpdEmission::Robust,
+        ] {
+            let found = |level: f64, sd: f64| {
+                let mut m = Bocpd::new(from_the_data(2, emission)).unwrap();
+                breaks_of(&mut m, stepping(level, sd))
+            };
+            let unit = found(0.0, 1.0);
+            for edge in [200, 400] {
+                assert!(
+                    unit.iter().any(|b| b.abs_diff(edge) <= 1),
+                    "{emission:?}: the break at {edge} was missed: {unit:?}"
+                );
+            }
+            if emission == BocpdEmission::Robust {
+                continue;
+            }
+            for (level, sd) in [(1e4, 1e-2), (-3e6, 2e3)] {
+                assert_eq!(found(level, sd), unit, "{emission:?} at {level}");
+            }
+        }
+    }
+
+    /// A feature that does not move over the first rows has no variance to
+    /// give the prior, and a predictive of no spread has no density. It
+    /// takes a floor, and the model runs: it finds the break in the other
+    /// feature, reports a number on every row after the first ones, and
+    /// counts no failure, at level 0 and away from it, and after the
+    /// constant starts to move (docs/PLAN.md task 195, U4).
+    #[test]
+    fn a_feature_constant_over_the_first_rows_does_not_break_the_prior() {
+        for emission in [
+            BocpdEmission::Gaussian,
+            BocpdEmission::Diag,
+            BocpdEmission::Robust,
+        ] {
+            for level in [0.0, 5.0, 1e4] {
+                let mut m = Bocpd::new(from_the_data(2, emission)).unwrap();
+                let mut n = Normals::new(23);
+                let (mut found, mut last) = (Vec::new(), 0.0);
+                for t in 0..500usize {
+                    let moving = if t < 300 { 0.0 } else { n.normal() };
+                    let shift = if t < 200 { 0.0 } else { 6.0 };
+                    let x = [level + moving, shift + n.normal()];
+                    let p = m.step(&x, &[], 1.0, 1.0).pred;
+                    if t >= 10 {
+                        assert!(
+                            p.iter().all(|v| v.is_finite()),
+                            "{emission:?} at {level}, row {t}: {p:?}"
+                        );
+                    }
+                    let mode = p[1];
+                    if mode.is_finite() {
+                        if mode < 20.0 && last >= 20.0 {
+                            found.push(t - mode as usize);
+                        }
+                        last = mode;
+                    }
+                }
+                assert_eq!(m.solve_failures, 0, "{emission:?} at {level}");
+                assert!(
+                    found.iter().any(|b| b.abs_diff(200) <= 1),
+                    "{emission:?} at {level}: {found:?}"
+                );
+            }
+        }
+    }
+
+    /// The warm-up: the first `warm_rows` learned rows (default `d + 2`)
+    /// report nothing; their sample mean and covariance -- the diagonal
+    /// under `diag` -- are the prior, held to the definition; and they are
+    /// then read as rows of a model given that prior from the start: every
+    /// row after them reports what that model reports, to the bit. A state
+    /// saved inside the warm-up goes on as the model that never stopped
+    /// (docs/PLAN.md task 195, U4).
+    #[test]
+    fn the_first_rows_set_the_prior_and_are_read_as_rows_of_it() {
+        for emission in [BocpdEmission::Gaussian, BocpdEmission::Diag] {
+            let d = 3;
+            let c = from_the_data(d, emission);
+            assert_eq!(c.warm_rows_or_default(), 5);
+            let mut n = Normals::new(41);
+            let rows: Vec<Vec<f64>> = (0..60)
+                .map(|t| {
+                    let a = n.normal();
+                    let lift = if t < 30 { 0.0 } else { 4.0 };
+                    vec![
+                        10.0 + a,
+                        -3.0 + 0.5 * a + n.normal(),
+                        lift + 0.1 * n.normal(),
+                    ]
+                })
+                .collect();
+            let mut m = Bocpd::new(c.clone()).unwrap();
+            let mut outs = Vec::new();
+            for (t, x) in rows.iter().enumerate() {
+                if t == 3 {
+                    let back = Bocpd::restore(&crate::OnlineModel::state(&m)).unwrap();
+                    assert_eq!(back, m, "{emission:?}: inside the warm-up");
+                }
+                let p = m.step(x, &[], 1.0, 1.0).pred;
+                assert_eq!(p.iter().all(|v| v.is_nan()), t < 5, "{emission:?}, row {t}");
+                outs.push(p);
+            }
+            // The definition: the sample mean and the unbiased covariance of
+            // the five rows.
+            let (mean, scale) = m.prior().expect("set");
+            let first = &rows[..5];
+            for i in 0..d {
+                let want = first.iter().map(|x| x[i]).sum::<f64>() / 5.0;
+                assert!((mean[i] - want).abs() <= 1e-14 * want.abs().max(1.0));
+                for j in 0..d {
+                    let mj = first.iter().map(|x| x[j]).sum::<f64>() / 5.0;
+                    let cov = first
+                        .iter()
+                        .map(|x| (x[i] - want) * (x[j] - mj))
+                        .sum::<f64>()
+                        / 4.0;
+                    let want = if emission == BocpdEmission::Gaussian || i == j {
+                        cov
+                    } else {
+                        0.0
+                    };
+                    let got = scale[i * d + j];
+                    assert!(
+                        (got - want).abs() <= 1e-13 * want.abs().max(1e-3),
+                        "{emission:?} [{i}][{j}]: {got} against {want}"
+                    );
+                }
+            }
+            // A model given that prior from the start reads every row after
+            // the warm-up to the bit.
+            let mut given = Bocpd::new(BocpdCfg {
+                prior_mean: Some(mean),
+                prior_scale: Some(scale),
+                ..c
+            })
+            .unwrap();
+            for (t, x) in rows.iter().enumerate() {
+                let p = given.step(x, &[], 1.0, 1.0).pred;
+                if t >= 5 {
+                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&p), bits(&outs[t]), "{emission:?}, row {t}");
+                }
+            }
+        }
+    }
+
+    /// The prior's weights are the rows' own against their largest, so a
+    /// weight's scale moves nothing, and a row of no weight is not one of
+    /// the first rows: it learns nothing and is not counted; its step joins
+    /// the next row's. A variance of 0 takes the floor `2^-52·max(x̄², 1)`,
+    /// and under `gaussian` a covariance that is not positive definite --
+    /// two features that are one -- gives its diagonal.
+    #[test]
+    fn the_warm_up_reads_weights_floors_a_constant_and_drops_collinearity() {
+        let c = BocpdCfg {
+            warm_rows: Some(3),
+            ..from_the_data(2, BocpdEmission::Gaussian)
+        };
+        let rows = [[1.0, 2.0], [3.0, 6.0], [2.0, 4.0], [5.0, 10.0]];
+        let weights = [1.0, 0.0, 3.0, 2.0];
+        let prior_at = |scale: f64| {
+            let mut m = Bocpd::new(c.clone()).unwrap();
+            for (x, w) in rows.iter().zip(weights) {
+                m.step(x, &[], 1.0, scale * w);
+            }
+            m.prior().expect("three learned rows")
+        };
+        let (mean, scale) = prior_at(1.0);
+        // Rows 0, 2 and 3 at weights 1, 3 and 2: V1 = 6, V2 = 14.
+        let want = (1.0 * 1.0 + 3.0 * 2.0 + 2.0 * 5.0) / 6.0;
+        assert!((mean[0] - want).abs() <= 1e-15 * want);
+        let ss =
+            1.0 * (1.0 - want).powi(2) + 3.0 * (2.0 - want).powi(2) + 2.0 * (5.0 - want).powi(2);
+        let var = ss / (6.0 - 14.0 / 6.0);
+        assert!((scale[0] - var).abs() <= 1e-14 * var, "{scale:?}");
+        // x1 = 2·x0: the covariance is singular, so its diagonal.
+        assert_eq!((scale[1], scale[2]), (0.0, 0.0), "{scale:?}");
+        assert!((scale[3] - 4.0 * var).abs() <= 1e-14 * var, "{scale:?}");
+        assert_eq!(prior_at(2f64.powi(-300)), prior_at(1.0), "a weight's scale");
+        for level in [0.0, 0.5, 7.0] {
+            let mut m = Bocpd::new(BocpdCfg {
+                warm_rows: Some(3),
+                ..from_the_data(1, BocpdEmission::Diag)
+            })
+            .unwrap();
+            for _ in 0..3 {
+                m.step(&[level], &[], 1.0, 1.0);
+            }
+            let floor = 2f64.powi(-52) * (level * level).max(1.0);
+            assert_eq!(m.prior().unwrap().1, vec![floor], "level {level}");
+        }
+    }
+
+    /// `warm_rows` is refused where it reads no row -- beside both priors --
+    /// and below 2, where there is no variance to take, and past the
+    /// buffer's budget.
+    #[test]
+    fn warm_rows_is_refused_where_it_cannot_set_a_prior() {
+        let both = BocpdCfg {
+            warm_rows: Some(5),
+            ..cfg(2)
+        };
+        assert!(both.validate().unwrap_err().contains("warm_rows"));
+        let one = BocpdCfg {
+            warm_rows: Some(1),
+            ..from_the_data(2, BocpdEmission::Diag)
+        };
+        assert!(one.validate().unwrap_err().contains("at least 2"));
+        let huge = BocpdCfg {
+            warm_rows: Some(1 << 40),
+            ..from_the_data(2, BocpdEmission::Diag)
+        };
+        assert!(huge.validate().unwrap_err().contains("MiB"));
+    }
+
+    /// `prior_nu`'s default is the smallest integer that gives the prior's
+    /// variance a mean: `d + 2` for the inverse-Wishart of `gaussian`
+    /// (`ν > d + 1`), and 3 for the per-feature normal-inverse-gamma of
+    /// `diag` and `robust` (`ν > 2`) whatever `d`. It was `d + 2` under
+    /// every emission, so a per-feature prior grew stronger with the
+    /// feature count for no reason (review round 4, CE2; docs/PLAN.md task
+    /// 195, U5).
+    #[test]
+    fn the_default_prior_nu_is_the_smallest_giving_each_emission_a_mean() {
+        for d in [1usize, 3, 6] {
+            let with = |emission| BocpdCfg {
+                emission,
+                prior_nu: None,
+                ..cfg(d)
+            };
+            assert_eq!(with(BocpdEmission::Gaussian).nu0(), d as f64 + 2.0);
+            assert_eq!(with(BocpdEmission::Diag).nu0(), 3.0, "d = {d}");
+            assert_eq!(with(BocpdEmission::Robust).nu0(), 3.0, "d = {d}");
         }
     }
 }

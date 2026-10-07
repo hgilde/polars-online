@@ -2430,12 +2430,15 @@ class TestPassiveAggressiveIsRivers:
     without an intercept and at unit weight, the two conditions the mapping
     states (D10). Measured: ``2e-15`` on the predictions and ``9e-16`` on
     the coefficients over 500 rows, once river is given the loss it
-    documents (see :func:`_river_pa`)."""
+    documents (see :func:`_river_pa`). River's ``eps`` is in the target's
+    units and ours in the residual's EW std (docs/PLAN.md task 195, U1), so
+    the two are held at ``eps = 0``, which is no tube in either; and ours on
+    the raw features, as river reads them."""
 
     @pytest.mark.parametrize(("mode", "river_mode"), [("pa", 0), ("pa1", 1), ("pa2", 2)])
     def test_every_row_is_rivers_without_an_intercept(self, mode, river_mode):
         rng = np.random.default_rng(11)
-        n, c, eps = 500, 0.3, 0.1
+        n, c, eps = 500, 0.3, 0.0
         x = rng.normal(0.0, 1.0, (n, 2))
         y = 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
         spec = po.spec.pa(
@@ -2449,6 +2452,7 @@ class TestPassiveAggressiveIsRivers:
             half_life=float("inf"),
             min_weight=0.0,
             coef_every=0,
+            standardize=False,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct
@@ -2466,9 +2470,9 @@ class TestPassiveAggressiveIsRivers:
     def test_the_intercept_is_inside_the_norm_here_and_outside_in_river(self):
         """The one difference the mapping names (D10): here the intercept is a
         column of ``z``, so ``‖z‖²`` counts its 1 and a plain step lands on the
-        tube's edge, ``y − eps``; river adds the same ``tau`` to its bias
-        outside the norm, and overshoots by ``ℓ/‖x‖²``."""
-        x, y, eps = {"x0": 1.0, "x1": 0.5}, 2.0, 0.1
+        tube's edge, the target itself at ``eps = 0``; river adds the same
+        ``tau`` to its bias outside the norm, and overshoots by ``ℓ/‖x‖²``."""
+        x, y, eps = {"x0": 1.0, "x1": 0.5}, 2.0, 0.0
         frame = pl.DataFrame({"x0": [1.0, 1.0], "x1": [0.5, 0.5], "y": [y, y]})
         spec = po.spec.pa(
             "m",
@@ -2478,6 +2482,7 @@ class TestPassiveAggressiveIsRivers:
             eps=eps,
             half_life=float("inf"),
             min_weight=0.0,
+            standardize=False,
         )
         again = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y")[1]
         assert again == pytest.approx(y - eps, abs=1e-12)
@@ -2717,11 +2722,12 @@ class TestHuberAgainstScikitLearn:
     squares, and without an intercept and with ``standardize`` it is
     ``LinearRegression(fit_intercept=False)`` on the raw columns -- the limit
     case the review names for pattern B. Statistical: with one row in fifty a
-    gross error, ``huber`` at ``huber_delta = 1.35`` and ``HuberRegressor(
-    epsilon = 1.35)`` land together where least squares does not. The
+    gross error, ``huber`` at its default ``huber_delta = 1.345`` and
+    ``HuberRegressor()`` at its default ``epsilon = 1.35``, the same constant
+    rounded, land together where least squares does not. The
     algorithms differ -- ours reweights each row by its prior residual in
     units of the residuals' EW spread, theirs solves for the scale jointly --
-    so they agree to a tolerance: 0.045 at this seed, at most 0.08 over eight,
+    so they agree to a tolerance: 0.044 at this seed, at most 0.08 over eight,
     against 0.38 to 0.47 for least squares. The spread ours measures in is
     not itself robust (review D4, ``robust.rs``), so at one row in ten the
     cut widens and the intercept sits halfway to least squares: 1.5 against
@@ -2766,8 +2772,11 @@ class TestHuberAgainstScikitLearn:
         bad = rng.random(n) < 0.02
         y[bad] += rng.uniform(15.0, 30.0, bad.sum())
         df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-        ours = self.fit(df, huber_delta=1.35)
-        theirs = HuberRegressor(epsilon=1.35, alpha=0.0, max_iter=1000).fit(x, y)
+        # `huber`'s default `huber_delta` is the 95%-efficiency constant
+        # 1.345 (Huber 1981), statsmodels' `HuberT`; scikit-learn rounds it to
+        # 1.35, its own default (docs/PLAN.md task 195, U3).
+        ours = self.fit(df)
+        theirs = HuberRegressor(alpha=0.0, max_iter=1000).fit(x, y)
         theirs = np.concatenate(([theirs.intercept_], theirs.coef_))
         ols = LinearRegression().fit(x, y)
         ols = np.concatenate(([ols.intercept_], ols.coef_))
@@ -3491,7 +3500,13 @@ class TestSgdIsScikitLearnsSgd:
     weight_sum) ** power`` is scikit-learn's ``eta0 / t ** power_t`` at unit
     weights with no decay, ``t`` counting rows from 1. Measured: 1.0e-15
     relative or less. The Poisson loss and the AdaGrad schedule have no
-    scikit-learn twin and stay with ``sgd_ref``."""
+    scikit-learn twin and stay with ``sgd_ref``. Nor, since task 195, has a
+    Huber cut or a tube of positive width: ours are in units of the
+    residual's EW std (U1), scikit-learn's ``epsilon`` in the target's, so
+    the epsilon-insensitive loss is held at ``eps = 0`` -- the sign of the
+    residual, which is the step's whole shape outside a tube -- and the
+    clamp to ``sgd_ref``. Ours steps on the raw features here, as
+    scikit-learn's ``partial_fit`` does."""
 
     TOL = 1e-12
     LR = 0.02
@@ -3515,6 +3530,7 @@ class TestSgdIsScikitLearnsSgd:
             half_life=float("inf"),
             min_weight=0.0,
             weight="w" if weighted else None,
+            standardize=False,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(frame)["s"].struct
@@ -3537,7 +3553,7 @@ class TestSgdIsScikitLearnsSgd:
         return pred
 
     @pytest.mark.parametrize("weighted", [False, True], ids=["unit weights", "weighted"])
-    @pytest.mark.parametrize("loss", ["huber", "epsilon_insensitive", "logistic"])
+    @pytest.mark.parametrize("loss", ["squared", "epsilon_insensitive", "logistic"])
     def test_every_row_is_scikit_learns(self, loss, weighted):
         from sklearn.linear_model import SGDClassifier, SGDRegressor
 
@@ -3546,37 +3562,33 @@ class TestSgdIsScikitLearnsSgd:
             penalty=None, learning_rate="constant", eta0=self.LR, shuffle=False
         )
         est: Any
-        if loss == "huber":
-            got = self.ours(frame, "y", weighted, loss=loss, huber_delta=1.0, learning_rate=self.LR)
-            est, target = SGDRegressor(loss="huber", epsilon=1.0, **sk), "y"
+        if loss == "squared":
+            got = self.ours(frame, "y", weighted, loss=loss, learning_rate=self.LR)
+            est, target = SGDRegressor(loss="squared_error", **sk), "y"
         elif loss == "epsilon_insensitive":
-            got = self.ours(frame, "y", weighted, loss=loss, eps=0.3, learning_rate=self.LR)
-            est, target = SGDRegressor(loss="epsilon_insensitive", epsilon=0.3, **sk), "y"
+            got = self.ours(frame, "y", weighted, loss=loss, eps=0.0, learning_rate=self.LR)
+            est, target = SGDRegressor(loss="epsilon_insensitive", epsilon=0.0, **sk), "y"
         else:
             got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)
             est, target = SGDClassifier(loss="log_loss", **sk), "yb"
         want = self.sklearns(est, frame, target, weighted)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
 
-    @pytest.mark.parametrize("loss", ["squared", "huber"])
-    def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self, loss):
+    def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self):
         from sklearn.linear_model import SGDRegressor
 
         frame = self.rows()
-        extra = {"huber_delta": 1.0} if loss == "huber" else {}
         got = self.ours(
             frame,
             "y",
             False,
-            loss=loss,
+            loss="squared",
             learning_rate=0.1,
             schedule="inv_scaling",
             power=0.5,
-            **extra,
         )
         est = SGDRegressor(
-            loss="huber" if loss == "huber" else "squared_error",
-            epsilon=1.0,
+            loss="squared_error",
             penalty=None,
             learning_rate="invscaling",
             eta0=0.1,
@@ -3587,15 +3599,18 @@ class TestSgdIsScikitLearnsSgd:
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
 
     def test_a_slip_in_the_mapping_misses(self):
-        """The control: scikit-learn's Huber at a cut of 0.9 where ours is at
-        1.0 parts from the bank by far more than the tolerance."""
+        """The control: scikit-learn's epsilon-insensitive loss at a tube of
+        0.05 where ours has none parts from the bank by far more than the
+        tolerance."""
         from sklearn.linear_model import SGDRegressor
 
         frame = self.rows()
-        got = self.ours(frame, "y", False, loss="huber", huber_delta=1.0, learning_rate=self.LR)
+        got = self.ours(
+            frame, "y", False, loss="epsilon_insensitive", eps=0.0, learning_rate=self.LR
+        )
         est = SGDRegressor(
-            loss="huber",
-            epsilon=0.9,
+            loss="epsilon_insensitive",
+            epsilon=0.05,
             penalty=None,
             learning_rate="constant",
             eta0=self.LR,
@@ -3696,7 +3711,7 @@ class TestRlsIsPadasips:
             targets=["y"],
             features=["x0", "x1"],
             half_life=half_life,
-            ridge=ridge,
+            delta=ridge,
             min_weight=0.0,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})

@@ -211,7 +211,7 @@ def main() -> None:
     specs = [
         po.spec.ewridge("ewridge", ridge=1e-4, **common),
         po.spec.rls(
-            "rls", ridge=1e-4, targets=[target], features=feats, half_life=hl, min_weight=50.0
+            "rls", delta=1e-4, targets=[target], features=feats, half_life=hl, min_weight=50.0
         ),
         po.spec.kalman("kalman", **kal),
         po.spec.lasso(

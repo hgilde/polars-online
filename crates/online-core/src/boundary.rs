@@ -115,6 +115,15 @@ fn bernoulli(z: f64) -> f64 {
     }
 }
 
+/// The smallest tail `1 − p` whose quantile `corrchange(kind =
+/// "sequential")` reads off the solve: below it the solve's quantile at
+/// `γ = 0` is off the series by more than the 0.03 Wied & Galeano's own
+/// Table 1 is good to (9.0e-2 at 2e-11 against 1.9e-2 here, measured with
+/// the search as it runs; docs/PLAN.md task 195). The solve's absolute
+/// error and the search's stopping tolerance, `|P − p| < 1e-11`, are each
+/// a large share of a tail that small.
+pub const MIN_SEQUENTIAL_TAIL: f64 = 5e-11;
+
 /// Cells of the space grid and the Crank–Nicolson step (see the module docs).
 const CELLS: usize = 400;
 const DT: f64 = 2e-3;
@@ -221,6 +230,16 @@ pub fn boundary_quantile(p: f64, gamma: f64) -> f64 {
     if let Some(&v) = cache.lock().expect("not poisoned").get(&key) {
         return v;
     }
+    let mid = solved_quantile(p, gamma, q0);
+    cache.lock().expect("not poisoned").insert(key, mid);
+    mid
+}
+
+/// The `p` quantile of `Z_γ` read off the solve, by Illinois regula falsi
+/// bracketed from `q0 ≤ q_γ(p)`, uncached. At `γ = 0` it is a second
+/// computation of the series' quantile, which is how its error in a tail
+/// is measured.
+fn solved_quantile(p: f64, gamma: f64, q0: f64) -> f64 {
     let f = |c: f64| boundary_cdf(c, gamma) - p;
     let (mut lo, mut flo) = (q0, f(q0));
     let (mut hi, mut fhi) = (q0 + 1.0, f(q0 + 1.0));
@@ -251,7 +270,6 @@ pub fn boundary_quantile(p: f64, gamma: f64) -> f64 {
             side = 1;
         }
     }
-    cache.lock().expect("not poisoned").insert(key, mid);
     mid
 }
 
@@ -375,6 +393,31 @@ mod tests {
             let got = boundary_cdf(q, 0.05);
             assert!((got - p).abs() < 1e-11, "p = {p}: P(Z ≤ {q}) = {got}");
         }
+    }
+
+    /// The solve's quantile at `γ = 0`, against the series, is within the
+    /// 0.03 Wied & Galeano's own table is good to down to the tail
+    /// [`MIN_SEQUENTIAL_TAIL`], and not at the next tail below it on a grid
+    /// of 1, 2 and 5 per decade (docs/PLAN.md task 195). The search starts
+    /// below the answer, as it does at `γ > 0`, where its bracket starts at
+    /// the `γ = 0` quantile: started on the answer itself it stops on its
+    /// first step and reads exact. Measured 2026-10-07: 1.6e-5 at 0.05,
+    /// 7.2e-4 at 1e-9, 6.1e-3 at 1e-10, 1.9e-2 at 5e-11, 9.0e-2 at 2e-11 and
+    /// 0.29 from 1e-11 down, where `|P − p| < 1e-11` stops it anywhere in a
+    /// tail that small.
+    #[test]
+    fn the_solve_is_within_the_papers_tolerance_down_to_the_floor() {
+        let error = |tail: f64| {
+            let p = 1.0 - tail;
+            let series = sup_abs_bm_quantile(p);
+            (solved_quantile(p, 0.0, series - 0.7) - series).abs()
+        };
+        for tail in [0.05, MIN_SEQUENTIAL_TAIL] {
+            let e = error(tail);
+            assert!(e < 0.03, "tail {tail:e}: {e}");
+        }
+        let below = error(0.4 * MIN_SEQUENTIAL_TAIL);
+        assert!(below > 0.03, "the next tail down: {below}");
     }
 
     /// Task 158: the Bernoulli function `B(z) = z/(e^z − 1)` near 0 is its

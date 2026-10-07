@@ -28,6 +28,7 @@ fn cfg(k: usize, scale: bool, schedule: LearningRate, l2: f64) -> SgdCfg {
         l2,
         min_weight: 50.0,
         standardize: scale,
+        strict_binary: false,
         clip_gradient: 1e3,
         constraint: None,
     }

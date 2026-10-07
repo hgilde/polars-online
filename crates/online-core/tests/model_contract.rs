@@ -279,7 +279,7 @@ fn rls_cfg() -> RlsCfg {
         n_targets: 2,
         fit_intercept: true,
         decay: decay(),
-        ridge: 1.0,
+        delta: 1.0,
         coef_prior: None,
         min_weight: 3.0,
     }
@@ -431,6 +431,7 @@ fn sgd_cfg() -> SgdCfg {
         clip_gradient: 1e3,
         constraint: None,
         standardize: false,
+        strict_binary: false,
         min_weight: 3.0,
     }
 }
@@ -453,6 +454,7 @@ fn pa_cfg() -> PaCfg {
         eps: 0.1,
         min_weight: 3.0,
         constraint: None,
+        standardize: false,
     }
 }
 
@@ -975,7 +977,7 @@ fn bocpd_cfg() -> BocpdCfg {
         hazard: 50.0,
         hazard_from_row: false,
         emission: BocpdEmission::Diag,
-        prior_mean: None,
+        prior_mean: Some(vec![0.0; K]),
         prior_kappa: 1.0,
         prior_nu: Some(2.0),
         prior_scale: Some(vec![1.0]),
@@ -983,6 +985,7 @@ fn bocpd_cfg() -> BocpdCfg {
         prune_below: 1e-6,
         max_run: 200,
         min_weight: 0.0,
+        warm_rows: None,
         hazard_on_clock: false,
     }
 }
@@ -1385,17 +1388,17 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
         ),
         (
             rls(RlsCfg {
-                ridge: inf,
+                delta: inf,
                 ..rls_cfg()
             }),
-            "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got inf",
+            "rls: delta must be finite and > 0 (it sets P0 = I / delta), got inf",
         ),
         (
             rls(RlsCfg {
-                ridge: nan,
+                delta: nan,
                 ..rls_cfg()
             }),
-            "rls: ridge must be finite and > 0 (it sets P0 = I / ridge), got NaN",
+            "rls: delta must be finite and > 0 (it sets P0 = I / delta), got NaN",
         ),
         (
             rls(RlsCfg {
@@ -1519,7 +1522,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
             ..lasso_cfg()
         }),
         rls(RlsCfg {
-            ridge: 1e300,
+            delta: 1e300,
             min_weight: inf,
             ..rls_cfg()
         }),
@@ -2855,6 +2858,29 @@ fn bocpd_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Bocpd::new(bocpd_cfg()).unwrap(), 0, true);
 }
 
+/// [`bocpd_cfg`] with its prior left to the first rows (docs/PLAN.md task
+/// 195, U4): the warm-up holds `d + 2` learned rows, reporting nothing, then
+/// reads them as rows of the prior they set.
+fn bocpd_from_the_data_cfg() -> BocpdCfg {
+    BocpdCfg {
+        prior_mean: None,
+        prior_scale: None,
+        prior_nu: None,
+        ..bocpd_cfg()
+    }
+}
+
+/// Inside the warm-up `predict` reports nothing, as the step does; after
+/// it, the step's number.
+#[test]
+fn bocpd_from_the_data_predict_is_the_step() {
+    predict_is_the_step_without_the_step(
+        || Bocpd::new(bocpd_from_the_data_cfg()).unwrap(),
+        0,
+        true,
+    );
+}
+
 /// On the clock `predict` applies the step's chance before it reads the
 /// row, as the step does; and the zero-weight contracts this runs hold a
 /// row of weight 0 to the stream without it, its step carried into the
@@ -3811,6 +3837,22 @@ mod generated {
             contract(|| Pa::new(pa_cfg()).unwrap(), &rows, split)?;
         }
 
+        /// `pa` and `sgd` standardize by default since docs/PLAN.md task 195
+        /// (U2), so the contract holds the scaled step too.
+        #[test]
+        fn pa_standardized(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Pa::new(PaCfg { standardize: true, ..pa_cfg() }).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn sgd_standardized(rows in stream(2, false), split in 0usize..60) {
+            contract(
+                || Sgd::new(SgdCfg { standardize: true, ..sgd_cfg() }).unwrap(),
+                &rows,
+                split,
+            )?;
+        }
+
         #[test]
         fn holt(rows in stream(2, false), split in 0usize..60) {
             contract(|| Holt::new(holt_cfg()).unwrap(), &rows, split)?;
@@ -3891,6 +3933,11 @@ mod generated {
         #[test]
         fn bocpd_on_the_clock(rows in stream(0, false), split in 0usize..60) {
             contract(|| Bocpd::new(bocpd_on_the_clock_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn bocpd_from_the_data(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Bocpd::new(bocpd_from_the_data_cfg()).unwrap(), &rows, split)?;
         }
 
         #[test]

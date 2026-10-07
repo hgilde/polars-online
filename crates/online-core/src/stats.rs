@@ -453,13 +453,17 @@ impl EwAutoCorr {
 /// ```text
 /// ic       = corr(pred, y)
 /// r2       = 1 − EW[(y − pred)²] / EW[(y − ȳ)²]
-/// hit_rate = EW mean of 1{sign(pred) = sign(y)}, over rows where y ≠ 0     (binary = false)
+/// hit_rate = EW mean of 1{sign(pred) = sign(y)}, over rows where y ≠ 0
+///            and pred ≠ 0                                               (binary = false)
 ///          = EW mean of 1{(pred > 0.5) = (y > 0.5)}, every row            (binary = true)
 /// ```
 ///
 /// A regression fit's `pred` and `y` share a sign convention, so agreement
-/// on the sign is informative and a `y = 0` row (neither up nor down) is
-/// excluded rather than scored either way. A classifier's `pred` is a
+/// on the sign is informative, and a row with `y = 0` or `pred = 0`
+/// (neither up nor down) is excluded rather than scored either way, as
+/// `po.eval` excludes it (docs/PLAN.md task 195, S6). A Poisson fit has no
+/// sign to hit, and its `hit_rate` is `None` ([`HitTest::Undefined`]). A
+/// classifier's `pred` is a
 /// probability in `(0, 1)` and its `y` a 0/1 label: both are positive by
 /// construction, so the sign test always agrees and reports 1.0 whatever the
 /// fit does (docs/PLAN.md task 76 measured it at exactly that on a fit
@@ -478,9 +482,9 @@ pub struct SlotMetrics {
     joint: crate::EwCov,
     /// EW mean squared error and its weight.
     mse: f64,
-    /// EW hit rate and its weight. Rows with `y == 0` are excluded from the
-    /// sign-agreement reading; every scored row counts toward the
-    /// accuracy-at-threshold one (see the struct docs).
+    /// EW hit rate and its weight. Rows with `y` or `pred` at the centre
+    /// are excluded from the sign-agreement reading; every scored row counts
+    /// toward the accuracy-at-threshold one (see the struct docs).
     hits: f64,
     hit_w: f64,
 }
@@ -543,11 +547,22 @@ impl SlotMetrics {
 
     /// [`Self::update`] with the regression hit test taken about `centre`
     /// rather than zero: agreement on which side of it `pred` and `y` fall,
-    /// a `y` exactly there not scored. For a target that is a ratio, whose
-    /// natural centre is 1 -- about zero, two positive numbers always agree,
-    /// and the rate read 1.0 whatever the fit (review 2026-09-26, D3).
-    /// `binary` ignores the centre. Centre 0 is [`Self::update`] to the bit.
+    /// a `y` or a `pred` exactly there not scored. For a target that is a
+    /// ratio, whose natural centre is 1 -- about zero, two positive numbers
+    /// always agree, and the rate read 1.0 whatever the fit (review
+    /// 2026-09-26, D3). `binary` ignores the centre. Centre 0 is
+    /// [`Self::update`] to the bit.
     pub fn update_about(&mut self, pred: f64, y: f64, lam: f64, w: f64, binary: bool, centre: f64) {
+        let hit = if binary {
+            HitTest::Threshold
+        } else {
+            HitTest::About(centre)
+        };
+        self.update_with(pred, y, lam, w, hit);
+    }
+
+    /// Score one row under the hit test `hit` ([`HitTest`]).
+    pub fn update_with(&mut self, pred: f64, y: f64, lam: f64, w: f64, hit: HitTest) {
         if !pred.is_finite() || !y.is_finite() || w <= 0.0 {
             // Age the estimates but do not score: a row with no prediction is
             // not evidence of a bad one. The means themselves are unchanged;
@@ -567,24 +582,51 @@ impl SlotMetrics {
             let e = y - pred;
             self.mse = ((denom - w) * self.mse + w * e * e) / denom;
         }
-        if binary || y != centre {
-            let hw = lam * self.hit_w + w;
-            let hit = if binary {
-                f64::from((pred > 0.5) == (y > 0.5))
-            } else {
-                f64::from((pred - centre).signum() == (y - centre).signum())
-            };
-            self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
-            self.hit_w = hw;
-        } else {
-            // A finite `y == 0` under a non-binary loss has no sign to hit,
-            // so it is not scored -- but it still happened, so it must age
-            // the hit weight exactly as a skipped row does above, or the hit
-            // rate runs on a different clock from `ic` and `r2` on any stream
-            // with exact zeros (review 2026-09-18, S1).
-            self.hit_w *= lam;
+        let scored = match hit {
+            HitTest::Threshold => Some(f64::from((pred > 0.5) == (y > 0.5))),
+            // A `y` or a `pred` exactly at the centre says neither up nor
+            // down. `signum(+0.0)` is 1, so a prediction of exactly 0 was
+            // "up", a hit on every rising row, where `po.eval`, whose
+            // `sign(0)` is 0, scored it a miss (review round 4, YB8;
+            // docs/PLAN.md task 195, S6).
+            HitTest::About(centre) if y != centre && pred != centre => {
+                Some(f64::from((pred - centre).signum() == (y - centre).signum()))
+            }
+            HitTest::About(_) | HitTest::Undefined => None,
+        };
+        match scored {
+            Some(hit) => {
+                let hw = lam * self.hit_w + w;
+                self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
+                self.hit_w = hw;
+            }
+            // A row with no sign to hit is not scored -- but it still
+            // happened, so it must age the hit weight exactly as a skipped
+            // row does above, or the hit rate runs on a different clock from
+            // `ic` and `r2` on any stream with exact zeros (review
+            // 2026-09-18, S1). Under `Undefined` no row is scored, and
+            // `hit_rate` is `None` throughout.
+            None => self.hit_w *= lam,
         }
     }
+}
+
+/// Which hit test a slot's `hit_rate` reads ([`SlotMetrics::update_with`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HitTest {
+    /// Sign agreement about a centre: 0 for a signed target, 1 for a ratio.
+    /// A row whose target or prediction sits exactly at the centre is not
+    /// scored.
+    About(f64),
+    /// Accuracy at a 0.5 threshold, every row scored: a probability against
+    /// a 0/1 label (the logistic losses).
+    Threshold,
+    /// None: a fit with no sign to hit -- a Poisson rate, positive by
+    /// construction against a count that is never negative, where the sign
+    /// test about zero agreed on every row and read 1.0 whatever the fit
+    /// (review round 4, CC5; docs/PLAN.md task 195, S5). `hit_rate` is
+    /// `None`, as `po.eval` nulls a metric that is not defined.
+    Undefined,
 }
 
 #[cfg(test)]
@@ -1544,5 +1586,32 @@ mod metric_tests {
     #[test]
     fn the_metrics_keep_no_runs() {
         assert!(!SlotMetrics::new().joint.keeps_runs());
+    }
+
+    /// A prediction exactly at the hit test's centre is left out, as a
+    /// target there is: it says neither up nor down, and the row ages the
+    /// weight without scoring. `f64::signum(+0.0)` is 1, so a prediction of
+    /// exactly 0 was "up", a hit on every rising row and a miss on every
+    /// falling one, where `po.eval`, whose `sign(0)` is 0, scored it a miss
+    /// on both (review round 4, YB8; docs/PLAN.md task 195, S6). `-0.0` is
+    /// at the centre too.
+    #[test]
+    fn a_prediction_at_the_centre_is_not_scored() {
+        for (centre, at) in [(0.0, 0.0), (0.0, -0.0), (1.0, 1.0)] {
+            let mut m = SlotMetrics::new();
+            m.update_about(at, centre + 1.0, 0.9, 1.0, false, centre);
+            assert_eq!(m.hit_rate(), None, "centre {centre}: a rising row");
+            m.update_about(at, centre - 1.0, 0.9, 1.0, false, centre);
+            assert_eq!(m.hit_rate(), None, "centre {centre}: a falling row");
+            m.update_about(centre + 0.5, centre + 1.0, 0.9, 1.0, false, centre);
+            assert_eq!(m.hit_rate(), Some(1.0), "centre {centre}");
+            m.update_about(at, centre + 1.0, 0.5, 1.0, false, centre);
+            assert_eq!(m.hit_rate(), Some(1.0), "centre {centre}: not scored");
+            assert_eq!(m.hit_w, 0.5, "centre {centre}: but aged");
+            // The binary reading scores every row, at its threshold.
+            let mut b = SlotMetrics::new();
+            b.update_about(0.0, 1.0, 0.9, 1.0, true, centre);
+            assert_eq!(b.hit_rate(), Some(0.0), "centre {centre}: binary");
+        }
     }
 }

@@ -283,11 +283,13 @@ class TestFeatureScaling:
         assert c[1] == pytest.approx(0.002, rel=0.15)
         assert c[2] == pytest.approx(900.0, rel=0.15)
 
-    def test_off_by_default(self):
+    def test_on_by_default(self):
+        """As for ``kalman`` (docs/PLAN.md task 195, U2): one learning rate has
+        to suit every feature, which only standardized features let it do."""
         spec = po.spec.sgd(
             "m", targets=["y0"], features=["x0"], half_life=100.0, learning_rate=0.01
         )
-        assert spec["model"]["standardize"] is False
+        assert spec["model"]["standardize"] is True
 
     def test_chunk_invariance(self):
         rng = np.random.default_rng(3)
@@ -518,3 +520,119 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
     # not a value given.
     assert all(spec["model"][k] is None for k in extra), spec["model"]
     po.ModelBank([spec])
+
+
+def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
+    """Review round 4's CC4 stream: `y = 0.5 + 2x + 0.3·noise`, the target
+    and the feature each scaled."""
+    rng = np.random.default_rng(2)
+    x, noise = rng.normal(size=n), rng.normal(size=n)
+    return pl.DataFrame({"x": scale_x * x, "y": scale_y * (0.5 + 2.0 * x + 0.3 * noise)})
+
+
+def _oos_r2(df, **kw):
+    spec = po.spec.sgd("s", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, **kw)
+    p = po.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y").to_numpy()
+    y = df["y"].to_numpy()
+    ok = np.isfinite(p)
+    return 1.0 - np.sum((y[ok] - p[ok]) ** 2) / np.sum((y[ok] - y[ok].mean()) ** 2)
+
+
+class TestUnitFreeDefaults:
+    """docs/PLAN.md task 195 (U1, U2; review round 4, CC4 and CC6): `sgd`
+    standardizes by default, as `kalman` does, and its `huber_delta` and
+    `eps` are in units of the target's EW residual standard deviation, as
+    `huber`'s `huber_delta` is. A default in the data's units fitted one
+    scale and failed the others."""
+
+    def test_standardize_is_on_by_default(self):
+        """Features times 100 at the defaults: R² -71847 with a raw step."""
+        assert _oos_r2(_cc4(scale_x=100.0)) > 0.95
+        assert _oos_r2(_cc4(scale_x=0.01)) > 0.95
+
+    def test_the_huber_cut_binds_at_every_scale_of_the_target(self):
+        """In the target's units the cut never bound on a target in
+        thousandths (huber equal to squared on 2994 of 2994 rows) and bound
+        on every row of one in thousands. In σ it binds on the tail rows at
+        every scale, and the fit is the same fit scaled. The gradient's clip
+        is a box in the target's units, so it is lifted here."""
+        preds = {}
+        for c in (2.0**-10, 1.0, 2.0**10):
+            df = _cc4(scale_y=c)
+            for loss in ("huber", "squared"):
+                spec = po.spec.sgd(
+                    "s",
+                    targets=["y"],
+                    features=["x"],
+                    half_life=1e9,
+                    min_weight=5.0,
+                    loss=loss,
+                    clip_gradient=float("inf"),
+                )
+                out = po.ModelBank([spec]).fit_predict(df)["s"].struct.field("pred_y")
+                preds[c, loss] = out.to_numpy() / c
+            differ = np.sum(preds[c, "huber"][5:] != preds[c, "squared"][5:])
+            assert differ > 2000, f"scale {c}: the cut bound on {differ} rows"
+        for c in (2.0**-10, 2.0**10):
+            np.testing.assert_array_equal(preds[c, "huber"], preds[1.0, "huber"])
+
+
+class TestLogisticLabels:
+    """docs/PLAN.md task 195 (S4; review round 4, CC9): a label outside {0, 1}
+    under the logistic loss takes `ftrl`'s rule. It is clamped into [0, 1] by
+    default, and `strict_binary=True` refuses the chunk naming the row."""
+
+    @staticmethod
+    def _frame(hi):
+        rng = np.random.default_rng(4)
+        x = rng.normal(size=600)
+        return pl.DataFrame({"x": x, "y": np.where(x + 0.5 * rng.normal(size=600) > 0, hi, 0.0)})
+
+    def test_a_label_above_one_is_clamped_to_one(self):
+        spec = po.spec.sgd(
+            "m", targets=["y"], features=["x"], half_life=1e9, min_weight=5.0, loss="logistic"
+        )
+        five = po.ModelBank([spec]).fit_predict(self._frame(5.0))
+        one = po.ModelBank([spec]).fit_predict(self._frame(1.0))
+        assert five["m"].struct.field("pred_y").equals(one["m"].struct.field("pred_y"))
+
+    def test_strict_binary_refuses_the_chunk_naming_the_row(self):
+        spec = po.spec.sgd(
+            "m",
+            targets=["y"],
+            features=["x"],
+            half_life=1e9,
+            loss="logistic",
+            strict_binary=True,
+        )
+        bank = po.ModelBank([spec])
+        with pytest.raises(ValueError, match=r"strict_binary.*neither 0 nor 1"):
+            bank.fit_predict(self._frame(5.0))
+        po.ModelBank([spec]).fit_predict(self._frame(1.0))
+
+    def test_strict_binary_is_for_the_logistic_loss(self):
+        with pytest.raises(ValueError, match="strict_binary"):
+            po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
+
+
+def test_a_poisson_fits_hit_rate_is_null():
+    """docs/PLAN.md task 195 (S5; review round 4, CC5): a rate is positive
+    and a count is not negative, so the sign test about zero agreed on every
+    row and `hit_rate` read 1.0 whatever the fit. There is no sign to hit, so
+    it is null, as `po.eval` nulls a metric that is not defined; `ic` and
+    `r2` are still read."""
+    rng = np.random.default_rng(3)
+    n = 2000
+    df = pl.DataFrame({"x": rng.normal(size=n), "y": rng.poisson(2.0, size=n).astype(float)})
+    spec = po.spec.sgd(
+        "s",
+        targets=["y"],
+        features=["x"],
+        half_life=200.0,
+        min_weight=5.0,
+        loss="poisson",
+        emit_metrics=True,
+    )
+    out = po.ModelBank([spec]).fit_predict(df)["s"].struct.unnest()
+    assert out["hit_rate_y"].null_count() == n
+    assert out["r2_y"].drop_nulls().len() > n - 20

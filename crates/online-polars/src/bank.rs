@@ -137,7 +137,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// what it keeps beside its models (S6), a clock range is kept as clock
 /// values (N18), a closed pair's statistic is `t_stat` (N8), and the
 /// envelope keeps each key column's form (N22); a 38 file is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 39;
+/// **40 since task 195** (2026-10-07): `sgd`'s and `pa`'s
+/// `huber_delta` and `eps` are in units of a residual spread each keeps,
+/// `pa` keeps a scaler, `bocpd` a warm-up, `ew_ridge` and `robust` each
+/// target's own `min_weight`, and `rls`'s prior strength is `delta`; a file
+/// from before it is refit.
+const MIN_BANK_SCHEMA_VERSION: u32 = 40;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -463,6 +468,9 @@ fn extract(
                 if matches!(
                     spec.model,
                     ModelKind::Ftrl {
+                        strict_binary: true,
+                        ..
+                    } | ModelKind::Sgd {
                         strict_binary: true,
                         ..
                     }

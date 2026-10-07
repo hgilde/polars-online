@@ -103,14 +103,14 @@ class TestRls:
         _close(coef, ref["coef"], TOL, "coef")
 
     def test_several_targets_learn_only_rows_where_all_are_present(self):
-        self._check(_stream(51), ["ya", "yb", "yc"], half_life=60.0, ridge=0.5)
+        self._check(_stream(51), ["ya", "yb", "yc"], half_life=60.0, delta=0.5)
 
     def test_a_prior_that_fades_as_the_sums_decay(self):
         self._check(
             _stream(51),
             ["ya", "yc"],
             half_life=40.0,
-            ridge=2.0,
+            delta=2.0,
             coef_prior=[[0.3, 1.0, -0.6, 0.0, 0.25], [-2.0, 0.0, -0.4, 0.0, 1.5]],
         )
 
@@ -119,7 +119,7 @@ class TestRls:
             _stream(52, level=3.0),
             ["ya"],
             half_life=80.0,
-            ridge=1.0,
+            delta=1.0,
             fit_intercept=False,
             coef_prior=[[1.0, -0.5, 0.0, 0.3]],
         )

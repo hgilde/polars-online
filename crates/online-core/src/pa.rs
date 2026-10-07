@@ -5,7 +5,7 @@
 //! coefficients that satisfies it. Passive when the constraint already holds,
 //! aggressive when it does not; there is no learning rate to tune.
 //!
-//! With `p = z·b`, `loss = max(0, |y − p| − eps)` and `s = ||z||²`:
+//! With `p = z·b`, `loss = max(0, |y − p| − eps·σ)` and `s = ||z||²`:
 //!
 //! ```text
 //! PA    tau = loss / s                    (unbounded step)
@@ -18,6 +18,25 @@
 //! `s = ||z||²` -- Crammer et al.'s augmented form -- where river's
 //! `PARegressor` and sklearn keep the intercept outside the norm: the one
 //! difference T-S18 has to map (review 2026-09-12, D10).
+//!
+//! **The tube is in units of `σ`**, the target's EW residual standard
+//! deviation as the row arrives, as `huber`'s `huber_delta` is: `σ²` is
+//! the EW mean of the squared out-of-sample residual, aged on every row
+//! and learned from a row with the target, a weight above 0 and a
+//! prediction, after the row has used it -- `sgd`'s and `huber`'s rule,
+//! and before the target has one the tube has no width. A tube in the
+//! target's own units left a target in hundredths inside it on every row,
+//! passive for ever: every prediction 0.0 and R² -0.051 where the unscaled
+//! target scored 0.961 (docs/PLAN.md task 195, review round 4 CC4). Under
+//! the unbounded step a target scaled by `c` then fits as the unscaled one,
+//! scaled by `c`; `C` caps `tau` in the target's units over `s`'s.
+//!
+//! **`standardize`** reads `z` as the features standardized against their
+//! EW moments with the row admitted, `sgd`'s scaler and its rule
+//! ([`crate::SgdCfg::standardize`]), so `s` and `C` stop being in the
+//! features' units; the coefficients are read out in the caller's units
+//! through the moments as they stand. A box or a sum is projected in the
+//! standardized coordinates, the bounds scaled as `sgd` scales them.
 //!
 //! **Weight note.** A row weight below 1 scales the step; a weight above 1
 //! counts as 1. The update is a projection onto the row's constraint, and
@@ -42,8 +61,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::sgd::{scales_of, standardized, unscaled};
 use crate::solve::dot_aug;
-use crate::{Constraint, Decay};
+use crate::{Constraint, Decay, EwDiag};
 
 /// Which passive-aggressive variant (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -65,19 +85,27 @@ pub struct PaCfg {
     pub fit_intercept: bool,
     pub decay: Decay,
     pub mode: PaMode,
-    /// Aggressiveness. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
+    /// Aggressiveness, a cap on `tau`, which is in the target's units over
+    /// `||z||²`'s: the features' own, or standardized ones under
+    /// `standardize`. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
     /// either bounded mode is [`PaMode::Pa`] exactly.
     pub c: f64,
-    /// Width of the insensitive tube: rows already this close are passive.
+    /// Half-width of the insensitive tube, in units of the target's EW
+    /// residual std: rows already this close are passive (the module docs).
     pub eps: f64,
     pub min_weight: f64,
     /// Box and/or sum constraint on the slopes, imposed by Euclidean
-    /// projection right after each update (ENHANCEMENTS E40); the intercept
-    /// is free. The initial `0` is projected too. A projected step no longer
+    /// projection after each update (ENHANCEMENTS E40); the intercept is
+    /// free. The initial `0` is projected too. A projected step no longer
     /// satisfies the row's margin exactly -- it is the closest feasible
-    /// coefficient to the one that would.
+    /// coefficient to the one that would. Under `standardize` the
+    /// projection is taken in the standardized coordinates, as `sgd`'s is.
     #[serde(default)]
     pub constraint: Option<Constraint>,
+    /// Standardize the features against their EW moments, `sgd`'s scaler
+    /// (the module docs; docs/PLAN.md task 195, U2).
+    #[serde(default)]
+    pub standardize: bool,
 }
 
 impl PaCfg {
@@ -108,6 +136,8 @@ impl PaCfg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Pa {
     cfg: PaCfg,
+    /// Running feature means and variances, under `standardize`.
+    scaler: Option<EwDiag>,
     beta: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows that carried it, decayed: what its
@@ -116,18 +146,36 @@ pub struct Pa {
     /// `min_weight = 10` with every coefficient at zero.
     #[serde(default)]
     w_target: Vec<f64>,
+    /// Per target, the EW variance of the out-of-sample residual, `σ²`, and
+    /// its weight: the scale `eps` is in (the module docs).
+    sig2: Vec<f64>,
+    wsig: Vec<f64>,
+    /// The row the model sees, `[1, z]`: the features as they stand, or
+    /// standardized under a scaler.
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// The raw row `[1, x]` the scaler is updated with.
+    #[serde(skip)]
+    rawbuf: Vec<f64>,
     /// Scratch for the projection.
     #[serde(skip)]
     pbuf: crate::constraint::Scratch,
+    /// Which targets stepped this row (kept under a constraint only).
+    #[serde(skip)]
+    learned: Vec<bool>,
+}
+
+thread_local! {
+    /// `predict`'s standardized row, as `sgd`'s.
+    static PREDICT_Z: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl Pa {
     pub fn new(cfg: PaCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k = cfg.k_total();
-        let mut beta = vec![vec![0.0; k]; cfg.n_targets];
+        let m = cfg.n_targets;
+        let mut beta = vec![vec![0.0; k]; m];
         if let Some(c) = &cfg.constraint {
             let off = usize::from(cfg.fit_intercept);
             let mut scratch = crate::constraint::Scratch::default();
@@ -136,11 +184,16 @@ impl Pa {
             }
         }
         Ok(Self {
+            scaler: cfg.standardize.then(|| EwDiag::new(k)),
             beta,
             w_sum: 0.0,
-            w_target: vec![0.0; cfg.n_targets],
+            w_target: vec![0.0; m],
+            sig2: vec![0.0; m],
+            wsig: vec![0.0; m],
             zbuf: vec![0.0; k],
+            rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
+            learned: Vec::new(),
             cfg,
         })
     }
@@ -149,8 +202,14 @@ impl Pa {
         &self.cfg
     }
 
-    pub fn coefficients(&self) -> &[Vec<f64>] {
-        &self.beta
+    /// Coefficients in the caller's units: under `standardize` the slopes
+    /// over each feature's scale as it stands, the intercept absorbing the
+    /// means, as `sgd`'s are read out.
+    pub fn coefficients(&self) -> Vec<Vec<f64>> {
+        match &self.scaler {
+            None => self.beta.clone(),
+            Some(sc) => unscaled(&self.beta, sc, self.cfg.fit_intercept),
+        }
     }
 
     pub fn n_eff(&self) -> f64 {
@@ -163,9 +222,30 @@ impl Pa {
         &self.w_target
     }
 
+    /// Per target, the EW variance of the out-of-sample residual, `σ²`.
+    pub fn sigma2(&self) -> &[f64] {
+        &self.sig2
+    }
+
+    /// Target `j`'s tube half-width: `eps·σ` once `σ²` is finite and above
+    /// 0, and no width before -- no residual yet, or every one exactly 0
+    /// (`huber`'s rule).
+    fn tube(&self, j: usize) -> f64 {
+        let s2 = self.sig2[j];
+        if s2 > 0.0 && s2.is_finite() {
+            self.cfg.eps * s2.sqrt()
+        } else {
+            0.0
+        }
+    }
+
     fn ensure_buffers(&mut self) {
-        if self.zbuf.len() != self.cfg.k_total() {
-            self.zbuf = vec![0.0; self.cfg.k_total()];
+        let k = self.cfg.k_total();
+        if self.zbuf.len() != k {
+            self.zbuf = vec![0.0; k];
+        }
+        if self.rawbuf.len() != k {
+            self.rawbuf = vec![0.0; k];
         }
     }
 }
@@ -189,12 +269,26 @@ impl OnlineModel for Pa {
         self.ensure_buffers();
         let m = self.cfg.n_targets;
         let lam = self.cfg.decay.factor(d_clock);
+        let off = usize::from(self.cfg.fit_intercept);
 
-        if self.cfg.fit_intercept {
+        // The row the model sees: `[1, x]`, or `[1, z]` standardized
+        // against the moments with the row admitted, `sgd`'s rule; the raw
+        // row updates the scaler afterwards, at the row's weight.
+        if off == 1 {
             self.zbuf[0] = 1.0;
-            self.zbuf[1..].copy_from_slice(x);
-        } else {
-            self.zbuf.copy_from_slice(x);
+            self.rawbuf[0] = 1.0;
+        }
+        self.rawbuf[off..].copy_from_slice(x);
+        match &self.scaler {
+            Some(sc) => {
+                for (z, v) in self.zbuf[off..]
+                    .iter_mut()
+                    .zip(standardized(sc, off, x, lam))
+                {
+                    *z = v;
+                }
+            }
+            None => self.zbuf[off..].copy_from_slice(x),
         }
 
         // Before this row's update and before its decay -- the convention
@@ -203,6 +297,10 @@ impl OnlineModel for Pa {
         let sq_norm: f64 = self.zbuf.iter().map(|z| z * z).sum();
 
         let mut pred = vec![f64::NAN; m];
+        if self.cfg.constraint.is_some() {
+            self.learned.clear();
+            self.learned.resize(m, false);
+        }
         for j in 0..m {
             let p: f64 = self
                 .zbuf
@@ -213,14 +311,31 @@ impl OnlineModel for Pa {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
+            // `σ²`'s weight ages on every row, as `huber`'s does.
+            self.wsig[j] *= lam;
             let Some(yj) = y[j] else { continue };
             // `p` overflows when a feature at the input bound meets a large
             // coefficient; a step from an infinite loss would be permanent.
-            if weight <= 0.0 || !yj.is_finite() || !p.is_finite() || sq_norm <= 0.0 {
+            if weight <= 0.0 || !yj.is_finite() || !p.is_finite() {
                 continue;
             }
             let err = yj - p;
-            let loss = (err.abs() - self.cfg.eps).max(0.0);
+            // The tube is drawn in the scale as the row arrives; the row's
+            // own residual joins it afterwards, from the prediction the row
+            // reports, as `huber`'s does (the module docs).
+            let tube = self.tube(j);
+            if pred[j].is_finite() {
+                let ws_new = self.wsig[j] + weight;
+                let s2 = (self.wsig[j] * self.sig2[j] + weight * err * err) / ws_new;
+                if s2.is_finite() {
+                    self.sig2[j] = s2;
+                    self.wsig[j] = ws_new;
+                }
+            }
+            if sq_norm <= 0.0 {
+                continue;
+            }
+            let loss = (err.abs() - tube).max(0.0);
             if loss == 0.0 {
                 continue; // passive: the constraint already holds
             }
@@ -241,9 +356,30 @@ impl OnlineModel for Pa {
             for (b, z) in self.beta[j].iter_mut().zip(&self.zbuf) {
                 *b += step * z;
             }
-            if let Some(c) = &self.cfg.constraint {
-                let off = usize::from(self.cfg.fit_intercept);
-                c.project(&mut self.beta[j][off..], None, &mut self.pbuf);
+            if let Some(l) = self.learned.get_mut(j) {
+                *l = true;
+            }
+        }
+        if let Some(sc) = &mut self.scaler {
+            sc.update(&self.rawbuf, lam, weight);
+        }
+        // Project after the scaler moved, as `sgd` does: the bounds live in
+        // the caller's units, and in standardized coordinates they move with
+        // the scales, so every target is re-projected when the scales
+        // changed (a positive weight), otherwise only the ones this row
+        // stepped. Without a scaler that is each stepped target, where its
+        // step left it.
+        if let Some(c) = &self.cfg.constraint {
+            let scales = self.scaler.as_ref().map(|sc| scales_of(sc, off));
+            let rescaled = self.scaler.is_some() && weight > 0.0;
+            for (j, b) in self.beta.iter_mut().enumerate() {
+                if rescaled || self.learned[j] {
+                    c.project(
+                        &mut b[off..],
+                        scales.as_deref().map(|s| &s[off..]),
+                        &mut self.pbuf,
+                    );
+                }
             }
         }
         self.w_sum = lam * self.w_sum + weight;
@@ -267,10 +403,26 @@ impl OnlineModel for Pa {
         }
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
-        for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
-            if *w >= self.cfg.min_weight {
-                *p = dot_aug(beta, x, self.cfg.fit_intercept);
+        let fit_intercept = self.cfg.fit_intercept;
+        let predict_with = |z: &[f64], pred: &mut [f64]| {
+            for ((p, beta), w) in pred.iter_mut().zip(&self.beta).zip(&self.w_target) {
+                if *w >= self.cfg.min_weight {
+                    *p = dot_aug(beta, z, fit_intercept);
+                }
             }
+        };
+        match &self.scaler {
+            None => predict_with(x, &mut pred),
+            // The row the step would see, standardized against the moments
+            // with it admitted after the step's decay, so `predict` gives
+            // the step's number exactly, as `sgd`'s does.
+            Some(sc) => PREDICT_Z.with_borrow_mut(|z| {
+                let off = usize::from(fit_intercept);
+                let lam = self.cfg.decay.factor(d_clock);
+                z.clear();
+                z.extend(standardized(sc, off, x, lam));
+                predict_with(z, &mut pred);
+            }),
         }
         Step {
             pred,
@@ -301,6 +453,20 @@ impl OnlineModel for Pa {
                 if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
                     return Err(StateError::Invalid(
                         "pa: the target weights have the wrong shape".into(),
+                    ));
+                }
+                if m.sig2.len() != n || m.wsig.len() != n {
+                    return Err(StateError::Invalid(
+                        "pa: the residual variances have the wrong shape".into(),
+                    ));
+                }
+                // A scaler exactly when `standardize` is on, at the cfg's
+                // width, as `sgd`'s state is held to (S16).
+                if m.cfg.standardize != m.scaler.is_some()
+                    || m.scaler.as_ref().is_some_and(|sc| sc.k() != k)
+                {
+                    return Err(StateError::Invalid(
+                        "pa: the state's scaler does not match its cfg's standardize".into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -403,6 +569,7 @@ mod tests {
             eps: 0.01,
             min_weight: 5.0,
             constraint: None,
+            standardize: false,
         }
     }
 
@@ -446,9 +613,10 @@ mod tests {
             m.coefficients()[0].clone()
         };
         // z = [1, 2] (intercept first), so |z|^2 = 5. beta starts at 0, so
-        // err = y and loss = |y| - eps.
-        let (y, sq_norm, eps) = (3.0, 5.0, 0.1);
-        let loss = y - eps;
+        // err = y; and the target has no residual scale yet, so the tube has
+        // no width and loss = |y| (the module docs; docs/PLAN.md task 195).
+        let (y, sq_norm) = (3.0, 5.0);
+        let loss = y;
 
         let pa = one_step(PaMode::Pa, 1.0, y);
         let tau = loss / sq_norm;
@@ -482,20 +650,23 @@ mod tests {
 
     #[test]
     fn inside_the_insensitivity_band_nothing_moves() {
-        // `loss == 0.0 => continue`: an error smaller than eps leaves the
-        // coefficients untouched, which is the "passive" half of the name.
+        // `loss == 0.0 => continue`: an error smaller than eps residual stds
+        // leaves the coefficients untouched, which is the "passive" half of
+        // the name. The first row's residual is the target's scale: 5.
         let mut c = cfg(1, PaMode::Pa);
-        c.eps = 1.0;
+        c.eps = 0.2;
         c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
         m.step(&[1.0], &[Some(5.0)], 0.0, 1.0);
         let moved = m.coefficients()[0].clone();
         assert!(moved[1] != 0.0, "the first row is outside the band");
+        assert_eq!(m.sigma2(), &[25.0]);
 
-        // Now feed a row it already predicts to within eps.
+        // Now feed a row it already predicts to within eps·σ = 1.
         let p: f64 = moved[0] + moved[1];
         m.step(&[1.0], &[Some(p + 0.5)], 1.0, 1.0);
         assert_eq!(m.coefficients()[0], moved, "inside the band: passive");
+        // σ² is now (25 + 0.25) / 2, so the tube is 0.2·3.55 = 0.71.
         m.step(&[1.0], &[Some(p + 1.5)], 1.0, 1.0);
         assert_ne!(m.coefficients()[0], moved, "outside the band: aggressive");
     }
@@ -529,15 +700,20 @@ mod tests {
 
     #[test]
     fn passive_inside_the_tube() {
-        // With a wide tube and a target already inside it, nothing moves.
+        // With a wide tube and a target already inside it, nothing moves
+        // after the first row, which has no scale to draw a tube in and so
+        // teaches; its residual is the scale every later row is inside.
         let mut c = cfg(1, PaMode::Pa1);
         c.eps = 10.0;
         c.min_weight = 0.0;
         let mut m = Pa::new(c).unwrap();
-        for _ in 0..100 {
-            m.step(&[1.0], &[Some(0.5)], 1.0, 1.0);
+        m.step(&[1.0], &[Some(0.5)], 0.0, 1.0);
+        let first = m.coefficients()[0].clone();
+        assert_ne!(first, vec![0.0, 0.0], "the first row teaches");
+        for i in 0..100 {
+            m.step(&[1.0], &[Some(0.5 + 0.01 * f64::from(i % 3))], 1.0, 1.0);
         }
-        assert_eq!(m.coefficients()[0], vec![0.0, 0.0]);
+        assert_eq!(m.coefficients()[0], first);
     }
 
     #[test]
@@ -905,5 +1081,89 @@ mod tests {
             out[1] < 0.5 * out[0],
             "the sparse target's own weight: {out:?}"
         );
+    }
+
+    /// `eps` is in units of the target's EW residual standard deviation σ,
+    /// as `huber`'s `huber_delta` is: a target scaled by a power of two fits
+    /// as the unscaled one does, scaled by it, to the bit, under the
+    /// unbounded step, whose `tau = loss / |z|²` scales with the target (a
+    /// finite `c` caps it in the target's units). In the target's units a
+    /// target in thousandths sat inside the tube on every row, passive for
+    /// ever, and one in thousands never did (review round 4, CC4;
+    /// docs/PLAN.md task 195, U1).
+    #[test]
+    fn the_tube_is_in_units_of_the_residual_std() {
+        let run = |c: f64| -> Vec<u64> {
+            let mut cf = cfg(2, PaMode::Pa);
+            cf.eps = 0.1;
+            cf.min_weight = 0.0;
+            let mut m = Pa::new(cf).unwrap();
+            let mut s = 5u64;
+            (0..400)
+                .map(|i| {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = c * (0.5 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s));
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let p = m.step(&x, &[Some(y)], d, 1.0).pred[0] / c;
+                    if p.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        p.to_bits()
+                    }
+                })
+                .collect()
+        };
+        let one = run(1.0);
+        for c in [2f64.powi(-10), 2f64.powi(10)] {
+            let scaled = run(c);
+            let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
+            assert_eq!(differ, 0, "at scale {c}: {differ} of 400 rows differ");
+        }
+    }
+
+    /// Under `standardize` the step reads the features standardized against
+    /// `sgd`'s scaler, so features scaled by a power of two predict the same
+    /// numbers, to the bit, in every mode, and the coefficients come back
+    /// in each scale's own units, a slope scaled by the inverse; `predict`
+    /// is the next step's number exactly; and a state round-trips mid-stream
+    /// (docs/PLAN.md task 195, U2). The raw step is the control.
+    #[test]
+    fn standardize_makes_the_fit_free_of_the_features_units() {
+        for mode in [PaMode::Pa, PaMode::Pa1, PaMode::Pa2] {
+            let run = |c: f64, standardize: bool| {
+                let mut cf = cfg(2, mode);
+                cf.standardize = standardize;
+                cf.eps = 0.1;
+                let mut m = Pa::new(cf).unwrap();
+                let mut s = 5u64;
+                let mut preds = Vec::new();
+                for i in 0..300 {
+                    let x = [c * lcg(&mut s), c * (3.0 + lcg(&mut s))];
+                    let y = 0.5 + 2.0 * x[0] / c - x[1] / c + 0.2 * lcg(&mut s);
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let ahead = m.predict(&x, d).pred[0];
+                    let p = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+                    assert_eq!(ahead.to_bits(), p.to_bits(), "{mode:?}, row {i}");
+                    preds.push(p.to_bits());
+                }
+                let back = Pa::restore(&m.state()).unwrap();
+                assert_eq!(back.coefficients(), m.coefficients(), "{mode:?}");
+                (preds, m.coefficients()[0].clone())
+            };
+            let (one, coef) = run(1.0, true);
+            let (scaled, scaled_coef) = run(128.0, true);
+            assert_eq!(scaled, one, "{mode:?}");
+            for i in 1..3 {
+                assert!(
+                    (scaled_coef[i] * 128.0 - coef[i]).abs() <= 1e-12 * coef[i].abs(),
+                    "{mode:?}: {scaled_coef:?} against {coef:?}"
+                );
+            }
+            assert!(
+                (coef[1] - 2.0).abs() < 0.2 && (coef[2] + 1.0).abs() < 0.2,
+                "{coef:?}"
+            );
+            assert_ne!(run(128.0, false).0, run(1.0, false).0, "{mode:?}: raw");
+        }
     }
 }
