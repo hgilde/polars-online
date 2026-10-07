@@ -1428,3 +1428,76 @@ function = "<impl crate::OnlineModel for EwCovModel>::step"
 mutation = "replace > with >="
 line_has = "if score.is_finite() && weight > 0.0 {"
 why = """as above: `EwQuantile::add` ignores a weight of 0"""
+
+# Task 184: the survivors of the run over the lines tasks 168-182 changed
+# (f49058d..8e28c1f) that no test can catch, each with the reason
+# (docs/PLAN.md task 184). Every other survivor there got a test.
+
+[[equivalent]]
+file = "crates/online-core/src/clock.rs"
+function = "Exact::step"
+mutation = "delete match arm (_, _, None)"
+line_has = "(_, _, None) => (0, 0),"
+why = """`raw` is `None` only where `ClockState::step`'s own match on it makes \
+`d` and `elapsed` 0 -- the stream's first row, or a clocked row after a \
+row-count one -- so the arm the mutant falls to, `ns_of_seconds` of each, \
+gives the same `(0, 0)`"""
+
+[[equivalent]]
+file = "crates/online-core/src/clock.rs"
+function = "Exact::step"
+mutation = "replace < with <="
+line_has = "} else if r < 0 {"
+why = """at `r = 0` the original takes `capped(0)`, the smaller of 0 and the \
+cap, which is 0 for any cap that is not negative: the cap is `gap_cap` in \
+nanoseconds, which the spec requires `> 0` (`ClockCfg::gap_cap`), or none"""
+
+[[equivalent]]
+file = "crates/online-core/src/clock.rs"
+function = "Exact::step"
+mutation = "replace > with >="
+line_has = "if total > cfg.gap_cap {"
+why = """at `total = gap_cap` the mutant adds `total − gap_cap = +0.0` to \
+`removed`, which leaves it as it was: it starts at `+0.0`, and a sum is \
+`-0.0` only when both its terms are. Both infinite would be a number clock \
+under no cap, which the spec refuses (`ClockCfg::gap_cap` is finite with a \
+clock column); without one, `total` counts rows, never infinitely many"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::shared_first_noise"
+mutation = "replace > with >="
+line_has = "if n > 0 {"
+why = """with `n = 0` nothing was summed either, and `first_noise(0/0)` -- \
+NaN, which is not finite -- is the 0 the line after the block returns"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "factorize"
+mutation = "delete match arm Ordering::Less"
+line_has = "Ordering::Less => 0.0,"
+why = """the arm puts zeros above the diagonal; without it the matrix's own \
+upper entries sit there. faer's lower Cholesky (`cholesky_in_place`, \
+through `ldlt::factor`'s kernels, its triangular solves and triangular \
+products) computes every entry on or below the diagonal from entries on \
+or below it, and what it writes above the diagonal feeds only entries \
+above it; `factorize` zeroes the strict upper triangle after. The factor, \
+and whether faer accepts it, are the same"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "SpdFactor::congruent"
+mutation = "replace > with >="
+line_has = "if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 && x.is_finite()) {"
+why = """the scale the mutant lets through, 0, takes its row's pivot to 0, \
+which `moved` refuses: `None` either way, and either way the factor is \
+spent and its owner factorizes afresh"""
+
+[[equivalent]]
+file = "crates/online-core/src/solve.rs"
+function = "SpdFactor::congruent"
+mutation = "replace && with ||"
+line_has = "if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 && x.is_finite()) {"
+why = """the scales the mutant lets through leave their row's pivot 0 or \
+negative (a scale of 0 or below) or infinite (`+inf`), which `moved` \
+refuses: `None` either way, as above"""

@@ -1438,4 +1438,49 @@ mod tests {
             assert!(f.clone().congruent(&e).is_none(), "{e:?}");
         }
     }
+
+    /// A scale of 0, of either sign, is refused at every order, as
+    /// `updated`'s `c > 0` says. At order 1 nothing else would refuse it:
+    /// `0·A + v vᵀ` is `v²`, a positive number, and the rotation would hand
+    /// back its factor `|v|` as a move of a matrix that has kept none of its
+    /// weight. At order 2 and up the rank-one `v vᵀ` leaves a pivot of
+    /// `0/0`, which spends the factor anyway.
+    #[test]
+    fn a_scale_of_zero_is_refused_at_order_one() {
+        let f = SpdFactor::of(&[4.0], 1).unwrap();
+        assert!(f.clone().updated(0.5, &mut [1.0]).is_some());
+        assert!(f.clone().updated(0.0, &mut [1.0]).is_none());
+        assert!(f.updated(-0.0, &mut [1.0]).is_none());
+    }
+
+    /// A factor moved to its cap reads back from its state, refusing its
+    /// next move as the saved one does: the cap is the most moves a factor
+    /// holds, not one past it. A state one past the cap is refused, as a
+    /// factor this module could not have made (task 170). Each move is
+    /// counted: `MAX_MOVES` of them, and no more, bring a factor to its cap.
+    #[test]
+    fn a_factor_at_its_cap_of_moves_reads_back_and_one_past_it_is_refused() {
+        let mut f = SpdFactor::of(&[4.0, 1.0, 1.0, 3.0], 2).unwrap();
+        for moved in 0..SpdFactor::MAX_MOVES {
+            assert!(f.can_move() && f.moves() == moved);
+            f = f.congruent(&[1.0, 1.0]).unwrap();
+        }
+        assert!(!f.can_move());
+        assert_eq!(f.moves(), SpdFactor::MAX_MOVES);
+        let named: SpdFactor =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&f).unwrap()).unwrap();
+        let json: SpdFactor = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        for back in [named, json] {
+            assert_eq!(back, f);
+            assert_eq!(back.moves(), SpdFactor::MAX_MOVES);
+            assert!(!back.can_move());
+        }
+        let mut past = SpdFactorState::from(f);
+        past.moves += 1;
+        let over = format!("counts {} moves", SpdFactor::MAX_MOVES + 1);
+        match SpdFactor::try_from(past) {
+            Err(e) => assert!(e.contains(&over), "{e}"),
+            Ok(f) => panic!("loaded with {} moves", f.moves()),
+        }
+    }
 }

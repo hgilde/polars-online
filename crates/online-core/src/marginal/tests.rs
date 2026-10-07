@@ -4307,3 +4307,33 @@ fn a_refused_row_takes_no_ring_slot_and_no_warm_up_row() {
         }
     }
 }
+
+/// A window's snapshots are spaced on the stamps its caller hands
+/// (task 175): on 1 ms rows under a `window_every` of 300 ms, one every
+/// 300th row, as the stamps' nanoseconds say. Handed none, the window
+/// reads the clock it sums from the steps, and the fifth snapshot comes a
+/// row late (row 1201), as it always did.
+#[test]
+fn the_windows_snapshots_are_spaced_on_the_stamps_it_is_handed() {
+    for stamped in [true, false] {
+        let mut c = cfg(2, 1);
+        c.window = Some(100.0);
+        c.window_every = Some(crate::seconds_of_ns(300_000_000));
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 13u64;
+        let taken = crate::since::events_on_millisecond_rows(1_300, stamped, |_, stamp, d| {
+            if let Some(st) = stamp {
+                m.stamp_next(st);
+            }
+            let held = m.win.as_ref().unwrap().snaps.len();
+            let (a, b) = (lcg(&mut s), lcg(&mut s));
+            OnlineModel::step(&mut m, &[a, b], &[Some(1.0 + a - 0.5 * b)], d, 1.0);
+            m.win.as_ref().unwrap().snaps.len() > held
+        });
+        if stamped {
+            assert_eq!(taken, [0, 300, 600, 900, 1200]);
+        } else {
+            assert_eq!(taken[4], 1201, "the summed clock's spacing drifts");
+        }
+    }
+}

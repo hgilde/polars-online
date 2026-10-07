@@ -2065,4 +2065,38 @@ mod tests {
             &fresh.predict(&x, 1.0).pred
         ));
     }
+
+    /// A window's snapshots are spaced on the stamps its caller hands
+    /// (task 175): on 1 ms rows under a `window_every` of 300 ms, one every
+    /// 300th row, as the stamps' nanoseconds say. Handed none, the window
+    /// reads the clock it sums from the steps, and the fifth snapshot comes
+    /// a row late (row 1201), as it always did.
+    #[test]
+    fn the_windows_snapshots_are_spaced_on_the_stamps_it_is_handed() {
+        for stamped in [true, false] {
+            let mut c = cfg(1, 2, Covariance::Diagonal);
+            c.window = Some(100.0);
+            c.window_every = Some(crate::seconds_of_ns(300_000_000));
+            let mut m = EwClass::new(c).unwrap();
+            let taken = crate::since::events_on_millisecond_rows(1_300, stamped, |i, stamp, d| {
+                if let Some(s) = stamp {
+                    m.stamp_next(s);
+                }
+                let held = m.win.as_ref().unwrap().snaps.len();
+                let label = (i % 2) as f64;
+                m.step(
+                    &[label + ((i * 7) % 5) as f64 / 10.0],
+                    &[Some(label)],
+                    d,
+                    1.0,
+                );
+                m.win.as_ref().unwrap().snaps.len() > held
+            });
+            if stamped {
+                assert_eq!(taken, [0, 300, 600, 900, 1200]);
+            } else {
+                assert_eq!(taken[4], 1201, "the summed clock's spacing drifts");
+            }
+        }
+    }
 }

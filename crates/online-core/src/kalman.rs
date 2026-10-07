@@ -2425,4 +2425,100 @@ mod tests {
             }
         }
     }
+
+    /// One feature through the origin, unstandardized, at `min_weight` 0:
+    /// the filter the tests below start from.
+    fn plain(p0: f64, half_life: f64, obs_var: Option<f64>) -> KalmanCfg {
+        KalmanCfg {
+            n_features: 1,
+            n_targets: 1,
+            fit_intercept: false,
+            decay: Decay::Halflife(50.0),
+            half_life: vec![half_life],
+            q: None,
+            obs_var,
+            p0,
+            share_p: false,
+            min_weight: 0.0,
+            revert_half_life: vec![f64::INFINITY],
+            standardize: false,
+        }
+    }
+
+    /// A covariance is unsized only when its whole diagonal is 0 (the module
+    /// doc, CC4). A slot the reversion takes to exactly 0 across a step,
+    /// beside one that still holds its variance, leaves `P` sized: the row
+    /// adds its process noise to it (none here), as to any sized `P`, and
+    /// the variance the other slot has learned carries on. Sized afresh at
+    /// `p0` times the noise, `P` would forget it. Slot 0 reverts at a
+    /// half-life of `1e-4`, so a step of 1 takes it and its covariances to
+    /// exactly 0 (`2^-10000`); slot 1 is a random walk with no process
+    /// noise. From the second row on slot 1 alone learns, and its variance
+    /// is a one-slot filter's, the oracle in information form: `1 / P11` is
+    /// the first row's marginal, `(1 + z0² + z1²) / (1 + z0²)` at
+    /// `P_0 = I`, plus `x1²` a row at `R = 1`.
+    #[test]
+    fn a_slot_reverted_to_zero_leaves_the_covariance_sized() {
+        let mut c = plain(1.0, f64::INFINITY, Some(1.0));
+        c.n_features = 2;
+        c.q = Some(vec![0.0, 0.0]);
+        c.revert_half_life = vec![1e-4, f64::INFINITY];
+        let mut m = Kalman::new(c).unwrap();
+        let z = [1.0, 2.0];
+        m.step(&z, &[Some(0.5)], 0.0, 1.0);
+        let mut info = (1.0 + z[0] * z[0] + z[1] * z[1]) / (1.0 + z[0] * z[0]);
+        let mut s = 113u64;
+        for i in 1..40 {
+            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            m.step(&x, &[Some(x[0] - 2.0 * x[1])], 1.0, 1.0);
+            info += x[1] * x[1];
+            let p = &m.p[0];
+            assert_eq!(p[0], 0.0, "row {i}: slot 0 holds nothing");
+            assert!(
+                (p[3] * info - 1.0).abs() <= 1e-12,
+                "row {i}: P11 = {} against {}",
+                p[3],
+                1.0 / info
+            );
+        }
+    }
+
+    /// A first noise so large that `p0` times it overflows sizes no prior:
+    /// `P` stays unsized, all zero and finite, where an infinite diagonal
+    /// would make every later innovation variance infinite, refuse every
+    /// correction and end the filter's learning for good. The next row
+    /// whose noise sizes a finite prior sizes it, and the filter learns
+    /// from it. A target at the input bound is within the model's contract,
+    /// as is any `p0 > 0`: here `p0 e² = 1e200 · 1e200`.
+    #[test]
+    fn a_prior_that_would_overflow_is_not_sized() {
+        let mut m = Kalman::new(plain(1e200, f64::INFINITY, None)).unwrap();
+        m.step(&[1.0], &[Some(crate::INPUT_BOUND)], 0.0, 1.0);
+        assert_eq!(m.p[0], vec![0.0], "unsized, and finite");
+        assert_eq!(m.beta[0], vec![0.0]);
+        // An innovation of 3 sizes a finite prior, `p0 · 9`, and corrects.
+        m.step(&[1.0], &[Some(3.0)], 1.0, 1.0);
+        assert!(m.p[0].iter().all(|v| v.is_finite()), "{:?}", m.p[0]);
+        assert_eq!(m.beta[0], vec![3.0], "learned");
+    }
+
+    /// Once `P` is sized, a row whose innovation is exactly 0 before the
+    /// target has a residual variance still sizes no noise, and corrects
+    /// nothing: at `R = 0` the gain would be `P z / zᵀ P z`, taking the row
+    /// as exact and collapsing `P` along `z`, here to 0, so the filter would
+    /// hold its fit with no doubt left (CC4, the module doc). `P` and `b`
+    /// keep their bits. The row before sized `P` at `p0 e² = 1` and
+    /// narrowed it to 1/2; the process noise derived from `σ² = 0` adds
+    /// nothing.
+    #[test]
+    fn an_exact_row_after_the_prior_is_sized_corrects_nothing() {
+        let mut m = Kalman::new(plain(1.0, 40.0, None)).unwrap();
+        m.step(&[1.0], &[Some(1.0)], 0.0, 1.0);
+        assert_eq!((m.p[0][0], m.beta[0][0]), (0.5, 0.5), "sized, narrowed");
+        assert_eq!(m.sig2, vec![0.0], "no residual variance yet");
+        let pred = m.step(&[1.0], &[Some(0.5)], 1.0, 1.0).pred[0];
+        assert_eq!(pred, 0.5, "the row is its prediction exactly");
+        assert_eq!((m.p[0][0], m.beta[0][0]), (0.5, 0.5));
+        assert_eq!(m.sig2, vec![0.0], "every residual so far exactly 0");
+    }
 }

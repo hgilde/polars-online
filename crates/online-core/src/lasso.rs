@@ -2594,4 +2594,55 @@ mod tests {
             assert_eq!(got, want, "stamped: {stamped}");
         }
     }
+
+    /// A target's selection errors count from its first predicted row: a
+    /// row on which it has no prediction -- here its first, before it has
+    /// any weight of its own -- adds no error, whatever the other targets'
+    /// predictions. Read off another target's prediction, the row's error
+    /// was `y − NaN`, and the NaN it left in each of the target's errors
+    /// never washed out: every comparison false, its choice stuck at the
+    /// heaviest penalty for good. The oracle is the definition: each path
+    /// point's mean squared out-of-sample error over the rows the target
+    /// was predicted on (no decay), the choice the smallest, the first on a
+    /// tie. Target 1 is null for the first 20 rows, its threshold 0; the
+    /// heavier penalty zeroes its slope, the lighter fits it.
+    #[test]
+    fn a_target_present_late_selects_on_its_own_predictions() {
+        use crate::OnlineModel;
+        let path = vec![1.0, 0.0];
+        let np = path.len();
+        let mut c = cfg(1, 2, path.clone());
+        c.min_weight = 0.0;
+        let mut m = Lasso::new(c).unwrap();
+        let (mut sum, mut scored) = ([0.0f64; 2], 0usize);
+        let mut s = 127u64;
+        for i in 0..120 {
+            let x = lcg(&mut s);
+            let y1 = (i >= 20).then(|| 0.5 - 3.0 * x + 0.01 * lcg(&mut s));
+            let ys = [Some(2.0 * x + 0.1 * lcg(&mut s)), y1];
+            let pred = m.step(&[x], &ys, if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+            if let Some(y) = y1
+                && pred[np].is_finite()
+            {
+                for (li, e) in sum.iter_mut().enumerate() {
+                    *e += (y - pred[np + li]).powi(2);
+                }
+                scored += 1;
+            }
+            assert!(
+                m.sel_err[1].iter().all(|e| e.is_finite()),
+                "row {i}: {:?}",
+                m.sel_err[1]
+            );
+            // Before any error, the lightest penalty, as the model starts.
+            let want = if scored == 0 {
+                np - 1
+            } else {
+                usize::from(sum[1] < sum[0])
+            };
+            assert_eq!(m.lam_selected()[1], path[want], "row {i}");
+        }
+        assert_eq!(scored, 99, "every row of target 1 but its first");
+        assert_eq!(m.lam_selected()[1], 0.0, "the lighter penalty fits");
+    }
 }

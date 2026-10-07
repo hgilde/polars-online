@@ -1218,6 +1218,57 @@ mod tests {
         }
     }
 
+    /// A row's stamp is the last accepted row's moved on by exactly the
+    /// row's own `d_clock`, on either form of clock: what a stamp is
+    /// (task 175). That holds on a step back the policy refuses too -- any
+    /// step back under `"error"`, a late row under `"reset_state"` --
+    /// whose `d_clock` is 0, so its stamp is the last one, and the row after
+    /// it moves on from there by its own step. A caller that names the
+    /// refused row and goes on stepping the clock meets no stamp behind the
+    /// ones before it. The oracle is the steps written out: seconds 0, 10,
+    /// 5 (refused), 12 and 12 are stamps 0, 10, 10, 17 and 17.
+    #[test]
+    fn a_refused_step_back_leaves_the_stamp_where_it_was() {
+        let at = [0i64, 10, 5, 12, 12];
+        let want = [0i128, 10, 10, 17, 17];
+        for policy in [OnClockReset::Error, OnClockReset::ResetState] {
+            let cfg = ClockCfg {
+                gap_cap: 60.0,
+                on_clock_reset: policy,
+                session_gap: None,
+                min_backwards_jump: 30.0,
+            };
+            let caps = ExactCaps {
+                gap_cap_ns: Some(60_000_000_000),
+                session_gap_ns: None,
+            };
+            let mut ns = ClockState::new();
+            let mut num = ClockState::new();
+            let mut last: Option<(Stamp, Stamp)> = None;
+            for (i, (&s, &w)) in at.iter().zip(&want).enumerate() {
+                let case = format!("{policy:?}, row {i}");
+                let a = stamp_at(&mut ns, &cfg, &caps, s * 1_000_000_000, None, true);
+                let b =
+                    num.advance_stamped(&cfg, &caps, Some(ClockValue::F64(s as f64)), None, true);
+                assert_eq!(a.backwards.is_some(), i == 2, "{case}");
+                assert_eq!(b.backwards.is_some(), i == 2, "{case}: number");
+                assert_eq!(a.d_clock, b.d_clock, "{case}");
+                let (sa, sb) = (a.stamp.unwrap(), b.stamp.unwrap());
+                assert_eq!(sa, Stamp::Ns(w * 1_000_000_000), "{case}");
+                if let Some((pa, pb)) = last {
+                    assert_eq!(sa.cmp_span(pa, a.d_clock), Ordering::Equal, "{case}");
+                    assert_eq!(sb.cmp_span(pb, b.d_clock), Ordering::Equal, "{case}");
+                }
+                assert_eq!(
+                    sb.cmp_span(Stamp::Raw(0.0, 0.0), w as f64),
+                    Ordering::Equal,
+                    "{case}: number"
+                );
+                last = Some((sa, sb));
+            }
+        }
+    }
+
     /// Task 176: on a temporal clock a row's place on the elapsed clock is
     /// every step since the stream began, uncapped, summed in integer
     /// nanoseconds, the oracle being the steps written out in integers: two
@@ -1389,7 +1440,8 @@ mod tests {
     /// their nanoseconds, so a difference of exactly a span given as a
     /// duration is equal to it and one nanosecond more is past it; two raw
     /// stamps by one subtraction when nothing was removed between them;
-    /// stamps of two forms by their decayed clocks as numbers.
+    /// stamps of two forms by their decayed clocks as numbers, a raw stamp's
+    /// being its raw value less the time removed before it.
     #[test]
     fn two_stamps_compare_exactly_against_a_span() {
         let second = seconds_of_ns(1_000_000_000);
@@ -1420,6 +1472,17 @@ mod tests {
         // Two forms: the decayed clocks as numbers.
         assert_eq!(
             Stamp::Raw(2.0, 0.0).cmp_span(Stamp::Ns(1_000_000_000), 1.0),
+            Ordering::Equal
+        );
+        // A raw stamp with time removed: raw 10 less 3 removed is a decayed
+        // clock of 7, on either side of the comparison.
+        let (raw, six) = (Stamp::Raw(10.0, 3.0), Stamp::Ns(6_000_000_000));
+        assert_eq!(raw.cmp_span(six, 1.0), Ordering::Equal);
+        assert_eq!(raw.cmp_span(six, 0.5), Ordering::Greater);
+        assert_eq!(raw.cmp_span(six, 1.5), Ordering::Less);
+        assert_eq!(Stamp::Ns(9_000_000_000).cmp_span(raw, 2.0), Ordering::Equal);
+        assert_eq!(
+            Stamp::Ns(9_000_000_000).cmp_span_ns(raw, 2.0, Some(2_000_000_000)),
             Ordering::Equal
         );
         // A difference with no answer is equal, as the operators read one.

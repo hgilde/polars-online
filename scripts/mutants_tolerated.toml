@@ -269,3 +269,22 @@ mutation = "replace > with >="
 line_has = "if nudge.is_finite() && aged > 0.0 {"
 kind = "input-bound"
 why = "as `replace && with ||` on this line"
+
+# Task 184 (docs/PLAN.md): from the run over the lines tasks 168-182 changed.
+
+[[tolerated]]
+file = "crates/online-core/src/kalman.rs"
+function = "<impl OnlineModel for Kalman>::step"
+mutation = "replace > with >="
+line_has = "if v > 0.0 && v.is_finite() {"
+kind = "rounding"
+why = """at `v = 0`, a row with no noise, the mutant writes zeros over a `P` \
+that is already unsized, its whole diagonal 0. The two differ only where \
+such a `P` holds an off-diagonal entry that is not `+0.0`: a `-0.0`, or a \
+stray of a few `2^-1074` that subnormal rounding leaves when the reversion \
+takes the diagonal to exactly 0 (measured: `4 · 2^-1074 = 2.0e-323`, at \
+per-slot factors near `2^-537`). No prediction reads `P`, `pred_var` is \
+NaN until there is a residual variance, and the next row with a noise \
+sizes `P` afresh, to the same bits under both (measured): the saved state \
+shows the difference, and a gain reads it only on a row whose `p0 σ²` \
+underflows to 0 or overflows though `σ²` is a positive number"""
