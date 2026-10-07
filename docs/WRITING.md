@@ -2,7 +2,7 @@
 
 The rules the reader-facing docs are held to: the README first, then the
 docstrings and the guides under `docs/`. Each rule is drawn from a report
-in [PHRASING.md](PHRASING.md). Most reports name a problem, and one
+in [PHRASING.md](records/PHRASING.md). Most reports name a problem, and one
 confirms an approach that worked. Each rule names the entry it came from,
 so it can be checked against the case. Where two rules pull against each
 other, the lower-numbered one wins.

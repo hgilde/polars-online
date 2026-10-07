@@ -5,7 +5,8 @@ the docstrings, is at <https://hgilde.github.io/polars-online/>, and its
 Sphinx sources are in [`reference/`](reference/). Every other document under
 `docs/` is one of two kinds. A **guide** is what you read to do something. A
 **record** says how a decision was reached, and is kept because the code or
-another document cites it.
+another document cites it. A record that nothing outside `docs/` cites is
+kept in [`records/`](records/), and its row links it there.
 
 ## Guides
 
@@ -23,9 +24,7 @@ another document cites it.
 | [TESTING.md](TESTING.md) | you want to know what the suite proves, what it has found, and where it is thin |
 | [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
 | **Writing the documentation** | |
-| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in PHRASING.md, with the README's task 89 rewrite as the worked example |
-| [PHRASING.md](PHRASING.md) | you have a phrasing problem to log, or want the report behind a rule in WRITING.md — the running list of phrasing reports, begun for task 68's clarity pass |
-| [README-ITERATIONS.md](README-ITERATIONS.md) | you are starting a pass over the README, or want to know which prompts improved it — every pass with its prompt verbatim, its counts and its verdict, and every idea the reviews raised with its status |
+| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's task 89 rewrite as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
 
 ## Records
 
@@ -39,24 +38,27 @@ out-of-date one, its row here says what became of it.
 | [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, §13 `window_size`, an EW accumulator with a hard cutoff, and §14 the nine review rounds of the window operators on 2026-10-03, each finding with the test that pins it. From §15 on, each section records one later review or decision, dated in its heading. The first three are the review of the 53 commits after v0.13.0 (§15), the whole-project review of 2026-10-05 (§16), and the parameters counted in rows where a clock would fit (§17) |
 | [ENHANCEMENTS.md](ENHANCEMENTS.md) | every model and feature after the first seven (E1–E75): what was proposed, what was measured, what was built and what was declined |
 | **Designs, as built** | |
-| [ANSWERS-E54-E64.md](ANSWERS-E54-E64.md) | the formulae and constants for the correlation and regime models, read from the papers before they were built |
+| [ANSWERS-E54-E64.md](records/ANSWERS-E54-E64.md) | the formulae and constants for the correlation and regime models, read from the papers before they were built |
 | [MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md) | two extensions to `marginal`, E66 and E67: lagged pair moments for an honest sample size, and binned target moments for a single-split gain. Both shipped, as tasks 65 and 66, and were revised under task 67 |
-| [MARGINAL-AT-WIDTH.md](MARGINAL-AT-WIDTH.md) | five asks against `marginal`'s cost per row at 10⁴ features × 50 targets, E70–E74, from the same caller: the measured cost and its scaling with the target count, then cross-lag terms on request, binning once per row, feature moments shared across targets, sharding a wide spec across the pool, and running a chunk pair-major. Tasks 122–126 built E70–E73 on 2026-09-25; task 127, E74, is open |
-| [WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md) | the settings that keep a model from being used before it has warmed up: the design as built for `ewridge` in 0.9.0, its evidence, what was tried and dropped, and §7, still open |
+| [MARGINAL-AT-WIDTH.md](records/MARGINAL-AT-WIDTH.md) | five asks against `marginal`'s cost per row at 10⁴ features × 50 targets, E70–E74, from the same caller: the measured cost and its scaling with the target count, then cross-lag terms on request, binning once per row, feature moments shared across targets, sharding a wide spec across the pool, and running a chunk pair-major. Tasks 122, 123 and 126 built E71, E70 and E73 on 2026-09-25, and task 125 built E72 on 2026-09-29; task 127, E74, is open |
+| [WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md) | the settings that keep a model from being used before it has warmed up: the design as built for `ewridge` in 0.9.0, its evidence, what was tried and dropped, and §7, the questions the design left, some answered and the rest open in PLAN task 116 |
 | **Surveys and prototypes** | |
-| [BEYOND-O-STATE.md](BEYOND-O-STATE.md) | what relaxing the O(state) rule to O(window) would unlock — a survey; four of its six candidates were since built (conformal intervals, `ew_cov` lags, `embargo`, and `window_size`, from snapshots under a memory budget) |
+| [BEYOND-O-STATE.md](records/BEYOND-O-STATE.md) | what relaxing the O(state) rule to O(window) would unlock — a survey; four of its six candidates were since built (conformal intervals, `ew_cov` lags, `embargo`, and `window_size`, from snapshots under a memory budget) |
 | [BOOSTED-TREES.md](BOOSTED-TREES.md) | how far gradient-boosted trees can be pushed toward the library's contract — a numpy prototype, measured, nothing in Rust |
 | [CLUSTERING.md](CLUSTERING.md) | the survey behind `kmeans` and `micro`: every clustering family, decided against the library's contract. Seven classes passed and were prototyped, two of them were built, and it says why the rest did not pass |
-| [ARROW-SOURCES.md](ARROW-SOURCES.md) | whether anything that produces Arrow chunks, DuckDB first, can feed a bank. One tier already works through Polars, and the rest was a proposal with nothing built (2026-09-17). Its §4, corrected on 2026-09-22, finds no blocker to a native import, which its status line predates |
+| [ARROW-SOURCES.md](ARROW-SOURCES.md) | whether anything that produces Arrow chunks, DuckDB first, can feed a bank. Its status line, dated 2026-10-06, says tier 0, which works through Polars, has shipped, and the native import is parked (PLAN task 86). Its §4, corrected on 2026-09-22, finds no blocker to that import |
+| **Logs of the documentation** | |
+| [PHRASING.md](records/PHRASING.md) | every phrasing report, kept verbatim with its reading, begun for task 68's clarity pass: each rule in WRITING.md names the report it came from |
+| [README-ITERATIONS.md](README-ITERATIONS.md) | every pass over the README, with its prompt verbatim, its counts and its verdict, and every idea the reviews raised with its status |
 | **Reviews, oldest first** | |
 | [SIMPLIFICATION.md](SIMPLIFICATION.md) | what complexity was removed after the performance work, and what was kept on purpose |
 | [IMPROVEMENTS.md](IMPROVEMENTS.md) | the pre-release review by axis — correctness, performance, usability, extensibility, testing — with the decision on each item |
 | [REVIEW-E54-E64.md](REVIEW-E54-E64.md) | the code review of tasks 45–56: 29 items, all resolved in task 57 |
 | [REVIEW-2026-09-12.md](REVIEW-2026-09-12.md) | a review by reading the code, in nine passes, each finding with the test that would confirm it. It has no status line and is left as the reviewer wrote it; the progress file below says what was done about each finding |
-| [REVIEW-2026-09-12-pass10.md](REVIEW-2026-09-12-pass10.md) | the tenth pass of that review (`ftrl`, `pa`, `hmm`), written as a delta to fold into it; not folded in |
-| [REVIEW-2026-09-12.pass10.patch](REVIEW-2026-09-12.pass10.patch) | the same pass as a patch to REVIEW-2026-09-12.md; not applied |
+| [REVIEW-2026-09-12-pass10.md](records/REVIEW-2026-09-12-pass10.md) | the tenth pass of that review (`ftrl`, `pa`, `hmm`), written as a delta to fold into it; not folded in |
+| [REVIEW-2026-09-12.pass10.patch](records/REVIEW-2026-09-12.pass10.patch) | the same pass as a patch to REVIEW-2026-09-12.md; not applied |
 | [REVIEW-2026-09-12-PROGRESS.md](REVIEW-2026-09-12-PROGRESS.md) | what was done about each finding of the 2026-09-12 review, taking first the fixes an independent library could test |
-| [REVIEW-2026-09-15.md](REVIEW-2026-09-15.md) | the eleven commits that answered the 2026-09-12 review, re-derived from first principles: three findings survived, and were fixed in batch 7 |
+| [REVIEW-2026-09-15.md](records/REVIEW-2026-09-15.md) | the eleven commits that answered the 2026-09-12 review, re-derived from first principles: three findings survived, and were fixed in batch 7 |
 | [REVIEW-2026-09-17.md](REVIEW-2026-09-17.md) | the changes since 0.6.0 (tasks 83–86 and the 0.7.0 release), every finding reproduced by running the code; all were applied except A2, which is recorded |
 | [REVIEW-2026-09-18.md](REVIEW-2026-09-18.md) | a review of every code file, kept as its working state. Its opening still reads as in progress, but its four batches of fixes are on `main` and were released in 0.8.0 |
 

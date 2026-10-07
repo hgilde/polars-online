@@ -212,7 +212,7 @@ them down, which is the failure this section exists to prevent.
   sketches this library does need it already has — P² quantiles behind
   `resid_quantiles` and `mahal_quantiles` until task 146, and since then a
   DDSketch whose buckets decay on the clock (`EwQuantile`) — and
-  [`BEYOND-O-STATE.md`](BEYOND-O-STATE.md) is where a sketch bound would be
+  [`BEYOND-O-STATE.md`](records/BEYOND-O-STATE.md) is where a sketch bound would be
   argued for if one were wanted.
 - **Recommenders** (`reco.Baseline`, `BiasedMF`, `FunkMF`, `RandomNormal`)
   and **factorization machines** (`facto.FMRegressor`, `FFMRegressor`,
@@ -299,7 +299,7 @@ losses, Poisson included); trees are investigated to prototype level
 ([`BOOSTED-TREES.md`](BOOSTED-TREES.md)) and open; clustering
 ([`CLUSTERING.md`](CLUSTERING.md)) was investigated the same way and then
 built as `kmeans` and `micro` (tasks 23–24); what is surveyed is B1–B6 in
-[`BEYOND-O-STATE.md`](BEYOND-O-STATE.md). One correction to that survey: **B1,
+[`BEYOND-O-STATE.md`](records/BEYOND-O-STATE.md). One correction to that survey: **B1,
 adaptive conformal intervals, passes the `O(state)` rule as written** — its own
 memory line says so (`O(1/ε)`, on top of E23's P², `EwQuantile` since task
 146) — so it belongs here rather
@@ -340,7 +340,7 @@ E41 (built, task 29) the bursty-regressor one; E42 (built, task 30) the "is the 
 |---|---|---|
 | E30 | ~~P2~~ **done** | **Export the EW Gram matrix and cross-moments as arrays.** `EwCov` maintains the centred `k × k` co-moment matrix and `EwRidge` the per-target cross-moment vector `r`; every solve reads them. Nothing exposes them to a caller. The only route today is `ew_cov`, which emits *pairwise* statistics as struct fields — the right shape at `k = 4` (6 columns) and the wrong one at `k = 400` (**79,800** columns). Done: `ModelBank.gram(spec, group=None)` returns one dict per (group, decay instance) with `means`, `comoments` (`k × k`), `cross_moments` (`n_targets × k`), `target_weights` and `n_eff` as numpy arrays; `Bank::gram` is the Rust equivalent, and `EwCov::comoments`/`means`, `EwRidge::cov`/`cross_moments`/`target_weights` and the `Lasso` equivalents expose them in `online-core`. Reports for the models that keep a co-moment matrix (`ewridge`, `lasso`, `ew_cov`); the others yield nothing rather than a fabricated matrix, since `rls` and `kalman` track an inverse and the gradient models keep no second moment. **The open question resolved itself into a documented identity, and writing the test is what found it:** `comoments` is centred (E11b) but `cross_moments` is *uncentred* `E[z·y]`, because that is the pair the solve consumes — so the relation is `(comoments + means⊗means) · beta == cross_moments`, and the first draft of both the docstring and the test got it wrong in the same direction. `tests/test_gram.py` now solves that system by hand and recovers the model's own coefficients, which is the only claim worth making. |
 
-**Related:** [`docs/BEYOND-O-STATE.md`](BEYOND-O-STATE.md) surveys what becomes
+**Related:** [`docs/records/BEYOND-O-STATE.md`](records/BEYOND-O-STATE.md) surveys what becomes
 possible if the `O(state)` memory rule is relaxed to `O(window)` or a sketch bound —
 six candidates that are genuinely absent from Rust and C++, of which adaptive conformal
 prediction is the strongest. None is proposed for implementation; the survey exists so
@@ -426,7 +426,7 @@ implemented; all are **scheduled** as `docs/PLAN.md` tasks 45–56
 resolves what each row left open and corrects the two places a row was
 wrong about the maths (E59's permutation null, E60's transition estimate).
 The points that block left to the papers are answered in
-`docs/ANSWERS-E54-E64.md` and folded back into it the same day. One
+`docs/records/ANSWERS-E54-E64.md` and folded back into it the same day. One
 correction of substance for a reader of this section: E59's "sequential
 constancy monitor" cites Wied–Krämer–Dehling (2012), whose test is a
 *closed-sample* fluctuation test — the sequential form with a boundary is
@@ -516,7 +516,7 @@ outputs, state, invariance, tests); the rows here are the index.
 
 ## 14. `marginal` at width, round two: what a row costs at 10⁴ × 50 (2026-09-25)
 
-All five are specified in `docs/MARGINAL-AT-WIDTH.md` (the caller's shape
+All five are specified in `docs/records/MARGINAL-AT-WIDTH.md` (the caller's shape
 and what it reads, the measured cost per row and its scaling with the
 target count, then per ask the API, state and cost, invariance and tests);
 the rows here are the index. Measured by the caller against 0.10.0 at

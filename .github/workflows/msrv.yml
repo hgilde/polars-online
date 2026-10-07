@@ -1,0 +1,50 @@
+name: MSRV
+
+# The workspace's `rust-version` (Cargo.toml) is the oldest Rust a source
+# build supports: what a user on a platform with no wheel builds the sdist
+# with. Every other job builds on the newest stable, so no job compiled the
+# version the workspace declares (review 2026-10-06, CI11). This one checks
+# the whole workspace on exactly that Rust, from the lock as committed,
+# weekly and by hand. tests/test_ci_cost_policy.py reads the version from
+# Cargo.toml and holds this job to it, so raising `rust-version` moves the
+# job too. `cargo check` compiles without code generation or linking, which
+# is what a declared minimum is about, and keeps the job short.
+on:
+  schedule:
+    - cron: "29 5 * * 3" # Wednesdays, 05:29 UTC
+  workflow_dispatch:
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+concurrency:
+  group: msrv-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: cargo check on the declared rust-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: "1.95"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # `+1.95`, because the repository's rust-toolchain.toml names `stable`,
+      # which a bare `cargo` inside the checkout would use instead. online-py
+      # builds pyo3 for `abi3-py312`, whose build script wants a Python of at
+      # least 3.12, and the image's own moves with the image.
+      - name: cargo check, the whole workspace, from the lock as committed
+        run: |
+          uv python install 3.12
+          PYO3_PYTHON="$(uv python find 3.12)"
+          export PYO3_PYTHON
+          cargo +1.95 check --workspace --locked

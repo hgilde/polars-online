@@ -138,6 +138,143 @@ def test_numpy_is_tested_at_its_newest_and_its_next_release_candidate():
     assert any("pytest" in r for r in canary_runs)
 
 
+def _polars_floor() -> str:
+    """The floor of the polars range `pyproject.toml` declares."""
+    meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    (polars,) = [d for d in meta["dependencies"] if re.match(r"polars\b", d)]
+    m = re.fullmatch(r"polars>=([\d.]+),<\d+", polars)
+    assert m, polars
+    return m.group(1)
+
+
+def test_the_suite_runs_on_the_declared_polars_floor_before_a_release():
+    """The floor, `polars>=1.34.0`, was a declared number no job ran: the
+    canary and the release's legs move polars up, and the suite last ran on
+    1.34.0 before the window operators were built (review 2026-10-06, AP7
+    and CI2). A blocking leg runs the suite on the floor itself, with its
+    runtime package, read from `pyproject.toml` by
+    ``scripts/polars_floor.py``, so raising the floor moves the leg with it.
+    The canary runs the same leg monthly. Only polars moves, as in the other
+    legs, and the tests that need a newer polars skip there by version."""
+    job = JOBS["floor-polars"]
+    assert "continue-on-error" not in job and "strategy" not in job
+    assert "floor-polars" in _transitive_needs("publish")
+    canary = _load("polars-canary.yml")
+    for where, spec in (
+        ("release.yml", job),
+        ("polars-canary.yml", canary["jobs"]["floor-polars"]),
+    ):
+        steps = spec["steps"]
+        (read,) = [s for s in steps if "scripts/polars_floor.py" in str(s.get("run", ""))]
+        assert read["id"] == "floor", where
+        assert read["run"].split() == [
+            "python3",
+            "scripts/polars_floor.py",
+            ">>",
+            '"$GITHUB_OUTPUT"',
+        ]
+        runs = [str(s.get("run", "")) for s in steps]
+        version = "${{ steps.floor.outputs.version }}"
+        sync = (
+            f'uv sync --upgrade-package "polars=={version}"'
+            f' --upgrade-package "polars-runtime-32=={version}"'
+        )
+        assert sync in runs, (where, runs)
+        assert not any("--prerelease" in r or "unpin" in r for r in runs), where
+        assert 'uv run pytest -q -m "not soak and not pins"' in runs, where
+        assert spec.get("env", {}).get("UV_PYTHON", canary.get("env", {}).get("UV_PYTHON")) == (
+            "3.12"
+        ), where
+    floor = _floor_script()
+    assert floor.version() == _polars_floor() == "1.34.0"
+
+
+def test_a_mark_for_a_newer_polars_lies_between_the_floor_and_the_pin():
+    """``needs_polars`` skips a test on the floor leg, naming the version and
+    why. A version at the floor would skip nothing, and one above the pin
+    would hide the test from CI's own runs, so both are refused when the
+    mark is made, at collection."""
+    from polars_version import needs_polars
+    from test_scaffold import BUILT_AGAINST, SUPPORTED_FLOOR
+
+    for outside in (SUPPORTED_FLOOR, "1.0.0", "9.0.0"):
+        with pytest.raises(AssertionError, match="above the floor"):
+            needs_polars(outside, "a reason")
+    mark = needs_polars(BUILT_AGAINST, "a reason")
+    assert mark.kwargs["reason"].startswith(f"needs py-polars >= {BUILT_AGAINST}, and this is ")
+    assert mark.kwargs["reason"].endswith(": a reason")
+
+
+def test_the_canary_runs_the_floor_monthly_and_the_newest_weekly():
+    """The floor leg runs on a monthly schedule of its own, and by hand; the
+    weekly jobs skip that schedule. Each schedule is its own concurrency
+    group, so a month's first Monday, when both fire, cancels neither."""
+    canary = _load("polars-canary.yml")
+    schedules = [entry["cron"] for entry in canary.get("on", canary.get(True))["schedule"]]
+    weekly = [c for c in schedules if c.split()[2] == "*"]
+    monthly = [c for c in schedules if c.split()[2] != "*"]
+    assert len(weekly) == 1 and len(monthly) == 1, schedules
+    (month,) = monthly
+    assert month.split()[2].isdigit() and month.split()[3:] == ["*", "*"], month
+    floor = " ".join(canary["jobs"]["floor-polars"]["if"].split())
+    assert floor == (
+        f"github.event.schedule == '{month}' || github.event_name == 'workflow_dispatch'"
+    ), floor
+    for job in ("latest-polars", "next-numpy"):
+        assert canary["jobs"][job]["if"] == f"github.event.schedule != '{month}'", job
+    assert "github.event.schedule" in canary["concurrency"]["group"]
+
+
+def _floor_script():
+    spec = importlib.util.spec_from_file_location(
+        "polars_floor", REPO / "scripts" / "polars_floor.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_floor_script_reads_the_range_it_is_given(tmp_path):
+    """It refuses a dependency line it cannot read, rather than printing a
+    floor the leg would then install."""
+    floor = _floor_script()
+    for line, want in (
+        ('"polars>=1.34.0,<3"', "1.34.0"),
+        ('"polars>=2.1.4,<4"', "2.1.4"),
+    ):
+        (tmp_path / "pyproject.toml").write_text(
+            f'[project]\nname = "x"\ndependencies = [{line}]\n', encoding="utf-8"
+        )
+        assert floor.version(tmp_path) == want
+    for line in ('"polars"', '"polars~=1.34"', '"polars-lts-cpu>=1.0,<2"'):
+        (tmp_path / "pyproject.toml").write_text(
+            f'[project]\nname = "x"\ndependencies = [{line}]\n', encoding="utf-8"
+        )
+        with pytest.raises(SystemExit, match="polars"):
+            floor.version(tmp_path)
+
+
+def test_the_legs_that_move_a_dependency_run_the_floor_python():
+    """Only the dependency the leg is about may vary, and `uv sync` takes
+    whatever interpreter the runner image carries unless told: the canary
+    pins 3.12 for that reason (review 2026-10-06, CI19), and the release's
+    Polars and NumPy legs did not."""
+    meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    python = meta["requires-python"].removeprefix(">=")
+    for job in ("next-polars", "next-numpy", "floor-polars"):
+        assert JOBS[job].get("env", {}).get("UV_PYTHON") == python, job
+
+
+def test_the_state_hand_off_uses_the_lock_as_committed():
+    """The two `cargo test` steps of the cross-OS state hand-off re-resolved
+    a stale `Cargo.lock` silently, as the builds did before ``--locked``
+    (review 2026-10-06, CI12)."""
+    for job in ("write-state", "read-state"):
+        (step,) = [s for s in JOBS[job]["steps"] if "cargo test" in str(s.get("run", ""))]
+        assert "--locked" in step["run"].split(), job
+
+
 #: The first NumPy with wheels for each Python, from PyPI's file lists:
 #: 1.24.4 has none past cp311, 1.25.2 none past cp311, 1.26.0 has cp312.
 FIRST_NUMPY_WHEEL = {"3.12": (1, 26)}

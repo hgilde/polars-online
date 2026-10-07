@@ -338,7 +338,7 @@ noted.
 | **F3** | **Building or inspecting a plan runs nothing**: `collect_schema()`, `explain()`, `explain(engine="streaming")`. | 0 runs |
 | **F4** | **`head(n)` reaches the source as `n_rows`** (when it is pushed — not through a `sort`), and the source ends its own run by returning; a filter reaches it as `predicate`; the streaming engine hands `batch_size=100_000`, the in-memory engine `None`. | as `_frame.py` already assumes |
 | **F5** | **A node after the source failing does not stop the source.** With a source that takes 0.5 s and a strict cast that fails on its second chunk, every engine (`collect()`, `collect(engine="streaming")`, `sink_parquet()`) drains the source to its natural end and raises *afterwards*. A failed `sink_parquet` leaves its file behind (0 bytes on 1.34.0, 323 bytes on 1.38.1/1.44.1). | raised after 0.58 s, source ended, in all three |
-| **F6** | An exception inside the source surfaces as `ComputeError: caught exception during execution of a Python source, exception: ...`. | as `_frame.py` documents |
+| **F6** | An exception inside the source surfaces, under py-polars 1.x, as `ComputeError: caught exception during execution of a Python source, exception: ...`. Under py-polars 2.0 the plan raises the source's own exception unwrapped, such as a `ValueError` or a `FileNotFoundError`. | 1.x as `_frame.py` documents; 2.0 as the canary found it on 2026-09-21 and 2026-10-05 |
 | **F7** | **An abandoned run is not ended.** `next()` on `collect_batches` then dropping the iterator, or `for .. break`, leaves the generator suspended after it ran 4–5 chunks ahead; on 1.38.1/1.44.1 it is closed (`GeneratorExit`, `finally`) only when the *plan object* is dropped, on 1.34.0 when the iterator is. | no `end`, `finally` later or much later |
 | **F8** | `sink_batches` exists from 1.34.0 (a callback per batch). A callback returning `True` stops the run on 1.34.0/1.38.1 and drains it on 1.44.1. Not needed by anything below; recorded because it differs. | |
 
@@ -504,7 +504,7 @@ the rules were implemented (§8).
 | C4 | `head(613)` writes the state of a bank fed `df.head(613)` | byte-identical (`rows_seen=613`, 1 group) |
 | C4b | `sort().head(5)` writes the whole stream's state | byte-identical to C2 (`rows_seen=3000`) |
 | C5 | `for .. break` over `collect_batches` writes nothing | no file |
-| C6 | a bank error mid-stream (a null clock at row 700) writes nothing | `ComputeError`, no file |
+| C6 | a bank error mid-stream (a null clock at row 700) writes nothing | `ComputeError` under py-polars 1.x, the bank's own `ValueError` under 2.0 (F6); no file |
 | C7 | a failing node after the bank still writes (R6) | file present, byte-identical to C2 |
 | C8 | `save_state=p` over rows 0–599, then `load_state=p, save_state=p` over 600– : the resumed rows equal one continuous stream's (bar `coef`'s cadence at the chunk boundary, as the README states for any resume) and the final state is byte-identical to the continuous run's | both hold |
 | C8b | the plan built against `p` re-run after `p` was overwritten gives the same frame (R3) | same frame |

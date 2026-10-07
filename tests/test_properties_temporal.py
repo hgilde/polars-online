@@ -45,6 +45,7 @@ from hypothesis import strategies as st
 
 import polars_online as po
 from polars_online._polars_online import format_duration, parse_duration
+from polars_version import needs_polars
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
 
@@ -203,6 +204,9 @@ class TestDurationText:
             assert g[0] != "0" and 1 <= int(g) <= most, text
         assert sum(int(g) * per for g, per, _ in written) == ns, text
 
+    # Measured on the releases from the floor, 2026-10-07: 1.34.0 refuses
+    # `+0ns`, and 1.35.1 reads it (1.35.0 cannot be installed).
+    @needs_polars("1.35.1", "Polars' dt.offset_by, the reference, refuses a leading +")
     @TEXT
     @given(case=fixed_texts())
     def test_the_text_means_what_polars_reads_it_as(self, case):
@@ -316,6 +320,10 @@ class TestTheThreeForms:
             td = timedelta(**{UNIT_KEYWORD[u]: n for u, n in parts.items() if u != "ns"})
             assert _halflife(td) == canonical
 
+    # Before 1.38.0 the length wraps inside Polars, before the package can
+    # see it, so there is nothing for it to refuse (measured on 1.37.0 and
+    # 1.38.0, 2026-10-07).
+    @needs_polars("1.38.0", "pl.duration wraps a length past an i64 inside Polars")
     @SPECS
     @given(data=st.data())
     def test_a_pl_duration_past_an_i64_is_refused_by_name_and_never_wraps(self, data):

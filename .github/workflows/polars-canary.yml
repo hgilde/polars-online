@@ -11,11 +11,17 @@
 # It is also the evidence for moving the range. That only works if a red
 # canary means *Polars broke us* and nothing else -- so this job has to be
 # as reliable as CI, not less, and only one thing may vary in it.
+#
+# The newest Polars proves the ceiling, and says nothing of the floor. Once a
+# month `floor-polars` runs the suite on the floor itself, as every release
+# does (release.yml), so a change that needs a newer Polars than the range
+# admits shows between releases too (review 2026-10-06, AP7 and CI2).
 name: Polars and NumPy canary
 
 on:
   schedule:
-    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC: the newest Polars and NumPy
+    - cron: "47 6 1 * *" # the 1st of each month, 06:47 UTC: the floor
   workflow_dispatch:
 
 # Least privilege: no token scope by default, granted per job. This matters more
@@ -23,8 +29,10 @@ on:
 permissions: {}
 
 # A second canary tells you nothing the first will not; do not pay for both.
+# Per schedule, though: when the 1st is a Monday both fire, and the floor
+# must not cancel the week's run, nor the week's run the floor.
 concurrency:
-  group: canary-${{ github.ref }}
+  group: canary-${{ github.event.schedule }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -40,6 +48,7 @@ env:
 jobs:
   latest-polars:
     name: build and test against the latest Polars
+    if: github.event.schedule != '47 6 1 * *'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -113,6 +122,7 @@ jobs:
 
   next-numpy:
     name: test against NumPy's next release candidate
+    if: github.event.schedule != '47 6 1 * *'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -131,5 +141,33 @@ jobs:
       - run: uv sync --prerelease=allow --upgrade-package numpy
       - name: versions in play
         run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run pytest -q -m "not soak and not pins"
+
+  floor-polars:
+    name: test against the floor of the Polars range
+    if: github.event.schedule == '47 6 1 * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    # release.yml's `floor-polars`, run between releases: the suite on
+    # exactly the py-polars the range starts at, and its runtime package,
+    # read from pyproject.toml. Only polars moves, down to the floor, and a
+    # test that needs a newer polars skips there by version, naming it.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: free disk and use a leaner linker
+        uses: ./.github/actions/linux-build-prep
+      - name: the floor, from pyproject.toml
+        id: floor
+        run: python3 scripts/polars_floor.py >> "$GITHUB_OUTPUT"
+      - run: uv sync --upgrade-package "polars==${{ steps.floor.outputs.version }}" --upgrade-package "polars-runtime-32==${{ steps.floor.outputs.version }}"
+      - name: versions in play
+        env:
+          FLOOR: ${{ steps.floor.outputs.version }}
+        run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins"

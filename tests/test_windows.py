@@ -25,6 +25,19 @@ import pytest
 
 import polars_online as po
 from polars_online._formula import FormulaError, from_tree, to_tree
+from polars_version import INSTALLED, needs_polars
+
+#: Polars' own windowed sums and means are this file's reference, and their
+#: results moved on the way from the floor of the declared range, 1.34.0, to
+#: the version this repository pins. Measured on the releases between them,
+#: 2026-10-07: before 1.41.1 `rolling_sum_by` over a time column refuses a
+#: column with a null, or gives null for an empty window where it now gives
+#: 0, and a value at rows where it now gives null; before 1.37.0
+#: `rolling_mean_by` over an integer index refuses a column with a null;
+#: `ewm_sum_by` arrived in 1.43.0.
+NEEDS_ROLLING_NULLS = needs_polars(
+    "1.41.1", "Polars' rolling_sum_by, the reference, gives other empty-window and null results"
+)
 
 CLOCK = {"clock": "t", "gap_cap": 1e9}
 
@@ -299,11 +312,18 @@ def test_polars_computes_the_same_mean_and_sum() -> None:
             "ewm_sum_by",
         )
     else:
-        major, minor, patch = (int(v) for v in pl.__version__.split(".")[:3])
-        assert (major, minor, patch) < (1, 44, 1), "ewm_sum_by arrived in 1.44.1"
+        assert INSTALLED < (1, 43, 0), "ewm_sum_by arrived in 1.43.0"
 
 
-@pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
+@pytest.mark.parametrize(
+    "closed",
+    [
+        "right",
+        pytest.param("left", marks=NEEDS_ROLLING_NULLS),
+        "both",
+        pytest.param("none", marks=NEEDS_ROLLING_NULLS),
+    ],
+)
 def test_which_rows_a_window_holds_is_polars_rolling(closed: str) -> None:
     """A window is a set of timestamps, as Polars' ``rolling_sum_by`` has it:
     rows at a repeated stamp share one window, and ``closed`` moves the
@@ -567,7 +587,12 @@ def test_what_is_not_element_wise_is_refused_by_name() -> None:
         (po.ewm_mean("x", half_life=2.0).cum_sum(), "CumSum"),
         (po.ewm_mean("x", half_life=2.0).mean(), "Agg"),
         (po.ewm_mean("x", half_life=2.0).rolling_mean(3), "Rolling"),
-        (po.ewm_mean("x", half_life=2.0).over("g"), "Over"),
+        # Refused by the node's own name, which Polars spells `Window` before
+        # 1.36.1 (measured on 1.34.0 and 1.35.1; 1.36.0 cannot be installed).
+        (
+            po.ewm_mean("x", half_life=2.0).over("g"),
+            "Over" if INSTALLED >= (1, 36, 1) else "Window",
+        ),
         # `Date` is read since review 2026-10-05 (YB1), a date literal's dtype.
         (po.ewm_mean("x", half_life=2.0).cast(pl.Datetime("us")), "a cast to Datetime"),
         (~(po.ewm_mean("x", half_life=2.0) > 0), "Not"),
@@ -1091,6 +1116,7 @@ def test_a_cut_window_ends_at_the_last_row_it_saw() -> None:
     assert rates[1] == 2.0 / 60.0
 
 
+@needs_polars("1.37.0", "Polars' rolling_mean_by, the reference, refuses a column with a null")
 def test_a_row_on_the_far_edge_counts_but_weighs_nothing() -> None:
     """R1-C6, decided: under ``"left"`` or ``"both"`` a row exactly one window
     old is in the window by its stamp, so it counts for ``min_samples``, but
@@ -1758,6 +1784,7 @@ def test_a_literal_that_is_not_finite_is_refused_by_name() -> None:
     assert out["y"].min() >= 0
 
 
+@needs_polars("1.43.0", "Expr.ewm_sum_by, the reference, which py-polars added in 1.43.0")
 def test_at_a_repeated_stamp_every_row_carries_the_stamps_total() -> None:
     """Task 159 (W4): ``ewm_sum`` is Polars' ``ewm_sum_by`` on distinct stamps
     only. Rows at one stamp share a window, so each carries the stamp's total
@@ -2145,6 +2172,7 @@ def test_the_docs_say_what_a_null_row_and_a_streams_start_give() -> None:
         assert po.stream.with_windows(df, s=e, **CLOCK)["s"].to_list() == want, partial
 
 
+@NEEDS_ROLLING_NULLS
 @pytest.mark.parametrize("min_samples", [1, 3])
 @pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
 def test_which_rows_a_window_holds_is_polars_rolling_on_a_long_random_stream(

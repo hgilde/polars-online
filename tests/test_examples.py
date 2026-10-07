@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 import child
+from polars_version import needs_polars
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -105,6 +106,11 @@ class TestPathwayExample:
         assert "pathway" not in pyproject
 
 
+#: Both database examples read their cursors through `pl.scan_arrow_c_stream`.
+NEEDS_SCAN_ARROW = needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
+
+
+@NEEDS_SCAN_ARROW
 class TestDuckdbCursorsExample:
     """Feeding a bank from DuckDB, sorted by the clock, one cursor per plan
     (docs/ARROW-SOURCES.md §3). The example checks itself: it exits non-zero if
@@ -119,6 +125,7 @@ class TestDuckdbCursorsExample:
         assert "the first yielded 0 rows" in res.stdout
 
 
+@NEEDS_SCAN_ARROW
 class TestAdbcCursorsExample:
     """The same for ADBC, where breaking the rule is silent: a re-executed
     cursor corrupts a plan built on its earlier stream with no error and no

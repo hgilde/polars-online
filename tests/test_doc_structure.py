@@ -41,6 +41,29 @@ def test_every_tracked_document_keeps_its_structure():
     assert counts["files"] == len(names) > 30
 
 
+def test_every_document_under_docs_has_a_row_in_the_index():
+    """`docs/README.md` is the map of `docs/`: each document a guide or a
+    record, with what it is for. Nothing held it to the files, and two logs,
+    PHRASING and README-ITERATIONS, sat under Guides (review 2026-10-06,
+    DB14). Every Markdown file in `docs/` and `docs/records/` has a row that
+    links it, every row links a file that exists, and the two logs are
+    records."""
+    import re
+
+    docs = REPO / "docs"
+    index = (docs / "README.md").read_text(encoding="utf-8")
+    rows = re.findall(r"^\| \[[^\]]+\]\(([^)#]+)\)", index, re.M)
+    files = {
+        p.relative_to(docs).as_posix() for d in (docs, docs / "records") for p in d.glob("*.md")
+    } - {"README.md"}
+    assert len(files) > 30, files
+    assert sorted(files - set(rows)) == [], "documents with no row in docs/README.md"
+    assert [r for r in rows if not (docs / r).exists()] == [], "rows that link no file"
+    records = index.split("\n## Records\n", 1)[1].split("\n## ", 1)[0]
+    for log in ("PHRASING.md", "README-ITERATIONS.md"):
+        assert re.search(rf"^\| \[{log}\]\(([\w/]*){log}\)", records, re.M), log
+
+
 def test_anchors_are_githubs():
     doc = doc_structure.read(
         "# A\n\n# A\n\n# A-1\n\n## A-1\n\n"

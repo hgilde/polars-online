@@ -1,7 +1,7 @@
 # Review 2026-09-12: progress
 
 Working status of `docs/REVIEW-2026-09-12.md` (passes 1–9) and
-`docs/REVIEW-2026-09-12-pass10.md` (pass 10: C24, S31, S32, D10, V24,
+`docs/records/REVIEW-2026-09-12-pass10.md` (pass 10: C24, S31, S32, D10, V24,
 V25). The review documents themselves are left as the reviewer wrote them;
 this file says what has been done about each finding.
 
@@ -133,7 +133,7 @@ batch 4a four, batch 4b four, batch 4c two, batch 4d one, batch 4e one),
 and batch 5 wrote the second opinions the review listed that nothing had
 written. One new observation from it, N9, is fixed in batch 6
 (`docs/PLAN.md` task 82). D1 is excluded by the user. The fixes were then
-reviewed from first principles (`docs/REVIEW-2026-09-15.md`): three
+reviewed from first principles (`docs/records/REVIEW-2026-09-15.md`): three
 findings, all in batches 4 to 6, fixed in batch 7.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
@@ -688,7 +688,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 ## The second review (2026-09-15)
 
 The fixes above, read from first principles against the findings, the
-user's decisions and the documentation: `docs/REVIEW-2026-09-15.md`.
+user's decisions and the documentation: `docs/records/REVIEW-2026-09-15.md`.
 Three findings, all in batches 4 to 6, fixed in batch 7 the same day.
 
 | | finding | status |

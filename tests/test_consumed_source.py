@@ -30,6 +30,11 @@ import pytest
 from polars.io.plugins import register_io_source
 
 import polars_online as po
+from polars_version import needs_polars
+
+#: The DuckDB, ADBC and pyarrow paths read through `pl.scan_arrow_c_stream`,
+#: which the README says needs py-polars 1.43.0.
+NEEDS_SCAN_ARROW = needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
 
 SPEC = po.spec.ewridge(
     "m", targets=["y"], features=["x0"], clock="t", half_life=10.0, gap_cap=5.0, min_weight=1.0
@@ -297,6 +302,7 @@ def _duck_rel(duckdb, n: int = 8):
     return con, con.sql("SELECT t, x0, y FROM ticks ORDER BY t")
 
 
+@NEEDS_SCAN_ARROW
 def test_the_hazard_reproduces_on_a_real_duckdb_relation():
     """Not a synthetic stand-in: the plan gives its rows once and nothing
     after, which is the bug this guard exists for."""
@@ -309,6 +315,7 @@ def test_the_hazard_reproduces_on_a_real_duckdb_relation():
     con.close()
 
 
+@NEEDS_SCAN_ARROW
 def test_a_bank_over_a_reused_duckdb_plan_warns():
     import duckdb
 
@@ -323,6 +330,7 @@ def test_a_bank_over_a_reused_duckdb_plan_warns():
     con.close()
 
 
+@NEEDS_SCAN_ARROW
 def test_rebuilding_the_plan_per_run_is_the_documented_fix():
     """What the warning tells the caller to do, checked as advertised."""
     import duckdb
@@ -353,6 +361,7 @@ def test_a_duckdb_relation_itself_is_reusable_on_this_version():
     con.close()
 
 
+@NEEDS_SCAN_ARROW
 def test_the_pyarrow_free_path_is_the_one_the_docs_recommend():
     """``scan_arrow_c_stream`` rides the capsule interface; the reader APIs
     need pyarrow, which this project does not depend on."""

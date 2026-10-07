@@ -309,14 +309,49 @@ class TestMutationTesting:
 
     MUT = ALL["mutants.yml"]
 
+    #: Each sharded job, the report job that reads its shards, and the prefix
+    #: of the artifact each shard uploads.
+    SHARDED = {
+        "changed": ("changed-report", "mutants-changed-"),
+        "weekly": ("weekly-report", "mutants-shard-"),
+    }
+
     @staticmethod
     def _runs(job: dict) -> str:
         return " ".join(str(step.get("run", "")) for step in job["steps"])
 
     def test_the_changed_lines_run_on_every_push_and_pull_request_and_gate(self):
         assert {"push", "pull_request"} <= set(self.MUT["on"])
-        run = self._runs(self.MUT["jobs"]["changed"])
-        assert "--in-diff" in run and "mutants_report.py" in run and "--fail-on-missed" in run
+        assert "--in-diff" in self._runs(self.MUT["jobs"]["changed"])
+        report = self._runs(self.MUT["jobs"]["changed-report"])
+        assert "mutants_report.py" in report and "--fail-on-missed" in report
+
+    def test_the_changed_lines_are_sharded_as_the_weekly_pass_is(self):
+        """One job at `-j 2` tests 75 to 85 mutants inside its 100-minute
+        stop, and a normal push lists hundreds: three of five pushes to
+        `main` stopped incomplete, at 84 of 236, 82 of 666 and 75 of 656
+        mutants (review 2026-10-06, CI1). So the changed lines are dealt
+        round-robin over shards of 100 minutes each, as the weekly pass is,
+        enough that the largest push measured fits at the slowest rate
+        measured, and one job reports them all."""
+        for job, (report_job, prefix) in self.SHARDED.items():
+            spec = self.MUT["jobs"][job]
+            shards = spec["strategy"]["matrix"]["shard"]
+            assert spec["strategy"]["fail-fast"] is False, job
+            run = self._runs(spec)
+            assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)} --sharding round-robin" in run
+            upload = next(s for s in spec["steps"] if "upload-artifact" in str(s.get("uses", "")))
+            assert upload["with"]["name"] == f"{prefix}${{{{ matrix.shard }}}}", job
+            report = self.MUT["jobs"][report_job]
+            assert report["needs"] == job
+            cond = " ".join(report["if"].split())
+            assert cond == f"always() && needs.{job}.result != 'skipped'", cond
+            download = next(
+                s for s in report["steps"] if "download-artifact" in str(s.get("uses", ""))
+            )
+            assert download["with"]["pattern"] == f"{prefix}*", report_job
+        shards = len(self.MUT["jobs"]["changed"]["strategy"]["matrix"]["shard"])
+        assert shards * 75 >= 666, shards
 
     def test_the_weekly_pass_runs_while_public_or_by_hand(self):
         """COST POLICY: ninety-six shards of up to four hours is not for a
@@ -330,11 +365,12 @@ class TestMutationTesting:
         assert "mutants_report.py" in run and "--fail-on-missed" not in run
 
     def test_every_shard_runs(self):
-        shards = self.MUT["jobs"]["weekly"]["strategy"]["matrix"]["shard"]
-        assert shards == list(range(len(shards)))
-        assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in self._runs(
-            self.MUT["jobs"]["weekly"]
-        )
+        for job in self.SHARDED:
+            shards = self.MUT["jobs"][job]["strategy"]["matrix"]["shard"]
+            assert shards == list(range(len(shards))), job
+            assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in self._runs(
+                self.MUT["jobs"][job]
+            )
 
     def test_every_run_skips_the_doctests_and_leaves_a_survivor_room(self):
         """Task 155: a test run of online-core took 67 seconds, 39 of them its
@@ -356,17 +392,16 @@ class TestMutationTesting:
         finished; it writes the list of the mutants it was given; and the
         report fails on a run that tested fewer, or a shard that sent
         nothing (task 155)."""
-        for job in ("changed", "weekly"):
+        for job, (report_job, _) in self.SHARDED.items():
             j = self.MUT["jobs"][job]
             run = self._runs(j)
             m = re.search(r"timeout --signal=INT (?:--kill-after=\S+ )?(\d+)m cargo mutants", run)
             assert m, job
             assert int(m.group(1)) + 15 <= j["timeout-minutes"], job
             assert "cargo mutants --list" in run and "listed.txt" in run, job
-        shards = len(self.MUT["jobs"]["weekly"]["strategy"]["matrix"]["shard"])
-        report = self._runs(self.MUT["jobs"]["weekly-report"])
-        assert f"--expect-runs {shards}" in report and "--fail-on-incomplete" in report
-        assert "--fail-on-incomplete" in self._runs(self.MUT["jobs"]["changed"])
+            shards = len(j["strategy"]["matrix"]["shard"])
+            report = self._runs(self.MUT["jobs"][report_job])
+            assert f"--expect-runs {shards}" in report and "--fail-on-incomplete" in report
 
     def test_a_push_cannot_cancel_the_weekly_pass(self):
         assert "github.event_name" in self.MUT["concurrency"]["group"]
@@ -469,13 +504,15 @@ class TestTheLinuxPrepIsOneAction:
                     f"{name}:{job} copies the prep again"
                 )
         # Every caller by name, so a new one is a decision: the two NumPy
-        # jobs were added on 2026-09-30.
+        # jobs were added on 2026-09-30, the two floor legs on 2026-10-07.
         assert sorted(callers) == [
             "ci.yml:test",
             "leakcheck.yml:native",
             "mutants.yml:changed",
+            "polars-canary.yml:floor-polars",
             "polars-canary.yml:latest-polars",
             "polars-canary.yml:next-numpy",
+            "release.yml:floor-polars",
             "release.yml:next-numpy",
             "release.yml:next-polars",
         ], callers
@@ -575,6 +612,42 @@ class TestTheDeclaredRustVersionBuildsTheLock:
         assert len(set(declared.values())) == 1, declared
         floor = next(iter(declared.values()))
         assert self._version(floor) >= self._version(needed[0]), (floor, needed)
+
+
+class TestTheDeclaredRustVersionCompiles:
+    """The check above reads what the dependencies declare, and no job
+    compiled the workspace on the Rust it declares: every build used the
+    newest stable, so a source build on an older Rust the declaration admits
+    was never tried (review 2026-10-06, CI11). A weekly job checks the whole
+    workspace on exactly that Rust, from the lock as committed. The version
+    is read from Cargo.toml, so a change to `rust-version` moves the job
+    with it or fails here."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def _declared(self) -> str:
+        cargo = tomllib.loads((self.ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        return cargo["workspace"]["package"]["rust-version"]
+
+    def test_a_weekly_linux_job_checks_the_workspace_on_the_declared_rust(self):
+        declared = self._declared()
+        workflow = ALL["msrv.yml"]
+        assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}, workflow["on"]
+        (cron,) = (entry["cron"] for entry in workflow["on"]["schedule"])
+        minute, hour, day, month, weekday = cron.split()
+        assert (day, month) == ("*", "*") and weekday.isdigit(), f"not weekly: {cron}"
+        (job,) = workflow["jobs"].values()
+        assert job["runs-on"] == "ubuntu-latest"
+        toolchains = [
+            s.get("with", {}).get("toolchain")
+            for s in job["steps"]
+            if "dtolnay/rust-toolchain@" in str(s.get("uses", ""))
+        ]
+        assert toolchains == [declared], toolchains
+        runs = [str(s.get("run", "")) for s in job["steps"]]
+        # `+<version>`: the repository's rust-toolchain.toml names `stable`,
+        # which a bare `cargo` inside the checkout would take instead.
+        assert any(f"cargo +{declared} check --workspace --locked" in r for r in runs), runs
 
 
 class TestEveryDeselectedMarkerRunsSomewhere:

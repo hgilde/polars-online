@@ -36,6 +36,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from polars_version import needs_polars
 from test_ffi_memory import run_isolated
 
 REPO = Path(__file__).resolve().parent.parent
@@ -589,6 +590,18 @@ def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
 README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
 
 
+def _block_param(path: str, line: int, code: str):
+    """One block as a test case. A block that streams a DuckDB, ADBC or
+    pyarrow source reads it with `pl.scan_arrow_c_stream`, and so needs the
+    py-polars the README names for it."""
+    marks = []
+    if "scan_arrow_c_stream" in code:
+        marks.append(
+            needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
+        )
+    return pytest.param(path, line, code, id=f"{path}:L{line}", marks=marks)
+
+
 def _names(code: str) -> tuple[set[str], list[str]]:
     """The names a block builds -- assigns, imports, defines or takes as an
     argument -- and the names it reads, in order."""
@@ -921,9 +934,7 @@ class TestReadmeExamples:
         assert len(README_BLOCKS) >= 8, README_BLOCKS
 
     @pytest.mark.parametrize(
-        ("path", "line", "code"),
-        README_BLOCKS,
-        ids=[f"{p}:L{ln}" for p, ln, _ in README_BLOCKS],
+        ("path", "line", "code"), [_block_param(*block) for block in README_BLOCKS]
     )
     def test_a_readme_block_runs(self, path, line, code, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # the doc examples write next to the inputs

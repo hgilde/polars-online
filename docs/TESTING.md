@@ -539,14 +539,16 @@ under `.github/workflows/` on its own schedule:
 |---|---|---|
 | before every commit | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`, and Sphinx with `-W` |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint and type checks, Sphinx, and every output against the newest release's, as a report; the Python coverage, as a report |
-| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
+| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in ten shards with one report, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
-| every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits and on the newest NumPy, both blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
-| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check on Linux and macOS, its control included; throughput; mutation testing of all of `online-core`, as a report |
+| every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check on Linux and macOS, its control included; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares |
+| monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
 The canary and the release's Polars and NumPy legs leave out the tests
 marked `pins`. Those assert this repo's own Polars pins, so they cannot pass
-on another Polars. Tests generate or download their own data (hard rule 1).
+on another Polars. On the floor, a test that needs a newer Polars skips,
+naming the version it needs and why (`tests/polars_version.py`). Tests generate or download their own data (hard rule 1).
 Downloads are cached under `.cache/`, and a test that needs one skips
 offline: the public intraday data (`tests/data.py::public_intraday`), the
 released wheels, and the day of quotes and trades.
@@ -1444,7 +1446,9 @@ and validation-branch comparisons, which are low value. T-D5 re-ran the full
 pass.
 
 **In CI since 2026-09-24** (`.github/workflows/mutants.yml`). Every push to
-`main` and pull request runs cargo-mutants over the lines it changed. It
+`main` and pull request runs cargo-mutants over the lines it changed, in
+ten shards since 2026-10-07: one job tested 75 to 85 mutants in its time,
+and three of five pushes listed hundreds (review 2026-10-06, CI1). It
 fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
 new code should come with a test that would notice it breaking. The whole of
 `online-core`, 11,138 mutants on 2026-10-03, runs weekly in ninety-six

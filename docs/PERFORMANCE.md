@@ -3225,7 +3225,7 @@ for the pair loop (four vectors per pair and the compensated mean) on a
 | 256 | 5.5× | 6.9× |
 
 So the split runs a batch of rows at a time, which is what the E73 ask
-described (`docs/MARGINAL-AT-WIDTH.md`). `Marginal::step_sharded`
+described (`docs/records/MARGINAL-AT-WIDTH.md`). `Marginal::step_sharded`
 advances each target's weight, mean, variance, runs and lagged
 autocovariance at once, as `step` does, and holds what each pair takes
 from the row: the features, each target's mix, where each lag's row back

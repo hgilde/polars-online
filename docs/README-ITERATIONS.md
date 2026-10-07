@@ -5,7 +5,7 @@ word for word, the ideas it applied, the counts before and after, and the
 verdict on the result. Read it to see which prompts produced a better
 document, and to choose the next ideas to apply. The rules the ideas became
 are in [WRITING.md](WRITING.md), and the reports behind them in
-[PHRASING.md](PHRASING.md).
+[PHRASING.md](records/PHRASING.md).
 
 | section | what it holds |
 |---|---|

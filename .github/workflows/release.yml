@@ -349,7 +349,7 @@ jobs:
       - name: write the hand-off state
         env:
           ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test -p online-polars --test state_portability
+        run: cargo test --locked -p online-polars --test state_portability
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: handoff-state
@@ -382,7 +382,7 @@ jobs:
         # rehearsal failed here on both OSes.
         env:
           ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test -p online-polars --test state_portability
+        run: cargo test --locked -p online-polars --test state_portability
 
   next-polars:
     name: the suite on ${{ matrix.leg }} polars
@@ -390,6 +390,11 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    # The floor Python, so the interpreter is not a second thing that moves:
+    # unpinned, `uv sync` takes whatever the runner image carries, as the
+    # canary did until it pinned the same (review 2026-10-06, CI19).
+    env:
+      UV_PYTHON: "3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -476,12 +481,51 @@ jobs:
       # the marker's description in pyproject.toml.
       - run: uv run pytest -q -m "not soak and not pins"
 
+  # The floor of the declared range, `polars>=1.34.0`: the suite on exactly
+  # that py-polars and its runtime package. The legs above move polars up,
+  # and nothing ran the floor: its last whole run, on 2026-09-27, came before
+  # the window operators (review 2026-10-06, AP7 and CI2). Blocking, since
+  # the floor is as much a promise as the ceiling. The version is read from
+  # pyproject.toml, so raising the floor moves this leg with it. A test that
+  # needs a newer polars skips here by version, naming the version and why
+  # (tests/polars_version.py). The canary runs the same leg monthly.
+  floor-polars:
+    name: the suite on the floor of the polars range
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: free disk and use a leaner linker
+        uses: ./.github/actions/linux-build-prep
+      - name: the floor, from pyproject.toml
+        id: floor
+        run: python3 scripts/polars_floor.py >> "$GITHUB_OUTPUT"
+      # Only polars and its runtime package move; the rest of the lock stays
+      # as CI tests it, so a red leg means the floor broke this library.
+      - run: uv sync --upgrade-package "polars==${{ steps.floor.outputs.version }}" --upgrade-package "polars-runtime-32==${{ steps.floor.outputs.version }}"
+      # Refused unless it is the floor: a leg that resolved anything else
+      # would pass without having tested the promise.
+      - name: versions in play
+        env:
+          FLOOR: ${{ steps.floor.outputs.version }}
+        run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run pytest -q -m "not soak and not pins"
+
   next-numpy:
     name: the suite on ${{ matrix.leg }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      UV_PYTHON: "3.12"
     strategy:
       fail-fast: false
       matrix:
@@ -534,7 +578,7 @@ jobs:
   # release.yml, environment pypi); the first publish claimed the name.
   publish:
     name: publish to PyPI
-    needs: [version, ci, sdist, build, read-state, next-polars, next-numpy]
+    needs: [version, ci, sdist, build, read-state, next-polars, floor-polars, next-numpy]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15

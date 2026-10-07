@@ -1694,8 +1694,10 @@ Save a bank's state (everything it has learned, for every spec and group)
 to one file, and load it back to keep learning or to score new rows
 without learning. Or export it as JSON. A state saved by 0.13.0 or an
 earlier release does not load in the releases after it: refit the bank from
-its input. `with_windows` keeps a state of its own ([Saving and resuming a
-window run](#saving-and-resuming-a-window-run)).
+its input. From 1.0, a state a 1.x build saved loads in every later 1.x
+([This package's own versioning](#this-packages-own-versioning)).
+`with_windows` keeps a state of its own ([Saving and resuming a window
+run](#saving-and-resuming-a-window-run)).
 
 ### Save and load
 
@@ -4970,19 +4972,56 @@ promise it.
 `polars-online~=0.13.0`, which takes the 0.13 series' patch releases and
 no 0.14.** Without that pin, an upgrade can bring a new minor version.
 While this package is pre-1.0, the **minor** version carries breaking
-changes and any change to the numbers a model returns. It follows semantic
-versioning ([CHANGELOG.md](CHANGELOG.md)), and output field names are part
-of its API ([Output field names](#output-field-names)). The Rust crates it
-is built from (`online-core`, `online-polars`, `online-cli` and
-`online-py`) are not published to crates.io, and are not part of its API
-([R3](docs/RELEASE-READINESS.md#r3--rust-crates-not-published)). A change
-to the Polars range is released as:
+changes and any change to the numbers a model returns. From 1.0, a minor
+version breaks nothing stable, so `polars-online~=1.0` keeps your code
+working across the 1.x series. Pin the minor as well if your numbers must
+not move, because a minor release can correct numbers that were wrong. The
+package follows semantic versioning ([CHANGELOG.md](CHANGELOG.md)).
 
-| a change to the Polars range | release |
+**Stable means part of this package's API, and from 1.0 a breaking change
+to a stable part needs a new major version.** Before 1.0 it needs a new
+minor. An unstable part can change its form in any minor release:
+
+| | what it covers |
 |---|---|
-| widening it | minor |
-| narrowing it | breaking |
-| capping it below a Polars that broke this library, as [How the pin moves](#how-the-pin-moves) describes | patch |
+| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
+| **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim` and `po.corr`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io ([R3](docs/RELEASE-READINESS.md#r3--rust-crates-not-published)); and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
+
+**From 1.0, a changed default or meaning is a major release, and a fix to
+numbers that were wrong is a minor one.** A number is wrong when it
+disagrees with the model's stated definition, the update equations its
+docstring gives:
+
+| a change | before 1.0 | from 1.0 |
+|---|---|---|
+| a fix that moves no number | patch | patch |
+| a fix to numbers that were wrong | minor | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
+| a new model, parameter, output or function | minor | minor |
+| a stable name renamed | minor, and the old name is refused, naming the new one | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one |
+| a default or a meaning changed, or a stable name removed | minor | major |
+| a change to an unstable part | minor | minor, declared in the CHANGELOG |
+
+**From 1.0, a state file a 1.x build wrote loads in every later 1.x.**
+Each change to a state's layout ships a loader for the layout before it.
+A saved state of each kind, frozen in the test suite, checks the loaders
+three ways: the file loads, its stream continues to the bit, and it saves
+back byte for byte. The two unstable formats, a window run's state and a
+formula target inside a bank's, are outside that promise. Before 1.0 there
+is no such promise: after upgrading across a release, refit a saved state
+from its input ([Saving, loading and serving](#saving-loading-and-serving)).
+
+**From 1.0, raising the Polars floor is a minor release, and dropping a
+Polars major version a major one.** A resolver that installs the new
+release upgrades Polars with it, inside the same Polars major, so no code
+has to change for a raised floor:
+
+| a change to the Polars range | before 1.0 | from 1.0 |
+|---|---|---|
+| widening it to admit a newer Polars | minor | minor |
+| raising the floor | minor | minor |
+| capping it below a Polars that broke this library, as [How the pin moves](#how-the-pin-moves) describes | patch | patch |
+| dropping a Polars major version | minor | major |
 
 #### What is pinned
 
@@ -5003,12 +5042,16 @@ what you use:
 | `lf.online.fit_predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and `refresh_time` | 1.34.0 | they read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
-The suite passes on 1.44.2, the pin, at every change. It has passed on
-1.34.0, 1.38.1, 1.44.1 and 2.0.0-rc.1 with identical numbers, but its last
-whole run on 1.34.0 came before the window operators, whose formula reader
-was checked there on its own. `tests/test_scaffold.py` asserts the pin and
-the range, and [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has
-each run with its date and what differed.
+The suite passes on 1.44.2, the pin, at every change. It runs on the
+floor, 1.34.0, before every release and once a month
+([How the pin moves](#how-the-pin-moves)), and passed there on 2026-10-07.
+On the floor, 23 tests skip, each naming the newer Polars it needs: most
+check against a Polars function that has changed since, and the rest
+stream a database or a pyarrow reader through `pl.scan_arrow_c_stream`.
+The suite has also passed on 1.38.1, 1.44.1 and 2.0.0-rc.1 with identical
+numbers. `tests/test_scaffold.py` asserts the pin and the range, and
+[docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has each run with
+its date and what differed.
 
 #### How the pin moves
 
@@ -5026,6 +5069,8 @@ included.** It builds the wheel as CI does, then runs the suite, all but
 the opt-in soak tests and the checks of this repository's own pins. Only
 Polars moves in that run, so a red canary means Polars broke this library.
 A second job runs the suite on NumPy's next release candidate each week.
+On the 1st of each month, a third runs it on the floor of the range,
+1.34.0, as every release does.
 
 **Every release runs the same check before it publishes**, in legs
 (`release.yml`):
@@ -5033,6 +5078,7 @@ A second job runs the suite on NumPy's next release candidate each week.
 | leg | resolves to | blocks the publish |
 |---|---|---|
 | the newest in-range | the newest stable inside `<3` | **yes** |
+| the floor | exactly the floor `pyproject.toml` declares, 1.34.0, with its runtime package | **yes** |
 | the next major | unpinned, prereleases allowed | no |
 | the newest NumPy | the newest NumPy | yes |
 | NumPy's next release candidate | its next release candidate | no |
@@ -5044,6 +5090,14 @@ pinned version alone would not show that the range holds. The next-major
 leg is early warning: [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md)
 has the steps for moving the ceiling up to a new major. Only NumPy moves in
 the NumPy runs, the release's and the canary's, so a red one names NumPy.
+
+**The floor leg blocks the publish too, because a run on the newest Polars
+says nothing about the oldest one the range admits.** A resolver keeps a
+user's Polars while it is inside the range, so a change that needs a newer
+Polars than the floor would break that user's install. The newest-Polars
+runs prove the ceiling, and the floor runs prove the floor. A test that
+needs a newer Polars than the floor skips there, naming the version it
+needs and why (`tests/polars_version.py`).
 
 #### Which interfaces carry a promise
 

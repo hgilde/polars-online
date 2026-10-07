@@ -67,7 +67,7 @@ which is gitignored on purpose: downloaded material stays out of the repo.
   12) and reimplements ~600 lines of arithmetic. Not a Hoeffding tree: no
   split-confidence bound (a split is reversible here, so it has nothing to
   protect; a gain floor measured slightly worse, §7.3), no per-row
-  randomness, no adaptive state. The earlier exclusion of trees (`docs/BEYOND-O-STATE.md`,
+  randomness, no adaptive state. The earlier exclusion of trees (`docs/records/BEYOND-O-STATE.md`,
   `docs/ENHANCEMENTS.md` §4) was written against Hoeffding trees and Poisson
   ensembles; §4 below takes its three objections one by one.
 
@@ -289,7 +289,7 @@ parallel).
 
 ## 4. The earlier exclusion, reassessed
 
-`docs/BEYOND-O-STATE.md` and `docs/ENHANCEMENTS.md` §4 left trees to MOA on
+`docs/records/BEYOND-O-STATE.md` and `docs/ENHANCEMENTS.md` §4 left trees to MOA on
 three grounds. Each is a property of the specific algorithms in view there
 (Hoeffding trees, Poisson-weighted ensembles), not of trees:
 

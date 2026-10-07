@@ -5,11 +5,12 @@ name: Mutants
 # and reruns `cargo test`. A mutant no test catches is a place where a bug
 # would pass the whole suite.
 #
-# Two jobs. `changed` runs on every push and pull request, over the lines the
-# change touched, and fails on a survivor that scripts/mutants_equivalent.toml
-# does not name: new code should come with a test that would notice it
-# breaking. `weekly` runs all of online-core in shards, and reports its
-# survivors without failing on them.
+# Two passes, each in shards with one job that reports them all. `changed`
+# runs on every push and pull request, over the lines the change touched, and
+# its report fails on a survivor that scripts/mutants_equivalent.toml does not
+# name: new code should come with a test that would notice it breaking.
+# `weekly` runs all of online-core, and its report lists the survivors
+# without failing on them.
 #
 # Every run skips the doctests and stops a mutant at ten times the
 # baseline's test time (docs/PLAN.md task 155). A test run of online-core
@@ -53,12 +54,22 @@ env:
 
 jobs:
   changed:
-    name: mutants on the changed lines
+    name: mutants on the changed lines, shard ${{ matrix.shard }} of 10
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job at `-j 2` tests 75 to 85 mutants inside its 100-minute
+        # stop, at task 155's rates on GitHub's runners, and three of five
+        # pushes to main listed 236, 656 and 666: each stopped incomplete,
+        # and its survivors went unread (review 2026-10-06, CI1). Ten shards,
+        # dealt round-robin as the weekly pass is, hold 750 at the slowest
+        # rate. A shard dealt nothing stops before it builds anything.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,33 +96,58 @@ jobs:
           cache-on-failure: true
       - name: install cargo-mutants
         run: cargo install --locked cargo-mutants --version 27.1.0
-      - name: cargo mutants on the diff
+      - name: cargo mutants on the diff, this shard
         run: |
           set +e
           args=(--in-diff changed.diff --package online-core --package online-polars
-                --file 'crates/online-core/src/**' --file crates/online-polars/src/span.rs)
+                --file 'crates/online-core/src/**' --file crates/online-polars/src/span.rs
+                --shard ${{ matrix.shard }}/10 --sharding round-robin)
           cargo mutants --list "${args[@]}" > listed.txt
-          # Stopped inside the job's 120 minutes, setup included, so the
-          # report still runs and counts what a large diff left untested.
-          timeout --signal=INT --kill-after=2m 100m cargo mutants "${args[@]}" \
-            --cargo-test-arg=--tests --timeout-multiplier 10 \
-            -j 2 --minimum-test-timeout 30 --output mutants-out
           code=$?
+          # A listing that failed would read as a shard dealt nothing.
+          if [ "$code" -ne 0 ]; then exit "$code"; fi
+          if [ -s listed.txt ]; then
+            # Stopped inside the job's 120 minutes, setup included, so the
+            # report still runs and counts what a large diff left untested.
+            timeout --signal=INT --kill-after=2m 100m cargo mutants "${args[@]}" \
+              --cargo-test-arg=--tests --timeout-multiplier 10 \
+              -j 2 --minimum-test-timeout 30 --output mutants-out
+            code=$?
+          else
+            echo "this shard was dealt no mutants"
+          fi
           mkdir -p mutants-out/mutants.out && cp listed.txt mutants-out/mutants.out/
           # 0: every mutant caught, 2: survivors, 3: timeouts, 124 or 137:
           # stopped by the limit above. The report decides on those; anything
           # else means the run itself failed.
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac
-      - name: report, failing on a survivor the equivalents list does not name, or a mutant left untested
-        run: >-
-          python3 scripts/mutants_report.py mutants-out/mutants.out
-          --fail-on-missed --fail-on-incomplete
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: mutants-changed
+          name: mutants-changed-${{ matrix.shard }}
           path: mutants-out/mutants.out
           if-no-files-found: ignore
+
+  changed-report:
+    name: mutants on the changed lines, the report
+    needs: changed
+    if: always() && needs.changed.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutants-changed-*
+          path: shards
+      # A shard that sent nothing counts as untested, so a pass cut short
+      # cannot read as a smaller clean one.
+      - name: report, failing on a survivor the equivalents list does not name, or a mutant left untested
+        run: >-
+          python3 scripts/mutants_report.py shards/* --expect-runs 10
+          --fail-on-missed --fail-on-incomplete
 
   weekly:
     name: mutants, online-core, shard ${{ matrix.shard }} of 96

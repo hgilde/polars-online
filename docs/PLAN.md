@@ -11418,7 +11418,7 @@ change becomes a reviewable diff. Proposed, not implemented.
 
 ## 11e. Beyond O(state)
 
-[`docs/BEYOND-O-STATE.md`](BEYOND-O-STATE.md): what a relaxed memory bound would
+[`docs/BEYOND-O-STATE.md`](records/BEYOND-O-STATE.md): what a relaxed memory bound would
 unlock, checked against crates.io so "nobody has built this" is evidence rather than
 assumption. Three strong candidates (adaptive conformal prediction, frequent-directions
 sketching, rolling-window regression), three weak, and Hoeffding trees left to MOA on

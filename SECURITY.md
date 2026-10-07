@@ -2,7 +2,15 @@
 
 ## Supported versions
 
-This project is pre-1.0. Only the latest released version receives fixes.
+| version | receives fixes |
+|---|---|
+| before 1.0 | the latest release only |
+| from 1.0 | the latest minor release, as a patch release on it (with 1.4.2 current, a fix ships as 1.4.3) |
+
+A fix is not backported to an older release. From 1.0, upgrading to the
+latest minor release of your major version is the way to receive one,
+since a minor release breaks nothing the README calls stable
+([This package's own versioning](README.md#this-packages-own-versioning)).
 
 ## Reporting a vulnerability
 

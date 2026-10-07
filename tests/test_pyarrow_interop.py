@@ -26,7 +26,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from polars_version import needs_polars
+
 TESTS = Path(__file__).resolve().parent
+
+#: A pyarrow reader reaches a query through `pl.scan_arrow_c_stream`.
+NEEDS_SCAN_ARROW = needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")
 
 #: What every child imports. `same` compares every field that is not reported
 #: on a chunk's cadence: `coef` and `support_coef` appear on each group's last
@@ -135,6 +140,7 @@ def test_a_struct_pyarrow_has_read_is_spent() -> None:
     assert got["names"][:2] == ["pred_y", "resid_y"] and "coef" in got["names"], got["names"]
 
 
+@NEEDS_SCAN_ARROW
 def test_a_pyarrow_reader_streams_into_a_bank() -> None:
     """A ``RecordBatchReader`` through ``pl.scan_arrow_c_stream``, batches of
     37 rows, into both streaming paths: the numbers are the whole frame's."""
@@ -160,6 +166,7 @@ def test_a_pyarrow_reader_streams_into_a_bank() -> None:
     assert got["fit_predict_batches"], "the batch path over a pyarrow reader moved a number"
 
 
+@NEEDS_SCAN_ARROW
 def test_a_reused_pyarrow_reader_plan_warns() -> None:
     """A reader is single-use, like any Arrow C stream: a second fit over the
     same plan sees no rows, and ``ConsumedSourceWarning`` says so, as its
