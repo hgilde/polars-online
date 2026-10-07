@@ -170,9 +170,8 @@ pub struct EwCov {
     /// What each mean in `m` leaves out: the mean is `m[i] + m_lo[i]`, a pair
     /// no step is rounded off ([`crate::comp`]; docs/PLAN.md task 101). A
     /// plain mean given one value row after row stopped a few rounding steps
-    /// short of it, and left the co-moments on that gap. Empty in a state
-    /// written before it: the means are then the doubles they were saved as.
-    #[serde(default)]
+    /// short of it, and left the co-moments on that gap. One per mean, as
+    /// `m` is ([`Self::has_shape`]).
     m_lo: Vec<f64>,
     /// Rows buffered for a blocked Gram update, and `w_sum` as it stood when
     /// the block opened (the merge needs the pre-block weight, and the
@@ -234,11 +233,10 @@ impl EwCov {
     /// What mean `i`'s double leaves out ([`crate::comp`]).
     #[inline]
     pub(crate) fn mean_lo(&self, i: usize) -> f64 {
-        crate::comp::lo_of(&self.m_lo, i)
+        self.m_lo[i]
     }
 
-    /// What each mean's double leaves out; empty in a state written before
-    /// it ([`crate::comp::lo_of`] reads it either way).
+    /// What each mean's double leaves out, one per mean.
     pub(crate) fn means_lo(&self) -> &[f64] {
         &self.m_lo
     }
@@ -248,7 +246,7 @@ impl EwCov {
     /// the double [`Self::mean`] is not.
     #[inline]
     pub fn deviation(&self, i: usize, x: f64) -> f64 {
-        crate::comp::dev(x, self.m[i], crate::comp::lo_of(&self.m_lo, i))
+        crate::comp::dev(x, self.m[i], self.m_lo[i])
     }
 
     /// The value feature `i` has held on every learned row from the `row`-th
@@ -322,7 +320,7 @@ impl EwCov {
     /// match: what a restored state must hold to be updated (review
     /// 2026-09-18, B3).
     pub fn has_shape(&self, k: usize) -> bool {
-        self.k == k && self.m.len() == k && self.c.len() == k * k
+        self.k == k && self.m.len() == k && self.c.len() == k * k && self.m_lo.len() == k
     }
 
     pub fn has_precision_prior(&self) -> bool {
@@ -723,7 +721,7 @@ impl EwCov {
         // level, `(m_B − m_A) + δ` rounds δ away, and the pair would start
         // a rounding step off the block's mean.
         let d_hi: Vec<f64> = (0..k)
-            .map(|i| crate::comp::dev(m_b[i], self.m[i], crate::comp::lo_of(&self.m_lo, i)))
+            .map(|i| crate::comp::dev(m_b[i], self.m[i], self.m_lo[i]))
             .collect();
         let big: Vec<f64> = d_hi.iter().zip(&delta).map(|(h, d)| h + d).collect();
 
@@ -762,8 +760,7 @@ impl EwCov {
             }
         }
         let share = u_sum / w_new;
-        for (i, mi) in self.m.iter_mut().enumerate() {
-            let lo = crate::comp::lo_slot(&mut self.m_lo, k, i);
+        for ((i, mi), lo) in self.m.iter_mut().enumerate().zip(self.m_lo.iter_mut()) {
             crate::comp::add(mi, lo, share * d_hi[i]);
             // A block of one row, or of one value, has no residue, and a
             // step of 0 could round the pair afresh (`crate::comp::add`).
@@ -830,10 +827,6 @@ impl EwCov {
         // every golden value is unchanged; 14% off at `k = 4`, 65% at
         // `k = 16`, 45% at `k = 64` and 24% from there up.
         let k = self.k;
-        if self.m_lo.len() != k {
-            // A state written before the means kept their low parts.
-            self.m_lo = vec![0.0; k];
-        }
         let d = &mut self.dev.0;
         d.clear();
         d.extend(
@@ -940,9 +933,8 @@ pub struct TargetMoments {
     /// `Sum w^2` under `lam^2` decay, per target.
     q: Vec<f64>,
     /// What each mean leaves out: the mean is `mean[t] + mean_lo[t]`
-    /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
-    /// before it.
-    #[serde(default)]
+    /// ([`crate::comp`]; docs/PLAN.md task 101). One per target, as `mean`
+    /// is.
     mean_lo: Vec<f64>,
 }
 
@@ -984,16 +976,11 @@ impl TargetMoments {
     /// step, so the variance matches an `ew_cov` over the column to the bit.
     #[inline]
     pub fn learn(&mut self, t: usize, y: f64, a: f64, b: f64, lam: f64, w: f64) {
-        let n = self.mean.len();
-        let d = crate::comp::dev(y, self.mean[t], crate::comp::lo_of(&self.mean_lo, t));
+        let d = crate::comp::dev(y, self.mean[t], self.mean_lo[t]);
         self.var[t] = a * self.var[t] + a * b * d * d;
         // A row of weight 0 takes no step (`crate::comp::add` says why).
         if b > 0.0 {
-            crate::comp::add(
-                &mut self.mean[t],
-                crate::comp::lo_slot(&mut self.mean_lo, n, t),
-                b * d,
-            );
+            crate::comp::add(&mut self.mean[t], &mut self.mean_lo[t], b * d);
         }
         self.q[t] = lam * lam * self.q[t] + w * w;
     }
@@ -1014,8 +1001,8 @@ impl TargetMoments {
         }
     }
 
-    /// What each mean leaves out ([`crate::comp`]): empty in a state, or a
-    /// snapshot, written before it. For a snapshot's footprint.
+    /// What each mean leaves out ([`crate::comp`]), one per target. For a
+    /// snapshot's footprint.
     pub(crate) fn means_lo(&self) -> &[f64] {
         &self.mean_lo
     }
@@ -1046,14 +1033,11 @@ impl TargetMoments {
             mean: vec![f64::NAN; n],
             var: vec![f64::NAN; n],
             q: vec![0.0; n],
-            mean_lo: Vec::new(),
+            mean_lo: vec![0.0; n],
         };
         for (t, p) in per.iter().enumerate() {
             let Some((ratio, g)) = *p else { continue };
-            let (lo, lo_old) = (
-                crate::comp::lo_of(&self.mean_lo, t),
-                crate::comp::lo_of(&old.mean_lo, t),
-            );
+            let (lo, lo_old) = (self.mean_lo[t], old.mean_lo[t]);
             let d = (old.mean[t] - self.mean[t]) + (lo_old - lo);
             out.mean[t] = self.mean[t] + (lo - ratio * d);
             // Rounding below zero is zero, and a NaN stays one: `max(0.0)`
@@ -1100,8 +1084,7 @@ impl TargetMoments {
         let d = self.mean[t] - other.mean[t];
         self.var[t] = a * self.var[t] + b * other.var[t] + a * b * d * d;
         self.mean[t] = a * self.mean[t] + b * other.mean[t];
-        let n = self.mean.len();
-        *crate::comp::lo_slot(&mut self.mean_lo, n, t) = 0.0;
+        self.mean_lo[t] = 0.0;
         // `Q` stays this side's, as the weight does: the blend mixes what the
         // moments say, not how much evidence stands behind them (docs/PLAN.md
         // task 145). Summed as a union of two row sets it would count every
@@ -2971,8 +2954,10 @@ mod tests {
             let mut c = mahal_cfg(2, 1e-6);
             c.mahal_quantiles = levels.clone();
             let m = EwCovModel::new(c).unwrap();
-            let mut state = crate::OnlineModel::state(&m);
-            state.schema_version = 20;
+            // At this build's schema, the markers' own refusal: a state
+            // saved at 20 is refused by its version before it is read
+            // (`crate::MIN_SCHEMA_VERSION`).
+            let state = crate::OnlineModel::state(&m);
             let bytes = rmp_serde::to_vec_named(&state).unwrap();
             let mut v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
             let markers = rmpv::Value::Array(levels.iter().map(|&p| p2(p)).collect());
@@ -4258,8 +4243,9 @@ mod tests {
             "inv": [1.0, 2.0, 3.0, 4.0],
             "inv_prior": 0.25,
             "inv_scale": want.precision_scale,
+            "m_lo": want.m_lo,
         });
-        let got: EwCov = serde_json::from_value(v1).unwrap();
+        let got: EwCov = serde_json::from_value(v1.clone()).unwrap();
         // No `q_sum` in a schema-1 file, and it cannot be reconstructed: the
         // load reports `None` rather than a Kish size that would be wrong by
         // the length of the history (E45).
@@ -4270,10 +4256,14 @@ mod tests {
         // they start at the next learned row (PLAN task 94).
         want.runs = Runs::default();
         want.rows_learned = 0;
-        // Nor the means' low parts (PLAN task 101): the means are the
-        // doubles the state holds.
-        want.m_lo.clear();
         assert_eq!(got, want);
+        // The means' low parts are required (docs/PLAN.md task 198): a file
+        // without them does not decode, where it loaded with the means at
+        // the doubles it held.
+        let mut v1 = v1;
+        v1.as_object_mut().unwrap().remove("m_lo");
+        let err = serde_json::from_value::<EwCov>(v1).unwrap_err().to_string();
+        assert!(err.contains("missing field `m_lo`"), "{err}");
         assert!(got.has_precision_prior());
         assert_eq!(got.precision(), want.precision());
     }

@@ -36,6 +36,7 @@ SUMMARY_SCHEMA = {
     "resets": pl.UInt64,
     # The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
     "settled_frac": pl.Float64,
+    "weight_sum_settled": pl.Float64,
     "error_inflation": pl.Float64,
     "min_support_coef": pl.Float64,
     "min_support_coef_feature": pl.String,

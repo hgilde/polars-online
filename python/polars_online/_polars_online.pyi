@@ -53,6 +53,12 @@ class ArrowStruct:
     ``__arrow_c_array__`` takes it directly -- ``pl.Series(obj)``,
     ``pa.array(obj)`` -- and duckdb, which reads streams, through
     ``pl.Series(obj)``. Exporting consumes it, so it can be read once.
+
+    .. warning::
+        The Arrow output is considered **unstable**: it may change in any
+        release without that counting as a breaking change. Under
+        ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that return one raise
+        ``polars_online.UnstableWarning``.
     """
 
     @property

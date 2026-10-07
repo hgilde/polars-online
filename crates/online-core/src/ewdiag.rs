@@ -38,8 +38,7 @@ pub struct EwDiag {
     /// EW **centered** second moments, length `k`: `EwCov`'s `c[i*k+i]`.
     c: Vec<f64>,
     /// What each mean leaves out: the mean is `m[i] + m_lo[i]`, as
-    /// `EwCov`'s is ([`crate::comp`]; docs/PLAN.md task 101). Empty in a
-    /// state written before it.
+    /// `EwCov`'s is ([`crate::comp`]; docs/PLAN.md task 101). One per mean.
     m_lo: Vec<f64>,
 }
 
@@ -56,7 +55,6 @@ struct EwDiagWire {
     w_sum: f64,
     m: Vec<f64>,
     c: Vec<f64>,
-    #[serde(default)]
     m_lo: Vec<f64>,
 }
 
@@ -64,12 +62,13 @@ impl TryFrom<EwDiagWire> for EwDiag {
     type Error = String;
 
     fn try_from(w: EwDiagWire) -> Result<Self, String> {
-        if w.m.len() != w.k || w.c.len() != w.k {
+        if w.m.len() != w.k || w.c.len() != w.k || w.m_lo.len() != w.k {
             return Err(format!(
-                "EwDiag: state has the wrong shape (k = {}, {} means, {} variances)",
+                "EwDiag: state has the wrong shape (k = {}, {} means, {} variances, {} low parts)",
                 w.k,
                 w.m.len(),
-                w.c.len()
+                w.c.len(),
+                w.m_lo.len()
             ));
         }
         Ok(Self {
@@ -130,7 +129,7 @@ impl EwDiag {
     /// `x`'s deviation from mean `i`, the pair's ([`crate::comp::dev`]).
     #[inline]
     pub fn deviation(&self, i: usize, x: f64) -> f64 {
-        crate::comp::dev(x, self.m[i], crate::comp::lo_of(&self.m_lo, i))
+        crate::comp::dev(x, self.m[i], self.m_lo[i])
     }
 
     /// Raw (uncentered) second moment `E_w[x_i²]`, reconstructed from the
@@ -194,9 +193,6 @@ impl EwDiag {
         // Weighted Welford, as `EwCov::update` writes its diagonal: the
         // deviation is against the OLD mean, and the expression
         // `a * c + a * b * d * d` is kept in that order so the bits agree.
-        if self.m_lo.len() != self.k {
-            self.m_lo = vec![0.0; self.k];
-        }
         let slots = self
             .c
             .iter_mut()
@@ -237,7 +233,7 @@ impl Including<'_> {
     /// would round.
     #[inline]
     pub fn moments(&self, i: usize, x: f64) -> (f64, f64, f64) {
-        let lo = crate::comp::lo_of(&self.sc.m_lo, i);
+        let lo = self.sc.m_lo[i];
         let d = crate::comp::dev(x, self.sc.m[i], lo);
         let c = self.a * self.sc.c[i] + self.a * self.b * d * d;
         let (mut hi, mut lo) = (self.sc.m[i], lo);
@@ -496,8 +492,9 @@ mod tests {
             }
         }
         // The shape check on its own, for a hand-written map.
-        let bad =
-            serde_json::json!({"k": 2, "w_sum": 1.0, "m": [0.0, 0.0], "c": [0.0, 0.0, 0.0, 0.0]});
+        let bad = serde_json::json!({
+            "k": 2, "w_sum": 1.0, "m": [0.0, 0.0], "c": [0.0, 0.0, 0.0, 0.0], "m_lo": [0.0, 0.0]
+        });
         let err = serde_json::from_value::<EwDiag>(bad)
             .unwrap_err()
             .to_string();

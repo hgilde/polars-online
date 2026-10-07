@@ -79,7 +79,14 @@ impl std::fmt::Display for GroupKey {
 /// error deep in a spec.
 const BANK_FORMAT_VERSION: u32 = 3;
 
-/// The oldest schema a bank file loads from. It was 19, above the models'
+/// The oldest schema a bank file loads from: every schema from it to
+/// `online_core::SCHEMA_VERSION` has a frozen bank file, `with_windows` state
+/// and `refresh_time` state, each held to loading, going on to the bit and
+/// saving its bytes again (`tests/state_fixtures.rs`; docs/PLAN.md task 198).
+/// Before 1.0 it moves with the schema; from 1.0 it stays at 1.0's, and a
+/// layout change ships a loader for the file before it.
+///
+/// It was 19, above the models'
 /// own `online_core::MIN_SCHEMA_VERSION`: a bank file names every spec's
 /// `on_clock_reset`, and every one written before schema 19 names `"max"` --
 /// the old default, written whether or not the spec had a clock -- or
@@ -155,7 +162,7 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// `pa`'s `eps` and `sgd`'s under `epsilon_insensitive`, is in units of the
 /// target's own spread, which each keeps where it kept a residual one; a
 /// file from before it is refit.
-const MIN_BANK_SCHEMA_VERSION: u32 = 44;
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 44;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -1246,7 +1253,7 @@ fn non_finite_step(spec: &Spec, refusal: StepRefusal, row_base: usize) -> Polars
 /// (`1d`, not `86400`), whose every clock parameter is one, `gap_cap`
 /// among them (task 120: a `Date` clock's refusal said `86400`); a number of
 /// the column's units otherwise.
-fn clock_amount(spec: &Spec, v: f64) -> String {
+pub(crate) fn clock_amount(spec: &Spec, v: f64) -> String {
     if spec
         .gap_cap
         .as_ref()

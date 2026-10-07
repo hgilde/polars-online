@@ -58,22 +58,11 @@ pub fn add(hi: &mut f64, lo: &mut f64, s: f64) {
     *hi = t;
 }
 
-/// Slot `i` of a `lo` vector that belongs to `n` means, which a state
-/// written before it does not carry: it starts at zero, the mean then being
-/// the double it was saved as.
-#[inline]
-pub(crate) fn lo_slot(lo: &mut Vec<f64>, n: usize, i: usize) -> &mut f64 {
-    if lo.len() != n {
-        *lo = vec![0.0; n];
-    }
-    &mut lo[i]
-}
-
-/// `lo[i]`, and zero where a state written before the vector has none.
-#[inline]
-pub(crate) fn lo_of(lo: &[f64], i: usize) -> f64 {
-    lo.get(i).copied().unwrap_or(0.0)
-}
+// A `lo` vector is sized with its means when they are made, and a restored
+// one of another length is refused as every other vector of a state is. The
+// repair that sized one at its first use, for a state written before the low
+// parts existed, loaded nothing a file this build reads can hold, and mended
+// a damaged vector with zeros (docs/PLAN.md task 198; review round 4, CC8).
 
 #[cfg(test)]
 mod tests {

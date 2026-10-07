@@ -401,13 +401,14 @@ pub struct SummaryRow<'a> {
     pub readiness: Option<crate::stream::Readiness>,
 }
 
-/// The `summary` frame for these rows, 18 columns: `group`, `rows_fed`,
+/// The `summary` frame for these rows, 19 columns: `group`, `rows_fed`,
 /// `rows_processed`, `rows_skipped`, `rows_learned`, `rows_zero_weight`,
 /// `weight_sum`, `clock_min`, `clock_max`, `last_clock`, `session_changes`,
 /// `clock_backwards`, `resets`, and the readiness statistics
-/// (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`, `error_inflation`,
-/// `min_support_coef`, `min_support_coef_feature` and `n_coef`. The three
-/// clock columns are in `clock`'s dtype ([`ClockDtype::column`]).
+/// (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`, `weight_sum_settled`,
+/// `error_inflation`, `min_support_coef`, `min_support_coef_feature` and
+/// `n_coef`. The three clock columns are in `clock`'s dtype
+/// ([`ClockDtype::column`]).
 pub fn summary_frame(
     rows: &[SummaryRow<'_>],
     clock: Option<&ClockDtype>,
@@ -458,6 +459,19 @@ pub fn summary_frame(
                     r.readiness
                         .as_ref()
                         .map(|x| x.settled_frac)
+                        .filter(|v| v.is_finite())
+                })
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        // The weight the stream settles at (`crate::stream::settled_weight`),
+        // null where there is none: no decay, a window, a single row.
+        Column::new(
+            "weight_sum_settled".into(),
+            rows.iter()
+                .map(|r| {
+                    r.readiness
+                        .as_ref()
+                        .map(|x| x.weight_sum_settled)
                         .filter(|v| v.is_finite())
                 })
                 .collect::<Vec<Option<f64>>>(),

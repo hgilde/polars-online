@@ -185,7 +185,7 @@ impl EwLagCov {
         debug_assert_eq!(m.len(), self.k);
         // Deviations from the means as pairs ([`crate::comp`]; docs/PLAN.md
         // task 101), as the accumulator beside this one takes them.
-        let dev = |i: usize, v: f64| crate::comp::dev(v, m[i], crate::comp::lo_of(m_lo, i));
+        let dev = |i: usize, v: f64| crate::comp::dev(v, m[i], m_lo[i]);
         if w < 0.0 {
             return;
         }
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn a_zero_weight_first_row_is_legal() {
         let mut lc = EwLagCov::new(2, vec![1]).unwrap();
-        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[]), 0.0, 0.9, 0.0);
+        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[0.0, 0.0]), 0.0, 0.9, 0.0);
         assert_eq!(lc.depth(), 0);
         assert!(lc.comoments().iter().all(|c| *c == 0.0));
     }
@@ -554,7 +554,7 @@ mod tests {
         assert!(!lc.has_shape(3, &[1, 2]));
         // Two features at two other lags: eight cells either way.
         assert!(!lc.has_shape(2, &[1, 3]));
-        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[]), 0.0, 1.0, 1.0);
+        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[0.0, 0.0]), 0.0, 1.0, 1.0);
         assert_eq!(lc.depth(), 1);
         assert!(lc.has_shape(2, &[1, 2]));
         let mut wide = lc.clone();
@@ -574,7 +574,7 @@ mod tests {
     fn a_ring_deeper_than_the_deepest_lag_is_not_the_shape() {
         let mut lc = EwLagCov::new(2, vec![1, 3]).unwrap();
         for x in &rows(5, 2, 9) {
-            lc.update(x, (&[0.0, 0.0], &[]), 1.0, 0.9, 1.0);
+            lc.update(x, (&[0.0, 0.0], &[0.0, 0.0]), 1.0, 0.9, 1.0);
         }
         assert_eq!(lc.depth(), 3);
         assert!(lc.has_shape(2, &[1, 3]), "as deep as the deepest lag");

@@ -20,6 +20,7 @@ from polars_online._spec import (
     coef_index,
     target_name,
 )
+from polars_online._warnings import warn_unstable
 
 #: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -453,7 +454,15 @@ class ModelBank:
 
         The frame still goes *in* as a polars frame. Raises what
         :meth:`fit_predict` raises for it.
+
+        .. warning::
+            The Arrow output -- this method, :meth:`predict_arrow` and
+            :class:`~polars_online.ArrowStruct` -- is considered **unstable**:
+            it may change in any release without that counting as a breaking
+            change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
+            :class:`~polars_online.UnstableWarning`.
         """
+        warn_unstable("ModelBank.fit_predict_arrow and the ArrowStruct it returns")
         self._check_frame(df, "fit_predict_arrow")
         out = self._native.fit_predict_arrow(df)
         self._warn_notices()
@@ -474,7 +483,15 @@ class ModelBank:
             bank.fit_predict(df)
             structs = bank.predict_arrow(df)           # the bank unmoved
             scored = df.with_columns([pl.Series(s) for s in structs])
+
+        .. warning::
+            The Arrow output -- :meth:`fit_predict_arrow`, this method and
+            :class:`~polars_online.ArrowStruct` -- is considered **unstable**:
+            it may change in any release without that counting as a breaking
+            change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
+            :class:`~polars_online.UnstableWarning`.
         """
+        warn_unstable("ModelBank.predict_arrow and the ArrowStruct it returns")
         self._check_frame(df, "predict_arrow")
         return self._native.predict_arrow(df)
 
@@ -951,6 +968,16 @@ class ModelBank:
             last row (docs/WARMUP-AND-CONVERGENCE.md): how full the decay
             window is, and the largest noise-gate ratio over its slots. Null
             where the model has no such reading.
+        ``weight_sum_settled``
+            The weight the stream settles at, read from where it stands:
+            ``(W - w1 * (1 - settled_frac)) / settled_frac``, ``W`` the
+            accumulated weight a next row would report as ``weight_sum`` and
+            ``w1`` a row's weight (1 without a weight column, the rows' mean
+            with one). On a regular stream -- rows ``d`` apart, of one weight --
+            it is the ceiling ``1 / (1 - 2 ** (-d / half_life))`` times that
+            weight exactly, from the second row on. It says, before the stream
+            gets there, whether a ``min_weight`` can be met. Null after a
+            single row, with no decay, and under ``window_size``.
         ``min_support_coef``, ``min_support_coef_feature``, ``n_coef``
             The smallest coefficient's data share, the feature it belongs to,
             and the coefficients per target, likewise.
@@ -1477,16 +1504,39 @@ class ModelBank:
         ``FileNotFoundError`` for a directory that is not there, ``PermissionError``
         for one that cannot be written. The file, if it existed, is untouched.
         ``RuntimeError`` while a ``fit_predict`` is in flight on another thread.
+
+        .. warning::
+            A spec's formula target (:func:`polars_online.target` over a window
+            expression) is written into the file as a tree whose form is
+            considered **unstable**: it may change in any release without that
+            counting as a breaking change. Under
+            ``POLARS_ONLINE_WARN_UNSTABLE=1`` saving or loading a bank that
+            holds one raises :class:`~polars_online.UnstableWarning`. The rest of
+            the file is promised.
         """
+        self._warn_formula_form()
         self._native.save(str(path))
+
+    def _warn_formula_form(self) -> None:
+        """:class:`~polars_online.UnstableWarning` for a bank whose specs hold a
+        formula target, whose written form is not promised (docs/PLAN.md task
+        198, D5); a caller's caller is the user's line."""
+        if any(
+            isinstance(t, dict) and "formula" in t
+            for spec in self._specs
+            for t in spec.get("targets") or ()
+        ):
+            warn_unstable("a formula target's written form in a state file", stacklevel=4)
 
     def save_bytes(self) -> bytes:
         """What :meth:`save` writes, as bytes, for a store that is not a file
         (:meth:`load_bytes` reads them back).
 
         This is also what pickle and ``copy.deepcopy`` carry. ``RuntimeError`` while a
-        ``fit_predict`` is in flight on another thread.
+        ``fit_predict`` is in flight on another thread. A formula target's written
+        form is unstable, as :meth:`save` says.
         """
+        self._warn_formula_form()
         return bytes(self._native.save_bytes())
 
     def to_json(self, *, pretty: bool = True) -> str:
@@ -1543,6 +1593,19 @@ class ModelBank:
         - a state that contradicts its own spec, such as an ``sgd`` state without the
           scaler its ``standardize`` needs;
         - ``specs`` that differ from the file's.
+
+        **The file carries no checksum.** What is checked is its envelope -- the
+        magic, the format and schema versions, the number of states -- and each
+        state's shape against its spec: every vector at the length its spec
+        gives it. A damaged payload that still decodes and passes those checks
+        loads: a flipped bit in a stored number is a slightly different state,
+        consistent with itself, and the model goes on from it. Keep a file where
+        it cannot be damaged, or carry a checksum beside it.
+
+        A formula target's written form is unstable, as :meth:`save` says, and
+        loading a file that holds one raises
+        :class:`~polars_online.UnstableWarning` under
+        ``POLARS_ONLINE_WARN_UNSTABLE=1``.
         """
         return cls.load_bytes(Path(path).read_bytes(), specs)
 
@@ -1554,7 +1617,9 @@ class ModelBank:
         """
         specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load_bytes(data, specs_json)
-        return cls._wrap(native)
+        bank = cls._wrap(native)
+        bank._warn_formula_form()
+        return bank
 
     @classmethod
     def _wrap(cls, native: Any) -> ModelBank:

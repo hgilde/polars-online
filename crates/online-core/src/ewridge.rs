@@ -2016,17 +2016,6 @@ impl OnlineModel for EwRidge {
                 let mut m = (**m).clone();
                 crate::model::check_cfg("ewridge", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
-                // A state written before schema 17 kept each target's own
-                // mean as an offset (`crate::gaps::Cross`).
-                if s.schema_version < 17 {
-                    m.acc.offsets_to_means();
-                    if let Some(slow) = m.slow.as_mut() {
-                        slow.offsets_to_means();
-                    }
-                    if let Some(win) = m.win.as_mut() {
-                        win.snaps.iter_mut().for_each(|s| s.acc.offsets_to_means());
-                    }
-                }
                 // The slow twin exactly when `session_shrink` asks for one:
                 // without it the blend was a silent no-op (review 2026-10-05,
                 // CA1).

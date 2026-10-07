@@ -243,27 +243,20 @@ pub struct FeatureMoments {
     pub w: f64,
     pub mean: Vec<f64>,
     pub var: Vec<f64>,
-    /// What `mean` leaves out: the low parts of the pairs. Empty in a state
-    /// written before them, and sized at the next row.
-    #[serde(default)]
+    /// What `mean` leaves out: the low parts of the pairs.
     pub mean_lo: Vec<f64>,
     /// The reference, a feature at a time: its weight, its means as pairs
     /// and its variances, and the rows each starts from -- [`START_ROWS`]
-    /// values and weights a feature, `n_start` of them kept. Empty in a
-    /// state written before it, and started from the next rows.
-    #[serde(default)]
+    /// values and weights a feature, `n_start` of them kept. Every one is
+    /// required at its width ([`Self::has_shape`]): a state written before
+    /// them loaded and started them over at the next rows, and so did a
+    /// damaged one (docs/PLAN.md task 198).
     pub w_long: Vec<f64>,
-    #[serde(default)]
     pub mean_long: Vec<f64>,
-    #[serde(default)]
     pub mean_long_lo: Vec<f64>,
-    #[serde(default)]
     pub var_long: Vec<f64>,
-    #[serde(default)]
     pub start: Vec<f64>,
-    #[serde(default)]
     pub start_w: Vec<f64>,
-    #[serde(default)]
     pub n_start: Vec<u32>,
 }
 
@@ -285,9 +278,26 @@ impl FeatureMoments {
     }
 
     /// Whether the moments are those of `p` features: what a restored state
-    /// must hold to be updated (review 2026-09-18, B3).
+    /// must hold to be updated (review 2026-09-18, B3). Every vector at its
+    /// width, the low parts and the reference's among them, and no start
+    /// holding more than its [`START_ROWS`].
     pub fn has_shape(&self, p: usize) -> bool {
-        self.mean.len() == p && self.var.len() == p
+        let s = START_ROWS;
+        [
+            &self.mean,
+            &self.var,
+            &self.mean_lo,
+            &self.w_long,
+            &self.mean_long,
+            &self.mean_long_lo,
+            &self.var_long,
+        ]
+        .iter()
+        .all(|v| v.len() == p)
+            && self.start.len() == p * s
+            && self.start_w.len() == p * s
+            && self.n_start.len() == p
+            && self.n_start.iter().all(|&n| n as usize <= s)
     }
 
     /// The clock passes: `W *= lam`, and each reference's weight by
@@ -308,7 +318,6 @@ impl FeatureMoments {
         if w_new <= 0.0 {
             return;
         }
-        self.size();
         let (a, b) = (self.w / w_new, w / w_new);
         for (((m, l), v), &xi) in self
             .mean
@@ -386,34 +395,6 @@ impl FeatureMoments {
         self.w_long[i] = wl_new;
     }
 
-    /// The low parts and the references are as wide as the means. A state
-    /// written before them starts them here: the low parts at 0, the
-    /// references from the next rows.
-    fn size(&mut self) {
-        let p = self.mean.len();
-        if self.mean_lo.len() != p {
-            self.mean_lo = vec![0.0; p];
-        }
-        let s = START_ROWS;
-        if self.w_long.len() != p
-            || self.mean_long.len() != p
-            || self.mean_long_lo.len() != p
-            || self.var_long.len() != p
-            || self.start.len() != p * s
-            || self.start_w.len() != p * s
-            || self.n_start.len() != p
-            || self.n_start.iter().any(|&n| n as usize > s)
-        {
-            self.w_long = vec![0.0; p];
-            self.mean_long = vec![0.0; p];
-            self.mean_long_lo = vec![0.0; p];
-            self.var_long = vec![0.0; p];
-            self.start = vec![0.0; p * s];
-            self.start_w = vec![0.0; p * s];
-            self.n_start = vec![0; p];
-        }
-    }
-
     /// The metric weights: `1 / v_i`, with `v_i` the EW variance floored at
     /// `scale_floor` times the reference's variance, where that is positive
     /// and its reciprocal finite, else `1` (raw units); all ones when not
@@ -428,7 +409,7 @@ impl FeatureMoments {
     /// without bound.
     pub fn metric(&self, standardize: bool, scale_floor: f64, out: &mut [f64]) {
         for (i, (o, &v)) in out.iter_mut().zip(&self.var).enumerate() {
-            let floor = scale_floor * self.var_long.get(i).copied().unwrap_or(0.0);
+            let floor = scale_floor * self.var_long[i];
             let v = if floor > v { floor } else { v };
             let inv = 1.0 / v;
             *o = if standardize && v > 0.0 && inv.is_finite() {
@@ -993,55 +974,17 @@ mod tests {
         assert_eq!(cut.n_start, vec![5, 5]);
     }
 
-    /// A state that lost one field of the reference -- any one, or has a
-    /// start of the wrong width -- starts the whole reference over at the
-    /// next rows, as one that lost them all does: the parts are sized
-    /// together or not at all.
+    /// A state that lost a field of the low parts or of the reference does
+    /// not decode, and one with a part of the wrong width is not of its
+    /// features: each was started over at the next rows, which mended a
+    /// damaged state with a reference it never had (docs/PLAN.md task 198).
     #[test]
-    fn a_state_missing_one_reference_field_starts_it_over() {
+    fn a_state_missing_a_reference_field_or_of_the_wrong_width_is_refused() {
         let mut m = FeatureMoments::new(2);
         for i in 0..8 {
             m.absorb(&[i as f64, 1.0 - i as f64], 1.0);
         }
-        for key in [
-            "w_long",
-            "mean_long",
-            "mean_long_lo",
-            "var_long",
-            "start",
-            "start_w",
-            "n_start",
-        ] {
-            let mut old = serde_json::to_value(&m).unwrap();
-            if key == "start" {
-                old["start"] = serde_json::json!([1.0, 2.0, 3.0]);
-            } else {
-                assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
-            }
-            let mut back: FeatureMoments = serde_json::from_value(old).unwrap();
-            for i in 0..START_ROWS {
-                back.absorb(&[10.0 + i as f64, 2.0], 1.0);
-            }
-            assert_eq!(back.n_start, vec![5, 5], "without {key}");
-            assert_eq!(
-                back.mean_long,
-                vec![12.0, 2.0],
-                "without {key}: the medians of the next five rows"
-            );
-            assert_eq!(back.w_long, vec![5.0, 5.0], "without {key}");
-        }
-    }
-
-    /// A state written before the low parts and the reference loads, reads
-    /// its metric without a floor, and starts them at the next rows, as
-    /// wide as the means.
-    #[test]
-    fn a_state_without_the_reference_starts_it() {
-        let mut m = FeatureMoments::new(2);
-        for i in 0..6 {
-            m.absorb(&[i as f64, 2.0 * i as f64], 1.0);
-        }
-        let mut old = serde_json::to_value(&m).unwrap();
+        assert!(m.has_shape(2));
         for key in [
             "mean_lo",
             "w_long",
@@ -1052,30 +995,20 @@ mod tests {
             "start_w",
             "n_start",
         ] {
+            let mut old = serde_json::to_value(&m).unwrap();
             assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
+            let err = serde_json::from_value::<FeatureMoments>(old)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&format!("missing field `{key}`")), "{err}");
+            let mut short = serde_json::to_value(&m).unwrap();
+            short[key].as_array_mut().unwrap().pop();
+            let back: FeatureMoments = serde_json::from_value(short).unwrap();
+            assert!(!back.has_shape(2), "{key} one short");
         }
-        let mut back: FeatureMoments = serde_json::from_value(old).unwrap();
-        assert!(back.mean_lo.is_empty() && back.var_long.is_empty() && back.n_start.is_empty());
-        assert!(back.has_shape(2));
-        let mut mw = [0.0; 2];
-        back.metric(true, 0.1, &mut mw);
-        assert_eq!(
-            mw,
-            [1.0 / back.var[0], 1.0 / back.var[1]],
-            "no reference: no floor"
-        );
-        for i in 0..START_ROWS {
-            back.absorb(&[10.0 + i as f64, 1.0], 1.0);
-        }
-        assert_eq!(
-            (back.mean_lo.len(), back.var_long.len(), back.n_start),
-            (2, 2, vec![5, 5])
-        );
-        assert_eq!(
-            back.mean_long,
-            vec![12.0, 1.0],
-            "the medians of the next five rows"
-        );
+        let mut over = m.clone();
+        over.n_start[0] = START_ROWS as u32 + 1;
+        assert!(!over.has_shape(2), "a start holding more than it keeps");
     }
 
     #[test]

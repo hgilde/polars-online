@@ -625,8 +625,7 @@ struct Run {
     /// off ([`crate::comp`]; docs/PLAN.md task 101). A run's mean steps by
     /// `w/n`, with no decay, and a plain one given one value row after row
     /// stopped a gap short of it that grows with the run, feeding the scatter
-    /// that gap's square on every row. Empty in a state written before it.
-    #[serde(default)]
+    /// that gap's square on every row. One per mean.
     mean_lo: Vec<f64>,
 }
 
@@ -654,9 +653,6 @@ impl Run {
             return;
         }
         let (b, c) = (w / n_new, w * self.n / n_new);
-        if self.mean_lo.len() != d {
-            self.mean_lo = vec![0.0; d];
-        }
         // Deviations from the means as the pairs they are.
         let (mean, lo) = (&self.mean, &self.mean_lo);
         let dev = |i: usize| crate::comp::dev(x[i], mean[i], lo[i]);
@@ -1331,7 +1327,9 @@ impl crate::OnlineModel for Bocpd {
                     .is_none_or(|p| p.mean.len() == d && p.scale.len() == d * d);
                 if m.runs.is_empty()
                     || m.runs.len() != m.logjoint.len()
-                    || m.runs.iter().any(|r| r.mean.len() != d || r.m2.len() != m2)
+                    || m.runs
+                        .iter()
+                        .any(|r| r.mean.len() != d || r.m2.len() != m2 || r.mean_lo.len() != d)
                     || !prior_ok
                     || m.warm.iter().any(|r| r.x.len() != d)
                     || (m.data_prior.is_some() && !m.warm.is_empty())

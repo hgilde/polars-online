@@ -163,17 +163,6 @@ pub(crate) fn age_target_weights(
     }
 }
 
-/// A state from before task 115 (d) keeps no per-target weight, and loads
-/// with each target at the shared weight -- the one its gate read, so the
-/// restored model withholds and predicts where it did. `false` when the
-/// state holds one of the wrong length.
-pub(crate) fn restore_target_weights(w: &mut Vec<f64>, w_sum: f64, n_targets: usize) -> bool {
-    if w.is_empty() {
-        *w = vec![w_sum; n_targets];
-    }
-    w.len() == n_targets
-}
-
 /// Each target's own `min_weight`, as a bank holds a list of them: none,
 /// for the model's one threshold everywhere, or one value `>= 0` per target
 /// (`lasso`'s `target_min_weight`, and the solving models' own first solve,

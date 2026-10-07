@@ -75,8 +75,8 @@ pub use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_f
 pub use polars::prelude::PlSmallStr;
 
 pub use bank::{
-    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, Learned, PAR_MIN_ROWS, coef_fields,
-    output_fields, output_index,
+    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, Learned, MIN_BANK_SCHEMA_VERSION,
+    PAR_MIN_ROWS, coef_fields, output_fields, output_index,
 };
 pub use defaults::resolved_defaults;
 pub use formula::{Formula, Literal, Node, OpNode};
@@ -90,9 +90,9 @@ pub use runner::{
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
-    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DURATION_OR_UNIT_FREE_FIELDS, FloatOrList,
-    ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec, Spec,
-    name_renamed,
+    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DEPRECATED, DURATION_OR_UNIT_FREE_FIELDS,
+    FloatOrList, ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec,
+    Spec, deprecation_notice, forward_deprecated, forward_deprecated_with, name_renamed,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

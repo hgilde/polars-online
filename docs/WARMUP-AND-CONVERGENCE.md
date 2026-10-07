@@ -10,7 +10,11 @@ ones from `crates/online-core/tests/readiness.rs` and
 `tests/test_readiness.py`. Section 5 is the evidence. Section 6 is what was
 tried and dropped, with the measurement that dropped it, so it is not
 proposed again without new evidence. Section 7 holds the questions the
-design left: six answered, and four still open, each part of PLAN task 116.
+design left: seven answered, and three still open, each part of PLAN task 116.
+**The readiness floors are final for 1.0** (docs/PLAN.md task 198, the
+user's decision D8 of 2026-10-06): `min_settled_frac` stays at 0,
+`max_error_inflation` at `√2` on `ewridge`, and every other model keeps its
+`min_weight` default; what task 116 adds from here moves no default.
 The clock settings §4 and §6 name have since become one parameter,
 `restart_after_step_back`: `min_session_clock` gave way to
 `min_backwards_jump` in 0.9.0, and task 144 merged that with
@@ -276,10 +280,9 @@ Per row, inside each spec's struct beside `weight_sum`, on by default:
 | `error_inflation_<slot>` (**opt-in**: costs `k²/2` per row, §2.1) | Float64 | 8 | `√(1 + h(x))`: how much this row's estimation variance inflates its expected error over the noise floor; `ewridge` only, refused elsewhere. The gate uses the stream average, which is free; the summary reports it |
 | `withheld_reason` | Enum | 1.41 | why `pred_*` is null this row: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`; **null once the row is real**. Never a String (16 B/row even when every value is null, §5.9). |
 
-Per group in `summary()`: `settled_frac`, `error_inflation`,
-`min_support_coef` and the feature it belongs to
-(`min_support_coef_feature`), and `n_coef`. `n_eff_settled`, the effective
-sample once settled, is not built (§7.8, PLAN task 116).
+Per group in `summary()`: `settled_frac`, `weight_sum_settled` (the weight the
+stream settles at, §7.8), `error_inflation`, `min_support_coef` and the
+feature it belongs to (`min_support_coef_feature`), and `n_coef`.
 
 Warnings, queued in Rust as notices (`Bank::take_notices`), raised in
 Python as `ReadinessWarning` and printed on stderr by the command line,
@@ -290,9 +293,31 @@ Python as `ReadinessWarning` and printed on stderr by the command line,
   naming the feature(s);
 - **`max_error_inflation` unreachable**: the stream has settled and
   `error_inflation` is still above the ceiling, so output will never appear
-  — with the fix in the message: raise the half-life, or raise
-  `max_error_inflation` to at least the settled value. The message gives no
-  half-life figure yet (PLAN task 116).
+  — with the fix in the message: a half-life above the one it names, or
+  `max_error_inflation` raised to at least the settled value. The figure is
+  the steady state's (built in task 198). Where the ratio is finite the gate
+  reads `√(1 + edf/n_Kish)`, `n_Kish` grows in proportion to the half-life,
+  and at a settled fraction `s` it is `s/(2 − s)` of its ceiling, so the gate
+  opens past `h·(worst² − 1)/(max² − 1)·s/(2 − s)`: measured 4.83 against a
+  threshold of 4.94 (two features, half-life 3, limit 1.1), the `edf`
+  moving a little with the half-life. Where it is infinite the model has not
+  solved, its weight short of the floor its first solve needs (a row per
+  coefficient), and the figure is the half-life whose ceiling passes that
+  floor, or whose Kish size carries `k`, whichever is longer: 7.2725 against
+  7.2725 measured (ten features, half-life 2). `tests/test_readiness.py`
+  holds both to the stream: 5% above the figure opens the gate, 5% below
+  does not. The notice itself fires only when the ratio's projection to
+  steady state, `1 + (worst² − 1)·s/(2 − s)`, is still at or above the limit
+  (or the weight's ceiling below the floor): read at 95% settled the ratio is
+  still falling, and a gate a little above the limit there opened later,
+  after a notice that it never would;
+- **`min_weight` unreachable** (built in task 198): the stream is 95%
+  settled and a target's weight tops out below its `min_weight` -- the
+  ceiling `1/(1 − 2^(−d/h))` of §5.1 at the rows' spacing and weight, which
+  a clock column keeps any spec from knowing in advance -- so the floor
+  withholds every prediction for good. The message names the ceiling
+  (`weight_sum_settled`) and the fix: a lower `min_weight` or a longer
+  half-life. On every model, since every model has the floor.
 
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short half-life can be
@@ -616,8 +641,9 @@ reported 0.00 for String and must not be trusted for it.
 ## 7. Questions the design left: answered, and still open
 
 The design left ten questions, numbered §7.1 to §7.10 as the rest of this
-document cites them. Six were answered while it was built. Four are open,
-and all four are part of PLAN task 116.
+document cites them. Six were answered while it was built, and §7.8 by task
+198, which also declared §7.2's answer final. Three are open, and all three
+are part of PLAN task 116.
 
 ### Still open, in PLAN task 116
 
@@ -663,9 +689,6 @@ not a prediction gate) or only reports.
 `standardize`); the standardiser's own noisy first rows can make the flag
 flicker before it settles.
 
-**7.8 `n_eff_settled` (PLAN task 116)** — from what settledness is the
-estimate (`weight_sum / settled_frac`) reported? 0.9?
-
 **7.9 CLI (PLAN task 116)** — one closing line counting groups not
 settled / low support?
 
@@ -674,7 +697,26 @@ settled / low support?
 **7.2 Default of `min_settled_frac`.** Settled at `0` by §4.1.1 on a
 theory argument (the mean-form fit is unbiased from row one under
 stationarity; the gate guards a representativeness bias only the user
-can size). Reopens only if a statistic for that bias is found.
+can size). **Declared final for 1.0** (task 198, D8), with the rest of the
+readiness floors: `max_error_inflation = √2` on `ewridge` and each other
+model's `min_weight` default. A statistic for that bias, if one is found,
+is a new gate off by default, not a moved default.
+
+**7.8 `n_eff_settled`** — answered by building it (task 198), as
+`weight_sum_settled`: task 144 named the weight `weight_sum` in every frame,
+and no column carries `n_eff` (`tests/test_renames.py`). Reported from
+every settledness rather than from a threshold such as 0.9: `weight_sum /
+settled_frac` overstates the ceiling by what is left of the first row's
+weight, and `(weight_sum − w₁·(1 − settled_frac)) / settled_frac` takes it
+out. On a regular stream it is the ceiling `w/(1 − λ)` exactly from the
+second row (after `n` rows the weight is `w·(1 − λⁿ)/(1 − λ)` and the
+settled fraction `1 − λⁿ⁻¹`, the first row bringing no clock); on the first
+row it is null, as it is with no decay and under a window, whose weight does
+not settle as the decay does. The stream keeps no first weight, so `w₁` is
+read as a row's weight: 1 without a weight column, the rows' mean with one,
+which on the regular stream the formula is exact for is every row's.
+`tests/test_readiness.py` holds it to the closed form at four spacings,
+half-lives and weights.
 
 **7.3 Is `withheld_reason` needed** given `settled_frac` and `weight_sum`
 are emitted? Answered: built, on every model that writes a row (the user

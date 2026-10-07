@@ -275,7 +275,6 @@ pub struct Sgd {
     /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
     /// `min_weight = 10` with every coefficient at zero.
-    #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the EW variance of the out-of-sample residual, `s²`, and
     /// its weight: the scale `huber_delta` is in (the module docs;
@@ -317,7 +316,6 @@ struct SgdV3 {
     beta: Vec<Vec<f64>>,
     g2: Vec<Vec<f64>>,
     w_sum: f64,
-    #[serde(default)]
     w_target: Vec<f64>,
     sig2: Vec<f64>,
     wsig: Vec<f64>,
@@ -330,7 +328,7 @@ impl TryFrom<SgdV3> for Sgd {
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
         let (sig2, wsig, spread) = (v.sig2, v.wsig, v.spread);
-        let mut w_target = v.w_target;
+        let w_target = v.w_target;
         let k = cfg.k_total();
         let m = cfg.n_targets;
         // What the cfg asks for, the state carries, and nothing else: a
@@ -357,7 +355,7 @@ impl TryFrom<SgdV3> for Sgd {
         {
             return Err("sgd: state has the wrong shape".into());
         }
-        if !crate::model::restore_target_weights(&mut w_target, w_sum, m) {
+        if w_target.len() != m {
             return Err("sgd: the state's target weights have the wrong shape".into());
         }
         // The scales a loss draws in, one per target, exactly under the
@@ -1812,10 +1810,12 @@ mod tests {
         assert_eq!(m.target_weights(), &[5.0]);
     }
 
-    /// A schema-19 state keeps no target weights: it loads with each target
-    /// at the shared weight, the one its gate read.
+    /// A state without target weights is refused, where it loaded with each
+    /// target at the shared weight -- the layout of schema 19, which this
+    /// build refuses by its version, and the repair a damaged file reached
+    /// (docs/PLAN.md task 198).
     #[test]
-    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+    fn a_state_without_target_weights_is_refused() {
         let mut c = cfg(2, SgdLoss::Squared);
         c.decay = Decay::Halflife(50.0); // JSON has no `inf`
         let mut m = Sgd::new(c).unwrap();
@@ -1827,8 +1827,14 @@ mod tests {
         assert!(m.target_weights()[0] < m.n_eff());
         let mut v = serde_json::to_value(&m).unwrap();
         assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
-        let back: Sgd = serde_json::from_value(v).unwrap();
-        assert_eq!(back.target_weights(), &[m.n_eff()]);
+        let err = serde_json::from_value::<Sgd>(v).unwrap_err().to_string();
+        assert!(err.contains("missing field `w_target`"), "{err}");
+        let mut short = serde_json::to_value(&m).unwrap();
+        short["w_target"] = serde_json::json!([]);
+        let err = serde_json::from_value::<Sgd>(short)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("target weights have the wrong shape"), "{err}");
     }
 
     /// Without `standardize` there is no scaler in either schema, and a

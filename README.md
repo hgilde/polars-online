@@ -952,8 +952,10 @@ the gate holds predictions back longer. It reads Kish's count, so one row
 carrying a hundred times the weight of the others counts as barely one.
 
 **Each row says how ready its model was.** `summary()` carries the same
-readings per group, and a `ReadinessWarning` names, once, a coefficient
-more ridge than data or a noise gate the settled stream can no longer meet.
+readings per group, with `weight_sum_settled`, the weight the stream settles at,
+and a `ReadinessWarning` names, once, a coefficient more ridge than data,
+or a noise gate or a `min_weight` the settled stream can no longer meet,
+with the half-life or the ceiling that would change that.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -1911,7 +1913,7 @@ an infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 | `rows_zero_weight` | rows that advanced the clock and nothing else |
 | `weight_sum`, `clock_min`, `clock_max`, `last_clock` | the weight behind the state, and the clock's range and last value, in the clock column's own dtype |
 | `session_changes`, `clock_backwards`, `resets` | what the clock rules met |
-| `settled_frac`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row |
+| `settled_frac`, `weight_sum_settled`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row; `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
 
 ### Output field names
 

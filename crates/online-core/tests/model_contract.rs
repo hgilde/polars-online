@@ -3190,151 +3190,133 @@ fn leveled(targets: usize, binary: bool) -> Vec<Row> {
         .collect()
 }
 
-/// A model restored at row 80 from its state with every low part removed --
-/// a state written before them -- next to the model restored whole: the
-/// number of low parts the state had, and the worst gap between the two
-/// afterwards, relative to `1 + |v|`. Each low part starts again at zero, so
-/// the two part by the few rounding steps the dropped parts held.
-fn resumes_without_low_parts<M: OnlineModel>(make: impl Fn() -> M, rows: &[Row]) -> (usize, f64) {
+/// A model's state at row 80 with every low part removed -- a state written
+/// before them -- read back: the number of low parts the state had, and
+/// whether the model refused it, by the decoding or by its restore.
+fn refuses_without_low_parts<M: OnlineModel>(make: impl Fn() -> M, rows: &[Row]) -> (usize, bool) {
     let mut m = make();
     for (i, r) in rows.iter().enumerate().take(80) {
         m.step(&r.x, &r.y, if i == 0 { 0.0 } else { 1.0 }, r.w);
     }
     let state = m.state();
-    let mut stripped = 0;
-    let old = edit_state(&state, |v| stripped = strip_low_parts(v));
-    let (mut whole, mut before) = (M::restore(&state).unwrap(), M::restore(&old).unwrap());
-    let mut worst = 0.0f64;
-    for r in &rows[80..] {
-        let (a, b) = (
-            whole.step(&r.x, &r.y, 1.0, r.w),
-            before.step(&r.x, &r.y, 1.0, r.w),
-        );
-        let (u_all, v_all): (Vec<f64>, Vec<f64>) = (
-            a.pred.iter().copied().chain([a.n_eff]).collect(),
-            b.pred.iter().copied().chain([b.n_eff]).collect(),
-        );
-        for (u, v) in u_all.iter().zip(&v_all) {
-            assert_eq!(u.is_nan(), v.is_nan(), "{u} against {v}");
-            if u.is_finite() {
-                worst = worst.max((u - v).abs() / (1.0 + u.abs()));
-            }
-        }
-    }
-    (stripped, worst)
+    let bytes = rmp_serde::to_vec_named(&state).unwrap();
+    let mut v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+    let stripped = strip_low_parts(&mut v);
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &v).unwrap();
+    let refused = match rmp_serde::from_slice::<State>(&out) {
+        Err(_) => true,
+        Ok(old) => M::restore(&old).is_err(),
+    };
+    (stripped, refused)
 }
 
-/// Every model loads a state written before the means' low parts and goes on
-/// as it would have (docs/PLAN.md task 110).
+/// Every model refuses a state without the means' low parts, where it
+/// loaded one and went on with each part at zero (docs/PLAN.md task 110):
+/// such a state is of a layout before this build's schema, which the
+/// version refuses (docs/PLAN.md task 198), and what the repair reached
+/// was a damaged file. `tests/state_repairs.rs` damages each low part
+/// alone, a vector at a time.
 #[test]
-fn every_model_resumes_from_a_state_without_the_low_parts() {
+fn every_model_refuses_a_state_without_the_low_parts() {
     let two = leveled(2, false);
     let one = leveled(1, false);
     let label = leveled(1, true);
     let label2 = leveled(2, true);
     let none = leveled(0, false);
-    let results: Vec<(&str, (usize, f64))> = vec![
+    let results: Vec<(&str, (usize, bool))> = vec![
         (
             "ewridge",
-            resumes_without_low_parts(|| EwRidge::new(ewridge_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| EwRidge::new(ewridge_cfg()).unwrap(), &two),
         ),
         (
             "rls",
-            resumes_without_low_parts(|| Rls::new(rls_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Rls::new(rls_cfg()).unwrap(), &two),
         ),
         (
             "lasso",
-            resumes_without_low_parts(|| Lasso::new(lasso_cfg()).unwrap(), &one),
+            refuses_without_low_parts(|| Lasso::new(lasso_cfg()).unwrap(), &one),
         ),
         (
             "kalman",
-            resumes_without_low_parts(|| Kalman::new(kalman_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Kalman::new(kalman_cfg()).unwrap(), &two),
         ),
         (
             "kalman_revert",
-            resumes_without_low_parts(|| Kalman::new(kalman_revert_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Kalman::new(kalman_revert_cfg()).unwrap(), &two),
         ),
         (
             "huber",
-            resumes_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap(), &two),
+            refuses_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap(), &two),
         ),
         (
             "quantile",
-            resumes_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap(), &two),
+            refuses_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap(), &two),
         ),
         (
             "ftrl",
-            resumes_without_low_parts(|| Ftrl::new(ftrl_cfg()).unwrap(), &label2),
+            refuses_without_low_parts(|| Ftrl::new(ftrl_cfg()).unwrap(), &label2),
         ),
         (
             "sgd",
-            resumes_without_low_parts(|| Sgd::new(sgd_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Sgd::new(sgd_cfg()).unwrap(), &two),
         ),
         (
             "pa",
-            resumes_without_low_parts(|| Pa::new(pa_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Pa::new(pa_cfg()).unwrap(), &two),
         ),
         (
             "holt",
-            resumes_without_low_parts(|| Holt::new(holt_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Holt::new(holt_cfg()).unwrap(), &two),
         ),
         (
             "ew_cov",
-            resumes_without_low_parts(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), &none),
         ),
         (
             "kmeans",
-            resumes_without_low_parts(|| KMeans::new(kmeans_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| KMeans::new(kmeans_cfg()).unwrap(), &none),
         ),
         (
             "micro",
-            resumes_without_low_parts(|| Micro::new(micro_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| Micro::new(micro_cfg()).unwrap(), &none),
         ),
         (
             "ew_class",
-            resumes_without_low_parts(|| EwClass::new(ew_class_cfg()).unwrap(), &label),
+            refuses_without_low_parts(|| EwClass::new(ew_class_cfg()).unwrap(), &label),
         ),
         (
             "seqtest",
-            resumes_without_low_parts(|| SeqTest::new(seqtest_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| SeqTest::new(seqtest_cfg()).unwrap(), &two),
         ),
         (
             "marginal",
-            resumes_without_low_parts(|| Marginal::new(marginal_cfg()).unwrap(), &two),
+            refuses_without_low_parts(|| Marginal::new(marginal_cfg()).unwrap(), &two),
         ),
         (
             "deco",
-            resumes_without_low_parts(|| Deco::new(deco_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| Deco::new(deco_cfg()).unwrap(), &none),
         ),
         (
             "rcov",
-            resumes_without_low_parts(|| Rcov::new(rcov_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| Rcov::new(rcov_cfg()).unwrap(), &none),
         ),
         (
             "hmm",
-            resumes_without_low_parts(|| Hmm::new(hmm_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| Hmm::new(hmm_cfg()).unwrap(), &none),
         ),
         (
             "corrchange",
-            resumes_without_low_parts(|| CorrChange::new(corrchange_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| CorrChange::new(corrchange_cfg()).unwrap(), &none),
         ),
         (
             "bocpd",
-            resumes_without_low_parts(|| Bocpd::new(bocpd_cfg()).unwrap(), &none),
+            refuses_without_low_parts(|| Bocpd::new(bocpd_cfg()).unwrap(), &none),
         ),
     ];
-    for (name, (stripped, worst)) in &results {
-        eprintln!("{name:>14}: {stripped:>3} low parts dropped, worst gap {worst:.2e}");
-    }
-    // Measured 2026-09-27: 3.7e-13 at worst (`deco`), 1.6e-13 for the rest.
-    for (name, (_, worst)) in &results {
-        assert!(
-            *worst <= 1e-11,
-            "{name}: {worst:e} from the model restored whole"
-        );
-    }
-    // Each model that keeps a mean had parts to drop, so its load was a real
-    // one: a model that lost its means, or a renamed field, shows here.
+    // Each model that keeps a mean had parts to drop, so its refusal is of
+    // a real state: a model that lost its means, or a renamed field, shows
+    // here. The rest keep no low part, and their state is whole.
     let keeps_means = [
         "ewridge",
         "lasso",
@@ -3342,6 +3324,7 @@ fn every_model_resumes_from_a_state_without_the_low_parts() {
         "kalman_revert",
         "huber",
         "quantile",
+        "pa",
         "ew_cov",
         "kmeans",
         "micro",
@@ -3352,44 +3335,30 @@ fn every_model_resumes_from_a_state_without_the_low_parts() {
         "corrchange",
         "bocpd",
     ];
-    for (name, (stripped, _)) in &results {
+    for (name, (stripped, refused)) in &results {
         if keeps_means.contains(name) {
             assert!(*stripped > 0, "{name}: no low part in its state");
+            assert!(*refused, "{name}: a state without its low parts loaded");
+        } else {
+            assert_eq!(*stripped, 0, "{name}: list it among the models with means");
         }
     }
 }
 
 /// A windowed `ewridge` or `lasso` saved at schema 16, when each target's
-/// own feature mean was kept as its offset `d` from the all-row mean,
-/// loads at 17 with the offsets made means once, in the live accumulator
-/// and in every window snapshot, and goes on as the model restored whole
-/// does (review 2026-09-27, G3). The state is rewritten to 16's shape: the
-/// field named `d`, holding `mj - m`, and no `mj_lo`.
+/// own feature mean was kept as its offset `d` from the all-row mean, is
+/// refused: by its version, and by its layout, which names no `mj`. It
+/// loaded at 17 with the offsets made means once (review 2026-09-27, G3),
+/// a loader the floor at the schema shipped retired (docs/PLAN.md task
+/// 198).
 #[test]
-fn a_schema_16_state_of_offsets_loads_as_own_means() {
+fn a_schema_16_state_of_offsets_is_refused() {
     fn to_offsets(v: &mut rmpv::Value, n: &mut usize) {
         match v {
             rmpv::Value::Map(entries) => {
-                let m: Option<Vec<f64>> = entries
-                    .iter()
-                    .find(|(k, _)| k.as_str() == Some("m"))
-                    .and_then(|(_, v)| v.as_array())
-                    .map(|a| a.iter().map(|v| v.as_f64().unwrap()).collect());
                 entries.retain(|(k, _)| k.as_str() != Some("mj_lo"));
                 for (k, x) in entries.iter_mut() {
                     if k.as_str() == Some("mj") {
-                        let m = m.as_ref().expect("mj sits beside m");
-                        let rmpv::Value::Array(rows) = x else {
-                            panic!("mj is a list of lists")
-                        };
-                        for row in rows {
-                            let rmpv::Value::Array(row) = row else {
-                                panic!("mj is a list of lists")
-                            };
-                            for (i, e) in row.iter_mut().enumerate() {
-                                *e = rmpv::Value::F64(e.as_f64().unwrap() - m[i]);
-                            }
-                        }
                         *k = rmpv::Value::from("d");
                         *n += 1;
                     } else {
@@ -3401,43 +3370,32 @@ fn a_schema_16_state_of_offsets_loads_as_own_means() {
             _ => {}
         }
     }
-    fn schema_16(state: &State) -> (State, usize) {
-        let mut n = 0;
-        let old = edit_state(state, |v| {
-            if let rmpv::Value::Map(entries) = v {
-                for (k, x) in entries.iter_mut() {
-                    if k.as_str() == Some("schema_version") {
-                        *x = rmpv::Value::from(16u32);
-                    }
-                }
-            }
-            to_offsets(v, &mut n);
-        });
-        (old, n)
-    }
     fn check<M: OnlineModel>(name: &str, make: impl Fn() -> M, rows: &[Row]) {
         let mut m = make();
         for (i, r) in rows.iter().enumerate().take(80) {
             m.step(&r.x, &r.y, if i == 0 { 0.0 } else { 1.0 }, r.w);
         }
         let state = m.state();
-        let (old, converted) = schema_16(&state);
-        // The live accumulator, and the window's snapshots besides.
-        assert!(converted >= 2, "{name}: {converted} offset vectors written");
-        let (mut whole, mut loaded) = (M::restore(&state).unwrap(), M::restore(&old).unwrap());
-        for r in &rows[80..] {
-            let (a, b) = (
-                whole.step(&r.x, &r.y, 1.0, r.w),
-                loaded.step(&r.x, &r.y, 1.0, r.w),
-            );
-            for (u, v) in a.pred.iter().zip(&b.pred) {
-                assert_eq!(u.is_nan(), v.is_nan(), "{name}: {u} against {v}");
-                if u.is_finite() {
-                    let gap = (u - v).abs() / (1.0 + u.abs());
-                    assert!(gap <= 1e-9, "{name}: {u} against {v}, {gap:e}");
-                }
-            }
-        }
+        let mut old = state.clone();
+        old.schema_version = 16;
+        assert!(
+            matches!(
+                M::restore(&old),
+                Err(StateError::SchemaVersion { found: 16, .. })
+            ),
+            "{name}: refused by its version"
+        );
+        let bytes = rmp_serde::to_vec_named(&state).unwrap();
+        let mut v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        let mut n = 0;
+        to_offsets(&mut v, &mut n);
+        assert!(n >= 2, "{name}: {n} offset vectors written");
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &v).unwrap();
+        assert!(
+            rmp_serde::from_slice::<State>(&out).is_err(),
+            "{name}: refused by its layout"
+        );
     }
     let rows = leveled(2, false);
     for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {

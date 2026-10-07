@@ -3733,31 +3733,21 @@ fn each_targets_spread_is_its_first_fits_residuals() {
     }
 }
 
+/// A state naming schema 17 is refused by its version, where its own means
+/// were read as offsets (docs/PLAN.md task 198: the floor is the schema
+/// shipped); and a twin of another width is refused.
 #[test]
-fn a_schema_17_state_is_read_as_it_is_and_a_mismatched_twin_is_refused() {
+fn a_schema_17_state_is_refused_and_so_is_a_mismatched_twin() {
     let mut c = cfg(2, 2);
     c.target_gaps = TargetGaps::Pairwise;
     c.min_weight = 0.0;
     let (m, _) = fitted(c, 60, 41);
     let mut s17 = m.state();
     s17.schema_version = 17;
-    let (mut whole, mut read) = (
-        EwRidge::restore(&m.state()).unwrap(),
-        EwRidge::restore(&s17).unwrap(),
-    );
-    let mut s = 43u64;
-    for _ in 0..20 {
-        let x = [lcg(&mut s), lcg(&mut s)];
-        let y = [Some(x[0]), Some(x[1] - x[0])];
-        let (a, b) = (
-            whole.step(&x, &y, 1.0, 1.0).pred,
-            read.step(&x, &y, 1.0, 1.0).pred,
-        );
-        assert_eq!(
-            a.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-            b.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
-        );
-    }
+    assert!(matches!(
+        EwRidge::restore(&s17),
+        Err(StateError::SchemaVersion { found: 17, .. })
+    ));
     let twin = |k: usize| {
         let mut c = cfg(k, 1);
         c.long_half_life = Some(200.0);

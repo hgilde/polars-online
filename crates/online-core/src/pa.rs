@@ -154,7 +154,6 @@ pub struct Pa {
     /// `min_weight` is checked against (hard rule 8, docs/PLAN.md task 115
     /// (d)). `w_sum` stood in for it, so ten rows with a null target met
     /// `min_weight = 10` with every coefficient at zero.
-    #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the EW mean and variance of the target itself: the unit
     /// `eps` is in (the module docs; docs/PLAN.md task 202).
@@ -446,7 +445,7 @@ impl OnlineModel for Pa {
                         "pa: the coefficients have the wrong shape".into(),
                     ));
                 }
-                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                if m.w_target.len() != n {
                     return Err(StateError::Invalid(
                         "pa: the target weights have the wrong shape".into(),
                     ));
@@ -511,10 +510,12 @@ mod tests {
         assert_eq!(m.target_weights(), &[5.0]);
     }
 
-    /// A schema-19 state keeps no target weights: it loads with each target
-    /// at the shared weight, the one its gate read.
+    /// A state without target weights is refused, where it loaded with each
+    /// target at the shared weight -- the layout of schema 19, which this
+    /// build refuses by its version, and the repair a damaged file reached
+    /// (docs/PLAN.md task 198).
     #[test]
-    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+    fn a_state_without_target_weights_is_refused() {
         use crate::{ModelState, OnlineModel, State};
         let mut m = Pa::new(cfg(2, PaMode::Pa1)).unwrap();
         let mut s = 7u64;
@@ -525,9 +526,13 @@ mod tests {
         assert_eq!(m.target_weights(), &[3.0]);
         let mut v = serde_json::to_value(&m).unwrap();
         assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
-        let old: Pa = serde_json::from_value(v).unwrap();
-        let back = Pa::restore(&State::new(ModelState::Pa(Box::new(old)))).unwrap();
-        assert_eq!(back.target_weights(), &[8.0]);
+        let err = serde_json::from_value::<Pa>(v).unwrap_err().to_string();
+        assert!(err.contains("missing field `w_target`"), "{err}");
+        let mut short = serde_json::to_value(&m).unwrap();
+        short["w_target"] = serde_json::json!([]);
+        let old: Pa = serde_json::from_value(short).unwrap();
+        let err = Pa::restore(&State::new(ModelState::Pa(Box::new(old)))).unwrap_err();
+        assert!(err.to_string().contains("wrong shape"), "{err}");
     }
 
     /// A state whose vectors are not the cfg's is refused, where it loaded

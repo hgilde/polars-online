@@ -990,14 +990,6 @@ impl OnlineModel for Lasso {
                                 .all(|t| t.len() == np && t.iter().all(|c| c.len() == k))
                     })
                     && m.win.is_some() == m.cfg.window.is_some();
-                // A state written before schema 17 kept each target's own
-                // mean as an offset (`crate::gaps::Cross`).
-                if s.schema_version < 17 {
-                    m.acc.offsets_to_means();
-                    if let Some(win) = m.win.as_mut() {
-                        win.snaps.iter_mut().for_each(|s| s.acc.offsets_to_means());
-                    }
-                }
                 if !m.acc.has_shape(n, k) || !selection {
                     return Err(StateError::Invalid(
                         "lasso: the accumulators have the wrong shape".into(),
@@ -2437,8 +2429,9 @@ mod tests {
         assert!(Lasso::new(cfg(2, 1, vec![0.1])).is_ok());
     }
 
-    /// Through the bytes a file holds, and read as schema 17 (own means,
-    /// already): a loaded model goes on exactly as the one saved.
+    /// Through the bytes a file holds: a loaded model goes on exactly as the
+    /// one saved. The same state naming schema 17 is refused by its version
+    /// (docs/PLAN.md task 198).
     #[test]
     fn a_saved_fit_goes_on_as_it_would_have() {
         use crate::OnlineModel;
@@ -2451,15 +2444,16 @@ mod tests {
         let mut s17: crate::State = rmp_serde::from_slice(&bytes).unwrap();
         let mut loaded = Lasso::restore(&s17).unwrap();
         s17.schema_version = 17;
-        let mut read17 = Lasso::restore(&s17).unwrap();
+        assert!(matches!(
+            Lasso::restore(&s17),
+            Err(crate::StateError::SchemaVersion { found: 17, .. })
+        ));
         let mut whole = m;
         for (x, y, w) in &rows[40..] {
             let a = whole.step(x, &y[..], 1.0, *w).pred;
             let b = loaded.step(x, &y[..], 1.0, *w).pred;
-            let c = read17.step(x, &y[..], 1.0, *w).pred;
             let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(bits(&a), bits(&b));
-            assert_eq!(bits(&a), bits(&c));
         }
     }
 

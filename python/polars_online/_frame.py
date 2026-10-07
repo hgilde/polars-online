@@ -256,7 +256,7 @@ class ReadinessWarning(UserWarning):
 
     Raised once per (spec, group) by the learning calls -- :meth:`ModelBank.fit`,
     :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and the
-    plan form -- never by ``predict``, for two findings
+    plan form -- never by ``predict``, for three findings
     (`docs/WARMUP-AND-CONVERGENCE.md
     <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_):
 
@@ -268,7 +268,13 @@ class ReadinessWarning(UserWarning):
     - **The noise gate cannot be met**: the stream has all but settled and
       ``error_inflation`` is still above ``max_error_inflation``, so every
       prediction is withheld for good. The message says how far, and the way
-      out -- a longer half-life, or a looser ratio.
+      out -- a half-life above the one it names, or a looser ratio.
+    - **A** ``min_weight`` **cannot be met**: the stream has all but settled
+      and the weight a target reads tops out below its ``min_weight`` -- the
+      ceiling ``1 / (1 - 2 ** (-d / half_life))`` at the rows' spacing ``d``
+      and weight, which a clock column keeps any spec from knowing in
+      advance. The message names the ceiling (``weight_sum_settled`` in
+      :meth:`ModelBank.summary`), and the way out.
 
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec

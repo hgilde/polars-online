@@ -144,6 +144,68 @@ fn model_key(text: &str, msg: &str) -> Option<String> {
     None
 }
 
+/// The environment variable that turns the unstable label's warning on, as
+/// `POLARS_WARN_UNSTABLE` does Polars' own: `1` and nothing else
+/// (docs/PLAN.md task 198, D5).
+const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
+
+/// What the command line says of a formula target under [`UNSTABLE_VAR`]:
+/// its tree is read from the TOML file and written into the state, and that
+/// written form is not promised.
+const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the      TOML file and in a saved state -- is considered unstable. It may be changed at any point      without it being considered a breaking change (unset POLARS_ONLINE_WARN_UNSTABLE to      silence this)";
+
+/// `text`, a TOML config, with each key `table` deprecates read as its new
+/// name at any depth, and a notice for each (`online_polars::DEPRECATED`,
+/// docs/PLAN.md task 198, D2). The text itself where nothing was renamed, or
+/// where it is not TOML at all, which the config's own parse then reports.
+fn forward_deprecated_toml(
+    text: &str,
+    table: &[(&str, &str)],
+) -> Result<(String, Vec<String>), String> {
+    fn walk(
+        v: &mut toml::Value,
+        table: &[(&str, &str)],
+        notices: &mut Vec<String>,
+    ) -> Result<(), String> {
+        match v {
+            toml::Value::Table(t) => {
+                for (old, new) in table {
+                    if let Some(value) = t.remove(*old) {
+                        if t.contains_key(*new) {
+                            return Err(format!(
+                                "{old} was renamed {new}, and both are given: give {new} alone"
+                            ));
+                        }
+                        t.insert((*new).to_string(), value);
+                        notices.push(online_polars::deprecation_notice(old, new));
+                    }
+                }
+                for (_, value) in t.iter_mut() {
+                    walk(value, table, notices)?;
+                }
+            }
+            toml::Value::Array(items) => {
+                for value in items {
+                    walk(value, table, notices)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let Ok(doc) = toml::from_str::<toml::Table>(text) else {
+        return Ok((text.to_string(), Vec::new()));
+    };
+    let mut doc = toml::Value::Table(doc);
+    let mut notices = Vec::new();
+    walk(&mut doc, table, &mut notices)?;
+    if notices.is_empty() {
+        return Ok((text.to_string(), notices));
+    }
+    let text = toml::to_string(&doc).map_err(|e| format!("rewriting the config: {e}"))?;
+    Ok((text, notices))
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -178,6 +240,12 @@ fn run() -> Result<(), String> {
     refuse_renamed_flags(&cli);
     let text = std::fs::read_to_string(&cli.config)
         .map_err(|e| format!("reading {}: {e}", cli.config.display()))?;
+    // A key renamed after 1.0 is read as its new name, with a warning.
+    let (text, notices) = forward_deprecated_toml(&text, online_polars::DEPRECATED)
+        .map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;
+    for notice in notices {
+        eprintln!("online: warning: {notice}");
+    }
     let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
         // A Windows path in a TOML basic string is the most common way this
         // fails, and TOML's own message ("too few unicode value digits", from
@@ -243,6 +311,11 @@ fn run() -> Result<(), String> {
     // What a spec may leave out, filled before anything reads it (E53).
     cfg.fill_defaults();
     cfg.validate()?;
+    if std::env::var(UNSTABLE_VAR).is_ok_and(|v| v == "1")
+        && cfg.specs.iter().any(|s| s.targets.any_formula())
+    {
+        eprintln!("online: {FORMULA_UNSTABLE}");
+    }
     // `validate` leaves the input to the run; a dry run wants to know now.
     let input_format = cfg.input_format()?;
     let output_format = if cfg.no_output() {
@@ -334,4 +407,43 @@ fn run() -> Result<(), String> {
         println!("saved state to {}", p.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// A key the table deprecates is read as its new name at any depth, a
+    /// spec's own and its model's, with a notice each; an old and a new name
+    /// side by side are refused; the production table, empty before 1.0,
+    /// leaves the text as it is (docs/PLAN.md task 198, D2).
+    #[test]
+    fn a_deprecated_toml_key_is_forwarded_with_a_notice() {
+        let table = [("half_lyfe", "half_life"), ("rigde", "ridge")];
+        let text = "input = \"in.parquet\"\n\n[[specs]]\nname = \"m\"\ntargets = [\"y\"]\n\
+                    features = [\"x\"]\nhalf_lyfe = 10.0\n\n[specs.model]\ntype = \"ew_ridge\"\n\
+                    rigde = 0.5\n";
+        let (out, notices) = super::forward_deprecated_toml(text, &table).unwrap();
+        assert_eq!(
+            notices,
+            [
+                online_polars::deprecation_notice("half_lyfe", "half_life"),
+                online_polars::deprecation_notice("rigde", "ridge"),
+            ]
+        );
+        let doc: toml::Table = toml::from_str(&out).unwrap();
+        let spec = &doc["specs"].as_array().unwrap()[0];
+        assert_eq!(spec["half_life"].as_float(), Some(10.0));
+        assert_eq!(spec["model"]["ridge"].as_float(), Some(0.5));
+        assert!(spec.get("half_lyfe").is_none());
+        let both = "half_lyfe = 1.0\nhalf_life = 2.0\n";
+        let err = super::forward_deprecated_toml(both, &table).unwrap_err();
+        assert!(
+            err.contains("half_lyfe") && err.contains("half_life"),
+            "{err}"
+        );
+        let (same, none) = super::forward_deprecated_toml(text, online_polars::DEPRECATED).unwrap();
+        assert!(none.is_empty() && same == text);
+        // Text that is not TOML is left for the config's own parse to report.
+        let (bad, none) = super::forward_deprecated_toml("= [", &table).unwrap();
+        assert!(none.is_empty() && bad == "= [");
+    }
 }

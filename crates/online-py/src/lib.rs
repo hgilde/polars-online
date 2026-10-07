@@ -227,6 +227,12 @@ fn busy(what: &str) -> PyErr {
 /// duckdb reads only `__arrow_c_stream__`, so it goes through `pl.Series`.
 /// Exporting consumes the array, so a second call raises rather than hand
 /// out buffers that have already been given away.
+///
+/// .. warning::
+///     The Arrow output is considered **unstable**: it may change in any
+///     release without that counting as a breaking change (docs/PLAN.md
+///     task 198, D5). Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that
+///     return one raise ``polars_online.UnstableWarning``.
 #[pyclass(name = "ArrowStruct", module = "polars_online._polars_online")]
 struct PyArrowStruct {
     name: String,

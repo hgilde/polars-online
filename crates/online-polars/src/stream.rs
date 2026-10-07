@@ -2324,7 +2324,11 @@ fn no_score_preds(v: &[std::collections::VecDeque<Vec<f64>>]) -> bool {
 pub struct Notified {
     /// A coefficient more ridge than data was named.
     pub support: bool,
-    /// The noise gate was found unreachable at steady state.
+    /// A readiness floor was found unreachable at steady state: the noise
+    /// gate, or a target's `min_weight` (docs/PLAN.md task 198). One flag for
+    /// both: the floor is checked first, so while it withholds a row the
+    /// noise gate's reason is never the row's, and a stream says the one
+    /// that holds it back.
     pub unreachable: bool,
     /// Raised and not yet drained; not state.
     #[serde(skip)]
@@ -2341,6 +2345,30 @@ pub fn settled_frac(decay: Decay, t: f64) -> f64 {
         Decay::Halflife(h) if h.is_finite() => 1.0 - (-(t / h)).exp2(),
         Decay::Lam(l) if l < 1.0 => 1.0 - l.powf(t),
         _ => f64::NAN,
+    }
+}
+
+/// The weight a stream settles at, read from where it stands: `weight`, the
+/// accumulated weight before the next row (`weight_sum`'s meaning), less what
+/// is left of the first row's, over the settled fraction:
+///
+/// ```text
+/// weight_sum_settled = (W − w₁·(1 − s)) / s,    s = settled_frac
+/// ```
+///
+/// On a regular stream -- rows `d` apart, each of weight `w` -- `W` after
+/// `n` rows is `w·(1 − λⁿ)/(1 − λ)` and `s` is `1 − λⁿ⁻¹` (the first row
+/// brings no clock), so this is `w/(1 − λ)`, the ceiling `1/(1 − λ^d)` in
+/// rows (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly, from the second
+/// row; on the first `s` is 0 and there is none (NaN). `w₁` is the first
+/// row's weight, which on such a stream is every row's: the stream keeps no
+/// first weight, so a caller hands the weight a row has there (docs/PLAN.md
+/// task 198, D8).
+pub fn settled_weight(weight: f64, first: f64, settled: f64) -> f64 {
+    if settled > 0.0 && settled.is_finite() {
+        (weight - first * (1.0 - settled)) / settled
+    } else {
+        f64::NAN
     }
 }
 
@@ -2362,11 +2390,105 @@ const REASON_INFLATION: u8 = 3;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Readiness {
     pub settled_frac: f64,
+    /// The weight the stream settles at, read from where it stands
+    /// ([`settled_weight`]); NaN where it has not one: no decay, a window,
+    /// or a single row.
+    pub weight_sum_settled: f64,
     /// The largest over the instance's slots.
     pub error_inflation: f64,
     pub min_support_coef: f64,
     pub min_support_coef_feature: Option<String>,
     pub n_coef: u64,
+}
+
+/// Where the noise gate's notice reads the stream: the gate's largest ratio,
+/// its limit, the settled fraction, the weight before the row and the row's
+/// own (docs/PLAN.md task 198, D8).
+struct Unmet {
+    worst: f64,
+    max: f64,
+    settled: f64,
+    weight: f64,
+    row_weight: f64,
+}
+
+impl Unmet {
+    /// Whether the gate stays shut at steady state, which the notice says:
+    /// the ratio's projection there -- `1 + (worst² − 1)·s/(2 − s)`, Kish's
+    /// size growing from `s/(2 − s)` of its ceiling to all of it -- at or
+    /// above the limit, or, where the model has not solved, its weight's
+    /// ceiling below the floor it needs. The notice said so of the ratio
+    /// read at 95% settled, which is still falling there: a gate a little
+    /// above the limit then opened later, after a notice that it never
+    /// would (docs/PLAN.md task 198, found by its half-life figure's test).
+    fn for_good(&self, spec: &Spec) -> bool {
+        if self.worst.is_finite() {
+            let s = self.settled;
+            1.0 + (self.worst * self.worst - 1.0) * s / (2.0 - s) >= self.max * self.max
+        } else {
+            settled_weight(self.weight, self.row_weight, self.settled) < solve_floor(spec)
+        }
+    }
+}
+
+/// The weight a model with a noise gate needs before it solves at all: a
+/// row per coefficient, or the spec's own `min_weight` (`build_bare`). Below
+/// it the ratio is infinite.
+fn solve_floor(spec: &Spec) -> f64 {
+    match spec.min_weight {
+        Some(_) => spec.min_periods_or_default(),
+        None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
+    }
+}
+
+/// What the noise gate's notice asks of the decay: the half-life above which
+/// the gate opens at steady state on a regular stream (docs/PLAN.md task
+/// 198, D8; WARMUP-AND-CONVERGENCE §7).
+///
+/// The gate reads `sqrt(1 + edf/n)`, `n` Kish's effective sample size, and
+/// opens below `max`. Where it reads `worst`, finite, `n` must grow by
+/// `r = (worst² − 1)/(max² − 1)`. At steady state `n` is `(1 + λ)/(1 − λ)`,
+/// in proportion to the half-life where it is many rows, and at a settled
+/// fraction `s` it is `s/(2 − s)` of that -- `(1 − λᵐ)/(1 + λᵐ)` of the
+/// ceiling with `λᵐ = 1 − s` -- so the half-life must pass `h·r·s/(2 − s)`.
+///
+/// Where the ratio is infinite the model never solved: its weight tops out
+/// at `C = w/(1 − 2^(−d/h))` ([`settled_weight`]) below its floor `N`
+/// ([`solve_floor`]). From `C` the spacing is `d/h = −log2(1 − w/C)`, and
+/// the half-life must pass both `d/−log2(1 − w/N)`, for the weight to reach
+/// `N`, and `d/−log2((n − 1)/(n + 1))` with `n = k/(max² − 1)`, for Kish's
+/// size to carry `k` degrees of freedom, the most a ridge leaves.
+///
+/// "Above", since the gate withholds at equality. In the spec's own terms: a
+/// duration on a temporal clock, `lam` where the spec gives one.
+fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
+    let h = match decay {
+        Decay::Halflife(h) => h,
+        Decay::Lam(l) => -1.0 / l.log2(),
+    };
+    let (max, s, w) = (at.max, at.settled, at.row_weight);
+    let need = if at.worst.is_finite() {
+        h * (at.worst * at.worst - 1.0) / (max * max - 1.0) * s / (2.0 - s)
+    } else {
+        let d = h * -(1.0 - w / settled_weight(at.weight, w, s)).log2();
+        let k = (spec.k() + usize::from(spec.fit_intercept)) as f64;
+        let n = k / (max * max - 1.0);
+        let floor = d / -(1.0 - w / solve_floor(spec)).log2();
+        let kish = d / -((n - 1.0) / (n + 1.0)).log2();
+        // A bound that cannot bind -- a floor of one row, a Kish size of
+        // one -- is NaN, and `max` takes the other.
+        floor.max(kish)
+    };
+    if !(need.is_finite() && need > 0.0) {
+        return "raise the half_life".into();
+    }
+    match decay {
+        Decay::Lam(_) => format!("raise lam above {:.6}", (-1.0 / need).exp2()),
+        Decay::Halflife(_) => format!(
+            "raise the half_life above {}",
+            crate::bank::clock_amount(spec, need)
+        ),
+    }
 }
 
 /// [`Persisted::resid_win`] holds no ring.
@@ -2442,6 +2564,25 @@ impl Stream {
             settled_frac(d, self.persisted.decay_time.first().copied().unwrap_or(0.0))
         });
         let model = self.models.first().map(|(_, m)| m);
+        // The weight a row has: 1 without a weight column, and the rows'
+        // mean weight with one, which on the regular stream the estimate is
+        // exact for is every row's. A window's weight does not settle as the
+        // decay does, so it has no estimate.
+        let windowed = spec
+            .model
+            .window_parts()
+            .is_some_and(|(window, _)| window.is_some());
+        let row_weight = match (&spec.weight, self.summary()) {
+            (None, _) => 1.0,
+            (Some(_), Some(d)) if self.persisted.rows_seen > 0 => {
+                d.weight_sum / self.persisted.rows_seen as f64
+            }
+            _ => f64::NAN,
+        };
+        let weight_sum_settled = match model {
+            Some(m) if !windowed => settled_weight(m.n_eff(), row_weight, settled),
+            _ => f64::NAN,
+        };
         let mut infl = Vec::new();
         let error_inflation = match model {
             Some(m) if m.error_inflation_into(&mut infl) => {
@@ -2467,6 +2608,7 @@ impl Stream {
         }
         Readiness {
             settled_frac: settled,
+            weight_sum_settled,
             error_inflation,
             min_support_coef: min_support,
             min_support_coef_feature: feature,
@@ -4776,6 +4918,8 @@ fn run_instance(
             step.pred.fill(f64::NAN);
             reason = REASON_SETTLED;
         }
+        // The first target the floor withholds, and the weight it read.
+        let mut short: Option<(usize, f64)> = None;
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             let weight = match sc.tn.get(tj) {
                 Some(&w) if own_weights => w,
@@ -4783,9 +4927,39 @@ fn run_instance(
             };
             if step_n_eff_below(weight, min_weight, tj) {
                 group.fill(f64::NAN);
+                short.get_or_insert((tj, weight));
                 if reason == 0 {
                     reason = REASON_MIN_PERIODS;
                 }
+            }
+        }
+        // The floor cannot be met: the stream has all but settled, and the
+        // weight the target reads tops out below it -- the ceiling
+        // `1/(1 − λ^d)` at the rows' spacing and weight
+        // (docs/WARMUP-AND-CONVERGENCE.md §5.1), which with a clock column
+        // no spec can say in advance. Said once per instance, as the noise
+        // gate's is, with the way out (docs/PLAN.md task 198, D8).
+        if let Some((tj, weight)) = short
+            && !inst.notified.unreachable
+            && settled >= 0.95
+        {
+            let ceiling = settled_weight(weight, w, settled);
+            let floor = min_weight.get(tj).copied().unwrap_or(f64::NAN);
+            if ceiling < floor {
+                inst.notified.unreachable = true;
+                let target = inst
+                    .spec
+                    .targets
+                    .get(tj)
+                    .map_or_else(String::new, |t| format!(" for target {t:?}"));
+                inst.notified.pending.push(format!(
+                    "min_weight = {floor} cannot be met{target}: the stream is {:.0}% settled and \
+                     the weight it reads tops out near {ceiling:.4}, the ceiling 1/(1 - lam^d) \
+                     at its rows' spacing d and weight, so every prediction is withheld for \
+                     good. Lower min_weight below {ceiling:.4}, or raise the half_life \
+                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                    100.0 * settled
+                ));
             }
         }
         // At or above the ratio: at equality the estimation variance is the
@@ -4807,19 +4981,47 @@ fn run_instance(
         // The noise gate cannot be met: the stream has all but settled and
         // the ratio is still above the threshold, so nothing will change
         // it. Said once per instance, with the way out (§3).
-        if reason == REASON_INFLATION && !inst.notified.unreachable && settled >= 0.95 {
-            let worst = sc.infl.iter().cloned().fold(0.0, f64::max);
+        let unmet = (reason == REASON_INFLATION && !inst.notified.unreachable && settled >= 0.95)
+            .then(|| Unmet {
+                worst: sc.infl.iter().cloned().fold(0.0, f64::max),
+                max: max_infl,
+                settled,
+                weight: step.n_eff,
+                row_weight: w,
+            })
+            .filter(|u| u.for_good(inst.spec));
+        if let Some(unmet) = unmet {
+            let worst = unmet.worst;
             inst.notified.unreachable = true;
-            inst.notified.pending.push(format!(
-                "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
-                 settled and error_inflation is still {worst:.3}, so every prediction is \
-                 withheld for good. Kish's effective sample size tops out near 2.9 \
-                 half_lives of rows; raise the half_life so it can carry the {} coefficients, \
-                 or raise max_error_inflation to at least {worst:.3} to accept this much \
-                 estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
-                100.0 * settled,
-                inst.spec.k() + usize::from(inst.spec.fit_intercept)
-            ));
+            let figure = half_life_figure(inst.spec, inst.decay, &unmet);
+            let k = inst.spec.k() + usize::from(inst.spec.fit_intercept);
+            inst.notified.pending.push(if worst.is_finite() {
+                format!(
+                    "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
+                     settled and error_inflation is still {worst:.3}, so every prediction is \
+                     withheld for good. Kish's effective sample size tops out near 2.9 \
+                     half_lives of rows; {figure} so it can carry the {k} coefficients, or \
+                     raise max_error_inflation to at least {worst:.3} to accept this much \
+                     estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
+                    100.0 * settled
+                )
+            } else {
+                // Infinite: the model has not solved, its weight short of the
+                // floor its first solve needs, which no ratio can loosen.
+                format!(
+                    "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
+                     settled and its weight tops out near {:.4}, below the {} the model needs \
+                     before it solves (a row per coefficient, or min_weight), so \
+                     error_inflation stays infinite and every prediction is withheld for good. \
+                     {}{} so it can carry the {k} coefficients \
+                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                    100.0 * settled,
+                    settled_weight(step.n_eff, w, settled),
+                    solve_floor(inst.spec),
+                    figure[..1].to_uppercase(),
+                    &figure[1..]
+                )
+            });
         }
 
         // Under `embargo` the residual diagnostics fold the prediction a

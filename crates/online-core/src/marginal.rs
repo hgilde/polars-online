@@ -420,11 +420,9 @@ pub struct Marginal {
     bins: Option<Box<Binned>>,
     /// What each mean in `mx` and `my` leaves out: each is a pair no step
     /// is rounded off, as `ew_cov`'s are, so the pairs still agree with it to
-    /// the bit ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state
-    /// written before them. Ahead of `win`, which skips and must stay last.
-    #[serde(default)]
+    /// the bit ([`crate::comp`]; docs/PLAN.md task 101). One per mean.
+    /// Ahead of `win`, which skips and must stay last.
     mx_lo: Vec<f64>,
-    #[serde(default)]
     my_lo: Vec<f64>,
     /// Per (target, feature) pair and per target, the value it has held on
     /// the target's rows since it last changed, and the weight of those rows
@@ -437,7 +435,6 @@ pub struct Marginal {
     y_runs: crate::Runs,
     /// Per target, its learned rows so far: what its runs' start rows count
     /// in, and what the window's snapshot records. Ahead of `win`.
-    #[serde(default)]
     rows_t: Vec<u64>,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
     /// reason `MarginalCfg::window` gives.
@@ -1157,7 +1154,6 @@ impl Marginal {
         if w < 0.0 {
             return;
         }
-        self.size_lo();
         let p = self.cfg.n_features;
         let Some(lag) = self.lag.as_mut() else {
             return;
@@ -1214,22 +1210,6 @@ impl Marginal {
         }
     }
 
-    /// The means' low parts at the means' own lengths, which a state written
-    /// before them does not carry: they start at zero. Here, not per element
-    /// inside the pair loop, whose vectorizing a possible reallocation would
-    /// stop (see `learn_lags`).
-    fn size_lo(&mut self) {
-        if self.mx_lo.len() != self.mx.len() {
-            self.mx_lo = vec![0.0; self.mx.len()];
-        }
-        if self.my_lo.len() != self.my.len() {
-            self.my_lo = vec![0.0; self.my.len()];
-        }
-        if self.rows_t.len() != self.cfg.n_targets {
-            self.rows_t = vec![0; self.cfg.n_targets];
-        }
-    }
-
     fn learn(&mut self, x: &[f64], y: &[Option<f64>], lam: f64, w: f64) {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         debug_assert_eq!(y.len(), self.cfg.n_targets);
@@ -1238,7 +1218,6 @@ impl Marginal {
             return;
         }
         let (p, n_targets) = (self.cfg.n_features, self.cfg.n_targets);
-        self.size_lo();
         // The model-level weight: every row, present targets or not. A
         // zero-weight first row leaves it at zero, which is legal (rule 9).
         let w_before = self.w_sum;
@@ -1395,7 +1374,6 @@ impl Marginal {
         if w < 0.0 {
             return;
         }
-        self.size_lo();
         let n_lags = self.lag.as_ref().map_or(0, |l| l.lags().len());
         if self.defer.n == 0 {
             // A batch begins with the ring as it stands.
@@ -2378,8 +2356,14 @@ impl OnlineModel for Marginal {
                             }
                     })
                 });
-                if [&m.wt, &m.qt, &m.my, &m.syy].iter().any(|v| v.len() != t)
-                    || [&m.mx, &m.sxx].iter().any(|v| v.len() != fx)
+                // The means' low parts and each target's learned rows too,
+                // which a state written before them lacked and a repair
+                // sized at zero (docs/PLAN.md task 198).
+                if [&m.wt, &m.qt, &m.my, &m.syy, &m.my_lo]
+                    .iter()
+                    .any(|v| v.len() != t)
+                    || [&m.mx, &m.sxx, &m.mx_lo].iter().any(|v| v.len() != fx)
+                    || m.rows_t.len() != t
                     || m.sxy.len() != p * t
                     || m.cfg.min_weight.len() != t
                     || !lag_ok

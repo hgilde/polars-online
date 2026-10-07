@@ -241,9 +241,8 @@ pub struct Deco {
     rho_w: Vec<f64>,
     /// What each `rho_bar` leaves out: the level is a pair no step is
     /// rounded off, as an `ew_cov`'s mean is ([`crate::comp`]; docs/PLAN.md
-    /// task 101), so the identity `Deco::advance` states holds. Empty in a
-    /// state written before it.
-    #[serde(default)]
+    /// task 101), so the identity `Deco::advance` states holds. One per
+    /// value, as `rho_bar` is.
     rho_bar_lo: Vec<f64>,
 }
 
@@ -524,6 +523,7 @@ impl crate::OnlineModel for Deco {
                     || m.blocks != m.cfg.resolved_blocks()
                     || m.rho.len() != values
                     || m.rho_bar.len() != values
+                    || m.rho_bar_lo.len() != values
                     || m.rho_w.len() != values
                 {
                     return Err(crate::StateError::Invalid(
@@ -564,7 +564,6 @@ impl Deco {
     /// sequence at the same half-life. The two forms differ in the last bit,
     /// and a test pins this one.
     fn advance(&mut self, u: &[f64], lam: f64, w: f64) {
-        let n = self.rho_bar.len();
         for (m, &um) in u.iter().enumerate() {
             if !um.is_finite() {
                 continue;
@@ -582,7 +581,7 @@ impl Deco {
             // history used to be kept whole (task 115 (c), PLAN §12).
             let b = if w_new > 0.0 { w / w_new } else { 0.0 };
             let bar = &mut self.rho_bar[m];
-            let lo = crate::comp::lo_slot(&mut self.rho_bar_lo, n, m);
+            let lo = &mut self.rho_bar_lo[m];
             if bar.is_finite() {
                 // A row of weight 0 takes no step (`crate::comp::add` says
                 // why).

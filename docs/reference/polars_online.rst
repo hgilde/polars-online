@@ -16,6 +16,10 @@
 
 .. autoclass:: polars_online.ReadinessWarning
 
+.. autoclass:: polars_online.PolarsOnlineDeprecationWarning
+
+.. autoclass:: polars_online.UnstableWarning
+
 
 .. autofunction:: polars_online.fit_predict
 

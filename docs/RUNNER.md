@@ -255,7 +255,11 @@ type = "ewridge"
 
 The formula is Polars' expression written as a tree: an operator, its
 input and its keywords. TOML has no null, so a null literal is written
-`["lit"]`. `group_close` is refused beside a window target, and so is
+`["lit"]`. **This written form is labelled unstable**: it may change in any
+release without that counting as a breaking change, in the TOML file and
+in the state it is saved into, and with `POLARS_ONLINE_WARN_UNSTABLE=1` the
+command line says so on stderr (docs/PLAN.md task 198). The window target
+itself, what it computes and when its rows are released, is promised. `group_close` is refused beside a window target, and so is
 `group` without `clock`.
 
 ### Clocks that are times

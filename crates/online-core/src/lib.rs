@@ -476,6 +476,13 @@ pub use window::{
 ///   not run (CE9), which a 37 build cannot read. The bank refuses a file
 ///   older than 38 by number, and pre-1.0 no loader is written. Every other
 ///   model's state loads as it did at 37.
+///
+///   Task 198 moved no layout at 38. It raised [`MIN_SCHEMA_VERSION`] to it,
+///   froze a state of every [`ModelState`] variant at it
+///   (`tests/state_fixtures.rs`), and took out the repairs that defaulted a
+///   field written since an older layout: a 38 state without one, or with a
+///   mean's low part of the wrong length, is refused where it was mended.
+///   Every state a 38 build writes carries them all, so each still loads.
 /// - 39 (2026-10-07, task 194): no model state changes; a bank file does.
 ///   A stream keeps what a save writes beside its models as one value, so
 ///   the file nests it under `persisted` (docs/SIMPLIFICATION.md S6); a
@@ -548,31 +555,24 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// older one is refused by its number, in the words
 /// [`StateError::SchemaVersion`] gives.
 ///
-/// **A gate on the number, not a promise that every state from it loads.**
-/// Pre-1.0 the layouts have moved since 14 with no loader written (the
-/// user, 2026-09-14 and 2026-09-28; hard rule 5's exception), and a state
-/// of a layout that moved fails to decode -- in serde, before a `State`
-/// exists for this gate to read -- whatever version it names. By
-/// [`SCHEMA_VERSION`]'s history:
+/// **The schemas this build loads, every one of them** (docs/PLAN.md task
+/// 198, review round 4, D1 and CF1). Each schema from this one to
+/// [`SCHEMA_VERSION`] has a frozen state of every [`ModelState`] variant,
+/// held to loading, going on to the bit and saving its bytes again
+/// (`tests/state_fixtures.rs`), and a test refuses a range a fixture does
+/// not cover. Before 1.0 a layout change raises this with
+/// [`SCHEMA_VERSION`] and regenerates the fixtures (hard rule 5's waiver);
+/// from 1.0 it stays at 1.0's schema, and every later layout change ships
+/// a loader, keeping the fixture of the schema before it. The bank's own
+/// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
+/// rule.
 ///
-/// - `ewridge`, `lasso`, `robust` (`huber` and `quantile`), `ew_cov` and
-///   `micro` from before 37, compactly or named: each keeps its cadence's
-///   stamps since 37, and 28 (`ew_cov`), 29 (`micro`), 31 (`lasso`) and 33
-///   (`robust`) had moved some of them before;
-/// - a windowed `ew_class` or `marginal` from before 32, compactly or
-///   named: a window's ring keys its snapshots by stamp since 32, and
-///   spaces them on the clock since 30;
-/// - a windowed `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`, a
-///   `kmeans` and a `corrchange` from before 41: a ring keeps its edge
-///   since 41, and the two others name their row counts `_rows`;
-/// - `pa` and `sgd` from before 44: each keeps the scale its band is drawn
-///   in, the target's own spread, since 44 (task 202), and a residual
-///   scale since 40 (task 195).
-///
-/// Every other model's state from 14 on decodes and loads. A bank file is
-/// refused before any of this, by the bank's own minimum
-/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 44). How the number came
-/// to be 14:
+/// It was 14 until task 198, and said "the oldest layout this build still
+/// loads" while six models' layouts had moved since with no loader: a state
+/// of such a layout failed in serde, before a `State` existed for this gate
+/// to read, whatever version it named. The repairs that defaulted a field
+/// written since an older layout went with that number. How it came to be
+/// 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
 /// nanoseconds now are, and pre-1.0 no loader is written for one.
@@ -617,7 +617,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 14;
+pub const MIN_SCHEMA_VERSION: u32 = 38;
 
 #[cfg(test)]
 mod tests {

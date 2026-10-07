@@ -374,6 +374,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 "resets",
                 // The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
                 "settled_frac",
+                "weight_sum_settled",
                 "error_inflation",
                 "min_support_coef",
                 "min_support_coef_feature",
@@ -693,7 +694,7 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
     let empty = Bank::new(specs).unwrap();
     let s = empty.summary(0, None).unwrap();
     assert_eq!(s.height(), 0);
-    assert_eq!(s.width(), 18);
+    assert_eq!(s.width(), 19);
     let d = empty.describe(0, None).unwrap();
     assert_eq!(d.height(), 0);
     assert_eq!(d.width(), 9);
@@ -1084,4 +1085,85 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
     let mut all = ModelKind::KINDS.to_vec();
     all.sort_unstable();
     assert_eq!(seen, all, "every ModelKind needs a spec here");
+}
+
+/// Task 198 (D8): `weight_sum_settled` is a regular stream's ceiling, `w/(1 −
+/// 2^(−d/h))` (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly from its second
+/// row and null on its first, under a window and with no decay; and a
+/// `min_weight` above that ceiling is named once the stream is 95% settled,
+/// once, where one below it is not.
+#[test]
+fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
+    let n = 80usize;
+    let (d, h, w) = (0.5, 7.0, 2.5);
+    let df = df!(
+        "t" => (0..n).map(|i| i as f64 * d).collect::<Vec<_>>(),
+        "x0" => (0..n).map(|i| ((i * 7) % 11) as f64).collect::<Vec<_>>(),
+        "y" => (0..n).map(|i| ((i * 3) % 13) as f64).collect::<Vec<_>>(),
+        "w" => vec![w; n]
+    )
+    .unwrap();
+    let spec = |model: &str, extra: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["x0"],
+                "clock": "t", "gap_cap": 5.0, "half_life": {h}, "weight": "w"{extra}}}"#
+        ))
+        .unwrap()
+    };
+    let settled = |bank: &Bank| -> Option<f64> {
+        bank.summary(0, None)
+            .unwrap()
+            .column("weight_sum_settled")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .get(0)
+    };
+    let ceiling = w / (1.0 - (-d / h).exp2());
+    for rows in [1, 2, 5, 80] {
+        let mut bank = Bank::new(vec![spec(r#"{"type": "rls"}"#, "")]).unwrap();
+        bank.fit_predict(&df.slice(0, rows)).unwrap();
+        match (rows, settled(&bank)) {
+            (1, got) => assert_eq!(got, None, "one row has brought no clock"),
+            (_, Some(got)) => assert!(
+                (got - ceiling).abs() <= 1e-12 * ceiling,
+                "{rows} rows: {got} against {ceiling}"
+            ),
+            (_, None) => panic!("{rows} rows: no estimate"),
+        }
+    }
+    // Under a window, and with no decay, there is no ceiling to settle at.
+    let no_decay: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "rls"}, "targets": ["y"], "features": ["x0"],
+            "clock": "t", "gap_cap": 5.0, "lam": 1.0, "weight": "w"}"#,
+    )
+    .unwrap();
+    for s in [
+        spec(r#"{"type": "ewridge", "window_size": 10.0}"#, ""),
+        no_decay,
+    ] {
+        let mut bank = Bank::new(vec![s.clone()]).unwrap();
+        bank.fit_predict(&df).unwrap();
+        assert_eq!(settled(&bank), None, "{:?}", s.model);
+    }
+    let notices = |floor: f64| -> Vec<String> {
+        let mut bank = Bank::new(vec![spec(
+            r#"{"type": "rls"}"#,
+            &format!(r#", "min_weight": {floor}"#),
+        )])
+        .unwrap();
+        let mut all = Vec::new();
+        for part in [df.slice(0, 40), df.slice(40, 40)] {
+            bank.fit_predict(&part).unwrap();
+            all.extend(bank.take_notices());
+        }
+        all
+    };
+    let unmet = notices(2.0 * ceiling);
+    assert_eq!(unmet.len(), 1, "{unmet:?}");
+    assert!(
+        unmet[0].contains("cannot be met") && unmet[0].contains(&format!("{ceiling:.4}")),
+        "{unmet:?}"
+    );
+    assert!(notices(0.99 * ceiling).is_empty());
 }

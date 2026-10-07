@@ -33,6 +33,7 @@ from polars_online._polars_online import (
     validate_spec,
 )
 from polars_online._renamed import removed_keywords
+from polars_online._warnings import forward_deprecated
 
 
 def _who(name: Any) -> str:
@@ -69,6 +70,10 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
                 return "inf" if v > 0 else "-inf"
             return v
         if isinstance(v, dict):
+            # A key renamed after 1.0 is read as its new name, with a
+            # warning, at any depth -- a model's own keys are a level down --
+            # as the Rust side forwards a TOML file's (`DEPRECATED`).
+            v = forward_deprecated(_who(who), v, _DEPRECATED, stacklevel=5)
             return {k: enc(x, k, who) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [enc(x, key, who) for x in v]
@@ -378,6 +383,17 @@ def _lists(value: Any) -> Any:
     return value
 
 
+#: The parameters renamed after 1.0, old -> new: a builder's keyword or a
+#: spec dict's key under the old name is read as the new one, with a
+#: :class:`~polars_online.PolarsOnlineDeprecationWarning`, until the next
+#: major version moves the entry to ``_RENAMED`` (docs/PLAN.md task 198;
+#: review round 4, D2). Empty: every rename so far was made before 1.0 and
+#: stays refused by name. Its twin for a TOML file is the Rust side's
+#: ``online_polars::DEPRECATED``, which ``tests/test_deprecation.py`` holds
+#: equal to this one. A function's own keyword renamed after 1.0 forwards
+#: through :func:`polars_online._warnings.forward_deprecated` at its top.
+_DEPRECATED: dict[str, str] = {}
+
 #: The parameters task 144 renamed (docs/PLAN.md): an old name is refused
 #: naming the new one, with no alias.
 _RENAMED = {
@@ -451,7 +467,10 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         if not isinstance(name, str):
             raise TypeError(f"spec name must be a str, got {_got(name)}")
         who = f"spec {json.dumps(name)}"
-        for key, value in kwargs.items():
+        # A keyword renamed after 1.0, read as its new name with a warning
+        # pointed at the caller's line.
+        given = forward_deprecated(who, kwargs, _DEPRECATED, stacklevel=3)
+        for key, value in given.items():
             if key == "name":
                 continue
             if key == "targets" and isinstance(value, (list, tuple)):
@@ -514,7 +533,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             key: infinity_as_number(duration_text(_lists(value), who, key))
             if key in clock
             else _lists(value)
-            for key, value in kwargs.items()
+            for key, value in given.items()
         }
         return typing.cast(Callable[..., R], fn)(*args, **written)
 

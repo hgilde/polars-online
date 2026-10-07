@@ -177,9 +177,8 @@ pub struct MarginalBins {
     /// What each bin's `mean` leaves out: a pair no step is rounded off
     /// ([`crate::comp`]; docs/PLAN.md task 101). A plain mean given one
     /// target value row after row stopped short of it, and left `m2` fed the
-    /// gap and the split gain on a ratio of rounding artefacts. Empty in a
-    /// state written before it.
-    #[serde(default)]
+    /// gap and the split gain on a ratio of rounding artefacts. One per
+    /// cell.
     mean_lo: Vec<f64>,
     /// Row scratch for [`Self::update_row`]. Not part of the state -- serde
     /// skips it and [`PartialEq`] ignores it.
@@ -279,7 +278,7 @@ impl MarginalBins {
             && self.w.len() == cells
             && self.mean.len() == cells
             && self.m2.len() == cells
-            && (self.mean_lo.is_empty() || self.mean_lo.len() == cells)
+            && self.mean_lo.len() == cells
     }
 
     /// Bins feature `j` actually has, which is one more than its edges.
@@ -369,17 +368,16 @@ impl MarginalBins {
     /// slices, kept for the tests as that kernel's oracle.
     #[cfg(test)]
     fn update_cell(&mut self, i: usize, u: f64, y: f64) {
-        let cells = self.w.len();
         self.empty = false;
         if self.w[i] <= 0.0 {
             self.w[i] = u;
             self.mean[i] = y;
             self.m2[i] = 0.0;
-            *crate::comp::lo_slot(&mut self.mean_lo, cells, i) = 0.0;
+            self.mean_lo[i] = 0.0;
             return;
         }
         let wb = self.w[i] + u;
-        let lo = crate::comp::lo_slot(&mut self.mean_lo, cells, i);
+        let lo = &mut self.mean_lo[i];
         let delta = crate::comp::dev(y, self.mean[i], *lo);
         crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
         self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
@@ -417,17 +415,7 @@ impl MarginalBins {
         };
         let mut row = std::mem::take(&mut self.row.0);
         self.bin_offsets(0, x, &mut row);
-        let (cells, width) = (self.w.len(), self.off[self.p]);
-        // What each mean leaves out, at the length of the cells, which a
-        // state written before it does not carry: sized on the first row
-        // that could write a cell, whether it does or not. Sized before the
-        // slices below are taken, since a row whose features bin nothing
-        // still takes them (review 2026-09-26, B1), and by the rule the
-        // sharded path sizes it (`cell_parts`, on a row with a weight), so
-        // the two paths' states agree byte for byte (A7).
-        if self.mean_lo.len() != cells {
-            self.mean_lo = vec![0.0; cells];
-        }
+        let width = self.off[self.p];
         for (t, yt) in y.iter().enumerate().take(self.n_targets) {
             let Some(v) = yt.filter(|v| v.is_finite()) else {
                 continue;
@@ -491,12 +479,8 @@ impl MarginalBins {
 
     /// The cells and what finds them, split so a caller can hand disjoint
     /// ranges of the cells to several writers ([`crate::Marginal`]'s
-    /// shards), with `mean_lo` at the cells' length.
+    /// shards).
     pub(crate) fn cell_parts(&mut self) -> CellParts<'_> {
-        let cells = self.w.len();
-        if self.mean_lo.len() != cells {
-            self.mean_lo = vec![0.0; cells];
-        }
         CellParts {
             w: &mut self.w,
             mean: &mut self.mean,
@@ -1786,47 +1770,28 @@ mod tests {
         }
     }
 
-    /// A histogram from a state written before the means' low parts
-    /// (`mean_lo` empty, which a schema 14 or 15 state carries) takes a row
-    /// whose features bin nothing -- every one not finite -- as the
-    /// per-target update takes it: nothing written, no panic (review
-    /// 2026-09-26, B1: the row update sliced `mean_lo` for every present
-    /// target before it could skip). The low parts are then sized wherever
-    /// the row could have written, which is what the sharded path does too
-    /// (A7), so the two paths' states agree byte for byte.
+    /// A row whose features bin nothing -- every one not finite -- is
+    /// taken by the row update as the per-target update takes it: nothing
+    /// written, no panic (review 2026-09-26, B1: the row update sliced
+    /// `mean_lo` for every present target before it could skip).
     #[test]
-    fn a_histogram_without_low_parts_takes_a_row_that_bins_nothing() {
+    fn a_row_that_bins_nothing_writes_nothing() {
         let mut a = MarginalBins::new(2, 1, vec![vec![0.0], vec![1.0]]).unwrap();
         a.update_row(&[0.5, 2.0], &[Some(1.0)], 1.0);
-        a.mean_lo = Vec::new();
         let mut b = a.clone();
         a.update_row(&[f64::NAN, f64::NAN], &[Some(1.0)], 1.0);
         b.update_target(0, &[f64::NAN, f64::NAN], 1.0, 1.0);
-        let cells = |h: &MarginalBins| -> Vec<u64> {
-            h.w.iter()
-                .chain(&h.mean)
-                .chain(&h.m2)
-                .map(|v| v.to_bits())
-                .collect()
-        };
-        assert_eq!(cells(&a), cells(&b), "nothing was written");
-        assert_eq!(
-            a.mean_lo.len(),
-            a.w.len(),
-            "sized where the row could have written"
-        );
-        assert!(
-            b.mean_lo.is_empty(),
-            "the per-target update never reached a cell"
-        );
+        assert_eq!(bits(&a), bits(&b), "nothing was written");
         a.update_row(&[0.5, 2.0], &[Some(2.0)], 1.0);
         b.update_target(0, &[0.5, 2.0], 2.0, 1.0);
         assert_eq!(bits(&a), bits(&b));
     }
 
     /// A restored histogram whose offsets disagree with its edges, or whose
-    /// low parts are neither absent nor at the cells' length, is refused as
-    /// the wrong shape rather than written through (review 2026-09-26, B2).
+    /// low parts are not at the cells' length, is refused as the wrong shape
+    /// rather than written through (review 2026-09-26, B2); absent low parts
+    /// too, which a state written before them carried and a repair sized at
+    /// zero (docs/PLAN.md task 198).
     #[test]
     fn a_bin_state_whose_offsets_or_low_parts_disagree_is_refused() {
         let good = MarginalBins::new(3, 2, vec![vec![0.0], vec![], vec![1.0, 2.0]]).unwrap();
@@ -1838,10 +1803,7 @@ mod tests {
         lo.mean_lo.pop();
         assert!(!lo.has_shape(3, 2), "low parts at the wrong length");
         lo.mean_lo = Vec::new();
-        assert!(
-            lo.has_shape(3, 2),
-            "absent low parts are a state written before them"
-        );
+        assert!(!lo.has_shape(3, 2), "absent low parts");
     }
 
     /// The best split read after the scale folded is the split of the same

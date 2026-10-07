@@ -886,3 +886,61 @@ fn skip_learned_resumes_on_overlapping_input() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Task 198 (D5): a formula target's written form -- its tree in the TOML
+/// file and in a saved state -- is labelled unstable. Under
+/// `POLARS_ONLINE_WARN_UNSTABLE=1` the command line says so on stderr, as
+/// Polars' `POLARS_WARN_UNSTABLE` does; without it, or for a config with no
+/// formula target, it says nothing.
+#[test]
+fn a_formula_target_is_labelled_unstable_under_the_variable() {
+    let dir = fresh_dir("unstable");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    let n = 40;
+    let mut df = df!(
+        "t" => (0..n).map(f64::from).collect::<Vec<_>>(),
+        "mid" => (0..n).map(|i| 100.0 + 0.1 * f64::from(i % 7)).collect::<Vec<_>>(),
+        "x0" => (0..n).map(|i| f64::from(i % 5) - 2.0).collect::<Vec<_>>(),
+        "y" => (0..n).map(|i| f64::from(i % 3)).collect::<Vec<_>>()
+    )
+    .unwrap();
+    ParquetWriter::new(std::fs::File::create(&input).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let formula = r#"[{ name = "fwd", formula = ["-", ["rewm_mean", ["col", "mid"], { half_life = 5.0, window_size = 10.0 }], ["col", "mid"]] }]"#;
+    let run = |targets: &str, var: Option<&str>| {
+        let toml = format!(
+            "input = \"{}\"\noutput = \"{}\"\n\n[[specs]]\nname = \"edge\"\ntargets = {targets}\n\
+             features = [\"x0\"]\nclock = \"t\"\ngap_cap = 50.0\nhalf_life = 40.0\nembargo = 12.0\n\
+             [specs.model]\ntype = \"ewridge\"\n",
+            toml_path(&input),
+            toml_path(&output)
+        );
+        let cfg = dir.join("edge.toml");
+        std::fs::write(&cfg, toml).unwrap();
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_online"));
+        cmd.args(["--config", cfg.to_str().unwrap(), "--dry-run"]);
+        cmd.env_remove("POLARS_ONLINE_WARN_UNSTABLE");
+        if let Some(v) = var {
+            cmd.env("POLARS_ONLINE_WARN_UNSTABLE", v);
+        }
+        let out = cmd.output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "{err}");
+        err
+    };
+    let warned = run(formula, Some("1"));
+    assert!(
+        warned.contains("formula target's written form") && warned.contains("unstable"),
+        "{warned}"
+    );
+    for (targets, var) in [
+        (formula, None),
+        (formula, Some("0")),
+        ("[\"y\"]", Some("1")),
+    ] {
+        let quiet = run(targets, var);
+        assert!(!quiet.contains("unstable"), "{targets} {var:?}: {quiet}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

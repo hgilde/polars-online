@@ -532,3 +532,118 @@ class TestInvariants:
             else:
                 assert "settled_frac" in fields, name
                 assert "withheld_reason" in fields, name
+
+
+def _regular(n: int, d: float, weight: float | None, seed: int = 3) -> pl.DataFrame:
+    """Rows ``d`` clock units apart, each of one weight where there is a weight
+    column: the regular stream ``weight_sum_settled`` is exact on."""
+    df = frame(n, k=2, seed=seed).with_columns(pl.col("t") * d)
+    return df.with_columns(w=pl.lit(weight)) if weight is not None else df
+
+
+def _last_reason(out: pl.DataFrame) -> str | None:
+    return reasons(out)[-1]
+
+
+class TestSettledWeight:
+    """What task 116 builds that moves no default (docs/PLAN.md task 198, D8):
+    ``weight_sum_settled`` in the summary, the warning where a ``min_weight`` can
+    never be met, and the half-life figure in the noise gate's notice. The
+    oracle is the definition: the ceiling ``w / (1 - 2 ** (-d / h))`` of a
+    regular stream, docs/WARMUP-AND-CONVERGENCE.md §5.1."""
+
+    @pytest.mark.parametrize(
+        ("d", "h", "weight"),
+        [(1.0, 20.0, None), (0.5, 7.0, None), (1.0, 5.0, 2.5), (3.0, 40.0, 0.25)],
+    )
+    def test_weight_sum_settled_is_the_ceiling_from_the_second_row(self, d, h, weight):
+        df = _regular(60, d, weight)
+        kw = {"weight": "w"} if weight is not None else {}
+        s = spec(clock="t", gap_cap=10.0 * d, half_life=h, **kw)
+        ceiling = (weight or 1.0) / (1.0 - 2.0 ** (-d / h))
+        for rows in (1, 2, 3, 17, 60):
+            bank = po.ModelBank([s])
+            bank.fit_predict(df[:rows])
+            got = bank.summary("m")["weight_sum_settled"][0]
+            if rows == 1:
+                assert got is None, "one row has brought no clock"
+            else:
+                assert got == pytest.approx(ceiling, rel=1e-12), rows
+
+    def test_weight_sum_settled_is_null_without_a_decay_or_under_a_window(self):
+        df = frame(50)
+        for s in (spec(half_life=math.inf), spec(window_size=20.0)):
+            bank = po.ModelBank([s])
+            bank.fit_predict(df)
+            assert bank.summary("m")["weight_sum_settled"][0] is None
+
+    def test_an_unreachable_min_weight_is_named_with_its_ceiling(self):
+        """Half-life 5 rows: every target's weight tops out at
+        ``1 / (1 - 2 ** (-1 / 5)) = 7.73``, so a ``min_weight`` of 20 withholds
+        every prediction for good, and says so once the stream is 95% settled
+        -- once, however many chunks follow."""
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
+        df = frame(200)
+        s = po.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
+        bank = po.ModelBank([s])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            out = bank.fit_predict(df[:100])
+            bank.fit_predict(df[100:])
+        assert field(out, "pred_y").null_count() == 100
+        got = [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        assert len(got) == 1, [str(w.message) for w in caught]
+        msg = str(got[0].message)
+        assert "min_weight = 20" in msg and '"y"' in msg and "half_life" in msg, msg
+        assert f"{ceiling:.4}" in msg, (ceiling, msg)
+        assert bank.summary("m")["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
+
+    def test_a_min_weight_between_the_settled_weight_and_the_ceiling_does_not_warn(self):
+        """At 95% settled the weight is 95% of the ceiling, so a floor between
+        the two is met later: no warning, and predictions once it is."""
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
+        s = po.spec.rls(
+            "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=0.99 * ceiling
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            out = po.ModelBank([s]).fit_predict(frame(200))
+        assert field(out, "pred_y")[-1] is not None
+
+    @pytest.mark.parametrize(
+        ("k", "h", "limit"),
+        [
+            # Ten features at a half-life of 2 rows: the weight tops out near
+            # 3.4, below the 11 the model needs before it solves, so the ratio
+            # is infinite and the figure is the weight's.
+            (10, 2.0, None),
+            # Two features at 3 rows solve, and read about 1.16 against a
+            # limit of 1.1: the figure is Kish's size's.
+            (2, 3.0, 1.1),
+        ],
+    )
+    def test_the_unreachable_noise_gate_names_the_half_life_that_opens_it(self, k, h, limit):
+        """The figure is the steady state's: a half-life a little above it
+        opens the gate, and one a little below it does not."""
+        df = frame(1200, k=k)
+        features = [f"x{j}" for j in range(k)]
+        kw = {} if limit is None else {"max_error_inflation": limit}
+
+        def run(h: float) -> tuple[pl.DataFrame, list[str]]:
+            bank = po.ModelBank([spec(features=features, half_life=h, **kw)])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                out = bank.fit_predict(df)
+            msgs = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+            return out, msgs
+
+        out, msgs = run(h)
+        assert _last_reason(out) == "above_max_error_inflation"
+        assert len(msgs) == 1, msgs
+        figure = float(msgs[0].split("aise the half_life above ")[1].split()[0])
+        assert figure > h, msgs[0]
+        opened, quiet = run(1.05 * figure)
+        assert _last_reason(opened) is None, figure
+        assert not quiet, quiet
+        shut, _ = run(0.95 * figure)
+        assert _last_reason(shut) == "above_max_error_inflation", figure

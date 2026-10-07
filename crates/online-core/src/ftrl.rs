@@ -177,26 +177,19 @@ pub struct Ftrl {
     /// (review 2026-09-12, S31). A row that taught it nothing does not
     /// count: a label `strict_binary` refuses, and a row whose gradient
     /// would overflow, which is skipped (review 2026-10-05, CC3).
-    #[serde(default)]
     w_target: Vec<f64>,
     /// Per target, the scale on the penalties `beta/alpha`, `l1` and `l2`
     /// under a half-life, as the last row that taught it left it: `W/W*`, its
     /// weight over its weight on a clock that runs only on the rows that
     /// teach it (docs/PLAN.md task 115 (d); the module docs). `1` without a
-    /// half-life, and in a state written before it: the penalties that state
-    /// was made with.
-    #[serde(default)]
+    /// half-life.
     scale: Vec<f64>,
     /// Per target, `W*`: its weight on the clock of the rows that teach it.
-    /// A state written before it loads with `W`, a scale of 1.
-    #[serde(default)]
     w_taught: Vec<f64>,
     /// Per target, the decay the clock has run since the last row that
     /// taught it, not yet applied to its sums: they stay as that row left
     /// them, so the fit read from them is the frozen one exactly, and a
-    /// long gap cannot run them into the subnormal range. `1` in a state
-    /// written before it, whose sums were decayed to its last row.
-    #[serde(default)]
+    /// long gap cannot run them into the subnormal range.
     pending: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
@@ -543,17 +536,10 @@ impl OnlineModel for Ftrl {
                         "ftrl: the accumulators have the wrong shape".into(),
                     ));
                 }
-                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                if m.w_target.len() != n {
                     return Err(StateError::Invalid(
                         "ftrl: the target weights have the wrong shape".into(),
                     ));
-                }
-                // A state written before the penalties' scale: its sums were
-                // decayed to its last row and its penalties whole.
-                if m.scale.is_empty() && m.w_taught.is_empty() && m.pending.is_empty() {
-                    m.scale = vec![1.0; n];
-                    m.w_taught = m.w_target.clone();
-                    m.pending = vec![1.0; n];
                 }
                 if [&m.scale, &m.w_taught, &m.pending]
                     .iter()
@@ -657,10 +643,13 @@ mod tests {
         assert_eq!(m.target_weights(), &[5.0, 0.0]);
     }
 
-    /// A schema-19 state keeps no target weights: it loads with each target
-    /// at the shared weight, the one its gate read.
+    /// A state without target weights, or without the penalties' scale, is
+    /// refused, where it loaded with each target at the shared weight and
+    /// each penalty whole -- the layouts before schema 20, which this build
+    /// refuses by their version, and the repair a damaged file reached
+    /// (docs/PLAN.md task 198).
     #[test]
-    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+    fn a_state_without_target_weights_is_refused() {
         use crate::{ModelState, State};
         let mut c = cfg(2, 2);
         c.decay = Decay::Halflife(50.0);
@@ -671,11 +660,17 @@ mod tests {
             m.step(&x, &[(i >= 5).then_some(1.0), None], 1.0, 1.0);
         }
         assert!(m.target_weights()[0] < m.n_eff() && m.target_weights()[1] == 0.0);
-        let mut v = serde_json::to_value(&m).unwrap();
-        assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
-        let old: Ftrl = serde_json::from_value(v).unwrap();
-        let back = Ftrl::restore(&State::new(ModelState::Ftrl(Box::new(old)))).unwrap();
-        assert_eq!(back.target_weights(), &[m.n_eff(), m.n_eff()]);
+        for key in ["w_target", "scale", "w_taught", "pending"] {
+            let mut v = serde_json::to_value(&m).unwrap();
+            assert!(v.as_object_mut().unwrap().remove(key).is_some());
+            let err = serde_json::from_value::<Ftrl>(v).unwrap_err().to_string();
+            assert!(err.contains(&format!("missing field `{key}`")), "{err}");
+            let mut short = serde_json::to_value(&m).unwrap();
+            short[key] = serde_json::json!([]);
+            let old: Ftrl = serde_json::from_value(short).unwrap();
+            let err = Ftrl::restore(&State::new(ModelState::Ftrl(Box::new(old)))).unwrap_err();
+            assert!(err.to_string().contains("wrong shape"), "{key}: {err}");
+        }
     }
 
     /// The model alone skips such a row. The bank never hands it one: it
@@ -1462,13 +1457,15 @@ mod tests {
                 other => panic!("{what}: {other:?}"),
             }
         }
-        let old = restored(&|f| {
+        // All three absent, a state written before them, is refused too,
+        // where it loaded with the penalties whole (docs/PLAN.md task 198).
+        match restored(&|f| {
             f.scale.clear();
             f.w_taught.clear();
             f.pending.clear();
-        })
-        .unwrap();
-        assert_eq!((old.scale, old.pending), (vec![1.0; 2], vec![1.0; 2]));
-        assert_eq!(old.w_taught, m.w_target);
+        }) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("all three absent: {other:?}"),
+        }
     }
 }

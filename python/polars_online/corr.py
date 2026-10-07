@@ -26,6 +26,13 @@ statsmodels' ``corr_nearest`` for :func:`nearest`, scikit-learn's
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
 Nothing here needs scipy or scikit-learn.
+
+.. warning::
+    This module is considered **unstable**: its functions' names, keywords
+    and results may change in any release without that counting as a
+    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
+    :class:`polars_online.UnstableWarning`, once for a call however many of
+    the module's functions it runs.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from polars_online._renamed import renamed_function
+from polars_online._warnings import unstable
 
 __all__ = [
     "Z_CLIP",
@@ -794,3 +802,18 @@ def fisher_se(
             raise ValueError(msg)
         se *= ((1.0 + p) / (1.0 - p)) ** 0.5
     return float(se)
+
+
+def _label_unstable() -> None:
+    """Every public function, labelled unstable (docs/PLAN.md task 198, D5):
+    each call raises :class:`polars_online.UnstableWarning` under
+    ``POLARS_ONLINE_WARN_UNSTABLE=1``, once however many of the others it
+    runs. By name from ``__all__``, so a function added or renamed is
+    labelled with the rest; a constant listed there is left as it is."""
+    here = globals()
+    for name in __all__:
+        if callable(here[name]):
+            here[name] = unstable(f"polars_online.corr.{name}")(here[name])
+
+
+_label_unstable()

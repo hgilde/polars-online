@@ -12,6 +12,12 @@ Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
 two calls with the same seed give byte-identical frames under one numpy
 version: numpy's ``Generator`` makes no promise across versions. numpy only;
 no scipy.
+
+.. warning::
+    This module is considered **unstable**: its keywords, its frames and the
+    draws behind them may change in any release without that counting as a
+    breaking change. Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` each call raises
+    :class:`polars_online.UnstableWarning`.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ from collections.abc import Sequence
 from typing import Any
 
 import polars as pl
+
+from polars_online._warnings import unstable
 
 __all__ = ["regimes"]
 
@@ -113,6 +121,7 @@ def _chain(
     return seq[:n_blocks]
 
 
+@unstable("polars_online.sim.regimes")
 def regimes(
     m: int,
     *,

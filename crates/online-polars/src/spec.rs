@@ -154,6 +154,73 @@ mod kinds_tests {
             "{sgd}"
         );
     }
+
+    /// The forwarding table is empty before 1.0: a rename made before it is
+    /// refused by name (task 144's rule), never forwarded, and no name is
+    /// both refused and forwarded (docs/PLAN.md task 198, D2).
+    #[test]
+    fn the_forwarding_table_is_empty_before_1_0() {
+        let major: u32 = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        if major < 1 {
+            assert!(super::DEPRECATED.is_empty(), "{:?}", super::DEPRECATED);
+        }
+        for (old, _) in super::DEPRECATED {
+            assert!(
+                super::RENAMED.iter().all(|(r, _)| r != old),
+                "{old} is both refused and forwarded"
+            );
+        }
+    }
+
+    /// An entry forwards an old name to the new one at any depth -- a spec's
+    /// own key and its model's -- with a notice each, and the spec it makes
+    /// is the one the new name makes; an old and a new name side by side are
+    /// refused, naming both.
+    #[test]
+    fn a_deprecated_name_is_forwarded_with_a_notice() {
+        let table = [("half_lyfe", "half_life"), ("rigde", "ridge")];
+        let mut old: serde_json::Value = serde_json::from_str(
+            r#"[{"name": "m", "model": {"type": "ewridge", "rigde": 0.5}, "targets": ["y"],
+                 "features": ["x"], "half_lyfe": 10.0}]"#,
+        )
+        .unwrap();
+        let notices = super::forward_deprecated_with(&mut old, &table).unwrap();
+        assert_eq!(
+            notices,
+            [
+                super::deprecation_notice("half_lyfe", "half_life"),
+                super::deprecation_notice("rigde", "ridge"),
+            ]
+        );
+        assert!(notices[0].contains("renamed half_life") && notices[0].contains("next major"));
+        let new: serde_json::Value = serde_json::from_str(
+            r#"[{"name": "m", "model": {"type": "ewridge", "ridge": 0.5}, "targets": ["y"],
+                 "features": ["x"], "half_life": 10.0}]"#,
+        )
+        .unwrap();
+        let (a, b): (Vec<super::Spec>, Vec<super::Spec>) = (
+            serde_json::from_value(old).unwrap(),
+            serde_json::from_value(new).unwrap(),
+        );
+        assert_eq!(a, b);
+        let mut both: serde_json::Value =
+            serde_json::from_str(r#"{"half_lyfe": 1.0, "half_life": 2.0}"#).unwrap();
+        let err = super::forward_deprecated_with(&mut both, &table).unwrap_err();
+        assert!(
+            err.contains("half_lyfe") && err.contains("half_life"),
+            "{err}"
+        );
+        // The production table, empty, leaves a spec as it is.
+        let mut plain: serde_json::Value = serde_json::from_str(r#"{"half_life": 3.0}"#).unwrap();
+        let before = plain.clone();
+        assert!(super::forward_deprecated(&mut plain).unwrap().is_empty());
+        assert_eq!(plain, before);
+    }
 }
 
 #[cfg(test)]
@@ -2387,6 +2454,75 @@ pub const RENAMED_WHERE_EXPECTED: &[(&str, &str)] = &[("ridge", "delta")];
 /// `ew_cov` statistic (N10, beside `partial_corr`). A spec naming the old
 /// one is refused naming the new one, as [`RENAMED`] does for a key.
 pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr", "lag_corr")];
+/// The parameters renamed after 1.0, `(old, new)`: a spec dict, a TOML file
+/// or a windows config naming the old one is read as naming the new one,
+/// with a deprecation notice ([`deprecation_notice`]; in Python a
+/// `polars_online.PolarsOnlineDeprecationWarning`, on the command line a
+/// line on stderr), until the next major version removes the entry and the
+/// name is refused through [`RENAMED`] (docs/PLAN.md task 198; review round
+/// 4, D2). Empty: every rename so far was made before 1.0, and stays
+/// refused by name, task 144's rule. A rename after 1.0 goes here, beside
+/// its twin in `python/polars_online/_spec.py`'s `_DEPRECATED`.
+pub const DEPRECATED: &[(&str, &str)] = &[];
+
+/// What a deprecated name is told: that it was renamed, that it still
+/// works, and until when.
+pub fn deprecation_notice(old: &str, new: &str) -> String {
+    format!(
+        "{old} is deprecated: it was renamed {new}. It is read as {new} until the next major \
+         version, which refuses it"
+    )
+}
+
+/// `v` -- a spec, a list of specs or a windows config, as JSON -- with each
+/// key [`DEPRECATED`] names renamed to its new name, at any depth (a model's
+/// own parameters are a level down), and a notice for each. A map naming
+/// both an old name and its new one is refused, naming both.
+pub fn forward_deprecated(v: &mut serde_json::Value) -> Result<Vec<String>, String> {
+    forward_deprecated_with(v, DEPRECATED)
+}
+
+/// [`forward_deprecated`] by `table`.
+pub fn forward_deprecated_with(
+    v: &mut serde_json::Value,
+    table: &[(&str, &str)],
+) -> Result<Vec<String>, String> {
+    let mut notices = Vec::new();
+    forward_into(v, table, &mut notices)?;
+    Ok(notices)
+}
+
+fn forward_into(
+    v: &mut serde_json::Value,
+    table: &[(&str, &str)],
+    notices: &mut Vec<String>,
+) -> Result<(), String> {
+    match v {
+        serde_json::Value::Object(map) => {
+            for (old, new) in table {
+                if let Some(value) = map.remove(*old) {
+                    if map.contains_key(*new) {
+                        return Err(format!(
+                            "{old} was renamed {new}, and both are given: give {new} alone"
+                        ));
+                    }
+                    map.insert((*new).to_string(), value);
+                    notices.push(deprecation_notice(old, new));
+                }
+            }
+            for value in map.values_mut() {
+                forward_into(value, table, notices)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for value in items {
+                forward_into(value, table, notices)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name, or the model `type` it refuses as an

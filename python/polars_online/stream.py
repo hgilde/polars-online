@@ -64,7 +64,8 @@ from polars_online._frame import (
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
-from polars_online._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
+from polars_online._spec import _DEPRECATED, _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
+from polars_online._warnings import forward_deprecated, warn_unstable
 
 __all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
 
@@ -775,6 +776,14 @@ def with_windows(
     cut a stream into files between stamps. Without a clock column there is
     no stamp to compare, and a repeated row is not caught.
 
+    .. warning::
+        The state file's format is considered **unstable**: it may change in
+        any release without that counting as a breaking change, and a state
+        one release saved need not load in the next. So is the formula tree
+        it holds. Under ``POLARS_ONLINE_WARN_UNSTABLE=1``, a call with
+        ``load_state`` or ``save_state`` raises
+        :class:`polars_online.UnstableWarning`.
+
     Under a slice of the output (``.head(n)``) the input
     is read only up to the row that resolved the *n*-th row, and the state
     records how many rows of the input were consumed so far. A run resumed
@@ -849,7 +858,9 @@ def with_windows(
                 f"{', '.join(clash)}"
             )
         # A hand-written dict with a clock key under its old name would be
-        # read as not setting it (review R1, F1): refused naming the new one.
+        # read as not setting it (review R1, F1): refused naming the new one,
+        # or, renamed after 1.0, read as it with a warning.
+        like = forward_deprecated(f"{who}: like= spec {like.get('name')!r}", like, _DEPRECATED)
         if old := [k for k in like if k in _RENAMED]:
             raise TypeError(
                 f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed {_RENAMED[old[0]]}"
@@ -883,6 +894,8 @@ def with_windows(
         lazy, who, plan_text, reads="a window is taken over rows in row order", before="the windows"
     )
     python_scan = _is_python_scan(lazy, plan_text)
+    if load_state is not None or save_state is not None:
+        warn_unstable(f"{who}'s state file (load_state, save_state)")
     # Read now, as a bank's `load_state` is: a plan collected twice goes on
     # from the same state, whatever the file holds by then.
     loaded = _read_state(load_state) if load_state is not None else None

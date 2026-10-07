@@ -124,7 +124,6 @@ pub struct Rls {
     /// task 115 (d)). The fit learns from a row only when every target is
     /// present, so the entries move together. `w_sum` stood in for it, so
     /// rows with a null target counted toward a fit they never reached.
-    #[serde(default)]
     w_target: Vec<f64>,
     seen: bool,
     #[serde(skip)]
@@ -365,7 +364,7 @@ impl OnlineModel for Rls {
                         "rls: the accumulators have the wrong shape".into(),
                     ));
                 }
-                if !crate::model::restore_target_weights(&mut m.w_target, m.w_sum, n) {
+                if m.w_target.len() != n {
                     return Err(StateError::Invalid(
                         "rls: the target weights have the wrong shape".into(),
                     ));
@@ -436,10 +435,12 @@ mod tests {
         assert_eq!(m.target_weights(), &[5.0, 5.0]);
     }
 
-    /// A schema-19 state keeps no target weights: it loads with each target
-    /// at the shared weight, the one its gate read.
+    /// A state without target weights is refused, where it loaded with each
+    /// target at the shared weight -- the layout of schema 19, which this
+    /// build refuses by its version, and the repair a damaged file reached
+    /// (docs/PLAN.md task 198).
     #[test]
-    fn a_state_without_target_weights_loads_at_the_shared_weight() {
+    fn a_state_without_target_weights_is_refused() {
         let mut m = Rls::new(rls_cfg(2, 1, 50.0, 1.0)).unwrap();
         let mut s = 7u64;
         for i in 0..8 {
@@ -449,9 +450,13 @@ mod tests {
         assert!(m.target_weights()[0] < m.n_eff());
         let mut v = serde_json::to_value(&m).unwrap();
         assert!(v.as_object_mut().unwrap().remove("w_target").is_some());
-        let old: Rls = serde_json::from_value(v).unwrap();
-        let back = Rls::restore(&State::new(ModelState::Rls(Box::new(old)))).unwrap();
-        assert_eq!(back.target_weights(), &[m.n_eff()]);
+        let err = serde_json::from_value::<Rls>(v).unwrap_err().to_string();
+        assert!(err.contains("missing field `w_target`"), "{err}");
+        let mut short = serde_json::to_value(&m).unwrap();
+        short["w_target"] = serde_json::json!([]);
+        let old: Rls = serde_json::from_value(short).unwrap();
+        let err = Rls::restore(&State::new(ModelState::Rls(Box::new(old)))).unwrap_err();
+        assert!(err.to_string().contains("wrong shape"), "{err}");
     }
 
     fn lcg(state: &mut u64) -> f64 {

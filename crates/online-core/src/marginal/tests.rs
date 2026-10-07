@@ -469,10 +469,12 @@ fn a_row_without_a_target_ages_that_targets_runs_alone() {
     }
 }
 
-/// A state written before the means' low parts, and before the runs,
-/// loads and steps: each starts at the size of what it belongs to.
+/// A state without the means' low parts, or without each target's learned
+/// rows, is refused, where it loaded and sized them at zero (docs/PLAN.md
+/// task 198); one without the runs still loads, which start at the next
+/// learned row (`crate::Runs`).
 #[test]
-fn a_state_without_the_low_parts_loads_and_steps() {
+fn a_state_without_the_low_parts_is_refused() {
     let mut c = cfg(2, 1);
     c.window = Some(9.0);
     let mut m = Marginal::new(c).unwrap();
@@ -485,18 +487,31 @@ fn a_state_without_the_low_parts_loads_and_steps() {
             1.0,
         );
     }
+    for key in ["mx_lo", "my_lo", "rows_t"] {
+        let mut old = serde_json::to_value(&m).unwrap();
+        assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
+        let err = serde_json::from_value::<Marginal>(old)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&format!("missing field `{key}`")), "{err}");
+        let mut short = serde_json::to_value(&m).unwrap();
+        short[key].as_array_mut().unwrap().pop();
+        let back: Marginal = serde_json::from_value(short).unwrap();
+        match Marginal::restore(&back.state()) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{key}: {e}"),
+            other => panic!("{key} one short: {other:?}"),
+        }
+    }
     let mut old = serde_json::to_value(&m).unwrap();
-    for key in ["mx_lo", "my_lo", "x_runs", "y_runs"] {
+    for key in ["x_runs", "y_runs"] {
         assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
     }
     let mut back: Marginal = serde_json::from_value(old).unwrap();
-    assert!(back.mx_lo.is_empty() && back.my_lo.is_empty());
     for i in 0..40 {
         back.step(&[lcg(&mut s), lcg(&mut s)], &[Some(lcg(&mut s))], 1.0, 1.0);
         let p = back.pair(0, i % 2);
         assert!(p.mean_x.is_finite() && p.var_x.is_finite(), "row {i}");
     }
-    assert_eq!((back.mx_lo.len(), back.my_lo.len()), (2, 1));
 }
 
 /// Under a window, Kish's size is `ew_cov`'s over the same rows: the
@@ -3171,20 +3186,21 @@ fn a_short_group_holds_only_its_rows() {
     assert!(held.capacity() <= 8, "{}", held.capacity());
 }
 
-/// A histogram from a state written before the means' low parts, given
-/// a row whose only feature is not finite: the plain and the sharded
-/// path size the low parts alike, so the two states agree byte for
-/// byte (review 2026-09-26, A7; the row itself is B1's).
+/// A histogram given a row whose only feature is not finite: the plain and
+/// the sharded path leave it alike, so the two states agree byte for byte
+/// (review 2026-09-26, A7; the row itself is B1's). And one whose bins have
+/// no low parts is refused, where both paths sized them at zero
+/// (docs/PLAN.md task 198).
 #[test]
-fn a_state_without_the_bins_low_parts_is_sized_the_same_by_both_paths() {
+fn a_row_that_bins_nothing_leaves_both_paths_alike() {
     let mut c = cfg(1, 1);
     c.bins = Some(given_edges(vec![0.0]));
     let mut m = Marginal::new(c).unwrap();
     m.step(&[0.5], &[Some(1.0)], 0.0, 1.0);
     let mut v = serde_json::to_value(m.state()).unwrap();
     crate::window::json_edit(&mut v, "mean_lo", &mut |x| *x = serde_json::json!([]));
-    let old = Marginal::restore(&serde_json::from_value(v).unwrap()).unwrap();
-    let (mut a, mut b) = (old.clone(), old);
+    assert!(Marginal::restore(&serde_json::from_value(v).unwrap()).is_err());
+    let (mut a, mut b) = (m.clone(), m);
     a.step(&[f64::NAN], &[Some(1.0)], 1.0, 1.0);
     let shards = Shards {
         count: 2,

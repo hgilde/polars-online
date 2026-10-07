@@ -92,22 +92,18 @@ pub(crate) fn row_share(decayed: f64, w: f64) -> f64 {
 pub(crate) struct Cross {
     pub(crate) w: f64,
     pub(crate) m: Vec<f64>,
-    /// Each target's mean of `z` over its own rows. Read as the offset
-    /// `δ_j` from a state written before schema 17 ([`Self::offsets_to_means`]
-    /// turns it into the mean on load; the field keeps the offset's place).
-    #[serde(alias = "d")]
+    /// Each target's mean of `z` over its own rows.
     pub(crate) mj: Vec<Vec<f64>>,
     pub(crate) my: Vec<f64>,
     pub(crate) c: Vec<Vec<f64>>,
     /// What `m` and `my` leave out: each mean is a pair no step is rounded
     /// off ([`crate::comp`]; docs/PLAN.md task 101), as a Gram's means are.
-    /// Empty in a state written before them.
-    #[serde(default)]
+    /// Sized with the means in the live accumulators, and empty in a
+    /// window's snapshot, whose subtraction reads the doubles alone
+    /// ([`Acc::snapshot`]).
     pub(crate) m_lo: Vec<f64>,
-    #[serde(default)]
     pub(crate) my_lo: Vec<f64>,
-    /// What each `mj` leaves out; empty in a state written before schema 17.
-    #[serde(default)]
+    /// What each `mj` leaves out, as `m_lo`.
     pub(crate) mj_lo: Vec<Vec<f64>>,
 }
 
@@ -125,18 +121,6 @@ impl Cross {
         }
     }
 
-    /// A state written before schema 17 kept each own mean as its offset
-    /// from the all-row mean: `m_j = m + δ_j`, formed once here, at the
-    /// precision the offset form had.
-    pub(crate) fn offsets_to_means(&mut self) {
-        for mj in &mut self.mj {
-            for (v, m) in mj.iter_mut().zip(&self.m) {
-                *v += m;
-            }
-        }
-        self.mj_lo = vec![vec![0.0; self.m.len()]; self.mj.len()];
-    }
-
     /// A row's share of the weight over every row, at decay `lam` and
     /// weight `w`: the `b` of [`Cross::learn`], [`Cross::miss`] and
     /// [`Cross::advance`].
@@ -151,28 +135,17 @@ impl Cross {
     /// rows. A row the target is absent on touches none of this; the
     /// all-row mean takes every row in [`Cross::advance`].
     pub(crate) fn learn(&mut self, j: usize, z: &[f64], y: f64, aj: f64, bj: f64) {
-        use crate::comp::{add, dev, lo_of, lo_slot};
-        let n = self.my.len();
+        use crate::comp::{add, dev};
         let k = self.m.len();
-        // A state written before the own means kept their low parts.
-        if self.mj_lo.len() != n {
-            self.mj_lo = vec![Vec::new(); n];
-        }
-        let dy = dev(y, self.my[j], lo_of(&self.my_lo, j));
+        let dy = dev(y, self.my[j], self.my_lo[j]);
         let ab_dy = aj * bj * dy;
         let (mj, c, mj_lo) = (&mut self.mj[j], &mut self.c[j], &mut self.mj_lo[j]);
         debug_assert_eq!(z.len(), k);
-        // The low parts' length is settled once, not checked per feature, so
-        // the loop is straight arithmetic (task 132's own means cost a
-        // 10-target `ewridge` a quarter of its rows a second with the checks
-        // inside; PERFORMANCE §26). The same steps in the same order: a row
-        // that steps sizes the vector as `lo_slot` did at its first feature,
-        // and a row of weight 0 takes no step (`crate::comp::add` says why)
-        // and leaves the vector as it found it.
+        // The low parts are sized with the means, so the loop is straight
+        // arithmetic (task 132's own means cost a 10-target `ewridge` a
+        // quarter of its rows a second with checks inside; PERFORMANCE §26).
+        // A row of weight 0 takes no step (`crate::comp::add` says why).
         if bj > 0.0 {
-            if mj_lo.len() != k {
-                *mj_lo = vec![0.0; k];
-            }
             for (((m, lo), ci), &zi) in mj.iter_mut().zip(mj_lo.iter_mut()).zip(c.iter_mut()).zip(z)
             {
                 let u = dev(zi, *m, *lo);
@@ -180,13 +153,13 @@ impl Cross {
                 add(m, lo, bj * u);
             }
         } else {
-            for (i, (ci, &zi)) in c.iter_mut().zip(z).enumerate() {
-                let u = dev(zi, mj[i], lo_of(mj_lo, i));
+            for (((m, lo), ci), &zi) in mj.iter().zip(mj_lo.iter()).zip(c.iter_mut()).zip(z) {
+                let u = dev(zi, *m, *lo);
                 *ci = aj * *ci + ab_dy * u; // `ab_dy` is a zero here: `bj` is 0
             }
         }
         if bj > 0.0 {
-            add(&mut self.my[j], lo_slot(&mut self.my_lo, n, j), bj * dy);
+            add(&mut self.my[j], &mut self.my_lo[j], bj * dy);
         }
     }
 
@@ -195,11 +168,6 @@ impl Cross {
     pub(crate) fn advance(&mut self, z: &[f64], lam: f64, w: f64, b: f64) {
         if b > 0.0 {
             use crate::comp::{add, dev};
-            // Sized once, as `learn` does, then straight arithmetic.
-            let k = self.m.len();
-            if self.m_lo.len() != k {
-                self.m_lo = vec![0.0; k];
-            }
             for ((mi, lo), &zi) in self.m.iter_mut().zip(self.m_lo.iter_mut()).zip(z) {
                 let u = dev(zi, *mi, *lo);
                 add(mi, lo, b * u);
@@ -248,7 +216,7 @@ impl Cross {
                 *m = aj * *m + bj * om;
             }
             self.my[j] = aj * self.my[j] + bj * other.my[j];
-            *crate::comp::lo_slot(&mut self.my_lo, n, j) = 0.0;
+            self.my_lo[j] = 0.0;
         }
         for (m, om) in self.m.iter_mut().zip(&other.m) {
             *m = a * *m + b * om;
@@ -295,15 +263,25 @@ impl Cross {
         Some(out)
     }
 
-    /// Whether the moments are those of `n_targets` targets over `k` slots;
-    /// the low parts absent (a state written before them) or shaped alike.
-    fn has_shape(&self, n_targets: usize, k: usize) -> bool {
+    /// Whether the moments are those of `n_targets` targets over `k` slots,
+    /// with the low parts shaped as the means where `low_parts` -- the live
+    /// accumulators -- and absent where not, as a window's snapshot holds
+    /// them ([`Acc::snapshot`]).
+    fn has_shape(&self, n_targets: usize, k: usize, low_parts: bool) -> bool {
+        let lows = if low_parts {
+            self.m_lo.len() == k
+                && self.my_lo.len() == n_targets
+                && self.mj_lo.len() == n_targets
+                && self.mj_lo.iter().all(|v| v.len() == k)
+        } else {
+            self.m_lo.is_empty() && self.my_lo.is_empty() && self.mj_lo.is_empty()
+        };
         self.m.len() == k
             && self.my.len() == n_targets
             && self.mj.len() == n_targets
             && self.c.len() == n_targets
             && self.mj.iter().chain(&self.c).all(|v| v.len() == k)
-            && (self.mj_lo.is_empty() || self.mj_lo.len() == n_targets)
+            && lows
     }
 }
 
@@ -674,12 +652,6 @@ impl Acc {
         }
     }
 
-    /// A state written before schema 17: the own means from their offsets
-    /// ([`Cross::offsets_to_means`]).
-    pub(crate) fn offsets_to_means(&mut self) {
-        self.cross.offsets_to_means();
-    }
-
     /// Whether every Gram keeps runs for a window to read.
     pub(crate) fn keeps_runs(&self) -> bool {
         self.grams.grams.iter().all(EwCov::keeps_runs)
@@ -850,15 +822,18 @@ impl Acc {
             && (0..g.grams.len()).all(|i| g.of.contains(&i))
             && self.wj.len() == n_targets
             && tm_has_shape(&self.tm, n_targets)
-            && self.cross.has_shape(n_targets, k)
+            && self.cross.has_shape(n_targets, k, true)
     }
 }
 
 /// Whether target moments are `n_targets` wide in each part a row or a
-/// window reads: the means, the variances and the Kish sums. The means'
-/// low parts are read where they are there (`crate::comp::lo_of`).
+/// window reads: the means, their low parts, the variances and the Kish
+/// sums.
 fn tm_has_shape(t: &TargetMoments, n_targets: usize) -> bool {
-    t.means().len() == n_targets && t.vars().len() == n_targets && t.q().len() == n_targets
+    t.means().len() == n_targets
+        && t.vars().len() == n_targets
+        && t.q().len() == n_targets
+        && t.means_lo().len() == n_targets
 }
 
 /// [`Acc`] as a window's snapshot holds it: decayed to the row it precedes.
@@ -876,12 +851,6 @@ pub(crate) struct AccSnap {
 }
 
 impl AccSnap {
-    /// A snapshot written before schema 17 ([`Cross::offsets_to_means`]).
-    pub(crate) fn offsets_to_means(&mut self) {
-        self.cross.offsets_to_means();
-        self.cross.mj_lo = Vec::new();
-    }
-
     /// Whether a snapshot is of `n_targets` targets over `k` slots, as the
     /// live accumulators must be ([`Acc::has_shape`]): every Gram's moments
     /// at the width with a weight a subtraction can read, each target
@@ -896,7 +865,7 @@ impl AccSnap {
             && g.of.len() == n_targets
             && g.of.iter().all(|&o| o < g.grams.len())
             && self.wj.len() == n_targets
-            && self.cross.has_shape(n_targets, k)
+            && self.cross.has_shape(n_targets, k, false)
             && self.tm.as_ref().is_none_or(|t| tm_has_shape(t, n_targets))
     }
 }
@@ -1284,8 +1253,8 @@ mod tests {
     #[test]
     fn each_part_of_the_cross_moments_shape_is_checked_alone() {
         let good = Cross::new(2, 3);
-        assert!(good.has_shape(2, 3));
-        let parts: [Corruption<Cross>; 6] = [
+        assert!(good.has_shape(2, 3, true));
+        let parts: [Corruption<Cross>; 9] = [
             ("a slot short in m", &|c: &mut Cross| {
                 c.m.pop();
             }),
@@ -1304,15 +1273,30 @@ mod tests {
             ("a target short in mj_lo", &|c: &mut Cross| {
                 c.mj_lo.pop();
             }),
+            ("a slot short in one mj_lo", &|c: &mut Cross| {
+                c.mj_lo[0].pop();
+            }),
+            ("a slot short in m_lo", &|c: &mut Cross| {
+                c.m_lo.pop();
+            }),
+            ("a target short in my_lo", &|c: &mut Cross| {
+                c.my_lo.pop();
+            }),
         ];
         for (what, corrupt) in parts {
             let mut c = good.clone();
             corrupt(&mut c);
-            assert!(!c.has_shape(2, 3), "{what}");
+            assert!(!c.has_shape(2, 3, true), "{what}");
         }
+        // A state's low parts are required, where a state written before
+        // them loaded with each at zero (docs/PLAN.md task 198); a window's
+        // snapshot carries none, and one that does is not a snapshot.
         let mut old = good.clone();
         old.mj_lo.clear();
-        assert!(old.has_shape(2, 3), "a state written before the low parts");
+        assert!(!old.has_shape(2, 3, true), "a state without the low parts");
+        let mut snap = good.clone();
+        (snap.m_lo, snap.my_lo, snap.mj_lo) = (Vec::new(), Vec::new(), Vec::new());
+        assert!(snap.has_shape(2, 3, false) && !good.has_shape(2, 3, false));
     }
 
     /// One corruption per condition [`Acc::has_shape`] checks, each refused

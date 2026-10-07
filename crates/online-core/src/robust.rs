@@ -315,8 +315,7 @@ pub struct Robust {
     /// over the rows' mean weight, which the quantile fit's warm-up and band
     /// floor read so that a weight's scale reaches neither (docs/PLAN.md
     /// task 147: rows at weight 100 left the warm-up on their first row,
-    /// and the fit reached 1e51). A state written before it starts at `wobs`.
-    #[serde(default)]
+    /// and the fit reached 1e51).
     nobs: Vec<f64>,
     /// Per target, the centred cross-moment `c_j = E[(z − m_j)(y − ȳ_j)]`
     /// over `wj`, with `m_j` its accumulator's mean, and `ȳ_j` beside it
@@ -353,9 +352,7 @@ pub struct Robust {
     weight_since_solve: f64,
     pub solve_failures: u64,
     /// What each `ybar` leaves out: the mean is `ybar[j] + ybar_lo[j]`
-    /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
-    /// before it.
-    #[serde(default)]
+    /// ([`crate::comp`]; docs/PLAN.md task 101). One per target.
     ybar_lo: Vec<f64>,
     /// Each target's band system, kept from its last solve or nudge for the
     /// nudges that follow ([`BandSystems`]): state since schema 33 (task
@@ -1089,22 +1086,14 @@ impl OnlineModel for Robust {
                     let wj_new = aged + w;
                     let a = aged / wj_new;
                     let bb = w / wj_new;
-                    let dy = crate::comp::dev(
-                        target,
-                        self.ybar[j],
-                        crate::comp::lo_of(&self.ybar_lo, j),
-                    );
+                    let dy = crate::comp::dev(target, self.ybar[j], self.ybar_lo[j]);
                     let ab_dy = a * bb * dy;
                     let cov = &self.cov[j];
                     for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(self.zbuf.iter()).enumerate()
                     {
                         *ci = a * *ci + ab_dy * cov.deviation(i, zi);
                     }
-                    crate::comp::add(
-                        &mut self.ybar[j],
-                        crate::comp::lo_slot(&mut self.ybar_lo, m, j),
-                        bb * dy,
-                    );
+                    crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], bb * dy);
                     // The Gram moves: the band system kept from the last
                     // solve or nudge moves with it where that is exact, from
                     // the row's step read before the means move, and is
@@ -1163,11 +1152,7 @@ impl OnlineModel for Robust {
                         // A step of nothing is not taken (`crate::comp::add`
                         // says why): a nudge from a row of weight 0.
                         if step != 0.0 {
-                            crate::comp::add(
-                                &mut self.ybar[j],
-                                crate::comp::lo_slot(&mut self.ybar_lo, m, j),
-                                step,
-                            );
+                            crate::comp::add(&mut self.ybar[j], &mut self.ybar_lo[j], step);
                         }
                     }
                 }
@@ -1229,12 +1214,13 @@ impl OnlineModel for Robust {
                 // scalar per target, all at the cfg's width; a short one
                 // loaded and panicked on the first `step` (review
                 // 2026-09-18, B3).
-                // A state written before the row counts reads its weights as
-                // them, which is what it was gated by.
-                if m.nobs.is_empty() {
-                    m.nobs = m.wobs.clone();
-                }
-                let per_target = [&m.wj, &m.wobs, &m.nobs, &m.ybar, &m.sig2, &m.wsig];
+                // Every per-target vector, the row counts and the means' low
+                // parts among them: a state written before either was
+                // repaired, the counts from the weights and the low parts at
+                // zero, and so was a damaged one (docs/PLAN.md task 198).
+                let per_target = [
+                    &m.wj, &m.wobs, &m.nobs, &m.ybar, &m.ybar_lo, &m.sig2, &m.wsig,
+                ];
                 if m.cov.len() != n
                     || m.cov.iter().any(|c| !c.has_shape(k))
                     || m.cross.len() != n

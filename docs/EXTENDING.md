@@ -604,10 +604,17 @@ until every step is in, which is what they are for.
 **A spec field changes the bytes of every bank file**, since each carries its
 specs. A field with `#[serde(default)]` added inside a schema no release has
 shipped needs no bump. Otherwise it is a layout change under hard rule 5:
-bump `SCHEMA_VERSION`, and before 1.0 raise `MIN_SCHEMA_VERSION`, or the
-bank's `MIN_BANK_SCHEMA_VERSION`, rather than write a loader for the old
-layout. A change to the windows state's version moves the bank's schema
-with it, and a Rust test pairs the two. **If the Python builders write a default the field
+bump `SCHEMA_VERSION`, and regenerate the frozen state fixtures --
+`PRINT_STATE_FIXTURES=1 cargo test -p online-core --test state_fixtures`,
+then the same for `-p online-polars` -- which refuse a schema they were not
+written at. Before 1.0 raise `MIN_SCHEMA_VERSION` and the bank's
+`MIN_BANK_SCHEMA_VERSION` to the new schema with it, rather than write a
+loader for the old layout; from 1.0 keep the old fixtures and write the
+loader they hold you to (docs/PLAN.md task 198). A change to the windows
+state's version moves the bank's schema with it, and a Rust test pairs the
+two. **A new model adds a case** to `crates/online-core/tests/cases/mod.rs`,
+keeping what its state can keep, and its variant name to the frozen list in
+`tests/state_fixtures.rs`: the name is the tag in every state file. **If the Python builders write a default the field
 would not otherwise have, add it to `Spec::fill_defaults` too.** Otherwise a
 TOML spec and the same spec in Python will save different bytes
 (`tests/test_no_output.py` compares the two state files).

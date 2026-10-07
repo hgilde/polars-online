@@ -106,9 +106,7 @@ pub struct Holt {
     w_sum: f64,
     /// Per target, the clock since its last observation, which a row it could
     /// not learn from adds to and the next observed row extrapolates over
-    /// (see the module docs). A schema-6 state has none and loads with every
-    /// target at zero: what the old recursion kept.
-    #[serde(default)]
+    /// (see the module docs).
     since: Vec<f64>,
     /// Per target, the weight the level has gathered, decayed on the level's
     /// half-life over the clock since the target was last observed: `W` in
@@ -294,17 +292,16 @@ impl OnlineModel for Holt {
         check_schema(s)?;
         match &s.model {
             ModelState::Holt(m) => {
-                let mut m = (**m).clone();
+                let m = (**m).clone();
                 crate::model::check_cfg("holt", m.cfg.validate())?;
                 let n = m.cfg.n_targets;
-                if m.since.len() != n {
-                    m.since = vec![0.0; n];
-                }
-                // The rest are checked, not repaired: a level or a weight
+                // Every vector is checked, not repaired: a level or a weight
                 // vector of the wrong length loaded and panicked on the
-                // first `step` (review 2026-09-18, B3).
+                // first `step` (review 2026-09-18, B3), and a clock since an
+                // observation of the wrong length was set to zero, the
+                // repair for a schema-6 state (docs/PLAN.md task 198).
                 if m.seen.len() != n
-                    || [&m.level, &m.trend, &m.w_level, &m.w_trend]
+                    || [&m.level, &m.trend, &m.w_level, &m.w_trend, &m.since]
                         .iter()
                         .any(|v| v.len() != n)
                 {
