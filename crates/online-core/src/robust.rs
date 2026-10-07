@@ -1131,6 +1131,7 @@ impl OnlineModel for Robust {
         match &s.model {
             ModelState::Robust(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("robust", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // One accumulator, one cross-moment row and one of each
                 // scalar per target, all at the cfg's width; a short one

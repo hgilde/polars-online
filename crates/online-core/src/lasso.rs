@@ -253,6 +253,18 @@ impl crate::Footprint for LassoMoments {
     }
 }
 
+impl LassoMoments {
+    /// Whether a snapshot is the shape of `n` targets over `k` slots and a
+    /// path of `np` points, as the live accumulators and selection are:
+    /// what the window's truncation and [`Lasso::window_sel_err`] read.
+    fn has_shape(&self, n: usize, k: usize, np: usize) -> bool {
+        self.acc.has_shape(n, k)
+            && self.sel_w.len() == n
+            && self.sel_err.len() == n
+            && self.sel_err.iter().all(|e| e.len() == np)
+    }
+}
+
 impl Lasso {
     pub fn new(cfg: LassoCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -884,6 +896,7 @@ impl OnlineModel for Lasso {
         match &s.model {
             ModelState::Lasso(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("lasso", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // The selection fields too: `sel_idx` indexes `lasso_path`
                 // in `lam_selected`, and a window is carried exactly when
@@ -912,6 +925,14 @@ impl OnlineModel for Lasso {
                 if !m.acc.has_shape(n, k) || !selection {
                     return Err(StateError::Invalid(
                         "lasso: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                // Every snapshot of the window too (review 2026-10-06, CA2).
+                if let Some(win) = &m.win
+                    && !win.snaps.iter().all(|s| s.has_shape(n, k, np))
+                {
+                    return Err(StateError::Invalid(
+                        "lasso: the window's snapshots have the wrong shape".into(),
                     ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
@@ -954,24 +975,74 @@ mod tests {
 
     /// A selection index past the path is refused, where it loaded and
     /// panicked in `lam_selected` (review 2026-09-18, B3); so is a threshold
-    /// for a target there is not (CA3).
+    /// for a target there is not (CA3), which the cfg's own check refuses
+    /// by name since every `restore` runs it (review 2026-10-06, CF4).
     #[test]
     fn a_state_of_the_wrong_shape_is_refused() {
         use crate::{ModelState, OnlineModel, StateError};
         let m = Lasso::new(cfg(2, 1, vec![0.1, 0.01])).unwrap();
-        let corrupt: [fn(&mut Lasso); 2] = [
-            |l| l.sel_idx[0] = 2,
-            |l| l.cfg.target_min_weight = vec![1.0; 2],
+        type Corrupt<'a> = (&'a str, fn(&mut Lasso));
+        let corrupt: [Corrupt; 2] = [
+            ("wrong shape", |l| l.sel_idx[0] = 2),
+            ("target_min_weight must be empty or one value", |l| {
+                l.cfg.target_min_weight = vec![1.0; 2]
+            }),
         ];
-        for f in corrupt {
+        for (says, f) in corrupt {
             let mut s = m.state();
             let ModelState::Lasso(inner) = &mut s.model else {
                 unreachable!()
             };
             f(inner);
             match Lasso::restore(&s) {
-                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                Err(StateError::Invalid(e)) => assert!(e.contains(says), "{e}"),
                 other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// A window's snapshots are held to the cfg's shape: a snapshot whose
+    /// selection weights or errors are a target short, or whose errors are
+    /// a path point short, loaded, and `window_sel_err` read `old.sel_w[1]`
+    /// of a one-entry vector on the next row (review 2026-10-06, CA2). The
+    /// accumulators a snapshot holds are `ewridge`'s, and its tests hold
+    /// them.
+    #[test]
+    fn a_window_snapshot_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let mut c = cfg(2, 2, vec![0.1, 0.0]);
+        c.window = Some(12.0);
+        c.min_weight = 0.0;
+        let rows = weighted_rows(2, 30, 23);
+        let m = run(c, &rows);
+        assert!(m.view().is_some(), "rows have aged out of the window");
+        assert!(Lasso::restore(&m.state()).is_ok(), "the state as saved");
+        type Damage<'a> = (&'a str, &'a dyn Fn(&mut LassoMoments));
+        let damage: [Damage; 3] = [
+            ("selection weights a target short", &|s| {
+                s.sel_w.pop();
+            }),
+            ("selection errors a target short", &|s| {
+                s.sel_err.pop();
+            }),
+            ("selection errors a path point short", &|s| {
+                s.sel_err[0].pop();
+            }),
+        ];
+        for (what, f) in damage {
+            let mut st = m.state();
+            let ModelState::Lasso(inner) = &mut st.model else {
+                unreachable!()
+            };
+            inner.win.as_mut().unwrap().snaps.iter_mut().for_each(f);
+            match Lasso::restore(&st) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("snapshots"), "{what}: {e}"),
+                Ok(mut back) => {
+                    let (x, y, w) = &rows[0];
+                    back.step(x, y, 1.0, *w);
+                    panic!("{what}: loaded and was read");
+                }
+                Err(e) => panic!("{what}: {e}"),
             }
         }
     }

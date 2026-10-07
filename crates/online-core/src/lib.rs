@@ -473,7 +473,29 @@ pub const SCHEMA_VERSION: u32 = 37;
 /// `half_life / 50` of clock brings in steady state.
 pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 
-/// Oldest state layout this build still loads.
+/// The oldest schema version [`check_schema`] accepts: a [`State`] naming an
+/// older one is refused by its number, in the words
+/// [`StateError::SchemaVersion`] gives.
+///
+/// **A gate on the number, not a promise that every state from it loads.**
+/// Pre-1.0 the layouts have moved since 14 with no loader written (the
+/// user, 2026-09-14 and 2026-09-28; hard rule 5's exception), and a state
+/// of a layout that moved fails to decode -- in serde, before a `State`
+/// exists for this gate to read -- whatever version it names. By
+/// [`SCHEMA_VERSION`]'s history:
+///
+/// - `ewridge`, `lasso`, `robust` (`huber` and `quantile`), `ew_cov` and
+///   `micro` from before 37, compactly or named: each keeps its cadence's
+///   stamps since 37, and 28 (`ew_cov`), 29 (`micro`), 31 (`lasso`) and 33
+///   (`robust`) had moved some of them before;
+/// - a windowed `ew_class` or `marginal` from before 32, compactly or
+///   named: a window's ring keys its snapshots by stamp since 32, and
+///   spaces them on the clock since 30.
+///
+/// Every other model's state from 14 on decodes and loads. A bank file is
+/// refused before any of this, by the bank's own minimum
+/// (`online_polars`' `MIN_BANK_SCHEMA_VERSION`, 37). How the number came
+/// to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
 /// nanoseconds now are, and pre-1.0 no loader is written for one.

@@ -531,6 +531,7 @@ impl OnlineModel for Ftrl {
         match &s.model {
             ModelState::Ftrl(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("ftrl", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 let rows = |v: &[Vec<f64>]| v.len() == n && v.iter().all(|r| r.len() == k);
                 // The three per-target accumulators at the cfg's width.

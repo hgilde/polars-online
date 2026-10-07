@@ -70,7 +70,11 @@ pub enum ModelState {
 
 #[derive(Debug, Error)]
 pub enum StateError {
-    #[error("state schema version {found} not supported (current: {current})")]
+    /// A version [`check_schema`] does not accept: older than
+    /// [`MIN_SCHEMA_VERSION`], or newer than [`SCHEMA_VERSION`], a file a
+    /// later build wrote. The message names the range and which side the
+    /// version is on (review 2026-10-06, CF11).
+    #[error("{}", schema_refusal(*.found, *.current))]
     SchemaVersion { found: u32, current: u32 },
     #[error("state is for a different model: expected {expected}, found {found}")]
     WrongModel {
@@ -79,6 +83,36 @@ pub enum StateError {
     },
     #[error("invalid state: {0}")]
     Invalid(String),
+}
+
+/// [`StateError::SchemaVersion`]'s message: a state from a newer build is
+/// told to upgrade, where it was told the version was not supported in
+/// the words an old one is.
+fn schema_refusal(found: u32, current: u32) -> String {
+    if found > current {
+        format!(
+            "state schema version {found} was written by a newer version (this build reads \
+             {MIN_SCHEMA_VERSION}..={current}): upgrade to read it"
+        )
+    } else {
+        format!(
+            "state schema version {found} not supported (this build reads \
+             {MIN_SCHEMA_VERSION}..={current}; {MIN_SCHEMA_VERSION} is the oldest it accepts)"
+        )
+    }
+}
+
+/// A restored state's configuration, held to what the model's `new` holds
+/// a fresh one to: every `restore` runs its cfg's `validate` (which runs
+/// [`crate::Decay::check`]) before it reads anything the cfg sizes or
+/// divides by. No `restore` did, so a state whose cfg its own `new` refuses
+/// -- `k = 0`, a half-life of 0, a feature index past the features, a lag
+/// of 0 -- loaded and failed at a later row, as a panic or as a NaN for
+/// good (review 2026-10-06, CF4, CA6, CD14).
+pub(crate) fn check_cfg(kind: &str, checked: Result<(), String>) -> Result<(), StateError> {
+    checked.map_err(|e| {
+        StateError::Invalid(format!("{kind}: the state's configuration is refused: {e}"))
+    })
 }
 
 impl ModelState {
@@ -706,5 +740,37 @@ mod tests {
                 Err(StateError::SchemaVersion { .. })
             ));
         }
+    }
+
+    /// The refusal names the oldest version the gate accepts, and a state
+    /// from a newer build is told so: it was told "not supported (current:
+    /// N)", which names neither the floor nor the cause (review 2026-10-06,
+    /// CF11).
+    #[test]
+    fn a_schema_refusal_names_the_range_and_a_newer_build() {
+        let s = State::new(ModelState::EwCov(Box::new(crate::EwCov::new(1))));
+        let refused = |v: u32| {
+            check_schema(&State {
+                schema_version: v,
+                ..s.clone()
+            })
+            .unwrap_err()
+            .to_string()
+        };
+        let range = format!("{MIN_SCHEMA_VERSION}..={SCHEMA_VERSION}");
+        let older = refused(MIN_SCHEMA_VERSION - 1);
+        assert!(
+            older.contains(&range)
+                && older.contains(&format!("{MIN_SCHEMA_VERSION} is the oldest it accepts"))
+                && !older.contains("newer"),
+            "{older}"
+        );
+        let newer = refused(SCHEMA_VERSION + 1);
+        assert!(
+            newer.contains("written by a newer version")
+                && newer.contains(&range)
+                && newer.contains("upgrade"),
+            "{newer}"
+        );
     }
 }

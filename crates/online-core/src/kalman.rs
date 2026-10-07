@@ -896,6 +896,8 @@ impl OnlineModel for Kalman {
         match &s.model {
             ModelState::Kalman(m) => {
                 let mut m = (**m).clone();
+                // The shapes are checked as the state is read (`KalmanV3`).
+                crate::model::check_cfg("kalman", m.cfg.validate())?;
                 m.ensure_buffers();
                 Ok(m)
             }

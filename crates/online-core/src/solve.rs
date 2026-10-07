@@ -521,7 +521,12 @@ impl TryFrom<SpdFactorState> for SpdFactor {
 
     fn try_from(st: SpdFactorState) -> Result<Self, String> {
         let k = st.order;
-        let packed = k.checked_mul(k + 1).map(|n| n / 2);
+        // `k + 1` checked too: at `usize::MAX` it overflowed before the
+        // product was (review 2026-10-06, CA3).
+        let packed = k
+            .checked_add(1)
+            .and_then(|n| k.checked_mul(n))
+            .map(|n| n / 2);
         if packed != Some(st.lower.len()) {
             return Err(format!(
                 "a factor of order {k} holds {} entries, not its triangle",
@@ -790,6 +795,28 @@ mod tests {
         }
         assert!(clamp_rounding(f64::NAN).is_nan());
         assert_eq!(f64::NAN.max(0.0), 0.0, "the clamp this replaced");
+    }
+
+    /// A factor state of an order whose triangle no `usize` holds is
+    /// refused by name. `k.checked_mul(k + 1)` formed `k + 1` first, so at
+    /// `usize::MAX` the addition overflowed: a panic in a debug build, and
+    /// in a release one a wrap to a triangle of 0 that an empty `lower`
+    /// matched, and `Mat::zeros` then aborted on the capacity (review
+    /// 2026-10-06, CA3). A `quantile` state carries this form.
+    #[test]
+    fn a_factor_state_of_an_impossible_order_is_refused() {
+        for order in [usize::MAX, usize::MAX - 1] {
+            let refused = SpdFactor::try_from(SpdFactorState {
+                order,
+                lower: Vec::new(),
+                attempts: 0,
+                jitter: 0.0,
+                moves: 0,
+            })
+            .err()
+            .unwrap_or_else(|| panic!("order {order}: read"));
+            assert!(refused.contains("not its triangle"), "{order}: {refused}");
+        }
     }
 
     #[test]

@@ -692,6 +692,7 @@ impl OnlineModel for EwClass {
         match &s.model {
             ModelState::EwClass(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("ew_class", m.cfg.validate())?;
                 // One accumulator per class at the cfg's width, and a window
                 // exactly when the cfg asks for one (review 2026-09-18, B3).
                 let (k, nc) = (m.cfg.n_features, m.cfg.n_classes);
@@ -701,6 +702,23 @@ impl OnlineModel for EwClass {
                 {
                     return Err(StateError::Invalid(
                         "ew_class: the state has the wrong shape".into(),
+                    ));
+                }
+                // Every snapshot of the window too: `view()` zips the classes
+                // with the boundary's and `score` reads a weight per class,
+                // so each holds the classes at the width, and a weight a
+                // subtraction can read (review 2026-10-06, CE3).
+                let snap = |s: &ClassMoments| {
+                    s.classes.len() == nc
+                        && s.classes.iter().all(|c| c.has_shape(k))
+                        && s.n_eff.is_finite()
+                        && s.n_eff >= 0.0
+                };
+                if let Some(win) = &m.win
+                    && !win.snaps.iter().all(snap)
+                {
+                    return Err(StateError::Invalid(
+                        "ew_class: the window's snapshots have the wrong shape".into(),
                     ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,
@@ -757,6 +775,61 @@ mod tests {
         match EwClass::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A windowed state's snapshots are held to the cfg's shape: one whose
+    /// boundary snapshot is a class short loaded, `view()` zipped the
+    /// classes with the short snapshot, and `score` read `weights[2]` of a
+    /// two-entry vector on the first row; one whose class moments are
+    /// another width, or whose weight is not a number, loaded too (review
+    /// 2026-10-06, CE3).
+    #[test]
+    fn a_window_snapshot_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let mut c = cfg(2, 3, Covariance::Diagonal);
+        c.window = Some(30.0);
+        c.max_rows_between_snapshots = Some(1);
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 5u64;
+        for i in 0..60 {
+            let label = ((lcg(&mut s) + 1.0) * 1.5).floor().min(2.0);
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(label)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.view().is_some(), "rows have aged out of the window");
+        assert!(EwClass::restore(&m.state()).is_ok(), "the state as saved");
+        type Damage<'a> = (&'a str, &'a dyn Fn(&mut ClassMoments));
+        let damage: [Damage; 3] = [
+            ("a class short", &|snap| {
+                snap.classes.pop();
+            }),
+            ("a class of another width", &|snap| {
+                snap.classes[0] = crate::Moments::of(&EwCov::new(5), 1.0);
+            }),
+            ("a weight that is not a number", &|snap| {
+                snap.n_eff = f64::NAN
+            }),
+        ];
+        for (what, f) in damage {
+            let mut state = m.state();
+            let ModelState::EwClass(inner) = &mut state.model else {
+                unreachable!()
+            };
+            inner.win.as_mut().unwrap().snaps.iter_mut().for_each(f);
+            match EwClass::restore(&state) {
+                Err(StateError::Invalid(e)) => {
+                    assert!(
+                        e.contains("snapshots") && e.contains("wrong shape"),
+                        "{what}: {e}"
+                    );
+                }
+                Ok(mut back) => {
+                    back.step(&[0.1, 0.2], &[None], 1.0, 1.0);
+                    panic!("{what}: loaded and was read");
+                }
+                Err(e) => panic!("{what}: {e}"),
+            }
         }
     }
 

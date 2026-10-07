@@ -20,6 +20,47 @@ fn a_state_of_the_wrong_shape_is_refused() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A state's configuration is held to what `new` holds a fresh one to:
+/// `lags = [0]`, edited into the cfg and the lag ring alike, passed the
+/// shape check -- which bounds the ring by `lags.last()`, so an empty ring
+/// fit -- and the first learned row took `back = depth - lag = 0` and
+/// indexed an empty ring (review 2026-10-06, CD14). A lag of 0 is the pair
+/// itself, which `new` refuses.
+#[test]
+fn a_restored_marginal_whose_cfg_new_refuses_is_refused() {
+    use crate::{OnlineModel, State, StateError};
+    let mut c = cfg(1, 1);
+    c.lags = vec![1];
+    let mut m = Marginal::new(c).unwrap();
+    for i in 0..5 {
+        let v = i as f64;
+        OnlineModel::step(&mut m, &[v], &[Some(v)], step_clock(i), 1.0);
+    }
+    OnlineModel::clear_lags(&mut m);
+    let mut v = serde_json::to_value(&m).unwrap();
+    v["cfg"]["lags"] = serde_json::json!([0]);
+    v["lag"]["lags"] = serde_json::json!([0]);
+    let edited: Marginal = serde_json::from_value(v).unwrap();
+    assert!(
+        Marginal::new(edited.cfg.clone()).is_err(),
+        "`new` refuses lags = [0]"
+    );
+    let s = State::new(crate::ModelState::Marginal(Box::new(edited)));
+    match Marginal::restore(&s) {
+        Err(StateError::Invalid(e)) => {
+            assert!(
+                e.contains("configuration") && e.contains("lags must be >= 1"),
+                "{e}"
+            );
+        }
+        Ok(mut back) => {
+            OnlineModel::step(&mut back, &[1.0], &[Some(1.0)], 1.0, 1.0);
+            panic!("lags = [0] loaded and was read");
+        }
+        Err(e) => panic!("{e}"),
+    }
+}
 use crate::{EwCov, EwCovCfg, EwCovModel, EwCovStat};
 
 fn lcg(state: &mut u64) -> f64 {
@@ -4003,15 +4044,22 @@ fn each_part_of_a_state_is_checked_alone() {
     fn first(m: &mut Marginal) -> &mut MarginalMoments {
         m.win.as_mut().unwrap().snaps.iter_mut().next().unwrap()
     }
+    // A threshold short a target is the cfg's own refusal, by name, since
+    // every `restore` runs the cfg's check (review 2026-10-06, CF4).
+    match restored(&windowed, &|m| {
+        m.cfg.min_weight.pop();
+    }) {
+        Err(StateError::Invalid(e)) => assert!(e.contains("min_weight has 1 entries"), "{e}"),
+        other => panic!("min_weight short a target: {other:?}"),
+    }
     type Case<'a> = (&'a str, &'a Marginal, &'a dyn Fn(&mut Marginal));
-    let cases: [Case; 7] = [
-        ("min_weight short a target", &windowed, &|m| {
-            m.cfg.min_weight.pop();
-        }),
+    let cases: [Case; 6] = [
         ("lags the moments were not kept at", &lagged, &|m| {
             m.cfg.lags = vec![1, 3]
         }),
-        ("bins in the cfg alone", &windowed, &|m| {
+        // On the unwindowed model: bins beside a window is a cfg `new`
+        // refuses, which `restore` refuses as that now.
+        ("bins in the cfg alone", &lagged, &|m| {
             m.cfg.bins = Some(bins_cfg(3, 50))
         }),
         ("a snapshot short a weight", &windowed, &|m| {

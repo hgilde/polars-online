@@ -2648,6 +2648,168 @@ fn a_state_whose_fit_or_readiness_is_the_wrong_shape_is_refused() {
     }
 }
 
+/// A window's snapshots are held to the cfg's shape, as the live
+/// accumulators are: a snapshot a target short -- in its residual weights
+/// or spreads, its target weights, its cross-moments or its target
+/// moments -- or a Gram snapshot of the wrong width loaded, and the next
+/// row's `view()` read `old.wsig[1]` or `old.wj[1]` of a one-entry vector
+/// and panicked (review 2026-10-06, CA2). Each edit reaches only the ring,
+/// under `win`, so the live vectors `restore` checked already stay intact.
+#[test]
+fn a_window_snapshot_of_the_wrong_shape_is_refused() {
+    let mut c = cfg(2, 2);
+    c.window = Some(12.0);
+    c.min_weight = 0.0;
+    let (m, rows) = fitted(c, 30, 23);
+    assert!(
+        m.view().is_some(),
+        "rows have aged out: the boundary is read"
+    );
+    let state = serde_json::to_value(m.state()).unwrap();
+    assert!(EwRidge::restore(&serde_json::from_value(state.clone()).unwrap()).is_ok());
+    for key in [
+        "wsig", "sig2", "wj", "my", "mj", "c", "m", "of", "mean", "var",
+    ] {
+        let mut v = state.clone();
+        crate::window::json_edit(&mut v["model"]["EwRidge"]["win"], key, &mut |x| {
+            x.as_array_mut().unwrap().pop();
+        });
+        match EwRidge::restore(&serde_json::from_value(v).unwrap()) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("snapshots"), "{key}: {e}"),
+            Ok(mut back) => {
+                let (x, y, w) = &rows[0];
+                back.step(x, y, 1.0, *w);
+                panic!("{key}: a snapshot of the wrong shape loaded and was read");
+            }
+            Err(e) => panic!("{key}: {e}"),
+        }
+    }
+}
+
+/// The live accumulators' widths too: a Gram whose means or co-moments are
+/// short of its `k`, or target moments whose variances or Kish sums are a
+/// target short, loaded -- `restore` held each Gram to its `k` alone and
+/// the target moments to their means -- and the next row's update indexed
+/// past them (found beside CA2, review 2026-10-06).
+#[test]
+fn a_live_gram_or_target_moment_of_the_wrong_width_is_refused() {
+    let (m, rows) = fitted(cfg(2, 2), 30, 23);
+    let state = serde_json::to_value(m.state()).unwrap();
+    let places = [
+        ("a Gram's means", "/acc/grams/grams/0/m"),
+        ("a Gram's co-moments", "/acc/grams/grams/0/c"),
+        ("the target variances", "/acc/tm/var"),
+        ("the target Kish sums", "/acc/tm/q"),
+    ];
+    for (what, at) in places {
+        let mut v = state.clone();
+        v["model"]["EwRidge"]
+            .pointer_mut(at)
+            .and_then(serde_json::Value::as_array_mut)
+            .unwrap_or_else(|| panic!("{what}: not in the state"))
+            .pop();
+        match EwRidge::restore(&serde_json::from_value(v).unwrap()) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+            Ok(mut back) => {
+                let (x, y, w) = &rows[0];
+                back.step(x, y, 1.0, *w);
+                panic!("{what}: a short accumulator loaded and was read");
+            }
+            Err(e) => panic!("{what}: {e}"),
+        }
+    }
+}
+
+/// The systems kept for the per-row leverage are held to the cfg's shape:
+/// a column index past the features, a scale or a mean short of the
+/// columns, or a Gram that is not there loaded, and
+/// `row_error_inflation_into`, which runs on every row the field is asked
+/// for, read `x[6]` or failed the factor's length assertion (review
+/// 2026-10-06, CA4).
+#[test]
+fn a_kept_system_of_the_wrong_shape_is_refused() {
+    let mut c = cfg(3, 1);
+    c.min_weight = 0.0;
+    let (mut m, _) = fitted(c, 40, 5);
+    m.set_keep_factor(true);
+    m.solve();
+    let x = [0.3, 1.1, 2.4];
+    let mut out = Vec::new();
+    m.row_error_inflation_into(&x, &mut out);
+    assert!(out[0].is_finite(), "the fixture reads a leverage: {out:?}");
+    assert!(EwRidge::restore(&m.state()).is_ok(), "the state as saved");
+    type Damage<'a> = (&'a str, &'a dyn Fn(&mut System));
+    let damage: [Damage; 4] = [
+        ("a column index past the features", &|s| s.z[0] = 7),
+        ("a scale short", &|s| {
+            s.s.pop();
+        }),
+        ("a mean short", &|s| {
+            s.mean.pop();
+        }),
+        ("a Gram that is not there", &|s| s.gram = 5),
+    ];
+    for (what, f) in damage {
+        let mut st = m.state();
+        let ModelState::EwRidge(inner) = &mut st.model else {
+            unreachable!()
+        };
+        f(inner
+            .ready
+            .systems
+            .iter_mut()
+            .flatten()
+            .next()
+            .expect("a kept system"));
+        match EwRidge::restore(&st) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
+            Ok(back) => {
+                back.row_error_inflation_into(&x, &mut out);
+                panic!("{what}: loaded and was read: {out:?}");
+            }
+            Err(e) => panic!("{what}: {e}"),
+        }
+    }
+}
+
+/// A state's configuration is held to what `new` holds a fresh one to: a
+/// feature set naming a feature past the features changed none of the
+/// widths the stream compares, loaded, and the next solve gathered
+/// `cov.raw(6, 6)` of a 3x3 Gram; a half-life of 0 loaded too (review
+/// 2026-10-06, CA6, CF4).
+#[test]
+fn a_state_whose_cfg_new_refuses_is_refused() {
+    let mut c = cfg(2, 1);
+    c.feature_sets = vec![("a".into(), vec![0, 1])];
+    c.min_weight = 0.0;
+    let (m, rows) = fitted(c, 20, 3);
+    type Damage<'a> = (&'a str, &'a dyn Fn(&mut EwRidgeCfg));
+    let damage: [Damage; 2] = [
+        ("has out-of-range indices", &|c| c.feature_sets[0].1[1] = 5),
+        ("half_life must be > 0", &|c| c.decay = Decay::Halflife(0.0)),
+    ];
+    for (says, f) in damage {
+        let mut st = m.state();
+        let ModelState::EwRidge(inner) = &mut st.model else {
+            unreachable!()
+        };
+        f(&mut inner.cfg);
+        assert!(inner.cfg.validate().is_err(), "{says}: `new` refuses it");
+        match EwRidge::restore(&st) {
+            Err(StateError::Invalid(e)) => {
+                assert!(e.contains("configuration") && e.contains(says), "{e}");
+            }
+            Ok(mut back) => {
+                for (x, y, w) in &rows {
+                    back.step(x, y, 1.0, *w);
+                }
+                panic!("{says}: loaded and ran: {:?}", back.coefficients());
+            }
+            Err(e) => panic!("{says}: {e}"),
+        }
+    }
+}
+
 /// A weighted row of the oracle: features, two targets, the weight.
 type OracleRow = (Vec<f64>, [f64; 2], f64);
 /// A weighted row of [`fitted`]: features, the targets, the weight.

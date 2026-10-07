@@ -500,6 +500,15 @@ impl crate::OnlineModel for Deco {
         match &s.model {
             crate::ModelState::Deco(m) => {
                 let mut m = (**m).clone();
+                // The width before the cfg's own check, which sizes a vector
+                // by it: the accumulator's is the data's, so a damaged width
+                // is refused here rather than allocated.
+                if m.diag.k() != m.cfg.n_features {
+                    return Err(crate::StateError::Invalid(
+                        "deco: the state has the wrong shape".into(),
+                    ));
+                }
+                crate::model::check_cfg("deco", m.cfg.validate())?;
                 // `blocks` is read from the state and indexes the features
                 // in `block_sums`, so it must be the cfg's own; the two
                 // correlation vectors are one per block pair (review
@@ -641,6 +650,32 @@ mod tests {
         inner.rho.pop();
         match Deco::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A damaged width is refused before the cfg's own check runs, since
+    /// that check sizes a vector by it: a `restore` that ran it first asked
+    /// for a terabyte of flags (review 2026-10-06, CF4). A half-life of 0
+    /// is the check's to refuse.
+    #[test]
+    fn a_restored_state_with_a_damaged_cfg_is_refused_without_reading_it() {
+        use crate::{ModelState, StateError};
+        let m = Deco::new(cfg(3)).unwrap();
+        let damaged = |f: &dyn Fn(&mut DecoCfg)| {
+            let mut s = m.state();
+            let ModelState::Deco(inner) = &mut s.model else {
+                unreachable!()
+            };
+            f(&mut inner.cfg);
+            Deco::restore(&s)
+        };
+        match damaged(&|c| c.n_features = 1 << 40) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+        match damaged(&|c| c.decay = Decay::Halflife(0.0)) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("configuration"), "{e}"),
             other => panic!("{other:?}"),
         }
     }

@@ -1103,6 +1103,7 @@ impl crate::OnlineModel for Rcov {
         match &s.model {
             crate::ModelState::Rcov(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("rcov", m.cfg.validate())?;
                 // A state written before the stretch rewrite kept `m + 1`
                 // returns in the tail, its front already emitted. The tail
                 // now holds exactly the unemitted `m`, and a longer one

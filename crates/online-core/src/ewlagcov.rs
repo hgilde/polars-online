@@ -70,6 +70,23 @@ impl EwLagCov {
     /// is not strictly increasing (the order is the output order, so it is
     /// not sorted in silence).
     pub fn new(k: usize, lags: Vec<usize>) -> Result<Self, String> {
+        Self::check_lags(&lags)?;
+        let l = lags.len();
+        let max = *lags.iter().max().expect("non-empty");
+        Ok(Self {
+            k,
+            lags,
+            ring: VecDeque::with_capacity(max),
+            c: vec![0.0; l * k * k],
+        })
+    }
+
+    /// The rules a list of lags keeps, which [`Self::new`] refuses a list
+    /// by: non-empty, none 0, strictly increasing. Checked without building
+    /// the accumulator, whose ring reserves `max(lags)` rows: `EwCovCfg`'s
+    /// check runs it, and a `restore` runs that, so a damaged lag reaches no
+    /// allocation there (review 2026-10-06, CF4).
+    pub fn check_lags(lags: &[usize]) -> Result<(), String> {
         if lags.is_empty() {
             return Err("lags must be non-empty".into());
         }
@@ -86,14 +103,7 @@ impl EwLagCov {
                  order, so it is not sorted for you"
             ));
         }
-        let l = lags.len();
-        let max = *lags.iter().max().expect("non-empty");
-        Ok(Self {
-            k,
-            lags,
-            ring: VecDeque::with_capacity(max),
-            c: vec![0.0; l * k * k],
-        })
+        Ok(())
     }
 
     pub fn k(&self) -> usize {
@@ -102,12 +112,16 @@ impl EwLagCov {
 
     /// Whether the matrices and the ring are those of `k` features at
     /// `lags`: what a restored state must hold to be updated (review
-    /// 2026-09-18, B3).
+    /// 2026-09-18, B3). The ring at most `max(lags)` deep, the most
+    /// `update` keeps: a deeper one was carried for ever, a row popped for
+    /// each pushed (review 2026-10-06, CB8); and some lags, which `update`
+    /// reads the deepest of.
     pub fn has_shape(&self, k: usize, lags: &[usize]) -> bool {
         self.k == k
             && self.lags.as_slice() == lags
             && self.c.len() == lags.len() * k * k
             && self.ring.iter().all(|r| r.len() == k)
+            && lags.last().is_some_and(|&max| self.ring.len() <= max)
     }
 
     /// The lags, in output order.
@@ -508,6 +522,27 @@ mod tests {
         let mut short = lc.clone();
         short.c.pop();
         assert!(!short.has_shape(2, &[1, 2]), "a matrix short a cell");
+    }
+
+    /// The ring holds at most `max(lags)` rows: a deeper one, which only a
+    /// damaged state holds, was carried for ever, `update` popping one row
+    /// a push and never shortening it (review 2026-10-06, CB8). And a list
+    /// of no lags, which `new` refuses and `update` cannot run on, is no
+    /// shape at all.
+    #[test]
+    fn a_ring_deeper_than_the_deepest_lag_is_not_the_shape() {
+        let mut lc = EwLagCov::new(2, vec![1, 3]).unwrap();
+        for x in &rows(5, 2, 9) {
+            lc.update(x, (&[0.0, 0.0], &[]), 1.0, 0.9, 1.0);
+        }
+        assert_eq!(lc.depth(), 3);
+        assert!(lc.has_shape(2, &[1, 3]), "as deep as the deepest lag");
+        let mut deep = lc.clone();
+        deep.ring.push_back(vec![0.5, 0.5]);
+        assert!(!deep.has_shape(2, &[1, 3]), "four rows under lags [1, 3]");
+        let mut none = lc.clone();
+        (none.lags, none.c, none.ring) = (Vec::new(), Vec::new(), VecDeque::new());
+        assert!(!none.has_shape(2, &[]), "no lags");
     }
 
     /// A negative weight is a caller's bug, and changes nothing: not the

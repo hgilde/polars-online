@@ -923,6 +923,7 @@ impl OnlineModel for KMeans {
         match &s.model {
             ModelState::KMeans(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("kmeans", m.cfg.validate())?;
                 // Empty until seeded, then exactly `k` of each per-cluster
                 // vector, every centre and buffered row `p` wide (review
                 // 2026-09-18, B3).
@@ -986,6 +987,41 @@ mod tests {
         match KMeans::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A state's configuration is held to what `new` holds a fresh one to:
+    /// `k = 0` loaded, `lloyd` seeded one centre from the buffer while the
+    /// per-cluster counts had none, and `absorb` indexed `rows[0]` on an
+    /// ordinary row (review 2026-10-06, CF4).
+    #[test]
+    fn a_restored_state_whose_cfg_new_refuses_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let c = KMeansCfg {
+            seed_rule: SeedRule::Lloyd,
+            warm_rows: 4,
+            ..cfg(2)
+        };
+        let mut s = KMeans::new(c).unwrap().state();
+        let ModelState::KMeans(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.k = 0;
+        assert!(inner.cfg.validate().is_err(), "`new` refuses k = 0");
+        match KMeans::restore(&s) {
+            Err(StateError::Invalid(e)) => {
+                assert!(
+                    e.contains("configuration") && e.contains("k must be >= 1"),
+                    "{e}"
+                );
+            }
+            Ok(mut back) => {
+                for i in 0..=KMeans::BUF_CAP {
+                    back.step(&[i as f64, (i % 3) as f64], &[], 1.0, 1.0);
+                }
+                panic!("k = 0 loaded and ran");
+            }
+            Err(e) => panic!("{e}"),
         }
     }
 

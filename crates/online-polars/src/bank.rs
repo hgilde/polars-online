@@ -118,7 +118,9 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// **35 since task 178** (the same day): `coef_every` reads the clock, where a
 /// 34 file's spec counted rows with it and wrote `0` for its default, which
 /// now means every row; and a stream keeps where its `coef` cadence stands.
-/// A 34 file is refit. **37 since task 180** (the same day): the solve,
+/// A 34 file is refit. Task 179's schema 36 left it at 35: `bocpd`'s
+/// `hazard_on_clock` is written only where it is true, so a 35 file reads
+/// as the per-row hazard it held. **37 since task 180** (the same day): the solve,
 /// component and checkpoint cadences of `ewridge`, `lasso`, `huber`,
 /// `quantile`, `ew_cov` and `micro` keep the stamp of their last event,
 /// where a 36 file's keep a summed clock, so a 36 file holding one would
@@ -3952,15 +3954,20 @@ impl Bank {
                 header.format_version, BANK_FORMAT_VERSION
             ));
         }
-        if !(MIN_BANK_SCHEMA_VERSION..=online_core::SCHEMA_VERSION).contains(&header.schema_version)
-        {
+        // A newer build's file is told to upgrade, not to refit (PA2).
+        let (found, reads) = (header.schema_version, online_core::SCHEMA_VERSION);
+        if found > reads {
             return Err(format!(
-                "state schema version {} not supported (this build loads {}..={}); a \
-                 bank saved before schema {MIN_BANK_SCHEMA_VERSION} keeps settings and \
-                 diagnostics this build no longer has, so refit it from its input",
-                header.schema_version,
-                MIN_BANK_SCHEMA_VERSION,
-                online_core::SCHEMA_VERSION
+                "bank state file written by a newer version (schema {found}, this build reads \
+                 up to {reads}): upgrade polars-online"
+            ));
+        }
+        if found < MIN_BANK_SCHEMA_VERSION {
+            return Err(format!(
+                "state schema version {found} not supported (this build loads \
+                 {MIN_BANK_SCHEMA_VERSION}..={reads}); a bank saved before schema \
+                 {MIN_BANK_SCHEMA_VERSION} keeps settings and diagnostics this build no \
+                 longer has, so refit it from its input"
             ));
         }
         let file: BankFile = rmp_serde::from_slice(bytes)
@@ -4014,6 +4021,25 @@ impl Bank {
         // first drain (task 160, PA2).
         for row in &file.closed {
             check_closed_row(&specs, row)?;
+        }
+        // And every other per-spec entry: one past the specs was dropped in
+        // silence, or kept and saved again for ever (review 2026-10-06, PA8).
+        let past = [
+            ("high_water", file.high_water.iter().map(|e| e.0).max()),
+            ("clock_dtypes", file.clock_dtypes.iter().map(|e| e.0).max()),
+            ("key_integer", file.key_integer.iter().map(|e| e.0).max()),
+            ("resolvers", file.resolvers.iter().map(|e| e.0).max()),
+            ("pca_prev", file.pca_prev.iter().map(|e| e.0).max()),
+            (
+                "pca_prev_by_group",
+                file.pca_prev_by_group.iter().map(|e| e.0).max(),
+            ),
+        ];
+        if let Some((what, Some(si))) = past.into_iter().find(|(_, si)| *si >= Some(specs.len())) {
+            return Err(format!(
+                "bank state file is damaged: its {what} names spec {si}, and it has {}",
+                specs.len()
+            ));
         }
         let mut bank = Bank::new(specs)?;
         // The caller's spec may write a half-life grid another way, `"600s"`

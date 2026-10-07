@@ -100,6 +100,180 @@ fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
     assert!(Bank::load_bytes(&bytes, None).is_ok());
 }
 
+/// A row held under `embargo` is learned at its release with the values the
+/// file holds, where none of the bank's checks on a row ran: a feature or a
+/// target that is not a usable number, a weight that is not one or is below
+/// 0, a step that is not finite, below 0 or past `gap_cap` loaded, and
+/// reached the models as no live row can -- `clock.rs`'s "no model ever
+/// receives a non-finite step" with it (review 2026-10-06, PB4).
+#[test]
+fn a_held_row_whose_values_the_bank_never_sends_is_refused() {
+    use crate::stream::PendingRow;
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "clock": "t", "gap_cap": 10.0,
+            "half_life": 5.0, "embargo": 2.0}"#,
+    );
+    let df = df!(
+        "g" => ["a", "b", "a", "b", "a", "b"],
+        "t" => [0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+        "x" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "y" => [2.0, 4.1, 6.0, 8.2, 10.0, 12.1]
+    )
+    .unwrap();
+    let mut bank = Bank::new(vec![s.clone()]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let specs = std::slice::from_ref(&s);
+    assert!(Bank::load_bytes(&bytes, Some(specs)).is_ok(), "as saved");
+    type Damage<'a> = (&'a str, &'a dyn Fn(&mut PendingRow));
+    let damage: [Damage; 10] = [
+        ("a NaN feature", &|r| r.xs[0] = f64::NAN),
+        ("an infinite feature", &|r| r.xs[0] = f64::INFINITY),
+        ("a feature past the input bound", &|r| r.xs[0] = 1e101),
+        ("a NaN target", &|r| r.ys[0] = Some(f64::NAN)),
+        ("a NaN weight", &|r| r.w = f64::NAN),
+        ("a negative weight", &|r| r.w = -1.0),
+        ("a negative step", &|r| r.d_clock = -3.0),
+        ("an infinite step", &|r| r.d_clock = f64::INFINITY),
+        ("a NaN step", &|r| r.d_clock = f64::NAN),
+        ("a step past gap_cap", &|r| r.d_clock = 11.0),
+    ];
+    for (what, f) in damage {
+        let b = reencoded(&bytes, |file| {
+            let held = &mut file.states[0][0].1.pending;
+            assert!(!held.is_empty(), "the group holds rows");
+            f(&mut held[0]);
+        });
+        let err = Bank::load_bytes(&b, Some(specs))
+            .err()
+            .unwrap_or_else(|| panic!("{what}: loaded"));
+        assert!(
+            err.contains("held row") && err.contains("damaged"),
+            "{what}: {err}"
+        );
+    }
+}
+
+/// The stream's residual quantile sketches are held to their own shape as
+/// `ew_cov`'s is: a level pointer outside the buckets loaded, and the next
+/// residual's `add` indexed past them (CB2's class in the stream, review
+/// 2026-10-06; `EwQuantile::reset` then needs no `expect`).
+#[test]
+fn a_residual_sketch_of_the_wrong_shape_is_refused() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0,
+            "resid_quantiles": [0.5, 0.9]}"#,
+    );
+    let mut bank = Bank::new(vec![s.clone()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let specs = std::slice::from_ref(&s);
+    assert!(Bank::load_bytes(&bytes, Some(specs)).is_ok(), "as saved");
+    let damaged = reencoded(&bytes, |file| {
+        let q = &mut file.states[0][0].1.resid_q[0][0];
+        let mut v = serde_json::to_value(&*q).unwrap();
+        v["at"] = serde_json::json!([-60_000, -60_000]);
+        *q = serde_json::from_value(v).unwrap();
+    });
+    match Bank::load_bytes(&damaged, Some(specs)) {
+        Err(err) => assert!(err.contains("residual quantiles"), "{err}"),
+        Ok(mut back) => {
+            let read = back.fit_predict(&frame());
+            panic!("a sketch pointing outside its buckets loaded: {read:?}");
+        }
+    }
+}
+
+/// PA8: every per-spec entry of the envelope names a spec the bank has.
+/// One past the specs was dropped in silence (`high_water`,
+/// `clock_dtypes`, `key_integer`, `resolvers`) or kept and saved again for
+/// ever (`pca_prev`, `pca_prev_by_group`), where a `states` list or a
+/// closed row of the same shape is refused (task 160, PA1/PA2).
+#[test]
+fn an_envelope_entry_for_a_spec_the_bank_has_not_got_is_refused() {
+    let specs = vec![ridge()];
+    let mut bank = Bank::new(specs.clone()).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let pca = || online_core::Pca {
+        eig: vec![1.0],
+        trace: 1.0,
+        loadings: vec![1.0],
+    };
+    let z = || GroupKey(Some("z".into()));
+    type Edit<'a> = (&'a str, &'a dyn Fn(&mut BankFile));
+    let edits: [Edit; 6] = [
+        ("high_water", &|f| f.high_water.push((7, z()))),
+        ("clock_dtypes", &|f| {
+            f.clock_dtypes.push((7, crate::stream::ClockDtype::Numeric));
+        }),
+        ("key_integer", &|f| f.key_integer.push((7, true))),
+        ("resolvers", &|f| {
+            f.resolvers.push((7, vec![(z(), vec![1, 2])]))
+        }),
+        ("pca_prev", &|f| f.pca_prev.push((7, String::new(), pca()))),
+        ("pca_prev_by_group", &|f| {
+            f.pca_prev_by_group.push((7, z(), String::new(), pca()));
+        }),
+    ];
+    for (what, edit) in edits {
+        let b = reencoded(&bytes, edit);
+        for expected in [None, Some(&specs[..])] {
+            match Bank::load_bytes(&b, expected) {
+                Err(err) => assert!(
+                    err.contains("damaged") && err.contains(what) && err.contains("spec 7"),
+                    "{what}: {err}"
+                ),
+                Ok(loaded) => {
+                    let again: BankFile =
+                        rmp_serde::from_slice(&loaded.save_bytes().unwrap()).unwrap();
+                    panic!(
+                        "{what}: an entry for spec 7 of 1 loaded; saved again, the file \
+                         holds {} PCA entries",
+                        again.pca_prev.len() + again.pca_prev_by_group.len()
+                    );
+                }
+            }
+        }
+    }
+    assert!(Bank::load_bytes(&bytes, Some(&specs)).is_ok());
+}
+
+/// PA2: a file above this build's schema was told it was "saved before
+/// schema 37" and to refit, where the fix is to upgrade; one below keeps
+/// today's message.
+#[test]
+fn a_schema_refusal_says_which_side_of_the_range_the_file_is_on() {
+    let specs = vec![ridge()];
+    let mut bank = Bank::new(specs.clone()).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let at = |v: u32| reencoded(&bytes, |f| f.schema_version = v);
+    let current = online_core::SCHEMA_VERSION;
+    let newer = Bank::load_bytes(&at(current + 1), Some(&specs))
+        .err()
+        .expect("a newer file loaded");
+    assert!(
+        newer.contains("written by a newer version")
+            && newer.contains(&format!("schema {}", current + 1))
+            && newer.contains(&format!("this build reads up to {current}"))
+            && newer.contains("upgrade polars-online")
+            && !newer.contains("refit"),
+        "{newer}"
+    );
+    let older = Bank::load_bytes(&at(super::MIN_BANK_SCHEMA_VERSION - 1), Some(&specs))
+        .err()
+        .expect("an older file loaded");
+    assert!(
+        older.contains("not supported")
+            && older.contains("refit it from its input")
+            && !older.contains("newer"),
+        "{older}"
+    );
+}
+
 /// PA2: a closed row whose spec index, targets or Gram do not fit its
 /// spec loaded, saved again, and panicked in `closed_groups`.
 #[test]

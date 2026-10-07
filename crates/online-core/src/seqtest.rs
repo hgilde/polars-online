@@ -193,6 +193,7 @@ impl OnlineModel for SeqTest {
         match &s.model {
             ModelState::SeqTest(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("seqtest", m.cfg.validate())?;
                 // The four per-target vectors at the cfg's width (review
                 // 2026-09-18, B3).
                 let n = m.cfg.n_targets;
@@ -245,6 +246,34 @@ mod tests {
         match SeqTest::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A state's configuration is held to what `new` holds a fresh one to:
+    /// a `min_weight` of NaN loaded, and its gate -- `n_eff >= NaN`, false
+    /// for good -- withheld every output from then on (review 2026-10-06,
+    /// CD14).
+    #[test]
+    fn a_restored_state_whose_cfg_new_refuses_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = run(&[1.0, -1.0, 1.0]);
+        let mut s = m.state();
+        let ModelState::SeqTest(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.min_weight = f64::NAN;
+        match SeqTest::restore(&s) {
+            Err(StateError::Invalid(e)) => {
+                assert!(
+                    e.contains("configuration") && e.contains("min_weight"),
+                    "{e}"
+                );
+            }
+            Ok(mut back) => {
+                let out = back.step(&[], &[Some(1.0)], 1.0, 1.0);
+                panic!("min_weight = NaN loaded: {:?}", out.pred);
+            }
+            Err(e) => panic!("{e}"),
         }
     }
 

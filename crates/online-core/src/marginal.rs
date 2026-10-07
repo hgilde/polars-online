@@ -250,8 +250,12 @@ impl MarginalCfg {
         if let Some(bad) = self.min_weight.iter().find(|v| v.is_nan() || **v < 0.0) {
             return Err(format!("marginal: min_weight must be >= 0, got {bad}"));
         }
-        // `MarginalLags::new` checks the lags themselves; this is the pair of
-        // rules that involve `serial_rule`, which it cannot see.
+        // The lags' own rules, which `MarginalLags::new` needs, checked here
+        // too, so a restored state's are (review 2026-10-06, CD14); then the
+        // pair of rules that involve `serial_rule`, which it cannot see.
+        if !self.lags.is_empty() {
+            crate::marglag::check_lags(&self.lags, self.cross_lags.as_deref())?;
+        }
         if self.lags.is_empty() && self.serial_rule.is_some() {
             return Err(
                 "marginal: serial_rule needs `lags`; the correction is built from the \
@@ -2334,6 +2338,7 @@ impl OnlineModel for Marginal {
         match &s.model {
             crate::ModelState::Marginal(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("marginal", m.cfg.validate())?;
                 let (p, t) = (m.cfg.n_features, m.cfg.n_targets);
                 // Every per-pair vector at `p·t`, every per-target one at
                 // `t`, and the boxed parts exactly as the cfg asks (review

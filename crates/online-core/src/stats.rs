@@ -81,16 +81,54 @@ impl EwQuantile {
         if levels.iter().any(|p| !(*p > 0.0 && *p < 1.0)) {
             return Err("EwQuantile: every level must be in (0, 1)".into());
         }
-        Ok(Self {
-            levels: levels.to_vec(),
+        Ok(Self::empty(levels.to_vec()))
+    }
+
+    /// No weight at `levels`, which the caller has checked.
+    fn empty(levels: Vec<f64>) -> Self {
+        let n = levels.len();
+        Self {
+            levels,
             buckets: Vec::new(),
             lo: 0,
             zero: 0.0,
             total: 0.0,
             scale: 1.0,
-            at: vec![None; levels.len()],
-            below: vec![0.0; levels.len()],
-        })
+            at: vec![None; n],
+            below: vec![0.0; n],
+        }
+    }
+
+    /// Whether a restored sketch can be read and added to: a pointer and a
+    /// weight below it per level, each level in (0, 1), every pointer at the
+    /// zero bucket or inside the buckets, the buckets inside the indices a
+    /// value can have, every weight finite and none below 0, and a scale in
+    /// (0, 1]. What `add`, `settle` and `get` index by and divide by; a
+    /// pointer outside the buckets loaded and the next value indexed
+    /// `buckets[k - lo]` far past them (review 2026-10-06, CB2). The weight
+    /// below a level is a running sum its pointer's moves add to and take
+    /// from, which rounding can leave a hair under 0, so it is held to
+    /// finite alone.
+    pub fn has_shape(&self) -> bool {
+        let n = self.levels.len();
+        let lo = i64::from(self.lo);
+        let end = lo + self.buckets.len() as i64;
+        let indices = i64::from(Self::index(f64::MIN_POSITIVE))..=i64::from(Self::index(f64::MAX));
+        let weight = |w: &f64| w.is_finite() && *w >= 0.0;
+        self.at.len() == n
+            && self.below.len() == n
+            && self.levels.iter().all(|p| *p > 0.0 && *p < 1.0)
+            && (self.buckets.is_empty() || (indices.contains(&lo) && indices.contains(&(end - 1))))
+            && self
+                .at
+                .iter()
+                .all(|a| a.is_none_or(|k| (lo..end).contains(&i64::from(k))))
+            && self.buckets.iter().all(weight)
+            && weight(&self.zero)
+            && weight(&self.total)
+            && self.below.iter().all(|b| b.is_finite())
+            && self.scale > 0.0
+            && self.scale <= 1.0
     }
 
     /// The levels this sketch reports, in the order [`EwQuantile::get`]
@@ -278,9 +316,10 @@ impl EwQuantile {
         })
     }
 
-    /// Back to no weight, at the same levels.
+    /// Back to no weight, at the same levels: valid, since `new` checked
+    /// them and a restore holds a sketch to [`Self::has_shape`].
     pub fn reset(&mut self) {
-        *self = Self::new(&self.levels).expect("the levels were valid");
+        *self = Self::empty(std::mem::take(&mut self.levels));
     }
 }
 
@@ -969,6 +1008,62 @@ mod tests {
         q.reset();
         assert_eq!(q, EwQuantile::new(&levels).unwrap());
         assert_eq!(q.get(0), None);
+    }
+
+    /// The shape a restored sketch must hold (review 2026-10-06, CB2), one
+    /// part broken at a time: a sketch this module made always holds it,
+    /// at every level, across the zero bucket, the decay's folds and the
+    /// extreme indices, and each break is caught alone.
+    #[test]
+    fn a_sketch_holds_its_shape_and_each_break_is_caught() {
+        let mut q = EwQuantile::new(&[0.1, 0.5, 0.99]).unwrap();
+        assert!(q.has_shape(), "a new sketch");
+        // At 0.8 a step the decay is folded in about every 200 rows.
+        for i in 0..400 {
+            q.age(0.8);
+            let v = match i % 5 {
+                0 => 0.0,
+                1 => f64::MIN_POSITIVE,
+                2 => f64::MAX,
+                _ => f64::from(i),
+            };
+            q.add(v, 1.0 + f64::from(i % 3));
+            assert!(q.has_shape(), "row {i}: {q:?}");
+        }
+        type Break<'a> = (&'a str, &'a dyn Fn(&mut EwQuantile));
+        let breaks: [Break; 11] = [
+            ("a pointer short", &|q| {
+                q.at.pop();
+            }),
+            ("a weight below short", &|q| {
+                q.below.pop();
+            }),
+            ("a level of 1", &|q| q.levels[0] = 1.0),
+            ("a pointer below the buckets", &|q| q.at[0] = Some(q.lo - 1)),
+            ("a pointer past the buckets", &|q| {
+                q.at[0] = Some(q.lo + q.buckets.len() as i32);
+            }),
+            ("buckets below the indices", &|q| q.lo = i32::MIN),
+            ("a negative bucket", &|q| q.buckets[0] = -1.0),
+            ("an infinite zero bucket", &|q| q.zero = f64::INFINITY),
+            ("a NaN total", &|q| q.total = f64::NAN),
+            ("a NaN weight below", &|q| q.below[0] = f64::NAN),
+            ("a scale of 0", &|q| q.scale = 0.0),
+        ];
+        for (what, f) in breaks {
+            let mut broken = q.clone();
+            f(&mut broken);
+            assert!(!broken.has_shape(), "{what}");
+        }
+        // A scale above 1 is no decay a step can leave, nor is a NaN one.
+        for scale in [1.5, f64::NAN] {
+            let mut broken = q.clone();
+            broken.scale = scale;
+            assert!(!broken.has_shape(), "a scale of {scale}");
+        }
+        // And `reset` keeps the levels without checking them again.
+        q.reset();
+        assert!(q.has_shape() && q.get(2).is_none());
     }
 
     /// "Anything else is not seen": a weight of 0 leaves the sketch exactly

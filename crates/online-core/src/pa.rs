@@ -288,6 +288,7 @@ impl OnlineModel for Pa {
         match &s.model {
             ModelState::Pa(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("pa", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // One coefficient row per target at the cfg's width; a
                 // short one loaded and panicked on the first `step` (review

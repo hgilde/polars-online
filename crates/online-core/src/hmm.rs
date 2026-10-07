@@ -756,6 +756,7 @@ impl crate::OnlineModel for Hmm {
         match &s.model {
             crate::ModelState::Hmm(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("hmm", m.cfg.validate())?;
                 // `k` states at the cfg's width, `k` marginals, a `k×k`
                 // transition matrix and buffered rows `d` long (review
                 // 2026-09-18, B3).

@@ -1125,6 +1125,9 @@ impl crate::OnlineModel for CorrChange {
         match &s.model {
             crate::ModelState::CorrChange(m) => {
                 let mut m = (**m).clone();
+                // First, so nothing below is read from a cfg `new` refuses:
+                // the sequential critical value is solved from it.
+                crate::model::check_cfg("corrchange", m.cfg.validate())?;
                 // The diagnostics and every ring row at the cfg's width
                 // (review 2026-09-18, B3); a `scalar` ring holds `u`.
                 let d = m.cfg.n_features;
@@ -1186,6 +1189,48 @@ mod tests {
         match CorrChange::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A state's configuration is held to what `new` holds a fresh one to:
+    /// a `window` state whose `perm_block` is 0 passed the shape checks,
+    /// which read the ring and the monitoring period alone, and the first
+    /// row that filled both windows divided by it in `permutation_crit`
+    /// (review 2026-10-06, CD14). The cfg is checked before the sequential
+    /// critical value is solved from it, which a damaged `boundary_gamma`
+    /// would have kept busy for hours.
+    #[test]
+    fn a_restored_corrchange_whose_cfg_new_refuses_is_refused() {
+        use crate::{ModelState, StateError};
+        let m = CorrChange::new(CorrChangeCfg {
+            span_rows: 5,
+            n_perm: 20,
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let mut v = serde_json::to_value(&m).unwrap();
+        v["cfg"]["perm_block"] = serde_json::json!(0);
+        let edited: CorrChange = serde_json::from_value(v).unwrap();
+        assert!(
+            edited.cfg.validate().is_err(),
+            "`new` refuses perm_block = 0"
+        );
+        let s = crate::State::new(ModelState::CorrChange(Box::new(edited)));
+        match CorrChange::restore(&s) {
+            Err(StateError::Invalid(e)) => {
+                assert!(
+                    e.contains("configuration") && e.contains("perm_block"),
+                    "{e}"
+                );
+            }
+            Ok(mut back) => {
+                let mut n = Normals::new(7);
+                for _ in 0..10 {
+                    back.step(&n.pair(0.3), &[], 1.0, 1.0);
+                }
+                panic!("perm_block = 0 loaded and ran");
+            }
+            Err(e) => panic!("{e}"),
         }
     }
     use crate::OnlineModel;

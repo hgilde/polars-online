@@ -733,6 +733,7 @@ impl OnlineModel for Micro {
         match &s.model {
             ModelState::Micro(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("micro", m.cfg.validate())?;
                 // The feature moments, the metric weights and every centre
                 // `p` wide (review 2026-09-18, B3).
                 let p = m.cfg.n_features;
@@ -786,6 +787,37 @@ mod tests {
         match Micro::restore(&s) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// A state's configuration is held to what `new` holds a fresh one to:
+    /// `max_clusters = 0` loaded, and the first learned row evicted at the
+    /// cap with no summary to evict, and hit `create`'s `expect` (review
+    /// 2026-10-06, CF4).
+    #[test]
+    fn a_restored_state_whose_cfg_new_refuses_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let mut s = Micro::new(cfg()).unwrap().state();
+        let ModelState::Micro(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cfg.max_clusters = 0;
+        assert!(
+            inner.cfg.validate().is_err(),
+            "`new` refuses max_clusters = 0"
+        );
+        match Micro::restore(&s) {
+            Err(StateError::Invalid(e)) => {
+                assert!(
+                    e.contains("configuration") && e.contains("max_clusters"),
+                    "{e}"
+                );
+            }
+            Ok(mut back) => {
+                back.step(&[0.0, 0.0], &[], 0.0, 1.0);
+                panic!("max_clusters = 0 loaded and ran");
+            }
+            Err(e) => panic!("{e}"),
         }
     }
 

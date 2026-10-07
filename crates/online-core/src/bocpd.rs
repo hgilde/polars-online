@@ -1098,6 +1098,7 @@ impl crate::OnlineModel for Bocpd {
         match &s.model {
             crate::ModelState::Bocpd(m) => {
                 let m = (**m).clone();
+                crate::model::check_cfg("bocpd", m.cfg.validate())?;
                 // One log-joint per run, at least one run, and every run's
                 // moments at the emission's width (review 2026-09-18, B3).
                 let d = m.cfg.n_features;

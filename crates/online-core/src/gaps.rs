@@ -836,18 +836,29 @@ impl Acc {
 
     /// Whether the accumulators are those of `n_targets` targets over `k`
     /// slots, with every target reading a Gram that exists and every Gram
-    /// read: what a restored state must hold to be stepped.
+    /// read: what a restored state must hold to be stepped. Each Gram's
+    /// means and co-moments at its width, and the target moments at theirs
+    /// in every part a row updates: a Gram was held to its `k` and the
+    /// target moments to their means alone, so a short vector loaded and
+    /// the next row indexed past it (review 2026-10-06, beside CA2).
     pub(crate) fn has_shape(&self, n_targets: usize, k: usize) -> bool {
         let g = &self.grams;
         !g.grams.is_empty()
-            && g.grams.iter().all(|c| c.k() == k)
+            && g.grams.iter().all(|c| c.has_shape(k))
             && g.of.len() == n_targets
             && g.of.iter().all(|&o| o < g.grams.len())
             && (0..g.grams.len()).all(|i| g.of.contains(&i))
             && self.wj.len() == n_targets
-            && self.tm.means().len() == n_targets
+            && tm_has_shape(&self.tm, n_targets)
             && self.cross.has_shape(n_targets, k)
     }
+}
+
+/// Whether target moments are `n_targets` wide in each part a row or a
+/// window reads: the means, the variances and the Kish sums. The means'
+/// low parts are read where they are there (`crate::comp::lo_of`).
+fn tm_has_shape(t: &TargetMoments, n_targets: usize) -> bool {
+    t.means().len() == n_targets && t.vars().len() == n_targets && t.q().len() == n_targets
 }
 
 /// [`Acc`] as a window's snapshot holds it: decayed to the row it precedes.
@@ -869,6 +880,24 @@ impl AccSnap {
     pub(crate) fn offsets_to_means(&mut self) {
         self.cross.offsets_to_means();
         self.cross.mj_lo = Vec::new();
+    }
+
+    /// Whether a snapshot is of `n_targets` targets over `k` slots, as the
+    /// live accumulators must be ([`Acc::has_shape`]): every Gram's moments
+    /// at the width with a weight a subtraction can read, each target
+    /// reading a Gram the snapshot holds, and every per-target vector
+    /// `n_targets` long -- what [`Acc::window`] and [`Acc::window_weights`]
+    /// index. A restored window held none of it, so a snapshot a target
+    /// short loaded and the next row's window read past it (review
+    /// 2026-10-06, CA2).
+    pub(crate) fn has_shape(&self, n_targets: usize, k: usize) -> bool {
+        let g = &self.grams;
+        g.grams.iter().all(|m| m.has_shape(k))
+            && g.of.len() == n_targets
+            && g.of.iter().all(|&o| o < g.grams.len())
+            && self.wj.len() == n_targets
+            && self.cross.has_shape(n_targets, k)
+            && self.tm.as_ref().is_none_or(|t| tm_has_shape(t, n_targets))
     }
 }
 

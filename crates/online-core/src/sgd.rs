@@ -739,6 +739,8 @@ impl OnlineModel for Sgd {
         match &s.model {
             ModelState::Sgd(m) => {
                 let mut m = (**m).clone();
+                // The shapes are checked as the state is read (`SgdV3`).
+                crate::model::check_cfg("sgd", m.cfg.validate())?;
                 m.ensure_buffers();
                 Ok(m)
             }

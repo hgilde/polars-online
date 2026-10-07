@@ -651,41 +651,42 @@ fn every_state_kind_is_distinct_and_named() {
     // read off a real model's state, where four of them were (review
     // 2026-09-18, T2; docs/PLAN.md task 112). `robust` covers both of its
     // losses, and the two `kalman` configurations are one kind.
-    let from_states = [
-        EwRidge::new(ew_ridge_cfg()).unwrap().state().model.kind(),
-        Rls::new(rls_cfg()).unwrap().state().model.kind(),
-        Lasso::new(lasso_cfg()).unwrap().state().model.kind(),
-        Kalman::new(kalman_cfg()).unwrap().state().model.kind(),
-        Robust::new(robust_cfg(ROBUST_LOSSES[0]))
-            .unwrap()
-            .state()
-            .model
-            .kind(),
-        Ftrl::new(ftrl_cfg()).unwrap().state().model.kind(),
-        Sgd::new(sgd_cfg()).unwrap().state().model.kind(),
-        Pa::new(pa_cfg()).unwrap().state().model.kind(),
-        Holt::new(holt_cfg()).unwrap().state().model.kind(),
-        EwCovModel::new(ew_cov_model_cfg())
-            .unwrap()
-            .state()
-            .model
-            .kind(),
-        KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
-        Micro::new(micro_cfg()).unwrap().state().model.kind(),
-        EwClass::new(ew_class_cfg()).unwrap().state().model.kind(),
-        SeqTest::new(seqtest_cfg()).unwrap().state().model.kind(),
-        Marginal::new(marginal_cfg()).unwrap().state().model.kind(),
-        Deco::new(deco_cfg()).unwrap().state().model.kind(),
-        Rcov::new(rcov_cfg()).unwrap().state().model.kind(),
-        Hmm::new(hmm_cfg()).unwrap().state().model.kind(),
-        CorrChange::new(corrchange_cfg())
-            .unwrap()
-            .state()
-            .model
-            .kind(),
-        Bocpd::new(bocpd_cfg()).unwrap().state().model.kind(),
+    let states = [
+        EwRidge::new(ew_ridge_cfg()).unwrap().state(),
+        Rls::new(rls_cfg()).unwrap().state(),
+        Lasso::new(lasso_cfg()).unwrap().state(),
+        Kalman::new(kalman_cfg()).unwrap().state(),
+        Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap().state(),
+        Ftrl::new(ftrl_cfg()).unwrap().state(),
+        Sgd::new(sgd_cfg()).unwrap().state(),
+        Pa::new(pa_cfg()).unwrap().state(),
+        Holt::new(holt_cfg()).unwrap().state(),
+        EwCovModel::new(ew_cov_model_cfg()).unwrap().state(),
+        KMeans::new(kmeans_cfg()).unwrap().state(),
+        Micro::new(micro_cfg()).unwrap().state(),
+        EwClass::new(ew_class_cfg()).unwrap().state(),
+        SeqTest::new(seqtest_cfg()).unwrap().state(),
+        Marginal::new(marginal_cfg()).unwrap().state(),
+        Deco::new(deco_cfg()).unwrap().state(),
+        Rcov::new(rcov_cfg()).unwrap().state(),
+        Hmm::new(hmm_cfg()).unwrap().state(),
+        CorrChange::new(corrchange_cfg()).unwrap().state(),
+        Bocpd::new(bocpd_cfg()).unwrap().state(),
     ];
+    let from_states: Vec<&str> = states.iter().map(|s| s.model.kind()).collect();
     assert_eq!(from_states, kinds);
+    // Each state's variant beside its kind is a pair `PROBED` lists, so the
+    // probe found by the kind is the variant's (review 2026-10-06, CF12).
+    let bare = State::new(ModelState::EwCov(Box::new(EwCov::new(1))));
+    for s in states.iter().chain([&bare]) {
+        let debug = format!("{:?}", s.model);
+        let variant = debug.split('(').next().unwrap();
+        assert!(
+            PROBED.contains(&(variant, s.model.kind())),
+            "{variant} names {} and PROBED pairs it otherwise",
+            s.model.kind()
+        );
+    }
     assert_eq!(
         Robust::new(robust_cfg(ROBUST_LOSSES[1]))
             .unwrap()
@@ -1162,6 +1163,121 @@ fn every_model_refuses_a_decay_it_cannot_run_on() {
     }
 }
 
+/// `model.<variant>.cfg.<key>` of a state's msgpack, set to `value`.
+fn set_cfg(v: &mut rmpv::Value, key: &str, value: rmpv::Value) {
+    fn entry<'a>(v: &'a mut rmpv::Value, key: &str) -> &'a mut rmpv::Value {
+        let rmpv::Value::Map(entries) = v else {
+            panic!("a map holds {key}")
+        };
+        &mut entries
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == Some(key))
+            .unwrap_or_else(|| panic!("no {key}"))
+            .1
+    }
+    let rmpv::Value::Map(variant) = entry(v, "model") else {
+        panic!("a model")
+    };
+    *entry(entry(&mut variant[0].1, "cfg"), key) = value;
+}
+
+/// Every model's `restore` holds the configuration its state carries to
+/// what its `new` holds a fresh one to: no `restore` ran `validate`, so a
+/// state whose cfg `new` refuses -- `kmeans` with `k = 0`, `micro` with
+/// `max_clusters = 0`, a half-life of 0 -- loaded and failed at a later
+/// row, as a panic or a NaN for good (review 2026-10-06, CF4, CA6, CD14).
+/// Each model's state with one cfg field set, in the named msgpack a bank
+/// writes, to a value its `validate` refuses: a half-life of 0 for the
+/// seventeen with a `Decay`, a field of its own for the four without.
+#[test]
+fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
+    fn refused<M: OnlineModel>(m: M, key: &str, value: rmpv::Value, says: &str) -> String {
+        let state = m.state();
+        let kind = state.model.kind();
+        let damaged = edit_state(&state, |v| set_cfg(v, key, value));
+        match M::restore(&damaged) {
+            Err(StateError::Invalid(e)) => {
+                let head = format!("{kind}: the state's configuration is refused");
+                assert!(e.starts_with(&head) && e.contains(says), "{kind}: {e}");
+            }
+            Err(e) => panic!("{kind}: {e}"),
+            Ok(_) => panic!("{kind}: a {key} its `new` refuses was restored"),
+        }
+        assert!(M::restore(&state).is_ok(), "{kind}: the state as saved");
+        kind.to_string()
+    }
+    let zero = || rmpv::Value::Map(vec![("Halflife".into(), 0.0.into())]);
+    let h = "half_life must be > 0";
+    let kinds = [
+        refused(EwRidge::new(ew_ridge_cfg()).unwrap(), "decay", zero(), h),
+        refused(Rls::new(rls_cfg()).unwrap(), "decay", zero(), h),
+        refused(Lasso::new(lasso_cfg()).unwrap(), "decay", zero(), h),
+        refused(Kalman::new(kalman_cfg()).unwrap(), "decay", zero(), h),
+        refused(
+            Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap(),
+            "decay",
+            zero(),
+            h,
+        ),
+        refused(
+            Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap(),
+            "decay",
+            zero(),
+            h,
+        ),
+        refused(Ftrl::new(ftrl_cfg()).unwrap(), "decay", zero(), h),
+        refused(Sgd::new(sgd_cfg()).unwrap(), "decay", zero(), h),
+        refused(Pa::new(pa_cfg()).unwrap(), "decay", zero(), h),
+        refused(
+            Holt::new(holt_cfg()).unwrap(),
+            "level_half_life",
+            0.0.into(),
+            "level_half_life must be > 0",
+        ),
+        refused(
+            EwCovModel::new(ew_cov_model_cfg()).unwrap(),
+            "decay",
+            zero(),
+            h,
+        ),
+        refused(KMeans::new(kmeans_cfg()).unwrap(), "decay", zero(), h),
+        refused(Micro::new(micro_cfg()).unwrap(), "decay", zero(), h),
+        refused(EwClass::new(ew_class_cfg()).unwrap(), "decay", zero(), h),
+        refused(
+            SeqTest::new(seqtest_cfg()).unwrap(),
+            "min_weight",
+            f64::NAN.into(),
+            "min_weight must be >= 0",
+        ),
+        refused(Marginal::new(marginal_cfg()).unwrap(), "decay", zero(), h),
+        refused(Deco::new(deco_cfg()).unwrap(), "decay", zero(), h),
+        refused(
+            Rcov::new(rcov_cfg()).unwrap(),
+            "theta",
+            0.0.into(),
+            "theta must be finite and > 0",
+        ),
+        refused(Hmm::new(hmm_cfg()).unwrap(), "decay", zero(), h),
+        refused(
+            CorrChange::new(corrchange_cfg()).unwrap(),
+            "decay",
+            zero(),
+            h,
+        ),
+        refused(
+            Bocpd::new(bocpd_cfg()).unwrap(),
+            "hazard",
+            0.5.into(),
+            "must be finite and > 1",
+        ),
+    ];
+    // Every model's `restore`: the twenty kinds, `robust` under both losses.
+    let mut seen: Vec<&str> = kinds.iter().map(String::as_str).collect();
+    seen.dedup();
+    let models = PROBED.len() - 1;
+    assert_eq!(seen.len(), models, "{seen:?}");
+}
+
 /// Exactly the models that solve on a schedule report a solve share --
 /// `ewridge`, `lasso`, and `robust` under both losses -- each the share it
 /// is given; every other model keeps the trait's `None` whatever it is set
@@ -1220,31 +1336,37 @@ fn exactly_the_scheduled_solvers_report_a_solve_share() {
     }
 }
 
-/// The variants of `ModelState` this file probes. A model added to the enum
-/// and not to this list fails here, which is the reminder to write its
-/// `*_cfg()` and probe above (docs/EXTENDING.md).
-const PROBED: &[&str] = &[
-    "EwCov",
-    "EwRidge",
-    "Rls",
-    "Lasso",
-    "Kalman",
-    "Robust",
-    "Ftrl",
-    "EwCovModel",
-    "Sgd",
-    "Pa",
-    "Holt",
-    "KMeans",
-    "Micro",
-    "EwClass",
-    "SeqTest",
-    "Marginal",
-    "Deco",
-    "Rcov",
-    "Hmm",
-    "CorrChange",
-    "Bocpd",
+/// The variants of `ModelState` this file probes, each beside the kind its
+/// states name (`ModelState::kind`), which names its probe: `fn
+/// <kind>_predict_is_the_step()` above. A model added to the enum and not to
+/// this list fails here, and so does an entry without its probe, which is
+/// the reminder to write its `*_cfg()` and probe (docs/EXTENDING.md): the
+/// list was held to the enum alone, so an entry with no probe passed
+/// (review 2026-10-06, CF12). The bare accumulator is no model and has no
+/// probe; `every_state_kind_is_distinct_and_named` reads its kind, and
+/// every model's, off a real state and holds each pair here to it.
+const PROBED: &[(&str, &str)] = &[
+    ("EwCov", "ew_cov_accumulator"),
+    ("EwRidge", "ew_ridge"),
+    ("Rls", "rls"),
+    ("Lasso", "lasso"),
+    ("Kalman", "kalman"),
+    ("Robust", "robust"),
+    ("Ftrl", "ftrl"),
+    ("EwCovModel", "ew_cov"),
+    ("Sgd", "sgd"),
+    ("Pa", "pa"),
+    ("Holt", "holt"),
+    ("KMeans", "kmeans"),
+    ("Micro", "micro"),
+    ("EwClass", "ew_class"),
+    ("SeqTest", "seqtest"),
+    ("Marginal", "marginal"),
+    ("Deco", "deco"),
+    ("Rcov", "rcov"),
+    ("Hmm", "hmm"),
+    ("CorrChange", "corrchange"),
+    ("Bocpd", "bocpd"),
 ];
 
 #[test]
@@ -1256,11 +1378,24 @@ fn every_model_state_variant_is_probed_here() {
         .to_string();
     let quoted: Vec<&str> = err.split('`').skip(1).step_by(2).collect();
     assert_eq!(quoted[0], "Nope", "{err}");
+    let variants: Vec<&str> = PROBED.iter().map(|(variant, _)| *variant).collect();
     assert_eq!(
         &quoted[1..],
-        PROBED,
+        variants,
         "a ModelState variant has no contract probe"
     );
+    // Each model's probe is in this file, found by its kind.
+    let src = include_str!("model_contract.rs");
+    for (variant, kind) in PROBED {
+        if *kind == "ew_cov_accumulator" {
+            continue;
+        }
+        let probe = format!("fn {kind}_predict_is_the_step()");
+        assert!(
+            src.contains(&probe),
+            "{variant}: add `{probe}` to this file"
+        );
+    }
 }
 
 #[test]

@@ -295,6 +295,7 @@ impl OnlineModel for Holt {
         match &s.model {
             ModelState::Holt(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("holt", m.cfg.validate())?;
                 let n = m.cfg.n_targets;
                 if m.since.len() != n {
                     m.since = vec![0.0; n];

@@ -511,6 +511,23 @@ impl Stack {
             n: self.sums[b + 2],
         }
     }
+
+    /// Whether every arena is as long as the rows say, at `n` operators:
+    /// what the accessors above index by ([`Windows::check`]).
+    fn has_width(&self, n: usize) -> bool {
+        let len = self.seq.len();
+        self.n == n
+            && [
+                self.tau.len(),
+                self.off.len(),
+                self.end.len(),
+                self.at.len(),
+            ]
+            .iter()
+            .all(|&l| l == len)
+            && len.checked_mul(ROW * n) == Some(self.vals.len())
+            && len.checked_mul(SUM * n) == Some(self.sums.len())
+    }
 }
 
 /// Write `a` into `out`'s slot for operator `j`.
@@ -771,6 +788,14 @@ impl Queue {
 
     fn len(&self) -> usize {
         self.front.len() + self.back.len()
+    }
+
+    /// Whether both stacks and the running sums are at `n` operators.
+    fn has_width(&self, n: usize) -> bool {
+        self.n == n
+            && self.front.has_width(n)
+            && self.back.has_width(n)
+            && (self.total.is_empty() || self.total.len() == SUM * n)
     }
 }
 
@@ -1171,6 +1196,174 @@ impl Windows {
     /// the windows as the one group's clock sees it.
     pub fn set_grouped(&mut self, grouped: bool) {
         self.grouped = grouped;
+    }
+
+    /// Whether a core read back from a state file holds what every method
+    /// here indexes by (review 2026-10-06, PD1): the loader compared the
+    /// kernels, the operators and the clock with its own call's and the
+    /// held rows' count with the frame's, and took the rest on trust, so a
+    /// damaged file that still decoded panicked at the next call. The rest:
+    /// each kernel's operators and the output count are the operators',
+    /// the held values `n_outputs` a held row, the rows ready among those
+    /// held, each group at its kernels' widths with its waiting rows held
+    /// and still open by exactly the windows left to close over them, the
+    /// silent list a list of the groups, and the keys the groups one to
+    /// one. `Err` names the first that fails.
+    ///
+    /// # Errors
+    ///
+    /// A core that is none this module could have built and fed.
+    pub fn check(&self) -> Result<(), String> {
+        for k in &self.kernels {
+            k.check()?;
+        }
+        let (nk, no) = (self.kernels.len(), self.ops.len());
+        let mut members = vec![Vec::new(); nk];
+        for (o, op) in self.ops.iter().enumerate() {
+            match members.get_mut(op.kernel) {
+                Some(m) => m.push(o),
+                None => return Err(format!("operator {o} names kernel {}", op.kernel)),
+            }
+        }
+        if no == 0 || members != self.members || members.iter().any(Vec::is_empty) {
+            return Err("its kernels' operators are not its operators".into());
+        }
+        if self.n_outputs != no {
+            return Err(format!("{} outputs for {no} operators", self.n_outputs));
+        }
+        let is_forward = |k: &KernelDef| k.direction == Direction::Forward;
+        let forward = self.kernels.iter().filter(|k| is_forward(k)).count();
+        if self.n_forward as usize != forward {
+            return Err(format!("{} forward kernels of {forward}", self.n_forward));
+        }
+        let held = self.held_meta.len();
+        if held.checked_mul(no) != Some(self.held_values.len()) {
+            return Err(format!(
+                "{} values held for {held} rows of {no} outputs",
+                self.held_values.len()
+            ));
+        }
+        let kept = self.held_meta.iter().take(self.ready).filter(|m| !m.drop);
+        if self.ready > held || self.ready_kept != kept.count() {
+            return Err(format!("{} rows ready of {held} held", self.ready));
+        }
+        if self.held_first.checked_add(held as u64) != Some(self.next_seq) {
+            return Err(format!(
+                "{held} rows held from row {} before row {}",
+                self.held_first, self.next_seq
+            ));
+        }
+        // Each group at its kernels' widths, and the windows still open over
+        // each held row, which `close` and `flush_group` count down.
+        let n_wait = u32::from(
+            self.kernels
+                .iter()
+                .any(|k| k.direction == Direction::Backward && k.closed.near(Direction::Backward)),
+        );
+        let is_held = |seq: u64| seq >= self.held_first && seq < self.next_seq;
+        let widths = |v: &[Vec<f64>]| {
+            v.len() == nk && v.iter().zip(&self.members).all(|(x, m)| x.len() == m.len())
+        };
+        let mut open = vec![0u32; held];
+        for (gi, g) in self.groups.iter().enumerate() {
+            let fits = g.queues.len() == nk
+                && g.queues
+                    .iter()
+                    .zip(&self.members)
+                    .all(|(q, m)| q.has_width(m.len()))
+                && g.open.len() == nk
+                && widths(&g.open_x)
+                && widths(&g.open_held)
+                && widths(&g.stamp_values)
+                && g.closed.len() == nk
+                && g.closed.iter().all(|&c| c <= g.waiting.len())
+                && g.last_valued.len() == no
+                && g.held.len() == no
+                && (forward > 0 || g.waiting.is_empty())
+                && (n_wait > 0 || g.pending.is_empty())
+                && g.waiting.iter().all(|w| is_held(w.seq))
+                && g.pending.iter().all(|&s| is_held(s))
+                && (!g.linked || g.last_raw.is_some());
+            if !fits {
+                return Err(format!("group {gi} does not fit its kernels and held rows"));
+            }
+            for (i, w) in g.waiting.iter().enumerate() {
+                let r = (w.seq - self.held_first) as usize;
+                let still = self.kernels.iter().zip(&g.closed);
+                open[r] += still.filter(|&(k, &c)| is_forward(k) && i >= c).count() as u32;
+            }
+            for &s in &g.pending {
+                open[(s - self.held_first) as usize] += n_wait;
+            }
+        }
+        if self.held_meta.iter().zip(&open).any(|(m, &o)| m.open != o) {
+            return Err("a held row's open windows are not the ones still open over it".into());
+        }
+        self.check_links()?;
+        // The keys name the groups one to one: `group` makes each group
+        // under its key, and `push` reads a group by the index a key gives.
+        let mut named = vec![false; self.groups.len()];
+        for &gi in self.index.values().chain(&self.null_group) {
+            match named.get_mut(gi) {
+                Some(seen) if !*seen => *seen = true,
+                _ => return Err("its keys do not name its groups one to one".into()),
+            }
+        }
+        if named.contains(&false) {
+            return Err("its keys do not name its groups one to one".into());
+        }
+        Ok(())
+    }
+
+    /// The silent list: links inside the groups, from the head through each
+    /// linked group once, back links that agree, the tail last, and no
+    /// unlinked group holding a link ([`Self::check`]).
+    fn check_links(&self) -> Result<(), String> {
+        let n = self.groups.len();
+        let bad = || Err("its silent list is not a list of its groups".to_string());
+        let inside = |l: Option<usize>| l.is_none_or(|i| i < n);
+        let mut links = self.groups.iter().flat_map(|g| [g.prev_link, g.next_link]);
+        if !inside(self.head) || !inside(self.tail) || !links.all(inside) {
+            return bad();
+        }
+        let (mut at, mut prev, mut walked) = (self.head, None, 0);
+        while let Some(i) = at {
+            let g = &self.groups[i];
+            if walked == n || !g.linked || g.prev_link != prev {
+                return bad();
+            }
+            (prev, at, walked) = (Some(i), g.next_link, walked + 1);
+        }
+        let linked = self.groups.iter().filter(|g| g.linked).count();
+        let stray = self
+            .groups
+            .iter()
+            .any(|g| !g.linked && (g.prev_link.is_some() || g.next_link.is_some()));
+        if prev != self.tail || walked != linked || stray {
+            return bad();
+        }
+        Ok(())
+    }
+
+    /// One named damage, as a bit flip or a truncated array in a state file
+    /// would leave the core: for the loader's test in `windows_frame.rs`,
+    /// the fields being this module's.
+    #[cfg(test)]
+    pub(crate) fn damage(&mut self, what: &str) {
+        match what {
+            "held_values" => {
+                self.held_values.pop_back();
+            }
+            "n_outputs" => self.n_outputs = 0,
+            "queue" => self.groups[0].queues[0].n += 1,
+            "link" => self.head = Some(self.groups.len()),
+            "ready" => self.ready = self.held_meta.len() + 1,
+            "waiting" => {
+                let past = self.held_first + self.held_meta.len() as u64;
+                self.groups[0].waiting[0].seq = past;
+            }
+            other => unreachable!("no damage {other:?}"),
+        }
     }
 
     /// The scratch buffers, which a loaded state lacks.
@@ -2300,10 +2493,88 @@ mod tests {
             if (i + 1) % every == 0 {
                 t.append(core.drain(), &mut next);
             }
+            // Every state a stream passes through holds what a loader
+            // checks (review 2026-10-06, PD1): `check` refuses no core this
+            // module made, across every stream the brute force runs.
+            core.check()
+                .unwrap_or_else(|e| panic!("after row {i}: {e}"));
         }
         t.append(core.finish(), &mut next);
+        core.check().unwrap_or_else(|e| panic!("finished: {e}"));
         assert_eq!(next, rows.len() as u64);
         Ok(t)
+    }
+
+    /// Each invariant [`Windows::check`] holds a loaded core to, broken
+    /// alone on a core fed a stream with groups, sessions, gaps and every
+    /// kernel -- so with rows held, waiting on forward windows and on the
+    /// next stamp, and groups in the silent list -- is refused by name
+    /// (review 2026-10-06, PD1).
+    #[test]
+    fn each_part_of_a_cores_invariants_is_checked_alone() {
+        let (kernels, ops) = all_kernels();
+        let rows = stream(9, 120, 3, true, true);
+        let clock = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let mut core = Windows::new(kernels, ops, clock).unwrap();
+        core.set_grouped(true);
+        for r in &rows[..77] {
+            push(&mut core, r).unwrap();
+        }
+        core.drain_kept(3);
+        core.check().unwrap();
+        let is_fwd = |k: &KernelDef| k.direction == Direction::Forward;
+        let fwd = core.kernels.iter().position(is_fwd).unwrap();
+        let held_in = |f: fn(&Group) -> bool| core.groups.iter().position(f);
+        let waiting = held_in(|g| !g.waiting.is_empty()).expect("a waiting row");
+        let pending = held_in(|g| !g.pending.is_empty()).expect("a pending row");
+        let (head, tail) = (core.head.expect("a silent list"), core.tail.unwrap());
+        assert_ne!(head, tail, "two groups listed");
+        let fit = "does not fit";
+        type Damage<'a> = (&'a str, &'a dyn Fn(&mut Windows));
+        let damage: [Damage; 21] = [
+            ("names kernel", &|c| c.ops[0].kernel = 99),
+            ("operators are not", &|c| c.members.swap(0, 1)),
+            ("outputs for", &|c| c.n_outputs += 1),
+            ("forward kernels of", &|c| c.n_forward += 1),
+            ("values held for", &|c| {
+                c.held_values.pop_back();
+            }),
+            ("rows ready of", &|c| c.ready = c.held_meta.len() + 1),
+            ("rows ready of", &|c| c.ready_kept += 1),
+            ("before row", &|c| c.held_first += 1),
+            (fit, &|c| c.groups[0].queues[0].n += 1),
+            (fit, &|c| c.groups[0].queues[fwd].back.tau.push(0.0)),
+            (fit, &|c| {
+                c.groups[0].open_x[0].pop();
+            }),
+            (fit, &|c| {
+                c.groups[waiting].closed[fwd] = c.groups[waiting].waiting.len() + 1;
+            }),
+            (fit, &|c| {
+                c.groups[0].last_valued.pop();
+            }),
+            (fit, &|c| c.groups[waiting].waiting[0].seq = c.next_seq),
+            (fit, &|c| {
+                c.groups[pending].pending[0] = c.held_first.wrapping_sub(1);
+            }),
+            (fit, &|c| c.groups[head].last_raw = None),
+            ("open windows", &|c| c.held_meta[c.ready].open += 1),
+            ("silent list", &|c| c.head = Some(c.groups.len())),
+            ("silent list", &|c| c.groups[tail].next_link = Some(head)),
+            ("one to one", &|c| {
+                c.index.insert("stray".into(), 0);
+            }),
+            ("one to one", &|c| c.null_group = Some(c.groups.len())),
+        ];
+        for (says, f) in damage {
+            let mut broken = core.clone();
+            f(&mut broken);
+            let err = broken
+                .check()
+                .err()
+                .unwrap_or_else(|| panic!("{says}: passed"));
+            assert!(err.contains(says), "{says}: {err}");
+        }
     }
 
     /// `mass` at a half-life far past the window is the even kernel's, to
@@ -3425,6 +3696,7 @@ mod tests {
             t.append(core.drain(), &mut next);
             let bytes = rmp_serde::to_vec_named(&core).unwrap();
             let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+            core.check().unwrap();
             for r in &rows[at..] {
                 push(&mut core, r).unwrap();
             }

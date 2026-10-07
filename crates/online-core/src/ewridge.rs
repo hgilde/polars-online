@@ -434,6 +434,14 @@ impl crate::Footprint for RidgeMoments {
     }
 }
 
+impl RidgeMoments {
+    /// Whether a snapshot is the shape of `n` targets over `k` slots, as the
+    /// live accumulators are: what [`EwRidge::view`] reads of the boundary.
+    fn has_shape(&self, n: usize, k: usize) -> bool {
+        self.acc.has_shape(n, k) && self.wsig.len() == n && self.sig2.len() == n
+    }
+}
+
 /// The accumulators a windowed fit reads, with everything older than the
 /// window subtracted off.
 struct RidgeView {
@@ -1220,14 +1228,30 @@ impl EwRidge {
     /// naming a system or none -- all of it empty before the first solve,
     /// and only then. A Gram split off since the last solve adds systems
     /// that solve has not sized, so a system's index is held to the Grams
-    /// there are now.
+    /// there are now. Each system kept for the per-row leverage maps a row
+    /// into its space by `z`, `s` and `mean`, so its columns are inside the
+    /// features, a scale and a mean per column, and its Gram one there is:
+    /// a column past the features read `x[6]`, a short scale or mean failed
+    /// the factor's length assertion (review 2026-10-06, CA4).
     fn fit_has_shape(&self) -> bool {
         let (k, nc) = (self.cfg.k_total(), self.cfg.n_combos());
         let slots = self.cfg.n_targets * nc;
         let n_systems = self.acc.grams.grams.len() * nc;
         let r = &self.ready;
+        let systems = r.systems.iter().flatten().all(|s| {
+            s.z.iter().all(|&zi| zi < k)
+                && s.s.len() == s.z.len()
+                && s.mean.len() == s.z.len()
+                && s.gram < self.acc.grams.grams.len()
+        });
         match &self.beta {
-            None => r.edf.is_empty() && r.support.is_empty() && r.system_of.is_empty(),
+            None => {
+                r.edf.is_empty()
+                    && r.support.is_empty()
+                    && r.system_of.is_empty()
+                    && r.systems.is_empty()
+            }
+            Some(_) if !systems => false,
             Some(beta) => {
                 beta.len() == slots
                     && beta.iter().all(|b| b.len() == k)
@@ -1876,6 +1900,7 @@ impl OnlineModel for EwRidge {
         match &s.model {
             ModelState::EwRidge(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("ew_ridge", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 // A state written before schema 17 kept each target's own
                 // mean as an offset (`crate::gaps::Cross`).
@@ -1910,6 +1935,16 @@ impl OnlineModel for EwRidge {
                 {
                     return Err(StateError::Invalid(
                         "ew_ridge: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                // Every snapshot of the window too: `view()` reads the
+                // boundary's per-target vectors and Grams (review
+                // 2026-10-06, CA2).
+                if let Some(win) = &m.win
+                    && !win.snaps.iter().all(|s| s.has_shape(n, k))
+                {
+                    return Err(StateError::Invalid(
+                        "ew_ridge: the window's snapshots have the wrong shape".into(),
                     ));
                 }
                 // The runs follow the window, not the file (review 2026-09-26,

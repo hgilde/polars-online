@@ -333,6 +333,7 @@ impl OnlineModel for Rls {
         match &s.model {
             ModelState::Rls(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("rls", m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
                 let rows = |v: &[Vec<f64>]| v.len() == n && v.iter().all(|r| r.len() == k);
                 // A factor or a per-target vector of the wrong length loaded

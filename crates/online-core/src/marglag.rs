@@ -210,6 +210,36 @@ pub struct PairMix<'a> {
     pub b: f64,
 }
 
+/// The rules `lags` and `cross_lags` keep: non-empty, from 1, strictly
+/// increasing, and each cross lag one of the lags. What
+/// [`MarginalLags::new`] needs, checked by `MarginalCfg::validate` too, so
+/// a restored state's configuration is held to them as a fresh model's is:
+/// `lags = [0]` in a state passed its shape check and indexed an empty ring
+/// (review 2026-10-06, CD14).
+pub(crate) fn check_lags(lags: &[usize], cross_lags: Option<&[usize]>) -> Result<(), String> {
+    if lags.is_empty() {
+        return Err("marginal: lags must not be empty".into());
+    }
+    if lags[0] < 1 {
+        return Err("marginal: lags must be >= 1 (lag 0 is the pair itself)".into());
+    }
+    if lags.windows(2).any(|w| w[1] <= w[0]) {
+        return Err("marginal: lags must be strictly increasing".into());
+    }
+    if let Some(c) = cross_lags {
+        if c.windows(2).any(|w| w[1] <= w[0]) {
+            return Err("marginal: cross_lags must be strictly increasing".into());
+        }
+        if let Some(bad) = c.iter().find(|l| !lags.contains(l)) {
+            return Err(format!(
+                "marginal: cross_lags must each be one of lags, and {bad} is not: a cross \
+                 term reads the ring `lags` keeps"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl MarginalLags {
     /// `cross_lags` is `None` for a cross moment at every lag, or the lags
     /// to keep them at: strictly increasing, each one of `lags`, and empty
@@ -221,26 +251,7 @@ impl MarginalLags {
         cross_lags: Option<Vec<usize>>,
         shared: bool,
     ) -> Result<Self, String> {
-        if lags.is_empty() {
-            return Err("marginal: lags must not be empty".into());
-        }
-        if lags[0] < 1 {
-            return Err("marginal: lags must be >= 1 (lag 0 is the pair itself)".into());
-        }
-        if lags.windows(2).any(|w| w[1] <= w[0]) {
-            return Err("marginal: lags must be strictly increasing".into());
-        }
-        if let Some(c) = cross_lags.as_ref() {
-            if c.windows(2).any(|w| w[1] <= w[0]) {
-                return Err("marginal: cross_lags must be strictly increasing".into());
-            }
-            if let Some(bad) = c.iter().find(|l| !lags.contains(l)) {
-                return Err(format!(
-                    "marginal: cross_lags must each be one of lags, and {bad} is not: a cross \
-                     term reads the ring `lags` keeps"
-                ));
-            }
-        }
+        check_lags(&lags, cross_lags.as_deref())?;
         let l = lags.len();
         let n_cross = cross_lags.as_ref().map_or(l, Vec::len);
         let max = *lags.last().expect("lags is non-empty");

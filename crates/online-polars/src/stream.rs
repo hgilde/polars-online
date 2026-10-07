@@ -2899,11 +2899,14 @@ impl Stream {
             &mut stream.drift,
             |_, _| true,
         )?;
+        // A sketch is held to its own shape too, as `ew_cov`'s is: the next
+        // residual indexes its buckets by its pointers (review 2026-10-06,
+        // CB2's class).
         take_diag(
             "residual quantiles",
             &saved.resid_q,
             &mut stream.resid_q,
-            |s, l| s.levels() == l.levels(),
+            |s, l| s.levels() == l.levels() && s.has_shape(),
         )?;
         take_diag(
             "autocorrelations",
@@ -2934,6 +2937,27 @@ impl Stream {
             .any(|r| r.xs.len() != nf || r.ys.len() != nt || r.arrived.is_none())
         {
             return Err("saved state's pending rows do not fit this spec".into());
+        }
+        // And values the bank would send a model: a held row is learned at
+        // its release, where none of the bank's checks on a row run, so a
+        // feature or target that is not usable, a weight that is not usable
+        // or is below 0, or a step outside `[0, gap_cap]` -- where every
+        // step `ClockState` hands a model is -- is refused here (review
+        // 2026-10-06, PB4).
+        let cap = spec.clock_cfg()?.gap_cap;
+        for (i, r) in saved.pending.iter().enumerate() {
+            let what = if !all_usable(&r.xs) {
+                "a feature that is not a usable number"
+            } else if !r.ys.iter().flatten().all(|&y| usable(y)) {
+                "a target that is not a usable number"
+            } else if !(usable(r.w) && r.w >= 0.0) {
+                "a weight that is not a usable number >= 0"
+            } else if !(r.d_clock.is_finite() && r.d_clock >= 0.0 && r.d_clock <= cap) {
+                "a step outside [0, gap_cap]"
+            } else {
+                continue;
+            };
+            return Err(format!("saved state's held row {i} is damaged: {what}"));
         }
         stream.pending = saved.pending.clone();
         stream.held_break = saved.held_break;

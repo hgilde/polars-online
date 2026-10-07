@@ -1707,6 +1707,11 @@ impl WindowsRun {
                 "{WHO}: the state's operators do not match its own call"
             ));
         }
+        // The core's own invariants, beyond the call's (review 2026-10-06,
+        // PD1): a damaged core that still decoded panicked at the next call.
+        file.core
+            .check()
+            .map_err(|e| format!("{WHO}: the state is damaged: {e}"))?;
         let held = IpcReader::new(Cursor::new(file.held))
             .finish()
             .map_err(|e| format!("{WHO}: the state's held rows cannot be read ({e})"))?;
@@ -2800,5 +2805,57 @@ mod tests {
             .err()
             .expect("refused");
         assert!(err.contains("damaged"), "{err}");
+    }
+
+    /// Review 2026-10-06, PD1: the core a state carries is held to its own
+    /// invariants at load, beyond the kernels, the operators, the clock and
+    /// the held count the loader compared: a held value short, an output
+    /// count below the operators, a queue of another width, a silent-list
+    /// link past the groups, more rows ready than held, or a waiting row
+    /// before the held ones loaded, and `finish`'s `emit` or the next
+    /// `push` indexed `held_values[r * n_out + o]` past its end.
+    #[test]
+    fn a_state_whose_core_is_damaged_is_refused() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        first.feed(&df.slice(0, 4), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        let file: FileIn = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(file.core.held() > 0, "rows wait for their forward windows");
+        for what in [
+            "held_values",
+            "n_outputs",
+            "queue",
+            "link",
+            "ready",
+            "waiting",
+        ] {
+            let mut core = file.core.clone();
+            core.damage(what);
+            let damaged = rmp_serde::to_vec_named(&FileOut {
+                magic: WINDOWS_MAGIC,
+                version: WINDOWS_VERSION,
+                config: &file.config,
+                core: &core,
+                held: &file.held,
+                increments: &file.increments,
+                stream_clock: file.stream_clock,
+                key_dtypes: &file.key_dtypes,
+                resume_skip: file.resume_skip,
+                resume_first: file.resume_first,
+                resume_first_session: file.resume_first_session,
+                last_row: &file.last_row,
+            })
+            .unwrap();
+            match WindowsRun::load_bytes(&damaged, config(FORWARD), df.schema()) {
+                Err(err) => assert!(err.contains("the state is damaged"), "{what}: {err}"),
+                Ok(mut run) => {
+                    let fed = run.feed(&df.slice(4, 2), None).map(|f| f.height());
+                    let done = run.finish().map(|f| f.height());
+                    panic!("{what}: loaded, fed {fed:?} and finished {done:?}");
+                }
+            }
+        }
+        assert!(WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).is_ok());
     }
 }

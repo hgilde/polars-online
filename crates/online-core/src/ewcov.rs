@@ -1312,10 +1312,9 @@ impl EwCovCfg {
         }
         if !self.lags.is_empty() {
             // The list's own rules live with the accumulator, so the CLI and
-            // the bank get one message.
-            crate::EwLagCov::new(self.n_features, self.lags.clone())
-                .map(|_| ())
-                .map_err(|e| format!("ew_cov: {e}"))?;
+            // the bank get one message; checked without building it, whose
+            // ring reserves `max(lags)` rows (a `restore` runs this).
+            crate::EwLagCov::check_lags(&self.lags).map_err(|e| format!("ew_cov: {e}"))?;
         }
         for &q in &self.mahal_quantiles {
             if !(q > 0.0 && q < 1.0) {
@@ -2073,6 +2072,7 @@ impl crate::OnlineModel for EwCovModel {
         match &s.model {
             crate::ModelState::EwCovModel(m) => {
                 let mut m = (**m).clone();
+                crate::model::check_cfg("ew_cov", m.cfg.validate())?;
                 // P² markers say nothing about a decayed distribution, and
                 // pre-1.0 no loader is written (docs/PLAN.md task 146).
                 if m.mahal_q.is_none() && !m.cfg.mahal_quantiles.is_empty() {
@@ -2103,7 +2103,14 @@ impl crate::OnlineModel for EwCovModel {
                 let pca_ok = m.pca.as_ref().is_none_or(|p| {
                     p.eig.len() <= m.cfg.pca && p.loadings.len() == p.eig.len() * k
                 });
+                // And inside the sketch and the window's snapshots, which
+                // a row indexes (review 2026-10-06, CB2).
+                let parts = m.mahal_q.as_ref().is_none_or(crate::EwQuantile::has_shape)
+                    && m.win
+                        .as_ref()
+                        .is_none_or(|w| w.snaps.iter().all(|s| s.has_shape(k)));
                 if !m.cov.has_shape(k)
+                    || !parts
                     || m.mahal_q.as_ref().map_or(&[][..], |q| q.levels())
                         != m.cfg.mahal_quantiles.as_slice()
                     || !lag_ok
@@ -2153,6 +2160,9 @@ impl crate::OnlineModel for EwCovModel {
         self.cfg.n_outputs()
     }
 }
+
+#[cfg(test)]
+mod damaged_state_tests;
 
 #[cfg(test)]
 mod tests {

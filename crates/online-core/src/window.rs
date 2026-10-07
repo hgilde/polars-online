@@ -799,6 +799,17 @@ impl Moments {
             rows: Some(cov.rows_learned()),
         }
     }
+
+    /// Whether a snapshot is of an accumulator over `k` slots, with a weight
+    /// a subtraction can read: what a restored window must hold before
+    /// [`truncated`] indexes `m[i]` and `c[i * k + j]` (review 2026-10-06,
+    /// CB2).
+    pub fn has_shape(&self, k: usize) -> bool {
+        self.m.len() == k
+            && k.checked_mul(k) == Some(self.c.len())
+            && self.w.is_finite()
+            && self.w >= 0.0
+    }
 }
 
 impl Footprint for Moments {
