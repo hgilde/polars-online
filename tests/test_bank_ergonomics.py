@@ -291,6 +291,38 @@ def test_a_frame_with_chunk_rows_is_fed_in_slices():
     assert len(list(po.ModelBank([_one()]).fit_predict_batches(df))) == 1
 
 
+def test_an_iterator_is_fed_as_it_comes_whatever_chunk_rows_says():
+    """The docstring's promise, held (review round 4, SF11): ``chunk_rows``
+    slices a plan or a frame, and an iterator of frames is fed as it comes,
+    one chunk per frame, in the sizes it has."""
+    df = _stream(seed=2)
+    parts = [df.slice(0, 5), df.slice(5, 23), df.slice(28, 12)]
+    outs = list(po.ModelBank([_one()]).fit_predict_batches(iter(parts), chunk_rows=4))
+    assert [o.height for o in outs] == [5, 23, 12]
+
+
+def test_the_chunked_runs_name_the_method_the_caller_used():
+    """A chunk that is not a frame was refused as ``ModelBank.fit_predict``
+    takes, a method the caller had not called (review round 4, SF11)."""
+    for method in ("fit_predict_batches", "fit"):
+        call = getattr(po.ModelBank([_one()]), method)
+        with pytest.raises(TypeError, match=rf"^ModelBank\.{method} takes a polars DataFrame, got"):
+            r = call([{"x0": [1.0], "y": [1.0]}])
+            if r is not None:
+                list(r)
+        with pytest.raises(TypeError, match=rf"^ModelBank\.{method} takes a DataFrame, not a"):
+            r = call([_stream().lazy()])
+            if r is not None:
+                list(r)
+
+
+def test_a_bank_needs_a_spec():
+    """``ModelBank([])`` is refused, as its docstring says (review round 4,
+    SF11): the command line's "no [[specs]]" was tested, this was not."""
+    with pytest.raises(ValueError, match="at least one spec is required"):
+        po.ModelBank([])
+
+
 def test_fit_over_an_empty_plan_is_not_an_error():
     """Nothing to learn from is a no-op that still leaves a loadable state."""
     bank = po.ModelBank([_one()])

@@ -57,6 +57,7 @@ use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::bank::GroupKey;
+use crate::stream::usable;
 
 /// One series' state within a group: its last value, whether it has ticked
 /// since the last grid point, and how many times.
@@ -437,13 +438,17 @@ impl RefreshTime {
     }
 
     /// One chunk of the long input, in `time` order within each `by` key.
+    /// A `value` that is null, NaN, infinite or past the input bound is a
+    /// tick that observed nothing: the series has not moved.
     ///
     /// # Errors
     ///
     /// `ColumnNotFound` for a column the frame has not got; `ComputeError`
-    /// for a `series` value not in `names` (a dropped row would hide a
-    /// misspelling), a null or non-finite `time`, or a `time` below the
-    /// previous row's within a group -- each naming the row.
+    /// for a `value` column that is not numeric (a boolean and a column of
+    /// nulls are), naming it, and for a `series` value not in `names` (a
+    /// dropped row would hide a misspelling), a null or non-finite `time`,
+    /// or a `time` below the previous row's within a group -- each naming
+    /// the row.
     pub fn feed(&mut self, df: &DataFrame, cols: &RefreshCols<'_>) -> PolarsResult<DataFrame> {
         self.feed_limited(df, cols, None)
     }
@@ -490,7 +495,20 @@ impl RefreshTime {
                 _ => None,
             }
         };
-        let value = df.column(cols.value)?.cast(&DataType::Float64)?;
+        // A number, as a spec's feature is: a boolean or a column of nulls
+        // too, and nothing else (review round 4, PC7). Cast without the
+        // check, text that is not a number came out all null -- an empty
+        // grid, nothing said -- and a `Date` came out as its day count.
+        let value = df.column(cols.value)?;
+        let dtype = value.dtype();
+        if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
+            polars_bail!(ComputeError:
+                "refresh_time: value column {:?} has dtype {}; it must be numeric \
+                 (cast it, e.g. pl.col({:?}).cast(pl.Float64))",
+                cols.value, dtype, cols.value
+            );
+        }
+        let value = value.cast(&DataType::Float64)?;
         let value = value.f64()?;
         let by = match cols.group {
             Some(b) => Some(key_text(df.column(b)?)?),
@@ -563,8 +581,13 @@ impl RefreshTime {
                 }
             }
             // A null value is not an update: the tick happened, but nothing
-            // was observed, so the series has not moved.
-            let Some(v) = value.get(row) else { continue };
+            // was observed, so the series has not moved. Nor is a value the
+            // bank reads as missing -- NaN, an infinity, a magnitude past
+            // the input bound -- by the rule every spec column follows
+            // (`usable`); they were values (review round 4, PC7).
+            let Some(v) = value.get(row).filter(|v| usable(*v)) else {
+                continue;
+            };
 
             let n_states = if self.pairs.is_empty() {
                 1
@@ -882,6 +905,96 @@ mod tests {
             out.column("a_value").unwrap().f64().unwrap().get(0),
             Some(3.0)
         );
+    }
+
+    /// A value the bank reads as missing is a tick that observed nothing, as
+    /// a null is (review round 4, PC7): NaN, an infinity and a magnitude past
+    /// the input bound were folded in as values, so a point completed on
+    /// such a tick reported it -- `b_value` NaN at `time_refresh` 2.
+    #[test]
+    fn a_value_that_is_not_usable_is_not_an_update() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e101, -1e101] {
+            let df = df!(
+                "series" => ["a", "b", "a", "b"],
+                "t" => [1.0, 2.0, 3.0, 4.0],
+                "v" => [1.0, bad, 3.0, 4.0],
+            )
+            .unwrap();
+            let names = ["a", "b"].map(str::to_string).to_vec();
+            let mut rt = RefreshTime::new(names, false).unwrap();
+            let out = rt.feed(&df, &cols(&[])).unwrap();
+            // b's first tick carried nothing, so the point waits for row 3.
+            assert_eq!(out.height(), 1, "{bad}");
+            let at = |c: &str| out.column(c).unwrap().f64().unwrap().get(0);
+            assert_eq!(at("time_refresh"), Some(4.0), "{bad}");
+            assert_eq!(at("a_value"), Some(3.0), "{bad}");
+            assert_eq!(at("b_value"), Some(4.0), "{bad}");
+        }
+        // At the bound itself a value is a value.
+        let df = df!(
+            "series" => ["a", "b"],
+            "t" => [1.0, 2.0],
+            "v" => [1.0, -1e100],
+        )
+        .unwrap();
+        let names = ["a", "b"].map(str::to_string).to_vec();
+        let out = RefreshTime::new(names, false)
+            .unwrap()
+            .feed(&df, &cols(&[]))
+            .unwrap();
+        assert_eq!(
+            out.column("b_value").unwrap().f64().unwrap().get(0),
+            Some(-1e100)
+        );
+    }
+
+    /// A value column that is not numeric is refused by name, as a spec's
+    /// feature is (review round 4, PC7). It was read through a non-strict
+    /// cast: text that is not a number came out all null, so the grid was
+    /// empty and nothing said why, and a `Date` was read as its day count.
+    /// The frame of no rows a plan is built from is refused too, so the plan
+    /// says so before it runs. Integers, booleans and a column of nulls are
+    /// numbers, as they are to a spec.
+    #[test]
+    fn a_value_column_that_is_not_numeric_is_refused_by_name() {
+        let names = ["a", "b"].map(str::to_string).to_vec();
+        let with_value = |v: Column| {
+            let mut df = df!("series" => ["a", "b"], "t" => [1.0, 2.0]).unwrap();
+            df.with_column(v.with_name("v".into())).unwrap();
+            df
+        };
+        let date = Column::new("v".into(), [19_000i32, 19_001])
+            .cast(&DataType::Date)
+            .unwrap();
+        for (what, v) in [
+            ("text", Column::new("v".into(), ["abc", "def"])),
+            ("numbers as text", Column::new("v".into(), ["1.5", "2.5"])),
+            ("a date", date),
+        ] {
+            for df in [with_value(v.clone()), with_value(v.clone()).clear()] {
+                let e = RefreshTime::new(names.clone(), false)
+                    .unwrap()
+                    .feed(&df, &cols(&[]))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    e.contains("value column \"v\"") && e.contains("must be numeric"),
+                    "{what}, {} rows: {e}",
+                    df.height()
+                );
+            }
+        }
+        for (what, v) in [
+            ("integers", Column::new("v".into(), [1i64, 2])),
+            ("booleans", Column::new("v".into(), [true, false])),
+            ("float32", Column::new("v".into(), [1.0f32, 2.0])),
+            ("nulls", Column::full_null("v".into(), 2, &DataType::Null)),
+        ] {
+            RefreshTime::new(names.clone(), false)
+                .unwrap()
+                .feed(&with_value(v), &cols(&[]))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
     }
 
     #[test]

@@ -111,8 +111,13 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
 
 /// `(group, instance, k, n_eff, n_kish, means, comoments, cross_moments,
 /// target_weights, target_means, target_vars, target_n_kish)` — the flat
-/// shape `ModelBank.gram` reshapes into numpy arrays. The trailing four are
-/// `None` for a state written before task 38 (docs/ENHANCEMENTS.md E45).
+/// shape `ModelBank.gram` reshapes into numpy arrays. The target moments are
+/// always there: `Bank::gram` gives `None` for them only from a window
+/// snapshot written before task 136 (schema 20), and no file the bank loads
+/// holds one (`MIN_BANK_SCHEMA_VERSION`; the sentences about states written
+/// before task 38 went in review round 4, SF9). A damaged file that still
+/// does reads as NaN, "this state cannot say", as a target with no weighted
+/// row reads in `target_n_kish`.
 type GramRow = (
     Option<String>,
     String,
@@ -123,9 +128,9 @@ type GramRow = (
     Vec<f64>,
     Vec<Vec<f64>>,
     Vec<f64>,
-    Option<Vec<f64>>,
-    Option<Vec<f64>>,
-    Option<Vec<Option<f64>>>,
+    Vec<f64>,
+    Vec<f64>,
+    Vec<Option<f64>>,
 );
 
 /// One [`GramRow`] with its lag block beside it (docs/ENHANCEMENTS.md E56):
@@ -161,6 +166,26 @@ struct PyModelBank {
 /// since an `io::Error`'s own message has no path in it.
 fn os_err(kind: std::io::ErrorKind, msg: String) -> PyErr {
     PyErr::from(std::io::Error::new(kind, msg))
+}
+
+/// A saver's error as Python sees it, one rule for the three --
+/// `ModelBank.save`, `RefreshTime.save`, `Windows.save` -- which had three
+/// (review round 4, SF10). A state that refuses to be written, a bank a
+/// refused chunk broke or a windows state of another input, is the
+/// `ValueError` `save_bytes` and pickle raise, and the file is not touched;
+/// the savers hand it over as `ErrorKind::Other` (`io::Error::other`) or
+/// `ErrorKind::InvalidData`. Anything else is the filesystem's: the `OSError`
+/// of its kind, with the path. `Other` is a kind "not used by the standard
+/// library" (the `ErrorKind` docs), so a filesystem's error never carries
+/// it, and the savers make `InvalidData` only for a refusal; the two are
+/// told apart without serializing the state a second time to ask.
+fn save_err(path: &str, e: std::io::Error) -> PyErr {
+    match e.kind() {
+        std::io::ErrorKind::Other | std::io::ErrorKind::InvalidData => {
+            PyValueError::new_err(e.to_string())
+        }
+        kind => os_err(kind, format!("{path}: {e}")),
+    }
 }
 
 /// A polars error as Python sees it: a file that could not be read or written
@@ -368,20 +393,13 @@ impl PyModelBank {
     /// chunk left broken, or a state that cannot be written -- raises the
     /// `ValueError` `save_bytes` and pickle raise, and the file is not
     /// touched (review 2026-10-05, YA2: it raised a bare `OSError`).
-    ///
     /// `Bank::save` serializes before it writes, so the refusal comes first,
-    /// wrapped in `io::Error::other`; `ErrorKind::Other` is a kind "not used
-    /// by the standard library" (the `ErrorKind` docs), so a filesystem's
-    /// error never carries it, and it tells the two apart without
-    /// serializing the state a second time to ask.
+    /// wrapped in `io::Error::other` ([`save_err`]).
     fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
         let this = slf.try_borrow().map_err(|_| busy("save"))?;
         this.inner
             .save(std::path::Path::new(path))
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::Other => PyValueError::new_err(e.to_string()),
-                kind => os_err(kind, format!("{path}: {e}")),
-            })
+            .map_err(|e| save_err(path, e))
     }
 
     fn save_bytes(slf: &Bound<'_, Self>) -> PyResult<Vec<u8>> {
@@ -394,13 +412,12 @@ impl PyModelBank {
     /// a bank that refuses to be saved: a broken bank's state holds rows
     /// whose output was never returned, and the export handed out what
     /// `save` refuses (review 2026-10-05, YA2). `Bank::save_json_string`
-    /// does not ask, so the refusal is `save_bytes`'s own; the msgpack it
-    /// costs is beside the JSON export's, which encodes the state as
-    /// msgpack again to check itself.
+    /// refuses it itself (review round 4, PA12), where this asked
+    /// `save_bytes` first and paid a second msgpack encode of the whole
+    /// state for the answer.
     #[pyo3(signature = (pretty = true))]
     fn save_json_string(slf: &Bound<'_, Self>, pretty: bool) -> PyResult<String> {
         let this = slf.try_borrow().map_err(|_| busy("save_json_string"))?;
-        this.inner.save_bytes().map_err(PyValueError::new_err)?;
         this.inner
             .save_json_string(pretty)
             .map_err(PyValueError::new_err)
@@ -476,6 +493,7 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)?
             .into_iter()
             .map(|g| {
+                let m = g.targets.len();
                 (
                     (
                         g.group.0,
@@ -487,9 +505,9 @@ impl PyModelBank {
                         g.comoments,
                         g.cross_moments,
                         g.target_weights,
-                        g.target_means,
-                        g.target_vars,
-                        g.target_n_kish,
+                        g.target_means.unwrap_or_else(|| vec![f64::NAN; m]),
+                        g.target_vars.unwrap_or_else(|| vec![f64::NAN; m]),
+                        g.target_n_kish.unwrap_or_else(|| vec![None; m]),
                     ),
                     g.lags.zip(g.lag_comoments),
                     (g.targets, g.means_by_target, g.cross_centred),
@@ -709,20 +727,26 @@ impl PyRefreshTime {
         })
     }
 
-    /// The state, written to `path` whole or not at all.
+    /// The state, written to `path` whole or not at all ([`save_err`]).
     fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
-        let this = slf.try_borrow().map_err(|_| busy("save"))?;
+        let this = slf.try_borrow().map_err(|_| refresh_busy("save"))?;
         this.inner
             .save(std::path::Path::new(path))
-            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
+            .map_err(|e| save_err(path, e))
     }
 
     /// The grid points completed by this chunk, in order; with `limit`, the
     /// rows after the one that completed the `limit`-th are not read
     /// (`RefreshTime::feed_limited`).
+    ///
+    /// The GIL is released for the run, as `fit_predict` releases it: the
+    /// frame is owned here, and a chunk of an IO-plugin source otherwise
+    /// stopped every other Python thread for its length (review round 4,
+    /// SF12). A second thread that reaches the sampler meanwhile is
+    /// refused by the borrow, with a sentence.
     #[pyo3(signature = (df, limit=None))]
     fn feed(slf: &Bound<'_, Self>, df: PyDataFrame, limit: Option<usize>) -> PyResult<PyDataFrame> {
-        let mut this = slf.try_borrow_mut().map_err(|_| busy("feed"))?;
+        let mut this = slf.try_borrow_mut().map_err(|_| refresh_busy("feed"))?;
         // Destructured so the sampler and the column names are separate
         // borrows: `feed` needs `&mut` on the one and `&` on the others.
         let PyRefreshTime {
@@ -740,12 +764,23 @@ impl PyRefreshTime {
             group: group.as_deref(),
             keep,
         };
-        Ok(PyDataFrame(
-            inner
-                .feed_limited(&df.0, &cols, limit)
-                .map_err(|e| run_err(&e))?,
-        ))
+        let df = df.0;
+        let out = slf
+            .py()
+            .detach(|| inner.feed_limited(&df, &cols, limit))
+            .map_err(|e| run_err(&e))?;
+        Ok(PyDataFrame(out))
     }
+}
+
+/// The error for a sampler reached from a second thread while a call is on
+/// the first (`feed` releases the GIL): one stream, fed from one place. It
+/// was the bank's sentence, naming `ModelBank`, unreachable while `feed`
+/// held the GIL (review round 4, SF12).
+fn refresh_busy(what: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "RefreshTime.{what}: the sampler is in use on another thread; it is one ordered stream"
+    ))
 }
 
 /// `po.stream.with_windows` (`online_polars::WindowsRun`, docs/PLAN.md task 78):
@@ -809,30 +844,33 @@ impl PyWindows {
         let this = slf.try_borrow().map_err(|_| windows_busy("save"))?;
         this.inner
             .save_with(std::path::Path::new(path), skip_on_resume, input_ended)
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::InvalidData {
-                    PyValueError::new_err(e.to_string())
-                } else {
-                    os_err(e.kind(), format!("{path}: {e}"))
-                }
-            })
+            .map_err(|e| save_err(path, e))
     }
 
     /// The rows this chunk resolved, in order; with `limit`, rows are fed
-    /// only until `limit` are out (`WindowsRun::feed`).
+    /// only until `limit` are out (`WindowsRun::feed`). The GIL is released
+    /// for the run, as `fit_predict` releases it (review round 4, SF12): a
+    /// 100,000-row chunk of the IO-plugin source otherwise stopped every
+    /// other Python thread for its length.
     #[pyo3(signature = (df, limit=None))]
     fn feed(slf: &Bound<'_, Self>, df: PyDataFrame, limit: Option<usize>) -> PyResult<PyDataFrame> {
         let mut this = slf.try_borrow_mut().map_err(|_| windows_busy("feed"))?;
-        Ok(PyDataFrame(
-            this.inner.feed(&df.0, limit).map_err(|e| run_err(&e))?,
-        ))
+        let run = &mut this.inner;
+        let df = df.0;
+        let out = slf
+            .py()
+            .detach(|| run.feed(&df, limit))
+            .map_err(|e| run_err(&e))?;
+        Ok(PyDataFrame(out))
     }
 
     /// The end of the input: every row still held, its open forward windows
-    /// null.
+    /// null. The GIL is released for it, as for `feed`.
     fn finish(slf: &Bound<'_, Self>) -> PyResult<PyDataFrame> {
         let mut this = slf.try_borrow_mut().map_err(|_| windows_busy("finish"))?;
-        Ok(PyDataFrame(this.inner.finish().map_err(|e| run_err(&e))?))
+        let run = &mut this.inner;
+        let out = slf.py().detach(|| run.finish()).map_err(|e| run_err(&e))?;
+        Ok(PyDataFrame(out))
     }
 
     /// The columns the windows read: what a source reads however narrow

@@ -102,6 +102,30 @@ class TestChunkInvariance:
             bank.save(missing)
         assert not missing.exists()
 
+    def test_every_saver_maps_a_filesystem_error_the_same_way(self, tmp_path):
+        """The three native savers -- the bank's, ``refresh_time``'s and
+        ``with_windows``' -- share one mapping (review round 4, SF10): the
+        filesystem's error is the ``OSError`` of its kind, naming the path,
+        and a state that refuses to be written is a ``ValueError``. They had
+        three; ``RefreshTime.save`` turned every error into an ``OSError``.
+        The Python layer checks a ``save_state`` directory before a plan
+        runs, so the savers are called here directly."""
+        import json
+
+        from polars_online import _polars_online as native
+
+        refresh = native.RefreshTime(["a", "b"], "series", "t", "v")
+        tree = ["rewm_sum", ["col", "x"], {"half_life": 2.0, "window_size": 3.0}]
+        windows = native.Windows(
+            json.dumps({"formulas": [{"name": "f", "tree": tree}]}),
+            pl.DataFrame(schema={"x": pl.Float64}),
+        )
+        for save in (po.ModelBank([_spec()]).save, refresh.save, windows.save):
+            missing = tmp_path / "nope" / "x.state"
+            with pytest.raises(FileNotFoundError, match="nope"):
+                save(str(missing))
+            assert not missing.exists()
+
 
 class TestOutOfSample:
     def test_noise_target_has_no_ic(self):

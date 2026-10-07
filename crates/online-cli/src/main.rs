@@ -85,8 +85,9 @@ struct Cli {
     #[arg(long)]
     predict: bool,
 
-    /// Validate the config, open the input as the run would, and print the
-    /// output schema without running.
+    /// Validate the config, open the input and the bank as the run would,
+    /// run the bank on no rows of the input's schema, and print the output
+    /// schema without reading a row.
     #[arg(long)]
     dry_run: bool,
 
@@ -210,13 +211,13 @@ fn run() -> Result<(), String> {
     };
 
     if cli.dry_run {
-        // What the run reads first, read now: the dry run said "config OK"
-        // for an input that is not there (task 160, YB12). The schema is
-        // the source's metadata, a parquet footer or a CSV's first rows; a
-        // glob or a directory resolves as the run's scan would.
-        cfg.scan()
-            .and_then(|mut lf| lf.collect_schema().map(|_| ()))
-            .map_err(|e| format!("input {}: {e}", cfg.input.display()))?;
+        // What the run does first, done now on no rows: the input's schema
+        // (the dry run said "config OK" for an input that is not there, task
+        // 160, YB12), the bank as the run opens it, and that bank run on a
+        // frame of no rows of the schema -- it said "config OK" for a
+        // `--resume` state that is not there or holds other specs, and for
+        // an input without a column a spec reads (review round 4, SF2).
+        cfg.dry_run().map_err(|e| e.to_string())?;
         println!("config OK: {} spec(s)", cfg.specs.len());
         for spec in &cfg.specs {
             println!("  {} ({}):", spec.name, spec.model.kind_name());

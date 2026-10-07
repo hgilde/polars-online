@@ -3477,15 +3477,25 @@ impl Stream {
         // A released row whose formula target resolved with a value, and
         // whose plain targets gave none at its row, is learned from now
         // (review R1, D3); counted here, after the release, in row order.
+        // The values themselves join the targets' statistics here too, at
+        // any weight, as a plain target's do at its row: the row was fed,
+        // and counted a null, before its window closed (review round 4,
+        // PA9).
         if let (Some(summary), Some(f)) = (self.summary.as_mut(), formulas) {
-            for plan in plans.iter().filter(|p| !p.direct() && p.w > 0.0) {
+            let n_features = spec.features.len();
+            for plan in plans.iter().filter(|p| !p.direct()) {
                 let ys = &released[plan.pending].ys;
+                for &k in f.slots {
+                    if let Some(y) = ys[k] {
+                        summary.resolved(n_features, k, y);
+                    }
+                }
                 let plain = ys
                     .iter()
                     .enumerate()
                     .any(|(k, y)| !f.slots.contains(&k) && y.is_some());
                 let formula = f.slots.iter().any(|&k| ys[k].is_some());
-                if !plain && formula {
+                if plan.w > 0.0 && !plain && formula {
                     summary.learned_late();
                 }
             }
@@ -4373,15 +4383,17 @@ impl Instance<'_> {
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
-        // A rebuilt model has seen no decay: it settles from here. A clock
-        // reset drops the rows held under `embargo` with it (E47); a drift
-        // reset keeps them, and each teaches the rebuilt model as it is
-        // released, its delta moving from the held clock to the decay time
-        // as any held row's does. The clock they covered before the restart
-        // is not the rebuilt model's, so both start at 0 either way (task
-        // 160, PB1).
+        // A rebuilt model has seen no decay: it settles from here. The
+        // clock of the rows held under `embargo` is the held rows' own: a
+        // drift reset keeps them, and each teaches the rebuilt model as it
+        // is released, its delta moving from the held clock to the decay
+        // time as any held row's does, so the held clock stays as it stands
+        // -- the kept rows' summed `d_clock`, which the rebuilt model will
+        // decay by. Zeroed here, each release took back a delta the reset
+        // had never added, and `settled_frac` left the held rows out for
+        // the rest of the stream (review round 4, PB1). A clock reset drops
+        // the rows, and the held clock with them (`run_instance`).
         *self.decay_time = 0.0;
-        *self.pending_clock = 0.0;
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
                 .expect("spec was already validated")
@@ -4465,8 +4477,10 @@ fn run_instance(
         if plan.reset {
             inst.reset();
             // The stream dropped its waiting rows at this row, skipped or
-            // not (C5); the record of what they were scored with goes too.
+            // not (C5); the record of what they were scored with goes too,
+            // and so does the clock they covered (E47).
             inst.score_pred.clear();
+            *inst.pending_clock = 0.0;
         } else {
             if plan.blend {
                 // A gentler alternative to resetting: revert partway toward

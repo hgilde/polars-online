@@ -74,13 +74,33 @@ impl ColumnStats {
             } else {
                 1.0 / self.count as f64
             };
-            let d = x - self.mean;
-            self.mean += d * inv;
-            self.m2 += d * (x - self.mean);
-            self.min = self.min.min(x);
-            self.max = self.max.max(x);
+            self.add(x, inv);
         } else {
             self.nulls = self.nulls.saturating_add(1);
+        }
+    }
+
+    /// Welford's step for a value just counted, `inv` the reciprocal of the
+    /// new count.
+    #[inline]
+    fn add(&mut self, x: f64, inv: f64) {
+        let d = x - self.mean;
+        self.mean += d * inv;
+        self.m2 += d * (x - self.mean);
+        self.min = self.min.min(x);
+        self.max = self.max.max(x);
+    }
+
+    /// A value its row was fed without, known now: counted a null when the
+    /// row was fed, it moves from the nulls to the moments when usable, so
+    /// the counts still partition the rows fed. An unusable one stays the
+    /// null it was counted as.
+    #[inline]
+    fn resolve(&mut self, x: f64) {
+        if usable(x) && self.nulls > 0 {
+            self.nulls -= 1;
+            self.count = self.count.saturating_add(1);
+            self.add(x, 1.0 / self.count as f64);
         }
     }
 
@@ -274,6 +294,21 @@ impl DataSummary {
     #[inline]
     pub fn learned_late(&mut self) {
         self.rows_learned = self.rows_learned.saturating_add(1);
+    }
+
+    /// A row held for its formula target is released to the models with
+    /// `y` as target `target` (an index into the spec's targets). The row
+    /// was fed before its window closed, and its target counted a null
+    /// then; the value joins the target's statistics now, in release order
+    /// -- row order, whatever the chunking -- so `describe` reads what the
+    /// models were handed, as `rows_learned` counts it (review round 4,
+    /// PA9: every such value went uncounted). A row still held, or one
+    /// whose window was cut, stays a null.
+    #[inline]
+    pub fn resolved(&mut self, n_features: usize, target: usize, y: f64) {
+        if let Some(c) = self.columns.get_mut(n_features + target) {
+            c.resolve(y);
+        }
     }
 
     /// The row just fed was accepted: its weight, and whether the models

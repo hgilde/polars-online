@@ -47,11 +47,15 @@ type = "ew_ridge"
 ```
 
 A dry run checks the configuration and prints the output schema without
-reading a row. It builds the bank, so it refuses what the bank refuses
-before a row, a window target's embargo short of its window included. A
-plain run then fits the specs over the input and writes the output. What
-depends on the rows themselves, such as a missing column or a clock that
-steps back, only the run can find:
+feeding the bank a row. It reads the input's schema as the run's scan
+would, from a parquet footer or a CSV's first rows. It opens the bank as
+the run would, loading `--resume`'s state, and runs it on no rows of that
+schema. So it refuses what the run would refuse at its first step: a state
+that is not there or was saved from other specs, a column a spec reads that
+the input or `keep_columns` lacks, and a window target's embargo short of
+its window. A plain run then fits the specs over the input and writes the
+output. What depends on the rows themselves, such as a clock that steps
+back, only the run can find:
 
 ```sh
 online --config bank.toml --dry-run
@@ -151,7 +155,7 @@ overrides it, though `--predict` can only switch scoring on.
 | `--save-state` | `save_state` | save the state when the run ends, after the output is committed |
 | `--closed-groups` | `closed_groups` | write the groups that closed to a sidecar file; needs a spec with `group_close` |
 | `--predict` | `predict` | score against the resumed state and learn nothing; needs `--resume` or `load_state`, drops the TOML's `save_state`, and refuses `--save-state` |
-| `--dry-run` | | validate the configuration and print the output schema, reading no row |
+| `--dry-run` | | check the configuration, the input's schema and the bank as the run would, and print the output schema, feeding the bank no row |
 | `-q`, `--quiet` | | suppress the per-chunk progress |
 | | `keep_columns` | the input columns to keep; all of them when it is empty |
 | | `[[specs]]` | the specs, one table each |

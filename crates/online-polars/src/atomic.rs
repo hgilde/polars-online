@@ -25,6 +25,14 @@
 //! "new" is durable once the directory is. And a process killed between
 //! creating the temporary and renaming it leaves `.name.tmpPID-seq` beside
 //! the destination, which nothing removes.
+//!
+//! What a rename does not carry over is said too. The new file is the
+//! temporary, so it has the owner and group a new file gets, not the old
+//! file's. Its mode is the old file's, copied onto the temporary before
+//! the rename on Unix (a no-op elsewhere): created with the process's
+//! default, a state file made private came back world-readable, 600
+//! becoming 644 under a umask of 022 (review round 4, PA4). A destination
+//! that is not there yet takes the default, as `fs::write` gives a new file.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -104,6 +112,7 @@ impl AtomicFile {
     /// exists for.
     pub(crate) fn commit(mut self) -> io::Result<()> {
         File::options().write(true).open(&self.tmp)?.sync_all()?;
+        keep_mode(&self.dest, &self.tmp)?;
         fs::rename(&self.tmp, &self.dest)?;
         self.pending = false;
         Ok(())
@@ -116,6 +125,31 @@ impl Drop for AtomicFile {
             let _ = fs::remove_file(&self.tmp);
         }
     }
+}
+
+/// Give the temporary the mode of the file it replaces, on Unix, so a save
+/// does not change who may read the state (review round 4, PA4): renamed
+/// over a file made private (`chmod 600`), the temporary published it with
+/// the process's default mode, 644 under a umask of 022. Called once the
+/// temporary is written and synced, since a read-only mode would refuse the
+/// sync's reopening for write. A destination that is not there yet, or
+/// cannot be read, keeps the default, as `fs::write` would give a new file.
+/// Elsewhere a no-op: there is no Unix mode to copy.
+#[cfg(unix)]
+fn keep_mode(dest: &Path, tmp: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match fs::metadata(dest) {
+        Ok(m) => fs::set_permissions(
+            tmp,
+            fs::Permissions::from_mode(m.permissions().mode() & 0o7777),
+        ),
+        Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn keep_mode(_dest: &Path, _tmp: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Write `bytes` to `path`, atomically.
@@ -211,6 +245,43 @@ mod tests {
             1,
             "a temporary was left behind"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A save keeps the mode of the file it replaces (review round 4, PA4).
+    /// The temporary was created with the process's default mode and renamed
+    /// over the destination, so a state file a user had made private came
+    /// back world-readable: 600 became 644 under a umask of 022. A file that
+    /// is not there yet takes the default, as `fs::write` gives it; and a
+    /// read-only one stays read-only, which is why the mode goes on after
+    /// the temporary is written and synced.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_destinations_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("po-atomic-mode-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("state.msgpack");
+        let mode = |p: &Path| {
+            format!(
+                "{:o}",
+                fs::metadata(p).unwrap().permissions().mode() & 0o7777
+            )
+        };
+        write(&dest, b"first").unwrap();
+        let fresh = dir.join("plain.msgpack");
+        fs::write(&fresh, b"first").unwrap();
+        assert_eq!(mode(&dest), mode(&fresh), "a new file takes the default");
+        for want in [0o600, 0o640, 0o604, 0o400] {
+            fs::set_permissions(&dest, fs::Permissions::from_mode(want)).unwrap();
+            write(&dest, format!("mode {want:o}").as_bytes()).unwrap();
+            assert_eq!(mode(&dest), format!("{want:o}"), "the mode after the save");
+            assert_eq!(
+                fs::read(&dest).unwrap(),
+                format!("mode {want:o}").as_bytes()
+            );
+        }
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
 

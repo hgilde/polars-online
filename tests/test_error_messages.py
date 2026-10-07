@@ -1031,6 +1031,80 @@ def test_concurrent_fit_predict_says_so(method):
     assert bank.fit_predict(df.head(10)).height == 10
 
 
+def _overlapping_calls(make, call) -> list[RuntimeError]:
+    """Four threads leave a barrier together and `call` one object `make`
+    built, a round at a time, until two calls overlap: the second finds the
+    object in use and is refused with a `RuntimeError`. A call that holds
+    the GIL for its whole run never overlaps another, so five rounds without
+    one fail."""
+    for _ in range(5):
+        obj = make()
+        start, errors = threading.Barrier(4), []
+
+        def go(obj=obj, start=start, errors=errors) -> None:
+            start.wait()
+            try:
+                call(obj)
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=go) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        busy = [err for err in errors if isinstance(err, RuntimeError)]
+        if busy:
+            return busy
+    pytest.fail("four threads never overlapped in five rounds: the call holds the GIL")
+
+
+@pytest.mark.parametrize("what", ["RefreshTime.feed", "Windows.feed", "Windows.finish"])
+def test_the_stream_operators_release_the_gil(what):
+    """`refresh_time`'s and `with_windows`' native calls release the GIL while
+    they work, as `fit_predict` does, so a 100,000-row chunk of an IO-plugin
+    source does not stop every other Python thread for its length (review
+    round 4, SF12). Proved by overlap: two threads inside one call at once,
+    the second refused with a sentence naming the class and the method."""
+    import json
+
+    from polars_online import _polars_online as native
+
+    n = 400_000
+    big = pl.DataFrame(
+        {
+            "series": ["a", "b"] * (n // 2),
+            "t": np.arange(n, dtype=float),
+            "v": np.random.default_rng(0).standard_normal(n),
+            "x": np.random.default_rng(1).standard_normal(n),
+        }
+    )
+    # A forward window longer than the frame: every row waits for `finish`.
+    tree = ["rewm_sum", ["col", "x"], {"half_life": 50.0, "window_size": 1e9}]
+    config = json.dumps({"formulas": [{"name": "f", "tree": tree}]})
+
+    def windows():
+        return native.Windows(config, big.clear())
+
+    def fed():
+        w = windows()
+        w.feed(big)
+        return w
+
+    cls, method = what.split(".")
+    make, call = {
+        "RefreshTime.feed": (
+            lambda: native.RefreshTime(["a", "b"], "series", "t", "v"),
+            lambda o: o.feed(big),
+        ),
+        "Windows.feed": (windows, lambda o: o.feed(big)),
+        "Windows.finish": (fed, lambda o: o.finish()),
+    }[what]
+    for e in _overlapping_calls(make, call):
+        assert f"{cls}.{method}: " in str(e), str(e)
+        assert "in use on another thread" in str(e), str(e)
+
+
 def test_ridge_scale_is_checked_by_name():
     """R2-P10: a wrong ``ridge_scale`` was refused by serde as an unknown
     variant with no parameter name."""

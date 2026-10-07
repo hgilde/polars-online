@@ -569,3 +569,74 @@ fn progress_reports_every_chunk() {
     assert_eq!(seen, [(64, 1), (128, 2), (192, 3), (250, 4)]);
     cleanup(&[output]);
 }
+
+/// A glob input is read in the lexicographic order of its paths, which is
+/// polars' own order for an expanded glob (review round 4, SF5): `part-10`
+/// before `part-2`, where the numbers say otherwise. Pinned because a
+/// deployment depends on it -- name the parts so the two orders agree, by
+/// padding the numbers -- and so a change of it shows here. Here the parts
+/// hold rows 0..200 and 200..400 of one stream, and the output, which
+/// keeps the input's columns in the order they were read, starts with the
+/// rows of `part-10`. With a clock, the same files are refused as a step
+/// back at the first row of `part-2`.
+#[test]
+fn a_glob_input_is_read_in_the_lexicographic_order_of_its_paths() {
+    let dir = tmp("glob-order");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let df = stream(400);
+    let id = Column::new("id".into(), (0..400i64).collect::<Vec<_>>());
+    let df = df.hstack(&[id]).unwrap();
+    // Numeric order: part-2 first, then part-10. Lexicographic: the reverse.
+    write(
+        &dir.join("part-2.parquet"),
+        Format::Parquet,
+        &df.slice(0, 200),
+    );
+    write(
+        &dir.join("part-10.parquet"),
+        Format::Parquet,
+        &df.slice(200, 200),
+    );
+    let output = dir.join("out.parquet");
+    let mut cfg = config(&dir.join("part-*.parquet"), &output);
+    // No clock: the order is read off the output, not refused.
+    cfg.specs[0].clock = None;
+    cfg.specs[0].gap_cap = None;
+    run_config(&cfg, no_progress).unwrap();
+    let ids: Vec<i64> = read(&output, Format::Parquet)
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    let want: Vec<i64> = (200..400).chain(0..200).collect();
+    assert_eq!(ids, want, "part-10's rows, then part-2's");
+    // A clock steps back at part-2's first row, the 201st read.
+    let mut clocked = config(&dir.join("part-*.parquet"), &output);
+    clocked.specs[0].group = None;
+    let mut ordered = df.clone();
+    ordered
+        .with_column(Column::new(
+            "t".into(),
+            (0..400).map(f64::from).collect::<Vec<f64>>(),
+        ))
+        .unwrap();
+    write(
+        &dir.join("part-2.parquet"),
+        Format::Parquet,
+        &ordered.slice(0, 200),
+    );
+    write(
+        &dir.join("part-10.parquet"),
+        Format::Parquet,
+        &ordered.slice(200, 200),
+    );
+    let err = run_config(&clocked, no_progress).unwrap_err().to_string();
+    assert!(
+        err.contains("goes backwards") && err.contains("row 200"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

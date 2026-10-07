@@ -353,3 +353,216 @@ fn what_a_formula_target_may_not_be() {
         "{err}"
     );
 }
+
+/// One spec's struct column of a bank's output, unnested.
+fn fields(cols: &[Column], spec: usize) -> DataFrame {
+    cols[spec].struct_().unwrap().clone().unnest()
+}
+
+/// A Boolean column that is a group key and is read by a formula target
+/// (review round 4, PA1). The chunk holds it twice under one name -- the
+/// formula's boolean and the key's text -- and the key lookup fell back to
+/// the first column that was not a number or a clock, the boolean, so
+/// `fit_predict` and `predict` panicked at an `unreachable!`. Both roles in
+/// one spec, and in two specs in either order: the bank keys the groups as
+/// it keys the same values given as text, and predicts the same.
+#[test]
+fn a_boolean_group_column_a_formula_target_also_reads() {
+    let base = stream(240, 13);
+    let b: Vec<bool> = base
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|g| g == Some("a"))
+        .collect();
+    let text: Vec<&str> = b
+        .iter()
+        .map(|&v| if v { "true" } else { "false" })
+        .collect();
+    let mut df = base.clone();
+    df.with_column(Column::new("b".into(), b)).unwrap();
+    df.with_column(Column::new("bs".into(), text)).unwrap();
+    let tree = r#"["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}],
+                       ["cast", ["col", "b"], "Float64"]]"#;
+    let formula = |name: &str, group: Option<&str>| -> Spec {
+        let group = group.map_or(String::new(), |g| format!(r#""group": "{g}","#));
+        serde_json::from_str(&format!(
+            r#"{{"name": "{name}", "model": {{"type": "ew_ridge", "ridge": 1e-6}},
+                 "targets": [{{"name": "fwd", "formula": {tree}}}], "features": ["x"],
+                 "clock": "t", "gap_cap": 100.0, "half_life": 50.0, "embargo": 12.5,
+                 {group} "min_weight": 2.0}}"#
+        ))
+        .unwrap()
+    };
+    let grouped = |group: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "k", "model": {{"type": "ew_ridge", "ridge": 1e-6}},
+                 "targets": ["mid"], "features": ["x"], "group": "{group}",
+                 "half_life": 50.0, "min_weight": 2.0}}"#
+        ))
+        .unwrap()
+    };
+    let pred = |s: &Spec| {
+        if s.name == "f" {
+            "pred_fwd"
+        } else {
+            "pred_mid"
+        }
+    };
+    let cases = [
+        (
+            "one spec",
+            vec![formula("f", Some("b"))],
+            vec![formula("f", Some("bs"))],
+        ),
+        (
+            "the formula spec first",
+            vec![formula("f", None), grouped("b")],
+            vec![formula("f", None), grouped("bs")],
+        ),
+        (
+            "the grouped spec first",
+            vec![grouped("b"), formula("f", None)],
+            vec![grouped("bs"), formula("f", None)],
+        ),
+    ];
+    for (label, specs, reference) in cases {
+        // `predict` on a fresh bank reads the chunk as `fit_predict` does.
+        let scored = Bank::new(specs.clone()).unwrap().predict(&df).unwrap();
+        let expected = Bank::new(reference.clone()).unwrap().predict(&df).unwrap();
+        for (si, s) in specs.iter().enumerate() {
+            let p = pred(s);
+            assert_eq!(
+                column(&fields(&scored, si), p),
+                column(&fields(&expected, si), p),
+                "{label}: a fresh bank's predict, {}",
+                s.name
+            );
+        }
+        let mut bank = Bank::new(specs.clone()).unwrap();
+        let got = bank.fit_predict(&df.slice(0, 200)).unwrap();
+        let mut keyed = Bank::new(reference).unwrap();
+        let want = keyed.fit_predict(&df.slice(0, 200)).unwrap();
+        let after = bank.predict(&df.slice(200, 40)).unwrap();
+        let before = keyed.predict(&df.slice(200, 40)).unwrap();
+        for (si, s) in specs.iter().enumerate() {
+            let p = pred(s);
+            let fit = column(&fields(&got, si), p);
+            assert_eq!(fit, column(&fields(&want, si), p), "{label}: {}", s.name);
+            assert!(
+                fit.iter().flatten().count() > 50,
+                "{label}: {} predicts",
+                s.name
+            );
+            assert_eq!(
+                column(&fields(&after, si), p),
+                column(&fields(&before, si), p),
+                "{label}: predict after the fit, {}",
+                s.name
+            );
+        }
+        assert_eq!(bank.groups(), keyed.groups(), "{label}: the keys");
+    }
+}
+
+/// `describe()` reads a formula target as the models were handed it (review
+/// round 4, PA9): a row is fed before its window has closed, so its target
+/// is counted a null then, and the value it is released with joins the
+/// target's statistics when it is released -- where `rows_learned` counts
+/// it. Every value went uncounted: the target's row read `count 0` beside a
+/// `rows_learned` of hundreds. The oracle is the column form, the same
+/// formula over the frame: each group's statistics are those of its values,
+/// computed here from scratch. A last row per group far past the rest
+/// releases every row before it; its own window never closes, so it stays a
+/// null on both sides.
+#[test]
+fn describe_counts_a_formula_target_as_the_models_were_handed_it() {
+    let n = 300;
+    let mut df = stream(n, 5);
+    let last = df.column("t").unwrap().f64().unwrap().get(n - 1).unwrap();
+    let tail = df!(
+        "t" => [last + 1000.0, last + 1001.0],
+        "g" => ["a", "b"],
+        "x" => [Some(0.25), Some(-0.25)],
+        "mid" => [100.0, 100.0],
+    )
+    .unwrap();
+    df.vstack_mut(&tail).unwrap();
+    let spec = native(Some(12.5));
+    let reference = with_column(&df, &spec);
+    let groups_of = |frame: &DataFrame| -> Vec<String> {
+        frame
+            .column("g")
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|v| v.unwrap().to_string())
+            .collect()
+    };
+    let (fed_g, ref_g, ref_fwd) = (
+        groups_of(&df),
+        groups_of(&reference),
+        column(&reference, "fwd"),
+    );
+    for chunks in [1, 7, 302] {
+        let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+        feed(&mut bank, &df, chunks);
+        let described = bank.describe(0, None).unwrap();
+        let summary = bank.summary(0, None).unwrap();
+        for (gi, g) in ["a", "b"].into_iter().enumerate() {
+            let what = format!("{chunks} chunks, group {g}");
+            let values: Vec<f64> = ref_g
+                .iter()
+                .zip(&ref_fwd)
+                .filter_map(|(rg, v)| (rg == g).then_some(*v).flatten())
+                .filter(|v| v.is_finite() && v.abs() <= 1e100)
+                .collect();
+            let fed = fed_g.iter().filter(|v| *v == g).count() as u64;
+            assert!(values.len() > 100, "{what}: {} values", values.len());
+            let k = values.len() as f64;
+            let mean = values.iter().sum::<f64>() / k;
+            let std = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (k - 1.0)).sqrt();
+            let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let mask = described.column("group").unwrap().str().unwrap().equal(g)
+                & described
+                    .column("role")
+                    .unwrap()
+                    .str()
+                    .unwrap()
+                    .equal("target");
+            let target = described.filter(&mask).unwrap();
+            assert_eq!(target.height(), 1, "{what}");
+            let u = |c: &str| target.column(c).unwrap().u64().unwrap().get(0);
+            let f = |c: &str| target.column(c).unwrap().f64().unwrap().get(0);
+            assert_eq!(u("count"), Some(values.len() as u64), "{what}");
+            assert_eq!(u("null_count"), Some(fed - values.len() as u64), "{what}");
+            let close = |a: Option<f64>, b: f64, rel: f64| {
+                a.is_some_and(|a| (a - b).abs() <= rel * b.abs().max(1.0))
+            };
+            assert!(
+                close(f("mean"), mean, 1e-12),
+                "{what}: {:?} vs {mean}",
+                f("mean")
+            );
+            assert!(
+                close(f("std"), std, 1e-9),
+                "{what}: {:?} vs {std}",
+                f("std")
+            );
+            assert_eq!(f("min"), Some(min), "{what}");
+            assert_eq!(f("max"), Some(max), "{what}");
+            // The two frames agree: every value counted is a row learned.
+            let learned = summary
+                .column("rows_learned")
+                .unwrap()
+                .u64()
+                .unwrap()
+                .get(gi);
+            assert_eq!(learned, Some(values.len() as u64), "{what}: rows_learned");
+        }
+    }
+}

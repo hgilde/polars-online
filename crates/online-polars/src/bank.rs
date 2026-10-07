@@ -2357,9 +2357,10 @@ pub struct Bank {
     /// ([`Stream::window_prepass`], docs/PLAN.md task 115 (d)), except where
     /// the pre-pass cannot see it -- `drift_action = "reset"` -- and there
     /// it is found as the rows go in, so the streams hold rows whose output
-    /// was never returned (review 2026-09-12, P4). `fit_predict`, `predict`
-    /// and `save_bytes` refuse; reading the state (`gram`, `summary`,
-    /// `to_json`) does not.
+    /// was never returned (review 2026-09-12, P4). `fit_predict`, `predict`,
+    /// `save_bytes` and its JSON form `save_json_string` refuse (review
+    /// round 4, PA12: the export handed out the state the save refuses);
+    /// reading the state (`gram`, `summary`, `coef`) does not.
     broken: Option<String>,
     /// Whether a chunk's window rings are replayed before any stream runs it
     /// ([`Stream::window_prepass`]): on, except in a test that holds the
@@ -3015,12 +3016,15 @@ impl Bank {
     /// `group`, `column`, `role` (`"feature"`, `"target"`, `"weight"`),
     /// `count`, `null_count`, `mean`, `std` (sample, `ddof = 1`; null below
     /// two values), `min`, `max`. A value counts when finite and within the
-    /// input bound, as the models take it, and is a null otherwise. An
-    /// unsupervised model's targets are not listed (it has none; the spec's
-    /// mirror a feature), an `ew_class` label column has its counts only, a
-    /// comparison's targets are named as the spec names them. A group
-    /// restored from a file written before the summary existed lists its
-    /// columns with every number null.
+    /// input bound, as the models take it, and is a null otherwise. A
+    /// formula target's value is the one its row is released to the models
+    /// with, counted at the release; the row is a null until then, and
+    /// stays one when the input ends first or the window is cut (review
+    /// round 4, PA9). An unsupervised model's targets are not listed (it
+    /// has none; the spec's mirror a feature), an `ew_class` label column
+    /// has its counts only, a comparison's targets are named as the spec
+    /// names them. A group restored from a file written before the summary
+    /// existed lists its columns with every number null.
     ///
     /// `group` narrows the frame to one group; a group the bank has never
     /// seen gives an empty frame, not an error.
@@ -3573,18 +3577,23 @@ impl Bank {
                 }
             }
             t_process += t4.elapsed();
-            let t5 = std::time::Instant::now();
-            assemble_phase(
-                specs,
-                derived,
-                n,
-                &per_spec_rows,
-                &mut out,
-                clock_dtypes,
-                |si| derived[si].compare.is_some(),
-            )?;
-            t_assemble += t5.elapsed();
         }
+        // Assembled whether or not a row reached them, as the first phase's
+        // are: a chunk of no rows has no work for a grouped spec, and a
+        // comparison left out of the assembly panicked below ("every spec is
+        // assembled"; found by the dry run's frame of no rows, review round
+        // 4, SF2).
+        let t5 = std::time::Instant::now();
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &per_spec_rows,
+            &mut out,
+            clock_dtypes,
+            |si| derived[si].compare.is_some(),
+        )?;
+        t_assemble += t5.elapsed();
         // ---- the monotone close batch (E54) ----
         // After both phases and in key order: every group below the chunk's
         // largest key is finished, whatever the chunking, because every row
@@ -3774,16 +3783,19 @@ impl Bank {
             for (si, r) in score(work2, specs, cfgs, &cols) {
                 per_spec_rows[si].push(r?);
             }
-            assemble_phase(
-                specs,
-                derived,
-                n,
-                &per_spec_rows,
-                &mut out,
-                &clock_dtypes,
-                |si| derived[si].compare.is_some(),
-            )?;
         }
+        // Whether or not a stream scored, as in `fit_predict`: a fresh bank,
+        // a chunk of unseen groups or of no rows has no work for a
+        // comparison, and it panicked below (review round 4, SF2).
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &per_spec_rows,
+            &mut out,
+            &clock_dtypes,
+            |si| derived[si].compare.is_some(),
+        )?;
         Ok(out
             .into_iter()
             .map(|c| c.expect("every spec is assembled in one of the two phases"))
@@ -3957,7 +3969,13 @@ impl Bank {
     /// [`crate::spec::Num`] already uses, so a spec's `half_life` and a
     /// stream's `decay` read the same way -- rather than as the `null`
     /// `serde_json` would write unasked. See [`FiniteOrTag`].
+    ///
+    /// Refused, as [`Bank::save_bytes`] is, for a bank a chunk broke (the
+    /// `broken` field): its streams hold rows whose output was never
+    /// returned. One rule in one place (review round 4, PA12); the Python
+    /// wrapper encoded the whole state as msgpack first to ask.
     pub fn save_json_string(&self, pretty: bool) -> Result<String, String> {
+        self.refuse_if_broken().map_err(|e| e.to_string())?;
         let file = self.to_file()?;
         let text = if pretty {
             serde_json::to_string_pretty(&file)

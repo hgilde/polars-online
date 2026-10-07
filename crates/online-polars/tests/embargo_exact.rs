@@ -632,3 +632,87 @@ fn a_formula_target_under_an_embargo_equal_to_its_window_on_both_paths() {
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// After a drift reset under an embargo, `settled_frac` still counts the
+/// clock of the rows held at the reset (review round 4, PB1). A drift reset
+/// keeps the held rows -- each teaches the rebuilt model as it is released
+/// -- and the reset zeroed the clock they covered, so every release took
+/// back a delta the reset had never added, and the field left their clock
+/// out for the rest of the stream: `min_settled_frac = 0.95` opened 59 rows
+/// late. The oracle is the definition, `1 - 2^(-T/h)` with `T` the clock
+/// the decay has covered: on a row-count clock `T = r - 1` before row `r`
+/// (the first row decays by nothing), and after a reset at row `R` the
+/// rebuilt model has covered none of it while the `E - 1` rows held there
+/// have covered `E - 1`, so `T = j + E - 1` at row `R + j`. A grid of
+/// half-lives resets every instance together; one instance resets itself.
+#[test]
+fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
+    let (n, change, embargo) = (1_200usize, 400usize, 60usize);
+    let mut r = lcg(17);
+    let x: Vec<f64> = (0..n).map(|_| r()).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| {
+            let level = if i < change {
+                2.0 * x[i]
+            } else {
+                -2.0 * x[i] + 8.0
+            };
+            level + 0.05 * r()
+        })
+        .collect();
+    let df = df!("x" => x, "y" => y).unwrap();
+    for (half_lives, suffixes) in [
+        ("20.0", vec![("", 20.0)]),
+        ("[20.0, 40.0]", vec![("@h20", 20.0), ("@h40", 40.0)]),
+    ] {
+        let spec: Spec = serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "standardize": false,
+                 "max_rows_between_solves": 1}}, "targets": ["y"], "features": ["x"],
+                 "half_life": {half_lives}, "min_weight": 3.0, "embargo": {embargo},
+                 "emit_drift": true, "drift_delta": 0.5, "drift_threshold": 5.0,
+                 "drift_action": "reset"}}"#
+        ))
+        .unwrap();
+        for size in [0, 7, 37] {
+            let out = run(&spec, &df, size);
+            let what = format!("half_life {half_lives}, chunks of {size}");
+            // The rows a drift flag is on, in any instance: each is a reset
+            // of every instance, at the row that released the row that
+            // tripped it.
+            let flagged: Vec<usize> = (0..n)
+                .filter(|&i| {
+                    suffixes.iter().any(|(sfx, _)| {
+                        field(&out, &format!("drift_y{sfx}")).bool().unwrap().get(i) == Some(true)
+                    })
+                })
+                .collect();
+            // Evidence the reset happened, and where: the first row after
+            // the change is released `embargo` rows later.
+            let reset = *flagged
+                .first()
+                .unwrap_or_else(|| panic!("{what}: no drift reset"));
+            assert!(reset >= change + embargo, "{what}: a reset at {reset}");
+            let end = flagged.iter().copied().find(|&i| i > reset).unwrap_or(n);
+            assert!(end - reset > 200, "{what}: the next reset at {end}");
+            for (sfx, h) in &suffixes {
+                let got = field(&out, &format!("settled_frac{sfx}"));
+                let got = got.f64().unwrap();
+                let at = |row: usize, t: f64| {
+                    let want = 1.0 - (-(t / h)).exp2();
+                    let v = got.get(row).unwrap();
+                    assert!(
+                        (v - want).abs() <= 1e-12,
+                        "{what}, instance {sfx:?}: row {row} reads {v}, the definition {want} \
+                         (T = {t}; reset at {reset})"
+                    );
+                };
+                for row in 1..reset {
+                    at(row, (row - 1) as f64);
+                }
+                for row in reset..end {
+                    at(row, (row - reset + embargo - 1) as f64);
+                }
+            }
+        }
+    }
+}

@@ -236,6 +236,14 @@ fn under_drift_resets_the_ring_still_stops_the_run() {
     assert!(err.contains("window_budget"), "{err}");
     let again = bank.save_bytes().unwrap_err();
     assert!(again.contains("cannot go on"), "{again}");
+    // The JSON export refuses it too, in one place for every caller (review
+    // round 4, PA12): it handed out the state `save_bytes` refuses, and the
+    // Python wrapper encoded the whole state as msgpack first to refuse it.
+    for pretty in [false, true] {
+        let json = bank.save_json_string(pretty).unwrap_err();
+        assert!(json.contains("cannot go on"), "{json}");
+        assert!(json.contains("window_budget"), "{json}");
+    }
 }
 
 /// The replay decides the window's edge on the rows' stamps, as the ring

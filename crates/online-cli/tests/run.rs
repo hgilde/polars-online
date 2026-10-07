@@ -399,18 +399,33 @@ fn resume_rejects_mismatched_specs() {
 /// The `online` binary over a config written to `dir`, with `args` after
 /// `--config`: its exit status, stdout and stderr.
 fn online(dir: &Path, input: &Path, output: &Path, args: &[&str]) -> (bool, String, String) {
+    let (code, stdout, stderr) = online_with(dir, input, output, "", 50.0, args);
+    (code == Some(0), stdout, stderr)
+}
+
+/// [`online`] with more top-level TOML keys (`top`, before `[[specs]]`) and
+/// the spec's `half_life`, giving the exit code itself.
+fn online_with(
+    dir: &Path,
+    input: &Path,
+    output: &Path,
+    top: &str,
+    half_life: f64,
+    args: &[&str],
+) -> (Option<i32>, String, String) {
     let toml = format!(
         r#"
 input = "{}"
 output = "{}"
 chunk_rows = 100
+{top}
 
 [[specs]]
 name = "ridge"
 targets = ["y"]
 features = ["x0", "x1"]
 clock = "t"
-half_life = 50.0
+half_life = {half_life:?}
 gap_cap = 10.0
 group = "group"
 
@@ -422,14 +437,18 @@ type = "ew_ridge"
     );
     let cfg = dir.join("bank.toml");
     std::fs::write(&cfg, toml).unwrap();
+    online_args(&[std::ffi::OsStr::new("--config"), cfg.as_os_str()], args)
+}
+
+/// The binary with `head` then `args`: its exit code, stdout and stderr.
+fn online_args(head: &[&std::ffi::OsStr], args: &[&str]) -> (Option<i32>, String, String) {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_online"))
-        .arg("--config")
-        .arg(&cfg)
+        .args(head)
         .args(args)
         .output()
         .unwrap();
     (
-        out.status.success(),
+        out.status.code(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
@@ -490,6 +509,168 @@ fn a_dry_run_names_an_input_that_is_not_there() {
     assert!(!ok, "{stdout}");
     assert!(!stdout.contains("config OK"), "{stdout}");
     assert!(err.contains(&missing.display().to_string()), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `path` without the column `drop`, written beside it as `to`.
+fn without_column(path: &Path, drop: &str, to: &Path) {
+    let mut df = ParquetReader::new(std::fs::File::open(path).unwrap())
+        .finish()
+        .unwrap()
+        .drop(drop)
+        .unwrap();
+    ParquetWriter::new(std::fs::File::create(to).unwrap())
+        .finish(&mut df)
+        .unwrap();
+}
+
+/// Review round 4, SF2: the dry run said "config OK" for three runs that
+/// fail at their first step -- a `--resume` state that is not there, one
+/// saved from other specs, and an input, or a `keep_columns`, without a
+/// column a spec reads. It opens the bank as the run would and runs it on a
+/// frame of no rows of the input's schema, so it refuses each as the run
+/// does, and still reads no row.
+#[test]
+fn a_dry_run_refuses_what_the_run_refuses_at_its_first_step() {
+    let dir = fresh_dir("sf2");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 60).unwrap();
+    let (state, other) = (dir.join("bank.state"), dir.join("other.state"));
+    for (path, half_life) in [(&state, 50.0), (&other, 999.0)] {
+        let save = ["-q", "--save-state", path.to_str().unwrap()];
+        let (code, _, err) = online_with(&dir, &input, &output, "", half_life, &save);
+        assert_eq!(code, Some(0), "{err}");
+    }
+    let s = state.to_str().unwrap();
+    for args in [
+        &["--dry-run"][..],
+        &["--dry-run", "--resume", s],
+        &["--dry-run", "--resume", s, "--predict"],
+    ] {
+        let (code, stdout, err) = online_with(&dir, &input, &output, "", 50.0, args);
+        assert_eq!(code, Some(0), "{args:?}: {err}");
+        assert!(stdout.contains("config OK"), "{args:?}: {stdout}");
+    }
+    let missing = dir.join("missing.state");
+    let narrow = dir.join("narrow.parquet");
+    without_column(&input, "x1", &narrow);
+    let keep = r#"keep_columns = ["group", "t", "x0", "y"]"#;
+    let missing_text = missing.display().to_string();
+    let cases: [(&str, &str, Vec<&str>, Vec<&str>); 4] = [
+        (
+            "a state that is not there",
+            "",
+            vec!["--resume", missing.to_str().unwrap()],
+            vec!["loading state", missing_text.as_str()],
+        ),
+        (
+            "a state saved from other specs",
+            "",
+            vec!["--resume", other.to_str().unwrap()],
+            vec!["do not match"],
+        ),
+        (
+            "an input without a feature",
+            "",
+            vec!["--input", narrow.to_str().unwrap()],
+            vec!["\"x1\"", "not found"],
+        ),
+        (
+            "keep_columns without a feature",
+            keep,
+            vec![],
+            vec!["\"x1\"", "not found"],
+        ),
+    ];
+    for (label, top, args, want) in cases {
+        let mut dry = vec!["--dry-run"];
+        dry.extend_from_slice(&args);
+        let (code, stdout, err) = online_with(&dir, &input, &output, top, 50.0, &dry);
+        assert_eq!(code, Some(1), "{label}: {stdout}{err}");
+        assert!(!stdout.contains("config OK"), "{label}: {stdout}");
+        // And the run refuses it, for the same reason.
+        let mut run = vec!["-q"];
+        run.extend_from_slice(&args);
+        let (run_code, _, run_err) = online_with(&dir, &input, &output, top, 50.0, &run);
+        assert_eq!(run_code, Some(1), "{label}: the run");
+        for w in &want {
+            assert!(err.contains(w), "{label}: {w:?} not in the dry run's {err}");
+            assert!(
+                run_err.contains(w),
+                "{label}: {w:?} not in the run's {run_err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Review round 4, SF6: a deployment scripts on the exit status, so it is
+/// pinned. 0 for a run that finished; 1 for every refusal and every error
+/// of a run -- a config that does not parse or is not there, an input that
+/// is not there, a chunk the bank refuses -- with `online: <message>` on
+/// stderr; and 2 for a command line clap refuses, a usage error.
+#[test]
+fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
+    let dir = fresh_dir("sf6");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 60).unwrap();
+    let (code, stdout, err) = online_with(&dir, &input, &output, "", 50.0, &["-q"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(stdout.contains("wrote 60 rows"), "{stdout}");
+
+    let narrow = dir.join("narrow.parquet");
+    without_column(&input, "x1", &narrow);
+    let bad_toml = dir.join("bad.toml");
+    std::fs::write(&bad_toml, "input = \n").unwrap();
+    let nowhere = dir.join("nowhere.toml");
+    let missing = dir.join("missing.parquet");
+    let config = |p: &Path| vec![std::ffi::OsString::from("--config"), p.into()];
+    let refusals: [(&str, Vec<std::ffi::OsString>, Vec<&str>); 5] = [
+        ("a config that does not parse", config(&bad_toml), vec![]),
+        ("a config that is not there", config(&nowhere), vec![]),
+        (
+            "an input that is not there",
+            config(&dir.join("bank.toml")),
+            vec!["--input", missing.to_str().unwrap()],
+        ),
+        (
+            "a chunk the bank refuses",
+            config(&dir.join("bank.toml")),
+            vec!["-q", "--input", narrow.to_str().unwrap()],
+        ),
+        (
+            "a config the binary refuses",
+            config(&dir.join("bank.toml")),
+            vec!["--no-output"],
+        ),
+    ];
+    for (label, head, args) in refusals {
+        let head: Vec<&std::ffi::OsStr> = head.iter().map(|s| s.as_os_str()).collect();
+        let (code, _, err) = online_args(&head, &args);
+        assert_eq!(code, Some(1), "{label}: {err}");
+        assert!(err.starts_with("online: "), "{label}: {err}");
+    }
+    let usage: [(&str, &[&str]); 4] = [
+        ("no --config", &[]),
+        ("an unknown flag", &["--no-such-flag"]),
+        ("a format clap cannot parse", &["--input-format", "xlsx"]),
+        (
+            "two flags that conflict",
+            &["--output", "o.parquet", "--no-output"],
+        ),
+    ];
+    let cfg = dir.join("bank.toml");
+    for (label, args) in usage {
+        let head: Vec<&std::ffi::OsStr> = if label == "no --config" {
+            vec![]
+        } else {
+            vec![std::ffi::OsStr::new("--config"), cfg.as_os_str()]
+        };
+        let (code, _, err) = online_args(&head, args);
+        assert_eq!(code, Some(2), "{label}: {err}");
+        // clap's own voice, not the binary's `online: `.
+        assert!(err.starts_with("error: "), "{label}: {err}");
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

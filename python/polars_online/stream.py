@@ -377,16 +377,17 @@ def refresh_time(
     refuses one with ``restart_after_step_back`` unset. The refusal is a
     ``ValueError``, which py-polars 1.x hands on inside its ``ComputeError``
     because the sampler runs as a polars source, for a ``DataFrame`` too. A temporal
-    clock is compared exactly, in integer nanoseconds. A null ``value`` is a
-    tick that observed nothing, so it does not update the series. Feeding
-    the input in one chunk or a thousand gives the same grid, since a point
-    is a property of the ticks up to it. Ties are broken by row order:
-    "strictly after ``tau_j``" is read against the row sequence. So a tick
-    carrying the same clock value as the one that just closed a point, but
-    later in the frame, belongs to the next interval. That is what lets a
-    point be emitted the moment its last series ticks, which is what makes
-    the result chunk-invariant. Sort the input by ``clock`` and by the order
-    you want within a clock value.
+    clock is compared exactly, in integer nanoseconds. A ``value`` that is
+    missing -- null, NaN, infinite, or past 1e100 in magnitude, the rule every
+    spec column follows -- is a tick that observed nothing, so it does not
+    update the series. Feeding the input in one chunk or a thousand gives the
+    same grid, since a point is a property of the ticks up to it. Ties are
+    broken by row order: "strictly after ``tau_j``" is read against the row
+    sequence. So a tick carrying the same clock value as the one that just
+    closed a point, but later in the frame, belongs to the next interval.
+    That is what lets a point be emitted the moment its last series ticks,
+    which is what makes the result chunk-invariant. Sort the input by
+    ``clock`` and by the order you want within a clock value.
 
     **It resumes.** ``save_state`` writes the sampler's state once the input
     is fed: every group's grid, part-way through an interval or not, and its
@@ -408,6 +409,8 @@ def refresh_time(
 
     - fewer than two ``names``, or a duplicate;
     - a column the frame has not got;
+    - a ``value`` column that is not numeric (a boolean and a column of nulls
+      are);
     - ``chunk_rows`` below 1;
     - a ``load_state`` that is not such a state, or was saved with other
       ``names`` or ``pairs``.
@@ -429,6 +432,16 @@ def refresh_time(
         if col not in in_schema:
             msg = f"refresh_time: no keep column {col!r} in the frame; it has {in_schema.names()}"
             raise ValueError(msg)
+    # A number, as a spec's feature is: a boolean or a column of nulls too
+    # (review round 4, PC7). Read through a non-strict cast, text came out
+    # all null, an empty grid with nothing said, and a `Date` as its days.
+    value_dtype = in_schema[value]
+    if not (value_dtype.is_numeric() or value_dtype in (pl.Boolean, pl.Null)):
+        msg = (
+            f"refresh_time: value column {value!r} has dtype {value_dtype}; it must be numeric "
+            f"(cast it, e.g. pl.col({value!r}).cast(pl.Float64))"
+        )
+        raise ValueError(msg)
     rows = chunk_rows if chunk_rows is not None else _native.default_chunk_rows()
     if rows < 1:
         msg = f"chunk_rows must be at least 1, got {rows}"

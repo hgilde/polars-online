@@ -38,7 +38,7 @@ def rss_kb() -> float:
     return PROC.memory_info().rss / 1024
 
 
-def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks=16):
+def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks=16):
     """Run `fn` in blocks and require RSS growth to flatten.
 
     Measurement starts **after** the allocator has stopped ramping, and the
@@ -51,7 +51,12 @@ def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks
     The blocks after the ramp are compared *one gap at a time* and the
     statistic is the median gap: a leak grows in every block, so its median
     gap is the leak rate, while a one-off step moves a single gap and leaves
-    the median where it was.
+    the median where it was. Seven blocks give six gaps, so two steps still
+    leave the median on quiet gaps. Five gave four, and two steps -- what
+    the ubuntu marks below show -- put it halfway up a step: two 3.4 MB
+    steps at 240 iterations a block read a median of 7 KB/iter with no leak,
+    the shape of `test_many_tiny_groups`' one failure in a gate (review
+    round 4, SF8; `TestThePlateauStatistic` holds both cases).
 
     Two earlier versions got this wrong, both by measuring the ramp:
 
@@ -70,7 +75,7 @@ def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks
       a limit of 4. A fixed warm-up only moves the guess; finding the plateau
       removes it.
     """
-    assert blocks >= 4, "the median gap needs at least three gaps after the first block"
+    assert blocks >= 7, "two steps must leave the median on a quiet gap: six gaps at least"
 
     def block() -> float:
         for _ in range(per_block):
@@ -100,6 +105,40 @@ def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks
         f"{[round(m) for m in marks]}). A plateau is expected; a slope means "
         "something is not being released."
     )
+
+
+class TestThePlateauStatistic:
+    """`assert_plateaus` on scripted RSS marks, so what it passes and fails is
+    held without a process's allocator in the way (review round 4, SF8)."""
+
+    @staticmethod
+    def _script(monkeypatch, marks):
+        """Make `rss_kb` read `marks` in turn, the last one for good."""
+        it = iter(marks)
+        last = [marks[-1]]
+
+        def fake() -> float:
+            last[0] = next(it, last[0])
+            return last[0]
+
+        monkeypatch.setattr(sys.modules[__name__], "rss_kb", fake)
+
+    def test_two_allocator_steps_after_the_ramp_are_not_a_leak(self, monkeypatch):
+        """The gate flake of `test_many_tiny_groups`: two 3.4 MB steps among
+        the measured blocks at 240 iterations a block, 14 KB/iter each. Five
+        blocks give four gaps, two of them steps, and a median of 7 KB/iter
+        failed with no leak; seven give six, and the median sits on a quiet
+        gap."""
+        quiet = [1000.0] * 3
+        self._script(monkeypatch, [*quiet, 1000, 1000, 4400, 4400, 7800, 7800, 7800])
+        assert_plateaus(lambda: None, per_block=240)
+
+    def test_a_leak_still_fails(self, monkeypatch):
+        """A slope never has two quiet blocks, runs out of warm-up, and its
+        every gap is the leak rate: 8.3 KB/iter against a limit of 4."""
+        self._script(monkeypatch, [1000.0 + 2000.0 * i for i in range(60)])
+        with pytest.raises(AssertionError, match="RSS still climbing"):
+            assert_plateaus(lambda: None, per_block=240)
 
 
 def frame(n=1500, seed=0):

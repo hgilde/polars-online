@@ -347,12 +347,14 @@ impl ArrowChunk {
         // numerically sorted integer key was refused at "10 after 9" (review
         // 2026-09-18, V12). The integer form is the one `monotone` reads as a
         // number.
+        //
+        // Else the text, and only the text: a key is pushed as one of these
+        // three forms (`cast_to`, `Want::Key`), and the fallback that took
+        // any form but a number or a clock took the boolean a formula target
+        // reads from the same column, which `group_indices` met at its
+        // `unreachable!` (review round 4, PA1).
         self.find(name, |c| matches!(c, ArrowCol::I64(_) | ArrowCol::U64(_)))
-            .or_else(|| {
-                self.find(name, |c| {
-                    !matches!(c, ArrowCol::F64(_) | ArrowCol::Nanos(_))
-                })
-            })
+            .or_else(|| self.find(name, |c| matches!(c, ArrowCol::Str(_))))
             .ok_or_else(|| self.missing(spec, role, name, "text or an integer key"))
     }
 

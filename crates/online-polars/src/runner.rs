@@ -355,6 +355,32 @@ impl RunConfig {
         }
     }
 
+    /// What `online --dry-run` checks beyond [`Self::validate`], reading no
+    /// row: the input's schema as the run's scan resolves it -- a parquet
+    /// footer, a CSV's first rows, a glob's first file, `keep_columns`
+    /// applied -- the bank as the run opens it ([`Self::open_bank`]), and
+    /// that bank run, as the run would run it, on a frame of no rows of that
+    /// schema. So a `load_state` that is not there or holds other specs, and
+    /// an input or a `keep_columns` without a column a spec reads, are
+    /// refused here as the run refuses them at its first step; a dry run
+    /// said "config OK" for all three (review round 4, SF2). The bank is
+    /// dropped: nothing is written.
+    ///
+    /// # Errors
+    ///
+    /// The scan's error, its message led by `input <path>: `; then
+    /// [`Self::open_bank`]'s; then [`Bank::fit_predict`]'s, or
+    /// [`Bank::predict`]'s for a scoring run.
+    pub fn dry_run(&self) -> PolarsResult<()> {
+        let schema = self
+            .scan()
+            .and_then(|mut lf| lf.collect_schema())
+            .map_err(|e| e.wrap_msg(|m| format!("input {}: {m}", self.input.display())))?;
+        let mut bank = self.open_bank()?;
+        let empty = DataFrame::empty_with_schema(&schema);
+        augment(&mut bank, empty, self.predict, self.no_output(), 0).map(|_| ())
+    }
+
     /// The bank this config starts from: loaded from `load_state`, or fresh.
     /// A file that cannot be read is an `IO` error; one that is not a bank
     /// this build loads, or whose specs are not the config's, is a

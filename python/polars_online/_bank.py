@@ -12,7 +12,7 @@ import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
-from polars_online._spec import _from_json, _json, coef_index, target_name
+from polars_online._spec import _coef_index_schema, _from_json, _json, coef_index, target_name
 
 #: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -312,13 +312,15 @@ class ModelBank:
         return self._fit_predict_from(df, 0)
 
     def _fit_predict_from(
-        self, df: pl.DataFrame, row_base: int, learn_only: bool = False
+        self, df: pl.DataFrame, row_base: int, learn_only: bool = False, what: str = "fit_predict"
     ) -> pl.DataFrame:
         """:meth:`fit_predict` for rows ``row_base..`` of a longer input: an error
         names the input's row, not the chunk's. The chunked surfaces pass the rows
         they have fed before the chunk; ``learn_only`` is :meth:`fit`'s run, which
-        keeps no prediction."""
-        self._check_frame(df, "fit_predict")
+        keeps no prediction. ``what`` is the public method the caller used, for a
+        chunk that is not a frame (review round 4, SF11: it named
+        ``fit_predict`` under :meth:`fit_predict_batches` and :meth:`fit`)."""
+        self._check_frame(df, what)
         outs = self._native.fit_predict(df, row_base, learn_only)
         self._warn_notices()
         return df.with_columns([pl.Series(s) for s in outs])
@@ -557,7 +559,9 @@ class ModelBank:
         # counter is how it is told from a spent stream (task 159, P2), here
         # as in the sources (review 2026-10-05, YB6).
         started = _source_runs()
-        return self._feed(self._chunks(batches, chunk_rows), path, guard, what == "fit", started)
+        return self._feed(
+            self._chunks(batches, chunk_rows), path, guard, what == "fit", started, what
+        )
 
     def _feed(
         self,
@@ -566,6 +570,7 @@ class ModelBank:
         guard: str | None = None,
         learn_only: bool = False,
         started: int | None = None,
+        what: str = "fit_predict_batches",
     ) -> Iterable[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
         checked: a generator, so nothing here runs until a caller asks.
@@ -574,7 +579,8 @@ class ModelBank:
         be reading a single-use Arrow stream; a run that then sees no rows at
         all is reported rather than passed off as a finished fit, unless one of
         this package's own sources ran since ``started``: then the plan is
-        one of its plan forms over an input that was empty."""
+        one of its plan forms over an input that was empty. ``what`` names the
+        calling method for a chunk that is not a frame."""
         from polars_online._frame import (
             ConsumedSourceWarning,
             _sources_ran_since,
@@ -586,7 +592,7 @@ class ModelBank:
         rows_seen = 0
         try:
             for chunk in source:
-                out = self._fit_predict_from(chunk, rows_seen, learn_only)
+                out = self._fit_predict_from(chunk, rows_seen, learn_only, what)
                 rows_seen += chunk.height
                 if path is not None:
                     rows = self.closed_groups()
@@ -657,12 +663,12 @@ class ModelBank:
 
         **With one exception, and it is this method's alone.** A fit whose
         every spec is an accumulator with no decay -- ``ewridge`` or ``rls``
-        at ``lam=1.0``, no ``window_size``, no session, no drift reset --
-        reaches the same coefficients whatever order the rows arrived in,
-        because its sums commute. Measured to rounding, not to the bit:
-        3.3e-16 over 200 rows. Since :meth:`fit` returns nothing and keeps
-        only the state, the order genuinely does not matter there, and no
-        warning is raised. It still is for :meth:`fit_predict_batches` over
+        at ``lam=1.0`` or ``half_life=inf``, no ``window_size``, no session,
+        no drift reset -- reaches the same coefficients whatever order the
+        rows arrived in, because its sums commute. Measured to rounding, not
+        to the bit: 3.3e-16 over 200 rows. Since :meth:`fit` returns nothing
+        and keeps only the state, the order genuinely does not matter there,
+        and no warning is raised. It still is for :meth:`fit_predict_batches` over
         the same specs, whose predictions are out-of-sample and so move with
         the order (1.33 on those same rows). It is for every model whose
         update does not commute: ``sgd``, ``pa``, ``ftrl``, ``quantile`` and a
@@ -754,14 +760,16 @@ class ModelBank:
             if (f := self._coef_try(i, group, names[i])) is not None
         ]
         if not frames:
+            # Every `coef()` frame's columns, `coef_index`'s among them, so
+            # this one stacks with the others: it had seven columns of the
+            # eleven, and a plain concat raised (review round 4, SF3).
             return pl.DataFrame(
                 schema={
                     "spec": pl.String,
                     "group": pl.String,
                     "instance": pl.String,
                     "weight_sum": pl.Float64,
-                    "position": pl.Int64,
-                    "term": pl.String,
+                    **_coef_index_schema(),
                     "coef": pl.Float64,
                 }
             )
@@ -831,7 +839,7 @@ class ModelBank:
         bank has never seen gives an empty frame. Specs with different fields
         are stacked ``diagonal_relaxed``, so a field one spec has not got is
         null on its rows. A group with no learned row yet (every row skipped
-        so far, or a state file written before 0.2.0) is a row of nulls.
+        so far) is a row of nulls.
         :meth:`predict` does not move it, and a chunk that ends in skipped
         rows leaves the row before them.
         """
@@ -900,12 +908,9 @@ class ModelBank:
 
         ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one
         the bank has not got), ``group`` to one group; a group never seen
-        gives an empty frame. A state file written before 0.2.0 carries no
-        summary. Its groups report ``spec``, ``group``, ``rows_processed`` and
-        ``last_clock``, and nulls elsewhere, for good: a count that began at
-        the load would read as the whole history. :meth:`predict` moves none
-        of it, and feeding the same rows in one chunk or a thousand gives the
-        same numbers to the bit.
+        gives an empty frame. :meth:`predict` moves none of it, and feeding
+        the same rows in one chunk or a thousand gives the same numbers to
+        the bit.
         """
         names = self._native.spec_names()
         picked = range(len(names)) if spec is None else [self._spec_index(spec)]
@@ -932,9 +937,11 @@ class ModelBank:
 
         An unsupervised model lists no targets, an ``ew_class`` label column has its
         counts only, and a comparison's target is the difference of residuals it
-        tests, named as the spec names it. ``spec`` and ``group`` narrow the frame as
-        in :meth:`summary`. A state file written before 0.2.0 lists its columns with
-        every number null; see :meth:`summary`.
+        tests, named as the spec names it. A window expression given as a target
+        counts the value each row is learned from, when the row is learned: it is
+        a null until the row's window closes and its ``embargo`` passes, and stays
+        one for a row still held when the input ends. ``spec`` and ``group``
+        narrow the frame as in :meth:`summary`.
         """
         names = self._native.spec_names()
         picked = range(len(names)) if spec is None else [self._spec_index(spec)]
@@ -1134,14 +1141,14 @@ class ModelBank:
                     if tidx
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
-                    "target_means": None if tmeans is None else np.asarray(tmeans),
-                    "target_vars": None if tvars is None else np.asarray(tvars),
+                    "target_means": np.asarray(tmeans, dtype=float),
+                    "target_vars": np.asarray(tvars, dtype=float),
                     # A target with no weighted row yet has no Kish size; the
                     # array says `nan` where the Rust side says `None`, as
                     # every other float array here does.
-                    "target_n_kish": None
-                    if tkish is None
-                    else np.asarray([np.nan if v is None else v for v in tkish], dtype=float),
+                    "target_n_kish": np.asarray(
+                        [np.nan if v is None else v for v in tkish], dtype=float
+                    ),
                     "lags": None if lags is None else list(lags),
                     "lag_comoments": None
                     if lag is None

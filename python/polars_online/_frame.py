@@ -535,8 +535,14 @@ _ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls"})
 #: denied as *unproven* rather than refuted: their code path never ran in the
 #: probe, and a green result from a path that did not execute is not evidence.
 _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
-    "lam": (1.0,),
-    "half_life": (None,),
+    # Decay off, either way the README names it: `lam=1.0` (with no
+    # `half_life`), or `half_life` infinite (with no `lam`), as a float or as
+    # the text a hand-written dict may carry. Only `lam=1.0` passed, so a fit
+    # with `half_life=inf` warned where the README says it does not (review
+    # round 4, TB2). A spec gives one of the two, so a `None` here is the
+    # other's.
+    "lam": (None, 1.0),
+    "half_life": (None, float("inf"), "inf"),
     "window_size": (None,),
     "window_budget": (None,),
     "window_every": (None,),

@@ -699,7 +699,13 @@ reported 0.00 for String and must not be trusted for it.
   held rows have covered counts too, though the models have not yet decayed
   by it: a scored row then reads what the doubled stream (E47's oracle)
   reads for it, where every held row has already decayed the model as a
-  weight-0 row -- and the mean-form fit is the same either way.
+  weight-0 row -- and the mean-form fit is the same either way. A drift
+  reset restarts the decay time and keeps the held rows' clock, since it
+  keeps the rows, each to teach the rebuilt model when released: on a
+  row-count clock under an embargo of `E` rows, a reset at row `R` reads
+  `1 − 2^(−(j+E−1)/h)` at row `R + j`, where zeroing both had read
+  `1 − 2^(−j/h)` for the rest of the stream (review round 4, PB1). A clock
+  reset drops the held rows, and their clock with them.
 - **`settled_frac`** per decay instance (a half-life grid gives one per
   instance); null when decay is off (`half_life = inf` / `lam = 1`).
 - **`support_coef`** `= diag(G_raw·G⁻¹)` on the solve schedule, from the

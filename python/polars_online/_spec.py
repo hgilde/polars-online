@@ -1290,21 +1290,36 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     ``ValueError`` for a spec that is not valid, as for :func:`output_fields`.
     """
     rows = json.loads(spec_coef_fields(_json(spec)))
-    return pl.DataFrame(
-        rows,
-        schema={
-            "field": pl.String,
-            "position": pl.UInt32,
-            "name": pl.String,
-            "target": pl.String,
-            "half_life": pl.Float64,
-            "lam": pl.Float64,
-            "ridge": pl.Float64,
-            "feature_set": pl.String,
-            "penalty": pl.Float64,
-            "term": pl.String,
-        },
+    return pl.DataFrame(rows, schema=_COEF_FIELDS_SCHEMA)
+
+
+#: The columns of :func:`coef_fields`, in order.
+_COEF_FIELDS_SCHEMA: dict[str, Any] = {
+    "field": pl.String,
+    "position": pl.UInt32,
+    "name": pl.String,
+    "target": pl.String,
+    "half_life": pl.Float64,
+    "lam": pl.Float64,
+    "ridge": pl.Float64,
+    "feature_set": pl.String,
+    "penalty": pl.Float64,
+    "term": pl.String,
+}
+
+
+def _index_columns(fields: pl.DataFrame) -> pl.DataFrame:
+    """:func:`coef_index`'s columns of a :func:`coef_fields` frame: the one
+    place they are chosen, so a bank with no coefficients lays out the empty
+    frame :meth:`ModelBank.coef` gives with them too (review round 4, SF3)."""
+    return fields.select(
+        pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
     )
+
+
+def _coef_index_schema() -> pl.Schema:
+    """The schema of every :func:`coef_index` frame, whatever the spec."""
+    return _index_columns(pl.DataFrame(schema=_COEF_FIELDS_SCHEMA)).schema
 
 
 def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
@@ -1361,9 +1376,7 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         msg = f"{kind} emits no coefficients"
         raise ValueError(msg)
     first = cf["field"][0]
-    return cf.filter(pl.col("field") == first).select(
-        pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
-    )
+    return _index_columns(cf.filter(pl.col("field") == first))
 
 
 @_checked

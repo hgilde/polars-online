@@ -391,6 +391,29 @@ def test_the_warning_points_at_the_caller_not_the_library():
 FREE = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
 
 
+def _free(model: str, decay: str) -> dict:
+    """An order-free spec of `model` with decay off as `decay` spells it."""
+    import math
+
+    if decay == "lam=1":
+        kw: dict = {"lam": 1.0}
+    else:
+        kw = {"half_life": math.inf}
+    spec = getattr(po.spec, model)("m", targets=["y"], features=["x0"], min_weight=1.0, **kw)
+    # The builder stores a float; a hand-written dict may carry the text.
+    return {**spec, "half_life": "inf"} if decay == "half_life='inf'" else spec
+
+
+#: Every spelling of "decay off" the README names, on both models it names
+#: (review round 4, TB2): `half_life=inf` was read as a decay and warned, and
+#: `rls`'s order-freedom was never measured.
+FREE_SPECS = [
+    pytest.param(_free(model, decay), id=f"{model}-{decay}")
+    for model in ("ewridge", "rls")
+    for decay in ("lam=1", "half_life=inf", "half_life='inf'")
+]
+
+
 def _rows(n: int = 200) -> pl.DataFrame:
     """Enough rows that a shuffle says something; `left()` has nine."""
     import math
@@ -419,10 +442,11 @@ def _spread(spec, frame) -> float:
     return max(abs(x - y) for x, y in zip(a, b, strict=True))
 
 
-def test_an_accumulator_with_no_decay_is_recognised_as_order_free():
+@pytest.mark.parametrize("free", FREE_SPECS)
+def test_an_accumulator_with_no_decay_is_recognised_as_order_free(free):
     from polars_online._frame import _order_free
 
-    assert _order_free([FREE])
+    assert _order_free([free])
 
 
 @pytest.mark.parametrize(
@@ -488,10 +512,11 @@ def test_one_disqualifying_spec_disqualifies_the_bank():
     assert not _order_free([])
 
 
-def test_fit_over_an_order_free_spec_says_nothing():
+@pytest.mark.parametrize("free", FREE_SPECS)
+def test_fit_over_an_order_free_spec_says_nothing(free):
     """The false positive this removes: the plan's order is unspecified, and
     for this fit it cannot matter."""
-    quiet(lambda: po.ModelBank([FREE]).fit(left().join(right(), on="k")))
+    quiet(lambda: po.ModelBank([free]).fit(left().join(right(), on="k")))
 
 
 def test_the_same_spec_still_warns_wherever_predictions_are_handed_back():
@@ -514,10 +539,12 @@ def test_a_disqualified_fit_still_warns():
 # --------------------------------------------- the suppression cannot outlive it
 
 
-def test_an_accumulators_coefficients_commute():
+@pytest.mark.parametrize("free", FREE_SPECS)
+def test_an_accumulators_coefficients_commute(free):
     """To rounding, never to the bit: the Gram sums commute mathematically but
-    not in floating point. If this ever fails, the exception above is wrong."""
-    assert _spread(FREE, _rows()) < 1e-12
+    not in floating point. If this ever fails, the exception above is wrong.
+    `rls` measured 1.4e-15, `ewridge` 3.3e-16."""
+    assert _spread(free, _rows()) < 1e-12
 
 
 def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():

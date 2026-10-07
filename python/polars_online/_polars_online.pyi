@@ -91,9 +91,9 @@ class ModelBank:
                 list[float],  # comoments, k*k row-major
                 list[list[float]],  # cross_moments, one row per target
                 list[float],  # target_weights
-                list[float] | None,  # target_means
-                list[float] | None,  # target_vars
-                list[float | None] | None,  # target_n_kish
+                list[float],  # target_means
+                list[float],  # target_vars
+                list[float | None],  # target_n_kish
             ],
             # (lags, L*k*k cross-moments), or None without lags (E56)
             tuple[list[int], list[float]] | None,

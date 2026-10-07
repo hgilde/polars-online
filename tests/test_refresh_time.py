@@ -43,7 +43,9 @@ def oracle(df, names, pairs=False):
     seen: set[str] = set()
     out = []
     for s, t, v in df.select("series", "t", "v").iter_rows():
-        if v is None:
+        # Missing by the rule every spec column follows: null, NaN, an
+        # infinity, or a magnitude past the input bound of 1e100.
+        if v is None or not abs(v) <= 1e100:
             continue
         last[s] = v
         ticks[s] += 1
@@ -279,6 +281,62 @@ def test_a_null_value_is_a_tick_that_observed_nothing():
     assert out.height == 1
     assert out["time_refresh"][0] == 4.0 and out["b_value"][0] == 4.0
     assert out["n_obs_b"][0] == 1, "the null tick is not counted"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), 1e101])
+def test_a_value_the_bank_reads_as_missing_observed_nothing(bad):
+    """NaN, an infinity and a magnitude past 1e100 are missing values, as
+    they are in every spec column, so such a tick observed nothing (review
+    round 4, PC7). They were values: a point completed on a NaN tick
+    reported ``b_value`` NaN."""
+    df = pl.DataFrame(
+        {"series": ["a", "b", "c", "b"], "t": [1.0, 2.0, 3.0, 4.0], "v": [1.0, bad, 3.0, 4.0]}
+    )
+    out = run(df)
+    assert out.height == 1
+    assert out["time_refresh"][0] == 4.0 and out["b_value"][0] == 4.0
+    assert out["n_obs_b"][0] == 1, "the missing tick is not counted"
+    # And through the longhand loop, on a stream with them sprinkled in.
+    ticks = poisson_obs(n=300)
+    holed = ticks.with_columns(
+        v=pl.when(pl.int_range(pl.len()) % 7 == 3).then(bad).otherwise(pl.col("v"))
+    )
+    assert run(holed).equals(pl.DataFrame(oracle(holed, NAMES)))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pl.Series(["1.5", "2.5", "3.5"]),
+        pl.Series(["abc", "def", "ghi"]),
+        pl.Series([19000, 19001, 19002]).cast(pl.Date),
+        pl.Series([1, 2, 3]).cast(pl.Datetime("us")),
+        pl.Series([[1.0], [2.0], [3.0]]),
+    ],
+    ids=["numbers-as-text", "text", "date", "datetime", "list"],
+)
+def test_a_value_column_that_is_not_numeric_is_refused_by_name(value):
+    """Refused while the plan is built, as a spec refuses a feature of that
+    dtype (review round 4, PC7). It was cast without a check: text came out
+    all null and the grid was empty with nothing said, and a ``Date`` was
+    read as its day count."""
+    df = pl.DataFrame({"series": ["a", "b", "c"], "t": [1.0, 2.0, 3.0], "v": value})
+    with pytest.raises(ValueError, match="value column 'v' has dtype .*; it must be numeric"):
+        run(df)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Float32, pl.Boolean, pl.UInt8, pl.Null])
+def test_a_value_column_of_any_numeric_dtype_is_read(dtype):
+    """Integers, booleans and a column of nulls are numbers, as they are to a
+    spec."""
+    v = (
+        pl.Series([None] * 3, dtype=pl.Null)
+        if dtype == pl.Null
+        else pl.Series([1, 0, 1]).cast(dtype)
+    )
+    df = pl.DataFrame({"series": ["a", "b", "c"], "t": [1.0, 2.0, 3.0], "v": v})
+    out = run(df)
+    assert out.height == (0 if dtype == pl.Null else 1)
 
 
 def test_the_pushdowns_are_honoured():

@@ -245,10 +245,23 @@ def test_coef_takes_every_spec_by_default_and_skips_the_ones_without_any():
 
 
 def test_coef_of_a_bank_with_no_coefficients_is_an_empty_frame():
+    """With every other bank's columns, so the frames of several banks stack
+    with the plain ``concat`` the docstring promises (review round 4, SF3):
+    it had 7 columns where every other ``coef()`` has 11, and the concat
+    raised ``ShapeError``. The four it lacked are ``coef_index``'s."""
     bank = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], half_life=20)])
     bank.fit_predict(_grouped())
     got = bank.coef()
     assert got.height == 0 and got.columns[0] == "spec" and "coef" in got.columns
+    ridge = po.ModelBank([GRID])
+    ridge.fit_predict(_grouped())
+    some = ridge.coef()
+    assert got.schema == some.schema
+    assert got.schema == ridge.coef(group="no such group").schema
+    for frames in ([got, some], [some, got]):
+        assert pl.concat(frames).equals(some)
+    layout = po.spec.coef_index(GRID).schema
+    assert {k: got.schema[k] for k in layout} == dict(layout)
 
 
 def test_the_layout_test_covers_every_kind_with_a_coef():

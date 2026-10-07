@@ -377,6 +377,67 @@ fn scoring_reads_the_state_before_the_chunk() {
     assert!(fresh.equals_missing(&scored));
 }
 
+/// A comparison with no stream to run still gets its column, as every
+/// other spec does: on a frame of no rows, learning or scoring, and when
+/// scoring a frame no stream of it has seen -- a fresh bank's `predict`, or
+/// a chunk of new groups -- where it is null throughout, as the sides'
+/// predictions are. The comparisons' phase was assembled only when it had
+/// work, so each call panicked at its end ("every spec is assembled in one
+/// of the two phases"). Found by `online --dry-run`, which runs the bank on
+/// no rows of the input's schema (review round 4, SF2), on
+/// `examples/bank.toml`; an empty input and a fresh bank's `predict`
+/// reached it before.
+#[test]
+fn a_comparison_with_no_stream_to_run_still_gets_its_column() {
+    let df = make_df(200);
+    let empty = df.clear();
+    for group in [true, false] {
+        let specs = vec![
+            ridge("a", 20.0, group),
+            ridge("b", 200.0, group),
+            compare("c", "a", "b", group),
+        ];
+        let mut bank = Bank::new(specs.clone()).unwrap();
+        // A fresh bank scores every row with no stream behind it.
+        let scored = DataFrame::new(200, bank.predict(&df).unwrap()).unwrap();
+        for f in ["log_e_a_y", "log_e_b_y", "weight_sum"] {
+            assert_eq!(
+                field(&scored, "c", f).null_count(),
+                200,
+                "group {group}: {f}"
+            );
+        }
+        assert_eq!(field(&scored, "a", "pred_y").null_count(), 200);
+        let learned = bank.fit_predict(&empty).unwrap();
+        let scored = bank.predict(&empty).unwrap();
+        for cols in [&learned, &scored] {
+            assert_eq!(cols.len(), 3, "group {group}");
+            assert!(cols.iter().all(|c| c.is_empty()), "group {group}");
+        }
+        // And the bank goes on as one that never saw either frame.
+        let mut fresh = Bank::new(specs).unwrap();
+        let want = DataFrame::new(200, fresh.fit_predict(&df).unwrap()).unwrap();
+        let got = DataFrame::new(200, bank.fit_predict(&df).unwrap()).unwrap();
+        assert!(got.equals_missing(&want), "group {group}");
+    }
+    // Scoring a chunk of groups no stream has seen, beside none it has.
+    let mut bank = Bank::new(vec![
+        ridge("a", 20.0, true),
+        ridge("b", 200.0, true),
+        compare("c", "a", "b", true),
+    ])
+    .unwrap();
+    let g = df.column("g").unwrap().str().unwrap().clone();
+    bank.fit_predict(&df.filter(&g.equal("g0")).unwrap())
+        .unwrap();
+    let unseen = df.filter(&g.equal("g1")).unwrap();
+    let scored = DataFrame::new(unseen.height(), bank.predict(&unseen).unwrap()).unwrap();
+    assert_eq!(
+        field(&scored, "c", "weight_sum").null_count(),
+        unseen.height()
+    );
+}
+
 #[test]
 fn a_refused_chunk_updates_neither_phase() {
     // A step back is refused by default (`restart_after_step_back` unset).
