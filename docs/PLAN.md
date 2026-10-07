@@ -86,7 +86,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `min_settled_frac` | float in `[0, 1)` | withhold predictions until the decay window has filled this far toward steady state, `settled_frac = 1 − 2^(−T/h)`, `T` the decay time seen; `0` (default) off. Off because a mean-form fit is unbiased from row one under stationarity; it guards a history that does not represent the process, which only the user can judge. Needs a decay |
 | `max_error_inflation` | float `> 1` | withhold while `error_inflation = sqrt(1 + edf / n_kish)` -- the estimation error's expected inflation of a prediction's error over the noise floor -- exceeds this. Default `sqrt(2)`; `inf` off. Tracks the model; reads Kish's `n`. `ew_ridge` only; the rest keep `min_periods` |
 | `emit_error_inflation` | bool | emit `error_inflation_<slot>`, the same ratio for the row's own features (its leverage against the fit's factor). `O(k²)` a row, hence opt-in; `ew_ridge` only |
-| `coef_every` | int | 0 = never; also emitted on **each group's** last row within every chunk — one row of coefficients per group per chunk, not one per chunk, so the emission schedule of `coef` follows the chunking while every other field is chunk-invariant (hard rule 3 is about the numbers) |
+| `coef_every` | clock units | unset: `coef` on **each group's** last row within every chunk — one row of coefficients per group per chunk, not one per chunk, so the emission schedule of `coef` follows the chunking while every other field is chunk-invariant (hard rule 3 is about the numbers); `0`: every row; a span: on the clock (task 178), with `max_rows_between_coefs` its row cap |
 | `group` | str \| None | one state per key |
 
 Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the same decay.
@@ -8009,11 +8009,181 @@ tick, and that the series holding it up has a count near 1.
       ewridge/lasso windowed Gram view can see NaN, from a row those models
       still learn (task 183). Tests in `hmm`, `deco`, `robust`, `ewcov` and
       `ewdiag`, each failing on the old code. Finite inputs move nothing.
-- [ ] 183. **`ew_cov`, `sgd`, `ewridge` and `lasso` still learn a row with a
+- [x] 183. **`ew_cov`, `sgd`, `ewridge` and `lasso` still learn a row with a
       non-finite feature -- found 2026-10-06 by task 182.** Through the Rust
       API only, outside `OnlineModel`'s contract (every input finite); the
-      bank never sends such a row. Other models were not all checked. Awaits
-      the user's word.
+      bank never sends such a row. Other models were not all checked.
+      *Decided 2026-10-06 (the user, "Your reco"): make it uniform.* The core
+      keeps the contract itself, so its line becomes a guarantee: one
+      predicate, the bank's `usable` (finite, within `INPUT_BOUND`), moved
+      into `online-core`; a target that is not usable is absent (predict-only,
+      the bank's rule); a feature or weight that is not usable makes the row
+      a zero-weight row that keeps nothing of its own (its clock ages the
+      state, nothing else of it enters, it is not counted), its `pred` NaN
+      for a feature; every one of the 20 models audited and held to it by one
+      contract test; the refusals of tasks 179, 181 and 182 that count the
+      row (`robust`'s `n_eff`, `hmm`'s and `bocpd`'s failures) brought into
+      line, a usable row that fails anyway still counted.
+      *Built 2026-10-06 by a worker: `60d5356` on branch `task183-unusable`,
+      unmerged.* `usable`/`all_usable` live beside `INPUT_BOUND`; every
+      model's `step` opens with an inlined check and a `#[cold]` refusal that
+      steps the row again at weight 0 with its features 0; the contract test
+      `refuses_unusable_values` failed 43 of 103 legs on the old code across
+      all 20 kinds; no expected exception held (no zero-weight row takes a
+      ring slot, a warm-up row or a likelihood) except a blocked `ewridge`
+      Gram, held as zeros; `deco` reports NaN for `u`/`rho` on such a row.
+      Cost: the core `step` +6-16% on `sgd`/`pa`, +3-6% on `kalman`;
+      through the bank (one thread, 300,000 rows, best of seven interleaved
+      rounds, load ~3) +3.4%/+4.7% for `sgd`/`pa` at two features, +0.8% to
+      +2.3% elsewhere, inside the rounds' 2-5% spread. *Cost accepted
+      2026-10-06 (the user, "Your reco all"): merged with tasks 184-193.*
+      *Done 2026-10-07*, merged first of the eleven, the cost as measured
+      and accepted. Two of task 186's tests reached their case through a row
+      past the input bound, which this refuses; they were restated at the
+      merge: `bocpd`'s failed predictive (CE10) through a hazard of 1 and a
+      step the clock cannot read, and `rcov`'s unrunnable repair (CE9)
+      through a sum held at infinity, as only a state built by hand can be.
+
+- [x] 184. **The survivors of the mutation run over `f49058d..8e28c1f`** (909
+      mutants, tasks 168-182: 23 missed, 1 timeout). Each killed by a test
+      or recorded as equivalent or tolerated with its reason. *Worker
+      `task184-survivors`, 2026-10-06.* *Done 2026-10-07*: 11 killed by
+      new tests (`clock`, `ewclass`, `marginal`, `kalman`, `lasso`,
+      `solve`), each checked by hand on its mutant; 7 new equivalent entries
+      and 1 tolerated (`kalman.rs:753:22`, rounding in an unsized `P`);
+      TESTING.md counts 168 equivalent in 167 entries and 32 tolerated in
+      28. `solve.rs:281`'s timeout still spins in an unbounded test loop.
+- [x] 185. **A loader refuses a damaged state by name** (§18: CA2 CA3 CA4 CA6
+      CB2 CB8 CE3 CF4 CD14 PD1 PB4 PA8 CF11 PA2 CF12). Every `restore` runs
+      its cfg's `validate()` and checks every shape it will index; the
+      windows core, held embargo rows and the envelope's spec indices are
+      checked at load. *Worker `task185-loaders`.* *Done 2026-10-07*:
+      `check_cfg` in all 20 restores, the shapes each next row reads,
+      `Windows::check` at load, a newer file told to upgrade; each test
+      failed on the old code by a panic or a load. No number moved. At the
+      merge the lag ceilings (task 193) joined the shared `check_lags`, so a
+      restored cfg is held to them, and the kept systems' Gram check went
+      with `System.gram` (task 186).
+- [x] 186. **Round-4 model defects** (§18: CC1 CE1 CC2 CC3 CA1 CA11 CB7 CD12
+      CE8 CE9 CE10 CA5 CE7 CF3 CA10 CD17): no prediction from a fit nobody
+      solved (NaN, CA5's rule; the per-target first solve is the user's),
+      `ew_class`'s windowed `coef`, `sgd`'s overflow guard, `kalman`'s shared
+      noise read once a row (with a `filterpy` second opinion), schema 38
+      (`System.gram` dropped). *Worker `task186-models`.* *Done
+      2026-10-07*: CC1 refined, a slot with no weight keeping a fit an
+      earlier solve made or `ewridge`'s `coef_prior` under a ridge (`Fit`,
+      NaN tagged in JSON). Moved: `pred` 0.0 to null on 56 of 80 rows (CC1),
+      `share_p`'s MSE (CC3), a windowed `ew_class`'s `coef` (CE1), `rcov`'s
+      `iv_sparse` and `iq` (CE8). Left: `share_p` still sequential, so target
+      order matters; CD12's γ>0 solve is inaccurate near its floor (195).
+- [x] 187. **Round-4 defects in the bank, the stream and the surfaces** (§18:
+      PA1 PA4 PA9 PA12 PB1 SF2 SF3 SF5 SF6 SF8 SF9 SF10 SF11 SF12 TB2 PC7).
+      *Worker `task187-surfaces`.* *Done 2026-10-07*: all 16, and a panic
+      SF2's dry run found (a `seqtest` comparison assembled only when it had
+      work: `predict` on a fresh bank, `fit_predict` on an empty grouped
+      frame). Moved: `settled_frac` after a drift reset under an embargo
+      (PB1), `describe()`'s formula-target row (PA9), `refresh_time` on an
+      unusable value (PC7). Left: its clock column casts non-strictly (197).
+- [x] 188. **Round-4 defects in the helper modules and the window operators**
+      (§18: YB1 YB2 YB3 YB4 YB6 YB7 YB12 YB13 YB14 YB15 YB17 YB18 YB19 YB21
+      PD3 PD4 PD5 PD6 PD7 PD9 PD10). *Worker `task188-helpers`.* *Done
+      2026-10-07*: all 21, with scikit-learn's and statsmodels' second
+      opinions. Moved: identity shrinkage (0.0754 to 0.1051), `nearest` 20
+      to 19 iterations, three dtypes. Left: an unnamed relative target scored
+      without `spec=` cannot be told apart (a decision). YB3, probed at the
+      merge: no documented flow runs `embargo` over this package's own plan
+      forms, which it warns about though they read twice correctly.
+- [x] 189. **Round-4 test findings** (§18: TA1-TA5 TA9-TA12 TB4 TB5 TB7-TB14
+      CF7-CF10 CD15 CC10 PB6 YA10 CE6): independent oracles (`filterpy`,
+      scikit-learn's `partial_fit`, `hmmlearn`, `padasip`), generators that
+      reach the bounds, a second golden bank, a cross-OS hand-off over every
+      kind, assertions that can fail. *Worker `task189-tests`.* *Done
+      2026-10-07* in four commits: the four oracles agree to 1.4e-13 or
+      better, a second golden bank of 291 entries and 29 Rust goldens, a
+      hand-off over every kind. No library number moved and no golden was
+      re-pinned at the merge, where three of its tests met task 193's rules
+      (`kalman` takes `coef_half_life` or `q`; `rcov` reads no `theta` under
+      `"kernel"`). CC10 checked there: without `.min(1.0)` its test fails.
+- [x] 190. **The API snapshot pins what the policy calls stable** (§18: AP1 AP2
+      AP8 YA1 YA8 TB1 DB2 DB3 DB4 DB5): resolved defaults, helper signatures,
+      frame columns, TOML keys, CLI flags, env vars, enum values. *Worker
+      `task190-pins`.* *Done 2026-10-07*: `resolved_defaults` renders each
+      kind from the bank's own build, and `test_spec_defaults.py` holds the
+      README's `min_weight` table to it. Regenerated after the merge: schema
+      38, `kalman`'s and `rcov`'s new defaults, `po.eval`'s `spec=`. Left: a
+      value a model estimates shows as null; `po.corr`'s and `po.sim`'s words
+      are not pinned.
+- [x] 191. **Round-4 fixes to the reader-facing documents and the release
+      workflow** (§18: DA3 DA5 DA8 DA10-DA15 AP14 AP16-AP18 AP21 AP23 CB5 CB6
+      CE6 PB5 PD6 PD7 SF4-SF6 SF13 YA3 YA7 CI5 CI7 CI9 CI10 CI12-CI14 CI16
+      CI17 CI19). A workflow edit: the next release rehearses first. *Worker
+      `task191-docs-ci`.* The CHANGELOG's DA6 and DA7 are the coordinator's
+      (done in the working tree). *Done 2026-10-07*: the sdist smoke, the
+      tag's headings, `--locked`, the README pin and `[Unreleased]` checks,
+      OUTPUTS' dtypes and *also null*, RUNNER's exit status. DA15 and SF13 did
+      not reproduce. Left: an infinite half-life is null in `output_index`;
+      two release legs pin no Python; the state legs lack `--locked` (199).
+- [x] 192. **The dated records name their dated spellings** (§18: DB9-DB13
+      DB15-DB28). *Worker `task192-records`.* *Done 2026-10-07*: one
+      table of renamed names (PERFORMANCE, "Names that changed") and a
+      pointer at the head of every record; statuses made current, REGIMES §6
+      and §9 under its doc test, provenance on PERFORMANCE §26-§36. Left:
+      three docs/README.md index rows (199).
+- [x] 193. **Round-4 input validation and the words of a refusal** (§18: CD10
+      CF2 CE9 CA6 CC7 CF6 CE4 PC6 PC8 YA5 PC10 PC11 YA4 YA6 PA6 PB7 CD16).
+      *Worker `task193-validation`.* *Done 2026-10-07*: the ceilings, the
+      parameters a mode does not read, the core held to the spec, the words
+      of every refusal (`spec_diff.rs` for PA6); no accepted spec's output
+      moved. At the merge: `hmm`'s `k` held to 1024 in core, spec and builder,
+      and `micro`'s matrix kept up to 4,096 potential summaries, its O(m)
+      path past it, a test holding the two to the same labels.
+- [ ] 194. **The bank's and the stream's state and frames** (§18, decided):
+      the stream's persisted fields as one sub-struct (S6, D7); a key
+      column's dtype kept in the state and a change refused (N22); the clock
+      range in each frame in the clock's own dtype (N18); counts `UInt64`
+      everywhere (N19); `closed_groups`' rcov block prefixed (N20); `group=`
+      takes a list of `str | None` and integer keys sort as numbers (N21);
+      `coef` on the group's last accepted row of a chunk (S2); `predict`
+      under an embargo documented and pinned (S3); `rows_fed()` (N9);
+      `t_stat`/`pair_t_stat` (N8). Schema 39.
+- [ ] 195. **The models' defaults and semantics** (§18, decided): `sgd`'s
+      `huber_delta` and `eps` and `pa`'s `eps` in units of the residual's EW
+      standard deviation (U1); `standardize=True` for `sgd`, and on `pa`
+      (U2); `huber_delta` 1.345 (U3); `bocpd`'s `prior_scale` from the first
+      rows (U4) and `prior_nu` per emission (U5); units stated for the rest
+      (U6); `sgd`'s logistic labels clamped, `strict_binary` (S4); a Poisson
+      fit's `hit_rate` null (S5); an exact zero prediction left out of
+      `hit_rate` in the bank and in `po.eval` (S6); a target's own first
+      solve (S9b); `rls`'s `ridge` renamed `delta` (N11).
+- [ ] 196. **Names in the specs, the models and the command line** (§18,
+      decided): `type = "ewridge"` and the `huber:`/`quantile:` message
+      prefixes (N1); `chunk_size` on every surface (N2); `dist_second` (N7);
+      `lag_corr` (N10); `*_every_rows` and `permute_every`'s redraw as
+      documented (N14, S1); `--load-state` (N15); holt's `level_half_life`
+      dropped (N16); a `closed` parameter on the windowed models, default
+      `"right"` (N17); `--skip-learned` (N26); a row cap of 0, `pca = 0` and
+      `stats = []` refused (U7). Every old name refused, naming the new one.
+- [ ] 197. **Names in the helper modules** (§18, decided): `po.eval`'s
+      `min_samples` and `group` (N3); `window_metrics(every=)` (N4);
+      `absorption_shift` (N5); `po.gram.lasso_path(penalties=)` (N6); the
+      five module constants in `__all__` (N24).
+- [ ] 198. **The mechanisms of the 1.0 promise** (§18, decided): the state
+      fixture harness, one frozen state per `ModelState` variant checked
+      three ways, `MIN_SCHEMA_VERSION` raised to the schema shipped, the
+      variant names frozen, the dead `#[serde(default)]` repairs deleted, the
+      released-state test loading for 1.x (D1); the deprecation warning and
+      its forwarding table, used from 1.0 (D2); the unstable label and its
+      opt-in warning on the windows state format, the formula tree's written
+      form, `fit_predict_arrow`, `po.sim` and `po.corr` (D5, N23); task 116's
+      parts that move no default, the current floors declared final (D8);
+      `ModelBank.load`'s note on damaged payloads (D14).
+- [ ] 199. **The 1.0 policy text and the process** (§18, decided): the
+      README's stability table, versioning after 1.0 and state-file promise
+      (D3, DA1 DA2 DA4 DA16); a polars floor leg in the release and monthly
+      in the canary (D4); the changed-lines mutation job sharded (D10); a
+      weekly 1.95 check (D11); SECURITY.md's support line (D12); uncited
+      records to `docs/records/` (D13); the `embargo` columns named stable
+      (N24). D9 (the dev pin to polars 2.0.x) when the canary passes.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -12028,3 +12198,90 @@ learned rows; (2) `micro` keeps every 100 learned rows; (3) built, task 178
 (unset is the old default, `0` every row, `max_rows_between_coefs` the row
 cap); (4) built, task 179, as a duration `hazard` applied before the row it
 leads into (a row's hazard is the chance of a break after it).
+
+## 18. Whole-project review before 1.0 (2026-10-06): everything, with a 1.0 lens
+
+The user: "Deep code review of everything in this project. We are getting
+close to version 1.0; find everything we should do before then." Nineteen
+read-only reviewers at `8e28c1f`, one slice each (six over `online-core`,
+four over the polars layer, one over the three surfaces, two over the Python
+package, two over the tests, one over CI and release, two over the
+documents, one cross-cutting over names, units, promises and policy), 257
+findings. Two lenses: **defect**, as §15 and §16; and **1.0**, anything cheap
+to change now and breaking after the promise (a name unlike Polars' or the
+library's own, a default with units in it, an undocumented semantic, a file
+format, a promise no test pins). Severity as §16; a 1.0 finding takes the
+severity of what it would cost after 1.0. Every reproduction was re-run by a
+verification agent: all 13 Rust tests confirmed (the load succeeds or the
+next row panics, as stated), all 27 Python scripts reproduce. The per-slice
+reports, reproductions and the consolidated list are in the session's
+scratchpad (`review4/`); this section keeps what must outlive it.
+
+The user then: "Do everything that does not need me." Tasks 184-194 carry
+the findings whose fix the code, the docs, an existing rule or a precedent
+settles; the decisions below wait for the user.
+
+**High defects** (each in a task): `huber`/`quantile` and `ewridge` predict a
+target with no rows at a solve as exactly 0.0 until the next scheduled solve
+(CC1, task 186); a windowed `ew_class`'s `coef` is the whole history's
+(CE1, 186); `po.eval` scores a relative target against its raw column (YB1,
+188). Two clusters: loaders that trust the bytes (twelve findings, 185) and
+spec values that size an allocation with no ceiling (CD10, CF2, CE9; 193).
+
+**Decisions for the user**, with the recommendation given:
+
+| # | Decision | Recommendation |
+|---|---|---|
+| D1 | Hard rule 5 returns at 1.0 with no loader and no fixture; `MIN_SCHEMA_VERSION = 14` is false (layouts since fail in serde before the gate); the released-state test asserts refusal only (CF1 AP10 CI3 DB1 TB3 CC8 DA3) | 1.0.0's schema is the floor; from there every layout change ships a loader and a frozen fixture per `ModelState` variant (embedded bytes), checked three ways (loads, continues to the bit, re-saves byte-identically); raise `MIN_SCHEMA_VERSION` to the shipped schema; build the harness now with HEAD's state; freeze the variant names; delete the dead `#[serde(default)]` repairs |
+| D2 | No deprecation policy; a renamed name is refused outright (AP9 CI4 DA16) | warn-and-forward with a `DeprecationWarning` subclass, removed at the next major; `RENAMED` becomes the forwarding table at 1.0 |
+| D3 | What a numbers-moving fix is after 1.0 (DA2) | a fix whose old numbers were wrong against the stated definition is a minor, declared with `compare_release`'s difference; a changed default or semantic is a major |
+| D4 | The Polars floor 1.34.0 has not run since the window operators; the canary tests the ceiling (AP7 CI2 AP11) | a blocking floor leg in `release.yml` and a monthly canary run; after 1.0, raising the floor is a minor |
+| D5 | No "unstable" marker (AP12 DA4 YB11) | Polars-style label and opt-in warning on the windows state format, the formula tree's written form, `fit_predict_arrow`, `po.sim`, `po.corr`; promise the rest |
+| D6 | Pins for the stable surface | *not a decision: task 190* |
+| D7 | The stream-state tidy (S6) | *not a decision: task 194* |
+| D8 | Task 116 leaves readiness defaults provisional (DB7) | build the parts that move no default; declare the current floors final |
+| D9 | New users get polars 2.0.0; the goldens and the lock are on 1.44.2 (CI18) | move the dev pin to 2.0.x once the canary has passed on it |
+| D10 | The changed-lines mutation job cannot finish a normal push (CI1) | shard it as the weekly job is |
+| D11 | `rust-version = 1.95` is compiled by no job (CI11) | a weekly `cargo check --locked` on 1.95 |
+| D12 | SECURITY.md's support line after 1.0 (CI15) | the latest minor receives fixes |
+| D13 | 21 of 32 `docs/` files are records (DB14) | `docs/records/` for the uncited ones; PHRASING and README-ITERATIONS filed as records |
+| D14 | No payload hash; a flipped bit loads (PA14) | no hash at 1.0; the limit stated in `ModelBank.load`'s docstring |
+| N1 | `po.spec.ewridge` vs `type = "ew_ridge"` vs the `ewridge:` message prefix (AP4 CF5) | tag `"ewridge"`; `huber:`/`quantile:` prefixes |
+| N2 | `chunk_rows` vs Polars' `chunk_size` (AP5) | `chunk_size` on all three surfaces |
+| N3 | `po.eval`'s `min_obs`, `by=` (a bare string iterates characters) (AP6 YB16) | `min_samples`, `group` |
+| N4 | `rolling_metrics` is tumbling (Polars' `group_by_dynamic`) (YB5) | `window_metrics(every=)` |
+| N5-N9 | `corr.shift`; `po.gram.lasso_path(lambdas=)`; `dist2`; `bank.marginal()`'s `t`; `rows_seen()` (YB10 YB20 TA7 CD13 PA11) | `absorption_shift`; `penalties=`; `dist_second`; `t_stat`; `rows_fed()` |
+| N10 | `lagcorr` at the surface, `lag_corr` in the state (CB3) | `lag_corr` everywhere |
+| N11 | `rls.ridge` is `ewridge`'s `ridge_scale="sum"`, not its `ridge` (CA7) | rename `delta` |
+| N12, N13 | `conformal=<level>`; `increment` vs `diff` (CA9 PD8) | keep both |
+| N14 | `update_every`, `split_merge_every`, `permute_every` count rows (AP15) | `*_every_rows` |
+| N15, N16 | `--resume` vs `load_state`; holt's `level_half_life` beside `half_life` (SF7 AP8 TA6) | `--load-state`; drop `level_half_life` |
+| N17 | the models' `window_size` keeps a row exactly `W` old; the operators and Polars drop it (CB1 PD2) | a `closed` parameter on the windowed models, Polars' `"right"` |
+| N18, N19 | clock range as Float64 seconds in three frames; `rows_fed` Int64 in one frame (SF1 AP13 PA3) | the clock's own dtype; UInt64 everywhere |
+| N20-N22 | rcov's closed-group block half-prefixed; the null group unreadable alone and text key order; a key column changing dtype splits groups silently (PA13 PA10 PC1 PA7) | prefix all; `group` takes `str \| None` lists and integer keys sort as numbers; the dtype recorded in the state and a change refused |
+| N23-N26 | `sim`'s status; five constants outside `__all__` and the `embargo` columns; `clock`/`group`/`lam`; `--skip-learned` (YB11 YB9 AP19 PC4 PC5 AP22) | unstable label; add to `__all__` and name the columns stable; keep (task 144); add it |
+| U1 | `sgd.huber_delta` 1.0, `sgd.eps` and `pa.eps` 0.1 in target units (AP3 CC4 PC2) | σ-relative, as `huber`'s |
+| U2 | `sgd.standardize` False; `pa` has none (CC6) | True for sgd; add to pa, default True |
+| U3 | `huber_delta` 1.5 unmeasured; the textbook constant is 1.345 (TA8) | 1.345 |
+| U4, U5 | `bocpd.prior_scale` is the identity in target² units; `prior_nu = d + 2` under every emission (CE5 CE2) | data-relative from the first rows; per-emission ν |
+| U6 | `rls.ridge`, `learning_rate`, `clip_gradient`, `pa.c`, ftrl's constants | keep; state the units; pinned by task 190 |
+| U7 | a row cap of 0 refused for `max_rows_between_coefs`, "every row" for four others; `pca = 0`, `stats = []` accepted (PC3 CB4 YA2 PC9) | refuse 0 and the empties everywhere |
+| S1 | `permute_every` redraws every `n + 1` reports (CD11) | the code matches the docs |
+| S2 | `coef` is skipped when a chunk's last row of a group is skipped (PB2) | the last accepted row |
+| S3 | under an embargo `predict` learns no matured label (PB3 TB6) | document and pin it |
+| S4-S6 | `sgd` logistic labels outside {0, 1}; a Poisson `hit_rate` reads 1.0; a prediction of exactly 0 a hit in the bank and a miss in `po.eval` (CC9 CC5 YB8) | ftrl's clamp and `strict_binary`; null; exclude `pred == 0` on both sides |
+| S9b | a target's own first solve when its weight first reaches its `min_weight` (CC1's second half) | build it |
+
+*Settled without the user, as following a rule or the docs (in tasks
+186-193):* S7 (`shrink`'s identity target, the paper's), S8 (CE1, the
+docstring's), S9a (NaN for an unsolved target, CA5's rule), S10 (a
+parameter a mode ignores is refused, YA8's rule), S11 (every way in checks
+a spec the same way), S12 (`refresh_time`'s value read by the `usable`
+rule), S13 (`pins` markers), S14 (`increment` of a `Time` gives seconds, as
+its docstring says), S15 and S16 (documentation of the current behaviour).
+
+*Decided 2026-10-06, the user's word ("Your reco all"): every recommendation
+in the table above, and task 183's cost accepted.* Built as tasks 194-199
+once tasks 183-193 merge, since they touch the same files. D9 waits for the
+weekly canary to pass on polars 2.0.0: its run of 2026-10-05 failed on the
+unwrapped `ValueError`, fixed in `a7a8f3c`.

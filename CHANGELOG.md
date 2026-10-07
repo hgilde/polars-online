@@ -14,6 +14,20 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
 
 ### Added
 
+- **`po.eval` reads a target through the spec that wrote it** (task 188;
+  review round 4, YB1). `metrics`, `rolling_metrics` and `sums` take
+  `spec=`, and `compare_specs` takes `specs=`. With it, a target taken
+  against another column is scored on the bank's own difference, ratio or
+  log ratio, and a ratio's hit test is taken about 1. A renamed target reads
+  its column. On the review's frame, a relative target's r² went from −1723
+  to 0.88. Without `spec=` nothing changes, except that a slot naming no
+  column now asks for it.
+- **The release checks more before it publishes** (task 191; review round
+  4, CI5, CI7, CI12, CI13). It installs the sdist into a fresh environment
+  and runs it, as it does each wheel, and builds with `--locked`. It refuses
+  a README pin on another minor, and publishing with entries left under
+  `[Unreleased]`. A tag's annotation keeps the CHANGELOG section's `###`
+  headings.
 - **`bocpd`'s hazard can be a duration** (task 179): on a temporal clock,
   `hazard="1h"` is the expected time between changepoints. The step `d`
   into each row carries the chance `1 − exp(−d/τ)` of a break, computed as
@@ -35,8 +49,8 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   stamps (at a repeated stamp every row carries the stamp's total), and the rate is
   the sum over the decayed time the window covers. The `rewm_` forms are
   their mirrors, looking ahead. A formula around them composes with
-  `pl.col`, literals, arithmetic, comparisons,
-  `log`/`exp`/`abs`/`sqrt`/`pow`/`clip`/`fill_null`/`is_null`,
+  `pl.col`, literals, arithmetic, negation, comparisons,
+  `log`/`exp`/`abs`/`sqrt`/`pow`/`clip`/`fill_null`/`is_null`/`is_not_null`,
   `when/then/otherwise`, `cast` and `alias`. A node that is not
   element-wise (`shift`, `cum_sum`, a rolling function, `over`, an
   aggregation) is refused by name. A `cast` is strict unless written
@@ -154,11 +168,14 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   builder's `targets` is typed as a `Sequence`, so mypy accepts a list of
   `po.target` tables, of window expressions, or a mix.
 
-### Changed
+### Changed (breaking)
 
-- **Every saved bank must be refit.** A bank file now carries schema 37,
+Code that ran on 0.13.0 must change for these: a name, a refusal, a
+reinterpreted parameter, an output's dtype or a file to refit.
+
+- **Every saved bank must be refit.** A bank file now carries schema 38,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
-  its version, naming the way out: refit from the input. Nine changes
+  its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
   specs a file stores carry (task 144), the window core a formula target
   keeps (task 104, then review rounds R4 and R6), the PCA, pruning and
@@ -168,8 +185,78 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   (task 170), the elapsed clock an embargo's held rows are measured on
   (task 176), and where each stream's `coef` cadence stands (task 178). An
   `ew_cov` state with `mahal_quantiles` is refused too. Schema 37 keeps
-  the stamp of the last solve, PCA refresh and checkpoint (task 180), and
-  refuses 36 and older.
+  the stamp of the last solve, PCA refresh and checkpoint (task 180).
+  Schema 38 drops a Gram index nothing read from the systems `ewridge` keeps
+  for its readiness statistics, and lets a closed `rcov` row's
+  `psd_repaired` be null (task 186). It refuses 37 and older.
+
+- **A fit nobody solved predicts nothing** (task 186; review round 4, CC1).
+  `ewridge`, `lasso`, `huber` and `quantile` predicted a target no solve had
+  fit, such as a late target or one whose first solve failed, from zero
+  coefficients. That gave exactly 0.0 until the next scheduled solve: on 56
+  of 80 rows under `solve_every=1000`, and 4 under the default cadence. Such
+  a target now predicts null, and its `coef` entries are null, until a solve
+  sees its rows. A fitted target whose weight a gap takes to exactly 0 keeps
+  its fit, and so does `ewridge`'s `coef_prior` under a ridge.
+
+- **A spec value that sizes memory before the first row has a ceiling**
+  (task 193 and its merge; review round 4, CD10, CF2, CE9). A lag,
+  `resid_autocorr_lag` and `n_perm` are refused past 2^20, `kmeans`' `k`
+  past 2^16 and its warm-up buffer past 256 MiB, and `hmm`'s `k` past 1024.
+  An `rcov` ring whose lagged products would pass 256 MiB is refused too.
+  Each refusal names the value. `marginal(lags=[2**62])` panicked in the
+  builder, `lags=[10**11]` reserved 2.4 TB, and `hmm(k=2**62)` grew memory
+  without bound. One legitimate spec is hit: an automatic `rcov` ring at 100
+  features over a block of 10^6 returns, about 1.1 GB.
+
+- **A parameter its mode does not read is refused** (task 193; review round
+  4, CF6, CE4, PC6, PC8). `kmeans` refuses `dead_frac > 0` beside
+  `split_merge = 0`, and a `warm_rows` below `k`, as `hmm` does; its default
+  `warm_rows` is now the larger of 500 and `k`. `hmm` refuses `transition`
+  beside `tvtp_coef`, and its warm-up parameters beside given states.
+  `rcov` refuses `jitter`, `max_bandwidth` and `theta` under a kind that
+  does not read them, and the builder's `jitter` and `theta` default to
+  `None`. `kalman` takes `coef_half_life` or `q`, exactly one: `q` alone was
+  refused for a missing half-life, and the two together ignored the
+  half-life.
+
+- **The builders refuse the empties a raw dict is refused for** (task 193;
+  review round 4, YA5, PC10). `feature_sets={}`, `blocks={}`,
+  `mahal_quantiles=[]` and an empty target name are refused. A grid listing
+  0 and -0 is refused as a duplicate, and a field named for -0 is named for
+  0: `__r0`, where it was `__r-0`. A tuple comes back from the bank as the
+  list it went in as.
+
+- **A number-clock step past the largest double is refused by row** (task
+  193; review round 4, PB7), before anything is touched. A clock from
+  −1e308 to 1e308 was taken, and `coef_every=100` then wrote `coef` on
+  every row.
+
+- **`corrchange(kind="sequential")` refuses an `alpha` too small for its
+  pairs** (task 186; review round 4, CD12). A share of `alpha` per pair
+  below 2^-52 is refused by name, where the test ran unable to flag.
+
+- **`refresh_time` refuses a value column that is not numeric** (task 187;
+  review round 4, PC7), as the bank refuses such a feature. A `String`
+  column gave an empty grid, day counts or epoch numbers. A value that is
+  NaN, infinite or past 1e100 is now a tick that observed nothing, so a
+  point that waits on such a series completes later.
+
+- **`po.gram.solve` and `po.gram.lasso_path` refuse numbers outside their
+  ranges** (task 188; review round 4, YB12). A ridge, penalty or weight must
+  be finite and at least 0, `l1_ratio` within [0, 1], `max_iter` at least 1,
+  and `tol` finite and above 0. `max_iter=0` returned all-zero slopes.
+
+- **Four frames keep the columns and dtypes their inputs give** (tasks 187
+  and 188; review round 4, SF3, YB2, YB14). `coef()` on a bank with no
+  coefficient spec has every other `coef()`'s columns, so the frames
+  concatenate. `po.stream.embargo(weight=)` takes an integer or Boolean
+  weight, which died in the merge with a `SchemaError`, and the weight
+  comes back `Float64`. `sim.regimes`' `activity` is `Float64` with or
+  without activity. `rolling_metrics`' `window_start` keeps an integer
+  clock's dtype, and refuses a `window_size` that is not whole on such a
+  clock.
+
 - **`ew_cov`'s principal components refresh on the clock** (task 161), as a
   regression's solve does. `pca_every` counts the clock's units, as
   `solve_every` does: a number of the clock column's units, a duration on a
@@ -181,6 +268,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   refreshes every `N` clock units, not every `N` rows. A spec with
   `max_rows_between_pca` alone exports to JSON again; `to_json()` refused
   it while it was unreleased.
+
 - **`micro` prunes on the clock** (task 163), as a regression's solve is
   scheduled. `prune_every` counts the clock's units: a number of the clock
   column's units, a duration on a temporal clock (`"10m"`), or `0` for
@@ -193,6 +281,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   counts clock units now: without a clock column the first checkpoint comes
   a row later (the first row is at clock 0) and rows of weight zero count;
   `max_rows_between_prunes=N` is the old cadence exactly.
+
 - **A window's snapshots are spaced on the clock** (task 162), in
   `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`, as a regression's
   solve is scheduled. `window_every` counts the clock's units: a number of
@@ -207,6 +296,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   past a budget names it. A spec without a clock column is unchanged; a
   clocked spec that gave `window_every=N` now means `N` clock units, and
   `max_rows_between_snapshots=N` is the old cadence exactly.
+
 - **`drift_threshold` is a clock parameter, required with a clock** (task
   168; review 2026-10-05, CC1). The drift detector sums each row's excess,
   in `sigma`, times the row's clock step, so its threshold is `sigma` times
@@ -221,6 +311,166 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   `sigma`-seconds there. At a row a minute it flagged 244 of 3,000 rows of
   noise, where `"20m"` flags none. To keep a spec's old numbers, give
   `drift_threshold=20.0` on a numeric clock and `"20s"` on a temporal one.
+
+- **A window looking ahead under `group` needs a clock column** (task 173;
+  review 2026-10-05, PC1). `with_windows` refuses `po.rewm_mean`,
+  `po.rewm_sum` or `po.rewm_rate` under `group` with no clock column,
+  through `po.stream.with_windows`, `lf.online`, `df.online` and `like=`,
+  and a spec refuses a window target under `group` with no `clock`, both
+  with one message naming the fix. On a row count, a group that fell
+  silent never closed its windows, and `with_windows` held every later row
+  of every group to the end of the input: 500,001 rows and 117 MiB more
+  over 2M rows, where about one window was promised. Without a clock there
+  is no `gap_cap`, which bounds a silent group on a clock.
+
+- **`coef_every` counts the clock, as `solve_every` does** (task 178). A
+  number of the clock column's units, or a duration on a temporal clock
+  (`"5m"`), writes `coef` once the clock has moved that far since the
+  group's last `coef` row, measured on the exact decayed clock (task 175);
+  `max_rows_between_coefs` writes it after that many accepted rows, counted
+  as `coef_every` counted them; whichever comes first. **`coef_every=0`,
+  which meant the default, now means every row**; leave it unset (`None`)
+  for the default, each group's last row in each chunk. A spec with a clock
+  that gave `coef_every=N` now means N clock units: write
+  `max_rows_between_coefs=N` for N rows. Without a clock column the clock
+  is the row's number, so `coef_every=N` still writes every N-th row,
+  skipped rows counted. Under a cadence the `coef` rows no longer include
+  each chunk's last row, so they no longer depend on the chunking; a clock
+  reset starts the cadence over. Both are refused on a model without
+  coefficients, `coef_every=0` included. No model's numbers move: only
+  which rows carry `coef` and `support_coef`.
+
+- **The public names follow Polars, and say what they do** (task 144; the
+  user, 2026-10-02: "Add all", and no backward compatibility for outputs).
+  No aliases: an old parameter is refused naming the new one, from a spec
+  builder, a spec dict, `with_windows` and a TOML file; an old output name
+  is simply gone. The two tables after this list name each one.
+  - **One clock rule in place of two**: `on_clock_reset` and
+    `min_backwards_jump` are `restart_after_step_back`. Unset, every step
+    back is refused (what `"error"` did); given a clock amount, a step back
+    larger than it starts the model over and one no larger is still refused
+    as a late row (what `"reset_state"` with `min_backwards_jump` did; the
+    comparison is inclusive). In the specs and in `with_windows`.
+  - The spec builders refuse two outputs that would render to one field
+    name, naming the inputs that collided.
+
+- **`po.corr.signal_share` takes a Kish size** (task 148): its second
+  argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
+  a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `weight_sum` is
+  a weight, about half of it, and doubled the noise floor.
+
+- **Builders and helpers refuse what they ignored or crashed on** (task
+  160). The eight builders of models with no target (`ew_cov`, `kmeans`,
+  `micro`, `deco`, `bocpd`, `corrchange`, `hmm` and `rcov`) refuse
+  `features=[]` by name, where it raised `IndexError`, and the five that took
+  `targets=` refuse it as `ew_cov` does. `po.spec.sgd` refuses `huber_delta`,
+  `quantile` or `eps` beside a loss that does not read it, and `power` beside
+  a schedule other than `"inv_scaling"`. `po.spec.lasso` refuses
+  `max_iter=0`. A window operator refuses `partial` without a `window_size`,
+  and a formula refuses a cast to a parametrized dtype, such as `Datetime`
+  or `List`, by name. A `save_state` that is a directory is refused when the
+  plan is built, not after the stream.
+
+- **A broken bank refuses every export** (task 160). `save(path)` raises
+  `ValueError`, as `save_bytes` does, and leaves the file untouched, where it
+  raised `OSError`; `to_json()` and `save_json()` refuse it too.
+
+- **`po.spec.marginal` writes its optional keys only when they are given**
+  (task 160): `lags`, `cross_lags`, `serial_rule`, `bins`, `bin_rule`,
+  `bin_warm_rows`, `bin_edges`, `bin_budget`, `shards`, `window_lags` and
+  `feature_moments`, as the saved spec does, so `ModelBank([s]).specs[0] ==
+  s`. Code that indexed one of them in a marginal spec reads it with `.get`.
+
+- **More of what crashed, hung or did nothing is refused by name** (task
+  160). `corrchange` refuses a `boundary_gamma` above 0.49, whose critical
+  value took minutes to hours to solve, and a non-default `alpha_adjust`
+  under `kind="window"`, where it did nothing. `rcov` refuses a
+  `bandwidth`, `max_bandwidth` or `preavg_rows` above `block_rows`, a
+  `theta` whose window is longer than `block_rows`, and a ring, window,
+  jitter or stride above 2^20, which panicked or aborted the process; and
+  `preavg_rows=2` without `psd`, where the estimate is the zero matrix. A
+  spec refuses `gap_cap` without a clock (so does `with_windows`),
+  `half_life=[]`, and a `coef_min`/`coef_max` list of the wrong length even
+  when every bound is infinite. A dict or TOML spec now meets the builders'
+  refusals of a formula target named after its own column and of an `sgd`
+  parameter its loss or schedule does not read. In Rust, every model's
+  `new` refuses a half-life of 0 or below, or NaN, and a `lam` outside
+  (0, 1].
+
+- **`refresh_time` returns its columns in their own dtypes** (task 160).
+  `time_refresh` is the completing tick's clock in the clock column's own
+  dtype, exactly, where it was a `Float64` of the clock's physical integer.
+  The group column is the input's own value at each completing tick, so
+  `Datetime`, `Time`, `Struct`, `Boolean` and zoned keys round-trip.
+
+### Changed
+
+Numbers move in most of these, each saying by how much; under this
+project's versioning that is carried by the minor version before 1.0.
+
+- **`kalman(share_p=True)` reads the shared noise once a row** (task 186;
+  review round 4, CC3), so no target's noise holds another target's
+  residual from the same row. On the review's stream, 394 or 395 of 396
+  rows move per target, by a median of 0.004 to 0.066 and at most 3.06.
+  Mean squared error falls for both targets: 0.5723 to 0.5494 for one, and
+  3.4501 to 3.2305 for the other. The targets still update the shared
+  covariance in turn, so their order still matters, as in filterpy's
+  sequential form, which now holds it as a second opinion.
+
+- **A windowed `ew_class` reports the class means inside the window**
+  (task 186; review round 4, CE1), in `coef` and `ModelBank.coef()`, as its
+  docstring said, and null for a class with no row in it. They were the
+  whole history's: on the review's stream, a class mean at row 599 moves
+  from 2.460 to 4.828.
+
+- **A break inside an `rcov` block restarts its subsampled grids** (task
+  186; review round 4, CE8). They feed `omega2`, `iv_sparse`, `iq` and the
+  automatic bandwidth, and carried returns across the break. On the
+  review's blocks, `iv_sparse` moves from [3.403, 5.561] to [3.085, 5.295]
+  and `iq` from [12.10, 27.32] to [9.62, 25.21]; `omega2` at stride 1 does
+  not move.
+
+- **`settled_frac` after a drift reset under an embargo counts the held
+  rows' clock** (task 187; review round 4, PB1). `drift_action="reset"`
+  zeroed it while rows were still held. The first row after a reset read
+  0.034 where the definition gives 0.875, and `min_settled_frac=0.95`
+  opened 87 rows after the reset instead of 28.
+
+- **`po.corr.shrink(target="identity")` takes Ledoit and Wolf's (2004)
+  intensity** (task 188; review round 4, YB4), as
+  `sklearn.covariance.ledoit_wolf` does. A constant-correlation term made it
+  shrink 16-36% too little: an intensity of 0.0754 is now 0.1051, and a
+  shrunk matrix moves by up to 0.063.
+
+- **`po.corr.nearest` stops on Higham's infinity-norm test** (task 188;
+  review round 4, YB7): 19 iterations on his 4×4, as published, where it
+  took 20. The result moves by 2.4e-9, inside `tol`.
+
+- **`po.eval.sums(weight=)` drops a row whose weight the bank would not
+  learn from** (task 188; review round 4, YB21): null, NaN, infinite, past
+  the input bound or negative. A null weight was counted in `n`.
+
+- **`po.stream.embargo` warns when its input is a Python scan** (task 188;
+  review round 4, YB3). It reads its input twice, once for each copy. A
+  source that can be read once, such as `pl.scan_arrow_c_stream` over a
+  DuckDB relation, gave the second copy nothing, and half the stream went
+  missing in silence. `ConsumedSourceWarning` now says so as the plan is
+  built. This package's own plan forms, `with_windows` and
+  `lf.online.fit_predict`, are Python scans too and are warned about,
+  though over a file they read twice correctly.
+
+- **Every refusal names its spec, key and value** (task 193; review round
+  4, PC11, YA4, YA6, PA6, CD16). A refusal of a value gives the value, and
+  every one starts `spec "m":`. A type error names the model's key, as
+  `[0].model.eps`, where it said `[0].model`. A count past its Rust width
+  is refused by name, where `seed=2**64` was blamed on `model`. Loading a
+  file of other specs names the spec and the first key that differs. The
+  bin budget is given in MiB, `hmm`'s covariance refusal names `hmm`, not
+  `ew_class`, and no message cites a document a wheel lacks.
+
+- **The `numpy` extra needs numpy 1.26 or later** (task 191; review round
+  4, CI10), the first release with wheels for Python 3.12.
+
 - **`rcov`'s pre-averaged estimate is rescaled as its paper does** (task
   171; review 2026-10-05, CE1). Under `kind="preavg"` and `psd=False` the
   bias-corrected estimate is now divided by `1 − ψ₁/(2ψ₂kₙ²)`, from
@@ -235,16 +485,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   `"plain"` are bit-identical. The paper's authors apply the rescaling in
   their own simulations and data work and leave it out of the text "to
   simplify notation".
-- **A window looking ahead under `group` needs a clock column** (task 173;
-  review 2026-10-05, PC1). `with_windows` refuses `po.rewm_mean`,
-  `po.rewm_sum` or `po.rewm_rate` under `group` with no clock column,
-  through `po.stream.with_windows`, `lf.online`, `df.online` and `like=`,
-  and a spec refuses a window target under `group` with no `clock`, both
-  with one message naming the fix. On a row count, a group that fell
-  silent never closed its windows, and `with_windows` held every later row
-  of every group to the end of the input: 500,001 rows and 117 MiB more
-  over 2M rows, where about one window was promised. Without a clock there
-  is no `gap_cap`, which bounds a silent group on a clock.
+
 - **A reset keeps a window looking ahead whole when its far edge is the
   last row before the reset** (task 173; review 2026-10-05, PC2), as a gap
   or a session change has since task 160. A reset is a step back past
@@ -254,6 +495,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   still discarded, null and never dropped. A bank's predictions do not
   move: a reset clears the rows waiting for their labels before any window
   resolves, so the row is not learned, as before.
+
 - **`lasso` counts each target's selection errors from its own `min_weight`**
   (task 174; review 2026-10-05, CA3). `penalty_selected_<t>` adds a row's
   error once the target's own weight has reached its own `min_weight`, so
@@ -264,6 +506,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   reaches the threshold, under a scalar `min_weight` too (11 to 26 rows of
   240 moved in the measured cases). Only `penalty_selected` moves; a
   target present on every row under a scalar or an equal list is unchanged.
+
 - **A model window's edge is exact** (task 175; review 2026-10-05, CB1), in
   `ewridge`, `lasso`, `ew_cov`, `ew_class` and `marginal`. The edge and the
   `window_every` spacing are decided on each row's decayed clock held
@@ -281,6 +524,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   and `sigma` and `zscore` under a window move with the model's window.
   Decay is unchanged bit for bit; only rows at an edge or a spacing move.
   The window operators decide their edges with the same comparison.
+
 - **`kalman`'s warm-up no longer depends on the target's units** (task
   172; review 2026-10-05, CC4). Before a target has a residual variance,
   its observation noise, and the `σ²` its process noise is derived from,
@@ -300,22 +544,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   a residual variance, the shared noise is the mean of the squared
   innovations of the targets the row observes. Warm-up predictions move,
   and so do the comparisons that read them, such as `seqtest`.
-- **`coef_every` counts the clock, as `solve_every` does** (task 178). A
-  number of the clock column's units, or a duration on a temporal clock
-  (`"5m"`), writes `coef` once the clock has moved that far since the
-  group's last `coef` row, measured on the exact decayed clock (task 175);
-  `max_rows_between_coefs` writes it after that many accepted rows, counted
-  as `coef_every` counted them; whichever comes first. **`coef_every=0`,
-  which meant the default, now means every row**; leave it unset (`None`)
-  for the default, each group's last row in each chunk. A spec with a clock
-  that gave `coef_every=N` now means N clock units: write
-  `max_rows_between_coefs=N` for N rows. Without a clock column the clock
-  is the row's number, so `coef_every=N` still writes every N-th row,
-  skipped rows counted. Under a cadence the `coef` rows no longer include
-  each chunk's last row, so they no longer depend on the chunking; a clock
-  reset starts the cadence over. Both are refused on a model without
-  coefficients, `coef_every=0` included. No model's numbers move: only
-  which rows carry `coef` and `support_coef`.
+
 - **`huber` and `quantile` warm up without the target's units** (task 177).
   Before a target has a residual scale (its residual variance above 0),
   `huber` down-weights no row, and `quantile` draws no band but takes
@@ -327,19 +556,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   off. Scaling every target by `c` now scales every prediction by `c`, bit
   for bit at powers of two. Outputs move only from a row judged without a
   scale whose residual exceeded the old cut; no pinned value moved.
-- **The public names follow Polars, and say what they do** (task 144; the
-  user, 2026-10-02: "Add all", and no backward compatibility for outputs).
-  No aliases: an old parameter is refused naming the new one, from a spec
-  builder, a spec dict, `with_windows` and a TOML file; an old output name
-  is simply gone. The two tables after this list name each one.
-  - **One clock rule in place of two**: `on_clock_reset` and
-    `min_backwards_jump` are `restart_after_step_back`. Unset, every step
-    back is refused (what `"error"` did); given a clock amount, a step back
-    larger than it starts the model over and one no larger is still refused
-    as a late row (what `"reset_state"` with `min_backwards_jump` did; the
-    comparison is inclusive). In the specs and in `with_windows`.
-  - The spec builders refuse two outputs that would render to one field
-    name, naming the inputs that collided.
+
 - **`session_shrink` is the long run's share of the data, as documented**
   (task 145). At a session boundary `ewridge` mixed its fit with the slow
   twin by accumulated weight, and the twin's weight is many times the fast
@@ -350,6 +567,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   prior scale. Numbers move for any `session_shrink` above 0: below 1 the
   fit, and at 1 `weight_sum`, the warm-up gates, the solve schedule and a
   `ridge_scale` fit.
+
 - **The stream's diagnostics run on the clock** (task 146), so their
   numbers do not change with the rows' density, and their fields move:
   - `resid_quantiles` and `ew_cov`'s `mahal_quantiles` are the
@@ -371,6 +589,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   - The docs say what still counts rows: `sgd`'s coefficients under a
     constant rate, `deco`'s linear dynamics, `hmm`'s transitions and the
     conformal step.
+
 - **A row weight scales evidence, not counts** (task 147): where a weight
   entered a count it now enters against the stream's mean weight, so a
   constant multiple of every weight changes nothing, and a stream of one
@@ -386,6 +605,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
     weight; the docs' `ξ` is corrected to what the code computes.
   - `rls`, `kalman`, `sgd`, `ftrl`, `pa` and `hmm` keep a weight on the sum
     scale, as their docs say, and `tests/test_weight_scale.py` names each.
+
 - **`kalman`'s `coef_half_life` is a clock half-life at any row spacing**
   (task 150). The process noise a row adds is `sigma^2 (ln 2 * d / h)^2`
   for a row `d` clock units after the last: `q_i * d^2`. It was `q_i * d`,
@@ -398,10 +618,7 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   and so do those of a `seqtest` that compares a Kalman among them. An
   explicit `q` is added as `q_i * d^2` too: the noise a row one clock unit
   after the last adds.
-- **`po.corr.signal_share` takes a Kish size** (task 148): its second
-  argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
-  a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `weight_sum` is
-  a weight, about half of it, and doubled the noise floor.
+
 - **The docs say what the code does** (tasks 148 and 151). `ridge_scale`
   penalizes the intercept, as RLS does, and reads `coef_prior`'s intercept
   slot; `po.gram.solve` does not reproduce a `ridge_scale` or `coef_prior`
@@ -452,25 +669,12 @@ The output names task 144 renamed:
 | `hmm`'s `p_<k>` and `p1_<k>` | `filtered_<k>` and `predicted_<k>` |
 | `micro`'s field `micro` | `micro_id` |
 
-- **Builders and helpers refuse what they ignored or crashed on** (task
-  160). The eight builders of models with no target (`ew_cov`, `kmeans`,
-  `micro`, `deco`, `bocpd`, `corrchange`, `hmm` and `rcov`) refuse
-  `features=[]` by name, where it raised `IndexError`, and the five that took
-  `targets=` refuse it as `ew_cov` does. `po.spec.sgd` refuses `huber_delta`,
-  `quantile` or `eps` beside a loss that does not read it, and `power` beside
-  a schedule other than `"inv_scaling"`. `po.spec.lasso` refuses
-  `max_iter=0`. A window operator refuses `partial` without a `window_size`,
-  and a formula refuses a cast to a parametrized dtype, such as `Datetime`
-  or `List`, by name. A `save_state` that is a directory is refused when the
-  plan is built, not after the stream.
-- **A broken bank refuses every export** (task 160). `save(path)` raises
-  `ValueError`, as `save_bytes` does, and leaves the file untouched, where it
-  raised `OSError`; `to_json()` and `save_json()` refuse it too.
 - **`po.stream.embargo` keeps an integer clock's dtype** (task 160). A whole
   delay, `5.0` as well as `5`, is added in the clock's dtype, where merging
   the two copies died in a `SchemaError`. A fractional delay on an integer
   clock is refused, and so is a frame that already holds the
   `role + "_weight"` column.
+
 - **`po.eval` reads as missing what the bank reads as missing** (task 160).
   `metrics`, `rolling_metrics` and `sums` drop rows whose target or
   prediction is NaN, infinite or beyond 1e100, where `r2`, `ic` and `mse`
@@ -478,50 +682,28 @@ The output names task 144 renamed:
   are undefined, as `from_sums` does, not as an infinity or a NaN.
   `rolling_metrics` refuses a window that is not finite.
 
-- **`po.spec.marginal` writes its optional keys only when they are given**
-  (task 160): `lags`, `cross_lags`, `serial_rule`, `bins`, `bin_rule`,
-  `bin_warm_rows`, `bin_edges`, `bin_budget`, `shards`, `window_lags` and
-  `feature_moments`, as the saved spec does, so `ModelBank([s]).specs[0] ==
-  s`. Code that indexed one of them in a marginal spec reads it with `.get`.
-
-- **More of what crashed, hung or did nothing is refused by name** (task
-  160). `corrchange` refuses a `boundary_gamma` above 0.49, whose critical
-  value took minutes to hours to solve, and a non-default `alpha_adjust`
-  under `kind="window"`, where it did nothing. `rcov` refuses a
-  `bandwidth`, `max_bandwidth` or `preavg_rows` above `block_rows`, a
-  `theta` whose window is longer than `block_rows`, and a ring, window,
-  jitter or stride above 2^20, which panicked or aborted the process; and
-  `preavg_rows=2` without `psd`, where the estimate is the zero matrix. A
-  spec refuses `gap_cap` without a clock (so does `with_windows`),
-  `half_life=[]`, and a `coef_min`/`coef_max` list of the wrong length even
-  when every bound is infinite. A dict or TOML spec now meets the builders'
-  refusals of a formula target named after its own column and of an `sgd`
-  parameter its loss or schedule does not read. In Rust, every model's
-  `new` refuses a half-life of 0 or below, or NaN, and a `lam` outside
-  (0, 1].
 - **Durations compare by their length** (task 160). `"5s"` is `"5000ms"`:
   a `with_windows` state resumes under another spelling of the same
   length, and a bank loads under a half-life grid spelled another way,
   labelling its outputs the caller's way and keeping `ew_cov`'s PCA sign
   continuity.
+
 - **Under an embargo, drift is flagged on the row that released the label
   that tripped it** (task 160). The flag was never written under an
   embargo, and `drift_action="reset"` restarted the model without one. The
   restart now takes effect before the releasing row is scored.
-- **`refresh_time` returns its columns in their own dtypes** (task 160).
-  `time_refresh` is the completing tick's clock in the clock column's own
-  dtype, exactly, where it was a `Float64` of the clock's physical integer.
-  The group column is the input's own value at each completing tick, so
-  `Datetime`, `Time`, `Struct`, `Boolean` and zoned keys round-trip.
+
 - **A window counts every row with a weight for its held-value rule**
   (task 160). In `marginal`, `ew_cov`, `ewridge`, `lasso` and `ew_class`, a
   row lighter than `1e-12` of the history did not count, so a window made
   of such rows read each value as held at the last heavy row's. It now
   reads their moments, and a light row with another value ends a held run.
+
 - **`ewridge` reports no fit where its first solve fails** (task 160): a
   NaN `coef` and a null prediction, where it reported zeros. A combination
   skipped for having no weight at `ridge=0` reports no readiness shares,
   where it reported the previous solve's.
+
 - **The command line checks its paths before it reads any input** (task
   160). A `save_state`, output or `closed_groups` path that is a directory
   is refused before the run. `--dry-run` opens the input, and names one
@@ -534,6 +716,7 @@ The output names task 144 renamed:
   moved the fit at that row by 6 to 127 times its residual. The bound is
   now the full leverage against the band's own system. Predictions move
   where the bound binds, and the speed it costs is under *Performance*.
+
 - **A zoned `Datetime` group or session column works** (task 160), in the
   bank, `with_windows`, `refresh_time` and `skip_learned`, where it was
   refused with polars' inner message. Its key is its instant, written as
@@ -543,6 +726,22 @@ The output names task 144 renamed:
 
 ### Performance
 
+- **The core checks every value a model is handed** (task 183; *Fixed*
+  says what it buys). The inlined check costs `sgd` and `pa` 6-16% of a
+  core `step`, 1.4 to 4.5 ns a row, and `kalman` 3-6%. Through the bank,
+  which checks first, `sgd` and `pa` run 3.4% and 4.7% slower at two
+  features, and other models 0.8-2.3%, inside the measurement's spread.
+  The cost was accepted.
+- **`micro`'s linkage holds at most 128 MiB** (task 193 and its merge;
+  review round 4, CF2). Up to 4,096 potential summaries it keeps their
+  squared distances in a matrix, as before. Past that it takes each pair's
+  distance when it needs it, in memory linear in their count, where the
+  matrix was `max_clusters²` doubles: 8 TB at a cap of 10^6. That path,
+  measured at 200 summaries, is 14-18% slower a checkpoint. Labels, counts
+  and the threshold are bit-identical on either path.
+- **`RefreshTime.feed`, `Windows.feed` and `Windows.finish` release the
+  GIL** (task 187; review round 4, SF12), as the bank's calls do, so other
+  Python threads run while they work.
 - The nanosecond clock's conversion to seconds takes a 64-bit road when the
   difference fits one, as it does for any two stamps less than 292 years
   apart (task 143). It runs the same two Euclidean operations, so every
@@ -576,6 +775,76 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **Every model refuses a value that is not a usable number, as the bank
+  always has** (task 183; Rust API only). A feature, target or weight that
+  is NaN, infinite or past the input bound of 1e100 reached the core
+  through the Rust API. Most models learned it into their state, and the
+  rest reported it or counted it. A target that is not usable is now
+  absent. A feature or weight that is not usable makes the row a row of
+  weight 0 that keeps and counts nothing, with NaN predictions for a
+  feature. One contract test holds all 20 models to it, and
+  `online_core::usable` is public. Through the bank nothing changes.
+- **A damaged state is refused by name at load** (task 185; review round 4,
+  CF4, CA2, CA3, CA4, CB2, CB8, CE3, PD1, PB4, PA8, PA2, CF11). Every
+  model's restore checks the configuration a state carries, as its `new`
+  checks a fresh one, and every shape the next row reads: window snapshots,
+  kept leverage systems, a factor's order, a quantile sketch, a lag ring,
+  the `with_windows` core, held embargo rows and a bank file's per-spec
+  entries. Each panicked, at load or at a later row, or ran on NaN. A file
+  from a newer version is told to upgrade, not to refit, and the core's
+  refusal names the schemas it loads.
+- **`sgd` skips a row whose gradient is not finite** (task 186; review
+  round 4, CC2), or under AdaGrad a row whose squared gradient is not, so
+  `clip_gradient=inf` no longer kills the stream: every prediction after
+  such a row was null.
+- **Four crashes, fixed** (tasks 187 and 188; review round 4, PA1, SF2,
+  YB13, PD3). A Boolean group column that a formula target also reads no
+  longer panics. Neither does `predict` on a fresh bank or on unseen
+  groups, nor `fit_predict` on an empty grouped frame, in a bank with a
+  `seqtest` comparison. `po.corr.loss` of a singular forecast is NaN, as
+  documented, where it raised `LinAlgError`. A hand-built `@po:` column is
+  refused as a reserved name, where it raised `IndexError`.
+- **`online --dry-run` refuses what the run refuses at its first step**
+  (task 187; review round 4, SF2): a missing or mismatched `--resume`
+  state, and an input or `keep_columns` without a column a spec reads. It
+  said "config OK".
+- **`describe()` reports a formula target's values** (task 187; review
+  round 4, PA9): the statistics of the values the target was learned from,
+  where every row read null.
+- **Saving over a state file keeps its permissions on Unix** (task 187;
+  review round 4, PA4): a `chmod 600` file stays 600.
+- **The JSON export refuses a broken bank in Rust, as in Python** (task
+  187; review round 4, PA12), and the Python wrapper no longer encodes the
+  whole state twice to check.
+- **A spec with `half_life=inf` is order-free, as one with `lam=1.0` is**
+  (task 187; review round 4, TB2), written as a float or as `"inf"`, so
+  `fit` no longer warns `OrderNotGuaranteedWarning` for it.
+- **The chunked runs name the method the caller used** (task 187; review
+  round 4, SF11) when they refuse a chunk that is not a frame.
+- **Four edge cases read their numbers right** (task 186; review round 4,
+  CA1, CB7, CE10, CE9). An `ewridge` window emptied by a gap reports a null
+  `support_coef` beside its null fit. A windowed variance whose co-moment
+  is not a number stays NaN, where it read 0. `bocpd` keeps a row whose
+  predictive fails out of `weight_sum` and the weight mean, and still
+  counts it as a failure. `rcov`'s `psd_repaired` is null where the repair
+  could not run, where it read `false`.
+- **`po.gram.merge` keeps `n_kish` across a part that learned nothing**
+  (task 188; review round 4, YB6), where it reported `None`.
+- **`po.stream.embargo` refuses a clock that is neither numeric nor
+  temporal** (task 188; review round 4, YB15), by name and with a
+  `TypeError`, where polars failed when the plan ran.
+- **`min_samples` takes any integer up to 4,294,967,295** (task 188; review
+  round 4, PD4), numpy's included, and both sides name that ceiling.
+- **`po.increment` of a `Time` column gives the step in seconds since
+  midnight** (task 188; review round 4, PD5), negative across midnight, as
+  its docstring says, where it was refused.
+- **A window operator refuses a word or duration where it is written**
+  (task 188; review round 4, PD9): `"nan"`, `"-inf"`, `"reset"`, an infinite
+  `window_size` word, and a duration at or below 0. Each failed later,
+  under a serde path.
+- **The Rust API is held to the spec's rules** (task 193; review round 4,
+  CA6, CC7). A NaN or infinite value that made a model learn nothing is
+  refused by name, as a spec refuses it.
 - **Four more ways a NaN feature reached a state, closed** (task 182;
   Rust API only, the bank passes no NaN feature). `hmm` refuses a row that
   is not finite before its states are seeded, where it buffered the row and
@@ -758,6 +1027,29 @@ The output names task 144 renamed:
 - `coef_every`'s doc says what it counts: each group's accepted rows, rows
   of weight zero and rows with a null target included, where it said
   learned rows (task 164).
+- **`kalman` withholds a prediction that overflows** (task 158). A feature
+  at the input bound, standardized against a scale earlier rows set, made
+  `z · β` infinite, and `step` and `predict` reported `inf` for that
+  target; both now report it as missing (a null in the output). Through
+  the bank the output already read as null.
+- **A subnormal half-life is refused by the window operators** (task 159,
+  W5). One below `f64::MIN_POSITIVE` passed the check, and its mass
+  underflowed: a mean of 0 and an infinite rate.
+
+### Tests and documents
+
+- The 23 survivors and one timeout of the mutation run over tasks 168-182
+  are each killed by a test or listed with the reason no test can (task 184).
+- Library oracles for `kalman` (filterpy), `sgd` (scikit-learn), `hmm`
+  (hmmlearn) and `rls` (padasip), generators that reach the input bound, a
+  second golden bank, and a cross-OS hand-off over every kind (task 189).
+- The API snapshot pins every resolved default, helper signature, frame
+  column, TOML key, CLI flag, environment variable and allowed word (task
+  190).
+- OUTPUTS.md gives each field's dtype and where else it is null, and
+  RUNNER.md the exit statuses (task 191).
+- Every dated record under `docs/` points to one table of renamed names,
+  PERFORMANCE.md's "Names that changed" (task 192).
 
 ## [0.13.0] — 2026-09-30
 
