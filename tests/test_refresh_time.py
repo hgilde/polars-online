@@ -339,6 +339,40 @@ def test_a_value_column_of_any_numeric_dtype_is_read(dtype):
     assert out.height == (0 if dtype == pl.Null else 1)
 
 
+@pytest.mark.parametrize(
+    "clock",
+    [
+        pl.Series(["1.5", "2.5", "3.5"]),
+        pl.Series(["abc", "def", "ghi"]),
+        pl.Series(["1", "2", "3"]).cast(pl.Categorical),
+        pl.Series([[1.0], [2.0], [3.0]]),
+    ],
+    ids=["numbers-as-text", "text", "categorical", "list"],
+)
+def test_a_clock_column_that_is_neither_numeric_nor_temporal_is_refused_by_name(clock):
+    """Refused while the plan is built, as the bank refuses a clock of that
+    dtype (task 187's rule for ``value``, PC7, applied to the clock). It was
+    cast without a check: text of digits was read as a clock, and other
+    text was refused as a null clock on its first row."""
+    df = pl.DataFrame({"series": ["a", "b", "c"], "t": clock, "v": [1.0, 2.0, 3.0]})
+    with pytest.raises(
+        ValueError, match="clock column 't' has dtype .*; it must be numeric or temporal"
+    ):
+        run(df)
+
+
+@pytest.mark.parametrize(
+    "dtype", [pl.Int64, pl.Float32, pl.UInt8, pl.Boolean, pl.Datetime("ms"), pl.Duration("us")]
+)
+def test_a_clock_column_the_bank_reads_is_read(dtype):
+    """A number, a boolean and a temporal column are clocks, as they are to a
+    spec."""
+    t = pl.Series([0, 1, 1]).cast(dtype)
+    df = pl.DataFrame({"series": ["a", "b", "c"], "t": t, "v": [1.0, 2.0, 3.0]})
+    out = run(df)
+    assert out.height == 1 and out.schema["time_refresh"] == dtype
+
+
 def test_the_pushdowns_are_honoured():
     df = poisson_obs(n=200)
     plan = stream.refresh_time(df.lazy(), series="series", names=NAMES, clock="t", value="v")

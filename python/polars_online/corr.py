@@ -33,8 +33,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from polars_online._renamed import renamed_function
+
 __all__ = [
+    "Z_CLIP",
     "absorption",
+    "absorption_shift",
     "block_means",
     "epps_invert",
     "equicorr",
@@ -49,7 +53,6 @@ __all__ = [
     "mp_density",
     "mp_edge",
     "nearest",
-    "shift",
     "shrink",
     "signal_share",
     "spectral",
@@ -430,21 +433,29 @@ def absorption(r: Any, k: int) -> float:
     return float(vals[:k].sum() / total) if total > 0.0 else float("nan")
 
 
-def shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) -> Any:
-    """The standardised absorption shift ``(fast - slow) / scale``, elementwise over
-    two aligned series of absorption ratios.
+def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) -> Any:
+    """Kritzman, Li, Page and Rigobon's standardised absorption shift,
+    ``(fast - slow) / scale``, elementwise over two aligned series of
+    absorption ratios (:func:`absorption`).
 
     ``scale`` defaults to the standard deviation of ``ar_slow`` over the sample;
     the two windows are the caller's. ``ValueError`` for series that do not align.
+    It was ``shift`` before 1.0, a name Polars gives a lag; that name is
+    refused, and the error names this one.
     """
     np = _np()
     fast = np.asarray(ar_fast, dtype=float)
     slow = np.asarray(ar_slow, dtype=float)
     if fast.shape != slow.shape:
-        msg = f"corr.shift: the two series must align, got {fast.shape} and {slow.shape}"
+        msg = f"corr.absorption_shift: the two series must align, got {fast.shape} and {slow.shape}"
         raise ValueError(msg)
     s = float(np.std(slow)) if scale is None else float(scale)
     return (fast - slow) / s if s > 0.0 else np.full_like(fast, np.nan)
+
+
+#: Renamed :func:`absorption_shift` before 1.0 (docs/PLAN.md task 197;
+#: review round 4, YB10).
+shift = renamed_function("po.corr.shift", "po.corr.absorption_shift")
 
 
 def spectral(r: Any, k: int) -> tuple[Any, Any]:

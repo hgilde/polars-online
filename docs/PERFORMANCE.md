@@ -119,7 +119,7 @@ the new one. A record that uses an old name points to this table:
 | `halflife`, alone or inside a name: `long_halflife`, `coef_halflife`, `revert_halflife`, `select_halflife`, `level_halflife`, `trend_halflife` | `half_life`, and so `long_half_life` and the rest | task 144 |
 | `max_dclock` | `gap_cap` | task 144 |
 | `label_delay` | `embargo` | task 144 |
-| a model's `window`, task 63's hard cutoff, and `po.eval.rolling_metrics`'s | `window_size` | task 144 |
+| a model's `window`, task 63's hard cutoff, and `po.eval.rolling_metrics`'s | `window_size`, and for `rolling_metrics` then `every`, in `window_metrics` | task 144, then task 197 |
 | `min_periods` | `min_weight` | task 144 |
 | `on_clock_reset` and its policies `"error"` and `"reset_state"`; `min_backwards_jump`; and before it `min_session_clock` | `restart_after_step_back`. Unset, every step back is refused, as `"error"` did; set, a step back larger than it restarts the stream, as `"reset_state"` did, and `0` restarts at every one | task 144; `min_session_clock` was removed in 0.9.0, and the policies `"max"` and `"zero"` in task 120 |
 | `emit_resid_z`, and its field `resid_z_<t>` | `emit_zscore`, and `zscore_<t>` | task 144 |
@@ -134,6 +134,10 @@ the new one. A record that uses an old name points to this table:
 | `bocpd`'s `logscore`; `hmm`'s `p_<k>` and `p1_<k>` | `loglik`; `filtered_<k>` and `predicted_<k>` | task 144 |
 | `po.prep`, and `refresh_time`'s `time=` and `by=` | `po.stream`, and `clock=` and `group=` | task 105 |
 | `po.corr.signal_share`'s `n_eff_blocks` | `n_kish_blocks` | task 148 |
+| `po.eval.rolling_metrics` and its `window_size` | `po.eval.window_metrics` and `every`: its windows do not overlap, as Polars' `group_by_dynamic(every=)` | task 197 |
+| `po.eval`'s `by` and `min_obs` | `group`, which also takes one key as a bare string, and `min_samples` | task 197 |
+| `po.corr.shift` | `po.corr.absorption_shift` | task 197 |
+| `po.gram.lasso_path`'s `lambdas` | `penalties` | task 197 |
 | `corrchange`'s `horizon` and `window`; `rcov`'s `window` | `span_rows`; `preavg_rows` | task 63a |
 | `po.run`, the Python runner | removed: the `online` command line, or `ModelBank.fit(lf)` | task 83 |
 | the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | task 85 |

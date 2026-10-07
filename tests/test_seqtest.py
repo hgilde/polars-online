@@ -228,7 +228,7 @@ class TestOracle:
         )
         s = spec(targets=["d0", "d1"], group="g", min_weight=3.0)
         bank = unnested(po.ModelBank([s]).fit_predict(df))
-        twin = po.eval.seqtest(df, targets=["d0", "d1"], by=["g"], min_weight=3.0)
+        twin = po.eval.seqtest(df, targets=["d0", "d1"], group=["g"], min_weight=3.0)
         assert bank.equals(twin["seqtest"].struct.unnest(), null_equal=True)
         assert bank.dtypes == [pl.Float64, pl.Float64, pl.Int64, pl.Int64] * 2 + [pl.Float64]
         # 52% positive (d0) and 48% (d1) over 5000 rows per group: read at
@@ -250,11 +250,11 @@ class TestOracle:
             po.spec.seqtest("c", targets=["y"], a="ridge", a_suffix="@h50", b="kalman", group="g"),
         ]
         out = po.ModelBank(specs).fit_predict(df)
-        twin = po.eval.seqtest(out, a="ridge", b="kalman", a_suffix="@h50", by=["g"])
+        twin = po.eval.seqtest(out, a="ridge", b="kalman", a_suffix="@h50", group=["g"])
         assert unnested(out, "c").equals(twin["seqtest"].struct.unnest(), null_equal=True)
         # `targets=None` finds the residual the two sides share.
         again = po.eval.seqtest(
-            out, targets=["y"], a="ridge", b="kalman", a_suffix="@h50", by=["g"]
+            out, targets=["y"], a="ridge", b="kalman", a_suffix="@h50", group=["g"]
         )
         assert twin.equals(again, null_equal=True)
 

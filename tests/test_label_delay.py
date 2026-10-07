@@ -904,7 +904,7 @@ class TestEmbargoItself:
     def test_a_clock_that_is_neither_a_number_nor_a_time_is_refused_by_name(self):
         """Review round 4 (YB15): a String clock failed inside polars
         (``InvalidOperationError: arithmetic on dtypes str and dyn float``)
-        while ``po.eval.rolling_metrics`` refuses the same clock by name, as
+        while ``po.eval.window_metrics`` refuses the same clock by name, as
         this now does, before any plan is built."""
         df = pl.DataFrame({"t": ["a", "b"], "x": [1.0, 2.0], "b": [True, False]})
         for clock, delay in (("t", 1.0), ("t", "1s"), ("b", 1.0)):

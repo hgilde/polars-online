@@ -614,9 +614,9 @@ class TestTheSolversCheckTheirNumbers:
     @pytest.mark.parametrize(
         "kw, says",
         [
-            ({"lambdas": [0.1, -0.1]}, "lambdas must be finite and >= 0"),
-            ({"lambdas": [float("nan")]}, "lambdas must be finite and >= 0"),
-            ({"lambdas": [float("inf")]}, "lambdas must be finite and >= 0"),
+            ({"penalties": [0.1, -0.1]}, "penalties must be finite and >= 0"),
+            ({"penalties": [float("nan")]}, "penalties must be finite and >= 0"),
+            ({"penalties": [float("inf")]}, "penalties must be finite and >= 0"),
             ({"max_iter": 0}, "max_iter must be >= 1"),
             ({"max_iter": -3}, "max_iter must be >= 1"),
             ({"tol": float("nan")}, "tol must be finite and > 0"),
@@ -630,10 +630,10 @@ class TestTheSolversCheckTheirNumbers:
         ],
     )
     def test_lasso_path_refuses_what_is_not_its_number(self, g, kw, says):
-        args = {"lambdas": [0.1], **kw}
-        lambdas = args.pop("lambdas")
+        args = {"penalties": [0.1], **kw}
+        penalties = args.pop("penalties")
         with pytest.raises(ValueError, match=f"^lasso_path: {says}"):
-            pg.lasso_path(g, lambdas, **args)
+            pg.lasso_path(g, penalties, **args)
 
     def test_the_edges_of_each_range_are_taken(self, g):
         assert np.isfinite(pg.solve(g, ridge=0.0)).all()

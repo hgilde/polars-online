@@ -66,7 +66,7 @@ from polars_online._frame import (
 )
 from polars_online._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
 
-__all__ = ["embargo", "refresh_time", "with_windows"]
+__all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
 
 #: Column :func:`embargo` adds to say which copy of a row this is.
 ROLE = "_online_role"
@@ -192,7 +192,7 @@ def embargo(
       ``weight``, one named ``role + "_weight"``.
 
     ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
-    as :func:`polars_online.eval.rolling_metrics` refuses it.
+    as :func:`polars_online.eval.window_metrics` refuses it.
     """
     lazy = lf.lazy()
     schema = lazy.collect_schema()
@@ -446,6 +446,8 @@ def refresh_time(
 
     - fewer than two ``names``, or a duplicate;
     - a column the frame has not got;
+    - a ``clock`` column that is neither numeric nor temporal, as a spec
+      refuses one (a boolean and a column of nulls are numbers);
     - a ``value`` column that is not numeric (a boolean and a column of nulls
       are);
     - ``chunk_size`` below 1;
@@ -469,6 +471,21 @@ def refresh_time(
         if col not in in_schema:
             msg = f"refresh_time: no keep column {col!r} in the frame; it has {in_schema.names()}"
             raise ValueError(msg)
+    # A number or a temporal column, as a spec's clock is: a boolean or a
+    # column of nulls is a number (task 197, PC7's rule). Read through a
+    # non-strict cast, text of digits was taken as a clock.
+    clock_dtype = in_schema[clock]
+    if not (
+        clock_dtype.is_numeric()
+        or clock_dtype.is_temporal()
+        or clock_dtype in (pl.Boolean, pl.Null)
+    ):
+        msg = (
+            f"refresh_time: clock column {clock!r} has dtype {clock_dtype}; it must be numeric or "
+            f"temporal (cast it, e.g. pl.col({clock!r}).cast(pl.Float64) or "
+            f"pl.col({clock!r}).str.to_datetime())"
+        )
+        raise ValueError(msg)
     # A number, as a spec's feature is: a boolean or a column of nulls too
     # (review round 4, PC7). Read through a non-strict cast, text came out
     # all null, an empty grid with nothing said, and a `Date` as its days.

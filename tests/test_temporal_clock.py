@@ -285,12 +285,12 @@ class TestHowADurationIsWritten:
         ("call", "who"),
         [
             (
-                lambda df, v: po.eval.rolling_metrics(df, "m", clock="t", window_size=v),
-                "rolling_metrics: window_size",
+                lambda df, v: po.eval.window_metrics(df, "m", clock="t", every=v),
+                "window_metrics: every",
             ),
             (lambda df, v: po.stream.embargo(df.lazy(), clock="t", delay=v), "embargo: delay"),
         ],
-        ids=["rolling_metrics", "embargo"],
+        ids=["window_metrics", "embargo"],
     )
     def test_what_is_not_a_duration_is_refused_by_name_by_a_helper(self, value, call, who):
         """Review 2026-10-05 (YA6): the words a spec's clock parameter takes
@@ -682,15 +682,15 @@ class TestTheHelpersMeasureTheClockTheSameWay:
         with pytest.raises(ValueError, match=says):
             po.stream.embargo(frames[frame].lazy(), clock=clock, delay=delay)
 
-    def test_rolling_metrics_buckets_a_temporal_clock_by_a_duration(self):
+    def test_window_metrics_buckets_a_temporal_clock_by_a_duration(self):
         df = _frame()
         numbers = df.hstack(_fit(df, _ridge("t_s", **NUMBERS | {"session_gap": None})).to_frame())
         durations = _temporal(df)
         durations = durations.hstack(
             _fit(durations, _ridge("t", **DURATIONS["text"] | {"session_gap": None})).to_frame()
         )
-        want = po.eval.rolling_metrics(numbers, "m", clock="t_s", window_size=3_600.0, min_obs=5)
-        got = po.eval.rolling_metrics(durations, "m", clock="t", window_size="1h", min_obs=5)
+        want = po.eval.window_metrics(numbers, "m", clock="t_s", every=3_600.0, min_samples=5)
+        got = po.eval.window_metrics(durations, "m", clock="t", every="1h", min_samples=5)
         assert got["window_start"].dtype == pl.Datetime("us")
         assert want.height > 3
         seconds = got["window_start"].dt.epoch("s").cast(pl.Float64)
@@ -904,11 +904,11 @@ class TestTheClockColumnInOtherRoles:
         learn = doubled.filter(pl.col("_online_role") == "learn")
         assert (learn["d"] - df["d"]).unique().to_list() == [timedelta(days=2)]
 
-    def test_rolling_metrics_buckets_a_duration_clock(self):
+    def test_window_metrics_buckets_a_duration_clock(self):
         df = _temporal(_frame()).with_columns(elapsed=pl.col("t") - pl.col("t").first())
         spec = _ridge("elapsed", half_life="10m", gap_cap="30m")
         out = df.hstack(_fit(df, spec).to_frame())
-        got = po.eval.rolling_metrics(out, "m", clock="elapsed", window_size="1h", min_obs=5)
+        got = po.eval.window_metrics(out, "m", clock="elapsed", every="1h", min_samples=5)
         assert got["window_start"].dtype == pl.Duration("us")
         assert got.height > 3
         starts = got["window_start"].dt.total_seconds().to_list()

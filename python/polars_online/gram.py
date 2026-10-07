@@ -37,7 +37,10 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+from polars_online._renamed import renamed_keywords
+
 __all__ = [
+    "INTERCEPT",
     "coef_stats",
     "condition",
     "correlation",
@@ -675,9 +678,10 @@ def solve(
     return out[0] if scalar else out
 
 
+@renamed_keywords("po.gram.lasso_path", {"lambdas": "penalties"})
 def lasso_path(
     g: dict[str, Any],
-    lambdas: Sequence[float],
+    penalties: Sequence[float],
     *,
     l1_ratio: float = 1.0,
     penalty_weights: Sequence[float] | None = None,
@@ -686,7 +690,7 @@ def lasso_path(
     max_iter: int = 1000,
     tol: float = 1e-7,
 ) -> Any:
-    """The elastic-net path from the Gram, one row of coefficients per lambda.
+    """The elastic-net path from the Gram, one row of coefficients per penalty.
 
     The ``lasso`` model's coordinate descent (``Lasso::solve``), run offline on
     the standardized (correlation-form) matrix, warm-started down the path in the
@@ -706,9 +710,12 @@ def lasso_path(
 
     .. rubric:: Parameters
 
-    ``lambdas``
-        The penalties, from large to small, as a path is meant to be walked: the
-        warm start makes that both faster and better conditioned.
+    ``penalties``
+        The penalties ``l``, from large to small, as a path is meant to be
+        walked: the warm start makes that both faster and better conditioned.
+        They are a spec's ``lasso_path``, and ``bank.coef()`` reports each as
+        ``penalty``. The keyword was ``lambdas`` before 1.0; that name is
+        refused, and the error names this one.
     ``l1_ratio``
         The share of the penalty that is L1; below 1 an elastic net. Default 1.
     ``penalty_weights``
@@ -723,7 +730,7 @@ def lasso_path(
     ``max_iter``, ``tol``
         The model's ``max_iter`` and ``tol``.
 
-    Returns an array of shape ``(len(lambdas), k)`` over the Gram's columns, the
+    Returns an array of shape ``(len(penalties), k)`` over the Gram's columns, the
     intercept first when there is one.
 
     .. code-block:: python
@@ -732,7 +739,7 @@ def lasso_path(
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
-        path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per lambda
+        path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per penalty
 
     ``ValueError`` for ``penalty_weights`` of the wrong length, and for a
     number outside its range, by the rule a spec applies to the same
@@ -744,9 +751,9 @@ def lasso_path(
     # Each was taken as given: `max_iter=0` returned the intercept with every
     # slope 0, a fully penalised fit to look at, and `tol=nan` never stopped
     # early (review round 4, YB12).
-    lams = np.asarray(lambdas, dtype=float).reshape(-1)
+    lams = np.asarray(penalties, dtype=float).reshape(-1)
     if not np.all(np.isfinite(lams) & (lams >= 0.0)):
-        msg = f"lasso_path: lambdas must be finite and >= 0, got {list(lambdas)!r}"
+        msg = f"lasso_path: penalties must be finite and >= 0, got {list(penalties)!r}"
         raise ValueError(msg)
     if not 0.0 <= l1_ratio <= 1.0:
         msg = f"lasso_path: l1_ratio must be in [0, 1], got {l1_ratio!r}"
@@ -801,9 +808,9 @@ def lasso_path(
         msg = f"lasso_path: penalty_weights must be finite and >= 0, got {pw.tolist()!r}"
         raise ValueError(msg)
 
-    out = np.zeros((len(lambdas), k))
+    out = np.zeros((len(penalties), k))
     b = np.zeros(len(slots))
-    for li, lam in enumerate(lambdas):
+    for li, lam in enumerate(penalties):
         l1, l2 = lam * l1_ratio * pw, lam * (1.0 - l1_ratio) * pw
         for _ in range(max_iter):
             delta = 0.0

@@ -54,19 +54,21 @@ class TestItIsTheSameAnswer:
     def test_from_sums_equals_metrics(self, groups):
         out = fitted(groups=groups)
         by = ["venue"] if groups > 1 else []
-        want = po.eval.metrics(out, "m", by=by)
-        got = po.eval.from_sums(po.eval.sums(out, "m", by=by))
+        want = po.eval.metrics(out, "m", group=by)
+        got = po.eval.from_sums(po.eval.sums(out, "m", group=by))
         close(want, got.drop("rmse"))
 
     def test_rmse_is_the_root_of_mse(self):
         got = po.eval.from_sums(po.eval.sums(fitted(), "m"))
         assert got["rmse"].to_numpy() == pytest.approx(np.sqrt(got["mse"].to_numpy()))
 
-    def test_min_obs_drops_a_thin_key_as_metrics_does(self):
+    def test_min_samples_drops_a_thin_key_as_metrics_does(self):
         out = fitted(n=200, groups=2)
         # One venue gets 100 rows; ask for more than that.
-        assert po.eval.from_sums(po.eval.sums(out, "m", by=["venue"]), min_obs=1000).height == 0
-        assert po.eval.metrics(out, "m", by=["venue"], min_obs=1000).height == 0
+        assert (
+            po.eval.from_sums(po.eval.sums(out, "m", group=["venue"]), min_samples=1000).height == 0
+        )
+        assert po.eval.metrics(out, "m", group=["venue"], min_samples=1000).height == 0
 
     def test_weights_are_respected(self):
         """A weighted mean squared error is not the unweighted one, and the
@@ -86,7 +88,7 @@ class TestItIsTheSameAnswer:
         df = pl.DataFrame({"x0": np.arange(float(n)), "y": np.full(n, 3.0)})
         spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.from_sums(po.eval.sums(out, "m"), min_obs=1)
+        got = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1)
         assert got["r2"][0] is None, "no variance to explain"
         assert got["ic"][0] is None
 
@@ -108,8 +110,8 @@ class TestItIsTheSameAnswer:
         out = pl.DataFrame({"y": y}).with_columns(
             m=pl.struct(pl.Series("pred_y", pred), pl.Series("resid_y", [0.0] * len(y)))
         )
-        want = po.eval.from_sums(po.eval.sums(out, "m"), min_obs=1).drop("rmse")
-        got = po.eval.metrics(out, "m", min_obs=1)
+        want = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1).drop("rmse")
+        got = po.eval.metrics(out, "m", min_samples=1)
         assert got.columns == want.columns
         undefined = [c for c in ("r2", "ic", "hit_rate") if want[c][0] is None]
         assert undefined, "a case where something is undefined"
@@ -126,9 +128,9 @@ class TestMerging:
     @pytest.mark.parametrize("parts", [2, 5, 97])
     def test_merging_a_split_gives_the_whole(self, parts):
         out = fitted(n=3000, seed=1, groups=3)
-        whole = po.eval.sums(out, "m", by=["venue"])
+        whole = po.eval.sums(out, "m", group=["venue"])
         pieces = [
-            po.eval.sums(out[chunk.tolist()], "m", by=["venue"])
+            po.eval.sums(out[chunk.tolist()], "m", group=["venue"])
             for chunk in np.array_split(np.arange(out.height), parts)
         ]
         close(whole, po.eval.merge_sums(*pieces), rel=1e-9)
@@ -148,16 +150,16 @@ class TestMerging:
 
     def test_keys_present_in_only_one_part_are_carried_through(self):
         out = fitted(n=1200, seed=3, groups=3)
-        a = po.eval.sums(out.filter(pl.col("venue") != "v2"), "m", by=["venue"])
-        b = po.eval.sums(out.filter(pl.col("venue") == "v2"), "m", by=["venue"])
+        a = po.eval.sums(out.filter(pl.col("venue") != "v2"), "m", group="venue")
+        b = po.eval.sums(out.filter(pl.col("venue") == "v2"), "m", group="venue")
         merged = po.eval.merge_sums(a, b)
         assert sorted(merged["venue"].to_list()) == ["v0", "v1", "v2"]
-        close(merged, po.eval.sums(out, "m", by=["venue"]), rel=1e-9)
+        close(merged, po.eval.sums(out, "m", group=["venue"]), rel=1e-9)
 
     def test_mismatched_keys_are_refused(self):
         out = fitted(n=400)
         with pytest.raises(ValueError, match="same keys in every part"):
-            po.eval.merge_sums(po.eval.sums(out, "m"), po.eval.sums(out, "m", by=["venue"]))
+            po.eval.merge_sums(po.eval.sums(out, "m"), po.eval.sums(out, "m", group=["venue"]))
 
 
 class TestWhyTheSumsAreCentred:
@@ -191,7 +193,7 @@ class TestWhyTheSumsAreCentred:
 
 class TestTheShape:
     def test_the_columns_are_the_documented_ones(self):
-        s = po.eval.sums(fitted(n=500, groups=2), "m", by=["venue"])
+        s = po.eval.sums(fitted(n=500, groups=2), "m", group=["venue"])
         assert s.columns == ["slot", "target", "venue", *po.eval.SUM_FIELDS]
         assert len(po.eval.SUM_FIELDS) == 10, "ten doubles per key is the claim"
 

@@ -494,6 +494,19 @@ impl RefreshTime {
         let series = series.str()?;
         let time_col = df.column(cols.clock)?;
         let time_dtype = time_col.dtype().clone();
+        // A number or a temporal column, as a spec's clock is: a boolean or a
+        // column of nulls is a number (task 197, PC7's rule for `value`).
+        // Cast without the check, text of digits was read as a clock.
+        if !(time_dtype.is_numeric()
+            || time_dtype.is_temporal()
+            || matches!(time_dtype, DataType::Boolean | DataType::Null))
+        {
+            polars_bail!(ComputeError:
+                "refresh_time: clock column {:?} has dtype {}; it must be numeric or temporal \
+                 (cast it, e.g. pl.col({:?}).cast(pl.Float64) or pl.col({:?}).str.to_datetime())",
+                cols.clock, time_dtype, cols.clock, cols.clock
+            );
+        }
         let base = self.rows_fed;
         let grouped = cols.group.is_some();
         match self.grouped {
@@ -1052,6 +1065,54 @@ mod tests {
                 .unwrap()
                 .feed(&with_value(v), &cols(&[]))
                 .unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
+    }
+
+    /// A clock that is neither a number nor temporal is refused by name, as
+    /// the bank refuses one (task 197, task 187's rule for `value` applied
+    /// to the clock). It went through a non-strict cast: text of digits was
+    /// read as a clock, and other text as a null clock on its first row. The
+    /// frame of no rows a plan is built from is refused too. Integers,
+    /// booleans and temporal columns are clocks, as they are to a spec.
+    #[test]
+    fn a_clock_column_that_is_neither_numeric_nor_temporal_is_refused_by_name() {
+        let names = ["a", "b"].map(str::to_string).to_vec();
+        let with_clock = |t: Column| {
+            let mut df = df!("series" => ["a", "b"], "v" => [1.0, 2.0]).unwrap();
+            df.with_column(t.with_name("t".into())).unwrap();
+            df
+        };
+        for (what, t) in [
+            ("numbers as text", Column::new("t".into(), ["1.5", "2.5"])),
+            ("text", Column::new("t".into(), ["abc", "def"])),
+        ] {
+            for df in [with_clock(t.clone()), with_clock(t.clone()).clear()] {
+                let e = RefreshTime::new(names.clone(), false)
+                    .unwrap()
+                    .feed(&df, &cols(&[]))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    e.contains("clock column \"t\"") && e.contains("must be numeric or temporal"),
+                    "{what}, {} rows: {e}",
+                    df.height()
+                );
+            }
+        }
+        let datetime = Column::new("t".into(), [1i64, 2])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap();
+        for (what, t) in [
+            ("integers", Column::new("t".into(), [1i64, 2])),
+            ("booleans", Column::new("t".into(), [false, true])),
+            ("float32", Column::new("t".into(), [1.0f32, 2.0])),
+            ("a datetime", datetime),
+        ] {
+            let out = RefreshTime::new(names.clone(), false)
+                .unwrap()
+                .feed(&with_clock(t), &cols(&[]))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(out.height(), 1, "{what}");
         }
     }
 

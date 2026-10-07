@@ -3183,7 +3183,7 @@ class TestPoEvalIsSklearnsMetrics:
         from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
 
         out, scored = self.regression()
-        got = po.eval.metrics(out, "m", by=["g"], min_obs=1)
+        got = po.eval.metrics(out, "m", group=["g"], min_samples=1)
         assert got["g"].to_list() == ["a", "b"]
         for row in got.iter_rows(named=True):
             part = scored.filter(pl.col("g") == row["g"])
@@ -3200,7 +3200,9 @@ class TestPoEvalIsSklearnsMetrics:
         from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
 
         out, scored = self.regression()
-        got = po.eval.from_sums(po.eval.sums(out, "m", weight="w"), min_obs=1).row(0, named=True)
+        got = po.eval.from_sums(po.eval.sums(out, "m", weight="w"), min_samples=1).row(
+            0, named=True
+        )
         y, pred, w = (scored[c].to_numpy() for c in ("y", "pred", "w"))
         signed = y != 0.0
         assert got["r2"] == pytest.approx(r2_score(y, pred, sample_weight=w), rel=1e-12)
@@ -3229,7 +3231,7 @@ class TestPoEvalIsSklearnsMetrics:
             min_weight=50.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.metrics(out, "m", binary=True, min_obs=1).row(0, named=True)
+        got = po.eval.metrics(out, "m", binary=True, min_samples=1).row(0, named=True)
         scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
         y, p = scored["y"].to_numpy(), scored["pred"].to_numpy()
         assert p.min() > 1e-15 and p.max() < 1.0 - 1e-15, "the clip is not in play"

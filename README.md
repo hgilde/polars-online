@@ -2391,12 +2391,12 @@ kalman = po.spec.kalman("kalman", targets=["y"], features=["x0", "x1"], clock="t
                         coef_half_life=100.0)   # how fast a coefficient may drift, as a half-life on the clock
 out = df.online.fit_predict([ridge, kalman])    # df's columns, plus one column per spec
 
-po.eval.metrics(out, "ridge", by=["stock_id"])                       # R², IC, hit rate, MSE
-po.eval.rolling_metrics(out, "ridge", clock="t", window_size=3600.0)  # the same, per clock window
-po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table, many specs: which had the lower error
-po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])        # is kalman closer? evidence per row
-po.eval.unpack(out, "ridge")                                        # long form: one row per (row, slot), with slot,
-                                                                    # target, pred and y, for your own group_by
+po.eval.metrics(out, "ridge", group="stock_id")                # R², IC, hit rate, MSE
+po.eval.window_metrics(out, "ridge", clock="t", every=3600.0)  # the same, per tumbling clock window
+po.eval.compare_specs(out, ["ridge", "kalman"])                # one table, many specs: which had the lower error
+po.eval.seqtest(out, a="kalman", b="ridge", group="stock_id")  # is kalman closer? evidence per row
+po.eval.unpack(out, "ridge")                                   # long form: one row per (row, slot), with slot,
+                                                               # target, pred and y, for your own group_by
 ```
 
 **Pass the spec as `spec=` when a target is relative or renamed.** The
@@ -2405,7 +2405,7 @@ each slot is scored against the column named after it. A target taken
 against another column, as `po.target("p", relative_to="mid")`, is then
 scored against the raw `p`, not the difference the bank learned. A target
 renamed with `name=` names no column, and the call asks for `spec=`.
-`metrics`, `rolling_metrics`, `sums` and `unpack` take `spec=`, and
+`metrics`, `window_metrics`, `sums` and `unpack` take `spec=`, and
 `compare_specs` takes the list as `specs=`.
 
 ### Evaluating a stream too large to hold
@@ -2427,10 +2427,10 @@ ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
 
 running = None
 for out in po.ModelBank([ridge]).fit_predict_batches(lf, chunk_size=100):   # the output, 100 rows at a time
-    part = po.eval.sums(out, "ridge", by=["stock_id"])   # weight= names a column to weight the rows by
+    part = po.eval.sums(out, "ridge", group="stock_id")   # weight= names a column to weight the rows by
     running = part if running is None else po.eval.merge_sums(running, part)
 
-po.eval.from_sums(running, min_obs=10)   # R², IC, hit rate and MSE, as metrics() gives them, and the RMSE
+po.eval.from_sums(running, min_samples=10)   # R², IC, hit rate and MSE, as metrics() gives them, and the RMSE
 ```
 
 ### Data whose truth is known

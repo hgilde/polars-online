@@ -19,8 +19,14 @@ name of its own -- is read through the spec that wrote the output: pass it as
 What each function raises is what :func:`unpack` raises, since each starts
 there: ``KeyError`` for a ``spec_name`` the frame has not got, ``TypeError``
 for a column that is not a model's prediction struct, ``ValueError`` for a
-slot whose target column cannot be found. A ``by`` or ``clock`` column the
-frame has not got is polars' ``ColumnNotFoundError``.
+slot whose target column cannot be found. A ``group`` or ``clock`` column
+the frame has not got is polars' ``ColumnNotFoundError``.
+
+``group`` names one key column, as a spec's ``group`` does, or a list of
+them. ``min_samples`` is the fewest rows a key is reported on, Polars' name
+for that count. Before 1.0 they were ``by`` and ``min_obs``, and
+:func:`window_metrics` was ``rolling_metrics``. An old name is refused, and
+the error names the new one.
 """
 
 from __future__ import annotations
@@ -33,17 +39,31 @@ import polars as pl
 
 from polars_online._duration import Duration, clock_nanoseconds
 from polars_online._polars_online import format_duration
+from polars_online._renamed import renamed_function, renamed_keywords
 
 __all__ = [
     "metrics",
-    "rolling_metrics",
+    "window_metrics",
     "compare_specs",
     "unpack",
     "seqtest",
     "sums",
     "merge_sums",
     "from_sums",
+    "SUM_FIELDS",
+    "RESERVED",
 ]
+
+# The keywords renamed before 1.0 (docs/PLAN.md task 197): `min_obs` is
+# Polars' `min_samples` for the same count, and `by` is `group`, the specs'
+# word since 0.12.0 (review round 4, AP6); `window_metrics`' `every` was
+# `rolling_metrics`' `window_size` (YB5). Literal tables, each whole: Sphinx's
+# source parser fails on a `{**a, **b}` in a decorator, and then drops every
+# `#:` comment of the module, so `SUM_FIELDS` and `RESERVED` went unrendered.
+_GROUP = {"by": "group"}
+_MIN_SAMPLES = {"min_obs": "min_samples"}
+_BOTH = {"by": "group", "min_obs": "min_samples"}
+_WINDOW = {"by": "group", "min_obs": "min_samples", "window_size": "every"}
 
 #: The columns :func:`sums` produces beside the keys, in order. Ten doubles
 #: per (key, slot) is the whole memory cost of evaluating a stream.
@@ -260,6 +280,14 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     return max(matches, key=len)
 
 
+def _group_keys(group: str | Iterable[str]) -> list[str]:
+    """``group`` as the list of its key columns: a bare string is one key,
+    as in Polars' ``group_by`` and ``over`` and a spec's ``group``. Iterated
+    as it was, ``by="group"`` was the keys ``g``, ``r``, ``o``, ``u``, ``p``
+    (review round 4, YB16)."""
+    return [group] if isinstance(group, str) else list(group)
+
+
 def _usable(value: pl.Expr) -> pl.Expr:
     """Whether a float is one the bank learns from: finite, and within its
     input bound (docs/PLAN.md section 3); null where ``value`` is."""
@@ -294,7 +322,7 @@ def _centred(long: pl.DataFrame, centres: dict[str, float]) -> tuple[pl.DataFram
 
 
 def _metric_exprs(
-    min_obs: int, *, binary: bool = False, centre: str | None = None
+    min_samples: int, *, binary: bool = False, centre: str | None = None
 ) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     # The centred sums, as :func:`sums` keeps them: a metric is null where
@@ -350,31 +378,33 @@ def _metric_exprs(
         hits = ((pred.sign() == y.sign()) & scored).sum()
         exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
     exprs.append(resid.pow(2).mean().alias("mse"))
-    exprs.append(pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough"))
+    exprs.append(pl.when(pl.len() >= min_samples).then(True).otherwise(False).alias("enough"))
     return exprs
 
 
+@renamed_keywords("po.eval.metrics", _BOTH)
 def metrics(
     df: pl.DataFrame,
     spec_name: str,
     *,
-    by: Iterable[str] = (),
+    group: str | Iterable[str] = (),
     targets: Sequence[str] | None = None,
     spec: dict | None = None,
-    min_obs: int = 30,
+    min_samples: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
-    """Out-of-sample metrics per ``(slot, target, *by)``, over the whole frame.
+    """Out-of-sample metrics per ``(slot, target, *group)``, over the whole frame.
 
     Rows where the prediction or the target is missing are dropped, so warm-up
     and skipped rows never enter the numbers. Missing is what the bank reads as
     missing: null, NaN, infinite, or past its input bound of 1e100 in
-    magnitude, a target the bank still predicts the row of. A group with fewer
-    than ``min_obs`` rows left is dropped from the result rather than reported
-    on too little. ``spec`` and ``targets`` are :func:`unpack`'s: pass the spec
-    for a target that is not a plain column. The columns:
+    magnitude, a target the bank still predicts the row of. ``group`` is one
+    key column, or a list of them. A key with fewer than ``min_samples`` rows
+    left is dropped from the result rather than reported on too little.
+    ``spec`` and ``targets`` are :func:`unpack`'s: pass the spec for a target
+    that is not a plain column. The columns:
 
-    ``slot``, ``target``, and the ``by`` columns
+    ``slot``, ``target``, and the ``group`` columns
         The key.
     ``n``
         The rows counted.
@@ -409,71 +439,76 @@ def metrics(
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        scores = po.eval.metrics(out, "ridge", by=["stock_id"])   # n, r2, ic, hit_rate, mse per key
+        scores = po.eval.metrics(out, "ridge", group="stock_id")   # n, r2, ic, hit_rate, mse
 
-    Raises as :func:`unpack` does; a ``by`` column the frame has not got is
+    Raises as :func:`unpack` does; a ``group`` column the frame has not got is
     polars' ``ColumnNotFoundError``.
     """
     long, centres = _unpack(df, spec_name, spec, targets)
     long, centre = _centred(_scored(long), centres)
-    keys = ["slot", "target", *by]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary, centre=centre)).sort(keys)
+    keys = ["slot", "target", *_group_keys(group)]
+    exprs = _metric_exprs(min_samples, binary=binary, centre=centre)
+    out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
-def rolling_metrics(
+@renamed_keywords("po.eval.window_metrics", _WINDOW)
+def window_metrics(
     df: pl.DataFrame,
     spec_name: str,
     *,
     clock: str,
-    window_size: float | Duration,
-    by: Iterable[str] = (),
+    every: float | Duration,
+    group: str | Iterable[str] = (),
     targets: Sequence[str] | None = None,
     spec: dict | None = None,
-    min_obs: int = 30,
+    min_samples: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
-    """:func:`metrics` in non-overlapping windows of ``window_size`` clock units.
+    """:func:`metrics` in tumbling windows of ``every`` clock units.
+
+    The windows do not overlap: each row falls in one, as in Polars'
+    ``group_by_dynamic(every=)``. Polars' ``rolling`` windows overlap, which
+    is why this is not ``rolling_metrics``, its name before 1.0.
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the
-    left edge of each bucket (``floor(clock / window_size) * window_size``).
-    ``binary``, ``spec`` and ``targets`` are :func:`metrics`'s.
-    ``window_size`` is measured the way a spec's clock parameters are: a
-    number for a numeric clock, and a duration for a ``Datetime``, ``Date``
-    or ``Duration`` one. ``window_start`` is of the clock's own dtype, an
-    integer clock's included, whose ``window_size`` must then be a whole
-    number of its units: a bucket's edges are values of the column.
+    left edge of each bucket (``floor(clock / every) * every``). ``binary``,
+    ``group``, ``min_samples``, ``spec`` and ``targets`` are :func:`metrics`'s.
+    ``every`` is measured the way a spec's clock parameters are: a number for
+    a numeric clock, and a duration for a ``Datetime``, ``Date`` or
+    ``Duration`` one. ``window_start`` is of the clock's own dtype, an
+    integer clock's included, whose ``every`` must then be a whole number of
+    its units: a bucket's edges are values of the column.
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window_size=100.0)
-        # on a Datetime clock: window_size=pl.duration(hours=1), timedelta(hours=1) or "1h"
+        by_hour = po.eval.window_metrics(out, "ridge", clock="t", every=100.0)
+        # on a Datetime clock: every=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
     Raises as :func:`unpack` does, and:
 
-    - ``ValueError`` for a ``window_size`` that is not finite and above 0,
-      of the wrong kind for the clock, or not a whole number on an integer
-      clock;
+    - ``ValueError`` for an ``every`` that is not finite and above 0, of the
+      wrong kind for the clock, or not a whole number on an integer clock;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
       temporal;
-    - polars' ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the
+    - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
       frame has not got.
     """
     dtype = df.schema.get(clock)
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
         raise pl.exceptions.ColumnNotFoundError(clock)
-    ns = clock_nanoseconds(window_size, dtype, "rolling_metrics", "window_size", clock)
-    if ns is None and not window_size > 0:  # type: ignore[operator]
-        msg = f"rolling_metrics: window_size must be > 0, got {window_size}"
+    ns = clock_nanoseconds(every, dtype, "window_metrics", "every", clock)
+    if ns is None and not every > 0:  # type: ignore[operator]
+        msg = f"window_metrics: every must be > 0, got {every}"
         raise ValueError(msg)
-    if ns is None and math.isinf(window_size):  # type: ignore[arg-type]
+    if ns is None and math.isinf(every):  # type: ignore[arg-type]
         # One bucket, whose `window_start` was NaN (review 2026-10-05, YB11).
         msg = (
-            f"rolling_metrics: window_size must be finite, got {window_size}; one window "
-            "over the whole frame is po.eval.metrics"
+            f"window_metrics: every must be finite, got {every}; one window over the whole "
+            "frame is po.eval.metrics"
         )
         raise ValueError(msg)
     if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
@@ -484,17 +519,17 @@ def rolling_metrics(
         # clock's is, in integers, so no edge is rounded through a float; a
         # window that is not whole would put edges between the column's
         # values (review round 4, YB14).
-        if not float(window_size).is_integer():  # type: ignore[arg-type]
+        if not float(every).is_integer():  # type: ignore[arg-type]
             msg = (
-                f"rolling_metrics: window_size {window_size!r} is not a whole number, and clock "
-                f"column {clock!r} is {dtype}, which holds whole numbers; give a whole "
-                "window_size, or cast the clock to a float"
+                f"window_metrics: every {every!r} is not a whole number, and clock column "
+                f"{clock!r} is {dtype}, which holds whole numbers; give a whole every, or cast "
+                "the clock to a float"
             )
             raise ValueError(msg)
-        whole = int(window_size)  # type: ignore[arg-type]
+        whole = int(every)  # type: ignore[arg-type]
         start = (pl.col(clock) // whole * whole).cast(dtype)
     elif ns is None:
-        start = (pl.col(clock) / window_size).floor() * window_size
+        start = (pl.col(clock) / every).floor() * every
     elif isinstance(dtype, pl.Duration):
         start = (
             (pl.col(clock).dt.total_nanoseconds() // ns * ns).cast(pl.Duration("ns")).cast(dtype)
@@ -503,28 +538,37 @@ def rolling_metrics(
         start = pl.col(clock).dt.truncate(format_duration(ns))
     long, centres = _unpack(df, spec_name, spec, targets)
     long, centre = _centred(_scored(long).with_columns(start.alias("window_start")), centres)
-    keys = ["slot", "target", *by, "window_start"]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary, centre=centre)).sort(keys)
+    keys = ["slot", "target", *_group_keys(group), "window_start"]
+    exprs = _metric_exprs(min_samples, binary=binary, centre=centre)
+    out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
+#: Renamed :func:`window_metrics`, and its ``window_size`` ``every``, before
+#: 1.0 (docs/PLAN.md task 197; review round 4, YB5).
+rolling_metrics = renamed_function(
+    "po.eval.rolling_metrics", "po.eval.window_metrics", ", and window_size was renamed every"
+)
+
+
+@renamed_keywords("po.eval.compare_specs", _BOTH)
 def compare_specs(
     df: pl.DataFrame,
     spec_names: Iterable[str],
     *,
-    by: Iterable[str] = (),
+    group: str | Iterable[str] = (),
     targets: Sequence[str] | None = None,
     specs: Sequence[dict] | None = None,
-    min_obs: int = 30,
+    min_samples: int = 30,
     binary: bool = False,
 ) -> pl.DataFrame:
     """:func:`metrics` for several specs in one table, with a ``spec`` column first.
 
-    ``binary`` is :func:`metrics`'s, applied to every spec alike: compare specs
-    that share a loss, not a logistic fit against a regression one. ``specs``
-    are the specs that wrote the columns, each read as :func:`metrics` reads
-    its ``spec`` for the column of its name; a name without one is read by
-    the name-based rule.
+    ``binary``, ``group`` and ``min_samples`` are :func:`metrics`'s, applied to
+    every spec alike: compare specs that share a loss, not a logistic fit
+    against a regression one. ``specs`` are the specs that wrote the columns,
+    each read as :func:`metrics` reads its ``spec`` for the column of its
+    name; a name without one is read by the name-based rule.
 
     .. code-block:: python
 
@@ -542,10 +586,10 @@ def compare_specs(
         metrics(
             df,
             name,
-            by=by,
+            group=group,
             targets=targets,
             spec=written.get(name),
-            min_obs=min_obs,
+            min_samples=min_samples,
             binary=binary,
         ).with_columns(pl.lit(name).alias("spec"))
         for name in spec_names
@@ -564,6 +608,7 @@ def _resid_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
     return [f.name for f in dtype.fields if f.name.startswith("resid_")]
 
 
+@renamed_keywords("po.eval.seqtest", _GROUP)
 def seqtest(
     df: pl.DataFrame,
     *,
@@ -572,7 +617,7 @@ def seqtest(
     b: str | None = None,
     a_suffix: str = "",
     b_suffix: str = "",
-    by: Iterable[str] = (),
+    group: str | Iterable[str] = (),
     min_weight: float = 0.0,
     name: str = "seqtest",
 ) -> pl.DataFrame:
@@ -603,10 +648,11 @@ def seqtest(
         In compare mode: the same, for "``a`` was closer" and "``b`` was
         closer".
     ``weight_sum``
-        The rows before this one in its ``by`` group; every other field is
-        null until it reaches ``min_weight``.
+        The rows before this one in its group; every other field is null
+        until it reaches ``min_weight``.
 
-    ``by`` runs one process per group, in row order (``.over(by)``). A null,
+    ``group`` runs one process per group, in row order (``.over(group)``):
+    one key column, as a spec's ``group`` is, or a list of them. A null,
     zero or NaN value bets nothing and counts nothing, as in the bank. What
     the bank adds is the clock (``session``, ``restart_after_step_back``),
     which a frame in memory has not got. The bank's struct is held to this
@@ -620,7 +666,7 @@ def seqtest(
             "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
         )
         out = po.ModelBank([ridge, kalman]).fit_predict(df)
-        evidence = po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])
+        evidence = po.eval.seqtest(out, a="kalman", b="ridge", group="stock_id")
 
     Raises:
 
@@ -630,7 +676,7 @@ def seqtest(
     - ``KeyError`` for a spec the frame has not got;
     - ``TypeError`` for one that is not a struct.
     """
-    keys = list(by)
+    keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = "seqtest: a and b go together; name both specs to compare them, or neither"
         raise ValueError(msg)
@@ -681,7 +727,7 @@ def seqtest(
     # running sum over the rows before, of a bet sized by counts that are
     # themselves running sums. Polars 1.34.0 refuses a window inside a
     # window ("window expression not allowed in aggregation"; 1.44.2 takes
-    # it), which failed every `by` at the declared floor (task 109's floor run,
+    # it), which failed every `group` at the declared floor (task 109's floor run,
     # 2026-09-27). The counts go into columns first, then the wealth reads
     # them; the arithmetic is the same.
     taken = set(df.columns)
@@ -726,11 +772,12 @@ def seqtest(
     return df.with_columns(first).with_columns(pl.struct(fields).alias(name)).drop(temps)
 
 
+@renamed_keywords("po.eval.sums", _GROUP)
 def sums(
     df: pl.DataFrame,
     spec_name: str,
     *,
-    by: Iterable[str] = (),
+    group: str | Iterable[str] = (),
     targets: Sequence[str] | None = None,
     spec: dict | None = None,
     weight: str | None = None,
@@ -739,7 +786,7 @@ def sums(
     """Reduce a chunk of output to the sufficient statistics of its metrics.
 
     :func:`metrics` needs the whole frame. This needs one chunk at a time: ten
-    doubles per ``(slot, target, *by)``, which :func:`merge_sums` adds together
+    doubles per ``(slot, target, *group)``, which :func:`merge_sums` adds together
     and :func:`from_sums` turns back into the same numbers. A run that compares
     fifty slots over a billion rows then keeps ten doubles per key instead of
     writing the rows out to evaluate them later. The columns beside the keys are
@@ -775,16 +822,17 @@ def sums(
     the bank would not learn from -- null, NaN, infinite, past the input
     bound, or negative -- is dropped too, and a zero weight is kept, counted
     in ``n`` and not in ``w``. Without ``weight`` every row counts 1 and ``w``
-    equals ``n``. ``spec``, ``targets`` and the errors are :func:`unpack`'s.
+    equals ``n``. ``group`` is :func:`metrics`'s; ``spec``, ``targets`` and the
+    errors are :func:`unpack`'s.
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        part = po.eval.sums(out.head(200), "ridge", by=["stock_id"])   # ten numbers per key
-        rest = po.eval.sums(out.tail(200), "ridge", by=["stock_id"])
-        running = po.eval.merge_sums(part, rest)                       # exact, whatever the split
-        scores = po.eval.from_sums(running, min_obs=10)                # r2, ic, hit_rate, mse, rmse
+        part = po.eval.sums(out.head(200), "ridge", group="stock_id")   # ten numbers per key
+        rest = po.eval.sums(out.tail(200), "ridge", group="stock_id")
+        running = po.eval.merge_sums(part, rest)                     # exact, whatever the split
+        scores = po.eval.from_sums(running, min_samples=10)          # r2, ic, hit_rate, mse, rmse
 
     """
     long, centres = _unpack(df, spec_name, spec, targets)
@@ -809,7 +857,7 @@ def sums(
         # :func:`metrics` and the bank (docs/PLAN.md task 195, S6).
         scored = (dy != 0) & (dp != 0)
         hits, signed = w * ((dy.sign() == dp.sign()) & scored), w * scored
-    keys = ["slot", "target", *by]
+    keys = ["slot", "target", *_group_keys(group)]
     return (
         long.group_by(keys)
         .agg(
@@ -886,7 +934,8 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def from_sums(s: pl.DataFrame, *, min_obs: int = 30) -> pl.DataFrame:
+@renamed_keywords("po.eval.from_sums", _MIN_SAMPLES)
+def from_sums(s: pl.DataFrame, *, min_samples: int = 30) -> pl.DataFrame:
     """The metrics :func:`metrics` reports, from :func:`sums` instead of rows.
 
     Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
@@ -897,7 +946,7 @@ def from_sums(s: pl.DataFrame, *, min_obs: int = 30) -> pl.DataFrame:
     nothing to choose here. There is no ``log_loss`` column (:func:`metrics`'s
     ``binary=True`` has it): :data:`SUM_FIELDS` would need a mean and a weight for
     it, not added since nothing has asked for the chunked form yet. A key with
-    fewer than ``min_obs`` rows is dropped, as :func:`metrics` drops it.
+    fewer than ``min_samples`` rows is dropped, as :func:`metrics` drops it.
 
     ``r2`` and ``ic`` are null where they are undefined: a key whose target or
     prediction never varied has no correlation to report, and dividing by its zero
@@ -907,7 +956,7 @@ def from_sums(s: pl.DataFrame, *, min_obs: int = 30) -> pl.DataFrame:
     mse = pl.col("sse") / pl.col("w")
     denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
     return (
-        s.filter(pl.col("n") >= min_obs)
+        s.filter(pl.col("n") >= min_samples)
         .select(
             *keys,
             pl.col("n"),

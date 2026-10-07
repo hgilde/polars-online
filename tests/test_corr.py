@@ -286,7 +286,7 @@ def test_equicorr_is_the_mean_off_diagonal():
     assert corr.equicorr(r) == pytest.approx((0.2 + 0.4 + 0.6) * 2 / 6)
 
 
-def test_absorption_and_shift():
+def test_absorption_and_absorption_shift():
     x = sample(n=500, k=6, rho=0.7, seed=6)
     r = np.corrcoef(x.T)
     vals = np.linalg.eigvalsh(r)[::-1]
@@ -295,8 +295,8 @@ def test_absorption_and_shift():
     assert corr.absorption(r, 1) > 0.6, "one factor, mostly one eigenvalue"
     fast = np.array([0.7, 0.8, 0.9])
     slow = np.array([0.6, 0.6, 0.7])
-    assert np.allclose(corr.shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
-    assert np.allclose(corr.shift(fast, slow), (fast - slow) / np.std(slow))
+    assert np.allclose(corr.absorption_shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
+    assert np.allclose(corr.absorption_shift(fast, slow), (fast - slow) / np.std(slow))
 
 
 def test_spectral_round_trips_through_from_spectral():

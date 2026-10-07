@@ -235,13 +235,15 @@ def test_the_same_number_under_one_name_in_every_frame():
     assert "weight_sum" in bank.gram(0)[0] and "n_eff" not in bank.gram(0)[0]
 
 
-def test_rolling_metrics_takes_window_size():
+def test_window_metrics_takes_every():
+    """Task 144 renamed ``rolling_metrics``' ``window`` ``window_size``; task
+    197 renamed the function ``window_metrics`` and the keyword ``every``."""
     bank, out = _fit()
     df = out.with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
-    by = po.eval.rolling_metrics(df, "m", clock="t", window_size=20.0, min_obs=5)
-    assert "window_start" in by.columns and len(by) >= 2
+    windows = po.eval.window_metrics(df, "m", clock="t", every=20.0, min_samples=5)
+    assert "window_start" in windows.columns and len(windows) >= 2
     with pytest.raises(TypeError):
-        po.eval.rolling_metrics(df, "m", clock="t", window=20.0, min_obs=5)  # type: ignore[call-arg]
+        po.eval.window_metrics(df, "m", clock="t", window=20.0)  # type: ignore[call-arg]
 
 
 def test_restart_after_step_back_is_one_rule():
@@ -480,3 +482,174 @@ def test_chunk_rows_is_refused_naming_chunk_size_and_chunk_size_works(which):
     with pytest.raises(TypeError, match="chunk_rows was renamed chunk_size"):
         call(chunk_rows=2)
     call(chunk_size=2)
+
+
+# --- task 197: names in the helper modules (docs/PLAN.md §18, N3-N6, N24) ---
+
+
+def _scored_fit() -> pl.DataFrame:
+    """Two specs over two groups, with a clock: what every ``po.eval``
+    function reads."""
+    rng = np.random.default_rng(197)
+    n = 200
+    x = rng.standard_normal(n)
+    df = pl.DataFrame(
+        {
+            "t": np.arange(n, dtype=float),
+            "x": x,
+            "y": 2.0 * x + 0.5 * rng.standard_normal(n),
+            "g": ["a", "b"] * (n // 2),
+        }
+    )
+    common = dict(targets=["y"], features=["x"], half_life=20.0, min_weight=5.0, group="g")
+    return po.ModelBank(
+        [po.spec.ewridge("m", **common), po.spec.ewridge("k", ridge=1.0, **common)]
+    ).fit_predict(df)
+
+
+#: Each ``po.eval`` function with a renamed keyword, called with the
+#: keyword's old name: N3's ``by`` and ``min_obs``, and N4's ``window_size``.
+_OLD_EVAL_KEYWORDS = {
+    "metrics by": (lambda o: po.eval.metrics(o, "m", by=["g"]), "by", "group"),
+    "metrics min_obs": (lambda o: po.eval.metrics(o, "m", min_obs=1), "min_obs", "min_samples"),
+    "window_metrics by": (
+        lambda o: po.eval.window_metrics(o, "m", clock="t", every=50.0, by=["g"]),
+        "by",
+        "group",
+    ),
+    "window_metrics min_obs": (
+        lambda o: po.eval.window_metrics(o, "m", clock="t", every=50.0, min_obs=1),
+        "min_obs",
+        "min_samples",
+    ),
+    "window_metrics window_size": (
+        lambda o: po.eval.window_metrics(o, "m", clock="t", window_size=50.0),
+        "window_size",
+        "every",
+    ),
+    "compare_specs by": (lambda o: po.eval.compare_specs(o, ["m"], by=["g"]), "by", "group"),
+    "compare_specs min_obs": (
+        lambda o: po.eval.compare_specs(o, ["m"], min_obs=1),
+        "min_obs",
+        "min_samples",
+    ),
+    "sums by": (lambda o: po.eval.sums(o, "m", by=["g"]), "by", "group"),
+    "seqtest by": (lambda o: po.eval.seqtest(o, a="m", b="k", by=["g"]), "by", "group"),
+    "from_sums min_obs": (
+        lambda o: po.eval.from_sums(po.eval.sums(o, "m"), min_obs=1),
+        "min_obs",
+        "min_samples",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_OLD_EVAL_KEYWORDS))
+def test_an_eval_keyword_renamed_is_refused_naming_the_new_one(case):
+    """N3 (review round 4, AP6): ``min_obs`` is Polars' ``min_samples`` for
+    the same count, and ``by`` is ``group``, the specs' word since 0.12.0.
+    N4 (YB5): ``window_metrics``' bucket width is ``every``, as Polars'
+    ``group_by_dynamic(every=)``."""
+    call, old, new = _OLD_EVAL_KEYWORDS[case]
+    with pytest.raises(TypeError, match=f"^po\\.eval\\.[a-z_]+: {old} was renamed {new}$"):
+        call(_scored_fit())
+
+
+def test_the_new_eval_keywords_are_the_old_ones_renamed():
+    out = _scored_fit()
+    m = po.eval.metrics(out, "m", group=["g"], min_samples=150)
+    assert m.is_empty()
+    m = po.eval.metrics(out, "m", group=["g"], min_samples=50)
+    scored = out.group_by("g").agg(pl.col("m").struct.field("pred_y").is_not_null().sum()).sort("g")
+    assert m["g"].to_list() == ["a", "b"] and m["n"].to_list() == scored["pred_y"].to_list()
+    s = po.eval.from_sums(po.eval.sums(out, "m", group=["g"]), min_samples=50)
+    assert s["g"].to_list() == ["a", "b"]
+    w = po.eval.window_metrics(out, "m", clock="t", every=50.0, group=["g"], min_samples=5)
+    assert w["window_start"].unique().sort().to_list() == [0.0, 50.0, 100.0, 150.0]
+    c = po.eval.compare_specs(out, ["m", "k"], group=["g"], min_samples=50)
+    assert c["spec"].to_list() == ["m", "m", "k", "k"]
+
+
+#: Each function taking ``group``, called with a bare string and with a list.
+_GROUPED = {
+    "metrics": lambda o, g: po.eval.metrics(o, "m", group=g, min_samples=1),
+    "window_metrics": lambda o, g: po.eval.window_metrics(
+        o, "m", clock="t", every=50.0, group=g, min_samples=1
+    ),
+    "compare_specs": lambda o, g: po.eval.compare_specs(o, ["m", "k"], group=g, min_samples=1),
+    "sums": lambda o, g: po.eval.sums(o, "m", group=g),
+    "seqtest": lambda o, g: po.eval.seqtest(o, a="m", b="k", group=g),
+}
+
+
+@pytest.mark.parametrize("fn", sorted(_GROUPED))
+def test_group_takes_a_bare_string_as_one_key(fn):
+    """YB16: ``by="group"`` iterated the string's characters and failed on a
+    column ``g``. A bare string is one key, as in Polars' ``group_by`` and
+    ``over``, and the specs' ``group``."""
+    out = _scored_fit().rename({"g": "group"})
+    call = _GROUPED[fn]
+    one = call(out, "group")
+    assert one.equals(call(out, ["group"]))
+    if fn != "seqtest":
+        assert one["group"].unique().sort().to_list() == ["a", "b"]
+
+
+def test_rolling_metrics_is_window_metrics_with_every():
+    """N4 (YB5): the buckets do not overlap, which in Polars is
+    ``group_by_dynamic(every=)``; ``rolling`` is its overlapping window."""
+    out = _scored_fit()
+    with pytest.raises(
+        TypeError, match="^po.eval.rolling_metrics was renamed po.eval.window_metrics"
+    ):
+        po.eval.rolling_metrics(out, "m", clock="t", window_size=50.0)
+    assert "rolling_metrics" not in po.eval.__all__ and "window_metrics" in po.eval.__all__
+    got = po.eval.window_metrics(out, "m", clock="t", every=50.0, min_samples=1)
+    assert got["window_start"].to_list() == [0.0, 50.0, 100.0, 150.0]
+    bucket = (pl.col("t") // 50.0).alias("bucket")
+    scored = out.group_by(bucket).agg(pl.col("m").struct.field("pred_y").is_not_null().sum())
+    assert got["n"].to_list() == scored.sort("bucket")["pred_y"].to_list()
+
+
+def test_corr_shift_is_absorption_shift():
+    """N5 (YB10): Polars' ``shift`` is a lag; this is Kritzman's
+    standardised absorption shift."""
+    fast, slow = np.array([0.5, 0.6, 0.7]), np.array([0.4, 0.4, 0.5])
+    with pytest.raises(TypeError, match="^po.corr.shift was renamed po.corr.absorption_shift$"):
+        po.corr.shift(fast, slow)
+    assert "shift" not in po.corr.__all__ and "absorption_shift" in po.corr.__all__
+    assert np.allclose(po.corr.absorption_shift(fast, slow, scale=0.1), [1.0, 2.0, 2.0])
+
+
+def test_lasso_path_takes_penalties():
+    """N6 (YB20): the spec takes the path as ``lasso_path=`` and ``coef()``
+    reports each as ``penalty``; the offline path took them as ``lambdas``."""
+    bank = po.ModelBank(
+        [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0)]
+    )
+    rng = np.random.default_rng(6)
+    x = rng.standard_normal((100, 2))
+    bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [1.0, -0.5] + 0.1}))
+    g = bank.gram("m")[0]
+    want = po.gram.lasso_path(g, [0.1, 0.01])
+    assert np.array_equal(po.gram.lasso_path(g, penalties=[0.1, 0.01]), want)
+    with pytest.raises(TypeError, match="^po.gram.lasso_path: lambdas was renamed penalties$"):
+        po.gram.lasso_path(g, lambdas=[0.1, 0.01])
+    with pytest.raises(ValueError, match="penalties must be finite and >= 0"):
+        po.gram.lasso_path(g, [-1.0])
+
+
+@pytest.mark.parametrize(
+    ("module", "name"),
+    [
+        ("gram", "INTERCEPT"),
+        ("eval", "SUM_FIELDS"),
+        ("eval", "RESERVED"),
+        ("stream", "ROLE"),
+        ("corr", "Z_CLIP"),
+    ],
+)
+def test_a_module_constant_the_docs_name_is_exported(module, name):
+    """N24 (YB9): docstrings link these with ``:data:``, tests and readers
+    use them, and outside ``__all__`` the reference rendered none of them,
+    so every ``:data:`` link was dead."""
+    assert name in getattr(po, module).__all__

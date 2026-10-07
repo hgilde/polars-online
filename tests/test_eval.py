@@ -25,7 +25,7 @@ def _fitted(n_groups=2, n_rows=300, **kw):
 
 def test_metrics_shape_and_values():
     out = _fitted()
-    m = po.eval.metrics(out, "m", by=["group"], targets=["y0"])
+    m = po.eval.metrics(out, "m", group=["group"], targets=["y0"])
     assert set(m["group"]) == {"g0", "g1"}
     assert m["slot"].unique().to_list() == ["pred_y0"]
     # synthetic data is genuinely predictable, so R^2 and IC must be positive
@@ -56,7 +56,7 @@ def test_r2_matches_a_manual_computation():
 
 def test_rolling_windows_partition_the_clock():
     out = _fitted(n_groups=1, n_rows=600)
-    r = po.eval.rolling_metrics(out, "m", clock="t", window_size=800.0, targets=["y0"], min_obs=5)
+    r = po.eval.window_metrics(out, "m", clock="t", every=800.0, targets=["y0"], min_samples=5)
     assert r.height > 1
     starts = r["window_start"].to_numpy()
     assert (np.diff(starts) == 800.0).all()
@@ -123,12 +123,12 @@ def test_mistakes_are_named():
         po.eval.unpack(cov, "c")
     with pytest.raises(ValueError, match="cannot infer the target column for slot 'pred_y0'"):
         po.eval.unpack(out.drop("y0"), "m")
-    with pytest.raises(ValueError, match="window_size must be > 0, got 0"):
-        po.eval.rolling_metrics(out, "m", clock="t", window_size=0)
+    with pytest.raises(ValueError, match="every must be > 0, got 0"):
+        po.eval.window_metrics(out, "m", clock="t", every=0)
     with pytest.raises(TypeError, match="clock column 'group' must be numeric"):
-        po.eval.rolling_metrics(out, "m", clock="group", window_size=10.0)
+        po.eval.window_metrics(out, "m", clock="group", every=10.0)
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
-        po.eval.metrics(out, "m", by=["zz"])
+        po.eval.metrics(out, "m", group=["zz"])
 
 
 def test_noise_target_gives_no_edge():
@@ -252,12 +252,12 @@ def test_target_named_like_an_output_column_does_not_collide():
     assert long.columns.count("y") == 1
 
 
-def test_rolling_metrics_names_a_missing_clock_before_reading_the_window():
+def test_window_metrics_names_a_missing_clock_before_reading_the_window():
     """R2-P9: a duration ``window_size`` beside a clock the frame lacks was
     compared with the missing dtype first and raised a bare ``TypeError``."""
     df = pl.DataFrame({"t": [0.0, 1.0], "m": [{"pred_y": 1.0, "resid_y": 0.5}] * 2})
     with pytest.raises(pl.exceptions.ColumnNotFoundError):
-        po.eval.rolling_metrics(df, "m", clock="nope", window_size="1h")
+        po.eval.window_metrics(df, "m", clock="nope", every="1h")
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1e101], ids=["nan", "inf", "bound"])
@@ -292,8 +292,8 @@ def test_what_the_bank_reads_as_missing_is_missing_here_too(bad):
     assert out["m"].struct.fields == [f.name for f in fields]
     kept = out.filter(~marked.is_in(bad_y + bad_pred))
     for run in (
-        lambda f: po.eval.metrics(f, "m", min_obs=1),
-        lambda f: po.eval.rolling_metrics(f, "m", clock="t", window_size=800.0, min_obs=1),
+        lambda f: po.eval.metrics(f, "m", min_samples=1),
+        lambda f: po.eval.window_metrics(f, "m", clock="t", every=800.0, min_samples=1),
         lambda f: po.eval.sums(f, "m"),
     ):
         got, want = run(out), run(kept)
@@ -301,12 +301,12 @@ def test_what_the_bank_reads_as_missing_is_missing_here_too(bad):
         assert got.height > 0
 
 
-def test_rolling_metrics_refuses_a_window_that_is_not_finite():
+def test_window_metrics_refuses_a_window_that_is_not_finite():
     """Review 2026-10-05 (YB11): ``window_size=inf`` gave one bucket, whose
     ``window_start`` was NaN."""
     out = _fitted(n_groups=1, n_rows=50)
-    with pytest.raises(ValueError, match="^rolling_metrics: window_size must be finite"):
-        po.eval.rolling_metrics(out, "m", clock="t", window_size=float("inf"))
+    with pytest.raises(ValueError, match="^window_metrics: every must be finite"):
+        po.eval.window_metrics(out, "m", clock="t", every=float("inf"))
 
 
 # --- A relative target (review round 4, YB1) ---------------------------------
@@ -382,16 +382,16 @@ def test_a_relative_target_is_scored_as_the_bank_scores_it(relative, name):
             want = bank[f"{metric}_{t}"][0]
             assert frame[metric][0] == pytest.approx(want, rel=1e-9, abs=1e-12), (metric, frame)
 
-    held(po.eval.from_sums(po.eval.sums(out, "m", spec=spec), min_obs=1))
-    got = po.eval.metrics(out, "m", spec=spec, min_obs=1)
+    held(po.eval.from_sums(po.eval.sums(out, "m", spec=spec), min_samples=1))
+    got = po.eval.metrics(out, "m", spec=spec, min_samples=1)
     held(got)
     assert 0.3 < got["hit_rate"][0] < 0.95, "a rate, not the sign test's 1.0 or 0.0"
     # And the windowed and stacked forms take the spec the same way.
-    windows = po.eval.rolling_metrics(
-        out.with_row_index("i"), "m", clock="i", window_size=1000, spec=spec, min_obs=1
+    windows = po.eval.window_metrics(
+        out.with_row_index("i"), "m", clock="i", every=1000, spec=spec, min_samples=1
     )
     assert windows["hit_rate"].to_list() == pytest.approx(got["hit_rate"].to_list(), rel=1e-12)
-    stacked = po.eval.compare_specs(out, ["m"], specs=[spec], min_obs=1)
+    stacked = po.eval.compare_specs(out, ["m"], specs=[spec], min_samples=1)
     assert stacked.drop("spec").equals(got)
 
 
@@ -430,7 +430,7 @@ def test_without_the_spec_a_slot_named_after_no_column_says_to_pass_it():
     refusal says where it is written down."""
     _, out = _relative_fit("log_ratio", "ret")
     with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
-        po.eval.metrics(out, "m", min_obs=1)
+        po.eval.metrics(out, "m", min_samples=1)
     with pytest.raises(ValueError, match=r"slot 'pred_ret'.*pass spec="):
         po.eval.unpack(out, "m")
 
@@ -462,7 +462,7 @@ def test_a_formula_target_the_frame_has_no_column_for_is_refused_by_name():
 
 
 @pytest.mark.parametrize("dtype", [pl.Int64, pl.Int32, pl.UInt32])
-def test_rolling_metrics_keeps_an_integer_clocks_dtype(dtype):
+def test_window_metrics_keeps_an_integer_clocks_dtype(dtype):
     """Review round 4 (YB14): on an ``Int64`` clock ``window_start`` came back
     ``Float64`` (``[0.0, 500.0, ...]``), where a temporal clock keeps its own
     dtype. A window of a whole number of the clock's units keeps it too, and
@@ -471,18 +471,18 @@ def test_rolling_metrics_keeps_an_integer_clocks_dtype(dtype):
     out = _fitted(n_groups=1, n_rows=600)
     ints = out.with_columns(pl.col("t").round().cast(dtype))
     floats = ints.with_columns(pl.col("t").cast(pl.Float64))
-    want = po.eval.rolling_metrics(
-        floats, "m", clock="t", window_size=800.0, targets=["y0"], min_obs=5
+    want = po.eval.window_metrics(
+        floats, "m", clock="t", every=800.0, targets=["y0"], min_samples=5
     )
     assert want.height > 1
     for window in (800, 800.0):
-        got = po.eval.rolling_metrics(
-            ints, "m", clock="t", window_size=window, targets=["y0"], min_obs=5
+        got = po.eval.window_metrics(
+            ints, "m", clock="t", every=window, targets=["y0"], min_samples=5
         )
         assert got["window_start"].dtype == dtype, window
         assert got.with_columns(pl.col("window_start").cast(pl.Float64)).equals(want), window
-    with pytest.raises(ValueError, match="^rolling_metrics: window_size 2.5 is not a whole number"):
-        po.eval.rolling_metrics(ints, "m", clock="t", window_size=2.5)
+    with pytest.raises(ValueError, match="^window_metrics: every 2.5 is not a whole number"):
+        po.eval.window_metrics(ints, "m", clock="t", every=2.5)
 
 
 @pytest.mark.parametrize(
@@ -536,8 +536,8 @@ def test_a_prediction_at_the_centre_is_left_out_in_the_bank_and_here():
     assert out["m"].struct.field("pred_y")[0] == 0.0
     bank = out["m"].struct.field("hit_rate_y")
     assert bank[1] is None, "read after the first row alone, whose prediction sits at the centre"
-    here = po.eval.metrics(out.head(3), "m", min_obs=1)["hit_rate"][0]
+    here = po.eval.metrics(out.head(3), "m", min_samples=1)["hit_rate"][0]
     assert here == pytest.approx(bank[3], abs=1e-15)
     sums = po.eval.sums(out.head(3), "m")
     assert sums["signed"][0] == 2.0
-    assert po.eval.from_sums(sums, min_obs=1)["hit_rate"][0] == pytest.approx(here, abs=1e-15)
+    assert po.eval.from_sums(sums, min_samples=1)["hit_rate"][0] == pytest.approx(here, abs=1e-15)
