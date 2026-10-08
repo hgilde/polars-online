@@ -314,6 +314,21 @@
 //! The readiness statistic, `z' P_j z / σ²_j`, is `z' P z / σ̄²` for every
 //! target, and needs no scaling.
 //!
+//! **When sharing `P` helps, and why the default does not share
+//! (docs/PLAN.md task 214).** With a constant noise, `P/σ²` and the gain
+//! `P z / (z' P z + σ²/w)` never read `σ²`: the process noise is `σ²` times
+//! `(ln 2/h)²`, so the Riccati recursion of `P/σ²` is the same at any noise.
+//! The shared filter and the per-target ones part only through how the
+//! `σ²_j` paths move. So sharing helps where the targets are related, and
+//! their noises move together; where each target's own `σ²_j` is a noisy
+//! estimate -- a short history, a sparse target -- which the mean over the
+//! targets smooths; and for cost, one `k×k` update a row for every target
+//! where there were `m`. On docs/VALIDATION.md §4's two targets, the next
+//! minute's return and the next five minutes', the shared filter scored an
+//! R² of -0.0110 against -0.0168 on the first and -0.0880 against -0.0746 on
+//! the second. The default stays one `P` per target: the exact filter for
+//! each target under its own noise.
+//!
 //! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
 //! §2.1).** The filter knows the estimation variance of each prediction
 //! under its own model: before row `z`'s target, at `d` clock units after the

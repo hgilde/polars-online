@@ -2997,6 +2997,17 @@ the residual variance, which already carries the estimation error,
 `R·error_inflation²` at `coef_half_life=50`. Under `share_p`, each target's
 `se_coef` reads the shared `P` times its own noise over the mean.
 
+**Keep one `P` per target, the default, unless the targets share their
+noise.** With a constant noise, `P/σ²` and the gain never read `σ²`, so a
+shared `P` and one per target part only where the targets' noises move
+apart. Give `share_p=True` for related targets, whose noises move together,
+or where each target's own noise estimate is noisy, from a short or sparse
+history, which the mean over the targets smooths. It also costs one `k×k`
+update a row instead of one per target. On section 4 of
+[docs/VALIDATION.md](docs/VALIDATION.md), the next minute's return scored
+R² -0.0110 shared against -0.0168 per target, and the next five minutes'
+-0.0880 against -0.0746.
+
 #### `huber` / `quantile` — robust regression
 
 *API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs) — *Outputs:* [huber](docs/OUTPUTS.md#huber), [quantile](docs/OUTPUTS.md#quantile)

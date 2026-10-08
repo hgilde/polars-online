@@ -1882,7 +1882,20 @@ def kalman(
         times ``sigma^2_j`` over the mean, and that is the covariance its
         ``se_coef`` reads (docs/PLAN.md task 211): read off
         ``P`` as it stands, two targets of noise 0.01 and 1 had standard errors
-        7.3 times too large and 1.39 times too small. Default ``False``.
+        7.3 times too large and 1.39 times too small. Default ``False``: one
+        ``P`` per target, the exact filter for each target under its own noise.
+
+        When sharing helps. With a constant noise, ``P / sigma^2`` and the gain
+        never read ``sigma^2``, since the process noise is ``sigma^2`` times
+        ``(ln 2 / coef_half_life) ** 2``; so the shared filter and the
+        per-target ones part only through how the ``sigma^2_j`` paths move.
+        Sharing helps where the targets are related, so their noises move
+        together; where each target's own ``sigma^2_j`` is a noisy estimate, a
+        short or sparse history, which the mean over the targets smooths; and
+        for cost, one ``k x k`` update a row for every target. On
+        ``docs/VALIDATION.md`` section 4's two targets, the next minute's
+        return and the next five minutes', sharing scored R² -0.0110 against
+        -0.0168 on the first and -0.0880 against -0.0746 on the second.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the

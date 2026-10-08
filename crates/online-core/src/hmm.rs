@@ -393,8 +393,8 @@ impl Hmm {
     /// The transition matrix in force, `K*K` row-major: the counts plus the
     /// Dirichlet prior, normalised. Under `tvtp` this is the count-based
     /// one, which that mode does not use. The counts as the last row left
-    /// them: the next row reads them aged by its clock first
-    /// ([`Self::transition_aged`]).
+    /// them: the next row reads them aged by its clock first (the module
+    /// docs).
     pub fn transition(&self) -> Vec<f64> {
         self.transition_aged(1.0)
     }
