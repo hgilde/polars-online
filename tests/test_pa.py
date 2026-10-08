@@ -286,6 +286,32 @@ def test_a_well_predicted_target_reaches_its_slope_at_the_default_band(kind):
     assert abs(b0) + abs(b1 - 2.0) < 0.005, (b0, b1)
 
 
+def test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well():
+    """docs/PLAN.md task 203, the trade-off the `pa` docstring states: at
+    `c = 1` every row outside the tube is fitted in full, so on a target
+    predicted to R² 0.978 (`y = 2x + N(0, 0.3²)`, `x ~ N(0, 1)`) the
+    out-of-sample MSE over rows 10k-30k is about 2.2 times the noise
+    variance at the default `eps`, 1.6 at `eps=0.1`, and 1.3 at `c=0.1`
+    (measured 1.15 / 0.59 / 0.33 above the noise over three seeds and two
+    lengths). The order is what is held, with room."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(30_000)
+    e = 0.3 * rng.standard_normal(30_000)
+    df = pl.DataFrame({"x": x, "y": 2.0 * x + e})
+    common = dict(targets=["y"], features=["x"], half_life=float("inf"))
+
+    def excess(**kw):
+        p = po.ModelBank([po.spec.pa("m", **common, **kw)]).fit_predict(df)
+        p = p["m"].struct.field("pred_y").to_numpy().astype(float)[10_000:]
+        noise = np.mean(e[10_000:] ** 2)
+        return (np.mean((df["y"].to_numpy()[10_000:] - p) ** 2) - noise) / noise
+
+    default, wide, damped = excess(), excess(eps=0.1), excess(c=0.1)
+    assert 1.0 < default < 1.4, default
+    assert 0.5 < wide < 0.7, wide
+    assert 0.25 < damped < 0.45, damped
+
+
 def test_standardize_is_offered_and_on_by_default():
     """docs/PLAN.md task 195 (U2; review round 4, CC6): `pa` standardizes its
     features against the EW scaler `sgd` uses, so `tau = loss / |z|²` and

@@ -2639,10 +2639,10 @@ def sgd(
         The half-width of the insensitive tube, in units of ``s_y``, the
         target's own std. Default 0.01: errors under 1% of the target's own
         spread do not move the fit. The tube does not shrink as the fit
-        improves, so it must sit inside a good fit's errors. At 0.1, a fit of
-        a target predicted to within 1% of its spread stopped as soon as every
-        error was inside the tube, about 0.08 off the truth in intercept and
-        slope together.
+        improves, so it must sit below a good fit's errors on most targets.
+        At 0.1, a fit of a target predicted to within 1% of its spread stopped
+        as soon as every error was inside the tube, about 0.08 off the truth
+        in intercept and slope together.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
         ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power`` default 0.5)
@@ -2878,7 +2878,12 @@ def pa(
         The margin, in units of ``sigma``: the row is close enough inside it and
         nothing moves. Default 0.01: errors under 1% of the target's own spread
         do not move the fit. The tube does not shrink as the fit improves, so it
-        must sit inside a good fit's errors, as :func:`sgd`'s tube does.
+        must sit below a good fit's errors on most targets, as :func:`sgd`'s
+        tube does. The tube is also this model's only damping against noise:
+        at ``c = 1`` every row outside it is fitted in full. On a target
+        predicted to R² 0.97 to 0.998 the out-of-sample error is 2.2 times
+        the noise at the default, 1.6 times at ``eps=0.1``, and 1.3 times at
+        ``c=0.1``, which damps without stalling a better fit.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:

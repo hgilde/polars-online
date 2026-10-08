@@ -2989,7 +2989,7 @@ wide and held every row, and without decay it never narrowed.
 
 **The tube's default, 0.01, keeps errors under 1% of the target's own
 spread from moving the fit.** The tube does not shrink as the fit improves,
-so it must sit inside a good fit's errors. At 0.1, a fit of a target
+so it must sit below a good fit's errors on most targets. At 0.1, a fit of a target
 predicted to within 1% of its spread stopped as soon as every error was
 inside the tube, about 0.08 off the truth in intercept and slope together.
 
@@ -3053,7 +3053,11 @@ residuals, and without decay stopped learning: R² −52. `σ` reads `y` alone,
 so until the target has two weighted rows of different values the tube has
 no width. `eps` is 0.01 by default, so errors under 1% of the target's own
 spread do not move the fit: the tube does not shrink as the fit improves,
-and must sit inside a good fit's errors, as `sgd`'s does. `pa` standardizes
+and must sit below a good fit's errors on most targets, as `sgd`'s does. The
+tube is also `pa`'s only damping against noise, since at `c = 1` every row
+outside it is fitted in full: on a target predicted to R² 0.97 to 0.998 the
+out-of-sample error is 2.2 times the noise at the default, 1.6 at `eps=0.1`
+and 1.3 at `c=0.1`, which damps without stalling a better fit. `pa` standardizes
 its features by default, with `sgd`'s scaler, so `s` and `c` are not in the features'
 units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:

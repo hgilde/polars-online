@@ -1004,7 +1004,7 @@ pub enum ModelKind {
         /// own EW std, the spread of `y` around its EW mean (docs/PLAN.md
         /// task 202). Default 0.01: errors under 1% of the target's own
         /// spread do not move the fit. The tube does not shrink as the fit
-        /// improves, so it must sit inside a good fit's errors; at 0.1 a
+        /// improves, so it must sit below a good fit's errors; at 0.1 a
         /// fit of a target predicted to within 1% stopped up to 0.1 off its
         /// slope (task 203).
         #[serde(default)]

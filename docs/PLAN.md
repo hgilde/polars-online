@@ -12412,4 +12412,18 @@ unwrapped `ValueError`, fixed in `a7a8f3c`.
 on the user's word, to be looked at again before 1.0: the unit of an
 insensitivity band (`pa`'s `eps`, `sgd`'s under `epsilon_insensitive`) -- the
 target's own EW spread rather than the residual's (task 202) -- and its
-default, 0.01 (task 203).
+default, 0.01 (task 203). **Reviewed 2026-10-07 (the user: "Yes" to both
+kept, two wordings changed).** A third rule was measured beside them, the
+residual's std capped by the target's (`eps·min(σ_resid, σ_y)`), which
+removes task 195's trap and shrinks with the fit: no rule wins across R²
+(`$S/eps/bands.py`; at `c = 1`, excess OOS MSE over the noise variance,
+0.01 of σ_y / 0.1 of σ_y / 0.3 of the cap: 0.18 / 54 / 0.44 at R² 0.99998,
+1.16 / 0.59 / 0.79 at 0.978, 0.81 / 0.68 / 0.59 at 0.80). The tension is
+`pa`'s: at `c = 1` the tube is its only damping against noise. 0.01 stays
+by regret (its worst case 1.2× the noise variance, 0.1's 54×, on the
+near-deterministic target a user has before differencing it); for `sgd`
+0.01 loses nowhere. Changed: "inside a good fit's errors" became "below a
+good fit's errors on most targets" (at R² 0.9998 the band is two-thirds of
+the noise std), and `pa`'s docstring and the README carry the trade-off
+with `c=0.1` as the better lever (2.2× / 1.6× / 1.3× the noise at R² 0.978,
+`test_pa.py::test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well`).
