@@ -18,6 +18,15 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **`po.ewm_var` and `po.ewm_std`, streaming on the clock** (task 212),
+  beside `po.ewm_mean`, taking Polars' parameters with `bias` (default
+  False). On a clock that steps by 1 they equal Polars' `ewm_var` and
+  `ewm_std(adjust=False)` to 4e-14; a window that holds one value gives
+  null, a constant input exactly 0 at any level. They make a feature in
+  units of its own spread a column in a stream: the README's *Features in
+  units of their spread* shows the recipe, and `docs/VALIDATION.md` §6
+  measures it (every model there loses less on z-scored features;
+  `ewridge`'s R² on the five-row target -0.052 to -0.026).
 - **`po.eval` reads a target through the spec that wrote it** (task 188;
   review round 4, YB1). `metrics`, `window_metrics` and `sums` take
   `spec=`, and `compare_specs` takes `specs=`. With it, a target renamed by
@@ -260,7 +269,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 47,
+- **Every saved bank must be refit.** A bank file now carries schema 48,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -283,10 +292,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
   8); relative targets removed (201); and the target's own spread (202).
   Schema 45 adds `rls`'s second weight sum `s₂` and the data shares
   `huber` and `quantile` keep per target (task 116). Schema 46 keeps the
-  readiness notices' wait (task 208). Schema 47, the one a bank file now
-  carries, adds the standardized models' warm-up count and holds `sgd`'s
-  and `pa`'s coefficients in the caller's units after it (task 206). It
-  refuses 46 and older, and so do the models' own states.
+  readiness notices' wait (task 208). Schema 47 adds the standardized
+  models' warm-up count and holds `sgd`'s and `pa`'s coefficients in the
+  caller's units after it (task 206). Schema 48, the one a bank file now
+  carries, is a `with_windows` state's version 9 (task 212: the variance
+  operators). It refuses 47 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -1401,6 +1411,22 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- `scripts/validate.py` learns each target only once it is known -- the
+  next row's return after one row, the five-row sum after five -- where it
+  learned both at their own rows, and compares the models at matched
+  memory (half-life 500; `ewridge` solved every row beside its default
+  cadence); `docs/VALIDATION.md` is regenerated (task 212). Its §4 now
+  reads differently: one shared `P` beats one per target on both targets.
+  A pre-registered sweep kept the insensitivity band at 0.01 of the
+  target's spread for `pa` and `sgd` (task 207): the residual-scaled
+  alternative left a target at a level of 1,000 at R² 0.76. The docs give
+  the band's width in noise units (`eps/sqrt(1 - R²)`), the measured
+  trade-off at R² 0.978 and 0.99998, and say that PA-I's `c` is in the
+  target's units while PA-II's is not; at its documented rates `sgd`'s
+  sign-valued step cannot carry a fit to a target at 1,000 within 30,000
+  rows. A relative `c` was measured with a clipped spread and a unit-free
+  seed for the first rows and passed no pre-registered regime set (task
+  213): `c` stays in the target's units.
 - Review round 5 (PLAN §19): the frozen state fixtures hold every layout
   the pre-1.0 bumps moved -- `sgd`'s per-loss state, `ewridge`'s kept
   systems, `bocpd`'s warm-up rows, and the integer clock's forms in a bank

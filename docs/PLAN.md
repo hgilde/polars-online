@@ -8446,7 +8446,7 @@ tick, and that the series holding it up has a count near 1.
       -0.0608 on the raw features and §6 at -0.0404 and -0.0286 on
       z-scores). Cost: `kalman` +85% per row; a 10% re-anchoring
       measured (141 against 195 ns in a replica), not shipped.
-- [ ] 207. **The insensitivity band and `c` in noise units, measured**
+- [x] 207. **The insensitivity band and `c` in noise units, measured**
       (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
       band rules (the target's spread, the residual's capped by the target's,
       a start-up cap) under half-lives 50, 500 and none, levels 0 and 1,000,
@@ -8454,7 +8454,24 @@ tick, and that the series holding it up has a count near 1.
       choose by the criterion stated before the sweep (minimax regret of
       excess error over the noise, the level trap as a hard floor); build
       the winner with its default, and `c` as a multiple of the target's
-      spread. *To brief after 206.*
+      spread. *To brief after 206.* *Done 2026-10-08* (worker `task207-band-c`; sweep
+      record `review5/fix/task207-band-c/` PREREG.md, TABLES.md,
+      SELECTION.md, written before any number ran). **The band stays
+      `eps·σ_y` at 0.01**: by the fixed criterion the capped-residual rule
+      failed the trap floor (without decay its start-up residuals stay in
+      σ_resid for good, which makes it a band 110 noise stds wide: R² 0.76
+      at a level of 1,000), and no `T` setting beat 0.01 by more than the
+      seed spread. PA-II's `c` was already free of the target's units (it
+      sits beside `‖z‖²`), so G5 applied to PA-I only. `sgd` could not be
+      judged: at its documented rates its sign-valued step moves the level
+      by the rate per row, so no band reaches a target at 1,000 in 30k rows.
+      **G5 (relative `c`) was built and not merged**: its worst regret tied
+      raw `c` = 1 (1.160 both) and it cost short histories (0.71 to 0.60)
+      and outlier resistance (0.5 to 2.8), with two guards loosened; the
+      user chose to measure fixes first ("Option 1"), task 213. Shipped:
+      the band's docs in noise units, the trade-off at the shipped
+      defaults, PA-I's `c` documented in the target's units, the guards
+      that held.
 - [x] 208. **The smaller round-5 decisions** (§19 A1 B3 C4 D4 F3): `share_p`'s
       noise over targets with one (A1, in 206's branch); `Int128` refused as
       a clock, read exactly by `po.increment` (B3); the summary's
@@ -8622,7 +8639,7 @@ tick, and that the series holding it up has a count near 1.
       filter; `share_p`'s reports per target; the docs; and the rule-9
       contract test comparing predictions for every model. *Worker
       `task211-kalman`.*
-- [ ] 212. **The validation run, the per-standard-deviation recipe, and
+- [x] 212. **The validation run, the per-standard-deviation recipe, and
       `po.ewm_std`** (the same review, items 1 and 5). The pre-206 kalman
       was a filter on z-scored features (to 1e-14); task 206 made it per
       raw unit; on `docs/VALIDATION.md`'s data the per-SD model fits
@@ -8634,7 +8651,30 @@ tick, and that the series holding it up has a count near 1.
       under its horizon's embargo, models at matched memory, VALIDATION
       regenerated; `po.ewm_std`/`po.ewm_var` streaming operators matching
       Polars'; the recipe documented and tested. *Worker
-      `task212-validate`.*
+      `task212-validate`.* *Done 2026-10-08* (schema 48, windows state 9):
+      `po.ewm_var`/`po.ewm_std` equal Polars' `ewm_var`/`ewm_std(adjust=False)`
+      on a row clock to 4e-14 (Chan-Golub-LeVeque merges, a compensated
+      mean, `V1² - V2` kept as its own sum so one weight gives null);
+      existing operators keep their speed. `validate.py`: y0 waits 1 row,
+      y1 5, every model at half-life 500; kalman's y0 R² -0.123 to -0.060.
+      §6, z-scored features: every model loses less. **§4 now reads
+      differently**: a shared `P` beats one per target on both targets --
+      `share_p`'s default is a question for the user once task 211 fixes
+      its reports.
+- [x] 213. **A relative `c` for PA-I, with its two costs fixed -- measured,
+      not built** (the user's "Option 1" on task 207, 2026-10-08). Two
+      candidates against criteria fixed before the run (worker's PREREG.md):
+      (i) a robust spread for the cap, each deviation clipped at 2.5 of the
+      current σ (0.978 of the true variance on Gaussian data; inflated at
+      most 1.13 at 4% contamination); (ii) a seed before a spread exists,
+      the cap `c·|y|` of the row's own target. Best, both at `c` 0.1: short
+      histories 0.757 (needed 0.7075), worst regret 1.160 (needed 1.211),
+      unit invariance 1.1e-12 (needed 1e-12), outliers 0.886 (needed < 0.5).
+      The outlier case's first row is itself an outlier (-559), which no
+      unit-free rule can tell from the target's scale, and without decay it
+      sets the cap for thousands of rows. **`c` stays in the target's
+      units**, documented (task 207). The research switch and logs are in
+      the scratchpad, `review5/fix/task213-relative-c/`.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
