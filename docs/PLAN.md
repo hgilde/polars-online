@@ -8104,6 +8104,15 @@ tick, and that the series holding it up has a count near 1.
       re-pinned at the merge, where three of its tests met task 193's rules
       (`kalman` takes `coef_half_life` or `q`; `rcov` reads no `theta` under
       `"kernel"`). CC10 checked there: without `.min(1.0)` its test fails.
+      *Follow-up 2026-10-07*: the wider generator left too few streams with
+      a scored row, and the rule-2 property failed Hypothesis's
+      `filter_too_much` health check (`kalman`, once in a gate and once in
+      460 runs; a median of about 20 streams rejected before the 10th kept,
+      in `kalman`, `ewridge` and `rls` alike). Not a leak: no prediction moved in 22,650 compared
+      streams, and 27,000 streams each run twice gave the same predictions
+      both times. `warmed_streams`
+      now opens each stream with four ordinary rows, so every stream has
+      one; its `assume` became an assertion.
 - [x] 190. **The API snapshot pins what the policy calls stable** (§18: AP1 AP2
       AP8 YA1 YA8 TB1 DB2 DB3 DB4 DB5): resolved defaults, helper signatures,
       frame columns, TOML keys, CLI flags, env vars, enum values. *Worker

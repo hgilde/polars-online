@@ -117,6 +117,40 @@ def stepping_back_streams(draw, min_rows=2, max_rows=40, max_groups=3):
     return df.with_columns(t=pl.Series(clocks, dtype=pl.Float64))
 
 
+#: Ordinary rows at the head of `warmed_streams`. At weight 1, one clock unit
+#: apart under `build`'s `half_life` of 20, the weight before the fourth is
+#: 2.80, past its `min_weight` of 2, so every model scores that row.
+WARM_ROWS = 4
+
+
+@st.composite
+def warmed_streams(draw):
+    """`streams`, behind `WARM_ROWS` rows of group `g0` with finite values at
+    weight 1, so every stream has a row the model scored. Drawn at random, too
+    few streams had one, and kalman failed Hypothesis's `filter_too_much`
+    health check once in a gate and once in 460 runs (2026-10-07)."""
+    df = draw(streams())
+    finite = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False)
+    rows = st.lists(finite, min_size=WARM_ROWS, max_size=WARM_ROWS)
+    head = pl.DataFrame(
+        {
+            "g": ["g0"] * WARM_ROWS,
+            "t": [float(i) for i in range(WARM_ROWS)],
+            "x0": draw(rows),
+            "x1": draw(rows),
+            "y0": draw(rows),
+            "w": [1.0] * WARM_ROWS,
+            "s": ["s0"] * WARM_ROWS,
+        },
+        schema=df.schema,
+    )
+    # The drawn stream's `g0` rows follow the warm ones on its clock.
+    rest = df.with_columns(
+        t=pl.when(pl.col("g") == "g0").then(pl.col("t") + WARM_ROWS).otherwise("t")
+    )
+    return pl.concat([head, rest])
+
+
 def build(model, extra, **kw):
     opts = dict(
         targets=["y0"],
@@ -282,19 +316,20 @@ class TestUniversalProperties:
         The row is drawn from those the model scored and whose target is
         there. The first such target is no use: every model withholds its
         first row, so a test that perturbed it compared two nulls in every
-        stream (review 2026-10-05, TA1). The count at the end says how many
-        streams compared a prediction that was there.
+        stream (review 2026-10-05, TA1). `warmed_streams` gives every stream
+        such a row. The count at the end says how many streams compared a
+        prediction that was there.
 
         `ewridge`'s error-inflation gate is switched off. On these short,
-        mostly-null streams it withholds all but 13 in 100 of them, so
-        Hypothesis would discard most streams. The gate only withholds, and
+        mostly-null streams it withholds all but 13 in 100 of them, and the
+        last warm row in about 4 draws in 5. The gate only withholds, and
         the comparison still fails if the perturbed run withholds a row the
         base run scored."""
         compared = []
         kw = {"max_error_inflation": float("inf")} if model == "ewridge" else {}
 
         @SETTINGS
-        @given(df=streams(), data=st.data())
+        @given(df=warmed_streams(), data=st.data())
         def check(df, data):
             df = binarize(df, model)
             spec = build(model, extra, **kw)
@@ -303,7 +338,7 @@ class TestUniversalProperties:
             preds = base["m"].struct.field(field).to_list()
             y = df["y0"].to_list()
             scored = [i for i in range(df.height) if preds[i] is not None and y[i] is not None]
-            assume(scored)
+            assert scored, f"no row scored, not even warm row {WARM_ROWS - 1}"
             idx = data.draw(st.sampled_from(scored), label="scored row")
             y[idx] = (0.0 if y[idx] else 1.0) if model == "ftrl" else y[idx] + 12345.0
             perturbed = po.ModelBank([spec]).fit_predict(
