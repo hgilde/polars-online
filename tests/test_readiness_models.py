@@ -25,6 +25,8 @@ import polars_online as po
 from polars_online import _polars_online as native
 from polars_online import _spec
 
+TIER = "essential"
+
 LIMIT_REASON = "above_max_error_inflation"
 
 

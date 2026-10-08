@@ -8,6 +8,8 @@ import pytest
 
 import polars_online
 
+TIER = "essential"
+
 
 def test_native_extension_loads() -> None:
     assert polars_online.native_version() == polars_online.__version__

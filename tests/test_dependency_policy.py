@@ -24,6 +24,8 @@ import pytest
 
 import child
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 META = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
 TESTS = sorted((REPO / "tests").glob("*.py"))

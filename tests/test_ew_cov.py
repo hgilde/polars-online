@@ -10,6 +10,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _df(n=3000, seed=0, rho=0.6):
     rng = np.random.default_rng(seed)

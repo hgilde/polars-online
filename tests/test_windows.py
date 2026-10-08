@@ -28,6 +28,8 @@ import polars_online as po
 from polars_online._formula import FormulaError, from_tree, to_tree
 from polars_version import INSTALLED, needs_polars
 
+TIER = "mixed"
+
 #: Polars' own windowed sums and means are this file's reference, and their
 #: results moved on the way from the floor of the declared range, 1.34.0, to
 #: the version this repository pins. Measured on the releases between them,
@@ -442,6 +444,7 @@ def trades_and_quotes(n: int, seed: int, quotes_per_trade: int = 2) -> pl.DataFr
     )
 
 
+@pytest.mark.extended(reason="a second or more (1.1 s)")
 def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> None:
     """Three forward VWAPs -- all trades, buys, sells -- as ratios of decayed
     sums, equal to the definition's ratio, unchanged by a trade split in two
@@ -894,6 +897,7 @@ def test_a_temporal_clock_takes_durations() -> None:
         po.stream.with_windows(df, m=po.ewm_mean("x", half_life=3.0), clock="ts", gap_cap="1000s")
 
 
+@pytest.mark.extended(reason="the network: a downloaded day of Binance quotes and trades")
 def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
     """One symbol-day of Binance quotes and trades (hard rule 1: downloaded
     and cached): the three forward VWAPs and a trailing mid, under a
@@ -2274,7 +2278,18 @@ def test_var_and_std_on_a_row_clock_are_polars_ewm_var_and_ewm_std(bias: bool, c
 
 
 @pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
-@pytest.mark.parametrize("op", ["ewm_var", "ewm_std"])
+@pytest.mark.parametrize(
+    "op",
+    [
+        "ewm_var",
+        # The essentials keep the variance at every edge; the standard
+        # deviation is its square root from the same pass.
+        pytest.param(
+            "ewm_std",
+            marks=pytest.mark.extended(reason="a grid: eight cases of 0.32 s, 2.6 s in all"),
+        ),
+    ],
+)
 def test_var_and_std_match_the_definition_on_an_irregular_clock(op: str, closed: str) -> None:
     """On an irregular clock -- bursts, gaps, repeated stamps, nulls -- a value
     weighs what it weighs in ``po.ewm_mean``: its held interval's decayed mass

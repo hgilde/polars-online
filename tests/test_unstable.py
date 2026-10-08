@@ -24,6 +24,8 @@ import pytest
 import polars_online as po
 from polars_online._warnings import UNSTABLE_VAR
 
+TIER = "essential"
+
 pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
 
 

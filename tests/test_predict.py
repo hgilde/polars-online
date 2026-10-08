@@ -28,6 +28,8 @@ from conftest import run_online
 from data import synthetic
 from test_semantics_all_models import IDS, SWEEP
 
+TIER = "essential"
+
 # --- the oracle ----------------------------------------------------------------
 
 

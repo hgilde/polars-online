@@ -17,6 +17,8 @@ import polars_online as po
 from polars_online import _spec
 from test_golden_pipeline import specs, stream
 
+TIER = "essential"
+
 BOUND = 1e100
 
 SUMMARY_SCHEMA = {

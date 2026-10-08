@@ -36,6 +36,8 @@ import polars_online as po
 from test_every_kind import frame_for
 from test_model_registry import MINIMAL
 
+TIER = "essential"
+
 REASONS = {"below_min_settled_frac", "above_max_error_inflation", "below_min_weight"}
 
 

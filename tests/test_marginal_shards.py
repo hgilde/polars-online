@@ -22,6 +22,8 @@ import pytest
 import child
 import polars_online as po
 
+TIER = "essential"
+
 P = 60
 #: A width at which ``"auto"`` splits in every shape on a pool of two or more
 #: threads (`auto_shards_at_the_python_suites_widths` in marginal.rs pins the

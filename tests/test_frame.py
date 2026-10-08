@@ -20,6 +20,8 @@ from polars.io.plugins import register_io_source
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _frame(n=5000, seed=0) -> pl.DataFrame:
     rng = np.random.default_rng(seed)

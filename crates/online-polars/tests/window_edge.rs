@@ -570,6 +570,7 @@ fn assert_same_floats(a: &DataFrame, b: &DataFrame, what: &str) {
 /// and 37 rows give the whole run's bits, and each holds the decayed
 /// clock's window.
 #[test]
+#[ignore = "extended: a second or more (2.5 s); bank.rs::chunk_invariance keeps hard rule 3"]
 fn chunking_moves_no_edge_across_every_clock_event() {
     let e = events();
     let mut failures = Vec::new();

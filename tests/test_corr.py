@@ -13,6 +13,8 @@ import pytest
 import polars_online as po
 from polars_online import corr
 
+TIER = "essential"
+
 # Higham (2002) §4's two examples.
 HIGHAM_3 = np.array([[1.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
 HIGHAM_3_NEAREST = np.array([[1.0, 0.7607, 0.1573], [0.7607, 1.0, 0.7607], [0.1573, 0.7607, 1.0]])

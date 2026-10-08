@@ -21,6 +21,8 @@ from polars.testing import assert_frame_equal
 import child
 import polars_online as po
 
+TIER = "mixed"
+
 #: `withheld_reason`, an enum over the three gates, on every model that
 #: writes a row (docs/WARMUP-AND-CONVERGENCE.md §3).
 REASON_DTYPE = pl.Enum(["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"])
@@ -86,6 +88,7 @@ def _bank_specs():
     return [_spec(), grid]
 
 
+@pytest.mark.extended(reason="threads: one thread against many, and run against run")
 class TestThreadDeterminism:
     """T-D3: the bank fans out over (spec x group) on its own pool, sized by
     `POLARS_ONLINE_MAX_THREADS`, and from 4096 rows a chunk's columns are

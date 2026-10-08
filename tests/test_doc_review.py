@@ -10,6 +10,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("doc_review", REPO / "scripts" / "doc_review.py")
 assert _spec and _spec.loader

@@ -22,6 +22,9 @@ from hypothesis import strategies as st
 
 import polars_online as po
 from test_model_registry import MINIMAL, REGRESSIONS, _build
+from tiers import examples
+
+TIER = "essential"
 
 #: The bank's bound on a value it learns from (`online_core::INPUT_BOUND`):
 #: a magnitude past it, NaN and the infinities are missing, as a null is.
@@ -41,8 +44,10 @@ MODELS = [
 ]
 IDS = [m[0] for m in MODELS]
 
+#: 30 streams a property in the extended tier, the tier's count in the
+#: essentials (``tiers.ESSENTIAL_EXAMPLES``).
 SETTINGS = settings(
-    max_examples=30,
+    max_examples=examples(30),
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
 )

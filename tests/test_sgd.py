@@ -11,6 +11,8 @@ import pytest
 import polars_online as po
 from conftest import run_online
 
+TIER = "mixed"
+
 
 def _spec(**kw):
     d = dict(
@@ -365,6 +367,9 @@ class TestFeatureScaling:
         assert early > 0.4, f"rows 25-50: R2 {early}"
         assert late > 0.85, f"rows 100-200: R2 {late}"
 
+    @pytest.mark.extended(
+        reason="a second or more: scikit-learn's SGDRegressor, refitted per row (2.6 s)"
+    )
     def test_learns_a_short_history_as_sgdregressor_does(self):
         """The same groups, with scikit-learn's `SGDRegressor` beside it at the
         same constant rate, one estimator and one `StandardScaler` per group

@@ -29,6 +29,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 NO_DECAY = float("inf")
 
 #: chi-squared 0.99 quantiles for k = 1..12 (scipy.stats.chi2.ppf(0.99, k)).

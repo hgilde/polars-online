@@ -5395,7 +5395,8 @@ vectorized paths on another CPU would show.
 
 | when | what runs |
 |---|---|
-| before every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the build, `pytest` and `sphinx -W` |
+| every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `uv lock --check`, `ruff`, `mypy`, the build, `sphinx -W`, and the essentials of `cargo test` and `pytest` |
+| before every push | `./scripts/gate.sh --extended`: the same checks with every test |
 | every push and pull request | the tests on Ubuntu, Windows and macOS, on Python 3.12 and 3.14, and on 3.13 on Linux; the format, lint, type and documentation checks, on Linux; mutation testing of the lines the change touched, which fails on a mutant no test catches; and every output compared with the newest release's, bit for bit, as a report |
 | every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, and on the newest NumPy |
 | weekly | the suite on the newest py-polars, and on NumPy's next release candidate; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
@@ -5417,8 +5418,9 @@ download are skipped.
 
 ```sh
 uv sync                                                # Python env (CPython 3.12 or newer)
-./scripts/gate.sh                                      # everything CI checks
-uv run cargo test --workspace --exclude online-py      # Rust tests
+./scripts/gate.sh                                      # every check, the tests' essentials
+./scripts/gate.sh --extended                           # every check and every test, before a push
+uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
 uv run maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest                                          # Python tests
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference

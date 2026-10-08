@@ -34,6 +34,8 @@ from sklearn.linear_model import Ridge
 
 import polars_online as po
 
+TIER = "essential"
+
 #: The ridge here is large enough to be seen in the fit, as the oracle maps
 #: it, so a short window early on reads mostly ridge, which the readiness
 #: notice says; that is beside the point of these tests.

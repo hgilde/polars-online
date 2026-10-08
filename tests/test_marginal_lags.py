@@ -20,6 +20,8 @@ from scipy.signal import lfilter
 
 import polars_online as po
 
+TIER = "essential"
+
 LAGS = [1, 2, 3, 5, 8, 13]
 
 

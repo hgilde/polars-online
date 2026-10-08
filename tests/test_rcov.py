@@ -15,6 +15,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 COLS = ["x0", "x1"]
 
 

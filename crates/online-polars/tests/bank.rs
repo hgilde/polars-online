@@ -952,6 +952,7 @@ fn coef_rows(out: &DataFrame, name: &str) -> Vec<usize> {
 }
 
 #[test]
+#[ignore = "extended: a second or more (4.9 s)"]
 fn runs_through_a_wide_model_are_invisible() {
     // The bank feeds a task's rows through its stream in runs of
     // `ChunkOut::run_rows` rows, one set of buffers each (docs/PERFORMANCE.md
@@ -987,6 +988,7 @@ fn runs_through_a_wide_model_are_invisible() {
 }
 
 #[test]
+#[ignore = "extended: a second or more (12.3 s)"]
 fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // The last row of a *chunk* reports the coefficients, not the last row
     // of every run inside it: `process_chunk`'s `last` flag is what tells the

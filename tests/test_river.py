@@ -24,6 +24,8 @@ from river import linear_model, optim, stats
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _sigmoid(v):
     return 1.0 / (1.0 + np.exp(-v))

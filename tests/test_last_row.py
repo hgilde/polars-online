@@ -14,6 +14,8 @@ import pytest
 import polars_online as po
 from test_golden_pipeline import specs, stream
 
+TIER = "essential"
+
 
 def feed(bank: po.ModelBank, df: pl.DataFrame, n_chunks: int) -> pl.DataFrame:
     step = -(-df.height // n_chunks)

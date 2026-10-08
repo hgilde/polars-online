@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("mutants_report", REPO / "scripts/mutants_report.py")
 assert _spec and _spec.loader

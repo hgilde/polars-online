@@ -1420,6 +1420,7 @@ mod tests {
     /// stream's estimate moves by several units, so the mean of sixteen is
     /// held to four standard errors.
     #[test]
+    #[ignore = "extended: a second or more: a long simulated stream (4.6 s)"]
     fn the_bias_term_reads_theta_from_the_window_actually_run() {
         let n = 20_000usize;
         for (preavg_rows, block_rows) in [(Some(20), None), (None, Some(n / 4)), (None, Some(n))] {

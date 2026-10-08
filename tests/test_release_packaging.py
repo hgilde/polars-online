@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+TIER = "essential"
+
 # The step under test is a `run:` block that executes only on the workflow's
 # ubuntu job. Running it needs a POSIX shell with `find`, `basename` and
 # `${f##*.}`; Git Bash on a Windows runner has a different `find` on PATH and

@@ -32,6 +32,8 @@ from polars.io.plugins import register_io_source
 import polars_online as po
 from polars_version import needs_polars
 
+TIER = "essential"
+
 #: The DuckDB, ADBC and pyarrow paths read through `pl.scan_arrow_c_stream`,
 #: which the README says needs py-polars 1.43.0.
 NEEDS_SCAN_ARROW = needs_polars("1.43.0", "pl.scan_arrow_c_stream, which py-polars added in 1.43.0")

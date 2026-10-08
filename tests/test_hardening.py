@@ -28,6 +28,8 @@ import child
 import polars_online as po
 from conftest import run_online
 
+TIER = "mixed"
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -156,6 +158,7 @@ class TestKitchenSinkAtScale:
         joined = drop_coef(pl.concat([first, rest]).select("m").unnest("m"))
         assert whole.equals(joined, null_equal=True)
 
+    @pytest.mark.extended(reason="threads: one thread against eight on a large stream (3.4 s)")
     def test_identical_across_thread_counts(self, frame, tmp_path):
         """The parallel fan-out (spec x group x instance) must be a pure
         scheduling choice. 400 rows -- the old determinism test's size -- could

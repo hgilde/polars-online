@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parent.parent
 
 #: Extensions that are data, not source, wherever they appear.

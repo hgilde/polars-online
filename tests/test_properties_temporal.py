@@ -48,6 +48,9 @@ from polars_online._polars_online import format_duration, parse_duration
 from polars_version import needs_polars
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
+from tiers import examples
+
+TIER = "essential"
 
 #: The longest duration, and the latest instant, an i64 of nanoseconds holds.
 MAX_NS = 2**63 - 1
@@ -78,13 +81,14 @@ WHITESPACE = [
     "\u3000",
 ]
 
-#: Pure functions: many examples cost little.
-TEXT = settings(max_examples=300, deadline=None)
-#: A spec per example.
-SPECS = settings(max_examples=150, deadline=None)
-#: A bank fitted on a stream per example, per model.
+#: Pure functions: many examples cost little, so the essentials keep 30.
+TEXT = settings(max_examples=examples(300, essential=30), deadline=None)
+#: A spec per example; the essentials keep 15.
+SPECS = settings(max_examples=examples(150, essential=15), deadline=None)
+#: A bank fitted on a stream per example, per model; the essentials keep the
+#: tier's count (``tiers.ESSENTIAL_EXAMPLES``).
 STREAMS = settings(
-    max_examples=20,
+    max_examples=examples(20),
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
 )
@@ -634,7 +638,7 @@ def delayed_streams(draw):
 class TestADelayedLabel:
     # A tiny or stale fit gets the readiness notice; it is beside the point.
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
-    @settings(STREAMS, max_examples=150)
+    @settings(STREAMS, max_examples=examples(150, essential=20))
     @given(data=st.data())
     def test_labels_in_flight_across_chunks_change_no_number(self, data):
         """Hard rule 3 where the stream properties above rarely reach it:

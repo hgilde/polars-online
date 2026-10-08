@@ -15,6 +15,8 @@ from pathlib import Path
 import polars_online as po
 from polars_online import _polars_online as _native
 
+TIER = "essential"
+
 ROOT = Path(__file__).resolve().parent.parent
 LLMS = ROOT / "llms.txt"
 CONF = ROOT / "docs" / "reference" / "conf.py"

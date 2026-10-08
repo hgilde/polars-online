@@ -16,6 +16,8 @@ import pytest
 import polars_online as po
 from test_model_registry import MINIMAL, _build
 
+TIER = "essential"
+
 
 def frame_for(name: str, n: int = 240) -> pl.DataFrame:
     """Rows every kind can run on: two features, a target -- a 0/1 one for

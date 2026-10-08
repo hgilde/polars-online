@@ -31,6 +31,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _window(
     ages: np.ndarray, half_life: float, window: float | None

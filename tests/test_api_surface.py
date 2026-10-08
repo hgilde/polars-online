@@ -47,6 +47,8 @@ from polars_online import _polars_online as native
 from polars_online import _spec
 from polars_online import spec as spec_mod
 
+TIER = "essential"
+
 SNAPSHOT = Path(__file__).parent / "api_surface.txt"
 REPO = Path(__file__).resolve().parent.parent
 

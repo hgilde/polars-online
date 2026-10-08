@@ -386,6 +386,7 @@ fn sizes() -> [usize; 5] {
 /// for byte. The Int32 key gives the same partition as the String one and
 /// so the same everything.
 #[test]
+#[ignore = "extended: threads: the parallel chunk plan above PAR_MIN_ROWS (4.8 s); bank.rs keeps the small frames"]
 fn layout_is_invisible() {
     for n in sizes() {
         let df = interleaved(n, 40, 7);
@@ -442,6 +443,7 @@ fn layout_is_invisible() {
 /// same as one contiguous chunk, under both layouts and with either key
 /// dtype, and leaves the same state.
 #[test]
+#[ignore = "extended: threads: the parallel chunk plan above PAR_MIN_ROWS (13.9 s); bank.rs keeps the small frames"]
 fn columns_read_in_pieces_read_the_same() {
     for n in sizes() {
         let df = interleaved(n, 40, 11);
@@ -470,6 +472,7 @@ fn columns_read_in_pieces_read_the_same() {
 /// interleaved, gives what the same values as a contiguous Float64 column
 /// give.
 #[test]
+#[ignore = "extended: threads: the parallel chunk plan above PAR_MIN_ROWS (8.1 s); bank.rs keeps the small frames"]
 fn other_dtypes_read_like_float64() {
     let n = PAR_MIN_ROWS + 1000;
     let df = interleaved(n, 40, 5);
@@ -570,6 +573,7 @@ fn feed(df: &DataFrame, len: usize) -> DataFrame {
 /// cadence is per row, and for everything but `coef` on the one whose
 /// cadence is per chunk.
 #[test]
+#[ignore = "extended: threads: the parallel chunk plan above PAR_MIN_ROWS (5.0 s); bank.rs keeps the small frames"]
 fn the_threshold_is_not_a_seam() {
     let n = 3 * PAR_MIN_ROWS + 17;
     let df = interleaved(n, 40, 13);
@@ -609,6 +613,7 @@ fn rows_of_the_group(df: &DataFrame, row: usize) -> Vec<usize> {
 /// weight are both bad, the clock is what is reported, every time -- the
 /// column checks run in parallel, the errors surface in a fixed order.
 #[test]
+#[ignore = "extended: threads: the parallel chunk plan above PAR_MIN_ROWS (1.2 s); bank.rs keeps the small frames"]
 fn errors_name_the_frame_row_under_any_layout() {
     let n = PAR_MIN_ROWS + 500;
     let df = interleaved(n, 40, 17);

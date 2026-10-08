@@ -21,6 +21,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 TEMPORAL = dict(clock="ts", half_life="1d", gap_cap="10m")
 SECONDS = dict(clock="t", half_life=86400.0, gap_cap=600.0)
 

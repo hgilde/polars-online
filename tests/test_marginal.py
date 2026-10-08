@@ -16,6 +16,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 PAIR_FIELDS = [
     "weight_sum",
     "n_kish",

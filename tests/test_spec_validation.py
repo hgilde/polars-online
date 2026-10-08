@@ -14,6 +14,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 BASE = dict(targets=["y"], features=["x0"])
 NAN = float("nan")
 INF = float("inf")

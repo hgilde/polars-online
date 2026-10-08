@@ -195,10 +195,14 @@ no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Soak tests are opt-in: `uv run pytest -m soak`.
+# Soak tests are opt-in: `uv run pytest -m soak`. The `extended` tier is
+# *not* deselected here: a plain run is the full one, and only the
+# essentials gate leaves it out, with `-m "not extended and not soak"`
+# (docs/TESTING.md, "Two tiers").
 addopts = "-ra -m 'not soak'"
 markers = [
     "soak: long-running stability tests (millions of rows)",
+    "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
     "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins'`",
 ]
 [tool.ruff]

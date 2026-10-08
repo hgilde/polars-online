@@ -2674,6 +2674,7 @@ fn reversed(shards: &mut [MarginalShard<'_>]) {
 /// batch (256 rows), across window snapshots, bin folds, a gap that
 /// empties everything and a cleared ring.
 #[test]
+#[ignore = "extended: threads: shards against the unsplit step (1.3 s)"]
 fn a_sharded_step_is_the_unsplit_step_to_the_bit() {
     let p = 7;
     let rows = shard_stream(700, p);

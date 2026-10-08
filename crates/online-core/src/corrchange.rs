@@ -1366,6 +1366,7 @@ mod tests {
     /// reads no `alpha`, and `"monitor"`'s quantile saturates, so neither
     /// refuses one.
     #[test]
+    #[ignore = "extended: a second or more: the boundary law solved to refuse (2.1 s)"]
     fn an_alpha_too_small_for_its_quantile_is_refused_under_sequential() {
         let limit = crate::boundary::MIN_SEQUENTIAL_TAIL;
         // Three columns: three pairs under Bonferroni.
@@ -1904,6 +1905,7 @@ mod tests {
     /// the test over-rejects badly at `|ρ| = 0.9` for `T ≤ 500` (`.142` in
     /// their own table) and that is the paper's finding, not a bug here.
     #[test]
+    #[ignore = "extended: a paper's simulation (2.0 s)"]
     fn the_size_is_the_papers() {
         let t = 500usize;
         let reps = 300usize;
@@ -1939,6 +1941,7 @@ mod tests {
     /// is what the test exists to find, so the assertion is one-sided --
     /// power at least the paper's, less the sampling band.
     #[test]
+    #[ignore = "extended: a paper's simulation (2.1 s)"]
     fn the_power_is_at_least_the_papers() {
         for (t, want) in [(500usize, 0.587), (1000usize, 0.830)] {
             let reps = 200usize;
@@ -2369,6 +2372,7 @@ mod tests {
     /// learned rows, then at most `monitor_rows`, a new history after a flag
     /// or the last of them. A break in the middle of the stream makes flags.
     #[test]
+    #[ignore = "extended: a second or more (1.9 s)"]
     fn the_sequential_detector_is_its_definition() {
         let (d, m, limit, gamma) = (3usize, 40usize, 60usize, 0.25);
         let mut model = CorrChange::new(seq_cfg(d, m, limit, gamma)).unwrap();
@@ -2519,6 +2523,7 @@ mod tests {
     /// equicorrelation of the standardized row, with the history's mean and
     /// Bartlett long-run sd of `u` written out.
     #[test]
+    #[ignore = "extended: a second or more (1.4 s)"]
     fn the_scalar_sequential_detector_is_its_definition() {
         let (d, m, limit) = (4usize, 30usize, 45usize);
         let mut model = CorrChange::new(CorrChangeCfg {
@@ -2579,6 +2584,7 @@ mod tests {
     /// A zero-weight row is reported as the next monitored row would be and
     /// then not learned: the stream around it is the stream without it.
     #[test]
+    #[ignore = "extended: a second or more (1.7 s); model_contract's corrchange() keeps hard rule 9"]
     fn a_zero_weight_row_is_not_a_monitored_row() {
         let mut n = Normals::new(21);
         let rows: Vec<Vec<f64>> = (0..120).map(|_| n.pair(0.4)).collect();
@@ -2601,6 +2607,7 @@ mod tests {
     /// `predict` is the step's answer without the step, on every row of a
     /// cycle; a break (`clear_lags`) starts a new history.
     #[test]
+    #[ignore = "extended: a second or more (2.4 s); model_contract's corrchange() keeps the clause"]
     fn sequential_predict_is_the_step_and_a_break_restarts_the_cycle() {
         let mut n = Normals::new(8);
         let mut m = CorrChange::new(seq_cfg(2, 20, 30, 0.3)).unwrap();
@@ -2623,6 +2630,7 @@ mod tests {
     /// on to the bit. A `scalar` monitor saved mid-span was refused on load:
     /// the shape check held its one-value rows to the feature count.
     #[test]
+    #[ignore = "extended: a second or more (1.6 s)"]
     fn a_state_saved_mid_cycle_goes_on_to_the_bit() {
         let cases = [
             seq_cfg(3, 30, 50, 0.2),

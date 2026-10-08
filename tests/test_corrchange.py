@@ -19,6 +19,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def pair(n, rho, seed=0, k=2):
     rng = np.random.default_rng(seed)

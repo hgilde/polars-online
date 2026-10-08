@@ -6,6 +6,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _spec(**kw):
     d = dict(

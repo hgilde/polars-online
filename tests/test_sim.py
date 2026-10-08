@@ -14,6 +14,8 @@ import pytest
 import polars_online as po
 from polars_online import sim
 
+TIER = "essential"
+
 
 def two_state(**kw):
     d = dict(

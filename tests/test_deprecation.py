@@ -25,6 +25,8 @@ from polars_online import _warnings
 from polars_online._spec import _RENAMED
 from polars_online._warnings import _DEPRECATED, forward_deprecated
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 
 

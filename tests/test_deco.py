@@ -20,6 +20,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 HALFLIFE = 100.0
 
 

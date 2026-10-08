@@ -39,12 +39,25 @@ docs/EXTENDING.md      every place a new model touches, with the test that catch
 
 ```
 uv sync                                  # Python env
-cargo test --workspace --exclude online-py   # Rust tests (online-py has none; see ci.yml)
+scripts/gate.sh                          # the essentials: each commit while a task is in progress
+scripts/gate.sh --extended               # everything: before EVERY push, always
+cargo test --workspace --exclude online-py   # Rust essentials only (online-py has none; see ci.yml)
+cargo test --workspace --exclude online-py -- --include-ignored   # every Rust test
 maturin develop --release -m crates/online-py/Cargo.toml
-uv run pytest -x                         # Python tests (downloads/generates data on first run)
+uv run pytest -x                         # every Python test (downloads/generates data on first run)
+HYPOTHESIS_PROFILE=essential uv run pytest -m "not extended and not soak"   # Python essentials
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference (gate + CI)
 cargo run -p online-cli -- --config examples/bank.toml
 ```
+
+Two tiers of tests (docs/TESTING.md, "Two tiers"; PLAN task 210). The
+essentials gate each commit while a task is in progress, for speed of
+iteration; **the full suite runs before every push, always**
+(`scripts/gate.sh --extended`), whatever the essentials said, and CI and a
+release run it too. The defaults are asymmetric: a plain `uv run pytest`
+runs both tiers, but a plain `cargo test` skips the extended Rust tests
+(`#[ignore = "extended: ..."]`), so the full Rust run is `cargo test --
+--include-ignored`.
 
 ## Hard rules
 

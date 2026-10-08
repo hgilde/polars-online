@@ -28,6 +28,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
 
 

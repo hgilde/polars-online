@@ -18,6 +18,8 @@ import pytest
 import polars_online as po
 from conftest import run_online
 
+TIER = "essential"
+
 HALFLIFE = 40.0
 
 

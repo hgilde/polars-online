@@ -19,6 +19,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 STEP = 10.0
 
 

@@ -1881,8 +1881,10 @@ mod tests {
             prop::collection::vec((value, weight), 0..60)
         }
 
+        // proptest's own count, 256, or `PROPTEST_CASES`, which the
+        // essentials gate sets low (docs/TESTING.md, "Two tiers").
         proptest! {
-            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+            #![proptest_config(ProptestConfig::default())]
 
             /// Whatever the sample, the edges are finite, strictly
             /// increasing, above the smallest usable value, no more than

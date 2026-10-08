@@ -23,6 +23,8 @@ import pytest
 import polars_online as po
 from conftest import run_online
 
+TIER = "essential"
+
 #: Epoch nanoseconds in 2026, a multiple of 256: ``T0 + 1`` to ``T0 + 127``
 #: are all ``T0`` as a double.
 T0 = 1_790_000_000_000_000_000

@@ -20,6 +20,8 @@ from polars_online import _polars_online as native
 from polars_online import _spec
 from test_model_registry import MINIMAL
 
+TIER = "essential"
+
 README = Path(__file__).resolve().parent.parent / "README.md"
 
 #: Each row of the README's `min_weight` table, by its first cell, as the

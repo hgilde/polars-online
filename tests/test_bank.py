@@ -11,6 +11,8 @@ import polars_online as po
 from data import synthetic
 from test_model_registry import REGRESSIONS
 
+TIER = "essential"
+
 #: The regression models that check each target's ``min_weight`` against
 #: that target's own weight (review 2026-09-12, S2); the rest check it against
 #: the shared weight. Held to the code by the test below, which runs every

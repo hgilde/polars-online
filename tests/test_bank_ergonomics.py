@@ -18,6 +18,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 INF = float("inf")
 BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 

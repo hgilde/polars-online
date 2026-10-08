@@ -20,6 +20,12 @@ import without_pyarrow  # noqa: E402
 
 without_pyarrow.install()
 
+# The two tiers' Hypothesis profiles, `extended` unless HYPOTHESIS_PROFILE
+# says `essential` (tests/tiers.py, docs/TESTING.md "Two tiers").
+import tiers  # noqa: E402
+
+tiers.register()
+
 
 @pytest.fixture(scope="session")
 def online_cli() -> Path:

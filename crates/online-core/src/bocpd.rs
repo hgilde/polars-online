@@ -1787,6 +1787,7 @@ mod tests {
     /// 0.47 after 3,000 rows, measured -- and falls as the new run ages, so
     /// it is not the reading to wait on.)
     #[test]
+    #[ignore = "extended: a second or more: a long stream (2.8 s)"]
     fn a_long_stationary_stream_is_held_to_max_run_and_still_sees_a_shift() {
         let max_run = 1_000;
         let mut m = Bocpd::new(BocpdCfg {
@@ -3081,6 +3082,7 @@ mod tests {
     /// left out: on the clock one applies its step, and under a per-row
     /// hazard it is no row at all.)
     #[test]
+    #[ignore = "extended: a second or more (1.8 s)"]
     fn regular_steps_on_the_clock_are_the_per_row_hazard_from_row_one() {
         let (d, tau) = (3.0f64, 120.0f64);
         let h = -(-d / tau).exp_m1();
@@ -3398,6 +3400,7 @@ mod tests {
     /// there and misses the one at 200 (a property of the emission, reported
     /// beside task 195 and not changed by it).
     #[test]
+    #[ignore = "extended: a grid of levels and scales (1.3 s)"]
     fn the_prior_from_the_first_rows_finds_the_breaks_at_any_level_and_scale() {
         for emission in [
             BocpdEmission::Gaussian,

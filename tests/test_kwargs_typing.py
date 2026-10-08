@@ -16,6 +16,8 @@ import pytest
 import polars_online as po
 from polars_online import _kwargs, _spec
 
+TIER = "mixed"
+
 # Every model with a spec builder: what the parametrised test below covers.
 BUILDERS = [
     "bocpd",
@@ -114,6 +116,7 @@ po.spec.rls("m", targets=("y", t), features=["x"])
 """
 
 
+@pytest.mark.extended(reason="a second or more: a mypy run with a cold cache (2.0 s)")
 def test_every_documented_target_form_type_checks(tmp_path, monkeypatch):
     from pathlib import Path
 

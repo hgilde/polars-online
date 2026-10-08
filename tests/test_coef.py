@@ -9,6 +9,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _grouped(n=300, seed=0):
     rng = np.random.default_rng(seed)

@@ -345,11 +345,14 @@ jobs:
       # No Python here either: `online-polars` has no pyo3 in its tree and
       # the test is pure Rust. The `uv sync` this used to run built the
       # extension into a venv the test never touched (17 minutes on macOS,
-      # 23 on Windows in the first rehearsal).
+      # 23 on Windows in the first rehearsal). `--include-ignored` here and
+      # below: a release runs the extended tier, everything, and a Rust test
+      # of that tier is `#[ignore = "extended: ..."]` (docs/TESTING.md, "Two
+      # tiers"); `ci` above runs the rest of the suite the same way.
       - name: write the hand-off state
         env:
           ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability
+        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: handoff-state
@@ -382,7 +385,7 @@ jobs:
         # rehearsal failed here on both OSes.
         env:
           ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability
+        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
 
   next-polars:
     name: the suite on ${{ matrix.leg }} polars

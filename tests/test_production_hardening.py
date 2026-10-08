@@ -39,6 +39,8 @@ import polars_online as po
 from polars_version import needs_polars
 from test_ffi_memory import run_isolated
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parent.parent
 
 

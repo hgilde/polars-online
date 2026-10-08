@@ -29,6 +29,8 @@ import polars_online as po
 from reference import ftrl_ref
 from reference_paths import holt_ref, pa_ref, sgd_ref
 
+TIER = "essential"
+
 MAX_DCLOCK = 20.0
 FEATURES = ["x0", "x1", "x2"]
 TARGETS = ["ya", "yb"]

@@ -31,6 +31,11 @@ import pytest
 import child
 import polars_online as po
 
+TIER = "extended"
+pytestmark = pytest.mark.extended(
+    reason="memory: RSS across the FFI boundary, block after block, 41 s in all"
+)
+
 PROC = psutil.Process(os.getpid())
 
 

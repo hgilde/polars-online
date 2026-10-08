@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("pypi_readme", REPO / "scripts/pypi_readme.py")
 assert _spec and _spec.loader

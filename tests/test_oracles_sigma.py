@@ -23,6 +23,8 @@ import pytest
 import polars_online as po
 from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 
+TIER = "essential"
+
 MAX_DCLOCK = 6.0
 
 # Measured over the cases below: sigma 8.1e-16 (|got - expected| / expected)

@@ -313,6 +313,7 @@ mod tests {
     /// `Z_γ ≥ Z_0`, and the more so the larger `γ`: at every `c` the law is
     /// ordered.
     #[test]
+    #[ignore = "extended: a grid of gammas, each a solve (3.1 s)"]
     fn a_larger_gamma_is_a_larger_supremum() {
         for c in [1.5, 2.5, 3.5] {
             let (z0, z25, z45) = (
@@ -332,6 +333,7 @@ mod tests {
     /// 2`) is above by 0.015, in a row of theirs off the exact `T`-scaling by
     /// 0.027, the spread 10,000 paths leave.
     #[test]
+    #[ignore = "extended: a paper's table, solved cell by cell (8.9 s)"]
     fn the_critical_values_are_wied_and_galeanos_table_1() {
         let table = [
             (0.0, [1.2870, 1.5578, 1.8158, 1.9980]),
@@ -373,6 +375,7 @@ mod tests {
     /// The quantile is the solve's inverse, and a second call is the cached
     /// value, bit for bit.
     #[test]
+    #[ignore = "extended: a grid of quantiles, each a solve (2.8 s)"]
     fn the_quantile_inverts_the_solve() {
         let q = boundary_quantile(0.9, 0.3);
         assert!((boundary_cdf(q, 0.3) - 0.9).abs() < 1e-8, "{q}");
@@ -387,6 +390,7 @@ mod tests {
     /// and at `p = 0.2`. Illinois's halving of the stale end is what keeps
     /// both bracket ends moving.
     #[test]
+    #[ignore = "extended: a grid of tail quantiles, each a solve (5.4 s)"]
     fn the_quantile_meets_its_tolerance_in_a_tail() {
         for p in [1e-4, 0.2] {
             let q = boundary_quantile(p, 0.05);
@@ -406,6 +410,7 @@ mod tests {
     /// 0.29 from 1e-11 down, where `|P − p| < 1e-11` stops it anywhere in a
     /// tail that small.
     #[test]
+    #[ignore = "extended: a grid down to the floor, each a solve (2.9 s)"]
     fn the_solve_is_within_the_papers_tolerance_down_to_the_floor() {
         let error = |tail: f64| {
             let p = 1.0 - tail;
@@ -516,6 +521,7 @@ mod tests {
     /// to 4e-5 at `(γ, c) = (0.3, 0.84), (0.4, 0.9), (0.49, 4)`, where a solve
     /// stopped short of settling reads 2e-4 to 6e-4 high.
     #[test]
+    #[ignore = "extended: a second computation of the law over a grid (4.7 s)"]
     fn the_solve_is_a_second_computation_of_the_law() {
         for x in [0.8, 1.5, 2.2414, 3.0] {
             let (got, want) = (bridged_cdf(x, 0.0), sup_abs_bm_cdf(x));

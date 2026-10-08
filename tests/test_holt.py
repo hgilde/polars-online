@@ -6,6 +6,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def _spec(**kw):
     d = dict(targets=["y0"], clock="t", gap_cap=100.0, half_life=5.0, min_weight=3.0)

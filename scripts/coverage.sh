@@ -15,8 +15,11 @@ source scripts/env.sh
 echo "=== Rust (cargo test only; see the note above) ==="
 # online-py has no Rust tests, and with it in the build every test binary
 # links libpython, which a uv-managed Python keeps off Linux's loader path
-# (tests/test_ci_cost_policy.py, TestTheRustTestsLinkNoPython).
-cargo llvm-cov --workspace --exclude online-py --summary-only
+# (tests/test_ci_cost_policy.py, TestTheRustTestsLinkNoPython). Both
+# numbers are the extended tier's, everything: `--include-ignored` runs the
+# Rust tests marked `#[ignore = "extended: ..."]`, and pytest's default run
+# already holds its extended tier (docs/TESTING.md, "Two tiers").
+cargo llvm-cov --workspace --exclude online-py --summary-only -- --include-ignored
 
 echo
 echo "=== Python (drives the extension end to end) ==="

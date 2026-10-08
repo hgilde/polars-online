@@ -211,6 +211,7 @@ fn assert_none(what: &str, bad: &[String]) {
 /// the countdown in doubles happened to land, likewise. The oracle compares
 /// the rows' integer nanoseconds with the embargo's.
 #[test]
+#[ignore = "extended: a second or more (1.2 s)"]
 fn a_row_is_learned_exactly_one_embargo_later_in_every_unit() {
     let n = 2_600;
     let mut failures = Vec::new();
@@ -704,6 +705,7 @@ fn a_formula_target_under_an_embargo_equal_to_its_window_on_both_paths() {
 /// have covered `E - 1`, so `T = j + E - 1` at row `R + j`. A grid of
 /// half-lives resets every instance together; one instance resets itself.
 #[test]
+#[ignore = "extended: a second or more (1.8 s)"]
 fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
     let (n, change, embargo) = (1_200usize, 400usize, 60usize);
     let mut r = lcg(17);

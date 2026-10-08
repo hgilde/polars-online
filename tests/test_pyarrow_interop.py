@@ -28,6 +28,8 @@ import pytest
 
 from polars_version import needs_polars
 
+TIER = "essential"
+
 TESTS = Path(__file__).resolve().parent
 
 #: A pyarrow reader reaches a query through `pl.scan_arrow_c_stream`.

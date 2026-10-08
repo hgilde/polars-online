@@ -14,6 +14,8 @@ import pytest
 import polars_online as po
 from polars_online import stream
 
+TIER = "essential"
+
 NAMES = ["a", "b", "c"]
 
 

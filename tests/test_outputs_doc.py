@@ -15,6 +15,8 @@ from pathlib import Path
 
 import child
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "OUTPUTS.md"
 SCRIPT = REPO / "scripts" / "outputs_doc.py"

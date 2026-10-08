@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+TIER = "essential"
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 #: Every script whose output is a measurement the documents cite.

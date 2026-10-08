@@ -21,6 +21,8 @@ import polars_online as po
 from conftest import run_online
 from polars_online import _spec
 
+TIER = "essential"
+
 INF = float("inf")
 BASE = dict(targets=["y"], features=["x0"], half_life=10.0)
 

@@ -13,6 +13,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def grid_spec(**kw):
     d = dict(

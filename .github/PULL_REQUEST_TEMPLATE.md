@@ -5,7 +5,8 @@
 
 ## Checklist
 
-- [ ] `./scripts/gate.sh` passes (run unpiped; it ends with `gate: PASS`)
+- [ ] `./scripts/gate.sh --extended` passes, the full suite, before the push (run
+      unpiped; it ends with `gate: PASS` and the extended tier)
 - [ ] Golden numbers unchanged — or, if they moved, the PR explains why that is
       correct rather than regenerated
 - [ ] New behaviour has a test with an **oracle**, beyond a pinned output.

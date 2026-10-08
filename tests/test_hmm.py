@@ -12,6 +12,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def blobs(n=2000, run=100, sep=4.0, seed=0, d=2):
     """Two well-separated blobs, visited in runs of `run` rows."""

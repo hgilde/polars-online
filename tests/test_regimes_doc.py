@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+TIER = "extended"
+
 REPO = Path(__file__).resolve().parents[1]
 DOC = REPO / "docs" / "REGIMES.md"
 
@@ -44,10 +46,15 @@ SECTIONS = {
     "9": ["sequential"],
 }
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="REGIMES.md is generated on macOS; another libm may move a third decimal",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform != "darwin",
+        reason="REGIMES.md is generated on macOS; another libm may move a third decimal",
+    ),
+    pytest.mark.extended(
+        reason="a document's experiments: scripts/regime_experiments.py, 32 s (section 9 23 s)"
+    ),
+]
 
 
 def _experiments():

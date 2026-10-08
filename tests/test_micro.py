@@ -41,6 +41,8 @@ import polars_online as po
 import reference_cluster as ref
 from test_kmeans import ari, blobs, frame, stranded
 
+TIER = "mixed"
+
 SHAPES = ["moons", "rings", "varied", "highdim20"]
 FIELDS = ("cluster", "dist", "micro_id", "outlier", "n_clusters", "n_micro", "weight_sum")
 
@@ -310,6 +312,7 @@ class TestDefinitions:
         j = int(np.argmin(d2))
         return group[j], math.sqrt(d2[j])
 
+    @pytest.mark.extended(reason="a second or more: every summary against its rows (1.7 s)")
     def test_each_summary_is_its_rows_and_each_row_goes_where_the_rule_says(self):
         """A row goes to the nearest potential summary if its radius² after
         taking the row, ``a r2 + a b |z - c|²``, stays within ``E = eps² p``;
@@ -382,6 +385,7 @@ class TestDefinitions:
 
 
 class TestLargeData:
+    @pytest.mark.extended(reason="a grid of four geometries at scale, 1.1 to 2.7 s each")
     @pytest.mark.parametrize(
         ("name", "eps", "k"),
         [("moons", 0.07, 2), ("rings", 0.1, 3), ("varied", 0.1, 3), ("highdim20", 0.3, 5)],

@@ -819,6 +819,7 @@ fn a_saved_summary_that_is_not_its_spec_s_is_refused_and_none_stays_none() {
 /// is either loaded or refused with an error -- never a panic -- and what
 /// loads can be read and saved again.
 #[test]
+#[ignore = "extended: a grid: every prefix and a third of the bytes flipped (3.1 s)"]
 fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
     let df = make_df(60);
     // One small spec so every prefix length can be tried.
@@ -884,7 +885,23 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
 /// accumulators, and a panic in any of them on a corrupt file is the same
 /// defect. Held to `ModelKind::KINDS`, so a new kind cannot be left out.
 #[test]
+#[ignore = "extended: a grid of corruptions for every kind (22 s); the thinned sweep below stays"]
 fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
+    every_kind_refuses_or_loads_corruption(7, 5);
+}
+
+/// The sweep above, thinned again for the essentials (docs/TESTING.md, "Two
+/// tiers"): every 97th prefix and a flip every 151st byte, still reaching
+/// each kind's framing and its payload both, as the assertions require.
+#[test]
+fn every_model_kind_refuses_or_loads_a_thinned_corruption_never_panics() {
+    every_kind_refuses_or_loads_corruption(97, 151);
+}
+
+/// Every `prefix_step`-th prefix of each kind's state file is refused, and
+/// bit 0 or bit 7 flipped at every `flip_step`-th byte is refused or loads
+/// into a bank that reads, saves and learns without a panic.
+fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) {
     let df = make_df(60);
     // (kind, model, targets, features, half-life): what runs on `make_df`.
     let kinds: &[(&str, &str, &str, &str, bool)] = &[
@@ -1056,7 +1073,7 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
                 let _ = loaded.fit_predict(&df.slice(0, 1));
             }
         };
-        for n in (0..bytes.len()).step_by(7) {
+        for n in (0..bytes.len()).step_by(prefix_step) {
             assert!(
                 Bank::load_bytes(&bytes[..n], Some(&specs)).is_err(),
                 "{kind}: a file cut at {n} of {} loaded",
@@ -1064,7 +1081,7 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
             );
         }
         let (mut loaded_flipped, mut tried) = (0, 0);
-        for pos in (0..bytes.len()).step_by(5) {
+        for pos in (0..bytes.len()).step_by(flip_step) {
             for bit in [0, 7] {
                 let mut b = bytes.clone();
                 b[pos] ^= 1 << bit;

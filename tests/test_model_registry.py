@@ -27,6 +27,8 @@ import test_semantics_all_models
 from polars_online import _polars_online as _native
 from polars_online import _spec
 
+TIER = "essential"
+
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 CORE_GOLDEN = ROOT / "crates" / "online-core" / "tests" / "golden.rs"

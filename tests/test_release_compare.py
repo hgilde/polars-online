@@ -10,6 +10,8 @@ from pathlib import Path
 
 import polars as pl
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 
 

@@ -16,6 +16,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "soak"
+
 pytestmark = pytest.mark.soak
 
 ROWS = 10_000_000

@@ -24,6 +24,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 K = 6
 HL = 100.0
 

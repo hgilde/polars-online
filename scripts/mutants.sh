@@ -57,4 +57,9 @@ while [ $# -gt 0 ]; do
         *)  args+=(--file "$1"); shift ;;
     esac
 done
-cargo mutants "${args[@]}"
+# `-- -- --include-ignored`: cargo-mutants hands what follows its `--` to
+# `cargo test`, and `cargo test` what follows its own to the test binaries.
+# The extended tier's Rust tests are `#[ignore = "extended: ..."]`, and a
+# mutant only they catch would otherwise count as a survivor (docs/TESTING.md,
+# "Two tiers"); CI's mutation runs pass the same.
+cargo mutants "${args[@]}" -- -- --include-ignored

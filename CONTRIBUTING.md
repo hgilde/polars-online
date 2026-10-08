@@ -8,7 +8,8 @@ get a change merged is to match the conventions it already has.
 ```sh
 uv sync                                    # Python env (CPython 3.12+)
 source scripts/env.sh                      # PATH for cargo/uv; `. .\scripts\env.ps1` on Windows
-./scripts/gate.sh                          # everything CI checks, in one command
+./scripts/gate.sh                          # every check, with the tests' essentials
+./scripts/gate.sh --extended               # every check and every test: before every push
 ```
 
 Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
@@ -16,13 +17,20 @@ Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
 
 ## The gate
 
-**Run `./scripts/gate.sh` before every commit, and let it pass.** It runs
-these steps, in this order:
+**Run `./scripts/gate.sh` before every commit, and let it pass. Run
+`./scripts/gate.sh --extended` before every push, always.** The gate has two
+tiers of tests ([docs/TESTING.md, "Two tiers"](docs/TESTING.md#two-tiers)).
+By default it runs the essentials, which keep the many commits of a task in
+progress quick. With `--extended` it runs every test, as CI and a release
+do, and what reaches GitHub has passed everything locally. Both run these
+steps, in this order:
 
 1. `cargo fmt --check`
 2. `cargo clippy -D warnings`
 3. `cargo test --workspace --exclude online-py`, since online-py has no Rust
-   tests and would link libpython into every test binary
+   tests and would link libpython into every test binary. `--extended` adds
+   `-- --include-ignored`, which runs the tests marked
+   `#[ignore = "extended: ..."]`
 4. `uv lock --check`, before any `uv run` could rewrite a stale lock file
 5. `ruff format --check`
 6. `ruff check`
@@ -31,12 +39,16 @@ these steps, in this order:
    rebuild the extension after a Rust change, so without this step the
    Python suite can silently test a stale binary.
 9. `pytest`, which also runs every README code block, every docstring
-   example and the structure check of every Markdown file
+   example and the structure check of every Markdown file. The essentials
+   leave out the tests marked `extended`, and draw fewer examples in the
+   property tests
 10. a `sphinx-build -W` of the API reference, so a docstring that is not
     valid RST fails the gate, not the docs deploy.
 
-Its last line is `gate: PASS` or `gate: FAIL`. It exists because grepping
-test output for "FAILED" hides compile and lint errors.
+Its first line names the tier, and its last line is `gate: PASS` or
+`gate: FAIL` with the tier beside it. The essentials' verdict says it is not
+the pre-push check. The gate exists because grepping test output for
+"FAILED" hides compile and lint errors.
 
 **Do not pipe it and then chain a commit.** `gate.sh | tail && git commit`
 commits even on failure, because a pipeline returns the exit status of

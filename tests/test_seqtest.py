@@ -46,6 +46,8 @@ import pytest
 import polars_online as po
 import reference
 
+TIER = "essential"
+
 LN20 = math.log(20.0)  # level 0.05
 LN100 = math.log(100.0)  # level 0.01
 

@@ -33,6 +33,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 #: Fitting a ridge from a handful of rows says so; beside the point here.
 pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
 

@@ -45,6 +45,8 @@ import pytest
 import polars_online as po
 from data import is_transient
 
+TIER = "extended"
+
 REPO = Path(__file__).resolve().parents[1]
 
 #: Every release from 0.10.0, the oldest whose files a loader once promised,
@@ -67,7 +69,10 @@ LOADED = [v for v in RELEASES if _major(v) >= 1] + [THIS_BUILD]
 
 # The workload's specs are built to reach every path, not to be ready: a
 # readiness warning about one of them is expected and says nothing here.
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = [
+    pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning"),
+    pytest.mark.extended(reason="the network: each release's wheel, downloaded from PyPI"),
+]
 
 
 def _load(name: str):

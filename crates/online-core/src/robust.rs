@@ -3346,6 +3346,7 @@ mod tests {
     /// intercept and through the origin, standardized and not, under a
     /// half-life and without one.
     #[test]
+    #[ignore = "extended: a second or more (2.7 s)"]
     fn without_a_ridge_a_band_row_moves_the_kept_factor() {
         for (fit_intercept, standardize) in
             [(true, false), (true, true), (false, false), (false, true)]
@@ -3527,6 +3528,7 @@ mod tests {
     /// was already a fresh one. Each comparison runs the 300 rows after its
     /// save point: a parting persists, and a solve comes within ten.
     #[test]
+    #[ignore = "extended: a save at every row (1.9 s)"]
     fn a_quantile_fit_resumes_to_the_bit_at_every_save_point() {
         use crate::OnlineModel;
         let rows = tc1b_rows(3000);

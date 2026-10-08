@@ -26,6 +26,8 @@ import tomllib
 import pytest
 import yaml
 
+TIER = "essential"
+
 WORKFLOWS = sorted(
     (pathlib.Path(__file__).resolve().parents[1] / ".github/workflows").glob("*.yml")
 )

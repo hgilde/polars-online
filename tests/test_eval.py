@@ -7,6 +7,8 @@ import pytest
 import polars_online as po
 from data import synthetic
 
+TIER = "essential"
+
 
 def _fitted(n_groups=2, n_rows=300, **kw):
     df, _ = synthetic(seed=51, n_groups=n_groups, n_rows=n_rows, k=3, null_frac=0.0)

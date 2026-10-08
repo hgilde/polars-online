@@ -7,6 +7,8 @@ import pytest
 import polars_online as po
 from data import synthetic
 
+TIER = "essential"
+
 
 def _spec(**kw):
     defaults = dict(

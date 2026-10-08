@@ -7,6 +7,8 @@ import pytest
 import polars_online as po
 from data import synthetic
 
+TIER = "essential"
+
 
 def _pred(out, col="pred_y0"):
     return out["m"].struct.field(col).to_numpy().astype(float)

@@ -28,6 +28,8 @@ from conftest import run_online
 from polars_online._polars_online import validate_spec
 from test_windows import trades_and_quotes
 
+TIER = "essential"
+
 W = 10.0
 H = 5.0
 

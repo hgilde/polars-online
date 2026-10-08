@@ -19,6 +19,8 @@ import polars_online as po
 from data import synthetic
 from reference import ftrl_ref, kalman_ref, lasso_ref, robust_ref
 
+TIER = "essential"
+
 MAXD = 50.0
 
 

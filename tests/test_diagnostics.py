@@ -15,6 +15,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"delta": 1.0}),

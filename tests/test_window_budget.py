@@ -17,6 +17,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 #: MiB: about a kilobyte, a handful of one-feature snapshots.
 TINY = 0.001
 

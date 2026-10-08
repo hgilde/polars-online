@@ -28,6 +28,8 @@ import polars_online as po
 from conftest import run_online
 from polars_online import stream
 
+TIER = "essential"
+
 HALFLIFE = 50.0
 
 

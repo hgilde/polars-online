@@ -2950,8 +2950,10 @@ mod finite_steps {
         ]
     }
 
+    // Eight times proptest's own count: 2,048 cases, or 256 under the
+    // essentials gate's `PROPTEST_CASES=32` (docs/TESTING.md, "Two tiers").
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #![proptest_config(ProptestConfig::with_cases(8 * ProptestConfig::default().cases))]
         #[test]
         fn every_step_is_finite(
             (cfg, with_clock) in cfg(),

@@ -19,6 +19,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 SPEC = {
     "name": "m",
     "model": {"type": "ewridge", "ridge": 1e-6, "max_rows_between_solves": 1},

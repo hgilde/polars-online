@@ -39,6 +39,8 @@ import pytest
 import polars_online as po
 import reference_cluster as ref
 
+TIER = "mixed"
+
 RULES = ["first", "farthest", "kmeanspp", "lloyd"]
 
 
@@ -717,6 +719,9 @@ class TestDefinitions:
             prev = now
         return seen
 
+    @pytest.mark.extended(
+        reason="a second or more: the criteria against their formulas row by row (1.4 s)"
+    )
     def test_the_far_and_merge_criteria_are_the_formulas(self):
         # Two blobs born after seeding, so a centre seeded on one blob is
         # freed for them by a merge.
@@ -735,6 +740,9 @@ class TestDefinitions:
             )
             assert seen["far"] > 100 and seen["checks"] > 40 and seen["merges"] >= 3, seen
 
+    @pytest.mark.extended(
+        reason="a second or more: the criterion against its formula row by row (1.1 s)"
+    )
     def test_the_dead_criterion_is_the_formula(self):
         # A blob dies and one is born far away: its centre is re-placed on
         # the new blob's far rows once it falls under dead_frac * n_eff / k.

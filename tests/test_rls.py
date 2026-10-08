@@ -8,6 +8,8 @@ import polars_online as po
 from data import synthetic
 from reference import compute_dclock, rls_ref
 
+TIER = "essential"
+
 HL = 300.0
 MAXD = 50.0
 

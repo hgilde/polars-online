@@ -14,6 +14,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 N = 300
 
 

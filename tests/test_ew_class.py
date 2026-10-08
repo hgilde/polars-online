@@ -37,6 +37,8 @@ import pytest
 import polars_online as po
 import reference
 
+TIER = "essential"
+
 SHAPES = ["full", "shared", "diagonal"]
 NAMES = np.array(["a", "b", "c", "d"])
 

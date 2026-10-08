@@ -24,6 +24,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 # The joins and group-bys below reorder `left()`'s rows, so its clock runs
 # backwards again and again, which is refused unless `restart_after_step_back`
 # reads it as a new start. These tests are about the *plan* warning, which must fire before

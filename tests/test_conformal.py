@@ -51,6 +51,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 # --- the oracle ----------------------------------------------------------------
 
 _A = (

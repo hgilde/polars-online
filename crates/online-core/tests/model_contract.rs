@@ -2003,6 +2003,7 @@ fn recovers_over<M: OnlineModel>(rows: &[Row], build: impl Fn() -> M, how: Recov
 }
 
 #[test]
+#[ignore = "extended: a second or more: two 30,000-row recoveries (3.5 s); the clause stays for the other models"]
 fn ewridge_recovers_from_bounded_extremes() {
     recovers_from_bounded_extremes(
         || EwRidge::new(ewridge_cfg()).unwrap(),
@@ -2050,6 +2051,7 @@ fn kalman_recovers_from_bounded_extremes() {
 }
 
 #[test]
+#[ignore = "extended: a second or more: four 30,000-row recoveries (6.4 s); the clause stays for the other models"]
 fn robust_recovers_from_bounded_extremes() {
     for loss in ROBUST_LOSSES {
         // Huber is least squares near the solution and converges; the
@@ -2168,6 +2170,7 @@ fn kmeans_recovers_from_bounded_extremes() {
 }
 
 #[test]
+#[ignore = "extended: a second or more: three 30,000-row recoveries (1.8 s); the clause stays for the other models"]
 fn ew_class_recovers_from_bounded_extremes() {
     // The script's target becomes the label: class 1 where y > 0. A row at
     // the bound with weight at the bound leaves one class's mean at 1e100
@@ -3081,6 +3084,7 @@ fn bocpd_on_the_clock_predict_is_the_step() {
 }
 
 #[test]
+#[ignore = "extended: a second or more: 30,000 rows of recovery (9.5 s); the clause stays for the other models"]
 fn bocpd_recovers_from_bounded_extremes() {
     // A 1e100 row is a changepoint by any reading, and the posterior is
     // path-dependent, so a clean twin is not the criterion. What must hold
@@ -3611,8 +3615,10 @@ fn a_schema_16_state_of_offsets_is_refused() {
 /// state saved and restored at any row continues exactly as the model that
 /// was not; and nothing a model reports is infinite, whatever the inputs
 /// inside the bound. Each is checked above on one fixed stream; here the
-/// stream is the variable. 128 streams a model in the suite; 2,000 a model,
-/// run once when this was written (docs/PLAN.md task 121), found nothing.
+/// stream is the variable. 128 streams a model in the suite, half proptest's
+/// own count: 16 under the essentials gate's `PROPTEST_CASES=32`
+/// (docs/TESTING.md, "Two tiers"). 2,000 a model, run once when this was
+/// written (docs/PLAN.md task 121), found nothing.
 /// The streams are drawn afresh each run (proptest seeds from the OS): a
 /// failure prints the shrunk stream, which is what to keep as a fixed case,
 /// and `PROPTEST_RNG_SEED=<n>` repeats a run (review 2026-09-26, C8).
@@ -3902,7 +3908,7 @@ mod generated {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+        #![proptest_config(ProptestConfig::with_cases(ProptestConfig::default().cases / 2))]
 
         #[test]
         fn ewridge(rows in stream(2, false), split in 0usize..60) {

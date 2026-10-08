@@ -290,6 +290,7 @@ fn first_event(got: &[usize], event: Event) -> Option<usize> {
 /// say. Summed in doubles each came a row late: 2001 rows apart, the first
 /// checkpoint at 2001.
 #[test]
+#[ignore = "extended: a second or more (1.1 s)"]
 fn every_cadence_fires_every_two_thousand_rows_of_a_millisecond_clock() {
     let n = 6_100;
     let mut failures = Vec::new();
@@ -396,6 +397,7 @@ fn a_number_clock_of_tenths_fires_by_one_subtraction_of_its_raw_values() {
 /// Hard rule 3: the events, and every output with them, are the same fed
 /// in chunks of 1, 7 and 37 rows as in one.
 #[test]
+#[ignore = "extended: a second or more (4.7 s); bank.rs::chunk_invariance keeps hard rule 3"]
 fn the_events_do_not_depend_on_the_chunking() {
     let n = 4_100;
     let (t, _) = millisecond_rows(n, TimeUnit::Microseconds);
@@ -424,6 +426,7 @@ fn the_events_do_not_depend_on_the_chunking() {
 /// the sum gives the nanoseconds back exactly, so only a number clock can
 /// show a stamp that was not saved.)
 #[test]
+#[ignore = "extended: a second or more (3.1 s)"]
 fn a_save_between_two_events_resumes_where_the_unbroken_run_does() {
     let (t, _) = millisecond_rows(4_600, TimeUnit::Nanoseconds);
     let ms = frame(t, 14);

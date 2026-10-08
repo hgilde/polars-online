@@ -38,6 +38,8 @@ import polars as pl
 import polars_online as po
 from reference_paths import lasso_paths_ref
 
+TIER = "essential"
+
 FEATURES = ["x0", "x1", "x2", "x3"]
 TARGETS = ["ya", "yb", "yc"]
 PATH = [0.2, 0.05, 0.0]

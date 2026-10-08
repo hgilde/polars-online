@@ -13,6 +13,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
     "doc_structure", REPO / "scripts" / "doc_structure.py"

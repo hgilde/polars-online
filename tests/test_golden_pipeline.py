@@ -27,6 +27,8 @@ import polars as pl
 
 import polars_online as po
 
+TIER = "essential"
+
 #: How far two platforms may disagree, relative. Different LLVM vectorization
 #: and BLAS paths can reorder floating-point operations; a genuinely divergent
 #: algorithm shows up far above this.

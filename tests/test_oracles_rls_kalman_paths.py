@@ -30,6 +30,8 @@ from reference import kalman_ref
 from reference_paths import rls_paths_ref
 from test_oracles_lasso_paths import FEATURES, _stream
 
+TIER = "essential"
+
 MAX_DCLOCK = 6.0
 
 # Measured over the cases below as |got - expected| / (1 + |expected|): rls

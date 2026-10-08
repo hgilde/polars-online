@@ -33,6 +33,8 @@ import polars_online as po
 from data import synthetic
 from reference import compute_dclock, kalman_ref
 
+TIER = "essential"
+
 INF = float("inf")
 MAXD = 50.0
 

@@ -585,10 +585,13 @@ builder's name differs from its kind.
 ### Then the gate
 
 Run the gate, unpiped, and commit once it passes. The registry tests fail
-until every step is in, which is what they are for.
+until every step is in, which is what they are for. Before the push, run
+it with `--extended`, which runs every test ([TESTING.md, "Two
+tiers"](TESTING.md#two-tiers)).
 
 ```sh
-./scripts/gate.sh   # unpiped
+./scripts/gate.sh              # unpiped; the essentials, for each commit
+./scripts/gate.sh --extended   # unpiped; every test, before the push
 ```
 
 ## Adding an output or a parameter instead

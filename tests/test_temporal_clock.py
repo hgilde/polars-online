@@ -32,6 +32,8 @@ from polars_online._polars_online import spec_clock_fields
 from polars_online._spec import _takes_duration
 from test_model_registry import MINIMAL
 
+TIER = "essential"
+
 # 2024-01-02 09:30:00 UTC, in epoch seconds.
 START = 1_704_187_800
 

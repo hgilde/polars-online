@@ -20,6 +20,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 MODELS = [
     ("ewridge", {}),
     ("lasso", {"lasso_path": [0.0]}),

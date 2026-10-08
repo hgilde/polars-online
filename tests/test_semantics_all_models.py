@@ -18,6 +18,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 #: (name, extra spec kwargs). One entry per model the bank can build;
 #: `test_model_registry` holds this list to exactly that.
 MODELS = [

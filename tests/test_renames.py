@@ -24,6 +24,8 @@ import pytest
 import polars_online as po
 from polars_online._spec import _RENAMED
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("release_probe", REPO / "scripts/release_probe.py")
 assert _spec and _spec.loader

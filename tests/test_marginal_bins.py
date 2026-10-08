@@ -19,6 +19,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def stream(n=4000, shape="threshold", seed=0):
     """A relation a correlation cannot see, plus a linear one for contrast."""

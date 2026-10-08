@@ -107,8 +107,11 @@ jobs:
           uv run python -c "import polars; print('py-polars', polars.__version__)"
           cargo tree -p polars --depth 0 || true
 
-      # online-py is left out, as in ci.yml's test job, which says why.
-      - run: uv run cargo test --workspace --exclude online-py
+      # online-py is left out, as in ci.yml's test job, which says why. The
+      # canary is a pre-release check, so it runs the extended tier:
+      # `--include-ignored` here, and pytest's `-m` below leaves `extended`
+      # in (docs/TESTING.md, "Two tiers").
+      - run: uv run cargo test --workspace --exclude online-py -- --include-ignored
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       # `-m` replaces the `-m 'not soak'` in pyproject's addopts rather than
       # adding to it, so both go here. `pins` marks the seven tests that can

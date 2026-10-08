@@ -21,6 +21,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def run(x, **kw):
     """`x` is `(n, d)`; returns the unnested output frame."""

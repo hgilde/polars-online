@@ -16,6 +16,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def frame(n=80, seed=0):
     rng = np.random.default_rng(seed)

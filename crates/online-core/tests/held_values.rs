@@ -608,6 +608,7 @@ fn slopes_decay<M: OnlineModel>(name: &str, make: impl Fn() -> M, slope: impl Fn
 }
 
 #[test]
+#[ignore = "extended: a second or more (1.3 s)"]
 fn a_held_target_leaves_no_slope_on_a_moving_feature() {
     slopes_decay(
         "ewridge",
@@ -748,6 +749,7 @@ fn a_held_target_is_reported_as_it_is() {
 /// rounding steps of the level, as every fit in the caller's units pays
 /// (`steps_of`).
 #[test]
+#[ignore = "extended: a second or more (2.1 s)"]
 fn without_decay_a_stopped_feature_keeps_its_slope() {
     let held = 100_000;
     let no_decay = |mut c: EwRidgeCfg| {
@@ -840,6 +842,7 @@ fn resumes<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
 }
 
 #[test]
+#[ignore = "extended: a second or more (1.9 s)"]
 fn a_state_saved_mid_hold_resumes_to_the_bit() {
     resumes("ewridge", || EwRidge::new(ridge(true)).unwrap());
     resumes("ewridge, blocked", || {
@@ -1047,6 +1050,7 @@ fn no_weight_moves_nothing<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
 }
 
 #[test]
+#[ignore = "extended: a second or more (2.0 s); model_contract's per-model tests keep hard rule 9"]
 fn a_row_of_no_weight_moves_no_mean() {
     no_weight_moves_nothing("ewridge", || EwRidge::new(ridge(true)).unwrap());
     no_weight_moves_nothing("ewridge, blocked", || {

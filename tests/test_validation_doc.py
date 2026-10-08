@@ -21,6 +21,11 @@ import pytest
 import child
 from data import VALIDATION_DATES, public_intraday_or_skip
 
+TIER = "extended"
+pytestmark = pytest.mark.extended(
+    reason="a document's experiments: scripts/validate.py over the downloaded intraday days"
+)
+
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "VALIDATION.md"
 

@@ -21,6 +21,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 FEATURES = ["x0", "x1", "x2"]
 LOADINGS = [f"pc0_loading_{f}" for f in FEATURES]
 MIN_WEIGHT = 5.0

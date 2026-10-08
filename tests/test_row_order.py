@@ -20,6 +20,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 K = 4
 FEATURES = [f"x{j}" for j in range(K)]
 

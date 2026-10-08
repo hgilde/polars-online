@@ -23,6 +23,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 INF = float("inf")
 
 

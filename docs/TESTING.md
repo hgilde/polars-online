@@ -35,7 +35,7 @@ says what cleared them.
 
 | section | what it holds |
 |---|---|
-| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [the window operators and formula targets](#the-window-operators-and-formula-targets) · [resuming a run](#resuming-a-run) · [beyond the eight classes](#beyond-the-eight-classes) · [where the suite runs](#where-the-suite-runs) |
+| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [the window operators and formula targets](#the-window-operators-and-formula-targets) · [resuming a run](#resuming-a-run) · [beyond the eight classes](#beyond-the-eight-classes) · [two tiers](#two-tiers) · [where the suite runs](#where-the-suite-runs) |
 | [What it has found](#what-it-has-found) | [defects, and where each is told](#defects-and-where-each-is-told) · [differences from river that are not bugs](#differences-from-river-that-are-not-bugs) |
 | [Where it is thin, and what is left](#where-it-is-thin-and-what-is-left) | [what is left](#what-is-left) · [measured coverage](#measured-coverage) · [mutation survivors](#mutation-survivors) |
 | [How the suite looks for defects](#how-the-suite-looks-for-defects) | [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
@@ -74,7 +74,8 @@ The scorecard is against the eight test classes of `docs/PLAN.md` §9. The
 references come next, with the rule that makes each one a reference and the
 libraries a test may take one from. Two surfaces newer than the classes
 follow: the window operators, and resuming a run. The last parts test what
-the classes do not name, and say where the suite runs.
+the classes do not name, say which tests gate a commit and which a push,
+and say where the suite runs.
 
 ### The eight test classes
 
@@ -529,15 +530,97 @@ each chunk's last row as well as every `coef_every` rows, so smaller chunks
 report it more often. The guarantee now names that exception, and every
 computed field is still bit-identical.
 
+### Two tiers
+
+**The essentials gate each commit while a task is in progress. The full
+suite runs before every push, always.** The user set the purpose on
+2026-10-08: "We will always run the full tests before a push, the idea of
+the essential tests is to improve the speed of iteration while developing
+many steps." A push never rides on the essentials, whatever they said
+(docs/PLAN.md task 210).
+
+| when | what runs | tier |
+|---|---|---|
+| each commit while a task is in progress | `./scripts/gate.sh` | the essentials |
+| before every push, always | `./scripts/gate.sh --extended` | everything |
+| every push and pull request | `ci.yml` on Linux, macOS and Windows | everything, and the essentials nowhere |
+| before a release | `release.yml`, which runs `ci.yml` | everything |
+| on their schedules | `polars-canary.yml`; `mutants.yml` | everything; every Rust test, the ignored ones included |
+
+**The rule for a tier was stated before any test moved.** The essentials
+hold a test of every hard rule, every golden and the contract tests. They
+hold the refusals and renames, the API snapshot and the document-structure
+tests too, and each module's own unit tests, each in its fastest form that
+can still fail. A test moves to the extended tier when it takes a second or
+more or needs the network or downloaded data. It moves too when it re-runs
+a document's experiments (REGIMES, VALIDATION), measures memory or threads,
+sweeps a grid, or runs a third-party oracle over a long stream. The only
+test of a hard rule never moves whole: a reduced form, with fewer rows or
+cases, stays in the essentials, and the full form moves. A golden stays
+whole however slow, since fewer rows are other numbers. The `soak` tests
+stay opt-in, as before.
+
+**How a test says its tier:**
+
+| where | extended | essentials |
+|---|---|---|
+| a pytest test | `@pytest.mark.extended(reason="...")` on the test, on one of its parameters, or as its module's `pytestmark` | no mark |
+| a pytest module | `TIER = "extended"`, or `TIER = "mixed"` when only some of its tests are | `TIER = "essential"` |
+| a Rust test | `#[ignore = "extended: <reason>"]` under its `#[test]` | no `#[ignore]` |
+| a Hypothesis property | the `extended` profile: the count its file names, 30 by default | the `essential` profile: at most 10 examples, or the smaller count its file names |
+| a proptest property | a multiple of proptest's own 256: 128 to 2,048 | `PROPTEST_CASES=32`, an eighth: 16 to 256 |
+
+**A plain `pytest` runs both tiers; a plain `cargo test` runs the
+essentials.** `uv run pytest` is the full run: `addopts` leaves out the
+soak alone, and the Hypothesis profile is `extended` unless
+`HYPOTHESIS_PROFILE=essential` is set (`tests/tiers.py`). cargo skips an
+ignored test, so `cargo test` alone runs the Rust essentials, and
+`cargo test -- --include-ignored` is the full Rust run. `gate.sh
+--extended`, CI, the release, the canary and `scripts/coverage.sh` all pass
+it. cargo-mutants takes it as `-- -- --include-ignored`, so a mutant only
+an extended test catches is not counted a survivor. The essentials gate
+runs pytest with `-m "not extended and not soak"`, the `essential` profile
+and `PROPTEST_CASES=32`.
+
+**Every hard rule a test can hold has tests in the essentials.**
+`tests/test_tiers.py` reads this table and fails if a test it names is
+missing or extended:
+
+| hard rule | essentials tests |
+|---|---|
+| 1, no data files | `tests/test_repo_hygiene.py::test_no_data_files_are_tracked` |
+| 2, out of sample | `tests/test_bank.py::TestOutOfSample::test_noise_target_has_no_ic`, `tests/test_properties.py::TestUniversalProperties::test_prediction_never_depends_on_the_current_target`, `crates/online-core/tests/model_contract.rs::ewridge_predict_is_the_step` and each model's beside it |
+| 3, chunk invariance | `tests/test_bank.py::TestChunkInvariance::test_chunked_equals_single`, `tests/test_semantics_all_models.py::TestUniversalInvariants::test_chunk_invariance`, `crates/online-polars/tests/bank.rs::chunk_invariance`, `crates/online-polars/tests/summary.rs::chunking_cannot_move_a_bit` |
+| 5, frozen fixtures | `crates/online-core/tests/state_fixtures.rs::every_fixture_goes_on_to_the_bit`, `crates/online-core/tests/state_fixtures.rs::every_fixture_saves_its_bytes_again`, `crates/online-polars/tests/state_fixtures.rs::every_fixture_loads_goes_on_to_the_bit_and_saves_its_bytes_again` |
+| 8, `n_eff` | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which hold the accessor and the reported weight to the one recursion; `tests/test_semantics_all_models.py::TestWarmup::test_n_eff_is_reported_before_the_update` |
+| 9, a zero weight | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which run `zero_weight_rows_only_advance_the_clock`; `tests/test_edge_cases.py::TestWeights::test_zero_weight_is_a_pure_decay_row` |
+
+The build holds rules 4 and 6: `online-core`'s manifest has no Polars
+dependency and forbids `unsafe_code`. Rule 7 is a practice.
+
+**The budget is time, so the gate prints it rather than a test checking
+it.** The essentials aim at pytest under 90 s and `cargo test`'s run under
+60 s at this machine's usual load. On 2026-10-08, at a load of 4 to 5 on 14
+cores, pytest's essentials took 72 s against the full suite's 196 s, and
+`cargo test`'s ran 29 s against 146 s. `gate.sh` names its tier on its
+first and last lines and prints each step's time, so a slow test that
+creeps into the essentials shows where they run. CI runs only the full tier
+and spends no minutes timing the essentials. The user asked for that on
+2026-10-08: "Do the work before the push just to save ci time".
+docs/PLAN.md task 210 has the measurements and every test that moved.
+
 ### Where the suite runs
 
 **Every push to `main` and every pull request runs the suite on Linux,
-macOS and Windows.** The gate runs before every commit, and each workflow
-under `.github/workflows/` on its own schedule:
+macOS and Windows.** The gate runs before every commit, the essentials
+while a task is in progress and everything before every push ([Two
+tiers](#two-tiers)), and each workflow under `.github/workflows/` on its
+own schedule:
 
 | when | where | what runs |
 |---|---|---|
-| before every commit | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`, and Sphinx with `-W` |
+| each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`'s essentials, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials, and Sphinx with `-W` |
+| before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint and type checks, Sphinx, and every output against the newest release's, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in ten shards with one report, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |

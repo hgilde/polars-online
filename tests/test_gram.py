@@ -18,6 +18,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 
 def stream(n=4000, k=3, seed=0):
     rng = np.random.default_rng(seed)

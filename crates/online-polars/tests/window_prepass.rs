@@ -119,6 +119,7 @@ fn prepass_against_the_ring(spec: &Spec, df: &DataFrame, size: usize) -> Option<
 /// ring ever fills: a replay that missed the reset or the close would
 /// refuse a chunk the bank takes, which the comparison would catch.
 #[test]
+#[ignore = "extended: a second or more (1.4 s)"]
 fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
     let df = frame(600, 80);
     let short = frame(600, 16);

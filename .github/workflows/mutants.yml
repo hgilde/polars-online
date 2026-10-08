@@ -21,6 +21,11 @@ name: Mutants
 # three times, the first full pass counted 1,588 timeouts, and 19 of the 25
 # sampled were survivors.
 #
+# Every run passes `-- -- --include-ignored`, which cargo-mutants hands to
+# `cargo test` and `cargo test` to the test binaries: the extended tier's
+# Rust tests are `#[ignore = "extended: ..."]`, and without it a mutant they
+# alone catch would be counted a survivor (docs/TESTING.md, "Two tiers").
+#
 # Every run is also stopped inside its job's own limit, with SIGINT, which
 # keeps the outcomes it finished, and writes the list of the mutants it was
 # given. So the report says when a run tested fewer, and fails on it: a job
@@ -111,7 +116,7 @@ jobs:
             # report still runs and counts what a large diff left untested.
             timeout --signal=INT --kill-after=2m 100m cargo mutants "${args[@]}" \
               --cargo-test-arg=--tests --timeout-multiplier 10 \
-              -j 2 --minimum-test-timeout 30 --output mutants-out
+              -j 2 --minimum-test-timeout 30 --output mutants-out -- -- --include-ignored
             code=$?
           else
             echo "this shard was dealt no mutants"
@@ -196,7 +201,7 @@ jobs:
           # still uploads what it finished and the report counts the rest.
           timeout --signal=INT --kill-after=2m 215m cargo mutants "${args[@]}" \
             --cargo-test-arg=--tests --timeout-multiplier 10 \
-            -j 4 --minimum-test-timeout 10 --output shard
+            -j 4 --minimum-test-timeout 10 --output shard -- -- --include-ignored
           code=$?
           mkdir -p shard/mutants.out && cp listed.txt shard/mutants.out/
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac

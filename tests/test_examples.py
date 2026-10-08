@@ -16,6 +16,8 @@ import pytest
 import child
 from polars_version import needs_polars
 
+TIER = "essential"
+
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
 

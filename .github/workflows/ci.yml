@@ -228,8 +228,11 @@ jobs:
       # `--no-fail-fast`: one failing test binary stopped the step there, so
       # on the 0.11.0 tag a unit test that failed on Linux and Windows hid
       # every integration test after it, and Windows never reached pytest.
+      # `--include-ignored`: CI runs the extended tier, everything. A Rust
+      # test of that tier is `#[ignore = "extended: ..."]`, which a plain
+      # `cargo test` skips (docs/TESTING.md, "Two tiers").
       - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked
+        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'
@@ -242,6 +245,13 @@ jobs:
       # and reported, never gating (docs/TESTING.md T-D4): a step of its own
       # ran the whole suite a second time on every OS, `continue-on-error`
       # (review 2026-10-06, CI17). The run itself gates as on every leg.
+      #
+      # The extended tier, everything: pyproject's addopts leave out the
+      # soak alone, and the Hypothesis profile is `extended` unless
+      # HYPOTHESIS_PROFILE says otherwise (tests/tiers.py). CI runs no
+      # essentials of its own: the gate times them locally, where they run
+      # (the user, 2026-10-08: "Do the work before the push just to save ci
+      # time").
       - name: pytest
         run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
 

@@ -16,6 +16,8 @@ from pathlib import Path
 
 from polars_online import _polars_online as _native
 
+TIER = "essential"
+
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "docs" / "reference"
 SOURCES = [ROOT / "README.md", ROOT / "llms.txt"]

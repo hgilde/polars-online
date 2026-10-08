@@ -18,6 +18,8 @@ import pytest
 
 from test_production_hardening import _readme_namespace
 
+TIER = "essential"
+
 README = Path(__file__).resolve().parent.parent / "README.md"
 SECTION = "### A first fit"
 A = pl.col("stock_id") == "A"

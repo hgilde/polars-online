@@ -7,6 +7,8 @@ import pytest
 from data import public_intraday_or_skip, synthetic
 from reference import compute_dclock, ewridge_ref, kalman_ref, rls_ref
 
+TIER = "mixed"
+
 
 def _arrays(df: pl.DataFrame, k: int = 3):
     x = np.column_stack([df[f"x{j}"].to_numpy() for j in range(k)])
@@ -140,6 +142,7 @@ def test_null_policy_in_oracle():
     assert np.isfinite(out["pred"][60, 0]) and np.isnan(out["resid"][60, 0])
 
 
+@pytest.mark.extended(reason="the network: the public intraday days")
 def test_public_intraday_download():
     df = public_intraday_or_skip()
     assert df.height > 1000

@@ -24,6 +24,8 @@ import pytest
 
 import polars_online as po
 
+TIER = "essential"
+
 #: The return a target table took three ways, as the columns Polars makes.
 HOW = {
     "difference": pl.col("p") - pl.col("mid"),
