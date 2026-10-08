@@ -2663,8 +2663,7 @@ def sgd(
         under ``"constant"`` their memory is in rows, about ``1 / (lr *
         E[z**2])`` of them, whatever the clock between rows. ``half-life``
         reaches ``weight_sum`` and ``min_weight``, the scaler and AdaGrad's sum,
-        not the coefficients: at half-life 10 and 10,000 a constant rate fits
-        the same slopes.
+        not the coefficients.
     ``l2``
         A ridge on every step, on the slopes only: the intercept is not
         penalised. Default 0.0.

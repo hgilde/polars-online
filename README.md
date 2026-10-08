@@ -2953,8 +2953,7 @@ g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gra
 **To set how many rows the coefficients remember, choose `learning_rate`.**
 Every row's step moves the coefficients and the half-life does not decay
 them, so under a constant rate they remember about
-`1 / (learning_rate · E[z²])` rows, whatever the clock between rows. A
-constant rate fits the same slopes at a half-life of 10 or 10,000. Under
+`1 / (learning_rate · E[z²])` rows, whatever the clock between rows. Under
 `schedule="adagrad"`, `Gᵢ` decays on the clock, so the adapted rate opens
 up again after a long gap.
 
